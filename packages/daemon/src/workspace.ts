@@ -62,6 +62,22 @@ export class Workspace {
     return true;
   }
 
+  /**
+   * Re-insert a repo with its original id and metadata. Used by undo/redo so
+   * id stability lets later toggle events still reference the same repo.
+   */
+  async restoreRepo(repo: Repo): Promise<void> {
+    const repos = await this.listRepos();
+    if (repos.some((r) => r.id === repo.id)) {
+      throw new Error(`Repo already exists with id ${repo.id}`);
+    }
+    if (repos.some((r) => r.path === repo.path)) {
+      throw new Error(`Repo already exists at path ${repo.path}`);
+    }
+    repos.push(repo);
+    await this.writeRepos(repos);
+  }
+
   private async writeRepos(repos: Repo[]): Promise<void> {
     const payload: ReposFile = { repos };
     await writeFile(

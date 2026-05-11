@@ -65,4 +65,21 @@ describe("Workspace", () => {
     const ws2 = await Workspace.open(path);
     expect((await ws2.listRepos()).map((r) => r.path)).toEqual(["/tmp/foo"]);
   });
+
+  test("restoreRepo preserves id and metadata (for undo/redo round-trips)", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const original = await ws.addRepo("/tmp/foo");
+    await ws.removeRepo(original.id);
+    await ws.restoreRepo(original);
+    const repos = await ws.listRepos();
+    expect(repos).toHaveLength(1);
+    expect(repos[0]?.id).toBe(original.id);
+    expect(repos[0]?.addedAt).toBe(original.addedAt);
+  });
+
+  test("restoreRepo rejects when id already exists", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(ws.restoreRepo(repo)).rejects.toThrow(/already exists/);
+  });
 });

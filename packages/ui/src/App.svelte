@@ -1,12 +1,34 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  interface FileStatus {
+    staged: number;
+    unstaged: number;
+    untracked: number;
+  }
+  interface BranchStatus {
+    branch: string;
+    upstream: string | null;
+    ahead: number;
+    behind: number;
+  }
+  interface LastCommit {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    author: string;
+    time: string;
+  }
+
   interface Worktree {
     path: string;
     branch: string;
     head: string;
     bare: boolean;
     detached: boolean;
+    fileStatus: FileStatus;
+    branchStatus: BranchStatus | null;
+    lastCommit: LastCommit | null;
   }
 
   interface Repo {
@@ -22,10 +44,11 @@
     timestamp: string;
     type: string;
     actor: "user" | "agent" | "supergit";
-    payload: unknown;
-    inverse?: unknown;
+    payload: any;
+    inverse?: any;
     undone: boolean;
     reversible: boolean;
+    redoable: boolean;
   }
 
   let repos: Repo[] = [];
@@ -77,7 +100,7 @@
     error = "";
     try {
       const res = await fetch("/api/pick-folder", { method: "POST" });
-      if (res.status === 204) return; // cancelled
+      if (res.status === 204) return;
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -101,10 +124,10 @@
     }
   }
 
-  async function undoEvent(id: string) {
+  async function toggleEvent(id: string, toggle: "undo" | "redo") {
     error = "";
     try {
-      const res = await fetch(`/api/events/${id}/undo`, { method: "POST" });
+      const res = await fetch(`/api/events/${id}/${toggle}`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -115,18 +138,33 @@
     }
   }
 
+  async function openIn(path: string, app: "editor" | "fork" | "terminal") {
+    error = "";
+    try {
+      const res = await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, app }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   function eventLabel(ev: Event): string {
     if (ev.type === "add_repo") {
-      const p = (ev.payload as { path?: string })?.path ?? "";
-      return `Added ${p}`;
+      const inv = ev.inverse as { repo?: { name?: string; path?: string } } | undefined;
+      const name = inv?.repo?.name ?? (ev.payload?.path as string | undefined)?.split("/").filter(Boolean).pop();
+      return `Added ${name ?? "(unknown)"}`;
     }
     if (ev.type === "remove_repo") {
       const inv = ev.inverse as { repo?: { name?: string; path?: string } } | undefined;
-      const label = inv?.repo?.name ?? inv?.repo?.path ?? "(unknown)";
-      return `Removed ${label}`;
-    }
-    if (ev.type === "undo") {
-      return `Undo of ${(ev.payload as { eventId?: string })?.eventId ?? "?"}`;
+      const name = inv?.repo?.name ?? inv?.repo?.path;
+      return `Removed ${name ?? "(unknown)"}`;
     }
     return ev.type;
   }
@@ -138,6 +176,22 @@
     if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
     return `${Math.floor(d / 86400)}d ago`;
   }
+
+  function statusSummary(s: FileStatus): { clean: boolean; text: string } {
+    const total = s.staged + s.unstaged + s.untracked;
+    if (total === 0) return { clean: true, text: "clean" };
+    const parts: string[] = [];
+    if (s.staged) parts.push(`${s.staged} staged`);
+    if (s.unstaged) parts.push(`${s.unstaged} unstaged`);
+    if (s.untracked) parts.push(`${s.untracked} untracked`);
+    return { clean: false, text: parts.join(", ") };
+  }
+
+  // Only show real actions in the history; hide the undo/redo toggle events
+  // (they're computed into the `undone` flag on the original action).
+  $: visibleEvents = events.filter(
+    (e) => e.type !== "undo" && e.type !== "redo",
+  );
 
   onMount(load);
 </script>
@@ -187,16 +241,67 @@
               {#if repo.worktrees.length > 0}
                 <ul class="worktrees">
                   {#each repo.worktrees as wt}
-                    <li>
-                      <code class="wt-path">{wt.path}</code>
-                      {#if wt.detached}
-                        <span class="branch detached"
-                          >detached @ {wt.head.slice(0, 7)}</span
-                        >
-                      {:else if wt.bare}
-                        <span class="branch bare">bare</span>
-                      {:else}
-                        <span class="branch">{wt.branch}</span>
+                    {@const summary = statusSummary(wt.fileStatus)}
+                    <li class="wt">
+                      <div class="wt-row1">
+                        <code class="wt-path">{wt.path}</code>
+                        {#if wt.detached}
+                          <span class="branch detached"
+                            >detached @ {wt.head.slice(0, 7)}</span
+                          >
+                        {:else if wt.bare}
+                          <span class="branch bare">bare</span>
+                        {:else}
+                          <span class="branch">{wt.branch}</span>
+                        {/if}
+                      </div>
+
+                      <div class="wt-row2">
+                        <span
+                          class="status-dot"
+                          class:clean={summary.clean}
+                          title={summary.text}
+                        ></span>
+                        <span class="muted small">{summary.text}</span>
+                        {#if wt.branchStatus && wt.branchStatus.upstream}
+                          {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
+                            <span class="ab" title={`vs ${wt.branchStatus.upstream}`}>
+                              {#if wt.branchStatus.ahead > 0}↑{wt.branchStatus.ahead}{/if}
+                              {#if wt.branchStatus.behind > 0}↓{wt.branchStatus.behind}{/if}
+                            </span>
+                          {:else}
+                            <span class="muted small ab-clean">in sync</span>
+                          {/if}
+                        {:else if !wt.detached && !wt.bare && wt.branchStatus}
+                          <span class="muted small">no upstream</span>
+                        {/if}
+
+                        <div class="wt-actions">
+                          <button
+                            class="tiny"
+                            on:click={() => openIn(wt.path, "editor")}
+                            title="Open in editor">Editor</button
+                          >
+                          <button
+                            class="tiny"
+                            on:click={() => openIn(wt.path, "fork")}
+                            title="Open in Fork">Fork</button
+                          >
+                          <button
+                            class="tiny"
+                            on:click={() => openIn(wt.path, "terminal")}
+                            title="Open in terminal">Terminal</button
+                          >
+                        </div>
+                      </div>
+
+                      {#if wt.lastCommit}
+                        <div class="wt-row3 muted small">
+                          <code class="sha">{wt.lastCommit.shortSha}</code>
+                          <span class="commit-subject">{wt.lastCommit.subject}</span>
+                          <span class="commit-author">— {wt.lastCommit.author}</span>
+                          <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
+                        </div>
                       {/if}
                     </li>
                   {/each}
@@ -212,11 +317,11 @@
 
     <section class="events-col">
       <h2>Recent actions</h2>
-      {#if events.length === 0}
+      {#if visibleEvents.length === 0}
         <p class="muted">No actions yet.</p>
       {:else}
         <ul class="events">
-          {#each events.slice(0, 20) as ev (ev.id)}
+          {#each visibleEvents.slice(0, 30) as ev (ev.id)}
             <li class:undone={ev.undone}>
               <div class="ev-row">
                 <span class="ev-type">{eventLabel(ev)}</span>
@@ -224,12 +329,16 @@
               </div>
               <div class="ev-meta">
                 <span class="actor actor-{ev.actor}">{ev.actor}</span>
-                {#if ev.undone}
-                  <span class="badge">undone</span>
-                {:else if ev.reversible}
-                  <button class="undo" on:click={() => undoEvent(ev.id)}
-                    >Undo</button
-                  >
+                {#if ev.reversible}
+                  {#if ev.undone}
+                    <button class="redo" on:click={() => toggleEvent(ev.id, "redo")}
+                      >Redo</button
+                    >
+                  {:else}
+                    <button class="undo" on:click={() => toggleEvent(ev.id, "undo")}
+                      >Undo</button
+                    >
+                  {/if}
                 {/if}
               </div>
             </li>
@@ -273,6 +382,9 @@
   }
   .muted {
     color: #888;
+  }
+  .small {
+    font-size: 0.8rem;
   }
   .nopad {
     margin: 0.5rem 0 0 0;
@@ -322,6 +434,10 @@
   }
   button.refresh {
     margin-left: auto;
+  }
+  button.tiny {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
   }
   .error {
     background: #3f1f1f;
@@ -383,18 +499,34 @@
     padding: 0;
     margin: 0.6rem 0 0;
   }
-  .worktrees li {
-    padding: 0.45rem 0;
+  .wt {
+    padding: 0.6rem 0;
     border-top: 1px solid #2a2a2b;
+  }
+  .wt-row1 {
     display: flex;
-    gap: 1rem;
+    gap: 0.75rem;
     align-items: center;
+  }
+  .wt-row2 {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.35rem;
+  }
+  .wt-row3 {
+    margin-top: 0.35rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    overflow: hidden;
   }
   .wt-path {
     font-family: ui-monospace, monospace;
     font-size: 0.85rem;
     color: #c0c0c0;
     overflow-wrap: anywhere;
+    flex: 1;
   }
   .branch {
     background: #1a3a5a;
@@ -402,7 +534,6 @@
     padding: 0.1rem 0.5rem;
     border-radius: 4px;
     font-size: 0.8rem;
-    margin-left: auto;
     white-space: nowrap;
   }
   .branch.detached {
@@ -412,6 +543,46 @@
   .branch.bare {
     background: #2a2a3a;
     color: #aaaacc;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #d97706;
+    display: inline-block;
+  }
+  .status-dot.clean {
+    background: #16a34a;
+  }
+  .ab {
+    background: #2a2a3a;
+    color: #d8d8ff;
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ab-clean {
+    margin-left: 0;
+  }
+  .wt-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.3rem;
+  }
+  .sha {
+    font-family: ui-monospace, monospace;
+    color: #a0a0a0;
+  }
+  .commit-subject {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .commit-author,
+  .commit-time {
+    white-space: nowrap;
   }
   .events {
     list-style: none;
@@ -467,11 +638,8 @@
     background: #2a2a2b;
     color: #c0c0c0;
   }
-  .badge {
-    font-size: 0.7rem;
-    color: #888;
-  }
-  .undo {
+  .undo,
+  .redo {
     margin-left: auto;
     padding: 0.2rem 0.6rem;
     font-size: 0.75rem;
@@ -480,5 +648,9 @@
   .undo:hover {
     background: #3a2a1a;
     color: #efcdaa;
+  }
+  .redo:hover {
+    background: #1a3a2a;
+    color: #cdefaa;
   }
 </style>

@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Workspace } from "./workspace";
-import { listWorktrees } from "./git";
+import { listWorktrees, getWorktreeDetails } from "./git";
 import { pickFolder } from "./picker";
+import { openIn, type OpenApp } from "./open";
 import { EventLog } from "./events";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 
@@ -60,8 +61,10 @@ const server = Bun.serve({
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
+          { method: "POST", path: "/api/open", body: { path: "string", app: "editor | fork | terminal" }, description: "open a path in editor / Fork / terminal via OS shell-out" },
           { method: "GET", path: "/api/events", description: "list recent events (mutations + observations) with undone/reversible flags" },
           { method: "POST", path: "/api/events/:id/undo", description: "reverse a reversible event" },
+          { method: "POST", path: "/api/events/:id/redo", description: "re-apply a previously undone event" },
           { method: "GET", path: "/mcp", description: "MCP server info" },
           { method: "POST", path: "/mcp", description: "MCP JSON-RPC: initialize, tools/list, tools/call" },
         ],
@@ -72,10 +75,16 @@ const server = Bun.serve({
     if (url.pathname === "/api/repos" && req.method === "GET") {
       const repos = await workspace.listRepos();
       const enriched = await Promise.all(
-        repos.map(async (repo) => ({
-          ...repo,
-          worktrees: await listWorktrees(repo.path),
-        })),
+        repos.map(async (repo) => {
+          const worktrees = await listWorktrees(repo.path);
+          const withDetails = await Promise.all(
+            worktrees.map(async (wt) => ({
+              ...wt,
+              ...(await getWorktreeDetails(wt.path)),
+            })),
+          );
+          return { ...repo, worktrees: withDetails };
+        }),
       );
       return json(enriched);
     }
@@ -123,6 +132,34 @@ const server = Bun.serve({
       return new Response(null, { status: 204, headers: CORS });
     }
 
+    if (url.pathname === "/api/open" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { path?: unknown; app?: unknown }
+        | null;
+      if (typeof body?.path !== "string" || typeof body?.app !== "string") {
+        return json(
+          { error: "body.path (string) and body.app (string) required" },
+          { status: 400 },
+        );
+      }
+      const validApps: OpenApp[] = ["editor", "fork", "terminal"];
+      if (!validApps.includes(body.app as OpenApp)) {
+        return json(
+          { error: `body.app must be one of: ${validApps.join(", ")}` },
+          { status: 400 },
+        );
+      }
+      try {
+        const result = await openIn(body.path, body.app as OpenApp);
+        return json(result);
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 500 },
+        );
+      }
+    }
+
     if (url.pathname === "/api/pick-folder" && req.method === "POST") {
       try {
         const result = await pickFolder();
@@ -144,47 +181,79 @@ const server = Bun.serve({
       return json(all.slice().reverse());
     }
 
-    const undoMatch = url.pathname.match(/^\/api\/events\/([^/]+)\/undo$/);
-    if (undoMatch && req.method === "POST") {
-      const id = undoMatch[1]!;
+    const toggleMatch = url.pathname.match(
+      /^\/api\/events\/([^/]+)\/(undo|redo)$/,
+    );
+    if (toggleMatch && req.method === "POST") {
+      const id = toggleMatch[1]!;
+      const toggle = toggleMatch[2] as "undo" | "redo";
       const original = await events.findById(id);
       if (!original) return json({ error: "event not found" }, { status: 404 });
-      if (original.type === "undo")
-        return json({ error: "cannot undo an undo event" }, { status: 400 });
-      if (original.undone)
-        return json({ error: "event already undone" }, { status: 409 });
+      if (original.type === "undo" || original.type === "redo")
+        return json({ error: `cannot ${toggle} a toggle event` }, { status: 400 });
       if (!original.reversible || original.inverse === undefined)
         return json({ error: "event is not reversible" }, { status: 400 });
+      if (toggle === "undo" && original.undone)
+        return json({ error: "already undone" }, { status: 409 });
+      if (toggle === "redo" && !original.undone)
+        return json(
+          { error: "nothing to redo (event is currently applied)" },
+          { status: 409 },
+        );
 
       try {
-        // Apply the inverse
-        if (original.type === "add_repo") {
-          const inv = original.inverse as { repo: { id: string } };
-          const removed = await workspace.removeRepo(inv.repo.id);
-          if (!removed) {
+        if (toggle === "undo") {
+          // Apply the inverse
+          if (original.type === "add_repo") {
+            const inv = original.inverse as { repo: { id: string } };
+            const removed = await workspace.removeRepo(inv.repo.id);
+            if (!removed) {
+              return json(
+                { error: "inverse failed: repo no longer exists" },
+                { status: 409 },
+              );
+            }
+          } else if (original.type === "remove_repo") {
+            const inv = original.inverse as {
+              repo: import("./workspace").Repo;
+            };
+            await workspace.restoreRepo(inv.repo);
+          } else {
             return json(
-              { error: "inverse failed: repo no longer exists" },
-              { status: 409 },
+              { error: `no inverse handler for type: ${original.type}` },
+              { status: 501 },
             );
           }
-        } else if (original.type === "remove_repo") {
-          const inv = original.inverse as {
-            repo: { path: string };
-          };
-          await workspace.addRepo(inv.repo.path);
         } else {
-          return json(
-            { error: `no inverse handler for type: ${original.type}` },
-            { status: 501 },
-          );
+          // redo: re-apply the original effect (using inverse.repo to preserve id)
+          if (original.type === "add_repo") {
+            const inv = original.inverse as {
+              repo: import("./workspace").Repo;
+            };
+            await workspace.restoreRepo(inv.repo);
+          } else if (original.type === "remove_repo") {
+            const inv = original.inverse as { repo: { id: string } };
+            const removed = await workspace.removeRepo(inv.repo.id);
+            if (!removed) {
+              return json(
+                { error: "redo failed: repo no longer exists" },
+                { status: 409 },
+              );
+            }
+          } else {
+            return json(
+              { error: `no redo handler for type: ${original.type}` },
+              { status: 501 },
+            );
+          }
         }
 
-        const undo = await events.append({
-          type: "undo",
+        const toggleEv = await events.append({
+          type: toggle,
           actor: "user",
           payload: { eventId: id },
         });
-        return json({ undone: id, by: undo.id });
+        return json({ [toggle]: id, by: toggleEv.id });
       } catch (e) {
         return json(
           { error: String(e instanceof Error ? e.message : e) },

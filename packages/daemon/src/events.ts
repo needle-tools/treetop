@@ -13,10 +13,9 @@ export type Actor = "user" | "agent" | "supergit";
  * The supergit event log. Every mutation goes through here, append-only.
  *
  * - Reversible events carry an `inverse` payload sufficient to undo them.
- * - An `undo` event references the original event's id; when reading the log,
- *   we compute each event's `undone` flag by scanning for matching undo events.
- *
- * File format: JSONL at `<workspace>/events.jsonl`. One event per line.
+ * - An `undo` event toggles the referenced action to the undone state; a
+ *   `redo` event toggles it back. Order matters — the *last* toggle wins.
+ * - File format: JSONL at `<workspace>/events.jsonl`. One event per line.
  */
 export interface EventInput<P = unknown, I = unknown> {
   type: string;
@@ -33,9 +32,11 @@ export interface Event<P = unknown, I = unknown> extends EventInput<P, I> {
 export interface ListedEvent<P = unknown, I = unknown> extends Event<P, I> {
   undone: boolean;
   reversible: boolean;
+  redoable: boolean;
 }
 
 const EVENTS_FILE = "events.jsonl";
+const TOGGLE_TYPES = new Set(["undo", "redo"]);
 
 export class EventLog {
   private constructor(public readonly path: string) {}
@@ -72,20 +73,28 @@ export class EventLog {
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as Event);
 
-    const undoneIds = new Set<string>();
+    // Compute the final toggle state per action id by walking events in order.
+    // undo -> undone; redo -> applied; later wins.
+    const undoneById = new Map<string, boolean>();
     for (const e of events) {
-      if (e.type === "undo") {
-        const eventId = (e.payload as { eventId?: unknown } | null | undefined)
-          ?.eventId;
-        if (typeof eventId === "string") undoneIds.add(eventId);
-      }
+      if (!TOGGLE_TYPES.has(e.type)) continue;
+      const eventId = (e.payload as { eventId?: unknown } | null | undefined)
+        ?.eventId;
+      if (typeof eventId !== "string") continue;
+      undoneById.set(eventId, e.type === "undo");
     }
 
-    return events.map((e) => ({
-      ...e,
-      undone: undoneIds.has(e.id),
-      reversible: e.inverse !== undefined && e.type !== "undo",
-    }));
+    return events.map((e) => {
+      const isToggle = TOGGLE_TYPES.has(e.type);
+      const reversible = !isToggle && e.inverse !== undefined;
+      const undone = undoneById.get(e.id) ?? false;
+      return {
+        ...e,
+        undone,
+        reversible,
+        redoable: reversible && undone,
+      };
+    });
   }
 
   async findById(id: string): Promise<ListedEvent | null> {
