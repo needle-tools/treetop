@@ -306,13 +306,17 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.35rem 0.5rem;
+    /* Tight row-gap + line-height: 1.1 so when last-activity wraps to a
+       second row the header doesn't blow up vertically. */
+    gap: 0.15rem 0.5rem;
+    line-height: 1.1;
   }
   .header-main > * {
     /* Text doesn't wrap inside an item; the item itself wraps to a new
        row of the flex container when there isn't enough room. */
     white-space: nowrap;
     flex: 0 0 auto;
+    line-height: 1.1;
   }
   .header-main .last-activity {
     /* Allow the last-activity pill to absorb any extra width on its row
