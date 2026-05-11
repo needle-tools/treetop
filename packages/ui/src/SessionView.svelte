@@ -176,7 +176,12 @@
               class:brand-claude={m.role === "assistant" && agent === "claude"}
               class:brand-codex={m.role === "assistant" && agent === "codex"}
               class:brand-copilot={m.role === "assistant" && agent === "copilot"}
-            >{roleLabel(m.role)}</span>
+            >
+              {#if m.role === "assistant" && agent === "claude"}
+                <img class="agent-icon" src="/agents/claude.svg" alt="" />
+              {/if}
+              {roleLabel(m.role)}
+            </span>
             {#if m.timestamp}
               <span class="muted small">{new Date(m.timestamp).toLocaleString()}</span>
             {/if}
@@ -332,6 +337,12 @@
   }
   .role.brand-claude {
     color: var(--chip-orange-text);
+  }
+  .role .agent-icon {
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.12em;
+    margin-right: 0.35em;
   }
   .role.brand-codex {
     color: var(--chip-green-text);
