@@ -1006,35 +1006,6 @@
             </div>
           {/if}
 
-          {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
-            {@const existingSources = new Set(
-              (wt.agents ?? []).map((a) => a.source),
-            )}
-            {@const visibleSessions = filterToExistingSessions(
-              openSessionsByWt[wt.path] ?? [],
-              existingSources,
-            )}
-            {#if visibleSessions.length > 0}
-              <div class="sessions-strip">
-                {#each visibleSessions as s, i (s.source)}
-                  <div
-                    class="session-col"
-                    on:dragover={handleSessionDragOver}
-                    on:drop={(e) => handleSessionDrop(e, wt.path, i)}
-                  >
-                    <SessionView
-                      agent={s.agent}
-                      source={s.source}
-                      onClose={() => closeSessionInWt(wt.path, s)}
-                      onDragStart={(e) =>
-                        handleSessionDragStart(e, wt.path, i)}
-                    />
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {/if}
-
           {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
             {@const latest = activityByCwd[wt.path][0]}
             <div class="row-activity" title={`source: ${latest.source}`}>
@@ -1098,6 +1069,36 @@
                 <span class="commit-author">{wt.lastCommit.author}</span>
                 <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
               </div>
+
+              {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
+                {@const existingSources = new Set(
+                  (wt.agents ?? []).map((a) => a.source),
+                )}
+                {@const visibleSessions = filterToExistingSessions(
+                  openSessionsByWt[wt.path] ?? [],
+                  existingSources,
+                )}
+                {#if visibleSessions.length > 0}
+                  <div class="sessions-strip">
+                    {#each visibleSessions as s, i (s.source)}
+                      <div
+                        class="session-col"
+                        on:dragover={handleSessionDragOver}
+                        on:drop={(e) =>
+                          handleSessionDrop(e, wt.path, i)}
+                      >
+                        <SessionView
+                          agent={s.agent}
+                          source={s.source}
+                          onClose={() => closeSessionInWt(wt.path, s)}
+                          onDragStart={(e) =>
+                            handleSessionDragStart(e, wt.path, i)}
+                        />
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
 
               {#if commitsExpanded[wt.path]}
                 <div class="expanded">
