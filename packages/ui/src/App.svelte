@@ -28,6 +28,7 @@
     lastActive: string;
     sessionId?: string;
     source: string;
+    title?: string;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -804,6 +805,7 @@
                               <button
                                 class="agent-row"
                                 class:active={openSession[wt.path]?.source === sess.source}
+                                title={sess.title}
                                 on:click={() => {
                                   openSession = {
                                     ...openSession,
@@ -819,7 +821,9 @@
                                 }}
                               >
                                 <span class="agent-dot agent-{sess.agent}"></span>
-                                <span class="agent-name">{sess.agent}</span>
+                                <span class="agent-title">
+                                  {sess.title ?? `(${sess.agent} — no title)`}
+                                </span>
                                 <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
                                 {#if sess.sessionId}
                                   <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
@@ -1455,9 +1459,12 @@
     background: var(--surface-2);
     color: var(--text-1);
   }
-  .agent-row .agent-name {
-    text-transform: lowercase;
-    font-family: ui-monospace, monospace;
+  .agent-row .agent-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    color: var(--text-2);
   }
   .agent-row .agent-time {
     text-align: right;

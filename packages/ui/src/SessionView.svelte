@@ -7,7 +7,18 @@
 
   function md(text: string | undefined): string {
     if (!text) return "";
-    return marked.parse(text, { async: false }) as string;
+    // Claude wraps pasted/screenshotted attachments as
+    //   [Image: source: /abs/path/to/file.png]
+    // Convert those to markdown images pointing at /api/image so they
+    // render inline in the chat (with our 30vh height cap).
+    const processed = text.replace(
+      /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi,
+      (_match, filePath) => {
+        const url = `/api/image?path=${encodeURIComponent(filePath.trim())}`;
+        return `![pasted image](${url})`;
+      },
+    );
+    return marked.parse(processed, { async: false }) as string;
   }
 
   export let agent: "claude" | "codex" | "copilot" = "claude";
@@ -180,7 +191,18 @@
               {#if m.role === "assistant" && agent === "claude"}
                 <img class="agent-icon" src="/agents/claude.svg" alt="" />
               {:else if m.role === "assistant" && agent === "codex"}
-                <span class="agent-icon agent-icon-codex" aria-hidden="true"></span>
+                <!-- Inline SVG so fill="currentColor" actually picks up the
+                     surrounding text colour (brand green). The codex.svg
+                     file in public/ is a PNG-in-SVG wrapper and can't be
+                     recoloured. -->
+                <svg
+                  class="agent-icon agent-svg"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+                </svg>
               {/if}
               {roleLabel(m.role)}
             </span>
@@ -346,15 +368,9 @@
     vertical-align: -0.12em;
     margin-right: 0.35em;
   }
-  /* Codex icon is a PNG-in-SVG too; use it as a CSS mask so the visible
-     pixels are painted with currentColor (i.e. the assistant row's brand
-     green). Stays in sync with the role colour without re-exporting the
-     SVG. */
-  .role .agent-icon.agent-icon-codex {
+  .role .agent-icon.agent-svg {
+    /* Inline-SVG icon: fill="currentColor" inherits the role's text color. */
     display: inline-block;
-    background-color: currentColor;
-    -webkit-mask: url("/agents/codex.svg") no-repeat center / contain;
-    mask: url("/agents/codex.svg") no-repeat center / contain;
   }
   .role.brand-codex {
     color: var(--chip-green-text);

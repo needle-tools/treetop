@@ -7,7 +7,7 @@
  * The daemon does not start agents; this is observation only.
  */
 
-import { readdir, stat, readFile } from "node:fs/promises";
+import { readdir, stat, readFile, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -23,6 +23,9 @@ export interface AgentSession {
   sessionId?: string;
   /** File path the session was discovered at. Useful for debugging. */
   source: string;
+  /** Short human-readable title: Claude's auto-summary or the first user
+   *  prompt, capped to ~80 chars. Undefined when nothing usable was found. */
+  title?: string;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -84,6 +87,84 @@ export async function readJsonlField(
   return null;
 }
 
+/** Read at most `bytes` bytes from the start of `path`. Avoids slurping
+ *  multi-megabyte session files when we only need the first few events. */
+async function readHead(path: string, bytes = 64 * 1024): Promise<string> {
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(path, "r");
+    const buf = Buffer.alloc(bytes);
+    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+    return buf.subarray(0, bytesRead).toString("utf-8");
+  } catch {
+    return "";
+  } finally {
+    if (fh) await fh.close().catch(() => {});
+  }
+}
+
+function firstTextFromMessageContent(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    for (const raw of content) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const b = raw as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") return b.text;
+    }
+  }
+  return undefined;
+}
+
+/** Pull cwd + a short human title out of a Claude session JSONL.
+ *  Prefers an explicit `summary` event; falls back to the first user
+ *  message's text. Skips the typical injected wrappers when picking the
+ *  fallback so titles look like real prompts, not "<ide_opened_file>...". */
+export async function readClaudeSessionMeta(
+  path: string,
+): Promise<{ cwd?: string; title?: string }> {
+  const head = await readHead(path);
+  if (!head) return {};
+  let cwd: string | undefined;
+  let summary: string | undefined;
+  let firstUserText: string | undefined;
+
+  for (const line of head.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof obj.cwd === "string" && !cwd) cwd = obj.cwd;
+    if (obj.type === "summary" && typeof obj.summary === "string" && !summary) {
+      summary = obj.summary;
+    }
+    if (!firstUserText && obj.type === "user") {
+      const msg = obj.message as { content?: unknown } | undefined;
+      let txt = firstTextFromMessageContent(msg?.content);
+      if (txt) {
+        // Strip Claude's injected <ide_*> / <system-reminder> / <command-*>
+        // wrappers so titles don't read as XML noise.
+        txt = txt.replace(
+          /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g,
+          "",
+        );
+        const cleaned = txt.replace(/\s+/g, " ").trim();
+        if (cleaned) firstUserText = cleaned;
+      }
+    }
+    if (cwd && (summary || firstUserText)) break;
+  }
+
+  let title = summary ?? firstUserText;
+  if (title) {
+    title = title.replace(/\s+/g, " ").trim();
+    if (title.length > 80) title = title.slice(0, 79) + "…";
+  }
+  return { cwd, title };
+}
+
 export async function scanClaude(
   root: string = CLAUDE_ROOT(),
 ): Promise<AgentSession[]> {
@@ -107,14 +188,15 @@ export async function scanClaude(
       const sessionPath = join(projPath, file);
       try {
         const stats = await stat(sessionPath);
-        const cwd = await readJsonlField(sessionPath, "cwd");
-        if (!cwd) continue;
+        const meta = await readClaudeSessionMeta(sessionPath);
+        if (!meta.cwd) continue;
         sessions.push({
           agent: "claude",
-          cwd: resolve(cwd),
+          cwd: resolve(meta.cwd),
           lastActive: stats.mtime.toISOString(),
           sessionId: file.replace(/\.jsonl$/, ""),
           source: sessionPath,
+          title: meta.title,
         });
       } catch {
         // unreadable session, skip

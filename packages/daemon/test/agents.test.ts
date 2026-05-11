@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   agentsForWorktree,
   readJsonlField,
+  readClaudeSessionMeta,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -48,6 +49,101 @@ describe("readJsonlField", () => {
     const file = join(dir, "s.jsonl");
     await writeFile(file, "garbage\n{not json\n{\"cwd\":\"/ok\"}\n");
     expect(await readJsonlField(file, "cwd")).toBe("/ok");
+  });
+});
+
+describe("readClaudeSessionMeta", () => {
+  test("returns empty object when file is missing", async () => {
+    expect(await readClaudeSessionMeta("/no/such/file")).toEqual({});
+  });
+
+  test("prefers an explicit summary over the first user message", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "summary", summary: "Fix auth bug" }),
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: { role: "user", content: "long unrelated prompt" },
+        }),
+      ].join("\n"),
+    );
+    const r = await readClaudeSessionMeta(file);
+    expect(r.title).toBe("Fix auth bug");
+    expect(r.cwd).toBe("/proj");
+  });
+
+  test("falls back to the first user message text", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "user",
+        cwd: "/proj",
+        message: { role: "user", content: "Please update the README" },
+      }),
+    );
+    expect((await readClaudeSessionMeta(file)).title).toBe(
+      "Please update the README",
+    );
+  });
+
+  test("strips <ide_*> wrappers before using the user text as a title", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "user",
+        cwd: "/proj",
+        message: {
+          role: "user",
+          content:
+            "<ide_opened_file>opened /a.ts</ide_opened_file>\nLet's refactor it",
+        },
+      }),
+    );
+    expect((await readClaudeSessionMeta(file)).title).toBe("Let's refactor it");
+  });
+
+  test("handles array-style content blocks", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "user",
+        cwd: "/proj",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Implement the feature" }],
+        },
+      }),
+    );
+    expect((await readClaudeSessionMeta(file)).title).toBe(
+      "Implement the feature",
+    );
+  });
+
+  test("truncates titles longer than 80 chars with an ellipsis", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    const longPrompt = "x ".repeat(100).trim();
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "user",
+        cwd: "/proj",
+        message: { role: "user", content: longPrompt },
+      }),
+    );
+    const r = await readClaudeSessionMeta(file);
+    expect(r.title?.length).toBeLessThanOrEqual(80);
+    expect(r.title?.endsWith("…")).toBe(true);
   });
 });
 

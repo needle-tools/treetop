@@ -102,6 +102,34 @@ const server = Bun.serve({
       return json({ status: "ok", workspace: WORKSPACE_PATH });
     }
 
+    if (url.pathname === "/api/image" && req.method === "GET") {
+      // Serve a local image file referenced from a Claude session message
+      // (e.g. "[Image: source: /var/folders/.../shot.png]"). Restricted to
+      // image extensions only so this can't be used to read arbitrary text
+      // files. CORS already pins us to the dashboard origin.
+      const imgPath = url.searchParams.get("path");
+      if (!imgPath) {
+        return json({ error: "?path required" }, { status: 400 });
+      }
+      if (!/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(imgPath)) {
+        return json({ error: "not an image extension" }, { status: 400 });
+      }
+      try {
+        const file = Bun.file(imgPath);
+        if (!(await file.exists())) {
+          return new Response("not found", { status: 404, headers: CORS });
+        }
+        return new Response(file, {
+          headers: {
+            ...CORS,
+            "Cache-Control": "public, max-age=300",
+          },
+        });
+      } catch {
+        return json({ error: "cannot read file" }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/api" || url.pathname === "/api/") {
       return json({
         name: "supergit",
@@ -110,6 +138,7 @@ const server = Bun.serve({
         endpoints: [
           { method: "GET", path: "/api", description: "this index (agent-discoverable route list)" },
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
+          { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
