@@ -1,5 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { marked } from "marked";
+
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function md(text: string | undefined): string {
+    if (!text) return "";
+    return marked.parse(text, { async: false }) as string;
+  }
 
   export let agent: "claude" | "codex" | "copilot" = "claude";
   export let source: string;
@@ -154,11 +162,11 @@
           </div>
           {#each m.blocks as b}
             {#if b.type === "text"}
-              <div class="block text">{b.text}</div>
+              <div class="block text md">{@html md(b.text)}</div>
             {:else if b.type === "thinking"}
               <div class="block thinking">
                 <span class="tag-label">thinking</span>
-                <span class="tag-body">{b.text}</span>
+                <div class="tag-body md">{@html md(b.text)}</div>
               </div>
             {:else if b.type === "tool_use"}
               <div class="block tool-use">
@@ -274,12 +282,7 @@
     border: 1px solid var(--surface-2);
     font-size: 0.82rem;
   }
-  .msg.role-user {
-    border-left: 3px solid var(--chip-blue-text);
-  }
-  .msg.role-assistant {
-    border-left: 3px solid var(--chip-purple-text);
-  }
+  /* Role differentiation is via the .role label text now; no left bar. */
   .msg-head {
     display: flex;
     gap: 0.5rem;
@@ -294,8 +297,98 @@
     font-weight: 600;
   }
   .block.text {
-    white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  /* Markdown rendering. Keep elements quiet enough for a chat density
+     (small margins, subtle code chips). */
+  .md :global(p) {
+    margin: 0.35em 0;
+  }
+  .md :global(p:first-child) {
+    margin-top: 0;
+  }
+  .md :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .md :global(code) {
+    background: var(--surface-2);
+    padding: 0.05em 0.35em;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.92em;
+  }
+  .md :global(pre) {
+    background: var(--surface-0);
+    padding: 0.55em 0.75em;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.45em 0;
+    font-size: 0.82em;
+    border: 1px solid var(--surface-2);
+  }
+  .md :global(pre code) {
+    background: transparent;
+    padding: 0;
+    font-size: inherit;
+  }
+  .md :global(ul),
+  .md :global(ol) {
+    padding-left: 1.4em;
+    margin: 0.4em 0;
+  }
+  .md :global(li) {
+    margin: 0.15em 0;
+  }
+  .md :global(h1),
+  .md :global(h2),
+  .md :global(h3),
+  .md :global(h4) {
+    margin: 0.6em 0 0.3em;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .md :global(h1) {
+    font-size: 1.15em;
+  }
+  .md :global(h2) {
+    font-size: 1.05em;
+  }
+  .md :global(h3),
+  .md :global(h4) {
+    font-size: 1em;
+  }
+  .md :global(blockquote) {
+    border-left: 2px solid var(--surface-3);
+    padding-left: 0.65em;
+    color: var(--text-muted);
+    margin: 0.4em 0;
+  }
+  .md :global(a) {
+    color: var(--brand);
+    text-decoration: none;
+  }
+  .md :global(a:hover) {
+    text-decoration: underline;
+  }
+  .md :global(hr) {
+    border: 0;
+    border-top: 1px solid var(--surface-2);
+    margin: 0.5em 0;
+  }
+  .md :global(table) {
+    border-collapse: collapse;
+    margin: 0.4em 0;
+  }
+  .md :global(th),
+  .md :global(td) {
+    border: 1px solid var(--surface-2);
+    padding: 0.25em 0.5em;
+    text-align: left;
+  }
+  .md :global(th) {
+    background: var(--surface-2);
+    font-weight: 600;
   }
   .block.tool-use {
     margin-top: 0.3rem;
