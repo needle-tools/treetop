@@ -808,6 +808,14 @@
     display: grid;
     grid-template-columns: 2fr 1fr;
     gap: 1.5rem;
+    min-width: 0;
+  }
+  /* Grid items default to min-width: auto which is content-width — long
+     diff lines would blow out the layout. Forcing min-width: 0 lets the
+     column shrink and the inner .diff scroll horizontally instead. */
+  .repos-col,
+  .events-col {
+    min-width: 0;
   }
   @media (max-width: 800px) {
     .columns {
@@ -824,6 +832,7 @@
     border: 1px solid var(--surface-2);
     border-radius: 8px;
     padding: 1rem 1.1rem;
+    padding-bottom: 0;
     margin: 0 0 0.75rem;
   }
   .repo-header {
@@ -1016,6 +1025,7 @@
     margin-top: 0.5rem;
     padding-left: 0.8rem;
     border-left: 2px solid var(--surface-2);
+    min-width: 0;
   }
   .tabs {
     display: flex;
@@ -1051,6 +1061,12 @@
     max-height: 360px;
     overflow: auto;
     white-space: pre;
+    /* Without these, long diff lines push the grid column wider than 2fr.
+       max-width:100% caps the pre at the parent's content-box; min-width:0
+       lets the parent itself shrink. */
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .diff.inline {
     margin-left: 1.4rem;
