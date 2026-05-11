@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { marked } from "marked";
+  import ToolIcon from "./ToolIcon.svelte";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -190,6 +191,7 @@
               </div>
             {:else if b.type === "tool_use"}
               <div class="block tool-use">
+                <ToolIcon name={b.toolName} />
                 <span class="tool-name">{b.toolName ?? "tool"}</span>
                 <code class="tool-input" title={inputPreview(b.toolInput)}>
                   {inputPreview(b.toolInput)}
@@ -447,19 +449,19 @@
   .block.tool-use {
     margin-top: 0.3rem;
     display: flex;
-    gap: 0.4rem;
-    align-items: baseline;
+    gap: 0.45rem;
+    align-items: center;
     font-family: ui-monospace, monospace;
     font-size: 0.78rem;
-    color: var(--chip-orange-text);
+    color: var(--text-3);
     min-width: 0;
   }
   .tool-name {
-    font-weight: 600;
+    color: var(--text-2);
     flex: 0 0 auto;
   }
   .tool-input {
-    color: var(--text-3);
+    color: var(--text-muted);
     flex: 1;
     min-width: 0;
     overflow: hidden;
