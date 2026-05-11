@@ -472,18 +472,45 @@ other.
 - **Auto-fetch all registered repos on a timer** so ahead/behind stays
   accurate without manual fetches. Configurable interval, default 5min;
   set `SUPERGIT_FETCH_INTERVAL_MS=0` to disable.
-- **v1.1 — Live agent activity** (Claude + Codex). Tail each session's
-  JSONL with a file watcher, parse newly-appended entries, broadcast via
-  SSE so the dashboard renders a live activity panel per worktree
-  ("claude editing src/foo.ts", "ran bun test → 0 fail", "idle 30s").
-  Read-only; safe regardless of how the session was launched. Copilot
-  deferred — its storage isn't tail-friendly and the project's pragmatic
-  priority is Claude + Codex first.
-- **v1.2 — Managed-spawn for Claude + Codex.** "Open in supergit" button
-  spawns the agent via PTY (node-pty / Bun PTY) inside an xterm.js panel.
-  Supergit owns stdio, so reading the stream AND typing prompts back
-  into the running session both work. External (user-launched) sessions
-  remain observe-only — by design; we can't reach into their stdin.
+- **v1.1 — Live agent activity** (Claude + Codex). **Shipped.** Each
+  session's JSONL is tailed with a file watcher, the translation layer
+  (`sessions.ts`) normalises Claude's and Codex's wildly different
+  shapes into one `NormalizedMessage` stream, and the UI renders it as
+  a chat panel below the worktree with markdown + per-agent brand
+  colour + auto-scroll + live refresh via 2-second polling. Read-only;
+  safe regardless of how the session was launched. Copilot deferred —
+  its storage isn't tail-friendly.
+
+- **v1.2 — Managed-spawn for Claude + Codex (read + WRITE).** The
+  pragmatic truth: read works for any session because the agent writes
+  to disk; **write only works for sessions supergit launched** because
+  there's no API to inject a prompt into a running CLI we don't own.
+  So:
+
+  - **"Open in supergit"** button on the agent badge / worktree row.
+    Daemon spawns `claude --resume <id>` (or `claude` for a new one)
+    via a PTY — likely `node-pty` since Bun's PTY support is still
+    experimental as of this writing.
+  - **xterm.js** in the dashboard renders the PTY output. Same code
+    path can show plain text streaming, ANSI colors, the cursor, etc.
+  - **Typing in the panel** writes to the PTY's stdin. So the
+    dashboard *is* the running session.
+  - **Lifecycle**: the spawned process is a child of the daemon.
+    When the user closes the panel, we offer "detach (keep running)"
+    vs "kill". Detached sessions are still observable via the v1.1 tail.
+  - **Same recipe for Codex**: just swap the spawn command.
+  - **External sessions** (started outside supergit) remain
+    observe-only forever. Trying to fake injection by writing to the
+    session JSONL would corrupt the agent's state. Don't.
+  - **Cross-platform**: node-pty handles macOS/Linux/Windows. PTY is
+    the friction point; if Windows compat is painful we ship macOS +
+    Linux first.
+
+  Open question: should the spawn live in the row (inline panel) or
+  in a docked terminal at the bottom of the dashboard à la VSCode?
+  Inline gives "this row IS its session" affordance; docked allows
+  multiple agents to be open simultaneously without scrolling. Lean
+  inline for v1.2, dock as v1.3 if needed.
 
 **v2 — second skins, multi-user, presence**
 - TUI client (second skin on the same daemon API).
