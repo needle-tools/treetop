@@ -144,13 +144,27 @@
   function toggleOpenSessionInWt(wtPath: string, s: OpenSession): void {
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
+    const wasOpen = i >= 0;
     openSessionsByWt = {
       ...openSessionsByWt,
-      [wtPath]:
-        i >= 0
-          ? [...list.slice(0, i), ...list.slice(i + 1)]
-          : [s, ...list], // newest-opened on the left of the strip
+      [wtPath]: wasOpen
+        ? [...list.slice(0, i), ...list.slice(i + 1)]
+        : [s, ...list], // newest-opened on the left of the strip
     };
+    if (!wasOpen) {
+      // After Svelte commits the DOM, scroll the strip so the new column
+      // sits at the left edge. We use the strip's scrollLeft directly so
+      // the previously-leftmost-visible column slides right by exactly
+      // one column-width — keeping more than 50px of it visible at the
+      // current min-width: 35% setup.
+      requestAnimationFrame(() => {
+        const strip = document.querySelector(
+          `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+        ) as HTMLElement | null;
+        if (!strip) return;
+        strip.scrollTo({ left: 0, behavior: "smooth" });
+      });
+    }
   }
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
     openSessionsByWt = {
@@ -1096,7 +1110,7 @@
                   existingSources,
                 )}
                 {#if visibleSessions.length > 0}
-                  <div class="sessions-strip">
+                  <div class="sessions-strip" data-wt-strip={wt.path}>
                     {#each visibleSessions as s, i (s.source)}
                       <div
                         class="session-col"
