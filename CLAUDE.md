@@ -93,8 +93,43 @@ supergit/
 
 - `bun install` once at root → installs workspaces.
 - `bun dev` → starts daemon (port 7777) and UI (port 5173) with hot reload.
-- `bun test` → runs all tests across packages.
+- `bun test` → runs all tests across packages (daemon + UI).
+- `bun run test:watch` → same, but re-runs on file changes.
+- `bun run test:coverage` → emits a line/function coverage table.
 - Open `http://localhost:5173` to use the dashboard.
+
+## Test coverage
+
+We don't enforce a hard percentage gate (chasing 100% rewards bad tests),
+but every block in the list below ships with tests *before* it ships:
+
+- **Every parser**: `parseWorktreeList`, `parseFileStatus`, `parseBranchStatus`,
+  `parseLastCommit`, `parseCommitList`. See `packages/daemon/test/git.test.ts`.
+- **Every storage class**: `Workspace`, `EventLog`, `ExpandedStore`. See
+  `packages/daemon/test/workspace.test.ts`, `events.test.ts`, and
+  `packages/ui/test/storage.test.ts`.
+- **Every reversible operation has a round-trip test** (add / remove /
+  rename → undo → redo restores the original state, ids and metadata
+  preserved). See `packages/daemon/test/integration.test.ts`.
+- **Persistence helpers** (filesystem or localStorage) are tested with an
+  injected store / temp dir, never against real global state.
+- **New daemon routes** either have a direct unit test on their pure parts
+  *or* are exercised by an integration test that uses the same payload
+  contracts the route uses.
+- **New format providers** (glb, blend, png, ...) ship with a roundtrip
+  test: parse → serialize → equal.
+
+Anti-patterns we reject:
+- Tests that pass without asserting.
+- Mocking the database / filesystem / git when a temp dir works.
+- `it.skip` without a tracking issue.
+- "Refactor + new behavior in one PR" — refactor first (tests green),
+  then add new tests + new behavior.
+
+**Automation:** every push and PR to `main` runs `bun test` via
+`.github/workflows/test.yml`. Coverage is reported in the same job.
+Locally, treat `bun test` as the inner loop — it's fast (<200ms) so the
+default workflow is "write a failing test → make it pass → commit."
 
 ## When in doubt
 Read the test names first — they're the spec. If the test names don't cover

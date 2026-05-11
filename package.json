@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "bun run dev.ts",
     "test": "bun test packages/",
+    "test:watch": "bun test --watch packages/",
+    "test:coverage": "bun test --coverage packages/",
     "build": "bun run --filter '*' build"
   },
   "devDependencies": {

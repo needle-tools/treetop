@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { ExpandedStore } from "./storage";
 
   interface FileStatus {
     staged: number;
@@ -73,29 +74,23 @@
   let commitsLoading: Record<string, boolean> = {};
   let commitsExhausted: Record<string, boolean> = {};
   const COMMITS_BATCH = 10;
-  const EXPANDED_STORAGE_KEY = "supergit:commitsExpanded";
+  const expandedStore = new ExpandedStore(
+    typeof window !== "undefined" ? window.localStorage : ({ getItem: () => null, setItem: () => {} }),
+    "supergit:commitsExpanded",
+  );
 
   function restoreExpanded() {
-    try {
-      const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
-      if (!raw) return;
-      const paths = JSON.parse(raw) as string[];
-      const next: Record<string, boolean> = {};
-      for (const p of paths) next[p] = true;
-      commitsExpanded = next;
-    } catch {
-      // ignore corrupt storage
-    }
+    const paths = expandedStore.load();
+    if (paths.size === 0) return;
+    const next: Record<string, boolean> = {};
+    for (const p of paths) next[p] = true;
+    commitsExpanded = next;
   }
   function persistExpanded() {
-    try {
-      const paths = Object.entries(commitsExpanded)
-        .filter(([, v]) => v)
-        .map(([k]) => k);
-      localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(paths));
-    } catch {
-      // ignore quota / privacy errors
-    }
+    const paths = Object.entries(commitsExpanded)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    expandedStore.save(paths);
   }
 
   async function load() {
