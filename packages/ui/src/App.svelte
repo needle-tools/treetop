@@ -944,6 +944,23 @@
                                 {#if sess.sessionId}
                                   <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
                                 {/if}
+                                <!-- Close affordance: space reserved for every
+                                     row to avoid layout shift; only visible
+                                     (and clickable) on hover of an already-
+                                     open row. -->
+                                <span
+                                  class="row-close"
+                                  aria-hidden={!isOpenInWt(wt.path, sess.source)}
+                                  on:click|stopPropagation={() => {
+                                    if (isOpenInWt(wt.path, sess.source)) {
+                                      toggleOpenSessionInWt(wt.path, {
+                                        agent: sess.agent,
+                                        source: sess.source,
+                                      });
+                                    }
+                                  }}
+                                  title="Close this session"
+                                >×</span>
                               </button>
                             </li>
                           {/each}
@@ -1599,8 +1616,10 @@
   }
   .agent-row {
     display: grid;
-    /* icon · agent-name · title · time · short-sha */
-    grid-template-columns: 16px auto 1fr auto auto;
+    /* icon · agent-name · title · time · short-sha · close-x
+       The close column is reserved on every row (open or not) so opening
+       and closing sessions doesn't shift other rows' columns. */
+    grid-template-columns: 16px auto 1fr auto auto 18px;
     gap: 0.5rem;
     align-items: center;
     width: 100%;
@@ -1657,6 +1676,30 @@
   }
   .agent-row .agent-sid {
     font-family: ui-monospace, monospace;
+  }
+  .agent-row .row-close {
+    /* Always rendered to reserve column space; hidden by default,
+       revealed on hover but only meaningful for open (dimmed) rows. */
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    color: var(--text-muted);
+    opacity: 0;
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+  }
+  /* Reveal + enable the X only on hover of a row that's already open
+     (we use the .dimmed class as the marker for "open elsewhere"). */
+  .agent-row.dimmed:hover .row-close {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .agent-row .row-close:hover {
+    background: var(--error-bg);
+    color: var(--error-text);
   }
   .row-activity {
     display: flex;
