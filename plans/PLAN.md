@@ -618,3 +618,26 @@ live in PLAN-3D.md.
     Leaning toward: green rail on unique commits + a small "ahead of
     <base>" badge in the History header. Backend already has the data
     (we run `rev-list <base>..HEAD` for the ↑n indicator).
+
+---
+
+## TODO (small UX gaps, batch later)
+
+These are noted-but-not-blocking issues. None are big enough to deserve
+their own plan; group them into one polish PR when convenient.
+
+- **Untracked files render inline with unstaged diffs.** Today untracked
+  files appear as a `# untracked files (...)` comment header above the
+  workdir diff (see `getDiff` in `packages/daemon/src/git.ts`). They
+  should render as proper synthetic "new file" diffs (lines all `+`),
+  inline with modified files, so the Unstaged tab reads as one unified
+  list. Implementation: `git diff --no-index --no-color /dev/null <f>`
+  per untracked file, concatenated with the existing workdir diff.
+  Handle binary files via `--binary` or a "Binary file" placeholder.
+- **Diffs/status don't live-update.** Editing a file in another editor
+  doesn't refresh the row's status or the Unstaged diff. Today we only
+  refetch on the 5-min auto-fetch tick (or manual refresh). Fix:
+  daemon-side `fs.watch` per worktree (debounced) broadcasting via SSE,
+  UI revalidates the affected row only. Watch out for node_modules /
+  build-output noise — use a gitignore-aware filter or a small
+  allowlist of git's own touched paths.
