@@ -54,6 +54,18 @@
   --chip-indigo-text: #d8d8ff;
   --chip-grey-text: #aaaacc;
 
+  /* diff colors */
+  --diff-add-bg: rgba(22, 163, 74, 0.16);
+  --diff-add-text: #b7e4c7;
+  --diff-remove-bg: rgba(217, 119, 6, 0.16);
+  --diff-remove-text: #efcdaa;
+  --diff-hunk-bg: rgba(37, 99, 235, 0.12);
+  --diff-hunk-text: #8ab4f8;
+  --diff-file-bg: var(--surface-2);
+  --diff-file-text: var(--text-1);
+  --diff-commit-bg: rgba(37, 99, 235, 0.08);
+  --diff-commit-text: #aacdef;
+
   /* metrics */
   --radius-sm: 4px;
   --radius-md: 6px;
