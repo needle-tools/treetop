@@ -1,10 +1,14 @@
-// Starts the daemon (watch mode) and UI (Vite dev server) together
-// with hot reload. Ctrl-C kills both.
+// Starts the daemon and UI (Vite dev server) together. Ctrl-C kills both.
+//
+// The daemon runs WITHOUT --hot on purpose: once we add embedded terminals
+// (see plans/PLAN-TERMINAL.md), every hot-reload would kill any running
+// PTY. Daemon code changes less often than UI code, and a manual restart
+// via the in-app "Reload daemon" button is preferable to losing live
+// terminals on every save. The UI keeps Vite HMR so Svelte iteration is
+// still instant.
 //
 // Pre-flight: any stale processes still holding ports 7777 (daemon) or
-// 5173 (Vite) from a previous run get killed first. Otherwise --hot
-// occasionally leaves an orphan and the next `bun dev` fails with
-// EADDRINUSE / "Port 5173 is in use".
+// 5173 (Vite) from a previous run get killed first.
 
 import { $ } from "bun";
 
@@ -29,7 +33,7 @@ async function killOnPort(port: number): Promise<void> {
 await killOnPort(7777);
 await killOnPort(5173);
 
-const daemon = Bun.spawn(["bun", "--hot", "run", "src/server.ts"], {
+const daemon = Bun.spawn(["bun", "run", "src/server.ts"], {
   cwd: "packages/daemon",
   stdout: "inherit",
   stderr: "inherit",
