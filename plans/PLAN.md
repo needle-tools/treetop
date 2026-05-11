@@ -502,9 +502,14 @@ other.
 Dashboard-pillar questions only. CAS / chunking / binary-specific questions
 live in PLAN-3D.md.
 
-1. **Rust + axum vs Go + chi.** Probably Rust for binary perf and
-   single-binary distribution; if iteration speed matters more, Go is fine.
-   Pick before day one.
+1. **Daemon stack pick.** v0 ships in **Bun + TypeScript** (chosen for
+   iteration speed and stack coherence with the Svelte UI — workload is
+   I/O bound, so the native-speed argument doesn't bite yet). For v1,
+   reconsider with real measurements: Go gives native speed + true
+   concurrency; Rust gives ultimate perf + smallest binary. The likely
+   answer is **"keep Bun for the daemon glue, drop to Rust/Go for the CAS
+   chunking hot path via FFI"** rather than a full rewrite — but only
+   commit once measurements demand it. Premature rewrites are YAGNI.
 2. **Auto-discover repos vs explicit `add`.** Explicit is safer, auto-scan is
    friendlier. Probably ship explicit + offer `--auto-scan ~/git` on first run.
 3. **Single binary with subcommands vs separate daemon/CLI binaries.** Single
