@@ -129,10 +129,10 @@ describe("readClaudeSessionMeta", () => {
     );
   });
 
-  test("truncates titles longer than 80 chars with an ellipsis", async () => {
+  test("truncates titles longer than 120 chars with an ellipsis", async () => {
     const dir = await tempDir();
     const file = join(dir, "s.jsonl");
-    const longPrompt = "x ".repeat(100).trim();
+    const longPrompt = "x ".repeat(200).trim();
     await writeFile(
       file,
       JSON.stringify({
@@ -142,8 +142,62 @@ describe("readClaudeSessionMeta", () => {
       }),
     );
     const r = await readClaudeSessionMeta(file);
-    expect(r.title?.length).toBeLessThanOrEqual(80);
+    expect(r.title?.length).toBeLessThanOrEqual(120);
     expect(r.title?.endsWith("…")).toBe(true);
+  });
+
+  test("falls back to the last user message when the first is empty after stripping wrappers", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        // First user message: pure command wrapper that becomes empty after
+        // cleanForTitle().
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: {
+            role: "user",
+            content: "<command-name>/init</command-name>",
+          },
+        }),
+        // Later user message with real text.
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: "Make the dashboard live-update sessions",
+          },
+        }),
+      ].join("\n"),
+    );
+    expect((await readClaudeSessionMeta(file)).title).toBe(
+      "Make the dashboard live-update sessions",
+    );
+  });
+
+  test("falls back to the first assistant text when no user text exists", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "user", cwd: "/proj", message: { role: "user", content: "<ide_opened_file>/a.ts</ide_opened_file>" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "I'll read the file first." },
+            ],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect((await readClaudeSessionMeta(file)).title).toBe(
+      "I'll read the file first.",
+    );
   });
 });
 

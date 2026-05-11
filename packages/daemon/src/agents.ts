@@ -115,18 +115,31 @@ function firstTextFromMessageContent(content: unknown): string | undefined {
   return undefined;
 }
 
+function cleanForTitle(txt: string): string {
+  // Strip Claude's injected wrapper blocks before considering the text
+  // as a candidate title.
+  const stripped = txt.replace(
+    /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g,
+    "",
+  );
+  return stripped.replace(/\s+/g, " ").trim();
+}
+
 /** Pull cwd + a short human title out of a Claude session JSONL.
- *  Prefers an explicit `summary` event; falls back to the first user
- *  message's text. Skips the typical injected wrappers when picking the
- *  fallback so titles look like real prompts, not "<ide_opened_file>...". */
+ *  Title fallback chain: explicit `summary` → first user prompt → most
+ *  recent user prompt → first assistant text. Reads the first 256KB of
+ *  the file so we have enough to find something non-empty even when the
+ *  opening messages are wrapped IDE injections / slash commands. */
 export async function readClaudeSessionMeta(
   path: string,
 ): Promise<{ cwd?: string; title?: string }> {
-  const head = await readHead(path);
+  const head = await readHead(path, 256 * 1024);
   if (!head) return {};
   let cwd: string | undefined;
   let summary: string | undefined;
   let firstUserText: string | undefined;
+  let lastUserText: string | undefined;
+  let firstAssistantText: string | undefined;
 
   for (const line of head.split("\n")) {
     if (!line) continue;
@@ -140,27 +153,29 @@ export async function readClaudeSessionMeta(
     if (obj.type === "summary" && typeof obj.summary === "string" && !summary) {
       summary = obj.summary;
     }
-    if (!firstUserText && obj.type === "user") {
+    if (obj.type === "user") {
       const msg = obj.message as { content?: unknown } | undefined;
-      let txt = firstTextFromMessageContent(msg?.content);
-      if (txt) {
-        // Strip Claude's injected <ide_*> / <system-reminder> / <command-*>
-        // wrappers so titles don't read as XML noise.
-        txt = txt.replace(
-          /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g,
-          "",
-        );
-        const cleaned = txt.replace(/\s+/g, " ").trim();
-        if (cleaned) firstUserText = cleaned;
+      const raw = firstTextFromMessageContent(msg?.content);
+      if (raw) {
+        const cleaned = cleanForTitle(raw);
+        if (cleaned) {
+          if (!firstUserText) firstUserText = cleaned;
+          lastUserText = cleaned;
+        }
+      }
+    } else if (obj.type === "assistant" && !firstAssistantText) {
+      const msg = obj.message as { content?: unknown } | undefined;
+      const raw = firstTextFromMessageContent(msg?.content);
+      if (raw) {
+        const cleaned = cleanForTitle(raw);
+        if (cleaned) firstAssistantText = cleaned;
       }
     }
-    if (cwd && (summary || firstUserText)) break;
   }
 
-  let title = summary ?? firstUserText;
+  let title = summary ?? firstUserText ?? lastUserText ?? firstAssistantText;
   if (title) {
-    title = title.replace(/\s+/g, " ").trim();
-    if (title.length > 80) title = title.slice(0, 79) + "…";
+    if (title.length > 120) title = title.slice(0, 119) + "…";
   }
   return { cwd, title };
 }

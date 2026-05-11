@@ -1419,8 +1419,11 @@
     top: calc(100% + 0.3rem);
     left: 0;
     z-index: 50;
-    width: 340px;
-    max-width: 90vw;
+    /* Wide enough to show real titles; capped at 250ch on huge displays
+       and 90vw on small ones so it never overflows the viewport. */
+    width: max-content;
+    min-width: 380px;
+    max-width: min(250ch, 90vw);
     max-height: 60vh;
     overflow: auto;
     background: var(--surface-1);
