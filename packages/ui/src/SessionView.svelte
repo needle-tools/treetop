@@ -173,11 +173,11 @@
           {session.sessionId.slice(0, 8)}
         </code>
       {/if}
-      {#if lastLoadedAt}
+      {#if session.endedAt}
         <span
           class="muted small"
-          title={`Polled ${pollCount}× since open`}
-        >• updated {relTimeFromNow(lastLoadedAt)}</span>
+          title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
+        >• last activity {relTimeFromIso(session.endedAt)}</span>
       {/if}
     {/if}
     <button class="close" on:click={onClose} title="Close">×</button>
