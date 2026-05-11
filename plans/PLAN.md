@@ -469,6 +469,21 @@ other.
   unreviewed agent output. Dashboard pills + opt-in OS notifications.
 - Heartbeat hook + installer.
 - Thin VSCode reporter extension (which workspaces are open right now).
+- **Auto-fetch all registered repos on a timer** so ahead/behind stays
+  accurate without manual fetches. Configurable interval, default 5min;
+  set `SUPERGIT_FETCH_INTERVAL_MS=0` to disable.
+- **v1.1 — Live agent activity** (Claude + Codex). Tail each session's
+  JSONL with a file watcher, parse newly-appended entries, broadcast via
+  SSE so the dashboard renders a live activity panel per worktree
+  ("claude editing src/foo.ts", "ran bun test → 0 fail", "idle 30s").
+  Read-only; safe regardless of how the session was launched. Copilot
+  deferred — its storage isn't tail-friendly and the project's pragmatic
+  priority is Claude + Codex first.
+- **v1.2 — Managed-spawn for Claude + Codex.** "Open in supergit" button
+  spawns the agent via PTY (node-pty / Bun PTY) inside an xterm.js panel.
+  Supergit owns stdio, so reading the stream AND typing prompts back
+  into the running session both work. External (user-launched) sessions
+  remain observe-only — by design; we can't reach into their stdin.
 
 **v2 — second skins, multi-user, presence**
 - TUI client (second skin on the same daemon API).

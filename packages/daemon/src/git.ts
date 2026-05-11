@@ -46,6 +46,24 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
   }
 }
 
+/**
+ * Run `git fetch --all --prune --quiet` for a repo. Network failures, missing
+ * remotes, auth prompts that would block — all silently treated as no-ops.
+ * Returns true if fetch ran cleanly, false otherwise.
+ */
+export async function fetchAll(repoPath: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(
+      ["git", "-C", repoPath, "fetch", "--all", "--prune", "--quiet"],
+      { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+    );
+    const exit = await proc.exited;
+    return exit === 0;
+  } catch {
+    return false;
+  }
+}
+
 export function parseWorktreeList(porcelain: string): Worktree[] {
   const worktrees: Worktree[] = [];
   let current: Partial<Worktree> = {};

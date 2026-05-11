@@ -7,6 +7,7 @@ import {
   listCommits,
   getDiff,
   getCommitDiff,
+  fetchAll,
   type DiffKind,
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
@@ -107,6 +108,7 @@ const server = Bun.serve({
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
+          { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
@@ -150,6 +152,13 @@ const server = Bun.serve({
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
       return json(await detectAgents());
+    }
+
+    if (url.pathname === "/api/fetch" && req.method === "POST") {
+      // Kick off an immediate fetch cycle. Returns immediately; the SSE
+      // stream emits "change" when fetches complete.
+      void runFetchCycle();
+      return json({ status: "queued" });
     }
 
     if (url.pathname === "/api/repos" && req.method === "POST") {
@@ -476,9 +485,51 @@ const server = Bun.serve({
 // Release the port cleanly when --watch restarts us, or on Ctrl-C.
 const shutdown = async (signal: string) => {
   console.log(`supergit daemon: ${signal} -> stopping`);
+  if (fetchTimer) clearInterval(fetchTimer);
   await server.stop(true);
   process.exit(0);
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGHUP", () => shutdown("SIGHUP"));
+
+// Periodic auto-fetch so ahead/behind stays accurate. Disable with
+// SUPERGIT_FETCH_INTERVAL_MS=0.
+const FETCH_INTERVAL_MS = Number(
+  process.env.SUPERGIT_FETCH_INTERVAL_MS ?? 5 * 60 * 1000,
+);
+let fetchTimer: ReturnType<typeof setInterval> | null = null;
+let fetchInFlight = false;
+
+async function runFetchCycle(): Promise<void> {
+  if (fetchInFlight) return;
+  fetchInFlight = true;
+  try {
+    const repos = await workspace.listRepos();
+    if (repos.length === 0) return;
+    const results = await Promise.allSettled(
+      repos.map((r) => fetchAll(r.path)),
+    );
+    const ok = results.filter(
+      (r) => r.status === "fulfilled" && r.value,
+    ).length;
+    console.log(
+      `supergit daemon: auto-fetch — ${ok}/${repos.length} repos updated`,
+    );
+    broadcast("change", { kind: "fetch_complete", ok, total: repos.length });
+  } finally {
+    fetchInFlight = false;
+  }
+}
+
+if (FETCH_INTERVAL_MS > 0) {
+  // Kick off shortly after startup so the dashboard doesn't show stale
+  // ahead/behind on first load.
+  setTimeout(() => void runFetchCycle(), 4_000);
+  fetchTimer = setInterval(() => void runFetchCycle(), FETCH_INTERVAL_MS);
+  console.log(
+    `supergit daemon: auto-fetch every ${Math.round(FETCH_INTERVAL_MS / 1000)}s`,
+  );
+} else {
+  console.log("supergit daemon: auto-fetch disabled (SUPERGIT_FETCH_INTERVAL_MS=0)");
+}
