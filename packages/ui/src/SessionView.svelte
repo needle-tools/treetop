@@ -39,8 +39,11 @@
   let loading = false;
   let error = "";
   let messagesEl: HTMLElement | null = null;
+  let lastLoadedAt = 0;
+  let pollCount = 0;
 
   async function load() {
+    if (loading) return;
     loading = true;
     error = "";
     try {
@@ -50,12 +53,27 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      session = await res.json();
+      const next = (await res.json()) as NormalizedSession;
+      // Force a new identity for the messages array so Svelte's
+      // reactivity definitely picks it up.
+      session = { ...next, messages: [...next.messages] };
+      lastLoadedAt = Date.now();
+      pollCount += 1;
+      console.debug(
+        `[SessionView] poll #${pollCount}: ${session.messages.length} messages`,
+      );
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
+  }
+
+  function relTimeFromNow(ts: number): string {
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 2) return "just now";
+    if (s < 60) return `${s}s ago`;
+    return `${Math.floor(s / 60)}m ago`;
   }
 
   function inputPreview(input: unknown): string {
@@ -82,62 +100,19 @@
     });
   }
 
-  // Live sync. We do two things in parallel so this works even if the
-  // browser's EventSource buffers / drops:
-  //   1. Subscribe to /api/stream and refetch on activity events matching
-  //      this session's `source`.
-  //   2. Poll every 5s as a fallback.
-  // Both go through scheduleRefetch which debounces to 250ms.
+  // Live sync: dead-simple polling. Every 2s, refetch /api/session.
+  // load() guards against overlapping calls and forces a new identity for
+  // the messages array so Svelte's reactivity always re-renders. SSE was
+  // proving fragile through Vite's proxy; this path is boring and works.
 
-  let refetchTimer: number | null = null;
-  function scheduleRefetch() {
-    if (refetchTimer !== null) return;
-    refetchTimer = window.setTimeout(() => {
-      refetchTimer = null;
-      void load();
-    }, 250);
-  }
-
-  let es: EventSource | null = null;
   let pollTimer: number | null = null;
 
-  function handleActivity(evt: MessageEvent) {
-    try {
-      const data = JSON.parse(evt.data) as { source?: string };
-      if (data.source === source) scheduleRefetch();
-    } catch {
-      // ignore malformed
-    }
-  }
-
-  function connectSSE() {
-    if (es) {
-      es.removeEventListener("activity", handleActivity);
-      es.close();
-    }
-    es = new EventSource("/api/stream");
-    es.addEventListener("activity", handleActivity);
-  }
-
   onMount(() => {
-    connectSSE();
-    // Poll every 2s as a safety-net AND opportunistically reconnect the
-    // SSE stream if it has died (browser tab woke from sleep, proxy
-    // dropped the connection, etc.). scheduleRefetch is debounced so the
-    // poll never piles up.
-    pollTimer = window.setInterval(() => {
-      scheduleRefetch();
-      if (!es || es.readyState === EventSource.CLOSED) connectSSE();
-    }, 2_000);
+    pollTimer = window.setInterval(() => void load(), 2_000);
   });
 
   onDestroy(() => {
-    if (es) {
-      es.removeEventListener("activity", handleActivity);
-      es.close();
-    }
     if (pollTimer !== null) window.clearInterval(pollTimer);
-    if (refetchTimer !== null) window.clearTimeout(refetchTimer);
   });
 </script>
 
@@ -150,6 +125,12 @@
         <code class="muted small sid" title={session.sessionId}>
           {session.sessionId.slice(0, 8)}
         </code>
+      {/if}
+      {#if lastLoadedAt}
+        <span
+          class="muted small"
+          title={`Polled ${pollCount}× since open`}
+        >• updated {relTimeFromNow(lastLoadedAt)}</span>
       {/if}
     {/if}
     <button class="close" on:click={onClose} title="Close">×</button>
