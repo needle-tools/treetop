@@ -28,6 +28,7 @@
   let session: NormalizedSession | null = null;
   let loading = false;
   let error = "";
+  let messagesEl: HTMLElement | null = null;
 
   async function load() {
     loading = true;
@@ -61,6 +62,15 @@
   $: if (source) {
     void load();
   }
+
+  // Scroll to the latest message once the list is populated. Runs again on
+  // any session change (e.g. switching to a different agent's session).
+  $: if (session && messagesEl) {
+    const el = messagesEl;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }
 </script>
 
 <div class="session">
@@ -84,7 +94,7 @@
   {:else if session && session.messages.length === 0}
     <p class="muted small">No messages parsed from this session.</p>
   {:else if session}
-    <ul class="messages">
+    <ul class="messages" bind:this={messagesEl}>
       {#each session.messages as m}
         <li class="msg role-{m.role}">
           <div class="msg-head">
@@ -180,7 +190,7 @@
     list-style: none;
     padding: 0.4rem 0.5rem;
     margin: 0;
-    max-height: 70vh;
+    max-height: 50vh;
     overflow: auto;
     display: flex;
     flex-direction: column;
