@@ -155,6 +155,48 @@
     };
   }
 
+  // Drag-to-reorder for sessions inside one worktree's strip. We don't
+  // (yet) move sessions between worktrees — that's a bigger UX choice.
+  let dragSource: { wtPath: string; index: number } | null = null;
+
+  function handleSessionDragStart(
+    e: DragEvent,
+    wtPath: string,
+    index: number,
+  ): void {
+    dragSource = { wtPath, index };
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      // Must set some data for Firefox to honour the drag.
+      e.dataTransfer.setData("text/plain", `${wtPath}|${index}`);
+    }
+  }
+
+  function handleSessionDragOver(e: DragEvent): void {
+    if (!dragSource) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  }
+
+  function handleSessionDrop(
+    e: DragEvent,
+    wtPath: string,
+    targetIndex: number,
+  ): void {
+    e.preventDefault();
+    const src = dragSource;
+    dragSource = null;
+    if (!src || src.wtPath !== wtPath) return;
+    if (src.index === targetIndex) return;
+    const list = openSessionsByWt[wtPath] ?? [];
+    const item = list[src.index];
+    if (!item) return;
+    const next = [...list];
+    next.splice(src.index, 1);
+    next.splice(targetIndex, 0, item);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+  }
+
   // diff viewer per worktree
   type DiffTab = "workdir" | "staged";
   let diffTab: Record<string, DiffTab> = {};
@@ -938,12 +980,18 @@
 
           {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
             <div class="sessions-strip">
-              {#each openSessionsByWt[wt.path] as s (s.source)}
-                <div class="session-col">
+              {#each openSessionsByWt[wt.path] as s, i (s.source)}
+                <div
+                  class="session-col"
+                  on:dragover={handleSessionDragOver}
+                  on:drop={(e) => handleSessionDrop(e, wt.path, i)}
+                >
                   <SessionView
                     agent={s.agent}
                     source={s.source}
                     onClose={() => closeSessionInWt(wt.path, s)}
+                    onDragStart={(e) =>
+                      handleSessionDragStart(e, wt.path, i)}
                   />
                 </div>
               {/each}

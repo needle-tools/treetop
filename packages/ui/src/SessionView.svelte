@@ -24,6 +24,7 @@
   export let agent: "claude" | "codex" | "copilot" = "claude";
   export let source: string;
   export let onClose: () => void = () => {};
+  export let onDragStart: (e: DragEvent) => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -163,7 +164,7 @@
 </script>
 
 <div class="session">
-  <header>
+  <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
     <span class="agent-pill agent-{agent}">{agent}</span>
     {#if session}
       <span class="muted small">{session.messages.length} messages</span>
@@ -289,6 +290,13 @@
     /* Border was the same color as background; use a lighter shade so the
        split between header and messages is actually visible. */
     border-bottom: 1px solid var(--surface-3);
+    /* Drag-to-reorder affordance — App.svelte uses this header as the
+       drag handle for the whole session column. */
+    cursor: grab;
+    user-select: none;
+  }
+  header:active {
+    cursor: grabbing;
   }
   .agent-pill {
     padding: 0.1rem 0.5rem;
