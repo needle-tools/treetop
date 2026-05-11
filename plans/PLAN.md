@@ -19,6 +19,13 @@ one place.
   The thing the author would use daily, immediately. Ships in weeks, not
   months. No 3D anything in v0 here — that's the other plan and starts
   whenever.
+- **The supergit workspace IS a git repo.** Single-member from v0; invitable
+  / multi-user from v2. We get sync, history, and team collaboration for
+  free with no backend infrastructure. See
+  [Shared supergit workspace](#shared-supergit-workspace).
+- **TDD discipline from day one.** Because AI agents will write most of the
+  code, every block has an executable spec before it ships. See
+  [DEVELOPMENT.md](./DEVELOPMENT.md).
 - **Editor-agnostic.** Detect installed editors (Fork's pattern) and shell
   out. No fork of any editor, no heavy extension.
 - **Two pillars, one daemon, one UI shell.** Dashboard and binary work share
@@ -29,6 +36,9 @@ one place.
 - [Architecture](#architecture) — local daemon, thin clients (web first), stack pick.
 - [Agent dashboard](#agent-dashboard) — the killer screen, and how it detects which agent is in which worktree.
 - [Git scope](#git-scope) — the 80% loop we cover; the 20% we punt to Fork via "Open in Fork".
+- [Reminders & event log](#reminders--event-log) — durable event stream + nudges so nothing falls through the cracks (the "forgets to push" colleague fix).
+- [Shared supergit workspace](#shared-supergit-workspace) — the workspace is itself a git repo with a derived SQLite cache; single-user v0, invitable / multi-user v2.
+- [Views, annotations & multi-user state](#views-annotations--multi-user-state) — node-graph workflow view, user-authored notes. v2+.
 - [Needle Cloud plays](#needle-cloud-plays) — presence relay and team mode. (CAS backend and preview render plays live in PLAN-3D.md.)
 - [Roadmap](#roadmap) — v0/v1/v2/v3 for this pillar.
 - [Open questions](#open-questions) — things to settle before code.
@@ -104,6 +114,11 @@ Stack lean:
 - **Web UI**: Svelte + Vite SPA. No SSR — pure localhost client.
 - **Transport**: SSE for daemon → client push (dashboard is one-way). REST for
   command actions. WebSocket reserved for interactive collab if/when needed.
+- **State**: a supergit *workspace* — itself a git repo — containing
+  registered repos, append-only event log, declared relationships, and
+  (later) members. Daemon maintains a derived SQLite index for fast queries.
+  JSON-lines log is the source of truth; SQLite is a rebuildable cache. See
+  [Shared supergit workspace](#shared-supergit-workspace).
 - **Distribution**: `brew install supergit` and equivalents on Linux/Windows.
   First run installs daemon as `launchd` / `systemd` user service and opens
   the browser. No Electron, no Tauri, no dock icon.
@@ -233,6 +248,178 @@ preserved → worktree auto-prunes after merge.
 
 ---
 
+## Reminders & event log
+
+A persistent **event log** captures everything the daemon observes — commits,
+branch switches, pushes, agent activity, worktree create/remove — into a
+durable append-only stream. On top of that, a small **reminder engine** runs
+rules over the log + current repo state to surface "things you might forget"
+in the dashboard. The motivating example is the colleague who regularly
+forgets to push, but the same machinery covers idle worktrees, stale stashes,
+unreviewed agent output, and branches that have been merged upstream but not
+cleaned up locally.
+
+**Event log** (infrastructure, ships in v0 as a side-effect of the daemon):
+- Append-only JSON-lines at `<workspace>/events.jsonl` — the workspace is
+  itself a git repo, see [Shared supergit workspace](#shared-supergit-workspace).
+- Every event tagged with timestamp, repo, worktree, actor (user / agent /
+  supergit itself).
+- Daemon maintains a derived SQLite index (`state.sqlite`) for fast queries.
+  The JSON log is the source of truth; SQLite is a rebuildable cache.
+- Powers: the activity timeline, the reminder engine, cross-agent handoff
+  context, and future audit/export.
+- Cheap to add — the daemon already watches all this; persisting it is one
+  more side effect. Independent of any reminder UI.
+
+**Reminder rules** (v1):
+- *Unpushed commits.* "3 commits ahead of origin/<branch> for >Xh."
+- *Stale staged changes.* "Staged changes untouched for >Xh."
+- *Idle worktree with work.* "Uncommitted changes and no activity for >Xd."
+- *Old stash.* "Stash older than X days."
+- *Agent output unreviewed.* "Claude finished N min ago, diff never opened."
+- *Mergeable branch left behind.* "Branch merged upstream — delete the
+  worktree?"
+
+**Surface**:
+- Dashboard row: a colored pill on the affected worktree + a top-level count.
+- Browser tab title: `(N) supergit` when reminders are pending.
+- OS notification (opt-in per rule): fires once when a rule first crosses
+  its threshold; doesn't re-fire until snoozed or resolved.
+- Status-bar widget in the VSCode reporter extension (v1+): pending count.
+
+**Configuration**:
+- `~/.supergit/reminders.toml` lists rules with per-rule thresholds.
+- Per-repo overrides live in the repo's supergit config.
+- Snooze a specific reminder for N hours/days; mute a rule entirely.
+
+**Cross-machine / cross-agent (v2+, requires presence relay)**:
+- "Your laptop has unpushed work on `feat/audio`" surfaces on your phone.
+- Team mode (very opt-in): teammates can see "X has unpushed changes on
+  shared branch Y for >24h." Pair/small-team workflow; not a default.
+
+What we don't build:
+- Slack / email integration in v1 — too noisy, too many edge cases.
+- Predictive "you might forget to commit because…" — no ML, just rules.
+- A rule scripting SDK in v1 — rules are hardcoded with thresholds. Defer
+  exposing an SDK to v3 unless there's demand.
+
+3D-pillar reminders (CAS usage, asset render failures, etc.) get their own
+rules later — see PLAN-3D.md when it grows them.
+
+---
+
+## Shared supergit workspace
+
+The biggest architectural choice in the plan: a **supergit workspace** is
+itself a git repo. It aggregates many GitHub repos, can be shared with
+others by invitation, and acts as the single source of truth for everything
+supergit knows about your work. The workspace is the multi-user unit;
+individual GitHub repos remain owned and hosted on GitHub (or wherever they
+live).
+
+Single-member at v0, invitable / multi-user at v2 — same architecture
+throughout. The workspace concept costs little to add in v0 and saves a
+painful refactor later.
+
+What lives in a workspace repo:
+- `config.toml` — workspace name, members (git identities), defaults.
+- `repos.json` — registered repos with their remotes
+  (e.g., `git@github.com:foo/bar.git`), worktree roots, per-repo settings.
+- `relationships.json` — declared connections between repos
+  (*"`needle-app` depends on `needle-engine`"*, *"`marketing` deploys
+  alongside `landing`"*). Shown as edges in the node-graph view.
+- `events.jsonl` — append-only event log (system events + user-authored
+  annotations).
+- `presence/<user>.json` — one short file per user, updated periodically by
+  their daemon ("marcel was active on `feat/audio` 2m ago"). One file per
+  user keeps merges trivial.
+- `state.sqlite` — *derived* cache rebuilt from the event log for fast
+  queries. `.gitignored` by default; the log is the source of truth.
+
+How sync works:
+- Daemon `git pull`s the workspace periodically (or watches via FS if
+  local), then rebuilds its SQLite cache from new events.
+- Daemon `git push`es its own events and presence updates as they happen
+  (batchable).
+- Conflict resolution: events are append-only and timestamped, so merges
+  are usually trivial. A small structured merge driver handles the rare
+  collisions.
+- Hosting: any git remote — GitHub private repo, self-host, Needle Cloud,
+  S3-backed git. Workspace is portable.
+
+Inviting collaborators (v2):
+1. Add their git identity to `members` in `config.toml`.
+2. Push to the shared remote.
+3. They clone the workspace, point their daemon at it, and instantly see
+   the shared dashboard with everyone's presence, annotations, and the
+   declared cross-repo relationships.
+
+Why JSON-lines + derived SQLite (not a binary SQLite committed directly):
+- Git merges JSON lines cleanly; merging binary SQLite is a nightmare.
+- JSON is human-readable for debugging and recovery.
+- SQLite is an *index*, regenerable. Anyone can blow it away and rebuild.
+- Optional: snapshot the SQLite to an LFS-tracked file periodically for
+  fast first-clone. Default off; turn on for huge workspaces.
+
+The CAS chunks (binary blobs from PLAN-3D.md) do **not** live in the
+workspace. CAS lives at `~/.supergit/objects/` with optional cloud
+backends. The workspace is metadata only — small, text, mergeable.
+
+How this changes earlier plan items:
+- The "git-tracked state" idea in the next section is subsumed by the
+  workspace itself.
+- The "Agent presence relay" Needle Cloud play becomes optional: workspace
+  sync via git already moves presence around. The cloud relay just adds
+  real-time push (vs periodic pull) when low latency matters.
+- Repo registration becomes "add this GitHub repo to the workspace"
+  instead of "add this path to my local supergit."
+
+Out of scope for v0:
+- Invitation / membership UI. Manual config edits at v1; UI at v2.
+- Federated workspaces (workspace-of-workspaces). Single-level only.
+- Real-time push via cloud relay. Workspace-only sync is push/pull-based;
+  cloud relay is the optional v2+ upgrade.
+
+---
+
+## Views, annotations & multi-user state
+
+Three ideas worth capturing while they're fresh. All v2+ — none are prerequisites
+for the daily-driver MVP. Calling them out together because they share a
+substrate (the event log) and a philosophy (build collaboration into the tool
+without requiring a backend).
+
+**Node-graph workflow view** (alternative to the list dashboard).
+The list answers "what's running right now?" A node-graph answers a different
+question — "how do my parallel branches and agent handoffs relate?" Nodes for
+worktrees / branches / agents; edges for "branched from", "merged into",
+"agent works on", "agent A handed off to B". Same daemon data, different
+shape. Probably a *toggle* between list and graph rather than a replacement.
+Natural fit for someone who already lives in node-graph tools (Needle,
+Blender shader editors, comp software).
+
+**Annotations** (user-authored notes on git objects, worktrees, or sessions).
+- "Note on `feat/audio`: claude #2 is waiting on the XR fix before merging."
+- "Sticky on commit abc123: needs WebXR re-test before push."
+- "TODO on this worktree: ask Felix about the material setup."
+
+Implementation-wise these are just user-authored events on the event log,
+discriminated by `actor: user`. Same storage, same query path, same
+notification surface — they show up as pills in the dashboard like reminders.
+
+**Multi-user sync (subsumed by the workspace).**
+The original "git-tracked state" idea — peer-to-peer dashboard state
+without a backend — collapsed into the workspace concept above. The
+workspace *is* a git repo, so sync is just `git pull` / `git push` of the
+workspace. See [Shared supergit workspace](#shared-supergit-workspace) for
+the full design.
+
+Open call on timeline for the rest — none of these are committed beyond
+"interesting if v1 lands well." Captured here so the design space is on
+record.
+
+---
+
 ## Needle Cloud plays
 
 Two cloud plays apply to this pillar; the CAS backend and cloud-side preview
@@ -261,26 +448,47 @@ roadmap in PLAN-3D.md and the two ship in parallel without blocking each
 other.
 
 **v0 — local agent dashboard (the daily-driver MVP)**
+- Workspace init (`supergit init workspace`) — workspace is a git repo
+  containing registered repos, event log, relationships. Single-member.
 - Daemon + web UI, SSE updates, single binary.
-- Repo registration, worktree list, agent detection (process + session files).
+- Derived SQLite cache rebuilt from the workspace event log.
+- Repo registration ("add this GitHub repo to the workspace"), worktree
+  list, agent detection (process + session files).
 - Session list per worktree with one-click resume (`claude --continue`).
 - Status, text diff, commit, push, pull, branch, worktree create/remove.
+- Append-only event log inside the workspace.
 - "Open in Fork" / "Open in editor (detected)" / "Open in terminal" escape
   hatches via plain CLI shell-outs.
+- Full TDD harness from day one — every block has tests before it ships.
+  See [DEVELOPMENT.md](./DEVELOPMENT.md).
 
 **v1 — making the dashboard feel inevitable**
 - Spawn-worktree-and-launch-agent action.
 - Cross-agent handoff (package one agent's work as context for another).
+- Reminder engine: unpushed commits, idle worktrees, stale stashes,
+  unreviewed agent output. Dashboard pills + opt-in OS notifications.
 - Heartbeat hook + installer.
 - Thin VSCode reporter extension (which workspaces are open right now).
 
-**v2 — second skins and presence**
+**v2 — second skins, multi-user, presence**
 - TUI client (second skin on the same daemon API).
-- Agent presence relay (cloud sync of presence metadata).
+- Multi-user workspace: invite collaborators via member list; presence
+  files per user; shared annotations.
+- Cross-repo relationships (declared edges in `relationships.json`,
+  visible in the dashboard and the node-graph view).
+- Annotations (user-authored notes on worktrees, commits, sessions).
+- Agent presence relay (cloud sync, real-time on top of git-based
+  workspace sync).
 
-**v3 — team mode**
+**v3 — team mode + extensibility**
 - Team-mode dashboard on Needle Cloud (multi-user fleet view).
+- Node-graph workflow view (toggle alternative to the list dashboard).
 - JetBrains / Cursor / Neovim reporter plugins.
+- **Extension / plugin API.** Community-contributed extensions for
+  `DiffProvider`, reminder rules, dashboard panels, slash-commands. In
+  the limit: agents writing their own supergit extensions to fit their
+  workflow. Designed *after* the natural extension points (DiffProvider,
+  reminder rules, presence relay) have stabilized through real use.
 
 **Never ship** (saying it out loud to keep us honest):
 - Our own interactive rebase UI. Use Fork or the terminal.
@@ -311,3 +519,33 @@ live in PLAN-3D.md.
    default, opt-in one-click trigger."
 8. **VSCode extension scope: how thin is thin?** Reporter-only feels right.
    Anything more risks re-introducing per-window blindness.
+9. **Reminder defaults.** What thresholds out of the box? Tentative: 4h for
+   unpushed commits, 2h for stale staged changes, 24h for idle worktrees,
+   7d for old stashes. All overridable per repo. Tighter defaults feel
+   nagging; looser defaults defeat the point.
+10. **OS notifications: one-shot or recurring?** First-cross-threshold
+    one-shot is less annoying; recurring ("still haven't pushed!") is more
+    effective for the actual forgetter. Default one-shot, recurring as
+    opt-in per rule.
+11. **Annotations as event-log entries or separate storage?** Treating
+    annotations as user-authored events (`actor: user`) on the same log
+    keeps queries and notifications unified; separate storage makes
+    structured editing easier. Lean toward one log with a discriminator.
+12. **Git-tracked state: which ref strategy?** Subsumed by the workspace
+    concept — state lives in the workspace repo, not as a special ref on
+    user repos. See [Shared supergit workspace](#shared-supergit-workspace).
+13. **Workspace location default.** `~/supergit/workspaces/<name>/` so the
+    user can `cd` to it and treat it like any other repo, or
+    `~/.supergit/workspace/` as a hidden default. Lean toward the former.
+14. **SQLite cache: gitignored or committed snapshots?** Gitignored by
+    default — rebuild on first run from the event log. Opt-in LFS-tracked
+    snapshots for huge workspaces with slow first-clone.
+15. **Event-log merge driver schema.** Events are timestamped and
+    append-only; trivial merges should auto-resolve. The rare conflict
+    (two events at the same timestamp + key) needs a structured merge
+    driver. Specify the JSON schema + driver in v1.
+16. **Extension API surface.** What can plugins extend — `DiffProvider`,
+    reminder rules, dashboard panels, slash-commands, daemon routes?
+    Probably a small core extension API in v3+ once the natural
+    extension points have been validated by real (in-tree) implementations.
+    Premature plugin API = bad interface frozen too early.

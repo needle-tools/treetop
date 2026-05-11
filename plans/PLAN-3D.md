@@ -23,6 +23,10 @@ edit push in milliseconds.
 - **Plug into the dashboard via a `DiffProvider` interface.** The binary
   side doesn't get its own UI shell; it ships viewers that render inside
   the main dashboard's diff pane.
+- **TDD discipline applies here too.** Format providers, the CAS, and merge
+  drivers are exactly the kind of code where AI agents could break
+  invariants silently — every block ships with an executable spec. See
+  [DEVELOPMENT.md](./DEVELOPMENT.md).
 
 ## Contents
 - [Vision](#vision) — who this serves, what the pain looks like.
