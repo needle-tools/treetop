@@ -144,27 +144,57 @@
   function toggleOpenSessionInWt(wtPath: string, s: OpenSession): void {
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
-    const wasOpen = i >= 0;
-    openSessionsByWt = {
-      ...openSessionsByWt,
-      [wtPath]: wasOpen
-        ? [...list.slice(0, i), ...list.slice(i + 1)]
-        : [s, ...list], // newest-opened on the left of the strip
-    };
-    if (!wasOpen) {
-      // After Svelte commits the DOM, scroll the strip so the new column
-      // sits at the left edge. We use the strip's scrollLeft directly so
-      // the previously-leftmost-visible column slides right by exactly
-      // one column-width — keeping more than 50px of it visible at the
-      // current min-width: 35% setup.
-      requestAnimationFrame(() => {
-        const strip = document.querySelector(
-          `[data-wt-strip="${CSS.escape(wtPath)}"]`,
-        ) as HTMLElement | null;
-        if (!strip) return;
-        strip.scrollTo({ left: 0, behavior: "smooth" });
-      });
+    if (i >= 0) {
+      // Already open — close it.
+      openSessionsByWt = {
+        ...openSessionsByWt,
+        [wtPath]: [...list.slice(0, i), ...list.slice(i + 1)],
+      };
+      return;
     }
+
+    // Opening a new session: insert it just left of the column the user is
+    // currently looking at, so it appears on the left of their *visible*
+    // strip (not just the array order). Then smooth-scroll so the new
+    // column sits at the viewport's left edge.
+    const strip = document.querySelector(
+      `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+    ) as HTMLElement | null;
+
+    let underlyingInsertAt = 0;
+    if (strip) {
+      const scrollLeft = strip.scrollLeft;
+      const cols = strip.querySelectorAll<HTMLElement>(".session-col");
+      for (const col of cols) {
+        const colRight = col.offsetLeft + col.offsetWidth;
+        // The first column whose right edge is at least 50px past the
+        // current scroll offset is the leftmost "visible" column.
+        if (colRight - scrollLeft >= 50) {
+          const targetSource = col.dataset.sessionSource;
+          if (targetSource) {
+            const u = list.findIndex((x) => x.source === targetSource);
+            if (u >= 0) underlyingInsertAt = u;
+          }
+          break;
+        }
+      }
+    }
+
+    const next = [...list];
+    next.splice(underlyingInsertAt, 0, s);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+
+    requestAnimationFrame(() => {
+      const strip2 = document.querySelector(
+        `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+      ) as HTMLElement | null;
+      if (!strip2) return;
+      const newCol = strip2.querySelector<HTMLElement>(
+        `.session-col[data-session-source="${CSS.escape(s.source)}"]`,
+      );
+      if (!newCol) return;
+      strip2.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
+    });
   }
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
     openSessionsByWt = {
