@@ -1200,9 +1200,6 @@
     max-width: 150ch;
     box-sizing: border-box;
   }
-  .agent-badge.active {
-    box-shadow: 0 0 0 1px var(--brand);
-  }
   header {
     margin-bottom: 1.5rem;
   }
