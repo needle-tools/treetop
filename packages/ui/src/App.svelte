@@ -84,6 +84,9 @@
 
   let actionsOpen = false;
 
+  // Per worktree: is the "all sessions" popover next to the agent badge open?
+  let agentsPopoverOpen: Record<string, boolean> = {};
+
   // Live activity stream keyed by the agent's cwd (≈ worktree path).
   // Capped to MAX_ACTIVITY entries per cwd; newest first.
   const MAX_ACTIVITY = 8;
@@ -553,9 +556,18 @@
   );
 
   function handleDocClick(e: MouseEvent) {
-    if (!actionsOpen) return;
     const target = e.target as HTMLElement | null;
-    if (!target?.closest(".actions-anchor")) actionsOpen = false;
+    if (actionsOpen && !target?.closest(".actions-anchor")) {
+      actionsOpen = false;
+    }
+    // Any open agents popovers that the click landed outside of: close them.
+    for (const key of Object.keys(agentsPopoverOpen)) {
+      if (!agentsPopoverOpen[key]) continue;
+      const anchor = target?.closest(`[data-agents-anchor="${key}"]`);
+      if (!anchor) {
+        agentsPopoverOpen = { ...agentsPopoverOpen, [key]: false };
+      }
+    }
   }
 
   // Svelte action: focus + select the node when it's mounted. Used on the
@@ -721,27 +733,75 @@
               {/if}
               {#if wt.agents && wt.agents.length > 0}
                 {@const a = wt.agents[0]}
-                <button
-                  class="agent-badge agent-{a.agent}"
-                  title={`Click to read this ${a.agent} session\nLast active ${relTime(a.lastActive)}\n${a.source}`}
-                  on:click={() => {
-                    const cur = openSession[wt.path];
-                    if (cur && cur.source === a.source) {
-                      openSession = { ...openSession, [wt.path]: null };
-                    } else {
-                      openSession = {
-                        ...openSession,
-                        [wt.path]: { agent: a.agent, source: a.source },
-                      };
-                    }
-                  }}
-                >
-                  <span class="agent-dot"></span>
-                  {a.agent} · {relTime(a.lastActive)}
+                <span class="agent-wrap" data-agents-anchor={wt.path}>
+                  <button
+                    class="agent-badge agent-{a.agent}"
+                    title={`Open the latest ${a.agent} session\nLast active ${relTime(a.lastActive)}`}
+                    on:click={() => {
+                      const cur = openSession[wt.path];
+                      if (cur && cur.source === a.source) {
+                        openSession = { ...openSession, [wt.path]: null };
+                      } else {
+                        openSession = {
+                          ...openSession,
+                          [wt.path]: { agent: a.agent, source: a.source },
+                        };
+                      }
+                    }}
+                  >
+                    <span class="agent-dot"></span>
+                    {a.agent} · {relTime(a.lastActive)}
+                  </button>
                   {#if wt.agents.length > 1}
-                    <span class="agent-extra">+{wt.agents.length - 1}</span>
+                    <button
+                      class="agent-more agent-{a.agent}"
+                      title={`Pick from ${wt.agents.length} sessions in this worktree`}
+                      on:click|stopPropagation={() => {
+                        agentsPopoverOpen = {
+                          ...agentsPopoverOpen,
+                          [wt.path]: !agentsPopoverOpen[wt.path],
+                        };
+                      }}
+                    >+{wt.agents.length - 1}</button>
+                    {#if agentsPopoverOpen[wt.path]}
+                      <div class="agents-popover" role="menu">
+                        <div class="popover-head">
+                          {wt.agents.length} sessions in this worktree
+                        </div>
+                        <ul class="agents-list">
+                          {#each wt.agents as sess (sess.source)}
+                            <li>
+                              <button
+                                class="agent-row"
+                                class:active={openSession[wt.path]?.source === sess.source}
+                                on:click={() => {
+                                  openSession = {
+                                    ...openSession,
+                                    [wt.path]: {
+                                      agent: sess.agent,
+                                      source: sess.source,
+                                    },
+                                  };
+                                  agentsPopoverOpen = {
+                                    ...agentsPopoverOpen,
+                                    [wt.path]: false,
+                                  };
+                                }}
+                              >
+                                <span class="agent-dot agent-{sess.agent}"></span>
+                                <span class="agent-name">{sess.agent}</span>
+                                <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
+                                {#if sess.sessionId}
+                                  <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
+                                {/if}
+                              </button>
+                            </li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
                   {/if}
-                </button>
+                </span>
               {/if}
               <code class="wt-path">{wt.path}</code>
             {:else}
@@ -1237,11 +1297,104 @@
     background: var(--chip-blue-bg);
     color: var(--chip-blue-text);
   }
-  .agent-extra {
-    background: rgba(0, 0, 0, 0.25);
-    border-radius: 999px;
-    padding: 0 0.35rem;
-    font-size: 0.65rem;
+  .agent-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+  }
+  .agent-badge {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .agent-wrap > .agent-badge:only-child {
+    border-radius: var(--radius-sm);
+    border-right: 0;
+  }
+  .agent-more {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
+    border: 0;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.7rem;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-top-right-radius: var(--radius-sm);
+    border-bottom-right-radius: var(--radius-sm);
+  }
+  .agent-more.agent-claude {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
+  }
+  .agent-more.agent-codex {
+    background: var(--chip-green-bg);
+    color: var(--chip-green-text);
+  }
+  .agent-more.agent-copilot {
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
+  }
+  .agent-more:hover {
+    filter: brightness(1.2);
+  }
+  .agents-popover {
+    position: absolute;
+    top: calc(100% + 0.3rem);
+    left: 0;
+    z-index: 50;
+    width: 340px;
+    max-width: 90vw;
+    max-height: 60vh;
+    overflow: auto;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    padding: 0.4rem 0.5rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .agents-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .agent-row {
+    display: grid;
+    grid-template-columns: 10px auto 1fr auto;
+    gap: 0.5rem;
+    align-items: center;
+    width: 100%;
+    padding: 0.3rem 0.45rem;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-align: left;
+    font-size: 0.78rem;
+  }
+  .agent-row:hover {
+    background: var(--surface-2);
+  }
+  .agent-row.active {
+    background: var(--surface-2);
+    color: var(--text-1);
+  }
+  .agent-row .agent-name {
+    text-transform: lowercase;
+    font-family: ui-monospace, monospace;
+  }
+  .agent-row .agent-time {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .agent-row .agent-sid {
+    font-family: ui-monospace, monospace;
   }
   .row-activity {
     display: flex;
