@@ -87,6 +87,36 @@
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
 
+  // Per repo id: is the "new worktree" inline form open?
+  let newWtOpen: Record<string, boolean> = {};
+  let newWtBranch: Record<string, string> = {};
+  let newWtBusy: Record<string, boolean> = {};
+
+  async function createWorktree(repoId: string) {
+    const branch = (newWtBranch[repoId] ?? "").trim();
+    if (!branch) return;
+    error = "";
+    newWtBusy = { ...newWtBusy, [repoId]: true };
+    try {
+      const res = await fetch(`/api/repos/${repoId}/worktrees`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      newWtBranch = { ...newWtBranch, [repoId]: "" };
+      newWtOpen = { ...newWtOpen, [repoId]: false };
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      newWtBusy = { ...newWtBusy, [repoId]: false };
+    }
+  }
+
   // Live activity stream keyed by the agent's cwd (≈ worktree path).
   // Capped to MAX_ACTIVITY entries per cwd; newest first.
   const MAX_ACTIVITY = 8;
@@ -810,11 +840,51 @@
             {/if}
 
             <button
+              class="new-wt"
+              title="Create a new worktree on a new branch"
+              on:click={() => {
+                newWtOpen = { ...newWtOpen, [repo.id]: !newWtOpen[repo.id] };
+                if (newWtOpen[repo.id] && !newWtBranch[repo.id]) {
+                  newWtBranch = { ...newWtBranch, [repo.id]: "" };
+                }
+              }}
+            >+ wt</button>
+            <button
               class="remove"
               title="Remove repo from workspace"
               on:click={() => removeRepo(repo.id)}>×</button
             >
           </div>
+
+          {#if newWtOpen[repo.id]}
+            <div class="new-wt-form">
+              <input
+                type="text"
+                class="new-wt-input"
+                placeholder="new branch name (e.g. feat/audio)"
+                bind:value={newWtBranch[repo.id]}
+                disabled={newWtBusy[repo.id]}
+                on:keydown={(e) => {
+                  if (e.key === "Enter") createWorktree(repo.id);
+                  if (e.key === "Escape") {
+                    newWtOpen = { ...newWtOpen, [repo.id]: false };
+                  }
+                }}
+              />
+              <button
+                class="tiny"
+                disabled={!newWtBranch[repo.id]?.trim() || newWtBusy[repo.id]}
+                on:click={() => createWorktree(repo.id)}
+              >
+                {newWtBusy[repo.id] ? "Creating…" : "Create"}
+              </button>
+              <span class="muted small">
+                will live at ~/wt/{repo.name}/{(newWtBranch[repo.id] ?? "")
+                  .trim()
+                  .replace(/[\/\\]/g, "-") || "…"}
+              </span>
+            </div>
+          {/if}
 
           {#if wt && openSession[wt.path]}
             {@const s = openSession[wt.path]!}
@@ -1445,6 +1515,41 @@
   .remove:hover {
     background: var(--error-bg);
     color: var(--error-text);
+  }
+  .new-wt {
+    background: transparent;
+    color: var(--text-muted);
+    padding: 0.15rem 0.5rem;
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+    flex: 0 0 auto;
+    border: 1px dashed var(--surface-2);
+    border-radius: var(--radius-sm);
+  }
+  .new-wt:hover {
+    background: var(--surface-2);
+    color: var(--text-2);
+    border-style: solid;
+  }
+  .new-wt-form {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
+  }
+  .new-wt-input {
+    flex: 1;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
+    color: inherit;
+    border-radius: var(--radius-sm);
+    min-width: 0;
   }
 
   .row-status {

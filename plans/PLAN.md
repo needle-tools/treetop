@@ -596,6 +596,15 @@ live in PLAN-3D.md.
     Probably a small core extension API in v3+ once the natural
     extension points have been validated by real (in-tree) implementations.
     Premature plugin API = bad interface frozen too early.
+17b. **Side-by-side sessions.** Currently each worktree row's session
+    panel stacks vertically. For comparing two agents working on related
+    branches or watching multiple sessions in flight, a docked
+    "sessions" pane at the right (or bottom) that holds N panels
+    horizontally would be the right shape. Keep the row-anchored panel
+    as default — opt in to "pop out to dock". Adjacent to v1.2
+    managed-spawn since dock makes most sense once each panel can be
+    typed into.
+
 17. **Unique-to-branch commits in the worktree history.** Right now
     History shows all commits reachable from HEAD; it's not obvious
     which ones are *only* on this branch vs already merged into main /

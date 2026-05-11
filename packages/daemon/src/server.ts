@@ -8,6 +8,8 @@ import {
   getDiff,
   getCommitDiff,
   fetchAll,
+  createWorktree,
+  removeWorktree,
   type DiffKind,
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
@@ -115,6 +117,7 @@ const server = Bun.serve({
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
+          { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
@@ -219,6 +222,44 @@ const server = Bun.serve({
         return json({ error: String(e instanceof Error ? e.message : e) }, {
           status: 409,
         });
+      }
+    }
+
+    const wtCreateMatch = url.pathname.match(
+      /^\/api\/repos\/([^/]+)\/worktrees$/,
+    );
+    if (wtCreateMatch && req.method === "POST") {
+      const id = wtCreateMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { branch?: unknown; base?: unknown }
+        | null;
+      const branch = body?.branch;
+      if (typeof branch !== "string" || branch.trim().length === 0) {
+        return json(
+          { error: "body.branch (non-empty string) is required" },
+          { status: 400 },
+        );
+      }
+      const base = typeof body?.base === "string" ? body.base : undefined;
+      const repos = await workspace.listRepos();
+      const repo = repos.find((r) => r.id === id);
+      if (!repo) return json({ error: "repo not found" }, { status: 404 });
+      try {
+        const created = await createWorktree(repo.path, branch.trim(), {
+          base,
+        });
+        await events.append({
+          type: "create_worktree",
+          actor: "user",
+          payload: { repoId: id, branch: created.branch, path: created.path },
+        });
+        broadcast("change", { kind: "create_worktree", path: created.path });
+        return json(created, { status: 201 });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 409 },
+        );
       }
     }
 

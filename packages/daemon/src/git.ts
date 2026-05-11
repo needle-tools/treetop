@@ -51,6 +51,72 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
  * remotes, auth prompts that would block — all silently treated as no-ops.
  * Returns true if fetch ran cleanly, false otherwise.
  */
+export interface CreatedWorktree {
+  path: string;
+  branch: string;
+}
+
+function sanitizeBranchForPath(branch: string): string {
+  // Replace slashes (`feat/audio`) with `-` for the on-disk dirname so we
+  // don't accidentally nest dirs under feat/.
+  return branch.replace(/[\/\\]/g, "-");
+}
+
+/**
+ * Create a new worktree for `repoPath` on a new branch named `branch`.
+ * Defaults to `~/wt/<repoBasename>/<sanitizedBranch>` for the worktree path,
+ * which matches the convention in PLAN.md.
+ */
+export async function createWorktree(
+  repoPath: string,
+  branch: string,
+  options: { base?: string; wtRoot?: string } = {},
+): Promise<CreatedWorktree> {
+  const { homedir } = await import("node:os");
+  const { mkdir } = await import("node:fs/promises");
+  const { join, basename } = await import("node:path");
+  const repoName = basename(repoPath.replace(/[\/\\]+$/, ""));
+  const root = options.wtRoot ?? join(homedir(), "wt", repoName);
+  await mkdir(root, { recursive: true });
+  const wtPath = join(root, sanitizeBranchForPath(branch));
+  const base = options.base ?? "HEAD";
+  const proc = Bun.spawn(
+    ["git", "-C", repoPath, "worktree", "add", wtPath, "-b", branch, base],
+    { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+  );
+  const stderr = await new Response(proc.stderr).text();
+  const exit = await proc.exited;
+  if (exit !== 0) {
+    throw new Error(`git worktree add failed: ${stderr.trim() || "exit " + exit}`);
+  }
+  return { path: wtPath, branch };
+}
+
+/**
+ * Remove a worktree by path. The branch is *not* deleted.
+ */
+export async function removeWorktree(
+  repoPath: string,
+  worktreePath: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  const args = ["git", "-C", repoPath, "worktree", "remove"];
+  if (options.force) args.push("--force");
+  args.push(worktreePath);
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  const stderr = await new Response(proc.stderr).text();
+  const exit = await proc.exited;
+  if (exit !== 0) {
+    throw new Error(
+      `git worktree remove failed: ${stderr.trim() || "exit " + exit}`,
+    );
+  }
+}
+
 export async function fetchAll(repoPath: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(
