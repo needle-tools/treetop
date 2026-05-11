@@ -21,7 +21,8 @@
       | "tool_result"
       | "ide_context"
       | "system_reminder"
-      | "command";
+      | "command"
+      | "marker";
     text?: string;
     toolName?: string;
     toolInput?: unknown;
@@ -214,6 +215,8 @@
                 <span class="tag-label">{b.tagName ?? "command"}</span>
                 <span class="tag-body">{b.text}</span>
               </div>
+            {:else if b.type === "marker"}
+              <div class="block marker">{b.text}</div>
             {/if}
           {/each}
         </li>
@@ -527,5 +530,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+  }
+  .block.marker {
+    margin-top: 0.2rem;
+    font-style: italic;
+    font-size: 0.75rem;
+    color: var(--text-faint);
   }
 </style>

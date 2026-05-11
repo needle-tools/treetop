@@ -25,7 +25,16 @@ export type NormalizedBlockKind =
   /** `<system-reminder>` … `</system-reminder>` wrappers. */
   | "system_reminder"
   /** `<command-name>` / `<command-message>` slash-command markers. */
-  | "command";
+  | "command"
+  /** Standalone bracketed markers like "[Request interrupted by user]". */
+  | "marker";
+
+/** Recognise Claude's standalone bracket-markers so the UI can render them
+ *  as quiet annotations instead of bold message text. */
+export function isMarker(text: string): boolean {
+  const t = text.trim();
+  return /^\[(Request interrupted|Tool use rejected|Tool use was rejected|Request interrupted by user)\b/i.test(t);
+}
 
 export interface NormalizedBlock {
   type: NormalizedBlockKind;
@@ -124,14 +133,19 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
     const content = msg.content;
     const blocks: NormalizedBlock[] = [];
 
+    const pushText = (txt: string) => {
+      if (isMarker(txt)) blocks.push({ type: "marker", text: txt.trim() });
+      else blocks.push(...splitInjectedTags(txt));
+    };
+
     if (typeof content === "string") {
-      blocks.push(...splitInjectedTags(content));
+      pushText(content);
     } else if (Array.isArray(content)) {
       for (const raw of content) {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (b.type === "text" && typeof b.text === "string") {
-          blocks.push(...splitInjectedTags(b.text));
+          pushText(b.text);
         } else if (b.type === "thinking" && typeof b.thinking === "string") {
           blocks.push({ type: "thinking", text: b.thinking });
         } else if (b.type === "tool_use") {

@@ -3,6 +3,7 @@ import {
   parseClaudeJsonl,
   parseCodexJsonl,
   splitInjectedTags,
+  isMarker,
 } from "../src/sessions";
 
 describe("parseClaudeJsonl", () => {
@@ -250,6 +251,52 @@ describe("parseClaudeJsonl with a real sanitized fixture", () => {
     );
     expect(toolUses.length).toBeGreaterThan(0);
     expect(toolResults.length).toBeGreaterThan(0);
+  });
+});
+
+describe("isMarker", () => {
+  test("recognises [Request interrupted by user]", () => {
+    expect(isMarker("[Request interrupted by user]")).toBe(true);
+    expect(isMarker("  [Request interrupted by user]  ")).toBe(true);
+    expect(isMarker("[Request interrupted by user for tool use]")).toBe(true);
+  });
+
+  test("recognises tool-rejection markers", () => {
+    expect(isMarker("[Tool use rejected]")).toBe(true);
+    expect(isMarker("[Tool use was rejected by user]")).toBe(true);
+  });
+
+  test("rejects normal bracketed text", () => {
+    expect(isMarker("[hello]")).toBe(false);
+    expect(isMarker("[Code] this is broken")).toBe(false);
+    expect(isMarker("Please review [my code]")).toBe(false);
+  });
+});
+
+describe("parseClaudeJsonl with interrupt markers", () => {
+  test("emits a 'marker' block for a standalone interrupt message", () => {
+    const sample = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "[Request interrupted by user]" },
+    });
+    const s = parseClaudeJsonl(sample);
+    expect(s.messages[0]?.blocks).toEqual([
+      { type: "marker", text: "[Request interrupted by user]" },
+    ]);
+  });
+
+  test("emits 'marker' inside an array content block too", () => {
+    const sample = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "[Request interrupted by user for tool use]" },
+        ],
+      },
+    });
+    const s = parseClaudeJsonl(sample);
+    expect(s.messages[0]?.blocks[0]?.type).toBe("marker");
   });
 });
 
