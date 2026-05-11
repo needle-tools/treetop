@@ -1,0 +1,61 @@
+/*
+ * Design tokens. All UI colors and a few common metrics live here so
+ * redesign is a single-file edit. Component CSS should reference var(--*)
+ * rather than literal hex codes.
+ *
+ * Token naming:
+ *   --surface-0  page background (deepest)
+ *   --surface-1  cards, inputs (one level up)
+ *   --surface-2  borders, secondary buttons
+ *   --surface-3  hover state
+ *   --text-N     text from brightest (1) to faintest (6)
+ *   --brand      primary accent
+ *   --status-*   semantic state colors
+ *   --chip-*-bg/text  small colored labels
+ */
+
+:root {
+  /* surfaces */
+  --surface-0: #0f0f10;
+  --surface-1: #1a1a1b;
+  --surface-2: #2a2a2b;
+  --surface-3: #333;
+  --surface-input-hover: #232325;
+
+  /* text levels */
+  --text-1: #e8e8e8;
+  --text-2: #d0d0d0;
+  --text-3: #c0c0c0;
+  --text-4: #b0b0b0;
+  --text-5: #a0a0a0;
+  --text-muted: #888;
+  --text-faint: #666;
+
+  /* brand */
+  --brand: #2563eb;
+  --brand-hover: #3175f0;
+
+  /* status */
+  --status-clean: #16a34a;
+  --status-dirty: #d97706;
+  --error-bg: #3f1f1f;
+  --error-text: #ffaaaa;
+
+  /* chips */
+  --chip-blue-bg: #1a3a5a;
+  --chip-blue-text: #aacdef;
+  --chip-orange-bg: #3a2a1a;
+  --chip-orange-text: #efcdaa;
+  --chip-purple-bg: #3a1a3a;
+  --chip-purple-text: #efaaef;
+  --chip-green-bg: #1a3a2a;
+  --chip-green-text: #cdefaa;
+  --chip-indigo-bg: #2a2a3a;
+  --chip-indigo-text: #d8d8ff;
+  --chip-grey-text: #aaaacc;
+
+  /* metrics */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}

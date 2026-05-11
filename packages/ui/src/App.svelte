@@ -593,13 +593,13 @@
       system-ui,
       sans-serif;
     margin: 0;
-    background: #0f0f10;
-    color: #e8e8e8;
+    background: var(--surface-0);
+    color: var(--text-1);
   }
   main {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
+    padding: 1.5rem 1.5rem 1.5rem;
   }
   header {
     margin-bottom: 1.5rem;
@@ -614,21 +614,21 @@
   }
   .live {
     font-size: 0.75rem;
-    color: #666;
+    color: var(--text-faint);
     letter-spacing: 0.04em;
   }
   .live.on {
-    color: #16a34a;
+    color: var(--status-clean);
   }
   h2 {
     margin: 0 0 0.75rem 0;
     font-size: 0.9rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: #888;
+    color: var(--text-muted);
   }
   .muted {
-    color: #888;
+    color: var(--text-muted);
   }
   .small {
     font-size: 0.8rem;
@@ -645,8 +645,8 @@
   input {
     flex: 1;
     padding: 0.55rem 0.75rem;
-    background: #1a1a1b;
-    border: 1px solid #2a2a2b;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
     color: inherit;
     border-radius: 6px;
     font-family: inherit;
@@ -654,11 +654,11 @@
   }
   input:focus {
     outline: none;
-    border-color: #2563eb;
+    border-color: var(--brand);
   }
   button {
     padding: 0.55rem 1rem;
-    background: #2a2a2b;
+    background: var(--surface-2);
     border: 0;
     color: inherit;
     border-radius: 6px;
@@ -666,18 +666,18 @@
     font-size: 0.95rem;
   }
   button:hover:not(:disabled) {
-    background: #333;
+    background: var(--surface-3);
   }
   button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
   button.primary {
-    background: #2563eb;
+    background: var(--brand);
     color: white;
   }
   button.primary:hover:not(:disabled) {
-    background: #3175f0;
+    background: var(--brand-hover);
   }
   button.refresh {
     margin-left: auto;
@@ -687,8 +687,8 @@
     font-size: 0.75rem;
   }
   .error {
-    background: #3f1f1f;
-    color: #ffaaaa;
+    background: var(--error-bg);
+    color: var(--error-text);
     padding: 0.75rem 1rem;
     border-radius: 6px;
     margin: 0 0 1rem;
@@ -710,8 +710,8 @@
     margin: 0;
   }
   .repos > li {
-    background: #1a1a1b;
-    border: 1px solid #2a2a2b;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
     border-radius: 8px;
     padding: 1rem 1.1rem;
     margin: 0 0 0.75rem;
@@ -738,10 +738,10 @@
     gap: 0.35rem;
   }
   .name-btn:hover {
-    background: #2a2a2b;
+    background: var(--surface-2);
   }
   .name-btn .pencil {
-    color: #666;
+    color: var(--text-faint);
     font-size: 0.8rem;
     opacity: 0;
   }
@@ -752,8 +752,8 @@
     padding: 0.15rem 0.4rem;
     font-size: 1rem;
     font-weight: 700;
-    background: #1a1a1b;
-    border: 1px solid #2563eb;
+    background: var(--surface-1);
+    border: 1px solid var(--brand);
     border-radius: 4px;
     color: inherit;
     width: auto;
@@ -768,14 +768,14 @@
   .remove {
     margin-left: auto;
     background: transparent;
-    color: #888;
+    color: var(--text-muted);
     padding: 0.2rem 0.55rem;
     font-size: 1.1rem;
     line-height: 1;
   }
   .remove:hover {
-    background: #3f1f1f;
-    color: #ffaaaa;
+    background: var(--error-bg);
+    color: var(--error-text);
   }
   .worktrees {
     list-style: none;
@@ -784,7 +784,7 @@
   }
   .wt {
     padding: 0.6rem 0;
-    border-top: 1px solid #2a2a2b;
+    border-top: 1px solid var(--surface-2);
   }
   .wt-row1 {
     display: flex;
@@ -807,39 +807,39 @@
   .wt-path {
     font-family: ui-monospace, monospace;
     font-size: 0.85rem;
-    color: #c0c0c0;
+    color: var(--text-3);
     overflow-wrap: anywhere;
     flex: 1;
   }
   .branch {
-    background: #1a3a5a;
-    color: #aacdef;
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
     padding: 0.1rem 0.5rem;
     border-radius: 4px;
     font-size: 0.8rem;
     white-space: nowrap;
   }
   .branch.detached {
-    background: #3a2a1a;
-    color: #efcdaa;
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .branch.bare {
-    background: #2a2a3a;
-    color: #aaaacc;
+    background: var(--chip-indigo-bg);
+    color: var(--chip-grey-text);
   }
   .status-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #d97706;
+    background: var(--status-dirty);
     display: inline-block;
   }
   .status-dot.clean {
-    background: #16a34a;
+    background: var(--status-clean);
   }
   .ab {
-    background: #2a2a3a;
-    color: #d8d8ff;
+    background: var(--chip-indigo-bg);
+    color: var(--chip-indigo-text);
     padding: 0.05rem 0.4rem;
     border-radius: 4px;
     font-size: 0.75rem;
@@ -855,7 +855,7 @@
   }
   .sha {
     font-family: ui-monospace, monospace;
-    color: #a0a0a0;
+    color: var(--text-5);
   }
   .commit-subject {
     overflow: hidden;
@@ -877,14 +877,14 @@
     background: transparent;
     border: 0;
     border-top: 1px dashed transparent;
-    color: #666;
+    color: var(--text-faint);
     cursor: pointer;
     border-radius: 4px;
   }
   .chevron:hover {
-    background: #232325;
-    color: #d0d0d0;
-    border-top-color: #2a2a2b;
+    background: var(--surface-input-hover);
+    color: var(--text-2);
+    border-top-color: var(--surface-2);
   }
   .chevron svg {
     transition: transform 0.15s ease-out;
@@ -895,7 +895,7 @@
   .commits {
     margin-top: 0.5rem;
     padding-left: 0.8rem;
-    border-left: 2px solid #2a2a2b;
+    border-left: 2px solid var(--surface-2);
   }
   .commit-row {
     display: flex;
@@ -903,7 +903,7 @@
     align-items: baseline;
     padding: 0.2rem 0;
     font-size: 0.8rem;
-    color: #b0b0b0;
+    color: var(--text-4);
     overflow: hidden;
   }
   .load-more {
@@ -915,8 +915,8 @@
     margin: 0;
   }
   .events > li {
-    background: #1a1a1b;
-    border: 1px solid #2a2a2b;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
     border-radius: 6px;
     padding: 0.6rem 0.8rem;
     margin: 0 0 0.5rem;
@@ -952,30 +952,30 @@
     letter-spacing: 0.04em;
   }
   .actor-user {
-    background: #1a3a5a;
-    color: #aacdef;
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
   }
   .actor-agent {
-    background: #3a1a3a;
-    color: #efaaef;
+    background: var(--chip-purple-bg);
+    color: var(--chip-purple-text);
   }
   .actor-supergit {
-    background: #2a2a2b;
-    color: #c0c0c0;
+    background: var(--surface-2);
+    color: var(--text-3);
   }
   .undo,
   .redo {
     margin-left: auto;
     padding: 0.2rem 0.6rem;
     font-size: 0.75rem;
-    background: #2a2a2b;
+    background: var(--surface-2);
   }
   .undo:hover {
-    background: #3a2a1a;
-    color: #efcdaa;
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .redo:hover {
-    background: #1a3a2a;
-    color: #cdefaa;
+    background: var(--chip-green-bg);
+    color: var(--chip-green-text);
   }
 </style>
