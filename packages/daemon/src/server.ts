@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { stat as fsStat, unlink } from "node:fs/promises";
 import { Workspace } from "./workspace";
 import {
   listWorktrees,
@@ -20,6 +21,7 @@ import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
+import * as inflight from "./inflight";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -131,7 +133,9 @@ const server = Bun.serve({
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
-          { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages." },
+          { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
+          { method: "GET", path: "/api/active-sends", description: "list claude subprocesses still in flight from /api/session/send. Optional ?sessionId=<id> to filter." },
+          { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -244,8 +248,25 @@ const server = Bun.serve({
       // forever waiting for a confirmation it can never receive. The user
       // explicitly typed a prompt in this session, which is consent enough
       // for v0. We can surface granular per-call approvals from the UI later.
+      // The claude CLI is itself a Bun-compiled standalone binary, so
+      // when it runs in a project cwd Bun's package-resolution machinery
+      // happily writes a `bun.lockb` / `bun.lock` there. We don't want
+      // those polluting the worktree, so snapshot what's there before
+      // spawn and unlink anything claude added once it exits.
+      const lockCandidates = [join(cwd, "bun.lockb"), join(cwd, "bun.lock")];
+      const preExisted = await Promise.all(
+        lockCandidates.map(async (p) => {
+          try {
+            await fsStat(p);
+            return true;
+          } catch {
+            return false;
+          }
+        }),
+      );
+
       try {
-        Bun.spawn({
+        const proc = Bun.spawn({
           cmd: [
             "claude",
             "-p",
@@ -259,12 +280,44 @@ const server = Bun.serve({
           stdout: "ignore",
           stderr: "ignore",
         });
+        const rec = inflight.register({
+          agent,
+          sessionId,
+          cwd,
+          text,
+          proc,
+        });
+        void proc.exited.then(async () => {
+          for (let i = 0; i < lockCandidates.length; i++) {
+            if (preExisted[i]) continue;
+            const p = lockCandidates[i]!;
+            try {
+              await fsStat(p);
+              await unlink(p);
+            } catch {
+              // not there, or unlink failed; nothing to do
+            }
+          }
+        });
+        return json({ ok: true, id: rec.id, pid: rec.pid });
       } catch (e) {
         return json(
           { error: e instanceof Error ? e.message : String(e) },
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/active-sends" && req.method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") ?? undefined;
+      return json(inflight.list({ sessionId }));
+    }
+
+    // Trailing-id pattern: /api/active-sends/:id for DELETE.
+    if (url.pathname.startsWith("/api/active-sends/") && req.method === "DELETE") {
+      const id = url.pathname.slice("/api/active-sends/".length);
+      const ok = inflight.kill(id);
+      if (!ok) return json({ error: "not found" }, { status: 404 });
       return json({ ok: true });
     }
 

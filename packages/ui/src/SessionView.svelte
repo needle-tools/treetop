@@ -87,6 +87,18 @@
   let inputText = "";
   let sending = false;
   let sendError = "";
+  /** Live count of claude subprocesses the daemon is still running for
+   *  THIS session — set from /api/active-sends polling. Renders an
+   *  in-header indicator with a cancel-all button. */
+  interface InflightRec {
+    id: string;
+    agent: string;
+    sessionId: string;
+    pid: number;
+    textPreview: string;
+    startedAt: string;
+  }
+  let inflight: InflightRec[] = [];
   /** When non-null we have a prompt in flight. The numeric value is the
    *  session.messages.length at the moment we hit Send; once load() sees
    *  a higher count we know claude wrote something back and can clear
@@ -140,6 +152,39 @@
     } finally {
       loading = false;
     }
+  }
+
+  async function refreshInflight() {
+    if (!session?.sessionId) return;
+    try {
+      const res = await fetch(
+        `/api/active-sends?sessionId=${encodeURIComponent(session.sessionId)}`,
+      );
+      if (!res.ok) return;
+      inflight = (await res.json()) as InflightRec[];
+    } catch {
+      // best-effort indicator; ignore network blips
+    }
+  }
+
+  async function cancelInflight(id: string) {
+    try {
+      await fetch(`/api/active-sends/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    } finally {
+      void refreshInflight();
+    }
+  }
+
+  async function cancelAllInflight() {
+    const ids = inflight.map((r) => r.id);
+    await Promise.allSettled(
+      ids.map((id) =>
+        fetch(`/api/active-sends/${encodeURIComponent(id)}`, { method: "DELETE" }),
+      ),
+    );
+    void refreshInflight();
   }
 
   async function sendMessage() {
@@ -269,7 +314,13 @@
   let pollTimer: number | null = null;
 
   onMount(() => {
-    pollTimer = window.setInterval(() => void load(), 2_000);
+    pollTimer = window.setInterval(() => {
+      void load();
+      void refreshInflight();
+    }, 2_000);
+    // Kick off an immediate inflight refresh so the indicator's accurate
+    // from the first render, not 2s later.
+    void refreshInflight();
   });
 
   onDestroy(() => {
@@ -295,6 +346,24 @@
               class="muted small last-activity"
               title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
             >last activity {relTimeFromIso(session.endedAt)}</span>
+          {/if}
+          {#if inflight.length > 0}
+            <button
+              class="inflight-pill"
+              type="button"
+              title={inflight
+                .map(
+                  (r) =>
+                    `pid ${r.pid}: ${r.textPreview}${r.textPreview.length === 200 ? "…" : ""}`,
+                )
+                .join("\n")}
+              on:click={cancelAllInflight}
+            >
+              <span class="spinner" aria-hidden="true"></span>
+              <span>
+                {inflight.length} sending — click to cancel
+              </span>
+            </button>
           {/if}
         {/if}
       </div>
@@ -627,6 +696,31 @@
     border-top-color: currentColor;
     border-radius: 50%;
     animation: spinner-spin 0.6s linear infinite;
+  }
+  /* In-header "N sending" pill. Click to SIGTERM every in-flight claude
+     subprocess associated with this session. Hover gets a tooltip with
+     prompt previews + PIDs so you can tell which one's stuck. */
+  .inflight-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: color-mix(in srgb, var(--brand) 18%, transparent);
+    color: var(--text-2);
+    border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.7rem;
+    cursor: pointer;
+    line-height: 1.2;
+  }
+  .inflight-pill:hover {
+    background: color-mix(in srgb, var(--brand) 28%, transparent);
+    color: var(--text-1);
+  }
+  .inflight-pill .spinner {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-width: 1.5px;
   }
   @keyframes spinner-spin {
     to { transform: rotate(360deg); }
