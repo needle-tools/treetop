@@ -294,6 +294,15 @@
        drag handle for the whole session column. */
     cursor: grab;
     user-select: none;
+    /* Header items must NEVER wrap. The parent column grows (up to its
+       max-width) to accommodate; if that's still not enough, the strip
+       scrolls horizontally. */
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+  header > * {
+    white-space: nowrap;
+    flex: 0 0 auto;
   }
   header:active {
     cursor: grabbing;

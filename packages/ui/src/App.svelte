@@ -3,6 +3,7 @@
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
+  import { OpenSessionsStore, filterToExistingSessions } from "./storage";
 
   interface FileStatus {
     staged: number;
@@ -80,6 +81,11 @@
   let error = "";
   let streamConnected = false;
 
+  // The unique row key (repoId + worktree path) currently being renamed.
+  // Was just editingRepoId — but repos with multiple worktrees produce
+  // multiple rows for the same repo, so a repo-id match would render two
+  // inputs at once and the bind:value + focus() race breaks typing.
+  let editingRowKey: string | null = null;
   let editingRepoId: string | null = null;
   let editRepoName = "";
 
@@ -223,6 +229,15 @@
       : ({ getItem: () => null, setItem: () => {} }),
     "supergit:commitsExpanded",
   );
+  const openSessionsPersistence = new OpenSessionsStore(
+    typeof window !== "undefined"
+      ? window.localStorage
+      : ({ getItem: () => null, setItem: () => {} }),
+    "supergit:openSessions",
+  );
+  // Don't persist until the initial restore has run, otherwise the first
+  // reactive write wipes saved state with our empty starting value.
+  let sessionsHydrated = false;
 
   function restoreExpanded() {
     const paths = expandedStore.load();
@@ -237,6 +252,12 @@
       .map(([k]) => k);
     expandedStore.save(paths);
   }
+
+  function restoreOpenSessions() {
+    openSessionsByWt = openSessionsPersistence.load();
+    sessionsHydrated = true;
+  }
+  $: if (sessionsHydrated) openSessionsPersistence.save(openSessionsByWt);
 
   async function load() {
     loading = true;
@@ -294,11 +315,13 @@
     }
   }
 
-  function startRenameRepo(repo: Repo) {
+  function startRenameRepo(repo: Repo, rowKey: string) {
+    editingRowKey = rowKey;
     editingRepoId = repo.id;
     editRepoName = repo.name;
   }
   function cancelRenameRepo() {
+    editingRowKey = null;
     editingRepoId = null;
     editRepoName = "";
   }
@@ -319,6 +342,7 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
+      editingRowKey = null;
       editingRepoId = null;
       editRepoName = "";
     } catch (e) {
@@ -681,6 +705,7 @@
 
   onMount(() => {
     restoreExpanded();
+    restoreOpenSessions();
     void loadEditors();
     void load().then(() => {
       for (const [path, expanded] of Object.entries(commitsExpanded)) {
@@ -805,7 +830,7 @@
           </div>
           <div class="row-content">
           <div class="row-head">
-            {#if editingRepoId === repo.id}
+            {#if editingRowKey === row.key}
               <input
                 class="name-edit"
                 use:focusAndSelect
@@ -820,7 +845,7 @@
               <button
                 class="repo-chip"
                 title="Rename repo"
-                on:click={() => startRenameRepo(repo)}
+                on:click={() => startRenameRepo(repo, row.key)}
               >
                 {repo.name}
                 <span class="pencil">✎</span>
@@ -982,23 +1007,32 @@
           {/if}
 
           {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
-            <div class="sessions-strip">
-              {#each openSessionsByWt[wt.path] as s, i (s.source)}
-                <div
-                  class="session-col"
-                  on:dragover={handleSessionDragOver}
-                  on:drop={(e) => handleSessionDrop(e, wt.path, i)}
-                >
-                  <SessionView
-                    agent={s.agent}
-                    source={s.source}
-                    onClose={() => closeSessionInWt(wt.path, s)}
-                    onDragStart={(e) =>
-                      handleSessionDragStart(e, wt.path, i)}
-                  />
-                </div>
-              {/each}
-            </div>
+            {@const existingSources = new Set(
+              (wt.agents ?? []).map((a) => a.source),
+            )}
+            {@const visibleSessions = filterToExistingSessions(
+              openSessionsByWt[wt.path] ?? [],
+              existingSources,
+            )}
+            {#if visibleSessions.length > 0}
+              <div class="sessions-strip">
+                {#each visibleSessions as s, i (s.source)}
+                  <div
+                    class="session-col"
+                    on:dragover={handleSessionDragOver}
+                    on:drop={(e) => handleSessionDrop(e, wt.path, i)}
+                  >
+                    <SessionView
+                      agent={s.agent}
+                      source={s.source}
+                      onClose={() => closeSessionInWt(wt.path, s)}
+                      onDragStart={(e) =>
+                        handleSessionDragStart(e, wt.path, i)}
+                    />
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
 
           {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
@@ -1198,9 +1232,12 @@
     padding-bottom: 0.25rem;
   }
   .session-col {
-    flex: 1 0 35%;
+    /* Columns prefer ~35% of the strip but can grow up to 50% to absorb a
+       wide session header (which must never wrap). When 3+ columns push
+       past the strip width, .sessions-strip's overflow-x kicks in. */
+    flex: 1 1 35%;
     min-width: 35%;
-    max-width: 150ch;
+    max-width: 50%;
     box-sizing: border-box;
   }
   header {

@@ -157,6 +157,24 @@ describe("remove → undo → redo round-trip", () => {
   });
 });
 
+describe("rename works correctly regardless of how many worktrees the repo has", () => {
+  test("renameRepo updates the single shared repo entry; listRepos reflects it once", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const repo = await ws.addRepo("/Users/me/multi-wt-repo");
+    // Simulating "this repo has multiple worktrees" — the workspace stores
+    // ONE Repo entry per repo, regardless of git worktree count. The UI
+    // renders one row per worktree but they all share the same Repo id.
+    // Renaming via id must succeed without depending on row identity.
+    const result = await ws.renameRepo(repo.id, "MultiWtRenamed");
+    expect(result).toEqual({ oldName: "multi-wt-repo", newName: "MultiWtRenamed" });
+    const after = await ws.listRepos();
+    expect(after).toHaveLength(1);
+    expect(after[0]?.id).toBe(repo.id);
+    expect(after[0]?.name).toBe("MultiWtRenamed");
+  });
+});
+
 describe("rename → undo → redo round-trip", () => {
   test("restores the old name on undo and reapplies the new one on redo", async () => {
     const dir = await tempDir();
