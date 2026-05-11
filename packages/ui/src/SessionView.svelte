@@ -285,8 +285,8 @@
     color: var(--chip-orange-text);
   }
   .agent-pill.agent-codex {
-    background: var(--chip-green-bg);
-    color: var(--chip-green-text);
+    background: var(--chip-codex-bg);
+    color: var(--chip-codex-text);
   }
   .agent-pill.agent-copilot {
     background: var(--chip-blue-bg);
@@ -372,7 +372,7 @@
     display: inline-block;
   }
   .role.brand-codex {
-    color: var(--chip-green-text);
+    color: var(--chip-codex-text);
   }
   .role.brand-copilot {
     color: var(--chip-blue-text);

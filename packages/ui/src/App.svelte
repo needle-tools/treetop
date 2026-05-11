@@ -1364,8 +1364,8 @@
     color: var(--chip-orange-text);
   }
   .agent-badge.agent-codex {
-    background: var(--chip-green-bg);
-    color: var(--chip-green-text);
+    background: var(--chip-codex-bg);
+    color: var(--chip-codex-text);
   }
   .agent-badge.agent-copilot {
     background: var(--chip-blue-bg);
@@ -1404,8 +1404,8 @@
     color: var(--chip-orange-text);
   }
   .agent-more.agent-codex {
-    background: var(--chip-green-bg);
-    color: var(--chip-green-text);
+    background: var(--chip-codex-bg);
+    color: var(--chip-codex-text);
   }
   .agent-more.agent-copilot {
     background: var(--chip-blue-bg);
@@ -1499,7 +1499,7 @@
     background: var(--chip-orange-text);
   }
   .row-activity .agent-dot.agent-codex {
-    background: var(--chip-green-text);
+    background: var(--chip-codex-text);
   }
   .row-activity .agent-dot.agent-copilot {
     background: var(--chip-blue-text);
