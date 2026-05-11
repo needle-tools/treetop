@@ -1295,11 +1295,11 @@
     padding-bottom: 0.25rem;
   }
   .session-col {
-    /* Columns prefer ~35% of the strip but can grow up to 50% to absorb a
-       wide session header (which must never wrap). When 3+ columns push
-       past the strip width, .sessions-strip's overflow-x kicks in. */
-    flex: 1 1 35%;
-    min-width: 35%;
+    /* Chat columns need real reading width to be useful. min-width forces a
+       wide column (300ch ~= 2400px on default font); narrower viewports
+       trigger the strip's horizontal scroll instead of squeezing text. */
+    flex: 1 1 300ch;
+    min-width: 300ch;
     max-width: 50%;
     box-sizing: border-box;
   }

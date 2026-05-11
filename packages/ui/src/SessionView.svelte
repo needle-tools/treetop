@@ -63,6 +63,11 @@
   let messagesEl: HTMLElement | null = null;
   let lastLoadedAt = 0;
   let pollCount = 0;
+  // Track whether we've already shown a session at least once. First render
+  // = scroll to bottom. Subsequent renders = only auto-scroll if the user
+  // was already near the bottom (so polling can't snatch them away when
+  // they've scrolled up to read history).
+  let hasRenderedOnce = false;
 
   async function load() {
     if (loading) return;
@@ -138,13 +143,24 @@
     void load();
   }
 
-  // Scroll to the latest message once the list is populated. Runs again on
-  // any session change (e.g. switching to a different agent's session).
+  // Scroll-to-bottom policy:
+  //   - First render (right after open or after switching sessions): jump
+  //     to the newest message so you see "now".
+  //   - Subsequent renders (the 2-second poll): only scroll if the user is
+  //     already pinned near the bottom. If they've scrolled up to read
+  //     history, we must not yank them back down.
   $: if (session && messagesEl) {
     const el = messagesEl;
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
+    const NEAR = 64;
+    const wasNearBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < NEAR;
+    const shouldStick = !hasRenderedOnce || wasNearBottom;
+    if (shouldStick) {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
+    hasRenderedOnce = true;
   }
 
   // Live sync: dead-simple polling. Every 2s, refetch /api/session.
@@ -179,7 +195,7 @@
             <span
               class="muted small last-activity"
               title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-            >• last activity {relTimeFromIso(session.endedAt)}</span>
+            >last activity {relTimeFromIso(session.endedAt)}</span>
           {/if}
         {/if}
       </div>

@@ -15,6 +15,7 @@ import {
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
 import { parseSessionFile } from "./sessions";
+import { serveImage } from "./images";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
@@ -104,30 +105,18 @@ const server = Bun.serve({
 
     if (url.pathname === "/api/image" && req.method === "GET") {
       // Serve a local image file referenced from a Claude session message
-      // (e.g. "[Image: source: /var/folders/.../shot.png]"). Restricted to
-      // image extensions only so this can't be used to read arbitrary text
-      // files. CORS already pins us to the dashboard origin.
-      const imgPath = url.searchParams.get("path");
-      if (!imgPath) {
-        return json({ error: "?path required" }, { status: 400 });
+      // (e.g. "[Image: source: /var/folders/.../shot.png]"). The validation
+      // + lookup lives in serveImage() so it's unit-testable.
+      const result = await serveImage(url.searchParams.get("path"));
+      if (result.status !== 200) {
+        return json({ error: result.error }, { status: result.status });
       }
-      if (!/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(imgPath)) {
-        return json({ error: "not an image extension" }, { status: 400 });
-      }
-      try {
-        const file = Bun.file(imgPath);
-        if (!(await file.exists())) {
-          return new Response("not found", { status: 404, headers: CORS });
-        }
-        return new Response(file, {
-          headers: {
-            ...CORS,
-            "Cache-Control": "public, max-age=300",
-          },
-        });
-      } catch {
-        return json({ error: "cannot read file" }, { status: 500 });
-      }
+      return new Response(result.file, {
+        headers: {
+          ...CORS,
+          "Cache-Control": "public, max-age=300",
+        },
+      });
     }
 
     if (url.pathname === "/api" || url.pathname === "/api/") {
