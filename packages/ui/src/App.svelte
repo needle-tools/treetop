@@ -28,6 +28,14 @@
     sessionId?: string;
     source: string;
   }
+  interface ActivityEvent {
+    agent: "claude" | "codex" | "copilot";
+    cwd: string;
+    sessionId: string;
+    summary: string;
+    timestamp: string;
+    source: string;
+  }
   interface Worktree {
     path: string;
     branch: string;
@@ -74,6 +82,11 @@
   let editRepoName = "";
 
   let actionsOpen = false;
+
+  // Live activity stream keyed by the agent's cwd (≈ worktree path).
+  // Capped to MAX_ACTIVITY entries per cwd; newest first.
+  const MAX_ACTIVITY = 8;
+  let activityByCwd: Record<string, ActivityEvent[]> = {};
 
   // diff viewer per worktree
   type DiffTab = "workdir" | "staged";
@@ -444,6 +457,16 @@
     es.addEventListener("change", () => {
       void load();
     });
+    es.addEventListener("activity", (rawEvt: MessageEvent) => {
+      try {
+        const ev = JSON.parse(rawEvt.data) as ActivityEvent;
+        const existing = activityByCwd[ev.cwd] ?? [];
+        const next = [ev, ...existing].slice(0, MAX_ACTIVITY);
+        activityByCwd = { ...activityByCwd, [ev.cwd]: next };
+      } catch {
+        // ignore malformed
+      }
+    });
     es.onopen = () => {
       streamConnected = true;
     };
@@ -638,6 +661,28 @@
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
         <li class="row">
           <div class="row-head">
+            {#if wt && wt.lastCommit}
+              <button
+                class="chevron"
+                class:open={commitsExpanded[wt.path]}
+                title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                on:click={() => toggleCommits(wt.path)}
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            {/if}
             {#if editingRepoId === repo.id}
               <input
                 class="name-edit"
@@ -693,6 +738,15 @@
               on:click={() => removeRepo(repo.id)}>×</button
             >
           </div>
+
+          {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
+            {@const latest = activityByCwd[wt.path][0]}
+            <div class="row-activity" title={`source: ${latest.source}`}>
+              <span class="agent-dot agent-{latest.agent}"></span>
+              <span class="activity-text">{latest.summary}</span>
+              <span class="activity-time muted">{relTime(latest.timestamp)}</span>
+            </div>
+          {/if}
 
           {#if wt && summary}
             <div class="row-status">
@@ -837,27 +891,6 @@
                   </div>
                 </div>
               {/if}
-
-              <button
-                class="chevron"
-                class:open={commitsExpanded[wt.path]}
-                title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                on:click={() => toggleCommits(wt.path)}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
             {/if}
           {/if}
         </li>
@@ -1148,6 +1181,44 @@
     padding: 0 0.35rem;
     font-size: 0.65rem;
   }
+  .row-activity {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    padding: 0.25rem 0.5rem;
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
+    font-family: ui-monospace, monospace;
+    font-size: 0.74rem;
+    color: var(--text-3);
+    min-width: 0;
+  }
+  .row-activity .agent-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .row-activity .agent-dot.agent-claude {
+    background: var(--chip-purple-text);
+  }
+  .row-activity .agent-dot.agent-codex {
+    background: var(--chip-green-text);
+  }
+  .row-activity .agent-dot.agent-copilot {
+    background: var(--chip-blue-text);
+  }
+  .activity-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .activity-time {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+  }
   .remove {
     background: transparent;
     color: var(--text-muted);
@@ -1318,23 +1389,23 @@
   }
 
   .chevron {
-    display: flex;
+    display: inline-flex;
     justify-content: center;
     align-items: center;
-    width: 100%;
-    margin-top: 0.4rem;
-    padding: 0.3rem 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    margin: 0;
     background: transparent;
     border: 0;
-    border-top: 1px dashed transparent;
     color: var(--text-faint);
     cursor: pointer;
     border-radius: var(--radius-sm);
+    flex: 0 0 auto;
   }
   .chevron:hover {
-    background: var(--surface-input-hover);
+    background: var(--surface-2);
     color: var(--text-2);
-    border-top-color: var(--surface-2);
   }
   .chevron svg {
     transition: transform 0.15s ease-out;

@@ -11,6 +11,7 @@ import {
   type DiffKind,
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
+import { startActivityTail, onActivity } from "./activity";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
@@ -486,6 +487,7 @@ const server = Bun.serve({
 const shutdown = async (signal: string) => {
   console.log(`supergit daemon: ${signal} -> stopping`);
   if (fetchTimer) clearInterval(fetchTimer);
+  stopActivity();
   await server.stop(true);
   process.exit(0);
 };
@@ -521,6 +523,13 @@ async function runFetchCycle(): Promise<void> {
     fetchInFlight = false;
   }
 }
+
+// Live tail of agent session JSONLs. New entries within a session arrive
+// here and we forward each as an "activity" SSE event so the dashboard can
+// render a live activity line per worktree.
+const stopActivity = await startActivityTail();
+onActivity((ev) => broadcast("activity", ev));
+console.log("supergit daemon: agent activity tail started");
 
 if (FETCH_INTERVAL_MS > 0) {
   // Kick off shortly after startup so the dashboard doesn't show stale
