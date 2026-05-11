@@ -176,12 +176,22 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
 
     if (blocks.length === 0) continue;
 
+    // Claude's tool-call protocol stores tool *results* as JSONL entries
+    // with type=user, msg.role=user — that's the Anthropic API convention
+    // (results are fed back to the model as user-role messages). They are
+    // not actual user turns. If every parsed block is a tool_result,
+    // relabel the role so the UI doesn't call agent output "user".
+    const effectiveRole: NormalizedRole =
+      role === "user" && blocks.every((b) => b.type === "tool_result")
+        ? "tool"
+        : role;
+
     const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
     if (ts && !out.startedAt) out.startedAt = ts;
     if (ts) out.endedAt = ts;
 
     out.messages.push({
-      role,
+      role: effectiveRole,
       blocks,
       timestamp: ts,
       id: typeof obj.uuid === "string" ? obj.uuid : undefined,

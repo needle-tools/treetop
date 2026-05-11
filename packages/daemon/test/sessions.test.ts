@@ -114,6 +114,46 @@ describe("parseClaudeJsonl", () => {
     });
   });
 
+  test("relabels role=user messages that only contain tool_result blocks as 'tool'", () => {
+    // Anthropic's API convention: tool results are sent back to the model
+    // as user-role messages. Claude Code writes those into the JSONL with
+    // type=user. They are *not* actual user turns and must not be rendered
+    // as "user" in the UI.
+    const toolResultLine = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tu-1", content: "exit code 0" },
+        ],
+      },
+    });
+    const userLine = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "please run the tests" },
+    });
+    const session = parseClaudeJsonl([userLine, toolResultLine].join("\n"));
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "tool"]);
+  });
+
+  test("a user message that mixes real text with a tool_result stays 'user'", () => {
+    // We only flip to "tool" when *every* block is a tool_result. A mixed
+    // message (real user text plus an attached tool_result, rare but
+    // possible) should keep role=user so the user's words aren't hidden.
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tu-1", content: "ok" },
+          { type: "text", text: "ah and one more thing" },
+        ],
+      },
+    });
+    const session = parseClaudeJsonl(line);
+    expect(session.messages[0]?.role).toBe("user");
+  });
+
   test("skips lines that don't parse as JSON", () => {
     const text = ["not json", "{\"type\":\"summary\"}", JSON.stringify({
       type: "user",
