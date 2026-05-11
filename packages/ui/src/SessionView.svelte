@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onMount, onDestroy } from "svelte";
 
   export let agent: "claude" | "codex" | "copilot" = "claude";
   export let source: string;
@@ -82,9 +82,13 @@
     });
   }
 
-  // Subscribe to the daemon's "activity" SSE stream and re-fetch whenever a
-  // new entry shows up for *this* session. Debounced to avoid hammering the
-  // endpoint when a flurry of events arrives.
+  // Live sync. We do two things in parallel so this works even if the
+  // browser's EventSource buffers / drops:
+  //   1. Subscribe to /api/stream and refetch on activity events matching
+  //      this session's `source`.
+  //   2. Poll every 5s as a fallback.
+  // Both go through scheduleRefetch which debounces to 250ms.
+
   let refetchTimer: number | null = null;
   function scheduleRefetch() {
     if (refetchTimer !== null) return;
@@ -93,21 +97,33 @@
       void load();
     }, 250);
   }
+
   let es: EventSource | null = null;
-  $: if (source) {
-    if (es) es.close();
-    es = new EventSource("/api/stream");
-    es.addEventListener("activity", (evt: MessageEvent) => {
-      try {
-        const data = JSON.parse(evt.data) as { source?: string };
-        if (data.source === source) scheduleRefetch();
-      } catch {
-        // ignore malformed
-      }
-    });
+  let pollTimer: number | null = null;
+
+  function handleActivity(evt: MessageEvent) {
+    try {
+      const data = JSON.parse(evt.data) as { source?: string };
+      if (data.source === source) scheduleRefetch();
+    } catch {
+      // ignore malformed
+    }
   }
+
+  onMount(() => {
+    es = new EventSource("/api/stream");
+    es.addEventListener("activity", handleActivity);
+    // Safety-net polling at 5s. Cheap (cached if unchanged), and rescues
+    // us if the SSE listener is silently broken in this browser.
+    pollTimer = window.setInterval(() => scheduleRefetch(), 5_000);
+  });
+
   onDestroy(() => {
-    if (es) es.close();
+    if (es) {
+      es.removeEventListener("activity", handleActivity);
+      es.close();
+    }
+    if (pollTimer !== null) window.clearInterval(pollTimer);
     if (refetchTimer !== null) window.clearTimeout(refetchTimer);
   });
 </script>
