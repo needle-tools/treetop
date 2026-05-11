@@ -165,21 +165,23 @@
 
 <div class="session">
   <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
-    <span class="agent-pill agent-{agent}">{agent}</span>
-    {#if session}
-      <span class="muted small">{session.messages.length} messages</span>
-      {#if session.sessionId}
-        <code class="muted small sid" title={session.sessionId}>
-          {session.sessionId.slice(0, 8)}
-        </code>
+    <div class="header-main">
+      <span class="agent-pill agent-{agent}">{agent}</span>
+      {#if session}
+        <span class="muted small">{session.messages.length} messages</span>
+        {#if session.sessionId}
+          <code class="muted small sid" title={session.sessionId}>
+            {session.sessionId.slice(0, 8)}
+          </code>
+        {/if}
+        {#if session.endedAt}
+          <span
+            class="muted small last-activity"
+            title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
+          >• last activity {relTimeFromIso(session.endedAt)}</span>
+        {/if}
       {/if}
-      {#if session.endedAt}
-        <span
-          class="muted small"
-          title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-        >• last activity {relTimeFromIso(session.endedAt)}</span>
-      {/if}
-    {/if}
+    </div>
     <button class="close" on:click={onClose} title="Close">×</button>
   </header>
 
@@ -282,30 +284,45 @@
     overflow: hidden;
   }
   header {
+    /* Outer header: keeps the × pinned to the right at any width. The
+       wrappable items live in .header-main inside, so when the column
+       gets narrow, last-activity flows onto a new row under the count
+       — but × stays put. */
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.5rem;
     padding: 0.4rem 0.6rem;
     background: var(--surface-2);
-    /* Border was the same color as background; use a lighter shade so the
-       split between header and messages is actually visible. */
     border-bottom: 1px solid var(--surface-3);
-    /* Drag-to-reorder affordance — App.svelte uses this header as the
-       drag handle for the whole session column. */
     cursor: grab;
     user-select: none;
-    /* Header items must NEVER wrap. The parent column grows (up to its
-       max-width) to accommodate; if that's still not enough, the strip
-       scrolls horizontally. */
-    flex-wrap: nowrap;
-    overflow: hidden;
-  }
-  header > * {
-    white-space: nowrap;
-    flex: 0 0 auto;
   }
   header:active {
     cursor: grabbing;
+  }
+  .header-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.5rem;
+  }
+  .header-main > * {
+    /* Text doesn't wrap inside an item; the item itself wraps to a new
+       row of the flex container when there isn't enough room. */
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .header-main .last-activity {
+    /* Allow the last-activity pill to absorb any extra width on its row
+       and push to a new row when space gets tight (it's the longest
+       item, so it wraps first). */
+    flex: 1 1 auto;
+  }
+  header .close {
+    flex: 0 0 auto;
+    align-self: flex-start;
   }
   .agent-pill {
     padding: 0.1rem 0.5rem;
