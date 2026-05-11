@@ -84,6 +84,14 @@
     return `${Math.floor(s / 60)}m ago`;
   }
 
+  function roleLabel(role: string): string {
+    if (role !== "assistant") return role;
+    if (agent === "claude") return "Claude";
+    if (agent === "codex") return "Codex";
+    if (agent === "copilot") return "Copilot";
+    return "assistant";
+  }
+
   function inputPreview(input: unknown): string {
     if (input === undefined) return "";
     if (typeof input === "string") return input;
@@ -155,7 +163,13 @@
       {#each session.messages as m}
         <li class="msg role-{m.role}">
           <div class="msg-head">
-            <span class="role">{m.role}</span>
+            <span
+              class="role"
+              class:assistant={m.role === "assistant"}
+              class:brand-claude={m.role === "assistant" && agent === "claude"}
+              class:brand-codex={m.role === "assistant" && agent === "codex"}
+              class:brand-copilot={m.role === "assistant" && agent === "copilot"}
+            >{roleLabel(m.role)}</span>
             {#if m.timestamp}
               <span class="muted small">{new Date(m.timestamp).toLocaleString()}</span>
             {/if}
@@ -295,6 +309,23 @@
     font-size: 0.7rem;
     color: var(--text-muted);
     font-weight: 600;
+  }
+  /* For assistant rows we render the proper agent name (Claude/Codex/...).
+     Keep the typographic shape but ditch uppercase so the brand name reads
+     as itself, and colour it by brand. */
+  .role.assistant {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.8rem;
+  }
+  .role.brand-claude {
+    color: var(--chip-purple-text);
+  }
+  .role.brand-codex {
+    color: var(--chip-green-text);
+  }
+  .role.brand-copilot {
+    color: var(--chip-blue-text);
   }
   .block.text {
     word-break: break-word;
