@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Workspace } from "./workspace";
-import { listWorktrees, getWorktreeDetails } from "./git";
+import { listWorktrees, getWorktreeDetails, listCommits } from "./git";
 import { pickFolder } from "./picker";
-import { openIn, type OpenApp } from "./open";
+import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 
@@ -24,6 +24,24 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+// SSE subscriber registry. Mutating routes call broadcast() so connected
+// clients refresh without polling.
+const sseSubscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const sseEncoder = new TextEncoder();
+
+function broadcast(event: string, data: unknown): void {
+  const payload = sseEncoder.encode(
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+  );
+  for (const ctrl of sseSubscribers) {
+    try {
+      ctrl.enqueue(payload);
+    } catch {
+      sseSubscribers.delete(ctrl);
+    }
+  }
+}
 
 function json(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -60,8 +78,12 @@ const server = Bun.serve({
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
+          { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
-          { method: "POST", path: "/api/open", body: { path: "string", app: "editor | fork | terminal" }, description: "open a path in editor / Fork / terminal via OS shell-out" },
+          { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
+          { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
+          { method: "POST", path: "/api/open", body: { path: "string", app: "fork | terminal | <editor cmd>" }, description: "open a path in Fork / terminal / a detected editor via OS shell-out" },
+          { method: "GET", path: "/api/stream", description: "Server-Sent Events stream; emits 'change' on every mutation so clients can refresh" },
           { method: "GET", path: "/api/events", description: "list recent events (mutations + observations) with undone/reversible flags" },
           { method: "POST", path: "/api/events/:id/undo", description: "reverse a reversible event" },
           { method: "POST", path: "/api/events/:id/redo", description: "re-apply a previously undone event" },
@@ -107,11 +129,45 @@ const server = Bun.serve({
           payload: { path },
           inverse: { repo },
         });
+        broadcast("change", { kind: "add_repo", repo });
         return json(repo, { status: 201 });
       } catch (e) {
         return json({ error: String(e instanceof Error ? e.message : e) }, {
           status: 409,
         });
+      }
+    }
+
+    const renameMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/rename$/);
+    if (renameMatch && req.method === "POST") {
+      const id = renameMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { name?: unknown }
+        | null;
+      const newName = body?.name;
+      if (typeof newName !== "string" || newName.trim().length === 0) {
+        return json(
+          { error: "body.name (non-empty string) is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { oldName, newName: nn } = await workspace.renameRepo(id, newName);
+        if (oldName !== nn) {
+          await events.append({
+            type: "rename_repo",
+            actor: "user",
+            payload: { id, newName: nn },
+            inverse: { id, oldName },
+          });
+          broadcast("change", { kind: "rename_repo", id, newName: nn });
+        }
+        return json({ id, oldName, newName: nn });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 400 },
+        );
       }
     }
 
@@ -129,7 +185,24 @@ const server = Bun.serve({
         payload: { id },
         inverse: { repo },
       });
+      broadcast("change", { kind: "remove_repo", id });
       return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/editors" && req.method === "GET") {
+      return json(await detectEditors());
+    }
+
+    if (url.pathname === "/api/commits" && req.method === "GET") {
+      const path = url.searchParams.get("path");
+      const before = url.searchParams.get("before") ?? undefined;
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? Math.max(1, Math.min(200, Number.parseInt(limitParam, 10))) : 20;
+      if (!path) {
+        return json({ error: "?path=<worktree-path> is required" }, { status: 400 });
+      }
+      const commits = await listCommits(path, { before, limit });
+      return json(commits);
     }
 
     if (url.pathname === "/api/open" && req.method === "POST") {
@@ -142,15 +215,8 @@ const server = Bun.serve({
           { status: 400 },
         );
       }
-      const validApps: OpenApp[] = ["editor", "fork", "terminal"];
-      if (!validApps.includes(body.app as OpenApp)) {
-        return json(
-          { error: `body.app must be one of: ${validApps.join(", ")}` },
-          { status: 400 },
-        );
-      }
       try {
-        const result = await openIn(body.path, body.app as OpenApp);
+        const result = await openIn(body.path, body.app);
         return json(result);
       } catch (e) {
         return json(
@@ -158,6 +224,36 @@ const server = Bun.serve({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/stream" && req.method === "GET") {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          sseSubscribers.add(controller);
+          // Initial hello so the connection's open and the client knows it
+          controller.enqueue(sseEncoder.encode(`: connected\n\n`));
+        },
+        cancel(controllerOrReason) {
+          // Best-effort cleanup; broadcast() also prunes failed controllers.
+          for (const ctrl of sseSubscribers) {
+            try {
+              // The actual controller isn't passed to cancel; we let broadcast
+              // prune it on the next attempted enqueue.
+            } catch {
+              sseSubscribers.delete(ctrl);
+            }
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
     }
 
     if (url.pathname === "/api/pick-folder" && req.method === "POST") {
@@ -218,6 +314,9 @@ const server = Bun.serve({
               repo: import("./workspace").Repo;
             };
             await workspace.restoreRepo(inv.repo);
+          } else if (original.type === "rename_repo") {
+            const inv = original.inverse as { id: string; oldName: string };
+            await workspace.renameRepo(inv.id, inv.oldName);
           } else {
             return json(
               { error: `no inverse handler for type: ${original.type}` },
@@ -240,6 +339,9 @@ const server = Bun.serve({
                 { status: 409 },
               );
             }
+          } else if (original.type === "rename_repo") {
+            const p = original.payload as { id: string; newName: string };
+            await workspace.renameRepo(p.id, p.newName);
           } else {
             return json(
               { error: `no redo handler for type: ${original.type}` },
@@ -253,6 +355,7 @@ const server = Bun.serve({
           actor: "user",
           payload: { eventId: id },
         });
+        broadcast("change", { kind: toggle, eventId: id });
         return json({ [toggle]: id, by: toggleEv.id });
       } catch (e) {
         return json(

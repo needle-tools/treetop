@@ -51,11 +51,28 @@
     redoable: boolean;
   }
 
+  interface EditorDescriptor {
+    name: string;
+    cmd: string;
+  }
+
   let repos: Repo[] = [];
   let events: Event[] = [];
+  let editors: EditorDescriptor[] = [];
   let newRepoPath = "";
   let loading = false;
   let error = "";
+  let streamConnected = false;
+
+  let editingRepoId: string | null = null;
+  let editRepoName = "";
+
+  // commit history per worktree-path: list, expanded flag, loading flag, done flag
+  let commitsByPath: Record<string, LastCommit[]> = {};
+  let commitsExpanded: Record<string, boolean> = {};
+  let commitsLoading: Record<string, boolean> = {};
+  let commitsExhausted: Record<string, boolean> = {};
+  const COMMITS_BATCH = 10;
 
   async function load() {
     loading = true;
@@ -113,6 +130,38 @@
     }
   }
 
+  function startRenameRepo(repo: Repo) {
+    editingRepoId = repo.id;
+    editRepoName = repo.name;
+  }
+  function cancelRenameRepo() {
+    editingRepoId = null;
+    editRepoName = "";
+  }
+  async function commitRenameRepo(id: string) {
+    const name = editRepoName.trim();
+    if (!name) {
+      cancelRenameRepo();
+      return;
+    }
+    error = "";
+    try {
+      const res = await fetch(`/api/repos/${id}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      editingRepoId = null;
+      editRepoName = "";
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function removeRepo(id: string) {
     error = "";
     try {
@@ -138,7 +187,7 @@
     }
   }
 
-  async function openIn(path: string, app: "editor" | "fork" | "terminal") {
+  async function openIn(path: string, app: string) {
     error = "";
     try {
       const res = await fetch("/api/open", {
@@ -153,6 +202,88 @@
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  async function fetchCommits(wtPath: string, before?: string): Promise<LastCommit[]> {
+    const qs = new URLSearchParams({ path: wtPath, limit: String(COMMITS_BATCH) });
+    if (before) qs.set("before", before);
+    const res = await fetch(`/api/commits?${qs.toString()}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function toggleCommits(wtPath: string) {
+    error = "";
+    if (commitsExpanded[wtPath]) {
+      commitsExpanded = { ...commitsExpanded, [wtPath]: false };
+      return;
+    }
+    commitsExpanded = { ...commitsExpanded, [wtPath]: true };
+    if (commitsByPath[wtPath]) return; // already loaded
+    commitsLoading = { ...commitsLoading, [wtPath]: true };
+    try {
+      const list = await fetchCommits(wtPath);
+      commitsByPath = { ...commitsByPath, [wtPath]: list };
+      commitsExhausted = {
+        ...commitsExhausted,
+        [wtPath]: list.length < COMMITS_BATCH,
+      };
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      commitsLoading = { ...commitsLoading, [wtPath]: false };
+    }
+  }
+
+  async function loadMoreCommits(wtPath: string) {
+    error = "";
+    const existing = commitsByPath[wtPath] ?? [];
+    const before = existing[existing.length - 1]?.sha;
+    if (!before) return;
+    commitsLoading = { ...commitsLoading, [wtPath]: true };
+    try {
+      const more = await fetchCommits(wtPath, before);
+      commitsByPath = {
+        ...commitsByPath,
+        [wtPath]: [...existing, ...more],
+      };
+      commitsExhausted = {
+        ...commitsExhausted,
+        [wtPath]: more.length < COMMITS_BATCH,
+      };
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      commitsLoading = { ...commitsLoading, [wtPath]: false };
+    }
+  }
+
+  async function loadEditors() {
+    try {
+      const res = await fetch("/api/editors");
+      if (!res.ok) return;
+      editors = await res.json();
+    } catch {
+      // Ignore — open buttons just won't render until reload succeeds.
+    }
+  }
+
+  function subscribeToStream(): () => void {
+    const es = new EventSource("/api/stream");
+    es.addEventListener("change", () => {
+      void load();
+    });
+    es.onopen = () => {
+      streamConnected = true;
+    };
+    es.onerror = () => {
+      streamConnected = false;
+      // EventSource auto-reconnects; no manual retry needed.
+    };
+    return () => es.close();
   }
 
   function eventLabel(ev: Event): string {
@@ -193,12 +324,21 @@
     (e) => e.type !== "undo" && e.type !== "redo",
   );
 
-  onMount(load);
+  onMount(() => {
+    void loadEditors();
+    void load();
+    return subscribeToStream();
+  });
 </script>
 
 <main>
   <header>
-    <h1>supergit</h1>
+    <h1>
+      supergit
+      <span class="live" class:on={streamConnected} title={streamConnected ? "live (SSE connected)" : "offline (SSE disconnected)"}>
+        {streamConnected ? "● live" : "○ offline"}
+      </span>
+    </h1>
     <p class="muted">v0 — dashboard for repos, worktrees, and recent actions</p>
   </header>
 
@@ -230,7 +370,27 @@
           {#each repos as repo (repo.id)}
             <li>
               <div class="repo-header">
-                <strong>{repo.name}</strong>
+                {#if editingRepoId === repo.id}
+                  <input
+                    class="name-edit"
+                    bind:value={editRepoName}
+                    autofocus
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") commitRenameRepo(repo.id);
+                      if (e.key === "Escape") cancelRenameRepo();
+                    }}
+                    on:blur={() => commitRenameRepo(repo.id)}
+                  />
+                {:else}
+                  <button
+                    class="name-btn"
+                    title="Click to rename"
+                    on:click={() => startRenameRepo(repo)}
+                  >
+                    <strong>{repo.name}</strong>
+                    <span class="pencil">✎</span>
+                  </button>
+                {/if}
                 <span class="muted path">{repo.path}</span>
                 <button
                   class="remove"
@@ -277,11 +437,13 @@
                         {/if}
 
                         <div class="wt-actions">
-                          <button
-                            class="tiny"
-                            on:click={() => openIn(wt.path, "editor")}
-                            title="Open in editor">Editor</button
-                          >
+                          {#each editors as ed}
+                            <button
+                              class="tiny"
+                              on:click={() => openIn(wt.path, ed.cmd)}
+                              title={`Open in ${ed.name}`}>{ed.name}</button
+                            >
+                          {/each}
                           <button
                             class="tiny"
                             on:click={() => openIn(wt.path, "fork")}
@@ -301,7 +463,36 @@
                           <span class="commit-subject">{wt.lastCommit.subject}</span>
                           <span class="commit-author">— {wt.lastCommit.author}</span>
                           <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
+                          <button class="link" on:click={() => toggleCommits(wt.path)}>
+                            {commitsExpanded[wt.path] ? "Hide" : "History"}
+                          </button>
                         </div>
+
+                        {#if commitsExpanded[wt.path]}
+                          <div class="commits">
+                            {#if commitsLoading[wt.path] && !commitsByPath[wt.path]}
+                              <p class="muted small nopad">Loading…</p>
+                            {:else if commitsByPath[wt.path]}
+                              {#each commitsByPath[wt.path] as c (c.sha)}
+                                <div class="commit-row">
+                                  <code class="sha">{c.shortSha}</code>
+                                  <span class="commit-subject">{c.subject}</span>
+                                  <span class="commit-author">— {c.author}</span>
+                                  <span class="commit-time">{relTime(c.time)}</span>
+                                </div>
+                              {/each}
+                              {#if !commitsExhausted[wt.path]}
+                                <button
+                                  class="tiny load-more"
+                                  on:click={() => loadMoreCommits(wt.path)}
+                                  disabled={commitsLoading[wt.path]}
+                                >{commitsLoading[wt.path] ? "Loading…" : "Load more"}</button>
+                              {:else}
+                                <span class="muted small">— end of history</span>
+                              {/if}
+                            {/if}
+                          </div>
+                        {/if}
                       {/if}
                     </li>
                   {/each}
@@ -372,6 +563,17 @@
     margin: 0;
     font-size: 1.5rem;
     letter-spacing: -0.01em;
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+  .live {
+    font-size: 0.75rem;
+    color: #666;
+    letter-spacing: 0.04em;
+  }
+  .live.on {
+    color: #16a34a;
   }
   h2 {
     margin: 0 0 0.75rem 0;
@@ -476,6 +678,42 @@
   }
   .repo-header strong {
     font-size: 1rem;
+  }
+  .name-btn {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 0.1rem 0.3rem;
+    margin: 0 0 0 -0.3rem;
+    border-radius: 4px;
+    cursor: text;
+    font: inherit;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+  }
+  .name-btn:hover {
+    background: #2a2a2b;
+  }
+  .name-btn .pencil {
+    color: #666;
+    font-size: 0.8rem;
+    opacity: 0;
+  }
+  .name-btn:hover .pencil {
+    opacity: 1;
+  }
+  .name-edit {
+    padding: 0.15rem 0.4rem;
+    font-size: 1rem;
+    font-weight: 700;
+    background: #1a1a1b;
+    border: 1px solid #2563eb;
+    border-radius: 4px;
+    color: inherit;
+    width: auto;
+    max-width: 240px;
+    flex: 0 0 auto;
   }
   .path {
     font-family: ui-monospace, monospace;
@@ -583,6 +821,34 @@
   .commit-author,
   .commit-time {
     white-space: nowrap;
+  }
+  .link {
+    background: transparent;
+    color: #6aa9ff;
+    padding: 0;
+    font-size: 0.75rem;
+    margin-left: 0.4rem;
+  }
+  .link:hover {
+    background: transparent;
+    text-decoration: underline;
+  }
+  .commits {
+    margin-top: 0.5rem;
+    padding-left: 0.8rem;
+    border-left: 2px solid #2a2a2b;
+  }
+  .commit-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    padding: 0.2rem 0;
+    font-size: 0.8rem;
+    color: #b0b0b0;
+    overflow: hidden;
+  }
+  .load-more {
+    margin-top: 0.4rem;
   }
   .events {
     list-style: none;

@@ -172,3 +172,27 @@ export function parseLastCommit(logOut: string): LastCommit | null {
     time: parts[3]!,
   };
 }
+
+export async function listCommits(
+  worktreePath: string,
+  options: { before?: string; limit?: number } = {},
+): Promise<LastCommit[]> {
+  const limit = options.limit ?? 20;
+  const ref = options.before ? `${options.before}^` : "HEAD";
+  try {
+    const out = await $`git -C ${worktreePath} log --format=%H%x00%s%x00%an%x00%aI -n ${limit} ${ref}`
+      .quiet()
+      .text();
+    return parseCommitList(out);
+  } catch {
+    return [];
+  }
+}
+
+export function parseCommitList(logOut: string): LastCommit[] {
+  return logOut
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map(parseLastCommit)
+    .filter((c): c is LastCommit => c !== null);
+}

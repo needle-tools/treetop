@@ -82,4 +82,23 @@ describe("Workspace", () => {
     const repo = await ws.addRepo("/tmp/foo");
     await expect(ws.restoreRepo(repo)).rejects.toThrow(/already exists/);
   });
+
+  test("renameRepo updates name and returns old + new", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const result = await ws.renameRepo(repo.id, "FancyName");
+    expect(result).toEqual({ oldName: "foo", newName: "FancyName" });
+    expect((await ws.listRepos())[0]?.name).toBe("FancyName");
+  });
+
+  test("renameRepo rejects empty name", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(ws.renameRepo(repo.id, "   ")).rejects.toThrow(/empty/);
+  });
+
+  test("renameRepo throws when id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(ws.renameRepo("nope", "X")).rejects.toThrow(/not found/);
+  });
 });

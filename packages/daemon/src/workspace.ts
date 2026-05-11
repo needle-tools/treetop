@@ -78,6 +78,28 @@ export class Workspace {
     await this.writeRepos(repos);
   }
 
+  /**
+   * Rename a registered repo. Returns the previous name so the caller can
+   * record an inverse for undo.
+   */
+  async renameRepo(
+    id: string,
+    newName: string,
+  ): Promise<{ oldName: string; newName: string }> {
+    const trimmed = newName.trim();
+    if (trimmed.length === 0) {
+      throw new Error("name must not be empty");
+    }
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const oldName = repos[idx]!.name;
+    if (oldName === trimmed) return { oldName, newName: trimmed };
+    repos[idx] = { ...repos[idx]!, name: trimmed };
+    await this.writeRepos(repos);
+    return { oldName, newName: trimmed };
+  }
+
   private async writeRepos(repos: Repo[]): Promise<void> {
     const payload: ReposFile = { repos };
     await writeFile(
