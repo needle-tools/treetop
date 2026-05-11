@@ -149,7 +149,7 @@
       [wtPath]:
         i >= 0
           ? [...list.slice(0, i), ...list.slice(i + 1)]
-          : [...list, s],
+          : [s, ...list], // newest-opened on the left of the strip
     };
   }
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
