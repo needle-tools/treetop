@@ -9,6 +9,7 @@ import {
   getCommitDiff,
   type DiffKind,
 } from "./git";
+import { detectAgents, agentsForWorktree } from "./agents";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
@@ -104,7 +105,8 @@ const server = Bun.serve({
         endpoints: [
           { method: "GET", path: "/api", description: "this index (agent-discoverable route list)" },
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
-          { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees" },
+          { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
+          { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
@@ -126,7 +128,10 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/api/repos" && req.method === "GET") {
-      const repos = await workspace.listRepos();
+      const [repos, agents] = await Promise.all([
+        workspace.listRepos(),
+        detectAgents(),
+      ]);
       const enriched = await Promise.all(
         repos.map(async (repo) => {
           const worktrees = await listWorktrees(repo.path);
@@ -134,12 +139,17 @@ const server = Bun.serve({
             worktrees.map(async (wt) => ({
               ...wt,
               ...(await getWorktreeDetails(wt.path)),
+              agents: agentsForWorktree(wt.path, agents),
             })),
           );
           return { ...repo, worktrees: withDetails };
         }),
       );
       return json(enriched);
+    }
+
+    if (url.pathname === "/api/agents" && req.method === "GET") {
+      return json(await detectAgents());
     }
 
     if (url.pathname === "/api/repos" && req.method === "POST") {

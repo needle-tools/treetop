@@ -21,6 +21,13 @@
     author: string;
     time: string;
   }
+  interface AgentSession {
+    agent: "claude" | "codex" | "copilot";
+    cwd: string;
+    lastActive: string;
+    sessionId?: string;
+    source: string;
+  }
   interface Worktree {
     path: string;
     branch: string;
@@ -30,6 +37,7 @@
     fileStatus: FileStatus;
     branchStatus: BranchStatus | null;
     lastCommit: LastCommit | null;
+    agents?: AgentSession[];
   }
   interface Repo {
     id: string;
@@ -660,6 +668,19 @@
               {:else}
                 <span class="branch">{wt.branch}</span>
               {/if}
+              {#if wt.agents && wt.agents.length > 0}
+                {@const a = wt.agents[0]}
+                <span
+                  class="agent-badge agent-{a.agent}"
+                  title={`${a.agent} session, last active ${relTime(a.lastActive)}\n${a.source}`}
+                >
+                  <span class="agent-dot"></span>
+                  {a.agent} · {relTime(a.lastActive)}
+                  {#if wt.agents.length > 1}
+                    <span class="agent-extra">+{wt.agents.length - 1}</span>
+                  {/if}
+                </span>
+              {/if}
               <code class="wt-path">{wt.path}</code>
             {:else}
               <code class="wt-path">{repo.path}</code>
@@ -1091,6 +1112,41 @@
   .branch.warn {
     background: var(--chip-orange-bg);
     color: var(--chip-orange-text);
+  }
+  .agent-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+    white-space: nowrap;
+    text-transform: lowercase;
+  }
+  .agent-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .agent-badge.agent-claude {
+    background: var(--chip-purple-bg);
+    color: var(--chip-purple-text);
+  }
+  .agent-badge.agent-codex {
+    background: var(--chip-green-bg);
+    color: var(--chip-green-text);
+  }
+  .agent-badge.agent-copilot {
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
+  }
+  .agent-extra {
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 999px;
+    padding: 0 0.35rem;
+    font-size: 0.65rem;
   }
   .remove {
     background: transparent;
