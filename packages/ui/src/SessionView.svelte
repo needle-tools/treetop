@@ -419,7 +419,7 @@
   }
   .md :global(img) {
     max-width: 100%;
-    max-height: 320px;
+    max-height: 30vh;
     width: auto;
     height: auto;
     border-radius: var(--radius-sm);
