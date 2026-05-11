@@ -12,8 +12,8 @@
  * this from becoming arbitrary command execution.
  */
 
-import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 export interface EditorDescriptor {
@@ -44,6 +44,29 @@ const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 async function which(cmd: string): Promise<boolean> {
   const proc = Bun.spawn(["which", cmd], { stdout: "pipe", stderr: "pipe" });
   return (await proc.exited) === 0;
+}
+
+/**
+ * If `dir` contains a `*.code-workspace` file, return its full path. Prefers a
+ * file matching the directory's basename when there are several (helps for
+ * repos that ship multiple workspaces). VSCode/Cursor open these like a
+ * project rather than a bare folder.
+ */
+export async function findWorkspaceFile(dir: string): Promise<string | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const wsFiles = entries.filter((e) => e.endsWith(".code-workspace"));
+  if (wsFiles.length === 0) return null;
+  const baseName = basename(dir);
+  const preferred =
+    wsFiles.find((f) => f === `${baseName}.code-workspace`) ??
+    wsFiles.find((f) => f.startsWith(baseName)) ??
+    wsFiles[0]!;
+  return join(dir, preferred);
 }
 
 async function macAppExists(appName: string): Promise<boolean> {
@@ -140,21 +163,33 @@ export async function openIn(
     throw new Error(`unknown app: ${app} (allowed: ${allowed})`);
   }
 
+  // VSCode and Cursor open `.code-workspace` files as full project workspaces;
+  // prefer those when present.
+  const supportsWorkspaceFile =
+    spec.cmd === "code" || spec.cmd === "cursor";
+  const target =
+    (supportsWorkspaceFile ? await findWorkspaceFile(path) : null) ?? path;
+
   if (await which(spec.cmd)) {
-    Bun.spawn([spec.cmd, path], {
+    Bun.spawn([spec.cmd, target], {
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
     });
-    return { via: spec.cmd };
+    return { via: target === path ? spec.cmd : `${spec.cmd} (workspace file)` };
   }
 
   if (spec.app && (await macAppExists(spec.app))) {
-    Bun.spawn(["open", "-a", spec.app, path], {
+    Bun.spawn(["open", "-a", spec.app, target], {
       stdout: "ignore",
       stderr: "ignore",
     });
-    return { via: `${spec.app} (app bundle)` };
+    return {
+      via:
+        target === path
+          ? `${spec.app} (app bundle)`
+          : `${spec.app} (workspace file)`,
+    };
   }
 
   throw new Error(
