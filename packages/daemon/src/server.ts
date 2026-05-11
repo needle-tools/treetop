@@ -19,11 +19,33 @@ const events = await EventLog.open(WORKSPACE_PATH);
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 console.log(`supergit daemon: listening on http://localhost:${PORT}`);
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+// CORS allowlist. The wildcard `*` is a real attack surface: with `*` any
+// website you visit could call localhost:7777 from your browser and read the
+// responses (list repos, trigger openIn, etc.). We allowlist the Vite dev
+// origin and nothing else. Programmatic clients (curl, agents, MCP) ignore
+// CORS, so they keep working.
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  ...(process.env.SUPERGIT_EXTRA_ORIGINS?.split(",")
+    .map((o) => o.trim())
+    .filter(Boolean) ?? []),
+]);
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Vary": "Origin",
+    };
+  }
+  // No Origin header (same-origin / programmatic): no CORS headers needed.
+  // Disallowed origins get nothing back, so browsers refuse the response.
+  return {};
+}
 
 // SSE subscriber registry. Mutating routes call broadcast() so connected
 // clients refresh without polling.
@@ -43,21 +65,21 @@ function broadcast(event: string, data: unknown): void {
   }
 }
 
-function json(body: unknown, init: ResponseInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...CORS,
-      ...(init.headers ?? {}),
-    },
-  });
-}
-
 const server = Bun.serve({
   port: PORT,
   async fetch(req) {
     const url = new URL(req.url);
+    const CORS = corsHeaders(req);
+
+    const json = (body: unknown, init: ResponseInit = {}): Response =>
+      new Response(JSON.stringify(body), {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...CORS,
+          ...(init.headers ?? {}),
+        },
+      });
 
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
@@ -90,7 +112,7 @@ const server = Bun.serve({
           { method: "GET", path: "/mcp", description: "MCP server info" },
           { method: "POST", path: "/mcp", description: "MCP JSON-RPC: initialize, tools/list, tools/call" },
         ],
-        note: "All routes reachable at http://localhost:7777/api/* (daemon direct) or http://localhost:5173/api/* (Vite dev proxy). CORS is open on localhost; agents can call freely.",
+        note: "All routes reachable at http://localhost:7777/api/* (daemon direct) or http://localhost:5173/api/* (Vite dev proxy). CORS is locked to the dev UI origin — set SUPERGIT_EXTRA_ORIGINS to allow others. Programmatic clients (curl, agents, MCP) ignore CORS and work either way.",
       });
     }
 
