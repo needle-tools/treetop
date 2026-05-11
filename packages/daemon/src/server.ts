@@ -12,6 +12,7 @@ import {
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
+import { parseSessionFile } from "./sessions";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
@@ -109,6 +110,7 @@ const server = Bun.serve({
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
+          { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -153,6 +155,22 @@ const server = Bun.serve({
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
       return json(await detectAgents());
+    }
+
+    if (url.pathname === "/api/session" && req.method === "GET") {
+      const source = url.searchParams.get("source");
+      if (!source) {
+        return json({ error: "?source=<session-file> required" }, { status: 400 });
+      }
+      // Only allow reading sessions that detectAgents() already knows
+      // about. Prevents arbitrary file reads via this endpoint.
+      const known = await detectAgents();
+      const match = known.find((a) => a.source === source);
+      if (!match) {
+        return json({ error: "session not known" }, { status: 404 });
+      }
+      const session = await parseSessionFile(match.agent, source);
+      return json(session);
     }
 
     if (url.pathname === "/api/fetch" && req.method === "POST") {

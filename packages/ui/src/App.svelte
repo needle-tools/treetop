@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
+  import SessionView from "./SessionView.svelte";
 
   interface FileStatus {
     staged: number;
@@ -87,6 +88,10 @@
   // Capped to MAX_ACTIVITY entries per cwd; newest first.
   const MAX_ACTIVITY = 8;
   let activityByCwd: Record<string, ActivityEvent[]> = {};
+
+  // Per worktree: which session is currently opened in the SessionView panel.
+  // null = closed. Stored by source path so it round-trips across SSE updates.
+  let openSession: Record<string, { agent: AgentSession["agent"]; source: string } | null> = {};
 
   // diff viewer per worktree
   type DiffTab = "workdir" | "staged";
@@ -573,6 +578,7 @@
 <main>
   <header>
     <h1>
+      <img src="/needle-logo.svg" alt="" class="brand-mark" />
       supergit
       <span
         class="live"
@@ -660,7 +666,7 @@
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
         <li class="row">
-          <div class="row-head">
+          <div class="row-left">
             {#if wt && wt.lastCommit}
               <button
                 class="chevron"
@@ -672,6 +678,9 @@
                 <span class="arrow">▾</span>
               </button>
             {/if}
+          </div>
+          <div class="row-content">
+          <div class="row-head">
             {#if editingRepoId === repo.id}
               <input
                 class="name-edit"
@@ -704,16 +713,27 @@
               {/if}
               {#if wt.agents && wt.agents.length > 0}
                 {@const a = wt.agents[0]}
-                <span
+                <button
                   class="agent-badge agent-{a.agent}"
-                  title={`${a.agent} session, last active ${relTime(a.lastActive)}\n${a.source}`}
+                  title={`Click to read this ${a.agent} session\nLast active ${relTime(a.lastActive)}\n${a.source}`}
+                  on:click={() => {
+                    const cur = openSession[wt.path];
+                    if (cur && cur.source === a.source) {
+                      openSession = { ...openSession, [wt.path]: null };
+                    } else {
+                      openSession = {
+                        ...openSession,
+                        [wt.path]: { agent: a.agent, source: a.source },
+                      };
+                    }
+                  }}
                 >
                   <span class="agent-dot"></span>
                   {a.agent} · {relTime(a.lastActive)}
                   {#if wt.agents.length > 1}
                     <span class="agent-extra">+{wt.agents.length - 1}</span>
                   {/if}
-                </span>
+                </button>
               {/if}
               <code class="wt-path">{wt.path}</code>
             {:else}
@@ -727,6 +747,17 @@
               on:click={() => removeRepo(repo.id)}>×</button
             >
           </div>
+
+          {#if wt && openSession[wt.path]}
+            {@const s = openSession[wt.path]!}
+            <div class="session-panel">
+              <SessionView
+                agent={s.agent}
+                source={s.source}
+                onClose={() => (openSession = { ...openSession, [wt.path]: null })}
+              />
+            </div>
+          {/if}
 
           {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
             {@const latest = activityByCwd[wt.path][0]}
@@ -882,6 +913,7 @@
               {/if}
             {/if}
           {/if}
+          </div>
         </li>
       {/each}
     </ul>
@@ -913,8 +945,13 @@
     font-size: 1.5rem;
     letter-spacing: -0.01em;
     display: flex;
-    align-items: baseline;
-    gap: 0.75rem;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .brand-mark {
+    height: 1.6rem;
+    width: auto;
+    display: inline-block;
   }
   .live {
     font-size: 0.75rem;
@@ -1059,9 +1096,26 @@
     background: var(--surface-1);
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-lg);
-    padding: 0.85rem 1rem;
+    padding: 0.65rem 0.75rem;
     margin: 0 0 0.6rem;
     min-width: 0;
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 0.5rem;
+    align-items: start;
+  }
+  .row-left {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    min-height: 28px;
+  }
+  .row-content {
+    min-width: 0;
+  }
+  .session-panel {
+    margin-top: 0.5rem;
   }
   .row-head {
     display: flex;
@@ -1145,6 +1199,11 @@
     font-family: ui-monospace, monospace;
     white-space: nowrap;
     text-transform: lowercase;
+    border: 0;
+    cursor: pointer;
+  }
+  .agent-badge:hover {
+    filter: brightness(1.15);
   }
   .agent-dot {
     width: 6px;
