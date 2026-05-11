@@ -97,6 +97,18 @@
     return `${Math.floor(s / 60)}m ago`;
   }
 
+  function relTimeFromIso(iso: string): string {
+    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
+    if (s < 5) return "just now";
+    if (s < 60) return `${s} seconds ago`;
+    if (s < 120) return "1 minute ago";
+    if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
+    if (s < 7200) return "1 hour ago";
+    if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
+    if (s < 172800) return "yesterday";
+    return `${Math.floor(s / 86400)} days ago`;
+  }
+
   function roleLabel(role: string): string {
     if (role !== "assistant") return role;
     if (agent === "claude") return "Claude";
@@ -206,7 +218,12 @@
               {roleLabel(m.role)}
             </span>
             {#if m.timestamp}
-              <span class="muted small">{new Date(m.timestamp).toLocaleString()}</span>
+              <span
+                class="muted small"
+                title={new Date(m.timestamp).toLocaleString()}
+              >
+                {relTimeFromIso(m.timestamp)}
+              </span>
             {/if}
           </div>
           {#each m.blocks as b}
