@@ -824,7 +824,7 @@
                 aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
                 on:click={() => toggleCommits(wt.path)}
               >
-                <span class="arrow">▾</span>
+                <span class="arrow">▸</span>
               </button>
             {/if}
           </div>
@@ -1926,7 +1926,7 @@
     transition: transform 0.15s ease-out;
   }
   .chevron.open .arrow {
-    transform: rotate(180deg);
+    transform: rotate(90deg);
   }
 
   /* Events list inside the popover */
