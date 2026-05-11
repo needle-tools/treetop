@@ -160,16 +160,31 @@ const server = Bun.serve({
     if (url.pathname === "/api/session" && req.method === "GET") {
       const source = url.searchParams.get("source");
       if (!source) {
-        return json({ error: "?source=<session-file> required" }, { status: 400 });
+        return json(
+          { error: "?source=<session-file> required" },
+          { status: 400 },
+        );
       }
-      // Only allow reading sessions that detectAgents() already knows
-      // about. Prevents arbitrary file reads via this endpoint.
-      const known = await detectAgents();
-      const match = known.find((a) => a.source === source);
-      if (!match) {
-        return json({ error: "session not known" }, { status: 404 });
+      // Allowlist: source must live under one of the agent roots we know
+      // how to parse. Keeps this endpoint from becoming an arbitrary file
+      // read, without depending on detectAgents() to currently re-find
+      // the same file (which races with file-system updates).
+      const home = process.env.HOME ?? "";
+      const claudeRoot = `${home}/.claude/projects/`;
+      const codexRoots = [
+        `${home}/.codex/sessions/`,
+        `${home}/.config/openai-codex/sessions/`,
+      ];
+      let agentKind: "claude" | "codex" | null = null;
+      if (source.startsWith(claudeRoot)) agentKind = "claude";
+      else if (codexRoots.some((r) => source.startsWith(r))) agentKind = "codex";
+      if (!agentKind) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
       }
-      const session = await parseSessionFile(match.agent, source);
+      const session = await parseSessionFile(agentKind, source);
       return json(session);
     }
 
