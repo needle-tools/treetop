@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   export let agent: "claude" | "codex" | "copilot" = "claude";
   export let source: string;
   export let onClose: () => void = () => {};
@@ -104,7 +106,6 @@
       }
     });
   }
-  import { onDestroy } from "svelte";
   onDestroy(() => {
     if (es) es.close();
     if (refetchTimer !== null) window.clearTimeout(refetchTimer);

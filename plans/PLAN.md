@@ -569,3 +569,16 @@ live in PLAN-3D.md.
     Probably a small core extension API in v3+ once the natural
     extension points have been validated by real (in-tree) implementations.
     Premature plugin API = bad interface frozen too early.
+17. **Unique-to-branch commits in the worktree history.** Right now
+    History shows all commits reachable from HEAD; it's not obvious
+    which ones are *only* on this branch vs already merged into main /
+    the upstream. Sketched candidates:
+    - Diff against the upstream (`<upstream>..HEAD`) — mark those commits
+      with a green left rail; everything before the merge-base is dim.
+    - Diff against `main` when no upstream — same rail, fallback target.
+    - A toggle "Only this branch" that filters History to the rev-list
+      output of `<base>..HEAD`.
+    - Show the merge-base as a horizontal divider line in the list.
+    Leaning toward: green rail on unique commits + a small "ahead of
+    <base>" badge in the History header. Backend already has the data
+    (we run `rev-list <base>..HEAD` for the ↑n indicator).
