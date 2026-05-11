@@ -73,6 +73,30 @@
   let commitsLoading: Record<string, boolean> = {};
   let commitsExhausted: Record<string, boolean> = {};
   const COMMITS_BATCH = 10;
+  const EXPANDED_STORAGE_KEY = "supergit:commitsExpanded";
+
+  function restoreExpanded() {
+    try {
+      const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
+      if (!raw) return;
+      const paths = JSON.parse(raw) as string[];
+      const next: Record<string, boolean> = {};
+      for (const p of paths) next[p] = true;
+      commitsExpanded = next;
+    } catch {
+      // ignore corrupt storage
+    }
+  }
+  function persistExpanded() {
+    try {
+      const paths = Object.entries(commitsExpanded)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(paths));
+    } catch {
+      // ignore quota / privacy errors
+    }
+  }
 
   async function load() {
     loading = true;
@@ -215,14 +239,8 @@
     return res.json();
   }
 
-  async function toggleCommits(wtPath: string) {
-    error = "";
-    if (commitsExpanded[wtPath]) {
-      commitsExpanded = { ...commitsExpanded, [wtPath]: false };
-      return;
-    }
-    commitsExpanded = { ...commitsExpanded, [wtPath]: true };
-    if (commitsByPath[wtPath]) return; // already loaded
+  async function loadCommitsInitial(wtPath: string) {
+    if (commitsByPath[wtPath]) return;
     commitsLoading = { ...commitsLoading, [wtPath]: true };
     try {
       const list = await fetchCommits(wtPath);
@@ -236,6 +254,14 @@
     } finally {
       commitsLoading = { ...commitsLoading, [wtPath]: false };
     }
+  }
+
+  async function toggleCommits(wtPath: string) {
+    error = "";
+    const willExpand = !commitsExpanded[wtPath];
+    commitsExpanded = { ...commitsExpanded, [wtPath]: willExpand };
+    persistExpanded();
+    if (willExpand) await loadCommitsInitial(wtPath);
   }
 
   async function loadMoreCommits(wtPath: string) {
@@ -325,8 +351,14 @@
   );
 
   onMount(() => {
+    restoreExpanded();
     void loadEditors();
-    void load();
+    void load().then(() => {
+      // Fetch commits for any worktree that was expanded before reload.
+      for (const [path, expanded] of Object.entries(commitsExpanded)) {
+        if (expanded) void loadCommitsInitial(path);
+      }
+    });
     return subscribeToStream();
   });
 </script>
@@ -463,9 +495,6 @@
                           <span class="commit-subject">{wt.lastCommit.subject}</span>
                           <span class="commit-author">— {wt.lastCommit.author}</span>
                           <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
-                          <button class="link" on:click={() => toggleCommits(wt.path)}>
-                            {commitsExpanded[wt.path] ? "Hide" : "History"}
-                          </button>
                         </div>
 
                         {#if commitsExpanded[wt.path]}
@@ -493,6 +522,27 @@
                             {/if}
                           </div>
                         {/if}
+
+                        <button
+                          class="chevron"
+                          class:open={commitsExpanded[wt.path]}
+                          title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                          aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                          on:click={() => toggleCommits(wt.path)}
+                        >
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.5"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <polyline points="6 9 12 15 18 9" />
+                          </svg>
+                        </button>
                       {/if}
                     </li>
                   {/each}
@@ -822,16 +872,30 @@
   .commit-time {
     white-space: nowrap;
   }
-  .link {
+  .chevron {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin-top: 0.4rem;
+    padding: 0.3rem 0;
     background: transparent;
-    color: #6aa9ff;
-    padding: 0;
-    font-size: 0.75rem;
-    margin-left: 0.4rem;
+    border: 0;
+    border-top: 1px dashed transparent;
+    color: #666;
+    cursor: pointer;
+    border-radius: 4px;
   }
-  .link:hover {
-    background: transparent;
-    text-decoration: underline;
+  .chevron:hover {
+    background: #232325;
+    color: #d0d0d0;
+    border-top-color: #2a2a2b;
+  }
+  .chevron svg {
+    transition: transform 0.15s ease-out;
+  }
+  .chevron.open svg {
+    transform: rotate(180deg);
   }
   .commits {
     margin-top: 0.5rem;
