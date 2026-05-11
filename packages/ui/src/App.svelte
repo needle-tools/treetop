@@ -455,6 +455,14 @@
     if (!target?.closest(".actions-anchor")) actionsOpen = false;
   }
 
+  // Svelte action: focus + select the node when it's mounted. Used on the
+  // rename input so clicking the repo chip drops you straight into typing.
+  function focusAndSelect(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+    return {};
+  }
+
   onMount(() => {
     restoreExpanded();
     void loadEditors();
@@ -566,6 +574,7 @@
             {#if editingRepoId === repo.id}
               <input
                 class="name-edit"
+                use:focusAndSelect
                 bind:value={editRepoName}
                 on:keydown={(e) => {
                   if (e.key === "Enter") commitRenameRepo(repo.id);
