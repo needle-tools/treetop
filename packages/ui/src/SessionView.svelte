@@ -110,12 +110,25 @@
     }
   }
 
-  onMount(() => {
+  function connectSSE() {
+    if (es) {
+      es.removeEventListener("activity", handleActivity);
+      es.close();
+    }
     es = new EventSource("/api/stream");
     es.addEventListener("activity", handleActivity);
-    // Safety-net polling at 5s. Cheap (cached if unchanged), and rescues
-    // us if the SSE listener is silently broken in this browser.
-    pollTimer = window.setInterval(() => scheduleRefetch(), 5_000);
+  }
+
+  onMount(() => {
+    connectSSE();
+    // Poll every 2s as a safety-net AND opportunistically reconnect the
+    // SSE stream if it has died (browser tab woke from sleep, proxy
+    // dropped the connection, etc.). scheduleRefetch is debounced so the
+    // poll never piles up.
+    pollTimer = window.setInterval(() => {
+      scheduleRefetch();
+      if (!es || es.readyState === EventSource.CLOSED) connectSSE();
+    }, 2_000);
   });
 
   onDestroy(() => {
