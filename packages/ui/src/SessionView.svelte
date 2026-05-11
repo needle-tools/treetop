@@ -179,6 +179,8 @@
             >
               {#if m.role === "assistant" && agent === "claude"}
                 <img class="agent-icon" src="/agents/claude.svg" alt="" />
+              {:else if m.role === "assistant" && agent === "codex"}
+                <span class="agent-icon agent-icon-codex" aria-hidden="true"></span>
               {/if}
               {roleLabel(m.role)}
             </span>
@@ -343,6 +345,16 @@
     height: 1em;
     vertical-align: -0.12em;
     margin-right: 0.35em;
+  }
+  /* Codex icon is a PNG-in-SVG too; use it as a CSS mask so the visible
+     pixels are painted with currentColor (i.e. the assistant row's brand
+     green). Stays in sync with the role colour without re-exporting the
+     SVG. */
+  .role .agent-icon.agent-icon-codex {
+    display: inline-block;
+    background-color: currentColor;
+    -webkit-mask: url("/agents/codex.svg") no-repeat center / contain;
+    mask: url("/agents/codex.svg") no-repeat center / contain;
   }
   .role.brand-codex {
     color: var(--chip-green-text);
