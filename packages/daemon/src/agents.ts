@@ -26,6 +26,10 @@ export interface AgentSession {
   /** Short human-readable title: Claude's auto-summary or the first user
    *  prompt, capped to ~80 chars. Undefined when nothing usable was found. */
   title?: string;
+  /** The most recent *user* message in the session (capped). Surfaced on
+   *  hover in the session picker so you can tell sessions apart even when
+   *  the title's identical or generic. */
+  lastUserMessage?: string;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -125,14 +129,41 @@ function cleanForTitle(txt: string): string {
   return stripped.replace(/\s+/g, " ").trim();
 }
 
-/** Pull cwd + a short human title out of a Claude session JSONL.
- *  Title fallback chain: explicit `summary` → first user prompt → most
- *  recent user prompt → first assistant text. Reads the first 256KB of
- *  the file so we have enough to find something non-empty even when the
- *  opening messages are wrapped IDE injections / slash commands. */
+/** Read at most `bytes` from the END of `path`. Used to find the most
+ *  recent user message in long session files where the head doesn't
+ *  contain it. The first line of the slice may be a partial line; we
+ *  drop it. */
+async function readTail(path: string, bytes = 64 * 1024): Promise<string> {
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(path, "r");
+    const stats = await fh.stat();
+    const fileSize = stats.size;
+    const length = Math.min(bytes, fileSize);
+    const start = Math.max(0, fileSize - length);
+    const buf = Buffer.alloc(length);
+    await fh.read(buf, 0, length, start);
+    const text = buf.toString("utf-8");
+    // If we didn't start at byte 0, the first line is likely a fragment.
+    if (start === 0) return text;
+    const nl = text.indexOf("\n");
+    return nl >= 0 ? text.slice(nl + 1) : "";
+  } catch {
+    return "";
+  } finally {
+    if (fh) await fh.close().catch(() => {});
+  }
+}
+
+/** Pull cwd + a short human title + last-user-message out of a Claude
+ *  session JSONL. Title fallback chain: explicit `summary` → first user
+ *  prompt → most recent user prompt → first assistant text. Reads the
+ *  first 256KB for title material, plus the last 64KB so the most-recent
+ *  user message is accurate even when the head and tail of a long
+ *  session don't overlap. */
 export async function readClaudeSessionMeta(
   path: string,
-): Promise<{ cwd?: string; title?: string }> {
+): Promise<{ cwd?: string; title?: string; lastUserMessage?: string }> {
   const head = await readHead(path, 256 * 1024);
   if (!head) return {};
   let cwd: string | undefined;
@@ -140,6 +171,14 @@ export async function readClaudeSessionMeta(
   let firstUserText: string | undefined;
   let lastUserText: string | undefined;
   let firstAssistantText: string | undefined;
+
+  const ingestUser = (raw: string | undefined) => {
+    if (!raw) return;
+    const cleaned = cleanForTitle(raw);
+    if (!cleaned) return;
+    if (!firstUserText) firstUserText = cleaned;
+    lastUserText = cleaned;
+  };
 
   for (const line of head.split("\n")) {
     if (!line) continue;
@@ -155,14 +194,7 @@ export async function readClaudeSessionMeta(
     }
     if (obj.type === "user") {
       const msg = obj.message as { content?: unknown } | undefined;
-      const raw = firstTextFromMessageContent(msg?.content);
-      if (raw) {
-        const cleaned = cleanForTitle(raw);
-        if (cleaned) {
-          if (!firstUserText) firstUserText = cleaned;
-          lastUserText = cleaned;
-        }
-      }
+      ingestUser(firstTextFromMessageContent(msg?.content));
     } else if (obj.type === "assistant" && !firstAssistantText) {
       const msg = obj.message as { content?: unknown } | undefined;
       const raw = firstTextFromMessageContent(msg?.content);
@@ -173,11 +205,34 @@ export async function readClaudeSessionMeta(
     }
   }
 
+  // Long-session correction: also scan the file's tail for any newer user
+  // messages we missed in the head.
+  const tail = await readTail(path, 64 * 1024);
+  if (tail) {
+    for (const line of tail.split("\n")) {
+      if (!line) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (obj.type === "user") {
+        const msg = obj.message as { content?: unknown } | undefined;
+        ingestUser(firstTextFromMessageContent(msg?.content));
+      }
+    }
+  }
+
   let title = summary ?? firstUserText ?? lastUserText ?? firstAssistantText;
   if (title) {
     if (title.length > 120) title = title.slice(0, 119) + "…";
   }
-  return { cwd, title };
+  let lastUserMessage = lastUserText;
+  if (lastUserMessage && lastUserMessage.length > 600) {
+    lastUserMessage = lastUserMessage.slice(0, 599) + "…";
+  }
+  return { cwd, title, lastUserMessage };
 }
 
 export async function scanClaude(
@@ -212,6 +267,7 @@ export async function scanClaude(
           sessionId: file.replace(/\.jsonl$/, ""),
           source: sessionPath,
           title: meta.title,
+          lastUserMessage: meta.lastUserMessage,
         });
       } catch {
         // unreadable session, skip

@@ -177,6 +177,31 @@ describe("readClaudeSessionMeta", () => {
     );
   });
 
+  test("returns the most recent user message in lastUserMessage", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: { role: "user", content: "first ask" },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "follow-up question" },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "and one more thing" },
+        }),
+      ].join("\n"),
+    );
+    const meta = await readClaudeSessionMeta(file);
+    expect(meta.lastUserMessage).toBe("and one more thing");
+  });
+
   test("falls back to the first assistant text when no user text exists", async () => {
     const dir = await tempDir();
     const file = join(dir, "s.jsonl");

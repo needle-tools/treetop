@@ -30,6 +30,7 @@
     sessionId?: string;
     source: string;
     title?: string;
+    lastUserMessage?: string;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -981,7 +982,12 @@
                                       ? "Codex"
                                       : sess.agent}
                                 </span>
-                                <span class="agent-title">
+                                <span
+                                  class="agent-title"
+                                  title={sess.lastUserMessage
+                                    ? `${sess.title ?? "(no title)"}\n\nMost recent user message:\n${sess.lastUserMessage}`
+                                    : (sess.title ?? "(no title)")}
+                                >
                                   {sess.title ?? "(no title)"}
                                 </span>
                                 <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
@@ -1276,10 +1282,19 @@
     color: var(--text-1);
   }
   main {
-    max-width: 1200px;
+    /* Use almost the full window — supergit is a dashboard, not a
+     * reading column. Cap at 1200px only on phones where 100% - 100px
+     * collapses too far; otherwise let it breathe. */
+    max-width: calc(100% - 100px);
     margin: 0 auto;
     padding: 1.5rem 1.5rem 1.5rem;
     min-width: 0;
+  }
+  @media (max-width: 900px) {
+    main {
+      max-width: 100%;
+      padding: 1rem 0.75rem;
+    }
   }
   /* Open sessions live anchored to their worktree row in a horizontal
      strip. Each column has a generous min-width so two sessions fit
@@ -1295,12 +1310,13 @@
     padding-bottom: 0.25rem;
   }
   .session-col {
-    /* Chat columns need real reading width to be useful. min-width forces a
-       wide column (300ch ~= 2400px on default font); narrower viewports
-       trigger the strip's horizontal scroll instead of squeezing text. */
-    flex: 1 1 300ch;
-    min-width: 300ch;
-    max-width: 50%;
+    /* Chat columns sized for comfortable reading — wide enough that code
+       blocks don't wrap aggressively, narrow enough that you can fit two
+       side-by-side on a 1440px screen. Hard cap in ch (not %) so widening
+       the window doesn't stretch each column to billboard widths. */
+    flex: 1 1 70ch;
+    min-width: 60ch;
+    max-width: 90ch;
     box-sizing: border-box;
   }
   header {
@@ -1351,10 +1367,11 @@
     color: var(--text-1);
   }
   .actions-btn .count {
-    background: var(--brand);
+    background: transparent;
     color: white;
     padding: .4em 0.4em;
     border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 50%, transparent);
     font-size: 0.7rem;
     min-width: 1.2rem;
     text-align: center;
@@ -1957,6 +1974,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.05rem;
+    max-height: 40vh;
+    overflow-y: auto;
   }
   .commit-row {
     display: flex;
@@ -1972,6 +1991,7 @@
     cursor: pointer;
     text-align: left;
     width: 100%;
+    flex-shrink: 0;
   }
   .commit-row:hover {
     background: var(--surface-2);

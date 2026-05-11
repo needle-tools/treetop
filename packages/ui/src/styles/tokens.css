@@ -75,4 +75,40 @@
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
+
+  /* scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+}
+
+/*
+ * Slim, theme-matched scrollbars across the whole app. We keep them visible
+ * (not auto-hide) so users can see overflow at a glance, but make them
+ * narrow and low-contrast so they don't fight for attention.
+ *
+ *   Firefox uses the standard scrollbar-* properties.
+ *   WebKit/Blink uses the ::-webkit-scrollbar pseudo-elements.
+ *
+ * Both are set so behaviour matches in Safari, Chrome, and Firefox.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }

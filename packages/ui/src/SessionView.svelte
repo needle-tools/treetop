@@ -5,6 +5,27 @@
 
   marked.setOptions({ breaks: true, gfm: true });
 
+  // Make every link open in a new tab. We're a desktop-style dashboard —
+  // following a link inside the chat panel would replace the whole UI.
+  // Applies to both [text](url) and bare-URL autolinks (gfm enables those).
+  marked.use({
+    renderer: {
+      link(token: { href: string; title?: string | null; text: string }) {
+        const href = token.href ?? "";
+        const title = token.title ? ` title="${escapeAttr(token.title)}"` : "";
+        return `<a href="${escapeAttr(href)}"${title} target="_blank" rel="noopener noreferrer">${token.text}</a>`;
+      },
+    },
+  });
+
+  function escapeAttr(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
   function md(text: string | undefined): string {
     if (!text) return "";
     // Claude wraps pasted/screenshotted attachments as
@@ -105,8 +126,7 @@
 
   function relTimeFromIso(iso: string): string {
     const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
-    if (s < 5) return "just now";
-    if (s < 60) return `${s} seconds ago`;
+    if (s < 60) return "just now";
     if (s < 120) return "1 minute ago";
     if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
     if (s < 7200) return "1 hour ago";
