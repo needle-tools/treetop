@@ -167,20 +167,22 @@
   <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
     <div class="header-main">
       <span class="agent-pill agent-{agent}">{agent}</span>
-      {#if session}
-        <span class="muted small">{session.messages.length} messages</span>
-        {#if session.sessionId}
-          <code class="muted small sid" title={session.sessionId}>
-            {session.sessionId.slice(0, 8)}
-          </code>
+      <div class="header-content">
+        {#if session}
+          <span class="muted small">{session.messages.length} messages</span>
+          {#if session.sessionId}
+            <code class="muted small sid" title={session.sessionId}>
+              {session.sessionId.slice(0, 8)}
+            </code>
+          {/if}
+          {#if session.endedAt}
+            <span
+              class="muted small last-activity"
+              title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
+            >• last activity {relTimeFromIso(session.endedAt)}</span>
+          {/if}
         {/if}
-        {#if session.endedAt}
-          <span
-            class="muted small last-activity"
-            title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-          >• last activity {relTimeFromIso(session.endedAt)}</span>
-        {/if}
-      {/if}
+      </div>
     </div>
     <button class="close" on:click={onClose} title="Close">×</button>
   </header>
@@ -301,27 +303,40 @@
     cursor: grabbing;
   }
   .header-main {
+    /* 2-column grid: agent pill stays in column 1; everything else
+       (messages count, sid, last-activity) wraps inside column 2. So when
+       last-activity bumps to a new row it aligns under "122 messages" —
+       not under the agent pill. */
     flex: 1 1 0;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: start;
+    gap: 0 0.5rem;
+    line-height: 1.1;
+  }
+  .header-main > .agent-pill {
+    align-self: start;
+  }
+  .header-content {
     min-width: 0;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    /* Tight row-gap + line-height: 1.1 so when last-activity wraps to a
-       second row the header doesn't blow up vertically. */
     gap: 0.15rem 0.5rem;
     line-height: 1.1;
   }
-  .header-main > * {
-    /* Text doesn't wrap inside an item; the item itself wraps to a new
-       row of the flex container when there isn't enough room. */
+  .header-content > * {
+    /* Each item's own text doesn't wrap; the item itself can wrap to a
+       new flex row inside .header-content when the column is tight. */
     white-space: nowrap;
     flex: 0 0 auto;
     line-height: 1.1;
   }
-  .header-main .last-activity {
-    /* Allow the last-activity pill to absorb any extra width on its row
-       and push to a new row when space gets tight (it's the longest
-       item, so it wraps first). */
+  .header-content .last-activity {
+    /* last-activity is the longest item, so it's the one that wraps
+       first when space runs out. flex: 1 1 auto lets it stretch on
+       its row before wrapping. */
     flex: 1 1 auto;
   }
   header .close {
