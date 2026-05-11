@@ -762,7 +762,10 @@
   </header>
 
   <section class="add">
-    <button class="primary" on:click={pickAndAdd}>Pick folder…</button>
+    <button
+      class:primary={repos.length === 0}
+      on:click={pickAndAdd}>Pick folder…</button
+    >
     <input
       type="text"
       placeholder="…or paste an absolute path"
