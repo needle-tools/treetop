@@ -1108,8 +1108,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    align-self: stretch;
-    min-height: 28px;
+    /* Stay pinned to the top of the row so the chevron sits next to the
+       row header, not centered across the (much taller) expanded row. */
+    height: 28px;
   }
   .row-content {
     min-width: 0;
