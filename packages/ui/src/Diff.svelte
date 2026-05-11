@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { parseDiff } from "./diff";
+  import { parseDiff, type DiffLine } from "./diff";
 
   export let text: string = "";
-  $: lines = parseDiff(text);
+  export let lines: DiffLine[] | null = null;
+  $: rendered = lines ?? parseDiff(text);
 </script>
 
 <div class="diff" role="document">
-  {#each lines as line}
+  {#each rendered as line}
     <div class="line {line.kind}">
       <span class="text">{line.text || " "}</span>
     </div>

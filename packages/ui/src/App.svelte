@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ExpandedStore } from "./storage";
-  import Diff from "./Diff.svelte";
+  import DiffViewer from "./DiffViewer.svelte";
 
   interface FileStatus {
     staged: number;
@@ -719,7 +719,7 @@
               <div class="row-commit muted small">
                 <code class="sha">{wt.lastCommit.shortSha}</code>
                 <span class="commit-subject">{wt.lastCommit.subject}</span>
-                <span class="commit-author">— {wt.lastCommit.author}</span>
+                <span class="commit-author">{wt.lastCommit.author}</span>
                 <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
               </div>
 
@@ -762,7 +762,7 @@
                     {#if diffLoading[wt.path] && workdirDiff[wt.path] === undefined}
                       <p class="muted small nopad">Loading diff…</p>
                     {:else if workdirDiff[wt.path]}
-                      <Diff text={workdirDiff[wt.path]} />
+                      <DiffViewer text={workdirDiff[wt.path]} />
                     {:else}
                       <p class="muted small nopad">Nothing unstaged.</p>
                     {/if}
@@ -770,7 +770,7 @@
                     {#if diffLoading[wt.path] && stagedDiff[wt.path] === undefined}
                       <p class="muted small nopad">Loading diff…</p>
                     {:else if stagedDiff[wt.path]}
-                      <Diff text={stagedDiff[wt.path]} />
+                      <DiffViewer text={stagedDiff[wt.path]} />
                     {:else}
                       <p class="muted small nopad">Nothing staged.</p>
                     {/if}
@@ -789,13 +789,13 @@
                         >
                           <code class="sha">{c.shortSha}</code>
                           <span class="commit-subject">{c.subject}</span>
-                          <span class="commit-author">— {c.author}</span>
+                          <span class="commit-author">{c.author}</span>
                           <span class="commit-time">{relTime(c.time)}</span>
                         </button>
                         {#if openCommitSha[wt.path] === c.sha}
                           {#if commitDiff[`${wt.path}:${c.sha}`] !== undefined}
                             <div class="inline-commit">
-                              <Diff text={commitDiff[`${wt.path}:${c.sha}`]} />
+                              <DiffViewer text={commitDiff[`${wt.path}:${c.sha}`]} />
                             </div>
                           {:else}
                             <p class="muted small nopad">Loading commit…</p>
@@ -907,7 +907,7 @@
   .actions-btn .count {
     background: var(--brand);
     color: white;
-    padding: 0 0.4rem;
+    padding: .4em 0.4em;
     border-radius: 999px;
     font-size: 0.7rem;
     min-width: 1.2rem;

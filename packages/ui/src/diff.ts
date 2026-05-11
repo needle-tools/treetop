@@ -52,3 +52,121 @@ export function parseDiff(text: string): DiffLine[] {
   if (!text) return [];
   return text.split("\n").map(classifyLine);
 }
+
+/**
+ * Group a parsed diff by file. Useful for rendering a sidebar of files with
+ * per-file add/remove counts. `header` collects everything before the first
+ * `diff --git` (commit header for `git show`, our "# untracked files"
+ * preamble, etc.).
+ */
+export interface DiffFile {
+  path: string;
+  oldPath?: string;
+  isNew: boolean;
+  isDeleted: boolean;
+  isRename: boolean;
+  isBinary: boolean;
+  added: number;
+  removed: number;
+  lines: DiffLine[];
+}
+
+export interface ParsedDiff {
+  header: DiffLine[];
+  files: DiffFile[];
+  untrackedFiles: string[];
+}
+
+function parseFileHeader(
+  line: string,
+): { oldPath: string; newPath: string } | null {
+  // "diff --git a/foo b/foo bar" — git's format is unfortunately ambiguous
+  // for paths with spaces. For now treat the simple case (no spaces).
+  const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+  if (!m) return null;
+  return { oldPath: m[1]!, newPath: m[2]! };
+}
+
+export function parseDiffStructured(text: string): ParsedDiff {
+  const lines = parseDiff(text);
+  const header: DiffLine[] = [];
+  const files: DiffFile[] = [];
+  const untrackedFiles: string[] = [];
+  let current: DiffFile | null = null;
+
+  for (const line of lines) {
+    if (line.kind === "file") {
+      if (current) files.push(current);
+      const paths = parseFileHeader(line.text);
+      current = {
+        path: paths?.newPath ?? "(unknown)",
+        oldPath: paths?.oldPath,
+        isNew: false,
+        isDeleted: false,
+        isRename: paths !== null && paths.oldPath !== paths.newPath,
+        isBinary: false,
+        added: 0,
+        removed: 0,
+        lines: [line],
+      };
+      continue;
+    }
+    if (line.kind === "untracked-file") {
+      const path = line.text.replace(/^\?\s+/, "").trim();
+      if (path) untrackedFiles.push(path);
+      if (current) current.lines.push(line);
+      else header.push(line);
+      continue;
+    }
+    if (current) {
+      current.lines.push(line);
+      if (line.kind === "add") current.added++;
+      else if (line.kind === "remove") current.removed++;
+      else if (line.kind === "meta") {
+        const t = line.text;
+        if (t.startsWith("new file")) current.isNew = true;
+        else if (t.startsWith("deleted file")) current.isDeleted = true;
+        else if (t.startsWith("Binary files")) current.isBinary = true;
+        else if (t.startsWith("rename ")) current.isRename = true;
+      }
+    } else {
+      header.push(line);
+    }
+  }
+  if (current) files.push(current);
+
+  return { header, files, untrackedFiles };
+}
+
+export interface CommitSummary {
+  sha?: string;
+  shortSha?: string;
+  subject?: string;
+  author?: string;
+}
+
+/**
+ * Pull a compact "sha · subject · author" summary out of `git show` output
+ * so the UI can render a tiny header instead of the multi-line commit block.
+ */
+export function extractCommitHeader(text: string): CommitSummary | null {
+  if (!text) return null;
+  let sha: string | undefined;
+  let author: string | undefined;
+  let subject: string | undefined;
+  let inBlank = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("commit ")) {
+      sha = line.slice("commit ".length).split(" ")[0];
+    } else if (line.startsWith("Author: ")) {
+      author = line.slice("Author: ".length);
+    } else if (line === "" && sha && !subject) {
+      inBlank = true;
+    } else if (inBlank && line.startsWith("    ") && !subject) {
+      subject = line.trim();
+      break;
+    }
+  }
+  if (!sha) return null;
+  return { sha, shortSha: sha.slice(0, 7), subject, author };
+}
