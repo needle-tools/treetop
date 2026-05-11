@@ -669,18 +669,7 @@
                 aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
                 on:click={() => toggleCommits(wt.path)}
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
+                <span class="arrow">▾</span>
               </button>
             {/if}
             {#if editingRepoId === repo.id}
@@ -1402,15 +1391,19 @@
     cursor: pointer;
     border-radius: var(--radius-sm);
     flex: 0 0 auto;
+    font-size: 0.85rem;
+    line-height: 1;
   }
   .chevron:hover {
     background: var(--surface-2);
     color: var(--text-2);
   }
-  .chevron svg {
+  .chevron .arrow {
+    display: inline-block;
+    line-height: 1;
     transition: transform 0.15s ease-out;
   }
-  .chevron.open svg {
+  .chevron.open .arrow {
     transform: rotate(180deg);
   }
 
