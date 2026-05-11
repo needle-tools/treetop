@@ -6,6 +6,7 @@
   interface NormalizedBlock {
     type:
       | "text"
+      | "thinking"
       | "tool_use"
       | "tool_result"
       | "ide_context"
@@ -78,6 +79,36 @@
       el.scrollTop = el.scrollHeight;
     });
   }
+
+  // Subscribe to the daemon's "activity" SSE stream and re-fetch whenever a
+  // new entry shows up for *this* session. Debounced to avoid hammering the
+  // endpoint when a flurry of events arrives.
+  let refetchTimer: number | null = null;
+  function scheduleRefetch() {
+    if (refetchTimer !== null) return;
+    refetchTimer = window.setTimeout(() => {
+      refetchTimer = null;
+      void load();
+    }, 250);
+  }
+  let es: EventSource | null = null;
+  $: if (source) {
+    if (es) es.close();
+    es = new EventSource("/api/stream");
+    es.addEventListener("activity", (evt: MessageEvent) => {
+      try {
+        const data = JSON.parse(evt.data) as { source?: string };
+        if (data.source === source) scheduleRefetch();
+      } catch {
+        // ignore malformed
+      }
+    });
+  }
+  import { onDestroy } from "svelte";
+  onDestroy(() => {
+    if (es) es.close();
+    if (refetchTimer !== null) window.clearTimeout(refetchTimer);
+  });
 </script>
 
 <div class="session">
@@ -113,6 +144,11 @@
           {#each m.blocks as b}
             {#if b.type === "text"}
               <div class="block text">{b.text}</div>
+            {:else if b.type === "thinking"}
+              <div class="block thinking">
+                <span class="tag-label">thinking</span>
+                <span class="tag-body">{b.text}</span>
+              </div>
             {:else if b.type === "tool_use"}
               <div class="block tool-use">
                 <span class="tool-name">{b.toolName ?? "tool"}</span>
@@ -160,7 +196,9 @@
     gap: 0.5rem;
     padding: 0.4rem 0.6rem;
     background: var(--surface-2);
-    border-bottom: 1px solid var(--surface-2);
+    /* Border was the same color as background; use a lighter shade so the
+       split between header and messages is actually visible. */
+    border-bottom: 1px solid var(--surface-3);
   }
   .agent-pill {
     padding: 0.1rem 0.5rem;
@@ -321,5 +359,25 @@
   }
   .block.command .tag-label {
     color: var(--chip-green-text);
+  }
+  .block.thinking {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    margin-top: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(160, 160, 160, 0.06);
+    border-radius: var(--radius-sm);
+    font-style: italic;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+  .block.thinking .tag-body {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
 </style>

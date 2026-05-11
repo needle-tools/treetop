@@ -16,6 +16,8 @@ export type NormalizedRole = "user" | "assistant" | "system" | "tool";
 
 export type NormalizedBlockKind =
   | "text"
+  /** Assistant's extended thinking blocks (internal reasoning). */
+  | "thinking"
   | "tool_use"
   | "tool_result"
   /** IDE state injected by the wrapper (`<ide_opened_file>`, `<ide_selection>` …). */
@@ -130,6 +132,8 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
         const b = raw as Record<string, unknown>;
         if (b.type === "text" && typeof b.text === "string") {
           blocks.push(...splitInjectedTags(b.text));
+        } else if (b.type === "thinking" && typeof b.thinking === "string") {
+          blocks.push({ type: "thinking", text: b.thinking });
         } else if (b.type === "tool_use") {
           blocks.push({
             type: "tool_use",

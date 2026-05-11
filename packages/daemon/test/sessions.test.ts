@@ -195,6 +195,64 @@ describe("splitInjectedTags", () => {
   });
 });
 
+describe("parseClaudeJsonl with a real sanitized fixture", () => {
+  test("handles a 13-line session without throwing and produces valid blocks", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const path = join(
+      import.meta.dir,
+      "fixtures",
+      "claude-real-sample.jsonl",
+    );
+    const raw = await readFile(path, "utf-8");
+    const session = parseClaudeJsonl(raw);
+
+    expect(session.agent).toBe("claude");
+    expect(session.cwd).toBe("/Users/test/repo");
+    expect(session.sessionId).toBe("00000000-0000-0000-0000-000000000000");
+    expect(session.messages.length).toBeGreaterThan(0);
+
+    const allowedRoles = new Set([
+      "user",
+      "assistant",
+      "system",
+      "tool",
+    ] as const);
+    const allowedBlocks = new Set([
+      "text",
+      "thinking",
+      "tool_use",
+      "tool_result",
+      "ide_context",
+      "system_reminder",
+      "command",
+    ] as const);
+    for (const m of session.messages) {
+      expect(allowedRoles.has(m.role)).toBe(true);
+      expect(m.blocks.length).toBeGreaterThan(0);
+      for (const b of m.blocks) {
+        expect(allowedBlocks.has(b.type as never)).toBe(true);
+      }
+    }
+
+    // The real session contained a `thinking` block — assert we picked it up.
+    const hasThinking = session.messages.some((m) =>
+      m.blocks.some((b) => b.type === "thinking"),
+    );
+    expect(hasThinking).toBe(true);
+
+    // …and at least one tool_use / tool_result pair.
+    const toolUses = session.messages.flatMap((m) =>
+      m.blocks.filter((b) => b.type === "tool_use"),
+    );
+    const toolResults = session.messages.flatMap((m) =>
+      m.blocks.filter((b) => b.type === "tool_result"),
+    );
+    expect(toolUses.length).toBeGreaterThan(0);
+    expect(toolResults.length).toBeGreaterThan(0);
+  });
+});
+
 describe("parseCodexJsonl", () => {
   test("returns an empty session for empty input", () => {
     expect(parseCodexJsonl("").messages).toEqual([]);
