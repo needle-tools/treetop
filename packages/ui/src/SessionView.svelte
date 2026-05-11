@@ -94,13 +94,18 @@
 
   function inputPreview(input: unknown): string {
     if (input === undefined) return "";
-    if (typeof input === "string") return input;
-    try {
-      const s = JSON.stringify(input);
-      return s.length > 200 ? s.slice(0, 200) + "…" : s;
-    } catch {
-      return String(input);
+    let s: string;
+    if (typeof input === "string") s = input;
+    else {
+      try {
+        s = JSON.stringify(input);
+      } catch {
+        s = String(input);
+      }
     }
+    // Collapse all whitespace so multiline Bash heredocs fit on one line.
+    s = s.replace(/\s+/g, " ").trim();
+    return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
   $: if (source) {
@@ -185,7 +190,9 @@
             {:else if b.type === "tool_use"}
               <div class="block tool-use">
                 <span class="tool-name">{b.toolName ?? "tool"}</span>
-                <code class="tool-input">{inputPreview(b.toolInput)}</code>
+                <code class="tool-input" title={inputPreview(b.toolInput)}>
+                  {inputPreview(b.toolInput)}
+                </code>
               </div>
             {:else if b.type === "tool_result"}
               <div class="block tool-result">
@@ -241,8 +248,8 @@
     font-family: ui-monospace, monospace;
   }
   .agent-pill.agent-claude {
-    background: var(--chip-purple-bg);
-    color: var(--chip-purple-text);
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .agent-pill.agent-codex {
     background: var(--chip-green-bg);
@@ -319,7 +326,7 @@
     font-size: 0.8rem;
   }
   .role.brand-claude {
-    color: var(--chip-purple-text);
+    color: var(--chip-orange-text);
   }
   .role.brand-codex {
     color: var(--chip-green-text);
@@ -429,13 +436,19 @@
     font-family: ui-monospace, monospace;
     font-size: 0.78rem;
     color: var(--chip-orange-text);
+    min-width: 0;
   }
   .tool-name {
     font-weight: 600;
+    flex: 0 0 auto;
   }
   .tool-input {
     color: var(--text-3);
-    overflow-wrap: anywhere;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .block.tool-result {
     margin-top: 0.3rem;

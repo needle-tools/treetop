@@ -1213,8 +1213,8 @@
     background: currentColor;
   }
   .agent-badge.agent-claude {
-    background: var(--chip-purple-bg);
-    color: var(--chip-purple-text);
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .agent-badge.agent-codex {
     background: var(--chip-green-bg);
@@ -1250,7 +1250,7 @@
     flex: 0 0 auto;
   }
   .row-activity .agent-dot.agent-claude {
-    background: var(--chip-purple-text);
+    background: var(--chip-orange-text);
   }
   .row-activity .agent-dot.agent-codex {
     background: var(--chip-green-text);
