@@ -1,5 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { parseClaudeJsonl, parseCodexJsonl } from "../src/sessions";
+import {
+  parseClaudeJsonl,
+  parseCodexJsonl,
+  splitInjectedTags,
+} from "../src/sessions";
 
 describe("parseClaudeJsonl", () => {
   test("returns an empty session for empty input", () => {
@@ -124,6 +128,70 @@ describe("parseClaudeJsonl", () => {
       JSON.stringify({ type: "system", message: { role: "system", content: "y" } }),
     ].join("\n");
     expect(parseClaudeJsonl(text).messages).toEqual([]);
+  });
+});
+
+describe("splitInjectedTags", () => {
+  test("plain text returns a single text block", () => {
+    expect(splitInjectedTags("just a normal message")).toEqual([
+      { type: "text", text: "just a normal message" },
+    ]);
+  });
+
+  test("ide_opened_file becomes an ide_context block", () => {
+    const blocks = splitInjectedTags(
+      "<ide_opened_file>The user opened /a/b/c.ts in the IDE.</ide_opened_file>",
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.type).toBe("ide_context");
+    expect(blocks[0]?.tagName).toBe("ide_opened_file");
+    expect(blocks[0]?.text).toContain("/a/b/c.ts");
+  });
+
+  test("system-reminder becomes a system_reminder block", () => {
+    const blocks = splitInjectedTags(
+      "<system-reminder>budget low</system-reminder>",
+    );
+    expect(blocks[0]?.type).toBe("system_reminder");
+    expect(blocks[0]?.tagName).toBe("system-reminder");
+  });
+
+  test("command-name / command-stdout become command blocks", () => {
+    const blocks = splitInjectedTags(
+      "<command-name>/help</command-name>\n<local-command-stdout>foo</local-command-stdout>",
+    );
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]?.type).toBe("command");
+    expect(blocks[1]?.type).toBe("command");
+  });
+
+  test("splits mixed plain text + injected tags in order", () => {
+    const input =
+      "Hi there.\n<ide_opened_file>opened foo.ts</ide_opened_file>\nPlease implement X.";
+    const blocks = splitInjectedTags(input);
+    expect(blocks.map((b) => b.type)).toEqual([
+      "text",
+      "ide_context",
+      "text",
+    ]);
+    expect(blocks[0]?.text).toBe("Hi there.");
+    expect(blocks[2]?.text).toBe("Please implement X.");
+  });
+
+  test("Claude parser splits ide_opened_file out of user text content", () => {
+    const text = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content:
+          "Please do X.\n<ide_opened_file>opened src/foo.ts</ide_opened_file>",
+      },
+    });
+    const session = parseClaudeJsonl(text);
+    expect(session.messages[0]?.blocks.map((b) => b.type)).toEqual([
+      "text",
+      "ide_context",
+    ]);
   });
 });
 

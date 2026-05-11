@@ -4,11 +4,18 @@
   export let onClose: () => void = () => {};
 
   interface NormalizedBlock {
-    type: "text" | "tool_use" | "tool_result";
+    type:
+      | "text"
+      | "tool_use"
+      | "tool_result"
+      | "ide_context"
+      | "system_reminder"
+      | "command";
     text?: string;
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
+    tagName?: string;
   }
   interface NormalizedMessage {
     role: "user" | "assistant" | "system" | "tool";
@@ -115,6 +122,21 @@
               <div class="block tool-result">
                 <span class="muted small">result</span>
                 <pre>{b.text ?? ""}</pre>
+              </div>
+            {:else if b.type === "ide_context"}
+              <div class="block ide-context" title={b.tagName}>
+                <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
+                <span class="tag-body">{b.text}</span>
+              </div>
+            {:else if b.type === "system_reminder"}
+              <div class="block sys-reminder" title={b.tagName}>
+                <span class="tag-label">system reminder</span>
+                <span class="tag-body">{b.text}</span>
+              </div>
+            {:else if b.type === "command"}
+              <div class="block command" title={b.tagName}>
+                <span class="tag-label">{b.tagName ?? "command"}</span>
+                <span class="tag-body">{b.text}</span>
               </div>
             {/if}
           {/each}
@@ -256,5 +278,48 @@
     max-height: 240px;
     overflow: auto;
     white-space: pre-wrap;
+  }
+  .block.ide-context,
+  .block.sys-reminder,
+  .block.command {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    margin-top: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+  .tag-label {
+    flex: 0 0 auto;
+    font-family: ui-monospace, monospace;
+    text-transform: lowercase;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .tag-body {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .block.ide-context {
+    background: rgba(37, 99, 235, 0.08);
+  }
+  .block.ide-context .tag-label {
+    color: var(--chip-blue-text);
+  }
+  .block.sys-reminder {
+    background: rgba(217, 119, 6, 0.08);
+  }
+  .block.sys-reminder .tag-label {
+    color: var(--chip-orange-text);
+  }
+  .block.command {
+    background: rgba(22, 163, 74, 0.08);
+  }
+  .block.command .tag-label {
+    color: var(--chip-green-text);
   }
 </style>

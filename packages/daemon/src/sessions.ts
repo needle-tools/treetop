@@ -14,8 +14,19 @@ import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
 
+export type NormalizedBlockKind =
+  | "text"
+  | "tool_use"
+  | "tool_result"
+  /** IDE state injected by the wrapper (`<ide_opened_file>`, `<ide_selection>` …). */
+  | "ide_context"
+  /** `<system-reminder>` … `</system-reminder>` wrappers. */
+  | "system_reminder"
+  /** `<command-name>` / `<command-message>` slash-command markers. */
+  | "command";
+
 export interface NormalizedBlock {
-  type: "text" | "tool_use" | "tool_result";
+  type: NormalizedBlockKind;
   /** Free-form text. For tool_result this is the rendered output. */
   text?: string;
   /** tool_use only. */
@@ -23,6 +34,44 @@ export interface NormalizedBlock {
   toolInput?: unknown;
   /** Links a tool_result back to the tool_use that produced it. */
   toolUseId?: string;
+  /** For ide_context / system_reminder / command: the tag name, e.g. "ide_opened_file". */
+  tagName?: string;
+}
+
+/**
+ * Claude Code injects semantic XML wrappers into raw text blocks
+ * (`<ide_opened_file>...</ide_opened_file>`, `<system-reminder>...`,
+ * `<command-name>...`, etc). We split those out into typed blocks so the
+ * UI can render IDE context / system reminders / slash commands
+ * differently from plain text. Anything outside a wrapper stays as
+ * plain text. Returns at least one block.
+ */
+export function splitInjectedTags(text: string): NormalizedBlock[] {
+  const blocks: NormalizedBlock[] = [];
+  const re =
+    /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr)>([\s\S]*?)<\/\1>/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const before = text.slice(lastIndex, match.index).trim();
+      if (before) blocks.push({ type: "text", text: before });
+    }
+    const tag = match[1]!;
+    const content = match[2]!.trim();
+    let kind: NormalizedBlockKind = "text";
+    if (tag.startsWith("ide_")) kind = "ide_context";
+    else if (tag === "system-reminder") kind = "system_reminder";
+    else if (tag.startsWith("command-") || tag.startsWith("local-command-"))
+      kind = "command";
+    blocks.push({ type: kind, text: content, tagName: tag });
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    const tail = text.slice(lastIndex).trim();
+    if (tail) blocks.push({ type: "text", text: tail });
+  }
+  return blocks.length > 0 ? blocks : [{ type: "text", text }];
 }
 
 export interface NormalizedMessage {
@@ -74,13 +123,13 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
     const blocks: NormalizedBlock[] = [];
 
     if (typeof content === "string") {
-      blocks.push({ type: "text", text: content });
+      blocks.push(...splitInjectedTags(content));
     } else if (Array.isArray(content)) {
       for (const raw of content) {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (b.type === "text" && typeof b.text === "string") {
-          blocks.push({ type: "text", text: b.text });
+          blocks.push(...splitInjectedTags(b.text));
         } else if (b.type === "tool_use") {
           blocks.push({
             type: "tool_use",
