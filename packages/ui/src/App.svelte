@@ -1144,6 +1144,7 @@
                     {#each visibleSessions as s, i (s.source)}
                       <div
                         class="session-col"
+                        data-session-source={s.source}
                         on:dragover={handleSessionDragOver}
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
