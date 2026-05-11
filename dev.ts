@@ -1,7 +1,7 @@
 // Starts the daemon (watch mode) and UI (Vite dev server) together
 // with hot reload. Ctrl-C kills both.
 
-const daemon = Bun.spawn(["bun", "--watch", "run", "src/server.ts"], {
+const daemon = Bun.spawn(["bun", "--hot", "run", "src/server.ts"], {
   cwd: "packages/daemon",
   stdout: "inherit",
   stderr: "inherit",
