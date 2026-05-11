@@ -417,6 +417,19 @@
     border-top: 1px solid var(--surface-2);
     margin: 0.5em 0;
   }
+  .md :global(img) {
+    max-width: 100%;
+    max-height: 320px;
+    width: auto;
+    height: auto;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    display: block;
+    margin: 0.4em 0;
+    /* alt-text shown if the image fails to load — keep it compact */
+    font-size: 0.78em;
+    color: var(--text-muted);
+  }
   .md :global(table) {
     border-collapse: collapse;
     margin: 0.4em 0;
