@@ -123,9 +123,33 @@
   const MAX_ACTIVITY = 8;
   let activityByCwd: Record<string, ActivityEvent[]> = {};
 
-  // Per worktree: which session is currently opened in the SessionView panel.
-  // null = closed. Stored by source path so it round-trips across SSE updates.
-  let openSession: Record<string, { agent: AgentSession["agent"]; source: string } | null> = {};
+  // Open sessions live globally so multiple can be visible side-by-side in
+  // the bottom dock. Identified by (agent, source) — source path is unique.
+  interface OpenSession {
+    agent: AgentSession["agent"];
+    source: string;
+  }
+  let openSessions: OpenSession[] = [];
+
+  function sessionKey(s: OpenSession): string {
+    return `${s.agent}|${s.source}`;
+  }
+  function isSessionOpen(source: string): boolean {
+    return openSessions.some((s) => s.source === source);
+  }
+  function toggleOpenSession(s: OpenSession): void {
+    const k = sessionKey(s);
+    const i = openSessions.findIndex((x) => sessionKey(x) === k);
+    if (i >= 0) {
+      openSessions = [...openSessions.slice(0, i), ...openSessions.slice(i + 1)];
+    } else {
+      openSessions = [...openSessions, s];
+    }
+  }
+  function closeSession(s: OpenSession): void {
+    const k = sessionKey(s);
+    openSessions = openSessions.filter((x) => sessionKey(x) !== k);
+  }
 
   // diff viewer per worktree
   type DiffTab = "workdir" | "staged";
@@ -767,18 +791,10 @@
                 <span class="agent-wrap" data-agents-anchor={wt.path}>
                   <button
                     class="agent-badge agent-{a.agent}"
+                    class:active={isSessionOpen(a.source)}
                     title={`Open the latest ${a.agent} session\nLast active ${relTime(a.lastActive)}`}
-                    on:click={() => {
-                      const cur = openSession[wt.path];
-                      if (cur && cur.source === a.source) {
-                        openSession = { ...openSession, [wt.path]: null };
-                      } else {
-                        openSession = {
-                          ...openSession,
-                          [wt.path]: { agent: a.agent, source: a.source },
-                        };
-                      }
-                    }}
+                    on:click={() =>
+                      toggleOpenSession({ agent: a.agent, source: a.source })}
                   >
                     <span class="agent-dot"></span>
                     {a.agent} · {relTime(a.lastActive)}
@@ -804,16 +820,13 @@
                             <li>
                               <button
                                 class="agent-row"
-                                class:active={openSession[wt.path]?.source === sess.source}
+                                class:active={isSessionOpen(sess.source)}
                                 title={sess.title}
                                 on:click={() => {
-                                  openSession = {
-                                    ...openSession,
-                                    [wt.path]: {
-                                      agent: sess.agent,
-                                      source: sess.source,
-                                    },
-                                  };
+                                  toggleOpenSession({
+                                    agent: sess.agent,
+                                    source: sess.source,
+                                  });
                                   agentsPopoverOpen = {
                                     ...agentsPopoverOpen,
                                     [wt.path]: false,
@@ -887,17 +900,6 @@
                   .trim()
                   .replace(/[\/\\]/g, "-") || "…"}
               </span>
-            </div>
-          {/if}
-
-          {#if wt && openSession[wt.path]}
-            {@const s = openSession[wt.path]!}
-            <div class="session-panel">
-              <SessionView
-                agent={s.agent}
-                source={s.source}
-                onClose={() => (openSession = { ...openSession, [wt.path]: null })}
-              />
             </div>
           {/if}
 
@@ -1067,6 +1069,20 @@
   {/if}
 </main>
 
+{#if openSessions.length > 0}
+  <aside class="sessions-dock" class:multi={openSessions.length > 1}>
+    {#each openSessions as s (sessionKey(s))}
+      <div class="dock-column">
+        <SessionView
+          agent={s.agent}
+          source={s.source}
+          onClose={() => closeSession(s)}
+        />
+      </div>
+    {/each}
+  </aside>
+{/if}
+
 <style>
   :global(body) {
     font-family:
@@ -1083,6 +1099,51 @@
     margin: 0 auto;
     padding: 1.5rem 1.5rem 1.5rem;
     min-width: 0;
+  }
+  /* When the bottom dock is showing sessions, push the main content up so
+     nothing important sits behind it. The dock's `.sessions-dock` reserves
+     its own 55vh slice via position: fixed below. */
+  :global(body:has(.sessions-dock)) main {
+    padding-bottom: calc(55vh + 1.5rem);
+  }
+
+  .sessions-dock {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 55vh;
+    background: var(--surface-0);
+    border-top: 1px solid var(--surface-2);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .dock-column {
+    flex: 1 0 360px;
+    max-width: 720px;
+    min-width: 320px;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0.5rem 0.6rem;
+    border-right: 1px solid var(--surface-2);
+    box-sizing: border-box;
+  }
+  .dock-column:last-child {
+    border-right: 0;
+  }
+  /* When multiple columns are open, let them each share width below the
+     720px cap; min 320 each + horizontal scroll if we exceed viewport. */
+  .sessions-dock.multi .dock-column {
+    flex: 1 1 0;
+  }
+
+  /* Highlight badges whose session is currently open in the dock. */
+  .agent-badge.active {
+    box-shadow: 0 0 0 1px var(--brand);
   }
   header {
     margin-bottom: 1.5rem;
