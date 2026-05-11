@@ -266,6 +266,14 @@
     }
   }
 
+  function fileManagerLabel(): string {
+    if (typeof navigator === "undefined") return "Files";
+    const ua = navigator.userAgent;
+    if (/Mac|iPhone|iPad/.test(ua)) return "Finder";
+    if (/Win/.test(ua)) return "Explorer";
+    return "Files";
+  }
+
   async function fetchCommits(
     wtPath: string,
     before?: string,
@@ -806,6 +814,11 @@
                   class="tiny"
                   on:click={() => openIn(wt.path, "terminal")}
                   title="Open in terminal">Terminal</button
+                >
+                <button
+                  class="tiny"
+                  on:click={() => openIn(wt.path, "files")}
+                  title="Reveal in file manager">{fileManagerLabel()}</button
                 >
               </div>
             </div>

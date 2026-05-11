@@ -38,7 +38,7 @@ const KNOWN_EDITORS: readonly EditorSpec[] = [
   { name: "Neovim", cmd: "nvim" },
 ];
 
-const SPECIAL_APPS = new Set(["fork", "terminal"]);
+const SPECIAL_APPS = new Set(["fork", "terminal", "files"]);
 const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 
 async function which(cmd: string): Promise<boolean> {
@@ -114,6 +114,28 @@ export async function openIn(
     const exit = await proc.exited;
     if (exit !== 0) throw new Error("could not open Fork (is it installed?)");
     return { via: "Fork" };
+  }
+
+  if (app === "files") {
+    // Open the path in the OS file manager (Finder / Explorer / xdg).
+    if (process.platform === "darwin") {
+      Bun.spawn(["open", path], { stdout: "ignore", stderr: "ignore" });
+      return { via: "Finder" };
+    }
+    if (process.platform === "linux") {
+      if (!(await which("xdg-open"))) {
+        throw new Error("xdg-open not available — cannot open file manager");
+      }
+      Bun.spawn(["xdg-open", path], { stdout: "ignore", stderr: "ignore" });
+      return { via: "Files" };
+    }
+    if (process.platform === "win32") {
+      Bun.spawn(["explorer", path], { stdout: "ignore", stderr: "ignore" });
+      return { via: "Explorer" };
+    }
+    throw new Error(
+      `file manager open not implemented for ${process.platform}`,
+    );
   }
 
   if (app === "terminal") {
