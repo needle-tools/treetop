@@ -196,3 +196,63 @@ export function parseCommitList(logOut: string): LastCommit[] {
     .map(parseLastCommit)
     .filter((c): c is LastCommit => c !== null);
 }
+
+export type DiffKind = "workdir" | "staged";
+
+/**
+ * Diff for a single commit (vs its first parent). Used by the History panel
+ * when the user clicks a commit to expand its content.
+ */
+export async function getCommitDiff(
+  worktreePath: string,
+  sha: string,
+): Promise<string> {
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) {
+    // Don't pass user-supplied strings to git; only short/long hex SHAs.
+    return "";
+  }
+  try {
+    return await $`git -C ${worktreePath} show --no-color --pretty=fuller ${sha}`
+      .quiet()
+      .text();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Return the textual diff for a worktree. `workdir` = unstaged changes;
+ * `staged` = the index vs HEAD. Empty string when there's nothing.
+ * Untracked files are summarised at the top so reviewers see them too —
+ * git diff doesn't otherwise mention untracked files.
+ */
+export async function getDiff(
+  worktreePath: string,
+  kind: DiffKind = "workdir",
+): Promise<string> {
+  try {
+    const diff = await (kind === "staged"
+      ? $`git -C ${worktreePath} diff --staged --no-color`
+      : $`git -C ${worktreePath} diff --no-color`)
+      .quiet()
+      .text();
+
+    if (kind === "workdir") {
+      const untracked = await $`git -C ${worktreePath} ls-files --others --exclude-standard`
+        .quiet()
+        .text();
+      const untrackedFiles = untracked.split("\n").filter((l) => l.length > 0);
+      if (untrackedFiles.length > 0) {
+        const header =
+          `# untracked files (${untrackedFiles.length}):\n` +
+          untrackedFiles.map((f) => `?  ${f}`).join("\n") +
+          "\n\n";
+        return header + diff;
+      }
+    }
+
+    return diff;
+  } catch {
+    return "";
+  }
+}

@@ -68,12 +68,21 @@
   let editingRepoId: string | null = null;
   let editRepoName = "";
 
+  // diff viewer per worktree: workdir / staged toggle + open commit
+  type DiffTab = "workdir" | "staged";
+  let diffTab: Record<string, DiffTab> = {};
+  let workdirDiff: Record<string, string> = {};
+  let stagedDiff: Record<string, string> = {};
+  let openCommitSha: Record<string, string | null> = {};
+  let commitDiff: Record<string, string> = {};
+  let diffLoading: Record<string, boolean> = {};
+
   // commit history per worktree-path: list, expanded flag, loading flag, done flag
   let commitsByPath: Record<string, LastCommit[]> = {};
   let commitsExpanded: Record<string, boolean> = {};
   let commitsLoading: Record<string, boolean> = {};
   let commitsExhausted: Record<string, boolean> = {};
-  const COMMITS_BATCH = 10;
+  const COMMITS_BATCH = 50;
   const expandedStore = new ExpandedStore(
     typeof window !== "undefined" ? window.localStorage : ({ getItem: () => null, setItem: () => {} }),
     "supergit:commitsExpanded",
@@ -234,6 +243,58 @@
     return res.json();
   }
 
+  async function fetchDiff(wtPath: string, kind: DiffTab): Promise<string> {
+    const qs = new URLSearchParams({ path: wtPath, kind });
+    const res = await fetch(`/api/diff?${qs.toString()}`);
+    if (!res.ok) throw new Error(`/api/diff: ${res.status}`);
+    return res.text();
+  }
+  async function loadWorkdirDiff(wtPath: string) {
+    diffLoading = { ...diffLoading, [wtPath]: true };
+    try {
+      workdirDiff = { ...workdirDiff, [wtPath]: await fetchDiff(wtPath, "workdir") };
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      diffLoading = { ...diffLoading, [wtPath]: false };
+    }
+  }
+  async function loadStagedDiff(wtPath: string) {
+    diffLoading = { ...diffLoading, [wtPath]: true };
+    try {
+      stagedDiff = { ...stagedDiff, [wtPath]: await fetchDiff(wtPath, "staged") };
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      diffLoading = { ...diffLoading, [wtPath]: false };
+    }
+  }
+  function setDiffTab(wtPath: string, tab: DiffTab) {
+    diffTab = { ...diffTab, [wtPath]: tab };
+    if (tab === "workdir" && workdirDiff[wtPath] === undefined) loadWorkdirDiff(wtPath);
+    if (tab === "staged" && stagedDiff[wtPath] === undefined) loadStagedDiff(wtPath);
+  }
+  async function openCommit(wtPath: string, sha: string) {
+    if (openCommitSha[wtPath] === sha) {
+      openCommitSha = { ...openCommitSha, [wtPath]: null };
+      return;
+    }
+    openCommitSha = { ...openCommitSha, [wtPath]: sha };
+    if (commitDiff[`${wtPath}:${sha}`] !== undefined) return;
+    diffLoading = { ...diffLoading, [wtPath]: true };
+    try {
+      const qs = new URLSearchParams({ path: wtPath, sha });
+      const res = await fetch(`/api/commit?${qs.toString()}`);
+      if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
+      const text = await res.text();
+      commitDiff = { ...commitDiff, [`${wtPath}:${sha}`]: text };
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      diffLoading = { ...diffLoading, [wtPath]: false };
+    }
+  }
+
   async function loadCommitsInitial(wtPath: string) {
     if (commitsByPath[wtPath]) return;
     commitsLoading = { ...commitsLoading, [wtPath]: true };
@@ -256,7 +317,11 @@
     const willExpand = !commitsExpanded[wtPath];
     commitsExpanded = { ...commitsExpanded, [wtPath]: willExpand };
     persistExpanded();
-    if (willExpand) await loadCommitsInitial(wtPath);
+    if (willExpand) {
+      await loadCommitsInitial(wtPath);
+      // Default to showing the workdir diff on first expand.
+      if (!diffTab[wtPath]) setDiffTab(wtPath, "workdir");
+    }
   }
 
   async function loadMoreCommits(wtPath: string) {
@@ -493,28 +558,73 @@
                         </div>
 
                         {#if commitsExpanded[wt.path]}
-                          <div class="commits">
-                            {#if commitsLoading[wt.path] && !commitsByPath[wt.path]}
-                              <p class="muted small nopad">Loading…</p>
-                            {:else if commitsByPath[wt.path]}
-                              {#each commitsByPath[wt.path] as c (c.sha)}
-                                <div class="commit-row">
-                                  <code class="sha">{c.shortSha}</code>
-                                  <span class="commit-subject">{c.subject}</span>
-                                  <span class="commit-author">— {c.author}</span>
-                                  <span class="commit-time">{relTime(c.time)}</span>
-                                </div>
-                              {/each}
-                              {#if !commitsExhausted[wt.path]}
-                                <button
-                                  class="tiny load-more"
-                                  on:click={() => loadMoreCommits(wt.path)}
-                                  disabled={commitsLoading[wt.path]}
-                                >{commitsLoading[wt.path] ? "Loading…" : "Load more"}</button>
+                          <div class="expanded">
+                            <div class="tabs">
+                              <button
+                                class="tab"
+                                class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
+                                on:click={() => setDiffTab(wt.path, "workdir")}
+                              >Unstaged {summary.unstaged ? `(${summary.unstaged})` : ""}</button>
+                              <button
+                                class="tab"
+                                class:active={diffTab[wt.path] === "staged"}
+                                on:click={() => setDiffTab(wt.path, "staged")}
+                              >Staged {summary.staged ? `(${summary.staged})` : ""}</button>
+                            </div>
+
+                            {#if (diffTab[wt.path] ?? "workdir") === "workdir"}
+                              {#if diffLoading[wt.path] && workdirDiff[wt.path] === undefined}
+                                <p class="muted small nopad">Loading diff…</p>
+                              {:else if workdirDiff[wt.path]}
+                                <pre class="diff">{workdirDiff[wt.path]}</pre>
                               {:else}
-                                <span class="muted small">— end of history</span>
+                                <p class="muted small nopad">Nothing unstaged.</p>
+                              {/if}
+                            {:else}
+                              {#if diffLoading[wt.path] && stagedDiff[wt.path] === undefined}
+                                <p class="muted small nopad">Loading diff…</p>
+                              {:else if stagedDiff[wt.path]}
+                                <pre class="diff">{stagedDiff[wt.path]}</pre>
+                              {:else}
+                                <p class="muted small nopad">Nothing staged.</p>
                               {/if}
                             {/if}
+
+                            <h3 class="commits-heading">History</h3>
+                            <div class="commits">
+                              {#if commitsLoading[wt.path] && !commitsByPath[wt.path]}
+                                <p class="muted small nopad">Loading…</p>
+                              {:else if commitsByPath[wt.path]}
+                                {#each commitsByPath[wt.path] as c (c.sha)}
+                                  <button
+                                    class="commit-row"
+                                    class:open={openCommitSha[wt.path] === c.sha}
+                                    on:click={() => openCommit(wt.path, c.sha)}
+                                  >
+                                    <code class="sha">{c.shortSha}</code>
+                                    <span class="commit-subject">{c.subject}</span>
+                                    <span class="commit-author">— {c.author}</span>
+                                    <span class="commit-time">{relTime(c.time)}</span>
+                                  </button>
+                                  {#if openCommitSha[wt.path] === c.sha}
+                                    {#if commitDiff[`${wt.path}:${c.sha}`] !== undefined}
+                                      <pre class="diff inline">{commitDiff[`${wt.path}:${c.sha}`]}</pre>
+                                    {:else}
+                                      <p class="muted small nopad">Loading commit…</p>
+                                    {/if}
+                                  {/if}
+                                {/each}
+                                {#if !commitsExhausted[wt.path]}
+                                  <button
+                                    class="tiny load-more"
+                                    on:click={() => loadMoreCommits(wt.path)}
+                                    disabled={commitsLoading[wt.path]}
+                                  >{commitsLoading[wt.path] ? "Loading…" : "Load more"}</button>
+                                {:else}
+                                  <span class="muted small">— end of history</span>
+                                {/if}
+                              {/if}
+                            </div>
                           </div>
                         {/if}
 
@@ -720,9 +830,19 @@
     display: flex;
     gap: 0.75rem;
     align-items: baseline;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
   .repo-header strong {
     font-size: 1rem;
+    white-space: nowrap;
+  }
+  .repo-header .path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .name-btn {
     background: transparent;
@@ -892,22 +1012,88 @@
   .chevron.open svg {
     transform: rotate(180deg);
   }
-  .commits {
+  .expanded {
     margin-top: 0.5rem;
     padding-left: 0.8rem;
     border-left: 2px solid var(--surface-2);
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 0.4rem;
+  }
+  .tab {
+    padding: 0.25rem 0.6rem;
+    background: var(--surface-2);
+    border: 0;
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.75rem;
+  }
+  .tab:hover {
+    color: var(--text-2);
+  }
+  .tab.active {
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
+  }
+  .diff {
+    margin: 0.25rem 0 0.5rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--surface-0);
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-sm);
+    font-family: ui-monospace, monospace;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--text-3);
+    max-height: 360px;
+    overflow: auto;
+    white-space: pre;
+  }
+  .diff.inline {
+    margin-left: 1.4rem;
+    max-height: 240px;
+  }
+  .commits-heading {
+    margin: 0.75rem 0 0.25rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .commits {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
   }
   .commit-row {
     display: flex;
     gap: 0.5rem;
     align-items: baseline;
-    padding: 0.2rem 0;
+    padding: 0.3rem 0.5rem;
     font-size: 0.8rem;
     color: var(--text-4);
     overflow: hidden;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .commit-row:hover {
+    background: var(--surface-2);
+  }
+  .commit-row.open {
+    background: var(--surface-2);
+    color: var(--text-2);
   }
   .load-more {
     margin-top: 0.4rem;
+    align-self: flex-start;
   }
   .events {
     list-style: none;

@@ -1,7 +1,14 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Workspace } from "./workspace";
-import { listWorktrees, getWorktreeDetails, listCommits } from "./git";
+import {
+  listWorktrees,
+  getWorktreeDetails,
+  listCommits,
+  getDiff,
+  getCommitDiff,
+  type DiffKind,
+} from "./git";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
@@ -104,6 +111,8 @@ const server = Bun.serve({
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
+          { method: "GET", path: "/api/diff", description: "git diff text for a worktree: ?path=<wt>&kind=workdir|staged" },
+          { method: "GET", path: "/api/commit", description: "git show output for one commit: ?path=<wt>&sha=<sha>" },
           { method: "POST", path: "/api/open", body: { path: "string", app: "fork | terminal | <editor cmd>" }, description: "open a path in Fork / terminal / a detected editor via OS shell-out" },
           { method: "GET", path: "/api/stream", description: "Server-Sent Events stream; emits 'change' on every mutation so clients can refresh" },
           { method: "GET", path: "/api/events", description: "list recent events (mutations + observations) with undone/reversible flags" },
@@ -213,6 +222,43 @@ const server = Bun.serve({
 
     if (url.pathname === "/api/editors" && req.method === "GET") {
       return json(await detectEditors());
+    }
+
+    if (url.pathname === "/api/commit" && req.method === "GET") {
+      const path = url.searchParams.get("path");
+      const sha = url.searchParams.get("sha");
+      if (!path || !sha) {
+        return json(
+          { error: "?path=<worktree-path>&sha=<commit-sha> required" },
+          { status: 400 },
+        );
+      }
+      const content = await getCommitDiff(path, sha);
+      return new Response(content, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          ...CORS,
+        },
+      });
+    }
+
+    if (url.pathname === "/api/diff" && req.method === "GET") {
+      const path = url.searchParams.get("path");
+      const kindParam = url.searchParams.get("kind");
+      const kind: DiffKind = kindParam === "staged" ? "staged" : "workdir";
+      if (!path) {
+        return json(
+          { error: "?path=<worktree-path> is required" },
+          { status: 400 },
+        );
+      }
+      const diff = await getDiff(path, kind);
+      return new Response(diff, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          ...CORS,
+        },
+      });
     }
 
     if (url.pathname === "/api/commits" && req.method === "GET") {
