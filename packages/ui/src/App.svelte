@@ -75,6 +75,10 @@
   let openCommitSha: Record<string, string | null> = {};
   let commitDiff: Record<string, string> = {};
   let diffLoading: Record<string, boolean> = {};
+  // Per-worktree: false = ±2 lines of context (default); true = whole file.
+  let fullFile: Record<string, boolean> = {};
+  const FULL_FILE_CONTEXT = 99999;
+  const DEFAULT_CONTEXT = 2;
 
   // commit history per worktree-path
   let commitsByPath: Record<string, LastCommit[]> = {};
@@ -250,11 +254,62 @@
     return res.json();
   }
 
+  function contextFor(wtPath: string): number {
+    return fullFile[wtPath] ? FULL_FILE_CONTEXT : DEFAULT_CONTEXT;
+  }
   async function fetchDiff(wtPath: string, kind: DiffTab): Promise<string> {
-    const qs = new URLSearchParams({ path: wtPath, kind });
+    const qs = new URLSearchParams({
+      path: wtPath,
+      kind,
+      context: String(contextFor(wtPath)),
+    });
     const res = await fetch(`/api/diff?${qs.toString()}`);
     if (!res.ok) throw new Error(`/api/diff: ${res.status}`);
     return res.text();
+  }
+
+  /** Flip ±2 lines ↔ Full file, drop the worktree's cached diffs, refetch. */
+  async function toggleFullFile(wtPath: string) {
+    fullFile = { ...fullFile, [wtPath]: !fullFile[wtPath] };
+
+    const wd = { ...workdirDiff };
+    delete wd[wtPath];
+    workdirDiff = wd;
+
+    const sd = { ...stagedDiff };
+    delete sd[wtPath];
+    stagedDiff = sd;
+
+    const cd: Record<string, string> = {};
+    for (const k in commitDiff) {
+      if (!k.startsWith(`${wtPath}:`)) cd[k] = commitDiff[k]!;
+    }
+    commitDiff = cd;
+
+    const tab = diffTab[wtPath] ?? "workdir";
+    if (tab === "workdir") await loadWorkdirDiff(wtPath);
+    else await loadStagedDiff(wtPath);
+
+    // If a commit was open, refetch its diff with the new context.
+    const sha = openCommitSha[wtPath];
+    if (sha) {
+      try {
+        const qs = new URLSearchParams({
+          path: wtPath,
+          sha,
+          context: String(contextFor(wtPath)),
+        });
+        const res = await fetch(`/api/commit?${qs.toString()}`);
+        if (res.ok) {
+          commitDiff = {
+            ...commitDiff,
+            [`${wtPath}:${sha}`]: await res.text(),
+          };
+        }
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      }
+    }
   }
 
   async function loadWorkdirDiff(wtPath: string) {
@@ -299,7 +354,11 @@
     if (commitDiff[`${wtPath}:${sha}`] !== undefined) return;
     diffLoading = { ...diffLoading, [wtPath]: true };
     try {
-      const qs = new URLSearchParams({ path: wtPath, sha });
+      const qs = new URLSearchParams({
+        path: wtPath,
+        sha,
+        context: String(contextFor(wtPath)),
+      });
       const res = await fetch(`/api/commit?${qs.toString()}`);
       if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
       const text = await res.text();
@@ -666,27 +725,37 @@
 
               {#if commitsExpanded[wt.path]}
                 <div class="expanded">
-                  <div class="tabs">
+                  <div class="tabs-row">
+                    <div class="tabs">
+                      <button
+                        class="tab"
+                        class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
+                        on:click={() => setDiffTab(wt.path, "workdir")}
+                      >
+                        Unstaged
+                        {#if summary.text !== "clean"}
+                          <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
+                        {/if}
+                      </button>
+                      <button
+                        class="tab"
+                        class:active={diffTab[wt.path] === "staged"}
+                        on:click={() => setDiffTab(wt.path, "staged")}
+                      >
+                        Staged
+                        {#if wt.fileStatus.staged > 0}
+                          <span class="tab-count">{wt.fileStatus.staged}</span>
+                        {/if}
+                      </button>
+                    </div>
                     <button
-                      class="tab"
-                      class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
-                      on:click={() => setDiffTab(wt.path, "workdir")}
-                    >
-                      Unstaged
-                      {#if summary.text !== "clean"}
-                        <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
-                      {/if}
-                    </button>
-                    <button
-                      class="tab"
-                      class:active={diffTab[wt.path] === "staged"}
-                      on:click={() => setDiffTab(wt.path, "staged")}
-                    >
-                      Staged
-                      {#if wt.fileStatus.staged > 0}
-                        <span class="tab-count">{wt.fileStatus.staged}</span>
-                      {/if}
-                    </button>
+                      class="ctx-toggle"
+                      class:active={fullFile[wt.path]}
+                      title={fullFile[wt.path]
+                        ? "Showing whole file — click for ±2 lines"
+                        : "Showing ±2 lines context — click for whole file"}
+                      on:click={() => toggleFullFile(wt.path)}
+                    >{fullFile[wt.path] ? "Full file" : "±2 lines"}</button>
                   </div>
 
                   {#if (diffTab[wt.path] ?? "workdir") === "workdir"}
@@ -1095,10 +1164,33 @@
     border-left: 2px solid var(--surface-2);
     min-width: 0;
   }
+  .tabs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+  }
   .tabs {
     display: flex;
     gap: 0.25rem;
-    margin-bottom: 0.4rem;
+  }
+  .ctx-toggle {
+    padding: 0.25rem 0.6rem;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ctx-toggle:hover {
+    color: var(--text-2);
+  }
+  .ctx-toggle.active {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .tab {
     padding: 0.25rem 0.6rem;

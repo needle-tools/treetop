@@ -227,13 +227,15 @@ const server = Bun.serve({
     if (url.pathname === "/api/commit" && req.method === "GET") {
       const path = url.searchParams.get("path");
       const sha = url.searchParams.get("sha");
+      const ctxParam = url.searchParams.get("context");
+      const context = ctxParam ? Number(ctxParam) : 2;
       if (!path || !sha) {
         return json(
           { error: "?path=<worktree-path>&sha=<commit-sha> required" },
           { status: 400 },
         );
       }
-      const content = await getCommitDiff(path, sha);
+      const content = await getCommitDiff(path, sha, context);
       return new Response(content, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
@@ -246,13 +248,15 @@ const server = Bun.serve({
       const path = url.searchParams.get("path");
       const kindParam = url.searchParams.get("kind");
       const kind: DiffKind = kindParam === "staged" ? "staged" : "workdir";
+      const ctxParam = url.searchParams.get("context");
+      const context = ctxParam ? Number(ctxParam) : 2;
       if (!path) {
         return json(
           { error: "?path=<worktree-path> is required" },
           { status: 400 },
         );
       }
-      const diff = await getDiff(path, kind);
+      const diff = await getDiff(path, kind, context);
       return new Response(diff, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",

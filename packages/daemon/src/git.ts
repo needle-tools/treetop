@@ -206,13 +206,15 @@ export type DiffKind = "workdir" | "staged";
 export async function getCommitDiff(
   worktreePath: string,
   sha: string,
+  context: number = 2,
 ): Promise<string> {
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) {
     // Don't pass user-supplied strings to git; only short/long hex SHAs.
     return "";
   }
+  const ctx = `--unified=${clampContext(context)}`;
   try {
-    return await $`git -C ${worktreePath} show --no-color --pretty=fuller ${sha}`
+    return await $`git -C ${worktreePath} show --no-color --pretty=fuller ${ctx} ${sha}`
       .quiet()
       .text();
   } catch {
@@ -220,20 +222,28 @@ export async function getCommitDiff(
   }
 }
 
+function clampContext(context: number): number {
+  if (!Number.isFinite(context)) return 2;
+  return Math.max(0, Math.min(99999, Math.floor(context)));
+}
+
 /**
  * Return the textual diff for a worktree. `workdir` = unstaged changes;
- * `staged` = the index vs HEAD. Empty string when there's nothing.
- * Untracked files are summarised at the top so reviewers see them too —
- * git diff doesn't otherwise mention untracked files.
+ * `staged` = the index vs HEAD. `context` controls -U<n>; pass a very large
+ * value (e.g. 99999) to effectively get the full file. Default 2 lines.
+ * Empty string when there's nothing. Untracked files are summarised at the
+ * top so reviewers see them too — git diff doesn't otherwise mention them.
  */
 export async function getDiff(
   worktreePath: string,
   kind: DiffKind = "workdir",
+  context: number = 2,
 ): Promise<string> {
+  const ctx = `--unified=${clampContext(context)}`;
   try {
     const diff = await (kind === "staged"
-      ? $`git -C ${worktreePath} diff --staged --no-color`
-      : $`git -C ${worktreePath} diff --no-color`)
+      ? $`git -C ${worktreePath} diff --staged --no-color ${ctx}`
+      : $`git -C ${worktreePath} diff --no-color ${ctx}`)
       .quiet()
       .text();
 

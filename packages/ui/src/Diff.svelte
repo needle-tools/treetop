@@ -21,7 +21,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.78rem;
     line-height: 1.45;
-    max-height: 420px;
+    max-height: 80vh;
     overflow: auto;
     padding: 0.35rem 0;
     min-width: 0;
