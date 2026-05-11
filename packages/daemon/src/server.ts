@@ -131,6 +131,7 @@ const server = Bun.serve({
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
+          { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -207,6 +208,64 @@ const server = Bun.serve({
       }
       const session = await parseSessionFile(agentKind, source);
       return json(session);
+    }
+
+    if (url.pathname === "/api/session/send" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { agent?: string; sessionId?: string; cwd?: string; text?: string }
+        | null;
+      const agent = body?.agent;
+      const sessionId = body?.sessionId;
+      const cwd = body?.cwd;
+      const text = body?.text;
+      if (!agent || !cwd || !text || typeof text !== "string" || !text.trim()) {
+        return json(
+          { error: "agent, cwd, text required" },
+          { status: 400 },
+        );
+      }
+      if (agent !== "claude") {
+        // Only Claude wired up in v0; codex/copilot follow once we know
+        // their non-interactive resume invocation.
+        return json(
+          { error: `sending to ${agent} not supported yet` },
+          { status: 501 },
+        );
+      }
+      if (!sessionId) {
+        return json({ error: "claude needs sessionId" }, { status: 400 });
+      }
+      // Fire-and-forget. Claude appends to its own JSONL on disk; the UI's
+      // existing 2s session poll picks the new messages up naturally.
+      //
+      // `--permission-mode bypassPermissions` is needed because we run with
+      // `-p` (print, headless): there's no TTY for the user to approve edit
+      // / bash / network permissions, so without bypass claude would block
+      // forever waiting for a confirmation it can never receive. The user
+      // explicitly typed a prompt in this session, which is consent enough
+      // for v0. We can surface granular per-call approvals from the UI later.
+      try {
+        Bun.spawn({
+          cmd: [
+            "claude",
+            "-p",
+            "-r",
+            sessionId,
+            "--permission-mode",
+            "bypassPermissions",
+            text,
+          ],
+          cwd,
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e) },
+          { status: 500 },
+        );
+      }
+      return json({ ok: true });
     }
 
     if (url.pathname === "/api/fetch" && req.method === "POST") {

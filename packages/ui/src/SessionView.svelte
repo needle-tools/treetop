@@ -84,6 +84,18 @@
   let messagesEl: HTMLElement | null = null;
   let lastLoadedAt = 0;
   let pollCount = 0;
+  let inputText = "";
+  let sending = false;
+  let sendError = "";
+  /** When non-null we have a prompt in flight. The numeric value is the
+   *  session.messages.length at the moment we hit Send; once load() sees
+   *  a higher count we know claude wrote something back and can clear
+   *  the composer + the in-flight flag. */
+  let pendingSinceLen: number | null = null;
+  /** Hard timeout for in-flight prompts. If claude never produces an
+   *  answer (crashed, hung, no API key, ...), we surface an error
+   *  instead of leaving the spinner up indefinitely. */
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   // Track whether we've already shown a session at least once. First render
   // = scroll to bottom. Subsequent renders = only auto-scroll if the user
   // was already near the bottom (so polling can't snatch them away when
@@ -110,10 +122,76 @@
       console.debug(
         `[SessionView] poll #${pollCount}: ${session.messages.length} messages`,
       );
+      // If a send is in flight, watch for the message count to grow —
+      // that means claude has written at least the user-turn (and likely
+      // the assistant turn too) into the JSONL. At that point we clear
+      // the composer.
+      if (pendingSinceLen !== null && session.messages.length > pendingSinceLen) {
+        inputText = "";
+        sending = false;
+        pendingSinceLen = null;
+        if (pendingTimer) {
+          clearTimeout(pendingTimer);
+          pendingTimer = null;
+        }
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function sendMessage() {
+    const text = inputText.trim();
+    if (!text || sending || !session?.sessionId || !session.cwd) return;
+    sending = true;
+    sendError = "";
+    // Capture the message count at send time. We clear the composer only
+    // once a *new* message lands in the JSONL — see load() below.
+    pendingSinceLen = session.messages.length;
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      if (pendingSinceLen !== null) {
+        sendError = "Claude didn't respond in 90s — try again or check claude logs";
+        pendingSinceLen = null;
+        sending = false;
+      }
+    }, 90_000);
+    try {
+      const res = await fetch("/api/session/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent,
+          sessionId: session.sessionId,
+          cwd: session.cwd,
+          text,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+      pendingSinceLen = null;
+      sending = false;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+    }
+    // Note: we don't clear inputText or set sending=false here on success —
+    // load() does it once it observes the new message(s) on disk.
+  }
+
+  function onComposerKey(e: KeyboardEvent) {
+    // Enter sends. Shift+Enter inserts a newline. IME composition keeps
+    // its own use of Enter and must not trigger a send.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void sendMessage();
     }
   }
 
@@ -196,6 +274,7 @@
 
   onDestroy(() => {
     if (pollTimer !== null) window.clearInterval(pollTimer);
+    if (pendingTimer) clearTimeout(pendingTimer);
   });
 </script>
 
@@ -311,6 +390,52 @@
       {/each}
     </ul>
   {/if}
+
+  {#if session && agent === "claude"}
+    <form class="composer" on:submit|preventDefault={sendMessage}>
+      <div class="composer-box">
+        <textarea
+          class="composer-input"
+          bind:value={inputText}
+          on:keydown={onComposerKey}
+          placeholder="Reply to Claude…  Shift+Enter for newline"
+          rows="2"
+          disabled={sending}
+        ></textarea>
+        <button
+          type="submit"
+          class="composer-send"
+          class:is-sending={sending}
+          disabled={!inputText.trim() || sending}
+          title={sending ? "Sending…" : "Send (Enter)"}
+          aria-label={sending ? "Sending" : "Send"}
+        >
+          {#if sending}
+            <span class="spinner" aria-hidden="true"></span>
+          {:else}
+            <!-- paper-plane glyph; currentColor so we control via CSS -->
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M22 2 11 13" />
+              <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
+            </svg>
+          {/if}
+        </button>
+      </div>
+      {#if sendError}
+        <span class="composer-error" title={sendError}>{sendError}</span>
+      {/if}
+    </form>
+  {/if}
 </div>
 
 <style>
@@ -418,6 +543,93 @@
     color: var(--error-text);
     padding: 0.5rem 0.75rem;
     margin: 0;
+  }
+  /* Composer pinned at the bottom of the session column. Borrowed from
+     the same surface tokens as the header for visual consistency. */
+  .composer {
+    border-top: 1px solid var(--surface-3);
+    background: var(--surface-2);
+    padding: 0.5rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  /* The textarea hosts the Send button absolutely-positioned in its
+     bottom-right corner. Padding-right on the input keeps typed text
+     from sliding under the button. */
+  .composer-box {
+    position: relative;
+  }
+  .composer-input {
+    width: 100%;
+    box-sizing: border-box;
+    resize: none;
+    min-height: 2.5rem;
+    background: var(--surface-1);
+    color: var(--text-1);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 2.6rem 0.5rem 0.6rem;
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1.35;
+  }
+  .composer-input:focus {
+    outline: none;
+    /* Subtle neutral focus state — no brand color so the chat field
+       doesn't shout for attention. */
+    border-color: var(--text-faint);
+  }
+  .composer-input::placeholder {
+    color: var(--text-muted);
+  }
+  .composer-error {
+    color: var(--error-text);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-send {
+    position: absolute;
+    right: 0.4rem;
+    bottom: 0.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: color 0.1s ease;
+  }
+  .composer-send:hover:not(:disabled) {
+    color: var(--text-1);
+  }
+  .composer-send:disabled {
+    cursor: not-allowed;
+  }
+  /* In-flight send: keep the spinner readable (slightly muted text)
+     instead of fading the button to near-invisible. */
+  .composer-send.is-sending:disabled {
+    color: var(--text-4);
+  }
+  .composer-send:disabled:not(.is-sending) {
+    color: var(--text-faint);
+  }
+  .spinner {
+    width: 0.9rem;
+    height: 0.9rem;
+    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spinner-spin 0.6s linear infinite;
+  }
+  @keyframes spinner-spin {
+    to { transform: rotate(360deg); }
   }
   .muted {
     color: var(--text-muted);
