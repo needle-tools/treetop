@@ -1,43 +1,79 @@
 /**
  * Shell out to OS apps to open a worktree in an editor / Fork / terminal.
  *
- * Editor detection scans a whitelist of known commands; only commands that
- * resolve via `which` are exposed. openIn() only spawns allowlisted commands
- * to keep this from becoming an arbitrary-command-execution endpoint.
+ * Editor detection:
+ *   - First try the CLI command (`cursor`, `code`, `rider`, ...) via `which`.
+ *   - On macOS, also probe for the matching `.app` bundle in /Applications
+ *     and ~/Applications. Many users have VSCode/Cursor installed but never
+ *     ran the "install 'code' command in PATH" step, so the CLI is absent
+ *     even when the app is there.
+ *
+ * openIn() only spawns allowlisted commands or `open -a <known app>` to keep
+ * this from becoming arbitrary command execution.
  */
 
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
 export interface EditorDescriptor {
-  name: string; // display name, e.g. "Cursor"
-  cmd: string; // CLI command, e.g. "cursor"
+  name: string; // display name, e.g. "VSCode"
+  cmd: string; // logical key the UI sends back to openIn()
 }
 
-const KNOWN_EDITORS: readonly EditorDescriptor[] = [
-  { name: "Cursor", cmd: "cursor" },
-  { name: "VSCode", cmd: "code" },
-  { name: "Rider", cmd: "rider" },
-  { name: "IntelliJ", cmd: "idea" },
-  { name: "WebStorm", cmd: "webstorm" },
-  { name: "Sublime Text", cmd: "subl" },
+interface EditorSpec {
+  name: string;
+  cmd: string;
+  app?: string; // macOS .app bundle name (without .app)
+}
+
+const KNOWN_EDITORS: readonly EditorSpec[] = [
+  { name: "Cursor", cmd: "cursor", app: "Cursor" },
+  { name: "VSCode", cmd: "code", app: "Visual Studio Code" },
+  { name: "Rider", cmd: "rider", app: "Rider" },
+  { name: "IntelliJ", cmd: "idea", app: "IntelliJ IDEA" },
+  { name: "IntelliJ CE", cmd: "idea-ce", app: "IntelliJ IDEA CE" },
+  { name: "WebStorm", cmd: "webstorm", app: "WebStorm" },
+  { name: "Sublime Text", cmd: "subl", app: "Sublime Text" },
   { name: "Neovim", cmd: "nvim" },
 ];
 
 const SPECIAL_APPS = new Set(["fork", "terminal"]);
-const ALLOWED_EDITOR_CMDS = new Set(KNOWN_EDITORS.map((e) => e.cmd));
+const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 
 async function which(cmd: string): Promise<boolean> {
   const proc = Bun.spawn(["which", cmd], { stdout: "pipe", stderr: "pipe" });
   return (await proc.exited) === 0;
 }
 
-let editorsCache: EditorDescriptor[] | null = null;
+async function macAppExists(appName: string): Promise<boolean> {
+  if (process.platform !== "darwin") return false;
+  const candidates = [
+    `/Applications/${appName}.app`,
+    join(homedir(), "Applications", `${appName}.app`),
+  ];
+  for (const c of candidates) {
+    try {
+      await access(c);
+      return true;
+    } catch {
+      // not at this path; try next
+    }
+  }
+  return false;
+}
 
 export async function detectEditors(): Promise<EditorDescriptor[]> {
-  if (editorsCache) return editorsCache;
-  const checks = await Promise.all(
-    KNOWN_EDITORS.map(async (e) => ({ e, present: await which(e.cmd) })),
+  const present = await Promise.all(
+    KNOWN_EDITORS.map(async (e) => {
+      if (await which(e.cmd)) return e;
+      if (e.app && (await macAppExists(e.app))) return e;
+      return null;
+    }),
   );
-  editorsCache = checks.filter((c) => c.present).map((c) => c.e);
-  return editorsCache;
+  return present
+    .filter((e): e is EditorSpec => e !== null)
+    .map(({ name, cmd }) => ({ name, cmd }));
 }
 
 export async function openIn(
@@ -93,19 +129,35 @@ export async function openIn(
     );
   }
 
-  // Anything else must be a known editor cmd — keeps this from becoming
-  // arbitrary-command execution.
-  if (!ALLOWED_EDITOR_CMDS.has(app)) {
-    const allowed = [...ALLOWED_EDITOR_CMDS, ...SPECIAL_APPS].join(", ");
+  // Must be a known editor cmd. Try CLI first; on macOS, fall back to
+  // launching the .app bundle so users don't have to install the shell CLI.
+  const spec = CMD_TO_SPEC.get(app);
+  if (!spec) {
+    const allowed = [
+      ...[...CMD_TO_SPEC.keys()],
+      ...SPECIAL_APPS,
+    ].join(", ");
     throw new Error(`unknown app: ${app} (allowed: ${allowed})`);
   }
-  if (!(await which(app))) {
-    throw new Error(`${app} is not on PATH`);
+
+  if (await which(spec.cmd)) {
+    Bun.spawn([spec.cmd, path], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    return { via: spec.cmd };
   }
-  Bun.spawn([app, path], {
-    stdout: "ignore",
-    stderr: "ignore",
-    stdin: "ignore",
-  });
-  return { via: app };
+
+  if (spec.app && (await macAppExists(spec.app))) {
+    Bun.spawn(["open", "-a", spec.app, path], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return { via: `${spec.app} (app bundle)` };
+  }
+
+  throw new Error(
+    `${spec.name}: neither CLI '${spec.cmd}' on PATH nor app bundle '${spec.app}.app' found`,
+  );
 }
