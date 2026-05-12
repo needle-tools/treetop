@@ -1232,23 +1232,6 @@
       diffLoading = { ...diffLoading, [wtPath]: false };
     }
   }
-  /** Auto-fetch the workdir diff for every row whose status is dirty,
-   *  so the Unstaged tab + diff body can render under the row head
-   *  without the user having to expand the History chevron first.
-   *  Idempotent: skipped when the diff is already cached or in flight. */
-  $: for (const row of rows) {
-    const wt = row.wt;
-    if (!wt) continue;
-    const summary = statusSummary(wt.fileStatus);
-    if (
-      summary.text !== "clean" &&
-      workdirDiff[wt.path] === undefined &&
-      !diffLoading[wt.path]
-    ) {
-      void loadWorkdirDiff(wt.path);
-    }
-  }
-
   function setDiffTab(wtPath: string, tab: DiffTab) {
     diffTab = { ...diffTab, [wtPath]: tab };
     if (tab === "workdir" && workdirDiff[wtPath] === undefined)
@@ -2494,76 +2477,16 @@
                 {/if}
               {/if}
 
-              <!-- Inline diff block: surfaces unstaged/staged changes
-                   without requiring the user to expand the History
-                   chevron first. Only renders when the worktree is
-                   dirty; the workdir diff auto-loads via the
-                   reactive `$:` block at script scope. -->
-              {#if summary.text !== "clean" || wt.fileStatus.staged > 0}
-                <div class="inline-diff">
-                  <div class="tabs-row">
-                    <div class="tabs">
-                      <button
-                        class="tab"
-                        class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
-                        on:click={() => setDiffTab(wt.path, "workdir")}
-                      >
-                        Unstaged
-                        {#if summary.text !== "clean"}
-                          <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
-                        {/if}
-                      </button>
-                      <button
-                        class="tab"
-                        class:active={diffTab[wt.path] === "staged"}
-                        on:click={() => setDiffTab(wt.path, "staged")}
-                      >
-                        Staged
-                        {#if wt.fileStatus.staged > 0}
-                          <span class="tab-count">{wt.fileStatus.staged}</span>
-                        {/if}
-                      </button>
-                    </div>
-                    <button
-                      class="ctx-toggle"
-                      class:active={fullFile[wt.path]}
-                      title={fullFile[wt.path]
-                        ? "Showing whole file — click for ±2 lines"
-                        : "Showing ±2 lines context — click for whole file"}
-                      on:click={() => toggleFullFile(wt.path)}
-                    >{fullFile[wt.path] ? "Full file" : "±2 lines"}</button>
-                  </div>
-
-                  {#if (diffTab[wt.path] ?? "workdir") === "workdir"}
-                    {#if diffLoading[wt.path] && workdirDiff[wt.path] === undefined}
-                      <p class="muted small nopad">Loading diff…</p>
-                    {:else if workdirDiff[wt.path]}
-                      <DiffViewer text={workdirDiff[wt.path]} />
-                    {:else}
-                      <p class="muted small nopad">Nothing unstaged.</p>
-                    {/if}
-                  {:else}
-                    {#if diffLoading[wt.path] && stagedDiff[wt.path] === undefined}
-                      <p class="muted small nopad">Loading diff…</p>
-                    {:else if stagedDiff[wt.path]}
-                      <DiffViewer text={stagedDiff[wt.path]} />
-                    {:else}
-                      <p class="muted small nopad">Nothing staged.</p>
-                    {/if}
-                  {/if}
-                </div>
-              {/if}
-
               <!-- "Topmost commit" row: chevron + last-commit summary,
                    placed BELOW the sessions strip so the chat columns
                    are the row's primary content. The chevron toggles
-                   the full History block below. -->
+                   the source-control panel (staging + history) below. -->
               <div class="row-commit muted small">
                 <button
                   class="chevron"
                   class:open={commitsExpanded[wt.path]}
-                  title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                  aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                  title={commitsExpanded[wt.path] ? "Hide source control" : "Show source control"}
+                  aria-label={commitsExpanded[wt.path] ? "Hide source control" : "Show source control"}
                   on:click={() => toggleCommits(wt.path)}
                 >
                   <span class="arrow">▸</span>
@@ -2579,9 +2502,63 @@
                   {#if zenRowKey === row.key}
                     <button
                       class="hide-history-btn"
-                      title="Hide history / staging view"
+                      title="Hide source control"
                       on:click={() => toggleCommits(wt.path)}
-                    >Hide history ✕</button>
+                    >Hide ✕</button>
+                  {/if}
+                  {#if summary.text !== "clean" || wt.fileStatus.staged > 0}
+                    <div class="inline-diff">
+                      <div class="tabs-row">
+                        <div class="tabs">
+                          <button
+                            class="tab"
+                            class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
+                            on:click={() => setDiffTab(wt.path, "workdir")}
+                          >
+                            Unstaged
+                            {#if summary.text !== "clean"}
+                              <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
+                            {/if}
+                          </button>
+                          <button
+                            class="tab"
+                            class:active={diffTab[wt.path] === "staged"}
+                            on:click={() => setDiffTab(wt.path, "staged")}
+                          >
+                            Staged
+                            {#if wt.fileStatus.staged > 0}
+                              <span class="tab-count">{wt.fileStatus.staged}</span>
+                            {/if}
+                          </button>
+                        </div>
+                        <button
+                          class="ctx-toggle"
+                          class:active={fullFile[wt.path]}
+                          title={fullFile[wt.path]
+                            ? "Showing whole file — click for ±2 lines"
+                            : "Showing ±2 lines context — click for whole file"}
+                          on:click={() => toggleFullFile(wt.path)}
+                        >{fullFile[wt.path] ? "Full file" : "±2 lines"}</button>
+                      </div>
+
+                      {#if (diffTab[wt.path] ?? "workdir") === "workdir"}
+                        {#if diffLoading[wt.path] && workdirDiff[wt.path] === undefined}
+                          <p class="muted small nopad">Loading diff…</p>
+                        {:else if workdirDiff[wt.path]}
+                          <DiffViewer text={workdirDiff[wt.path]} />
+                        {:else}
+                          <p class="muted small nopad">Nothing unstaged.</p>
+                        {/if}
+                      {:else}
+                        {#if diffLoading[wt.path] && stagedDiff[wt.path] === undefined}
+                          <p class="muted small nopad">Loading diff…</p>
+                        {:else if stagedDiff[wt.path]}
+                          <DiffViewer text={stagedDiff[wt.path]} />
+                        {:else}
+                          <p class="muted small nopad">Nothing staged.</p>
+                        {/if}
+                      {/if}
+                    </div>
                   {/if}
                   <h3 class="commits-heading">History</h3>
                   <div class="commits">
