@@ -3,7 +3,3 @@ dist/
 .DS_Store
 *.log
 .vite/
-# Dogfooding artifact: when a local supergit instance watches this
-# repo as a worktree, it writes events.jsonl / attachments / terminal
-# state into a `.supergit/` here. Never check it in.
-.supergit/
