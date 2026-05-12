@@ -108,21 +108,12 @@ whatever the user is doing in the running dashboard. The rule:
 > `:27787`) or otherwise restart it, **first send a one-line message
 > asking for permission** — even after the user just said "deploy this"
 > or "try X." Wait for an explicit go-ahead before issuing the kill.
-> Dev daemon restarts under `bun dev:portless` are fine without asking
-> (hot reload is the point); only prod is sensitive.
+> Dev daemon restarts under `bun dev` are fine without asking (hot
+> reload is the point); only prod is sensitive.
 
 - `bun run start` builds the SPA, then runs the daemon serving
   `packages/ui/dist`. Default port: **27787** (override with
   `SUPERGIT_PORT=…`). Open `http://localhost:27787`.
-- For the clean `https://supergit.localhost/` URL, wrap with
-  `bunx portless supergit …`. The portless proxy daemon must be running
-  first; it binds `:443` and so needs sudo:
-  ```
-  sudo portless proxy start --https
-  ```
-  Then `bunx portless supergit bun run packages/daemon/src/server.ts`
-  (or just `bun start` if you keep the port in env). `supergit-dev.localhost`
-  works the same way via `bun run dev:portless`.
 - For a long-lived prod (survives this shell / a tool sandbox), launch
   detached with `nohup … >/tmp/supergit-prod.log 2>&1 </dev/null &; disown`.
   Background tasks spawned by AI tooling get SIGTERM'd after a few minutes;
@@ -140,15 +131,15 @@ first re-architecting the helper to survive daemon restarts (e.g.
 detached + Unix socket IPC so the daemon can attach to an existing
 helper instead of owning it as a child).
 
-### Port collision footgun (don't reintroduce)
+### PTY env scrub (don't remove)
 
-`bunx portless supergit …` exports `PORT=<supergit's port>`,
-`PORTLESS_URL=…`, and `NODE_EXTRA_CA_CERTS=…` into the daemon's env.
-Those would propagate to every PTY supergit spawns and break neighbouring
-dev servers (Vite reads `process.env.PORT` + `strictPort: true` → refuses
-to start). `packages/daemon/src/terminals/helper.mjs` strips those three
-vars before handing the env to a PTY; keep that scrub in place if you
-refactor terminal spawning.
+`packages/daemon/src/terminals/helper.mjs` strips `PORT`, `PORTLESS_URL`,
+and `NODE_EXTRA_CA_CERTS` from the env it hands to spawned PTYs. The
+PORT scrub matters in general: any reverse-proxy wrapper (current or
+future) that exports `PORT=<supergit's port>` would otherwise propagate
+into every Vite/dev-server PTY supergit spawns, and Vite reads
+`process.env.PORT` with `strictPort: true` → refuses to start because
+"port already in use." Keep the scrub.
 
 ### Debug endpoint
 
