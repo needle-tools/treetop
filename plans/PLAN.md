@@ -648,18 +648,9 @@ their own plan; group them into one polish PR when convenient.
   UI revalidates the affected row only. Watch out for node_modules /
   build-output noise — use a gitignore-aware filter or a small
   allowlist of git's own touched paths.
-- **Split `packages/ui/src/App.svelte` into components.** The file is
-  ~4.5k lines and growing — it now holds the row-list, every per-row
-  pane (status, inline diff, history foldout, sessions strip, terminal
-  columns), all of the keyboard / zen / drag state, plus every chip
-  and modal style. Concrete pain: when two agents work in parallel on
-  unrelated UI tweaks, they keep colliding inside this one file and
-  the resulting diff is hard to staged-commit cleanly. Carve out the
-  obvious chunks first — `WorktreeRow.svelte` (the per-row template
-  + its row-scoped state), `SessionsStrip.svelte`, `DiffPane.svelte`,
-  `ZenLayer.svelte` — and leave `App.svelte` as routing / global
-  state / SSE plumbing only. Refactor first (no behaviour change,
-  tests green), then resume feature work on top.
+- **Split `packages/ui/src/App.svelte` into components.** Full plan
+  in [App.svelte refactor (componentization)](#appsvelte-refactor-componentization)
+  below.
 - **Smooth out `/api/session` cold-start burst.** Today the cache-miss
   path in `packages/daemon/src/sessions.ts` does a fixed 8 MB tail-read
   via `tailParseSessionFile`. For sessions with small messages that
@@ -671,6 +662,165 @@ their own plan; group them into one polish PR when convenient.
   `MAX_CACHED_MESSAGES + slack` lines. Strictly bounded; should
   noticeably lower the RSS high-water mark on a daemon serving multiple
   big TUI sessions.
+
+---
+
+## App.svelte refactor (componentization)
+
+`packages/ui/src/App.svelte` is **4782 lines** as of this writing:
+1854 of script, ~1120 of template, 1808 of style. It holds 73
+top-level state declarations and 87 functions. The pain isn't aesthetic
+— it's that every UI feature lands here, two agents can't easily work
+in the same file without colliding, and the same chip/popover/row
+shapes are re-implemented every time we add a new menu.
+
+### Concrete findings (what's actually duplicated)
+
+Counted in the current file, not hypothetical:
+
+- **7 popover variants** (`actions-popover`, `events-popover`,
+  `tuis-popover`, `wt-picker-popover`, `branch-popover`,
+  `new-agent-popover`, `agents-popover`). All share the same shell:
+  surface-2 background, radius-md, box-shadow, sticky `popover-head`,
+  scrollable body, `use:clampToViewport`. Each variant overrides 3-5
+  properties (position anchor, min/max width, head copy).
+- **`.agent-row`** family — 19 references across at least 6 contexts:
+  TUI overview popover, branch picker, new-agent picker, agent picker,
+  worktree picker, dispose menu. Same anatomy every time: agent icon
+  + name + manual-title + meta (msgs/time/sid) + close-X. Variants
+  for `brand-{claude,codex,copilot}`, plus context-specific modifiers
+  (`branch-row`, `new-agent-row`, `wt-pick-row`, `rm-wt-current`).
+- **Chip-shaped pills** — `.ab`, `.ab-ahead`, `.ab-behind`,
+  `.repo-chip`, `.tab-count`, `.agent-pill`. All small monospace
+  pills, ~0.05-0.2rem padding, `var(--radius-sm)`, sized
+  0.7-0.85rem. The `--chip-*-bg/text` tokens are good but the base
+  shape is re-stated each time.
+- **Dots** — `.status-dot`, `.agent-dot`. Already factored to 8px
+  circle (after the recent alignment fix), but live in separate
+  rules. One `Dot` primitive collapses them.
+- **Icon buttons** — `.tiny`, `.actions-btn`, `.dispose-btn`,
+  `.restart-btn`, `.fullscreen-btn`, `.row-zen-btn`, `.close`,
+  `.remove`. All transparent-bg, muted-color, surface-3 hover. One
+  `.icon-btn` base plus 1-2 modifiers covers the lot.
+- **Row-scoped `Record<wtPath, X>` maps** — `commitsExpanded`,
+  `diffTab`, `workdirDiff`, `stagedDiff`, `diffLoading`,
+  `commitsByPath`, `commitsLoading`, `commitsExhausted`,
+  `openCommitSha`, `commitDiff`, `fullFile`, `rowFolded`,
+  `pickerSessionsByWt`, `awaitingByWt`, `activityByCwd`. Each is "one
+  entry per row" — a tell that the row should own its own state,
+  not the dashboard.
+
+### Phase 0 — CSS dedup, zero behaviour change
+
+Pure style refactor. No template changes, no component splits.
+Targets the duplication that's bleeding into every new feature.
+
+1. Introduce CSS bases + modifiers:
+   - `.chip` — base padding / radius-sm / monospace / font-size.
+     Variants come from the existing `--chip-*-bg/text` tokens
+     wired through `.chip-green`, `.chip-orange`, `.chip-blue`,
+     `.chip-indigo` modifiers.
+   - `.dot` — 8px circle base, colored via `--dot-color` set per
+     instance (`.dot.clean`, `.dot.dirty`, `.dot.claude` etc).
+   - `.icon-btn` — transparent / muted / surface-3-hover base.
+     Specific buttons keep their semantic class for selection but
+     drop the duplicated CSS body.
+   - `.popover` — shell shape (surface-2 / radius-md / shadow /
+     clampToViewport-ready positioning). Each `actions-popover`,
+     `agents-popover` etc. becomes `.popover.actions` /
+     `.popover.agents` with just the per-variant overrides.
+2. Rename the existing classes to point at the base + modifier
+   pattern; the template renames are mechanical (`class="ab ab-ahead"`
+   → `class="chip chip-green"`). Keep the legacy class as an alias
+   for one commit if there's any chance of in-flight branches still
+   using it.
+3. Audit `.agent-row` rules — split into base + brand + variant
+   stylesheets so adding the next picker doesn't double the CSS.
+
+Expected line reduction in the `<style>` block: **~30%** (1800 → ~1250).
+Expected line reduction in `<template>`: small (just shorter class
+strings).
+
+**Risk:** low. CSS-only, visual regressions are easy to spot.
+Verify by `bun dev` and walking the dashboard.
+
+### Phase 1 — Pure presentational components
+
+Tiny, slot-driven, no business state. Each is 50-150 LOC.
+
+1. `Chip.svelte` — `<Chip variant="green|orange|blue|indigo" title?>` +
+   default slot. Replaces every site of `.chip`-modifier markup.
+2. `Dot.svelte` — `<Dot kind="clean|dirty|claude|codex|copilot"
+   size?>`. Replaces `.status-dot` / `.agent-dot` usages.
+3. `Popover.svelte` — `<Popover head="…" on:close>` + default
+   slot for the body. Wraps `use:clampToViewport`, handles ESC,
+   exposes the scrollable body. All 7 popover sites consume it.
+4. `IconButton.svelte` — `<IconButton title icon class?>`. Replaces
+   the family of small action buttons.
+5. `AgentRow.svelte` — `<AgentRow agent name manualTitle? meta? on:click
+   on:close>` — the row anatomy used in every picker. Brand color
+   from `agent` prop.
+
+App.svelte loses ~400-500 lines of template + the CSS that backed
+those classes (already gone in Phase 0).
+
+**Risk:** low-medium. Components are pure functions of props; the
+business logic stays in App.svelte for now.
+
+### Phase 2 — Row-scoped composites
+
+Each row currently lives as one big template chunk in `{#each rows}`,
+sharing dashboard-global state. Extract pieces that have a clear
+"props in, events out" contract.
+
+1. `RowHead.svelte` — chevron + name editor + repo chip + branch
+   chip + actions cluster. Slots for the popovers anchored to it.
+2. `RowStatus.svelte` — the dot + dirty-count + ↑/↓ chips line.
+   Pure read of `wt.fileStatus` and `wt.branchStatus`.
+3. `SourceControlPane.svelte` — the foldout: tabs (Unstaged /
+   Staged), inline DiffViewer, History list. Owns its own
+   `diffTab`, `workdirDiff`, `stagedDiff` state (no more
+   `Record<wtPath, X>` maps). Receives `wt` + `onCommitOpen`
+   callbacks.
+4. `SessionsStrip.svelte` — the horizontal `.sessions-strip`
+   container that hosts `SessionView` / `TerminalView` /
+   `ShellView` / `new-session-col` cards. Owns drag-to-reorder.
+
+**Risk:** medium. State migration is the tricky part — anything
+that currently lives in a `Record<wtPath, X>` map moves into the
+component instance.
+
+### Phase 3 — Big composites
+
+1. `WorktreeRow.svelte` — wraps the Phase 2 components and owns
+   row-level state (rowFolded, zen toggle, drag highlight). App.svelte
+   becomes `{#each rows as row}<WorktreeRow {row} on:zen on:remove />`.
+2. `DashboardHeader.svelte` — the top bar (Recent actions, Errors,
+   TUIs popovers, add-folder button).
+3. `DirtyCheckoutModal.svelte` — the existing modal, extracted with
+   its own scoped styles.
+
+After Phase 3, `App.svelte` should be **~800-1000 lines**: imports,
+global state (rows, sessions, polling, SSE subscription), routing,
+top-level layout. Heavy templates + scoped styles live in their
+respective components.
+
+**Risk:** medium-high. Row-level state has many touch points (SSE
+refresh, zen mode, drag-and-drop, FS-change handling). Each one has
+to be re-plumbed through props or moved into the row.
+
+### Phasing & guard rails
+
+- Each phase is independently committable. **No phase blocks the next.**
+  If we ship Phase 0 and pause, the codebase is already strictly better.
+- **Tests stay green between phases** (parser + workspace tests
+  cover the daemon side; UI changes verified by `bun dev` walkthrough).
+- **No new behaviour during a refactor commit.** A commit either
+  refactors *or* changes behaviour, never both. Catches accidental
+  bug-introductions instantly.
+- **Tackle Phase 0 first.** It's the highest leverage with the
+  lowest risk — once the CSS is normalised, the component
+  extractions in Phase 1-3 have a clean palette to consume.
 
 ---
 
