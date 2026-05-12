@@ -12,6 +12,7 @@ import {
   agentsForWorktree,
   readJsonlField,
   readClaudeSessionMeta,
+  scanClaudeUserMessages,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -223,6 +224,98 @@ describe("readClaudeSessionMeta", () => {
     expect((await readClaudeSessionMeta(file)).title).toBe(
       "I'll read the file first.",
     );
+  });
+});
+
+describe("scanClaudeUserMessages", () => {
+  test("returns empty stats when the file is missing", async () => {
+    expect(await scanClaudeUserMessages("/no/such/file")).toEqual({
+      lastUserMessages: [],
+      userMessageCount: 0,
+    });
+  });
+
+  test("captures first user message, last 3, and total count", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    const lines: string[] = [];
+    for (let i = 1; i <= 7; i++) {
+      lines.push(
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: `prompt ${i}` },
+        }),
+      );
+    }
+    await writeFile(file, lines.join("\n"));
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage).toBe("prompt 1");
+    expect(stats.lastUserMessages).toEqual([
+      "prompt 5",
+      "prompt 6",
+      "prompt 7",
+    ]);
+    expect(stats.userMessageCount).toBe(7);
+  });
+
+  test("returns fewer than 3 in lastUserMessages when there aren't that many", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "only ask" },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage).toBe("only ask");
+    expect(stats.lastUserMessages).toEqual(["only ask"]);
+    expect(stats.userMessageCount).toBe(1);
+  });
+
+  test("skips lines whose user content is empty after stripping wrappers", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: "<command-name>/init</command-name>",
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "real prompt" },
+        }),
+        JSON.stringify({ type: "assistant", message: { content: "ack" } }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage).toBe("real prompt");
+    expect(stats.userMessageCount).toBe(1);
+    expect(stats.lastUserMessages).toEqual(["real prompt"]);
+  });
+
+  test("caps each captured message to a reasonable length", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    const huge = "y ".repeat(800).trim();
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: huge },
+      }),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage?.length ?? 0).toBeLessThanOrEqual(400);
+    expect(stats.firstUserMessage?.endsWith("…")).toBe(true);
   });
 });
 

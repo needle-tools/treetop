@@ -38,6 +38,9 @@
     title?: string;
     lastUserMessage?: string;
     manualTitle?: string;
+    firstUserMessage?: string;
+    lastUserMessages?: string[];
+    userMessageCount?: number;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -1290,6 +1293,45 @@
     return `${Math.floor(d / 86400)}d ago`;
   }
 
+  /** Build the multi-line tooltip for a session row in the agents
+   *  popover: title → first user prompt → "[… N more messages …]" →
+   *  last 3 (oldest-first). Falls back to the simple "last user
+   *  message" shape when the daemon hasn't filled the richer fields
+   *  yet (e.g. for codex, which doesn't expose them). */
+  function sessionTooltip(sess: AgentSession): string {
+    const headline = sess.manualTitle ?? sess.title ?? "(no title)";
+    const first = sess.firstUserMessage;
+    const last = sess.lastUserMessages ?? [];
+    const count = sess.userMessageCount ?? 0;
+    if (!first && last.length === 0) {
+      // Codex / partial data: legacy single-message tooltip.
+      return sess.lastUserMessage
+        ? `${headline}\n\nMost recent user message:\n${sess.lastUserMessage}`
+        : headline;
+    }
+    // Show first + last 3 without duplicating when they overlap. For
+    // count ≤ 4 the first IS one of the "last 3", so we just print the
+    // messages in order. For count > 4 we insert a [… N more …]
+    // separator between the first and the tail.
+    const tailExcludingFirst = first
+      ? last.filter((m) => m !== first)
+      : last;
+    const lines: string[] = [headline];
+    if (count <= 4) {
+      // Print every captured message once, oldest-first.
+      const all = first ? [first, ...tailExcludingFirst] : last;
+      for (const m of all) lines.push("", m);
+    } else {
+      if (first) lines.push("", first);
+      const skipped = count - 1 - tailExcludingFirst.length;
+      if (skipped > 0) {
+        lines.push("", `[… ${skipped} more message${skipped === 1 ? "" : "s"} …]`);
+      }
+      for (const m of tailExcludingFirst) lines.push("", m);
+    }
+    return lines.join("\n");
+  }
+
   function statusSummary(s: FileStatus): { clean: boolean; text: string } {
     const total = s.staged + s.unstaged + s.untracked;
     if (total === 0) return { clean: true, text: "clean" };
@@ -1798,9 +1840,7 @@
                                 <span
                                   class="agent-title"
                                   class:manual={!!sess.manualTitle}
-                                  title={sess.lastUserMessage
-                                    ? `${sess.manualTitle ?? sess.title ?? "(no title)"}\n\nMost recent user message:\n${sess.lastUserMessage}`
-                                    : (sess.manualTitle ?? sess.title ?? "(no title)")}
+                                  title={sessionTooltip(sess)}
                                 >
                                   {sess.manualTitle ?? sess.title ?? "(no title)"}
                                 </span>

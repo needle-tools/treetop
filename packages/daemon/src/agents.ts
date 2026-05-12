@@ -33,6 +33,17 @@ export interface AgentSession {
   /** User-provided title for this session (stored in the workspace,
    *  keyed by `source`). When set, the UI prefers it over `title`. */
   manualTitle?: string;
+  /** First user prompt, cleaned. Surfaced in the session popover so the
+   *  reader can recall what kicked the session off, independently of
+   *  `title` (which may have come from a `summary` line). */
+  firstUserMessage?: string;
+  /** Up to the last 3 user prompts, oldest-first. The most recent one
+   *  is also available as `lastUserMessage`. */
+  lastUserMessages?: string[];
+  /** Total number of non-empty user prompts in the session. Used to
+   *  render "[… N more messages …]" between the first and the last 3
+   *  in the tooltip. */
+  userMessageCount?: number;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -238,6 +249,65 @@ export async function readClaudeSessionMeta(
   return { cwd, title, lastUserMessage };
 }
 
+/** Per-prompt cap for the tooltip-friendly user-message snapshot. The
+ *  popover renders 4 messages plus a separator inside a native browser
+ *  tooltip; each one needs to stay readable but compact. 360 chars is
+ *  enough for a paragraph; longer messages get ellipsized. */
+const USER_MESSAGE_CAP = 360;
+
+function capForTooltip(s: string): string {
+  if (s.length <= USER_MESSAGE_CAP) return s;
+  return s.slice(0, USER_MESSAGE_CAP - 1) + "…";
+}
+
+/** Stream the whole session file and collect just the user-message
+ *  shape used by the session popover tooltip: the first user prompt,
+ *  the last 3, and the total count. Lines that don't contain
+ *  `"type":"user"` are skipped without parsing; matching lines are
+ *  JSON-parsed and their text content extracted via the same
+ *  cleanForTitle pipeline that produces titles, so wrapper junk
+ *  (`<command-name>`, `<ide_opened_file>`, etc.) is excluded.
+ *
+ *  Returns zeroed stats on read failure, so a missing or unreadable
+ *  file just leaves the popover with the title and nothing else —
+ *  no error propagates. */
+export async function scanClaudeUserMessages(path: string): Promise<{
+  firstUserMessage?: string;
+  lastUserMessages: string[];
+  userMessageCount: number;
+}> {
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return { lastUserMessages: [], userMessageCount: 0 };
+  }
+  let firstUserMessage: string | undefined;
+  const tail: string[] = [];
+  let count = 0;
+  for (const line of content.split("\n")) {
+    if (!line || !line.includes('"type":"user"')) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (obj.type !== "user") continue;
+    const msg = obj.message as { content?: unknown } | undefined;
+    const raw = firstTextFromMessageContent(msg?.content);
+    if (!raw) continue;
+    const cleaned = cleanForTitle(raw);
+    if (!cleaned) continue;
+    const capped = capForTooltip(cleaned);
+    if (!firstUserMessage) firstUserMessage = capped;
+    tail.push(capped);
+    if (tail.length > 3) tail.shift();
+    count++;
+  }
+  return { firstUserMessage, lastUserMessages: tail, userMessageCount: count };
+}
+
 export async function scanClaude(
   root: string = CLAUDE_ROOT(),
 ): Promise<AgentSession[]> {
@@ -263,6 +333,9 @@ export async function scanClaude(
         const stats = await stat(sessionPath);
         const meta = await readClaudeSessionMeta(sessionPath);
         if (!meta.cwd) continue;
+        // Full user-message scan: accurate count + last 3 even when the
+        // head/tail snippets readClaudeSessionMeta uses don't overlap.
+        const userStats = await scanClaudeUserMessages(sessionPath);
         sessions.push({
           agent: "claude",
           cwd: resolve(meta.cwd),
@@ -271,6 +344,13 @@ export async function scanClaude(
           source: sessionPath,
           title: meta.title,
           lastUserMessage: meta.lastUserMessage,
+          firstUserMessage: userStats.firstUserMessage,
+          lastUserMessages: userStats.lastUserMessages.length > 0
+            ? userStats.lastUserMessages
+            : undefined,
+          userMessageCount: userStats.userMessageCount > 0
+            ? userStats.userMessageCount
+            : undefined,
         });
       } catch {
         // unreadable session, skip
