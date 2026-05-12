@@ -2,7 +2,7 @@
 // with hot reload. Ctrl-C kills both.
 //
 // Pre-flight: any stale processes still holding ports 7777 (daemon) or
-// 7779 (Vite) from a previous run get killed first. Otherwise --hot
+// 7779 (Vite) from a previous run get killed first. Otherwise --watch
 // occasionally leaves an orphan and the next `bun dev` fails with
 // EADDRINUSE / "Port 7779 is in use".
 
@@ -29,7 +29,12 @@ async function killOnPort(port: number): Promise<void> {
 await killOnPort(7777);
 await killOnPort(7779);
 
-const daemon = Bun.spawn(["bun", "--hot", "run", "src/server.ts"], {
+// --watch (full process restart on file change), not --hot (in-place
+// module reload). --hot leaks timers, FS watchers, and the HTTP server
+// across reloads — we measured 50GB RSS after ~1h of editing. --watch
+// is a clean restart, so memory stays flat; cost is a manual browser
+// reload to reconnect SSE/WebSocket.
+const daemon = Bun.spawn(["bun", "--watch", "run", "src/server.ts"], {
   cwd: "packages/daemon",
   stdout: "inherit",
   stderr: "inherit",

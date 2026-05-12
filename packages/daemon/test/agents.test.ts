@@ -13,6 +13,7 @@ import {
   readJsonlField,
   readClaudeSessionMeta,
   scanClaudeUserMessages,
+  scanCodexMessageCount,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -232,7 +233,45 @@ describe("scanClaudeUserMessages", () => {
     expect(await scanClaudeUserMessages("/no/such/file")).toEqual({
       lastUserMessages: [],
       userMessageCount: 0,
+      totalMessageCount: 0,
     });
+  });
+
+  test("totalMessageCount sums user + assistant turns, skips tool_result-only", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        // 1 real user
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: { role: "user", content: "hi" },
+        }),
+        // 1 assistant
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: "hello" },
+        }),
+        // tool result wrapped as a user message — should NOT count
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }],
+          },
+        }),
+        // 1 more user
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "again" },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.totalMessageCount).toBe(3);
+    expect(stats.userMessageCount).toBe(2);
   });
 
   test("captures first user message, last 3, and total count", async () => {
@@ -350,6 +389,66 @@ describe("scanClaude", () => {
     await mkdir(proj, { recursive: true });
     await writeFile(join(proj, "empty.jsonl"), '{"type":"summary"}\n');
     expect(await scanClaude(root)).toEqual([]);
+  });
+});
+
+describe("scanCodexMessageCount", () => {
+  test("returns 0 when the file is missing", async () => {
+    expect(await scanCodexMessageCount("/no/such/file")).toBe(0);
+  });
+
+  test("counts 0.130 response_item user/assistant pairs, skips developer/system + events", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "x", cwd: "/p" },
+        }),
+        JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "policy" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "yo" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexMessageCount(file)).toBe(2);
+  });
+
+  test("counts pre-0.130 flat-format role+content lines", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ role: "user", content: "hi", cwd: "/p" }),
+        JSON.stringify({ role: "assistant", content: "yo" }),
+        JSON.stringify({ role: "user", content: "again" }),
+      ].join("\n"),
+    );
+    expect(await scanCodexMessageCount(file)).toBe(3);
   });
 });
 

@@ -37,7 +37,12 @@ for (const [k, v] of Object.entries(process.env)) {
   if (k === "PORT" || k === "SUPERGIT_PORT") continue;
   daemonEnv[k] = v;
 }
-const daemon = Bun.spawn(["bun", "--hot", "run", "src/server.ts"], {
+// --watch (full process restart on file change), not --hot (in-place
+// module reload). --hot leaks timers, FS watchers, and the HTTP server
+// across reloads — we measured 50GB RSS after ~1h of editing. --watch
+// is a clean restart, so memory stays flat; cost is a manual browser
+// reload to reconnect SSE/WebSocket.
+const daemon = Bun.spawn(["bun", "--watch", "run", "src/server.ts"], {
   cwd: "packages/daemon",
   env: daemonEnv,
   stdout: "inherit",

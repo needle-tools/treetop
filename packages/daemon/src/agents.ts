@@ -44,6 +44,11 @@ export interface AgentSession {
    *  render "[… N more messages …]" between the first and the last 3
    *  in the tooltip. */
   userMessageCount?: number;
+  /** Total messages in the session — both user and assistant turns
+   *  for Claude; both user-role and assistant-role response_items for
+   *  Codex. Surfaced as a cell in the agents popover so the user can
+   *  tell at a glance how much conversation each session contains. */
+  messageCount?: number;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -275,37 +280,111 @@ export async function scanClaudeUserMessages(path: string): Promise<{
   firstUserMessage?: string;
   lastUserMessages: string[];
   userMessageCount: number;
+  /** Total user + assistant turns. Tool-result-only "user" entries
+   *  (Anthropic's API convention; the parser relabels these as role
+   *  "tool" elsewhere) are excluded from this count. */
+  totalMessageCount: number;
 }> {
   let content: string;
   try {
     content = await readFile(path, "utf-8");
   } catch {
-    return { lastUserMessages: [], userMessageCount: 0 };
+    return { lastUserMessages: [], userMessageCount: 0, totalMessageCount: 0 };
   }
   let firstUserMessage: string | undefined;
   const tail: string[] = [];
-  let count = 0;
+  let userCount = 0;
+  let totalCount = 0;
   for (const line of content.split("\n")) {
-    if (!line || !line.includes('"type":"user"')) continue;
+    if (!line) continue;
+    // Cheap pre-filter so we don't JSON.parse every line on huge files.
+    if (
+      !line.includes('"type":"user"') &&
+      !line.includes('"type":"assistant"')
+    ) {
+      continue;
+    }
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(line) as Record<string, unknown>;
     } catch {
       continue;
     }
-    if (obj.type !== "user") continue;
-    const msg = obj.message as { content?: unknown } | undefined;
-    const raw = firstTextFromMessageContent(msg?.content);
-    if (!raw) continue;
-    const cleaned = cleanForTitle(raw);
-    if (!cleaned) continue;
-    const capped = capForTooltip(cleaned);
-    if (!firstUserMessage) firstUserMessage = capped;
-    tail.push(capped);
-    if (tail.length > 3) tail.shift();
-    count++;
+    if (obj.type === "user") {
+      // Tool-result-only "user" turns (an Anthropic API convention)
+      // shouldn't be counted as conversation. Detect by inspecting
+      // message.content blocks.
+      const msg = obj.message as { content?: unknown } | undefined;
+      const content = msg?.content;
+      const isToolResultOnly = (() => {
+        if (!Array.isArray(content)) return false;
+        if (content.length === 0) return false;
+        return content.every(
+          (b) =>
+            typeof b === "object" &&
+            b !== null &&
+            (b as { type?: unknown }).type === "tool_result",
+        );
+      })();
+      if (isToolResultOnly) continue;
+      totalCount++;
+      const raw = firstTextFromMessageContent(content);
+      if (!raw) continue;
+      const cleaned = cleanForTitle(raw);
+      if (!cleaned) continue;
+      const capped = capForTooltip(cleaned);
+      if (!firstUserMessage) firstUserMessage = capped;
+      tail.push(capped);
+      if (tail.length > 3) tail.shift();
+      userCount++;
+    } else if (obj.type === "assistant") {
+      totalCount++;
+    }
   }
-  return { firstUserMessage, lastUserMessages: tail, userMessageCount: count };
+  return {
+    firstUserMessage,
+    lastUserMessages: tail,
+    userMessageCount: userCount,
+    totalMessageCount: totalCount,
+  };
+}
+
+/** Total chat-turn count for a Codex JSONL. Counts `response_item`
+ *  lines where payload.type is "message" — the 0.130+ message shape —
+ *  with role being user or assistant only. Developer/system injected
+ *  messages don't count. Falls back to top-level role+content lines
+ *  for older flat-format sessions. */
+export async function scanCodexMessageCount(path: string): Promise<number> {
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+      const p = obj.payload as Record<string, unknown>;
+      if (p.type !== "message") continue;
+      if (p.role === "user" || p.role === "assistant") count++;
+      continue;
+    }
+    // Pre-0.130 flat form.
+    if (
+      typeof obj.role === "string" &&
+      (obj.role === "user" || obj.role === "assistant")
+    ) {
+      count++;
+    }
+  }
+  return count;
 }
 
 export async function scanClaude(
@@ -350,6 +429,9 @@ export async function scanClaude(
             : undefined,
           userMessageCount: userStats.userMessageCount > 0
             ? userStats.userMessageCount
+            : undefined,
+          messageCount: userStats.totalMessageCount > 0
+            ? userStats.totalMessageCount
             : undefined,
         });
       } catch {
@@ -453,6 +535,7 @@ export async function scanCodex(
         const stats = await stat(sessionPath);
         const meta = await readCodexSessionMeta(sessionPath);
         if (!meta.cwd) continue;
+        const messageCount = await scanCodexMessageCount(sessionPath);
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
@@ -462,6 +545,7 @@ export async function scanCodex(
           // `rollout-<iso>-` prefix that's not a valid id.
           sessionId: meta.id ?? sessionPath.split("/").pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
+          messageCount: messageCount > 0 ? messageCount : undefined,
         });
       } catch {
         // skip

@@ -41,6 +41,7 @@
     firstUserMessage?: string;
     lastUserMessages?: string[];
     userMessageCount?: number;
+    messageCount?: number;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -1844,6 +1845,14 @@
                                 >
                                   {sess.manualTitle ?? sess.title ?? "(no title)"}
                                 </span>
+                                <span
+                                  class="muted small agent-msgs"
+                                  title={sess.messageCount
+                                    ? `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
+                                    : "no messages counted"}
+                                >
+                                  {#if sess.messageCount}{sess.messageCount.toLocaleString()} msg{:else}—{/if}
+                                </span>
                                 <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
                                 {#if sess.sessionId}
                                   <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
@@ -3400,10 +3409,10 @@
   }
   .agent-row {
     display: grid;
-    /* icon · agent-name · title · time · short-sha · close-x
+    /* icon · agent-name · title · msgs · time · short-sha · close-x
        The close column is reserved on every row (open or not) so opening
        and closing sessions doesn't shift other rows' columns. */
-    grid-template-columns: 16px auto 1fr auto auto 18px;
+    grid-template-columns: 16px auto 1fr auto auto auto 18px;
     gap: 0.5rem;
     align-items: center;
     width: 100%;
@@ -3466,6 +3475,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 18ch;
+  }
+  .agent-row .agent-msgs {
+    /* Tabular nums so the digit columns align across rows. Right-aligned
+       since it's a number, not a label. */
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
   }
   .agent-row .agent-time {
     text-align: right;

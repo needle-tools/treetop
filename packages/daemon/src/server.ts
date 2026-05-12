@@ -61,6 +61,15 @@ const UI_DIR = ((): string | null => {
 })();
 if (UI_DIR) console.log(`supergit daemon: serving UI from ${UI_DIR}`);
 
+// Set a readable process title so `ps`, `top`, `htop`, and macOS
+// Activity Monitor's command column show "supergit dev" / "supergit
+// prod" instead of "bun run src/server.ts". Dev = no built UI in
+// front of us; prod = we're serving the dist. The explicit env
+// SUPERGIT_PROCESS_TITLE wins if set (handy for one-off runs).
+process.title =
+  process.env.SUPERGIT_PROCESS_TITLE ??
+  (UI_DIR ? "supergit prod" : "supergit dev");
+
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
 
