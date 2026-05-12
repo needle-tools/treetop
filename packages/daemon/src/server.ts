@@ -228,6 +228,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
+          { method: "POST", path: "/api/session/title", body: { source: "string", title: "string" }, description: "set a manual title for the session keyed by `source`. Empty title clears." },
           { method: "GET", path: "/api/active-sends", description: "list claude subprocesses still in flight from /api/session/send. Optional ?sessionId=<id> to filter." },
           { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
           { method: "POST", path: "/api/terminals", body: { cmd: ["string"], cwd: "string", cols: "number?", rows: "number?", ownerId: "string?" }, description: "spawn a PTY via the supernode helper. Returns { id, pid }." },
@@ -261,10 +262,14 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/repos" && req.method === "GET") {
-      const [repos, agents] = await Promise.all([
+      const [repos, agents, titles] = await Promise.all([
         workspace.listRepos(),
         detectAgents(),
+        workspace.listSessionTitles(),
       ]);
+      const titled = agents.map((s) =>
+        titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+      );
       const enriched = await Promise.all(
         repos.map(async (repo) => {
           const worktrees = await listWorktrees(repo.path);
@@ -272,7 +277,7 @@ const server = Bun.serve<TermWsData, never>({
             worktrees.map(async (wt) => ({
               ...wt,
               ...(await getWorktreeDetails(wt.path)),
-              agents: agentsForWorktree(wt.path, agents),
+              agents: agentsForWorktree(wt.path, titled),
             })),
           );
           return { ...repo, worktrees: withDetails };
@@ -282,7 +287,46 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
-      return json(await detectAgents());
+      const [agents, titles] = await Promise.all([
+        detectAgents(),
+        workspace.listSessionTitles(),
+      ]);
+      return json(
+        agents.map((s) =>
+          titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+        ),
+      );
+    }
+
+    if (url.pathname === "/api/session/title" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { source?: unknown; title?: unknown }
+        | null;
+      const source = body?.source;
+      const title = body?.title;
+      if (typeof source !== "string" || source.length === 0) {
+        return json(
+          { error: "body.source (non-empty string) is required" },
+          { status: 400 },
+        );
+      }
+      if (typeof title !== "string") {
+        return json(
+          { error: "body.title (string; empty clears) is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        await workspace.setSessionTitle(source, title);
+        const titles = await workspace.listSessionTitles();
+        broadcast("change", { kind: "session_title", source });
+        return json({ source, title: titles[source] ?? "" });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 400 },
+        );
+      }
     }
 
     if (url.pathname === "/api/session" && req.method === "GET") {
@@ -313,6 +357,8 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
       const session = await parseSessionFile(agentKind, source);
+      const titles = await workspace.listSessionTitles();
+      if (titles[source]) session.manualTitle = titles[source];
       return json(session);
     }
 

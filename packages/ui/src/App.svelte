@@ -37,6 +37,7 @@
     source: string;
     title?: string;
     lastUserMessage?: string;
+    manualTitle?: string;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -460,6 +461,63 @@
     };
   }
 
+  /** Per-synthetic-source manual title state. Lives here (not in the
+   *  SessionView) because the `__new__:` flow uses a bare TerminalView,
+   *  not SessionView. Title is keyed by the synthetic source so it
+   *  persists across daemon restarts during the brief window before the
+   *  real JSONL appears. */
+  let newSessionTitles: Record<string, string> = {};
+  let newSessionTitleEditing: Record<string, boolean> = {};
+  let newSessionTitleDraft: Record<string, string> = {};
+
+  function startNewSessionTitleEdit(source: string) {
+    newSessionTitleDraft = {
+      ...newSessionTitleDraft,
+      [source]: newSessionTitles[source] ?? "",
+    };
+    newSessionTitleEditing = { ...newSessionTitleEditing, [source]: true };
+  }
+
+  async function saveNewSessionTitle(source: string) {
+    const next = (newSessionTitleDraft[source] ?? "").trim();
+    const prev = newSessionTitles[source] ?? "";
+    newSessionTitleEditing = { ...newSessionTitleEditing, [source]: false };
+    if (next === prev) return;
+    try {
+      const res = await fetch("/api/session/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, title: next }),
+      });
+      if (!res.ok) return;
+      newSessionTitles = next
+        ? { ...newSessionTitles, [source]: next }
+        : (({ [source]: _, ...rest }) => rest)(newSessionTitles);
+    } catch {
+      // best-effort
+    }
+  }
+
+  function onNewSessionTitleKey(e: KeyboardEvent, source: string) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void saveNewSessionTitle(source);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      newSessionTitleEditing = { ...newSessionTitleEditing, [source]: false };
+    }
+  }
+
+  /** Svelte action: focus + select an input on mount. Used by the inline
+   *  manual-title input in the new-session header. */
+  function autoFocusSelect(node: HTMLInputElement) {
+    requestAnimationFrame(() => {
+      node.focus();
+      node.select();
+    });
+    return {};
+  }
+
   /** Faster poll cadence while a transient new-agent TUI is open — the
    *  agent is in the process of writing its first JSONL line, and we
    *  want it to surface in the worktree's agent strip within a few
@@ -701,6 +759,18 @@
   );
   let visibleWorktreesByRepo: Record<string, string[]> = {};
   let visibleHydrated = false;
+
+  // Per-repo "fold this repo's rows to a minimal one-line format". Keyed
+  // by repo.id. Persisted in localStorage so a folded repo stays folded
+  // across reloads. Reuses ExpandedStore — it's just a Set<string>.
+  const foldedReposStore = new ExpandedStore(
+    typeof window !== "undefined"
+      ? window.localStorage
+      : ({ getItem: () => null, setItem: () => {} }),
+    "supergit:foldedRepos",
+  );
+  let repoFolded: Record<string, boolean> = {};
+  let foldedHydrated = false;
   // Don't persist until the initial restore has run, otherwise the first
   // reactive write wipes saved state with our empty starting value.
   let sessionsHydrated = false;
@@ -730,6 +800,26 @@
     visibleHydrated = true;
   }
   $: if (visibleHydrated) visibleWorktreesPersistence.save(visibleWorktreesByRepo);
+
+  function restoreFoldedRepos() {
+    const ids = foldedReposStore.load();
+    if (ids.size > 0) {
+      const next: Record<string, boolean> = {};
+      for (const id of ids) next[id] = true;
+      repoFolded = next;
+    }
+    foldedHydrated = true;
+  }
+  $: if (foldedHydrated) {
+    foldedReposStore.save(
+      Object.entries(repoFolded)
+        .filter(([, v]) => v)
+        .map(([k]) => k),
+    );
+  }
+  function toggleRepoFolded(repoId: string) {
+    repoFolded = { ...repoFolded, [repoId]: !repoFolded[repoId] };
+  }
 
   /** Hide a worktree row from the dashboard. Disk is untouched; the
    *  worktree still exists, just not displayed. Re-show via the
@@ -1285,6 +1375,7 @@
     restoreExpanded();
     restoreOpenSessions();
     restoreVisibleWorktrees();
+    restoreFoldedRepos();
     void loadInstalledAgents();
     void loadEditors();
     void load().then(() => {
@@ -1444,9 +1535,24 @@
       {#each rows as row (row.key)}
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
-        <li class="row" data-wt-row={wt ? wt.path : `${repo.id}|none`}>
+        <li
+          class="row"
+          class:row-folded={repoFolded[repo.id]}
+          data-wt-row={wt ? wt.path : `${repo.id}|none`}
+        >
           <div class="row-content">
           <div class="row-head">
+            <button
+              class="chevron fold-toggle"
+              class:open={!repoFolded[repo.id]}
+              title={repoFolded[repo.id]
+                ? `Expand \`${repo.name}\``
+                : `Fold \`${repo.name}\` to a minimal row`}
+              aria-label={repoFolded[repo.id] ? "Expand repo" : "Fold repo"}
+              on:click|stopPropagation={() => toggleRepoFolded(repo.id)}
+            >
+              <span class="arrow">▸</span>
+            </button>
             {#if editingRowKey === row.key}
               <input
                 class="name-edit"
@@ -1605,7 +1711,7 @@
                   <button
                     class="agent-badge agent-{a.agent}"
                     class:active={isOpenInWt(wt.path, a.source)}
-                    title={`Open the latest ${a.agent} session\nLast active ${relTime(a.lastActive)}`}
+                    title={`${a.manualTitle ?? `Open the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
                     on:click={() =>
                       toggleOpenSessionInWt(wt.path, {
                         agent: a.agent,
@@ -1613,7 +1719,12 @@
                       })}
                   >
                     <span class="agent-dot"></span>
-                    {a.agent} · {relTime(a.lastActive)}
+                    {#if a.manualTitle}
+                      <span class="agent-manual-title">{a.manualTitle}</span>
+                      <span class="muted small">· {relTime(a.lastActive)}</span>
+                    {:else}
+                      {a.agent} · {relTime(a.lastActive)}
+                    {/if}
                   </button>
                   {/if}
                   {#if a && wt.agents.length > 1}
@@ -1679,11 +1790,12 @@
                                 </span>
                                 <span
                                   class="agent-title"
+                                  class:manual={!!sess.manualTitle}
                                   title={sess.lastUserMessage
-                                    ? `${sess.title ?? "(no title)"}\n\nMost recent user message:\n${sess.lastUserMessage}`
-                                    : (sess.title ?? "(no title)")}
+                                    ? `${sess.manualTitle ?? sess.title ?? "(no title)"}\n\nMost recent user message:\n${sess.lastUserMessage}`
+                                    : (sess.manualTitle ?? sess.title ?? "(no title)")}
                                 >
-                                  {sess.title ?? "(no title)"}
+                                  {sess.manualTitle ?? sess.title ?? "(no title)"}
                                 </span>
                                 <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
                                 {#if sess.sessionId}
@@ -1840,6 +1952,7 @@
             >
           </div>
 
+          {#if !repoFolded[repo.id]}
           {#if newWtOpen[repo.id]}
             <div class="new-wt-form">
               <input
@@ -1956,6 +2069,32 @@
                           >
                             <header class="new-session-head">
                               <span class="agent-pill agent-{s.agent}">{s.agent}</span>
+                              {#if newSessionTitleEditing[s.source]}
+                                <input
+                                  class="manual-title-input"
+                                  bind:value={newSessionTitleDraft[s.source]}
+                                  on:keydown={(e) =>
+                                    onNewSessionTitleKey(e, s.source)}
+                                  on:blur={() => saveNewSessionTitle(s.source)}
+                                  use:autoFocusSelect
+                                  placeholder="Name this session…"
+                                  maxlength="120"
+                                />
+                              {:else}
+                                <button
+                                  type="button"
+                                  class="manual-title"
+                                  class:placeholder={!newSessionTitles[s.source]}
+                                  title={newSessionTitles[s.source]
+                                    ? "Click to rename this session"
+                                    : "Click to name this session"}
+                                  on:click={() =>
+                                    startNewSessionTitleEdit(s.source)}
+                                >
+                                  {newSessionTitles[s.source] ||
+                                    "Name this session…"}
+                                </button>
+                              {/if}
                               <span class="muted small">new session — TUI</span>
                               {#if transientAwaiting[s.source]}
                                 <span class="awaiting-pill" title="The agent is paused waiting for input — click the terminal and respond.">
@@ -2127,6 +2266,7 @@
                 </div>
               {/if}
             {/if}
+          {/if}
           {/if}
           </div>
         </li>
@@ -2590,6 +2730,16 @@
     /* The chevron lives next to the row-commit line (below the sessions
        strip) now, so no separate left-rail column — row-content takes
        the full width. */
+  }
+  /* When folded, only the row-head is rendered. Tighten the row's
+     vertical padding and stack-gap so a folded repo reads as a compact
+     one-liner instead of leaving a blank area where the body was. */
+  .row.row-folded {
+    padding: 0.35rem 0.75rem;
+    margin-bottom: 0.3rem;
+  }
+  .fold-toggle {
+    margin-right: -0.2rem;
   }
   .row-content {
     min-width: 0;
@@ -3106,6 +3256,50 @@
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
     50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
   }
+  /* Click-to-edit manual title inside the new-session TUI header.
+     Mirrors SessionView's affordance so naming behaves the same in both
+     the stored-chat view and the live TUI view. */
+  .new-session-head .manual-title {
+    background: transparent;
+    border: 0;
+    color: var(--text-1);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: var(--radius-sm);
+    cursor: text;
+    text-align: left;
+    max-width: 22ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .new-session-head .manual-title:hover {
+    background: var(--surface-3);
+  }
+  .new-session-head .manual-title.placeholder {
+    color: var(--text-faint);
+    font-weight: 400;
+    font-style: italic;
+  }
+  .new-session-head .manual-title-input {
+    background: var(--surface-1);
+    color: var(--text-1);
+    border: 1px solid var(--text-faint);
+    border-radius: var(--radius-sm);
+    padding: 0.05rem 0.3rem;
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    min-width: 8ch;
+    width: 20ch;
+    max-width: 100%;
+  }
+  .new-session-head .manual-title-input:focus {
+    outline: none;
+    border-color: var(--brand);
+  }
   .agent-more.agent-claude {
     background: var(--chip-orange-bg);
     color: var(--chip-orange-text);
@@ -3202,6 +3396,19 @@
     white-space: nowrap;
     min-width: 0;
     color: var(--text-2);
+  }
+  .agent-row .agent-title.manual {
+    color: var(--text-1);
+    font-weight: 600;
+  }
+  /* Manual title shown inline in the worktree row's single-agent badge.
+     Stays on one line; the row already manages overflow. */
+  .agent-manual-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 18ch;
   }
   .agent-row .agent-time {
     text-align: right;

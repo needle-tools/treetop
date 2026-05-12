@@ -77,6 +77,7 @@
     startedAt?: string;
     endedAt?: string;
     messages: NormalizedMessage[];
+    manualTitle?: string;
   }
 
   let session: NormalizedSession | null = null;
@@ -135,6 +136,68 @@
     startedAt: string;
   }
   let inflight: InflightRec[] = [];
+  /** Manual title editing state. Lives separately from `session.manualTitle`
+   *  so a poll mid-edit can't overwrite what the user is typing. */
+  let manualTitleEditing = false;
+  let manualTitleDraft = "";
+  let manualTitleSaving = false;
+  let manualTitleInputEl: HTMLInputElement | null = null;
+  $: manualTitle = session?.manualTitle ?? "";
+
+  function startManualTitleEdit() {
+    manualTitleDraft = manualTitle;
+    manualTitleEditing = true;
+    // focus on next tick once the input renders
+    requestAnimationFrame(() => {
+      manualTitleInputEl?.focus();
+      manualTitleInputEl?.select();
+    });
+  }
+
+  async function saveManualTitle() {
+    const next = manualTitleDraft;
+    // No-op if unchanged
+    if (next === manualTitle) {
+      manualTitleEditing = false;
+      return;
+    }
+    manualTitleSaving = true;
+    try {
+      const res = await fetch("/api/session/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, title: next }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      // Reflect locally; the 2s poll will reconfirm.
+      if (session) {
+        session = { ...session, manualTitle: next.trim() || undefined };
+      }
+    } catch {
+      // best-effort — leave the edit open so the user can retry / cancel
+    } finally {
+      manualTitleSaving = false;
+      manualTitleEditing = false;
+    }
+  }
+
+  function cancelManualTitleEdit() {
+    manualTitleEditing = false;
+    manualTitleDraft = "";
+  }
+
+  function onManualTitleKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void saveManualTitle();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelManualTitleEdit();
+    }
+  }
   /** When non-null we have a prompt in flight. The numeric value is the
    *  session.messages.length at the moment we hit Send; once load() sees
    *  a higher count we know claude wrote something back and can clear
@@ -370,6 +433,30 @@
     <div class="header-main">
       <span class="agent-pill agent-{agent}">{agent}</span>
       <div class="header-content">
+        {#if manualTitleEditing}
+          <input
+            class="manual-title-input"
+            bind:this={manualTitleInputEl}
+            bind:value={manualTitleDraft}
+            on:keydown={onManualTitleKey}
+            on:blur={() => void saveManualTitle()}
+            disabled={manualTitleSaving}
+            placeholder="Name this session…"
+            maxlength="120"
+          />
+        {:else}
+          <button
+            type="button"
+            class="manual-title"
+            class:placeholder={!manualTitle}
+            title={manualTitle
+              ? "Click to rename this session"
+              : "Click to name this session"}
+            on:click={startManualTitleEdit}
+          >
+            {manualTitle || "Name this session…"}
+          </button>
+        {/if}
         {#if session}
           <span class="muted small">{session.messages.length} messages</span>
           {#if session.sessionId}
@@ -717,6 +804,50 @@
   }
   .sid {
     font-family: ui-monospace, monospace;
+  }
+  /* Manual title: click-to-edit affordance. When set, bold + bright; when
+     empty, a quiet placeholder users can click to start naming. Same flex
+     row as the message count etc so it wraps with them. */
+  .manual-title {
+    background: transparent;
+    border: 0;
+    color: var(--text-1);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: var(--radius-sm);
+    cursor: text;
+    text-align: left;
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .manual-title:hover {
+    background: var(--surface-3);
+  }
+  .manual-title.placeholder {
+    color: var(--text-faint);
+    font-weight: 400;
+    font-style: italic;
+  }
+  .manual-title-input {
+    background: var(--surface-1);
+    color: var(--text-1);
+    border: 1px solid var(--text-faint);
+    border-radius: var(--radius-sm);
+    padding: 0.05rem 0.3rem;
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    min-width: 8ch;
+    width: 24ch;
+    max-width: 100%;
+  }
+  .manual-title-input:focus {
+    outline: none;
+    border-color: var(--brand);
   }
   .close {
     margin-left: auto;

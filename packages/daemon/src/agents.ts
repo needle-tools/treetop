@@ -30,6 +30,9 @@ export interface AgentSession {
    *  hover in the session picker so you can tell sessions apart even when
    *  the title's identical or generic. */
   lastUserMessage?: string;
+  /** User-provided title for this session (stored in the workspace,
+   *  keyed by `source`). When set, the UI prefers it over `title`. */
+  manualTitle?: string;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");

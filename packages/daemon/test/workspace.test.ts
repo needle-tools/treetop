@@ -101,4 +101,38 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await expect(ws.renameRepo("nope", "X")).rejects.toThrow(/not found/);
   });
+
+  test("session titles start empty", async () => {
+    const ws = await Workspace.open(await tempDir());
+    expect(await ws.listSessionTitles()).toEqual({});
+  });
+
+  test("setSessionTitle persists and roundtrips", async () => {
+    const path = await tempDir();
+    const ws1 = await Workspace.open(path);
+    await ws1.setSessionTitle("/abs/session.jsonl", "Refactor billing");
+    expect(await ws1.listSessionTitles()).toEqual({
+      "/abs/session.jsonl": "Refactor billing",
+    });
+    const ws2 = await Workspace.open(path);
+    expect(await ws2.listSessionTitles()).toEqual({
+      "/abs/session.jsonl": "Refactor billing",
+    });
+  });
+
+  test("setSessionTitle with empty string deletes the entry", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.setSessionTitle("/a.jsonl", "name");
+    await ws.setSessionTitle("/b.jsonl", "other");
+    await ws.setSessionTitle("/a.jsonl", "");
+    expect(await ws.listSessionTitles()).toEqual({ "/b.jsonl": "other" });
+  });
+
+  test("setSessionTitle trims whitespace; whitespace-only clears", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.setSessionTitle("/a.jsonl", "  spaced  ");
+    expect((await ws.listSessionTitles())["/a.jsonl"]).toBe("spaced");
+    await ws.setSessionTitle("/a.jsonl", "   ");
+    expect(await ws.listSessionTitles()).toEqual({});
+  });
 });

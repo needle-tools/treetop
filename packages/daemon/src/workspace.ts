@@ -14,6 +14,7 @@ interface ReposFile {
 }
 
 const REPOS_FILE = "repos.json";
+const SESSION_TITLES_FILE = "session-titles.json";
 
 export class Workspace {
   private constructor(public readonly path: string) {}
@@ -28,6 +29,55 @@ export class Workspace {
       await writeFile(reposPath, JSON.stringify(empty, null, 2));
     }
     return new Workspace(path);
+  }
+
+  /** Return all manual session titles as `{ [source]: title }`. Missing
+   *  file or unparseable contents yield an empty map (tolerant of corrupt
+   *  state). */
+  async listSessionTitles(): Promise<Record<string, string>> {
+    let raw: string;
+    try {
+      raw = await readFile(join(this.path, SESSION_TITLES_FILE), "utf-8");
+    } catch {
+      return {};
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof k !== "string" || k.length === 0) continue;
+      if (typeof v !== "string" || v.length === 0) continue;
+      out[k] = v;
+    }
+    return out;
+  }
+
+  /** Persist a manual title for a session, keyed by the session's `source`
+   *  (its JSONL path, or the synthetic `__new__:…` source while a TUI is
+   *  still spawning). Empty / whitespace-only `title` deletes the entry. */
+  async setSessionTitle(source: string, title: string): Promise<void> {
+    if (typeof source !== "string" || source.length === 0) {
+      throw new Error("source must be a non-empty string");
+    }
+    const titles = await this.listSessionTitles();
+    const trimmed = title.trim();
+    if (trimmed.length === 0) {
+      if (!(source in titles)) return;
+      delete titles[source];
+    } else {
+      titles[source] = trimmed;
+    }
+    await writeFile(
+      join(this.path, SESSION_TITLES_FILE),
+      JSON.stringify(titles, null, 2),
+    );
   }
 
   async listRepos(): Promise<Repo[]> {

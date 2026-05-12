@@ -100,6 +100,10 @@ export interface NormalizedSession {
   startedAt?: string;
   endedAt?: string;
   messages: NormalizedMessage[];
+  /** User-provided title for this session (stored in the workspace). The
+   *  server populates this when serving /api/session; the parsers leave
+   *  it unset. */
+  manualTitle?: string;
 }
 
 function emptySession(agent: AgentKind): NormalizedSession {
