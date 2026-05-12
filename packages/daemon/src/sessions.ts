@@ -110,6 +110,38 @@ function emptySession(agent: AgentKind): NormalizedSession {
   return { agent, cwd: "", sessionId: "", messages: [] };
 }
 
+/** Clip block text to TEXT_CLIP_BYTES. Returns the input unchanged if
+ *  already within the budget. Truncation uses utf-8 byte length so we
+ *  never split a multibyte sequence — `slice` works on JS string units
+ *  but for our budget it's close enough; we apply the suffix so the user
+ *  knows there's more. */
+function clipText(text: string): string {
+  if (text.length <= TEXT_CLIP_BYTES) return text;
+  return text.slice(0, TEXT_CLIP_BYTES) + TEXT_CLIP_SUFFIX;
+}
+
+/** Recursively clip every string in a tool_use's `input` payload. Claude's
+ *  `Write` / `Edit` tool inputs include the full file content (or old/new
+ *  strings) which is what blows up the cache for code-editing sessions —
+ *  one Edit can be 100 KB+ of held string. The UI only displays the tool
+ *  name and a hint (file_path, command, …) so the heavy text strings can
+ *  safely be clipped here.
+ *
+ *  Non-string values are returned as-is. Arrays/objects are shallow-cloned
+ *  so we never mutate the parsed JSON in place. */
+function clipToolInput(input: unknown): unknown {
+  if (typeof input === "string") return clipText(input);
+  if (Array.isArray(input)) return input.map(clipToolInput);
+  if (input !== null && typeof input === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input)) {
+      out[k] = clipToolInput(v);
+    }
+    return out;
+  }
+  return input;
+}
+
 /** Process a single JSONL line into `out`. Returns void; mutates `out`
  *  in place. Used by both the batch `parseClaudeJsonl` and the
  *  incremental tail-parser in `getSessionResponseJson`. */
@@ -137,7 +169,13 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
 
   const pushText = (txt: string) => {
     if (isMarker(txt)) blocks.push({ type: "marker", text: txt.trim() });
-    else blocks.push(...splitInjectedTags(txt));
+    else {
+      const split = splitInjectedTags(txt);
+      for (const blk of split) {
+        if (typeof blk.text === "string") blk.text = clipText(blk.text);
+        blocks.push(blk);
+      }
+    }
   };
 
   if (typeof content === "string") {
@@ -149,12 +187,12 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
       if (b.type === "text" && typeof b.text === "string") {
         pushText(b.text);
       } else if (b.type === "thinking" && typeof b.thinking === "string") {
-        blocks.push({ type: "thinking", text: b.thinking });
+        blocks.push({ type: "thinking", text: clipText(b.thinking) });
       } else if (b.type === "tool_use") {
         blocks.push({
           type: "tool_use",
           toolName: typeof b.name === "string" ? b.name : undefined,
-          toolInput: b.input,
+          toolInput: clipToolInput(b.input),
           toolUseId: typeof b.id === "string" ? b.id : undefined,
         });
       } else if (b.type === "tool_result") {
@@ -168,7 +206,7 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
               : "";
         blocks.push({
           type: "tool_result",
-          text,
+          text: clipText(text),
           toolUseId:
             typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
         });
@@ -255,11 +293,11 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
-          blocks.push({ type: "text", text: b.text });
+          blocks.push({ type: "text", text: clipText(b.text) });
         }
       }
     } else if (typeof p.content === "string") {
-      blocks.push({ type: "text", text: p.content });
+      blocks.push({ type: "text", text: clipText(p.content) });
     }
     if (blocks.length === 0) return;
     const ts =
@@ -301,7 +339,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   if (role && text) {
     out.messages.push({
       role,
-      blocks: [{ type: "text", text }],
+      blocks: [{ type: "text", text: clipText(text) }],
       timestamp: ts,
     });
     return;
@@ -319,7 +357,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         {
           type: "tool_use",
           toolName: obj.name,
-          toolInput: obj.input ?? obj.arguments,
+          toolInput: clipToolInput(obj.input ?? obj.arguments),
         },
       ],
       timestamp: ts,
@@ -382,8 +420,15 @@ export async function parseSessionFile(
  * `manualTitle` is injected per-request via string surgery on the
  * stringified body so the cache key doesn't depend on workspace title state.
  */
-const MAX_CACHED = 8;
-const MAX_CACHED_MESSAGES = 300;
+const MAX_CACHED = 4;
+const MAX_CACHED_MESSAGES = 100;
+/** Per-block text cap. Claude `tool_result` blocks routinely contain full
+ *  file contents (~90 KB each) — they balloon the cache far beyond what
+ *  the chat view actually needs to display. We clip each block's `text`
+ *  to TEXT_CLIP_BYTES bytes with a marker; the user can re-open the file
+ *  in their editor for the full content. */
+const TEXT_CLIP_BYTES = 16 * 1024;
+const TEXT_CLIP_SUFFIX = "\n\n… [truncated by supergit; full content available in the source file]";
 interface SessionCacheEntry {
   mtimeMs: number;
   /** Number of bytes from the file we have already parsed into `parsed`. */

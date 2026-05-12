@@ -612,24 +612,24 @@ describe("getSessionResponseJson cache", () => {
     expect(c.messages[1]?.blocks[0]?.text).toBe("inprogress");
   });
 
-  test("caps cached/returned messages at MAX_CACHED_MESSAGES (~300), keeping the most recent", async () => {
+  test("caps cached/returned messages at MAX_CACHED_MESSAGES (~100), keeping the most recent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
     const path = join(dir, "session.jsonl");
 
-    // Build a file with more than the cap. We use 400 lines — the cap is
-    // 300, so we expect the returned messages to be the last 300.
+    // Build a file with more than the cap. We use 150 lines — the cap is
+    // 100, so we expect the returned messages to be the last 100.
     const lines: string[] = [];
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 150; i++) {
       lines.push(claudeLine(`msg-${i}`, `2026-05-12T01:00:00Z`));
     }
     await writeFile(path, lines.join("\n") + "\n");
 
     const a = JSON.parse(await getSessionResponseJson("claude", path));
-    expect(a.messages).toHaveLength(300);
-    // Most recent comes last, and it's "msg-399".
-    expect(a.messages[299]?.blocks[0]?.text).toBe("msg-399");
-    // First retained one is msg-100 (we dropped msg-0..msg-99).
-    expect(a.messages[0]?.blocks[0]?.text).toBe("msg-100");
+    expect(a.messages).toHaveLength(100);
+    // Most recent comes last, and it's "msg-149".
+    expect(a.messages[99]?.blocks[0]?.text).toBe("msg-149");
+    // First retained one is msg-50 (we dropped msg-0..msg-49).
+    expect(a.messages[0]?.blocks[0]?.text).toBe("msg-50");
 
     // Append a few more — cache stays bounded.
     await appendFile(
@@ -638,11 +638,75 @@ describe("getSessionResponseJson cache", () => {
         claudeLine("after-2", "2026-05-12T01:00:02Z") + "\n",
     );
     const b = JSON.parse(await getSessionResponseJson("claude", path));
-    expect(b.messages).toHaveLength(300);
-    expect(b.messages[299]?.blocks[0]?.text).toBe("after-2");
-    expect(b.messages[298]?.blocks[0]?.text).toBe("after-1");
-    // The trim still drops from the head — msg-102 is now the oldest kept.
-    expect(b.messages[0]?.blocks[0]?.text).toBe("msg-102");
+    expect(b.messages).toHaveLength(100);
+    expect(b.messages[99]?.blocks[0]?.text).toBe("after-2");
+    expect(b.messages[98]?.blocks[0]?.text).toBe("after-1");
+    // The trim still drops from the head — msg-52 is now the oldest kept.
+    expect(b.messages[0]?.blocks[0]?.text).toBe("msg-52");
+  });
+
+  test("clips oversized strings inside tool_use.toolInput (Write/Edit content)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const huge = "y".repeat(32 * 1024);
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tu-1",
+            name: "Write",
+            input: { file_path: "/tmp/big.ts", content: huge },
+          },
+        ],
+      },
+      timestamp: "2026-05-12T01:00:00Z",
+    });
+    await writeFile(path, line + "\n");
+
+    const s = JSON.parse(await getSessionResponseJson("claude", path));
+    const blk = s.messages[0].blocks[0];
+    expect(blk.type).toBe("tool_use");
+    expect(blk.toolInput.file_path).toBe("/tmp/big.ts");
+    // content was clipped — much shorter than the 32 KB original.
+    expect(typeof blk.toolInput.content).toBe("string");
+    expect(blk.toolInput.content.length).toBeLessThan(huge.length);
+    expect(blk.toolInput.content).toContain("truncated by supergit");
+  });
+
+  test("clips oversized tool_result text in the cache", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    // A tool_result whose text exceeds the 16 KB clip — we use 32 KB so
+    // the truncation is obvious.
+    const huge = "x".repeat(32 * 1024);
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tu-1",
+            content: huge,
+          },
+        ],
+      },
+      timestamp: "2026-05-12T01:00:00Z",
+    });
+    await writeFile(path, line + "\n");
+
+    const s = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(s.messages).toHaveLength(1);
+    const blk = s.messages[0].blocks[0];
+    expect(blk.type).toBe("tool_result");
+    // 16 KB + suffix — definitely shorter than the 32 KB original.
+    expect(blk.text.length).toBeLessThan(huge.length);
+    expect(blk.text).toContain("truncated by supergit");
   });
 
   test("falls back to a full re-parse if the file shrinks (truncation)", async () => {
