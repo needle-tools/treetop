@@ -1,15 +1,77 @@
-# PLAN-TERMINAL.md — embedded terminals (prototype)
+# PLAN-TERMINAL.md — embedded terminals
 
-A feature-branch prototype that lets you spawn and interact with terminals
-(typically running `claude`, `codex`, or a plain shell) directly inside
-supergit, without leaving the dashboard.
+**Status: in progress** (branch `feat/embedded-terminal`).
 
-The existing session-viewer stays. Terminals are an *additional* affordance,
-not a replacement. Where the viewer is read-only translation of an agent's
-JSONL on disk, the terminal is a live PTY you type into.
+A feature-branch build that lets you interact with `claude` / `codex` /
+`$SHELL` directly inside supergit, with a real cross-platform terminal
+emulator — full TUI, colours, Ctrl+C, slash commands, permission prompts,
+the works.
 
-This document is a plan, not a spec. Open questions are called out. Adjust as
-we prototype.
+## The mental model
+
+The session list in the dashboard becomes a list of **conversations**, each
+in one of two states:
+
+- **Dormant** — JSONL exists on disk, supergit isn't hosting a live process
+  for it. (Most sessions you've ever opened.) Renders as the existing
+  markdown-rendered read-only view.
+- **Alive** — supergit owns a PTY running `claude --resume <sid>` (or
+  similar) in the session's cwd. Renders as an `xterm.js` terminal panel
+  attached to that PTY.
+
+"Live" means *supergit is hosting the PTY.* A session you're running in
+iTerm right now, outside supergit, is still dormant from our view — we
+can't see other people's PTYs. (We could later flag "recently-modified
+JSONL" as "active elsewhere" with an orange dot, but that's a nice-to-have.)
+
+### The Resume button
+
+The header of each session column gets a **Resume in terminal** button. Its
+behaviour depends on session state:
+
+- **Dormant** → spawn a new PTY via the daemon: `claude --resume <sid>` in
+  the session's cwd, registered in the in-memory terminals map. The column
+  flips from the read-only renderer to the terminal panel. Session becomes
+  **alive**.
+- **Alive** → no spawn. The UI just opens a WebSocket to the existing
+  PTY's I/O endpoint and replays recent scrollback. Same machinery for
+  page reload, second browser tab, or clicking Resume on an already-live
+  session.
+
+### Closing a terminal disposes it
+
+There is exactly one close action: `×`. Clicking it sends SIGTERM, waits
+500ms, sends SIGKILL if still alive, and removes the entry from the
+terminals map. The session flips back to **dormant**. The JSONL on disk
+keeps whatever the agent wrote.
+
+We **don't** offer a "detach but keep running" option, deliberately. The
+risk of dangling claude/codex processes the user can't see is worse than
+the convenience of background-keepalive. If you want to keep a long-running
+agent in the background, run it in your own terminal — supergit's job is
+not to manage daemons.
+
+The reload behaviour follows from "close = dispose": when a UI's
+WebSocket to a terminal closes, the daemon starts a short grace timer
+(~3s). If no new WS attaches before the timer fires, the PTY is
+disposed. Browser reload reconnects within that window and the session
+stays alive; outright closing the panel (or the tab) lets the timer
+fire and the PTY dies cleanly. Multiple browser tabs are fine — the
+PTY only dies when the *last* subscriber drops and the grace passes.
+
+### Why this design is the right one
+
+- Read mode stays the default — it's the right experience for skimming
+  many sessions across many worktrees. Markdown, icons, fast.
+- Terminal mode is the *interactive driver* — one click away when you need
+  it, invisible otherwise.
+- No duplicate views. Each column is in exactly one mode at a time.
+- The existing chat-input composer (a fire-and-forget `claude -p`) can
+  stay as a "quick reply without firing up a full TUI" affordance, or be
+  retired once Resume feels good. Decide after we use it.
+
+This document is a plan, not a spec. Open questions are called out. Adjust
+as we build.
 
 ---
 
