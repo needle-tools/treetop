@@ -2309,10 +2309,18 @@
               <span class="muted small">{summary.text}</span>
               {#if wt.branchStatus && wt.branchStatus.upstream}
                 {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
-                  <span class="ab" title={`vs ${wt.branchStatus.upstream}`}>
-                    {#if wt.branchStatus.ahead > 0}↑{wt.branchStatus.ahead}{/if}
-                    {#if wt.branchStatus.behind > 0}↓{wt.branchStatus.behind}{/if}
-                  </span>
+                  {#if wt.branchStatus.ahead > 0}
+                    <span
+                      class="ab ab-ahead"
+                      title={`${wt.branchStatus.ahead} commit${wt.branchStatus.ahead === 1 ? "" : "s"} to push → ${wt.branchStatus.upstream}`}
+                    >↑{wt.branchStatus.ahead}</span>
+                  {/if}
+                  {#if wt.branchStatus.behind > 0}
+                    <span
+                      class="ab ab-behind"
+                      title={`${wt.branchStatus.behind} commit${wt.branchStatus.behind === 1 ? "" : "s"} to pull from ${wt.branchStatus.upstream}`}
+                    >↓{wt.branchStatus.behind}</span>
+                  {/if}
                 {:else}
                   <span class="muted small">in sync</span>
                 {/if}
@@ -3970,8 +3978,8 @@
     min-width: 0;
   }
   .row-activity .agent-dot {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex: 0 0 auto;
   }
@@ -4047,6 +4055,9 @@
     align-items: center;
     gap: 0.5rem;
     margin-top: 0.5rem;
+    /* Left padding mirrors `.row-activity`'s 0.5rem so the status dot
+       lines up vertically with the agent dot in the activity row above. */
+    padding: 0 0.5rem;
   }
   .status-dot {
     width: 8px;
@@ -4059,12 +4070,25 @@
     background: var(--status-clean);
   }
   .ab {
-    background: var(--chip-indigo-bg);
-    color: var(--chip-indigo-text);
-    padding: 0.05rem 0.4rem;
+    padding: 0.1rem 0.45rem;
     border-radius: var(--radius-sm);
-    font-size: 0.75rem;
+    font-size: 0.8rem;
+    font-weight: 600;
     font-family: ui-monospace, monospace;
+    letter-spacing: 0.02em;
+  }
+  /* Ahead = local commits not pushed yet. Green = actionable: you have
+     work ready to send. Bolder than the old indigo pill so it reads at
+     a glance in a row that may also show dirty status + activity. */
+  .ab-ahead {
+    background: var(--chip-green-bg);
+    color: var(--chip-green-text);
+  }
+  /* Behind = upstream has commits you don't. Orange = stale / needs
+     attention, parallel to the dirty-status dot. */
+  .ab-behind {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
   }
   .row-actions {
     margin-left: auto;
