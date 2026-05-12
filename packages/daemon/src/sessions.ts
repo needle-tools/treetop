@@ -568,10 +568,57 @@ function trimMessages(session: NormalizedSession): void {
  * still the right trade vs. full-parse on every cache-miss.
  */
 const TAIL_BYTES = 8 * 1024 * 1024; // 8 MB
+/** Head bytes we scan for the authoritative cwd / sessionId / startedAt.
+ *  Claude / Codex both stamp these on every entry, but only the *first*
+ *  occurrence corresponds to the project directory `~/.claude/projects/...`
+ *  Claude uses for `--resume` lookup. If the tail-only read latches onto
+ *  an intermediate cd-into-subdir line, the wrong cwd propagates to the
+ *  resume PTY → "No conversation found with session ID". */
+const HEAD_META_BYTES = 64 * 1024;
 
-async function tailParseSessionFile(
+/** Scan up to HEAD_META_BYTES from the start of a session JSONL and
+ *  return the first cwd / sessionId / timestamp. Cheap line walk;
+ *  abandons as soon as all three are populated. */
+async function readSessionHeadMeta(
+  fh: Awaited<ReturnType<typeof open>>,
+  fileSize: number,
+  headBytes: number,
+): Promise<{ cwd?: string; sessionId?: string; startedAt?: string }> {
+  if (fileSize === 0) return {};
+  const size = Math.min(headBytes, fileSize);
+  const buf = Buffer.alloc(size);
+  await fh.read(buf, 0, size, 0);
+  const text = buf.toString("utf-8");
+  let cwd: string | undefined;
+  let sessionId: string | undefined;
+  let startedAt: string | undefined;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!cwd && typeof obj.cwd === "string") cwd = obj.cwd;
+    // Codex 0.130+ puts cwd under payload.cwd on a session_meta event.
+    if (!cwd && obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+      const p = obj.payload as Record<string, unknown>;
+      if (typeof p.cwd === "string") cwd = p.cwd;
+      if (!sessionId && typeof p.id === "string") sessionId = p.id;
+    }
+    if (!sessionId && typeof obj.sessionId === "string") sessionId = obj.sessionId;
+    if (!startedAt && typeof obj.timestamp === "string") startedAt = obj.timestamp;
+    if (cwd && sessionId && startedAt) break;
+  }
+  return { cwd, sessionId, startedAt };
+}
+
+export async function tailParseSessionFile(
   agent: AgentKind,
   path: string,
+  tailBytes: number = TAIL_BYTES,
+  headBytes: number = HEAD_META_BYTES,
 ): Promise<NormalizedSession> {
   if (agent !== "claude" && agent !== "codex") return emptySession(agent);
   const fh = await open(path, "r").catch(() => null);
@@ -579,7 +626,11 @@ async function tailParseSessionFile(
   try {
     const st = await fh.stat();
     if (st.size === 0) return emptySession(agent);
-    const readSize = Math.min(TAIL_BYTES, st.size);
+    // Always read the head first so cwd / sessionId reflect where the
+    // session started, even when an intermediate message recorded a
+    // subdirectory cwd.
+    const headMeta = await readSessionHeadMeta(fh, st.size, headBytes);
+    const readSize = Math.min(tailBytes, st.size);
     const startPos = st.size - readSize;
     const buf = Buffer.alloc(readSize);
     await fh.read(buf, 0, readSize, startPos);
@@ -587,11 +638,22 @@ async function tailParseSessionFile(
     // Drop the first (potentially partial) line if we didn't start at offset 0.
     if (startPos > 0) {
       const firstNewline = text.indexOf("\n");
-      if (firstNewline === -1) return emptySession(agent);
+      if (firstNewline === -1) {
+        const empty = emptySession(agent);
+        if (headMeta.cwd) empty.cwd = headMeta.cwd;
+        if (headMeta.sessionId) empty.sessionId = headMeta.sessionId;
+        if (headMeta.startedAt) empty.startedAt = headMeta.startedAt;
+        return empty;
+      }
       text = text.slice(firstNewline + 1);
     }
-    if (agent === "claude") return parseClaudeJsonl(text);
-    return parseCodexJsonl(text);
+    const parsed = agent === "claude" ? parseClaudeJsonl(text) : parseCodexJsonl(text);
+    // Overlay head meta — the head wins for identity fields. The tail
+    // keeps the messages (those are the recent ones the UI wants).
+    if (headMeta.cwd) parsed.cwd = headMeta.cwd;
+    if (headMeta.sessionId) parsed.sessionId = headMeta.sessionId;
+    if (headMeta.startedAt) parsed.startedAt = headMeta.startedAt;
+    return parsed;
   } finally {
     await fh.close();
   }

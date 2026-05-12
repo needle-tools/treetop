@@ -9,6 +9,7 @@ import {
   isMarker,
   parseSessionFile,
   getSessionResponseJson,
+  tailParseSessionFile,
   clearParseCache,
 } from "../src/sessions";
 
@@ -588,6 +589,48 @@ describe("getSessionResponseJson cache", () => {
     const c = JSON.parse(await getSessionResponseJson("claude", path));
     expect(c.messages).toHaveLength(3);
     expect(c.messages[2]?.blocks[0]?.text).toBe("third");
+  });
+
+  test("pins cwd / sessionId from the file head, not from the tail (long-session bug repro)", async () => {
+    // Repro for a real session where a 22k-message Claude JSONL had the
+    // session's original cwd (`/origin`) on the first line but later
+    // messages recorded a sub-cwd (`/origin/sub`). Tail-only parsing
+    // latched the sub-cwd, supergit launched `claude --resume` with that
+    // wrong cwd, and Claude responded "No conversation found with session
+    // ID" because the project directory it derives from cwd no longer
+    // matched. The fix is to seed cwd/sessionId from the file's head and
+    // let the tail provide only messages.
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-head-"));
+    const path = join(dir, "session.jsonl");
+
+    function lineWithCwd(cwd: string, sessionId: string, content: string, ts: string) {
+      return JSON.stringify({
+        type: "user",
+        cwd,
+        sessionId,
+        message: { role: "user", content },
+        timestamp: ts,
+      });
+    }
+    // Head: the authoritative cwd + sessionId.
+    await writeFile(
+      path,
+      lineWithCwd("/origin", "head-session-id", "first", "2026-05-12T01:00:00Z") + "\n",
+    );
+    // Force the tail-read window to exclude the head by passing a tiny
+    // tailBytes; the head meta read uses its own (larger) window.
+    // First check the bug repro: without head pinning we'd see the tail
+    // cwd. With the fix, head wins.
+    await appendFile(
+      path,
+      lineWithCwd("/origin/sub", "tail-session-id", "later", "2026-05-12T01:00:01Z") + "\n",
+    );
+    const result = await tailParseSessionFile("claude", path, 200, 64 * 1024);
+    expect(result.cwd).toBe("/origin");
+    expect(result.sessionId).toBe("head-session-id");
+    // The tail still contributes its messages (the latest ones the UI
+    // shows in the chat).
+    expect(result.messages.length).toBeGreaterThan(0);
   });
 
   test("defers a partial last line until its trailing newline arrives", async () => {
