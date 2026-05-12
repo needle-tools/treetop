@@ -149,3 +149,89 @@ export function filterToExistingSessions(
 ): PersistedSession[] {
   return persisted.filter((s) => existingSources.has(s.source));
 }
+
+/**
+ * Persisted "which worktrees of each repo should appear as rows in the
+ * dashboard". Storage shape: { [repoId]: string[] } where strings are
+ * worktree paths.
+ *
+ * The dashboard used to flat-list every worktree of every registered
+ * repo. That gets noisy fast on repos with many branches, so the user
+ * controls visibility explicitly: adding a repo defaults to showing
+ * only the main worktree; the worktree picker toggles others in / out.
+ *
+ * Persistence is per-browser (localStorage). Daemon doesn't see this —
+ * which is fine; it's a presentation concern, not workspace state.
+ */
+export class VisibleWorktreesStore {
+  constructor(
+    private readonly storage: KVStore,
+    private readonly key: string,
+  ) {}
+
+  load(): Record<string, string[]> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return {};
+    }
+    if (raw === null) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    const out: Record<string, string[]> = {};
+    for (const [repoId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(value)) continue;
+      out[repoId] = value.filter((x): x is string => typeof x === "string" && x.length > 0);
+    }
+    return out;
+  }
+
+  save(map: Record<string, string[]>): void {
+    try {
+      // Strip empty arrays + non-string entries on the way out so we
+      // don't accumulate garbage.
+      const sanitized: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(map)) {
+        const paths = (v ?? []).filter((p) => typeof p === "string" && p.length > 0);
+        if (paths.length > 0) sanitized[k] = paths;
+      }
+      this.storage.setItem(this.key, JSON.stringify(sanitized));
+    } catch {
+      // ignore — best-effort
+    }
+  }
+}
+
+/**
+ * Compute the effective list of worktree paths to render for a given
+ * repo, applying defaults for repos with no stored visibility yet.
+ *
+ * Default behaviour: when no entry exists for the repo, fall back to
+ * showing **the first worktree only**. (The first one from `git
+ * worktree list` is the original / main worktree of the repo.)
+ *
+ * Caller is responsible for passing the *current* set of on-disk
+ * worktrees — any path in the stored list that no longer exists on
+ * disk is silently dropped so removed worktrees don't haunt the UI.
+ */
+export function effectiveVisibleWorktrees(
+  repoId: string,
+  diskWorktreePaths: string[],
+  stored: Record<string, string[]>,
+): string[] {
+  if (diskWorktreePaths.length === 0) return [];
+  const entry = stored[repoId];
+  if (entry === undefined) {
+    return [diskWorktreePaths[0]!];
+  }
+  const onDisk = new Set(diskWorktreePaths);
+  return entry.filter((p) => onDisk.has(p));
+}

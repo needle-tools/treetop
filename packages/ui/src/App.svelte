@@ -3,7 +3,12 @@
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
-  import { OpenSessionsStore, filterToExistingSessions } from "./storage";
+  import {
+    OpenSessionsStore,
+    VisibleWorktreesStore,
+    effectiveVisibleWorktrees,
+    filterToExistingSessions,
+  } from "./storage";
 
   interface FileStatus {
     staged: number;
@@ -198,8 +203,30 @@
     };
   }
 
-  // Per repo id: is the "new worktree" inline form open?
+  // Per repo id: is the "new worktree" inline form open? (legacy — kept
+  // for the createWorktree() flow which still reads/writes
+  // newWtBranch[repo.id]; the inline-form rendering has been replaced
+  // by the worktree-picker popover.)
   let newWtOpen: Record<string, boolean> = {};
+  // Per wt.path (or repo.id when no worktrees exist yet): is the
+  // unified worktree picker open? The picker lets you jump to a
+  // worktree row, remove one, or create a new one.
+  let wtPickerOpen: Record<string, boolean> = {};
+
+  function repoName(repo: Repo): string {
+    return (repo as { name?: string }).name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+  }
+
+  /** Smooth-scroll the dashboard to the row representing this worktree
+   *  and pulse it briefly so the user can locate it. */
+  function jumpToWorktreeRow(path: string) {
+    const sel = `[data-wt-row="${CSS.escape(path)}"]`;
+    const el = document.querySelector<HTMLElement>(sel);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("wt-row-pulse");
+    setTimeout(() => el.classList.remove("wt-row-pulse"), 1200);
+  }
   let newWtBranch: Record<string, string> = {};
   let newWtBusy: Record<string, boolean> = {};
 
@@ -383,6 +410,14 @@
       : ({ getItem: () => null, setItem: () => {} }),
     "supergit:openSessions",
   );
+  const visibleWorktreesPersistence = new VisibleWorktreesStore(
+    typeof window !== "undefined"
+      ? window.localStorage
+      : ({ getItem: () => null, setItem: () => {} }),
+    "supergit:visibleWorktrees",
+  );
+  let visibleWorktreesByRepo: Record<string, string[]> = {};
+  let visibleHydrated = false;
   // Don't persist until the initial restore has run, otherwise the first
   // reactive write wipes saved state with our empty starting value.
   let sessionsHydrated = false;
@@ -406,6 +441,31 @@
     sessionsHydrated = true;
   }
   $: if (sessionsHydrated) openSessionsPersistence.save(openSessionsByWt);
+
+  function restoreVisibleWorktrees() {
+    visibleWorktreesByRepo = visibleWorktreesPersistence.load();
+    visibleHydrated = true;
+  }
+  $: if (visibleHydrated) visibleWorktreesPersistence.save(visibleWorktreesByRepo);
+
+  /** Hide a worktree row from the dashboard. Disk is untouched; the
+   *  worktree still exists, just not displayed. Re-show via the
+   *  worktrees picker. */
+  function hideWorktreeRow(repoId: string, wtPath: string, diskPaths: string[]) {
+    const current = effectiveVisibleWorktrees(repoId, diskPaths, visibleWorktreesByRepo);
+    const next = current.filter((p) => p !== wtPath);
+    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
+  }
+
+  /** Toggle a worktree's visibility in the dashboard from the picker. */
+  function toggleWorktreeVisibility(repoId: string, wtPath: string, diskPaths: string[]) {
+    const current = effectiveVisibleWorktrees(repoId, diskPaths, visibleWorktreesByRepo);
+    const isVisible = current.includes(wtPath);
+    const next = isVisible
+      ? current.filter((p) => p !== wtPath)
+      : [...current, wtPath];
+    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
+  }
 
   async function load() {
     loading = true;
@@ -503,6 +563,55 @@
     try {
       const res = await fetch(`/api/repos/${id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Remove a worktree (the directory + git's per-worktree state slot).
+   *  Defaults to refusing on dirty state — the daemon returns
+   *  {dirty: true} in that case so we can offer a forced retry behind
+   *  an extra confirm. Branch itself is never deleted; just the
+   *  on-disk working tree. */
+  async function removeWorktreeInRow(repoId: string, wt: { path: string; branch: string }) {
+    error = "";
+    if (!confirm(`Remove worktree on branch \`${wt.branch}\`?\n\n${wt.path}\n\nThe directory will be deleted. The branch ref is kept and can be checked out again later.`)) {
+      return;
+    }
+    async function call(force: boolean) {
+      const res = await fetch(`/api/repos/${repoId}/worktrees`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: wt.path, force }),
+      });
+      if (res.ok) return { ok: true as const };
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        dirty?: boolean;
+      };
+      return { ok: false as const, ...body };
+    }
+    try {
+      let result = await call(false);
+      if (!result.ok && result.dirty) {
+        if (
+          !confirm(
+            `${result.error}\n\nDiscard uncommitted/untracked changes and remove anyway?`,
+          )
+        ) {
+          return;
+        }
+        result = await call(true);
+      }
+      if (!result.ok) throw new Error(result.error ?? "remove failed");
+      // Drop any session columns / terminal state pointed at this worktree
+      // from local state so the UI doesn't try to resume into a path that
+      // no longer exists.
+      const next = { ...openSessionsByWt };
+      delete next[wt.path];
+      openSessionsByWt = next;
+      void openSessionsPersistence.write(openSessionsByWt);
       await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -811,17 +920,27 @@
     return { clean: false, text: parts.join(", ") };
   }
 
-  // Flat list: one row per worktree (or one placeholder row per registered
-  // path that has no worktrees yet).
-  $: rows = repos.flatMap((repo) =>
-    repo.worktrees.length > 0
-      ? repo.worktrees.map((wt) => ({
-          repo,
-          wt,
-          key: `${repo.id}|${wt.path}`,
-        }))
-      : [{ repo, wt: null as Worktree | null, key: `${repo.id}|none` }],
-  );
+  // Flat list of rendered rows. Each repo contributes ONE row per
+  // worktree the user has chosen to show (via the worktrees picker),
+  // not one per worktree on disk. A repo with no checked worktrees
+  // still appears as a placeholder so the user can find it via its
+  // picker. Placeholder also covers the "registered path has no
+  // worktrees yet" edge case.
+  $: rows = repos.flatMap((repo) => {
+    const diskPaths = repo.worktrees.map((w) => w.path);
+    const visiblePaths = effectiveVisibleWorktrees(
+      repo.id,
+      diskPaths,
+      visibleWorktreesByRepo,
+    );
+    if (visiblePaths.length === 0) {
+      return [{ repo, wt: null as Worktree | null, key: `${repo.id}|none` }];
+    }
+    return visiblePaths.map((path) => {
+      const wt = repo.worktrees.find((w) => w.path === path)!;
+      return { repo, wt, key: `${repo.id}|${wt.path}` };
+    });
+  });
 
   // Only "real" actions in the dropdown; toggle events are hidden.
   $: visibleEvents = events.filter(
@@ -836,6 +955,14 @@
     if (tuisOpen && !target?.closest(".tuis-anchor")) {
       tuisOpen = false;
       stopTuiPolling();
+    }
+    // Close any open worktree-picker popover the click landed outside of.
+    for (const key of Object.keys(wtPickerOpen)) {
+      if (!wtPickerOpen[key]) continue;
+      const anchor = target?.closest(`[data-wt-picker-anchor="${key}"]`);
+      if (!anchor) {
+        wtPickerOpen = { ...wtPickerOpen, [key]: false };
+      }
     }
     // Any open agents popovers that the click landed outside of: close them.
     for (const key of Object.keys(agentsPopoverOpen)) {
@@ -858,6 +985,7 @@
   onMount(() => {
     restoreExpanded();
     restoreOpenSessions();
+    restoreVisibleWorktrees();
     void loadEditors();
     void load().then(() => {
       for (const [path, expanded] of Object.entries(commitsExpanded)) {
@@ -994,7 +1122,6 @@
 
   <section class="add">
     <button
-      class:primary={repos.length === 0}
       on:click={pickAndAdd}>Pick folder…</button
     >
     <input
@@ -1020,7 +1147,7 @@
       {#each rows as row (row.key)}
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
-        <li class="row">
+        <li class="row" data-wt-row={wt ? wt.path : `${repo.id}|none`}>
           <div class="row-left">
             {#if wt && wt.lastCommit}
               <button
@@ -1187,20 +1314,116 @@
               <span class="branch warn">no worktrees</span>
             {/if}
 
-            <button
-              class="new-wt"
-              title="Create a new worktree on a new branch"
-              on:click={() => {
-                newWtOpen = { ...newWtOpen, [repo.id]: !newWtOpen[repo.id] };
-                if (newWtOpen[repo.id] && !newWtBranch[repo.id]) {
-                  newWtBranch = { ...newWtBranch, [repo.id]: "" };
-                }
-              }}
-            >+ wt</button>
+            <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
+              <button
+                class="new-wt"
+                title="Worktrees of this repo (switch to / remove / create new)"
+                on:click|stopPropagation={() => {
+                  const key = wt ? wt.path : repo.id;
+                  wtPickerOpen = { ...wtPickerOpen, [key]: !wtPickerOpen[key] };
+                }}
+              >worktrees ({repo.worktrees.length})</button>
+              {#if wtPickerOpen[wt ? wt.path : repo.id]}
+                {@const diskPaths = repo.worktrees.map((w) => w.path)}
+                {@const visibleSet = new Set(
+                  effectiveVisibleWorktrees(repo.id, diskPaths, visibleWorktreesByRepo),
+                )}
+                <div class="agents-popover wt-picker-popover" role="menu" use:clampToViewport>
+                  <div class="popover-head">Worktrees of {repo.name ?? repoName(repo)}</div>
+                  <ul class="agents-list">
+                    {#each repo.worktrees as wOption (wOption.path)}
+                      <li>
+                        <div
+                          class="agent-row wt-pick-row"
+                          class:wt-pick-visible={visibleSet.has(wOption.path)}
+                          role="button"
+                          tabindex="0"
+                          on:click={() => {
+                            toggleWorktreeVisibility(repo.id, wOption.path, diskPaths);
+                          }}
+                          on:keydown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              toggleWorktreeVisibility(repo.id, wOption.path, diskPaths);
+                            }
+                          }}
+                          title={visibleSet.has(wOption.path)
+                            ? `${wOption.path}\n\nVisible in the dashboard. Click to hide this row. The worktree itself stays on disk.`
+                            : `${wOption.path}\n\nHidden. Click to show as a row in the dashboard.`}
+                        >
+                          <span class="wt-pick-tick" aria-hidden="true">
+                            {visibleSet.has(wOption.path) ? "✓" : ""}
+                          </span>
+                          <span class="agent-row-name">{wOption.branch}</span>
+                          <span class="agent-title">{wOption.path}</span>
+                          <button
+                            class="row-close wt-pick-kill"
+                            on:click|stopPropagation={() => {
+                              wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
+                              void removeWorktreeInRow(repo.id, {
+                                path: wOption.path,
+                                branch: wOption.branch,
+                              });
+                            }}
+                            title="Remove this worktree's directory from disk (branch ref is kept)"
+                            aria-label="Remove worktree from disk"
+                          >×</button>
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                  <form
+                    class="wt-pick-create-row"
+                    on:submit|preventDefault={() => {
+                      const branch = (newWtBranch[repo.id] ?? "").trim();
+                      if (!branch) return;
+                      const key = wt ? wt.path : repo.id;
+                      wtPickerOpen = { ...wtPickerOpen, [key]: false };
+                      void createWorktree(repo.id);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      placeholder="new branch — creates worktree on it"
+                      bind:value={newWtBranch[repo.id]}
+                      on:click|stopPropagation
+                      class="wt-pick-create-input"
+                      title={`Runs \`git worktree add ~/wt/${repoName(repo)}/<branch> -b <branch>\` — creates BOTH the new branch and a worktree directory for it.`}
+                    />
+                    <button
+                      type="submit"
+                      class="wt-pick-create-go"
+                      disabled={!((newWtBranch[repo.id] ?? "").trim())}
+                      title="git worktree add ~/wt/<repo>/<branch> -b <branch>"
+                    >+ create</button>
+                  </form>
+                  <button
+                    class="wt-pick-remove-repo"
+                    on:click|stopPropagation={() => {
+                      wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
+                      void removeRepo(repo.id);
+                    }}
+                    title="Untrack this repo entirely. Worktrees on disk are not deleted."
+                  >Remove repo from supergit</button>
+                </div>
+              {/if}
+            </span>
             <button
               class="remove"
-              title="Remove repo from workspace"
-              on:click={() => removeRepo(repo.id)}>×</button
+              title={wt
+                ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
+                : "Remove this repo from supergit's workspace."}
+              on:click={() => {
+                if (wt) {
+                  hideWorktreeRow(
+                    repo.id,
+                    wt.path,
+                    repo.worktrees.map((w) => w.path),
+                  );
+                } else {
+                  void removeRepo(repo.id);
+                }
+              }}>×</button
             >
           </div>
 
@@ -1666,6 +1889,132 @@
   button.tiny {
     padding: 0.2rem 0.55rem;
     font-size: 0.75rem;
+  }
+  /* Unified worktree picker popover anchored to the repo-header
+     `worktrees (N)` button. Same agents-popover shell; same .agent-row
+     visual for each line; same 0.78rem font as "X sessions in this
+     worktree". A create-new input lives at the bottom. */
+  .wt-picker-anchor {
+    position: relative;
+    display: inline-flex;
+  }
+  .wt-picker-popover {
+    width: 520px;
+    max-width: 90vw;
+  }
+  .wt-pick-row {
+    /* Each row is a div (not a button) since the X needs to be its own
+       clickable target. Primary click on the row toggles visibility.
+       4 children: tick · branch · path · × — override .agent-row's
+       6-column session-popover grid so the cells line up. */
+    cursor: pointer;
+    grid-template-columns: 12px auto 1fr 18px;
+  }
+  .wt-pick-tick {
+    display: inline-block;
+    width: 12px;
+    text-align: center;
+    color: var(--brand);
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+  /* Visible worktrees: brand-colored branch name so the eye picks them
+     out from the hidden ones. */
+  .wt-pick-row.wt-pick-visible .agent-row-name {
+    color: var(--text-1);
+  }
+  .wt-pick-row:not(.wt-pick-visible) .agent-row-name,
+  .wt-pick-row:not(.wt-pick-visible) .agent-title {
+    opacity: 0.55;
+  }
+  .wt-pick-row:hover {
+    background: var(--surface-2);
+  }
+  /* Hover-reveal the X exactly like the sessions popover's row-close. */
+  .wt-pick-row .wt-pick-kill {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .wt-pick-row:hover .wt-pick-kill {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .wt-pick-kill:hover {
+    background: var(--error-bg);
+    color: var(--error-text);
+  }
+  /* Highlight the worktree whose row this popover was opened from. */
+  .wt-picker-popover .agent-row.rm-wt-current {
+    background: var(--surface-2);
+    outline: 1px solid color-mix(in srgb, var(--text-faint) 50%, transparent);
+  }
+  /* Create-new input at the bottom of the picker. */
+  .wt-pick-create-row {
+    margin-top: 0.4rem;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--surface-2);
+  }
+  .wt-pick-create-input {
+    flex: 1;
+    background: transparent;
+    color: var(--text-1);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+  }
+  .wt-pick-create-input:focus {
+    outline: none;
+    border-color: var(--text-faint);
+  }
+  .wt-pick-create-go {
+    background: var(--surface-2);
+    color: var(--text-1);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.65rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .wt-pick-create-go:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .wt-pick-create-go:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
+  /* Tiny destructive link at the bottom of the worktree picker: untracks
+     the repo from supergit entirely (workspace state). Distinct from
+     hiding individual worktree rows. */
+  .wt-pick-remove-repo {
+    display: block;
+    margin-top: 0.4rem;
+    width: 100%;
+    background: transparent;
+    color: #efaaaa;
+    border: 0;
+    padding: 0.35rem 0;
+    font-size: 0.72rem;
+    cursor: pointer;
+    text-align: center;
+    border-top: 1px dashed color-mix(in srgb, var(--surface-3) 70%, transparent);
+  }
+  .wt-pick-remove-repo:hover {
+    color: #ffcaca;
+  }
+  /* Brief highlight pulse when the picker scrolls to a worktree row. */
+  @keyframes wt-row-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 50%, transparent); }
+    40%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand) 30%, transparent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .wt-row-pulse {
+    animation: wt-row-pulse 1.2s ease-out;
+    border-radius: var(--radius-md);
   }
 
   .error {

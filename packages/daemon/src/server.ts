@@ -12,6 +12,8 @@ import {
   fetchAll,
   createWorktree,
   removeWorktree,
+  listBranches,
+  checkoutBranch,
   type DiffKind,
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
@@ -238,6 +240,9 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
           { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
+          { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
+          { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
+          { method: "POST", path: "/api/repos/:id/checkout", body: { path: "string", branch: "string", force: "boolean?" }, description: "run `git checkout <branch>` in the given worktree. Refuses on dirty state unless force=true. Remote-style branches (origin/foo) get an implicit `-t` to create a tracking local branch." },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
@@ -576,6 +581,105 @@ const server = Bun.serve<TermWsData, never>({
           { error: String(e instanceof Error ? e.message : e) },
           { status: 409 },
         );
+      }
+    }
+
+    if (wtCreateMatch && req.method === "DELETE") {
+      const id = wtCreateMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { path?: unknown; force?: unknown }
+        | null;
+      const wtPath = body?.path;
+      const force = body?.force === true;
+      if (typeof wtPath !== "string" || wtPath.trim().length === 0) {
+        return json(
+          { error: "body.path (worktree path) is required" },
+          { status: 400 },
+        );
+      }
+      const repos = await workspace.listRepos();
+      const repo = repos.find((r) => r.id === id);
+      if (!repo) return json({ error: "repo not found" }, { status: 404 });
+      try {
+        await removeWorktree(repo.path, wtPath, { force });
+        await events.append({
+          type: "remove_worktree",
+          actor: "user",
+          payload: { repoId: id, path: wtPath, force },
+        });
+        broadcast("change", { kind: "remove_worktree", path: wtPath });
+        return json({ ok: true });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        // Surface dirty-state errors with a recognizable shape so the UI
+        // can offer a "force" retry.
+        const isDirty = /uncommitted|modified|untracked|locked/i.test(msg);
+        return json(
+          { error: msg, dirty: isDirty },
+          { status: 409 },
+        );
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/branches$/);
+      if (m && req.method === "GET") {
+        const id = m[1]!;
+        const path = url.searchParams.get("path");
+        const repos = await workspace.listRepos();
+        const repo = repos.find((r) => r.id === id);
+        if (!repo) return json({ error: "repo not found" }, { status: 404 });
+        const target = path && path.length > 0 ? path : repo.path;
+        try {
+          const branches = await listBranches(target);
+          return json(branches);
+        } catch (e) {
+          return json(
+            { error: String(e instanceof Error ? e.message : e) },
+            { status: 500 },
+          );
+        }
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/checkout$/);
+      if (m && req.method === "POST") {
+        const id = m[1]!;
+        const body = (await req.json().catch(() => null)) as
+          | { path?: unknown; branch?: unknown; force?: unknown }
+          | null;
+        const wtPath = body?.path;
+        const branch = body?.branch;
+        const force = body?.force === true;
+        if (
+          typeof wtPath !== "string" ||
+          wtPath.trim().length === 0 ||
+          typeof branch !== "string" ||
+          branch.trim().length === 0
+        ) {
+          return json(
+            { error: "body.path and body.branch are required" },
+            { status: 400 },
+          );
+        }
+        const repos = await workspace.listRepos();
+        const repo = repos.find((r) => r.id === id);
+        if (!repo) return json({ error: "repo not found" }, { status: 404 });
+        try {
+          await checkoutBranch(wtPath, branch.trim(), { force });
+          await events.append({
+            type: "checkout_branch",
+            actor: "user",
+            payload: { repoId: id, path: wtPath, branch: branch.trim(), force },
+          });
+          broadcast("change", { kind: "checkout_branch", path: wtPath });
+          return json({ ok: true });
+        } catch (e) {
+          const msg = String(e instanceof Error ? e.message : e);
+          const isDirty = /uncommitted|untracked|stash/i.test(msg);
+          return json({ error: msg, dirty: isDirty }, { status: 409 });
+        }
       }
     }
 

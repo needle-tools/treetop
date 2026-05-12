@@ -2,6 +2,8 @@ import { test, expect, describe } from "bun:test";
 import {
   ExpandedStore,
   OpenSessionsStore,
+  VisibleWorktreesStore,
+  effectiveVisibleWorktrees,
   filterToExistingSessions,
   type KVStore,
   type PersistedSession,
@@ -290,5 +292,108 @@ describe("filterToExistingSessions", () => {
     const beforeJson = JSON.stringify(persisted);
     filterToExistingSessions(persisted, new Set(["/keep.jsonl"]));
     expect(JSON.stringify(persisted)).toBe(beforeJson);
+  });
+});
+
+describe("VisibleWorktreesStore", () => {
+  const KEY = "supergit:visibleWorktrees";
+
+  test("returns empty map when nothing stored", () => {
+    const s = new VisibleWorktreesStore(new MemStore(), KEY);
+    expect(s.load()).toEqual({});
+  });
+
+  test("round-trips a map of repoId -> paths", () => {
+    const store = new MemStore();
+    const s = new VisibleWorktreesStore(store, KEY);
+    s.save({ rA: ["/path/a", "/path/b"], rB: ["/path/c"] });
+    const reloaded = new VisibleWorktreesStore(store, KEY).load();
+    expect(reloaded).toEqual({ rA: ["/path/a", "/path/b"], rB: ["/path/c"] });
+  });
+
+  test("save drops empty arrays and non-string entries on the way out", () => {
+    const store = new MemStore();
+    const s = new VisibleWorktreesStore(store, KEY);
+    s.save({
+      rA: ["/keep"],
+      rEmpty: [],
+      rGarbage: ["/ok", 42 as unknown as string, ""],
+    });
+    const reloaded = new VisibleWorktreesStore(store, KEY).load();
+    expect(reloaded).toEqual({ rA: ["/keep"], rGarbage: ["/ok"] });
+  });
+
+  test("tolerates corrupt JSON without throwing", () => {
+    const store = new MemStore();
+    store.setItem(KEY, "{not json}");
+    const s = new VisibleWorktreesStore(store, KEY);
+    expect(s.load()).toEqual({});
+  });
+
+  test("tolerates a non-object root (array, string, null)", () => {
+    const store = new MemStore();
+    store.setItem(KEY, '["nope"]');
+    expect(new VisibleWorktreesStore(store, KEY).load()).toEqual({});
+    store.setItem(KEY, '"hello"');
+    expect(new VisibleWorktreesStore(store, KEY).load()).toEqual({});
+  });
+
+  test("save swallows storage errors", () => {
+    const s = new VisibleWorktreesStore(new ThrowingStore(), KEY);
+    expect(() => s.save({ rA: ["/path"] })).not.toThrow();
+  });
+
+  test("load swallows storage errors", () => {
+    const s = new VisibleWorktreesStore(new ThrowingStore(), KEY);
+    expect(s.load()).toEqual({});
+  });
+});
+
+describe("effectiveVisibleWorktrees", () => {
+  test("returns [] when the repo has no worktrees on disk", () => {
+    expect(effectiveVisibleWorktrees("rA", [], { rA: ["/anything"] })).toEqual([]);
+  });
+
+  test("with no stored entry, defaults to the first worktree on disk only", () => {
+    // This is THE rule for new repos: adding a repo to supergit shows
+    // only its main worktree by default; further worktrees must be
+    // explicitly enabled via the picker.
+    expect(
+      effectiveVisibleWorktrees(
+        "rA",
+        ["/repos/A", "/wt/A/feature", "/wt/A/other"],
+        {},
+      ),
+    ).toEqual(["/repos/A"]);
+  });
+
+  test("respects an explicit stored list", () => {
+    expect(
+      effectiveVisibleWorktrees(
+        "rA",
+        ["/repos/A", "/wt/A/feature", "/wt/A/other"],
+        { rA: ["/wt/A/feature"] },
+      ),
+    ).toEqual(["/wt/A/feature"]);
+  });
+
+  test("an explicit empty list keeps the repo hidden — does NOT fall back to first wt", () => {
+    expect(
+      effectiveVisibleWorktrees(
+        "rA",
+        ["/repos/A", "/wt/A/feature"],
+        { rA: [] },
+      ),
+    ).toEqual([]);
+  });
+
+  test("filters out stored paths whose worktree no longer exists on disk", () => {
+    expect(
+      effectiveVisibleWorktrees(
+        "rA",
+        ["/repos/A"],
+        { rA: ["/wt/A/feature-deleted", "/repos/A"] },
+      ),
+    ).toEqual(["/repos/A"]);
   });
 });

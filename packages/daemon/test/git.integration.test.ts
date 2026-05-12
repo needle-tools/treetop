@@ -9,7 +9,17 @@ import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
-import { listWorktrees, getWorktreeDetails, listCommits, getDiff } from "../src/git";
+import {
+  listWorktrees,
+  getWorktreeDetails,
+  listCommits,
+  getDiff,
+  createWorktree,
+  removeWorktree,
+  listBranches,
+  checkoutBranch,
+} from "../src/git";
+import { stat } from "node:fs/promises";
 
 async function tempRepo(): Promise<string> {
   // realpath resolves macOS's /var -> /private/var symlink so the path
@@ -145,5 +155,107 @@ describe("getDiff against real git", () => {
     const diff = await getDiff(repo, "staged");
     expect(diff).toContain("a.txt");
     expect(diff).toContain("+v1");
+  });
+});
+
+describe("removeWorktree against real git", () => {
+  test("clean removal deletes the directory and the .git slot", async () => {
+    const repo = await tempRepo();
+    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const created = await createWorktree(repo, "feature-a", { wtRoot });
+
+    // sanity: dir exists, listWorktrees sees it
+    expect((await stat(created.path)).isDirectory()).toBe(true);
+    expect((await listWorktrees(repo)).some((w) => w.path === created.path)).toBe(true);
+
+    await removeWorktree(repo, created.path);
+
+    // dir gone
+    let dirGone = false;
+    try { await stat(created.path); } catch { dirGone = true; }
+    expect(dirGone).toBe(true);
+    // listWorktrees no longer references it
+    expect((await listWorktrees(repo)).some((w) => w.path === created.path)).toBe(false);
+    // branch ref preserved
+    const branches = (await $`git -C ${repo} branch --list feature-a`.quiet()).stdout.toString();
+    expect(branches).toContain("feature-a");
+  });
+
+  test("refuses to remove when the worktree has uncommitted changes", async () => {
+    const repo = await tempRepo();
+    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const created = await createWorktree(repo, "dirty-branch", { wtRoot });
+    await writeFile(join(created.path, "dirty.txt"), "uncommitted\n");
+
+    let thrown: Error | null = null;
+    try {
+      await removeWorktree(repo, created.path);
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).not.toBeNull();
+    // worktree still exists
+    expect((await stat(created.path)).isDirectory()).toBe(true);
+
+    // force=true overrides
+    await removeWorktree(repo, created.path, { force: true });
+    let dirGone = false;
+    try { await stat(created.path); } catch { dirGone = true; }
+    expect(dirGone).toBe(true);
+  });
+});
+
+describe("listBranches against real git", () => {
+  test("reports current branch + local refs in a fresh repo", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} branch feature-a`.quiet();
+    await $`git -C ${repo} branch feature-b`.quiet();
+    const b = await listBranches(repo);
+    expect(b.current).toBe("main");
+    expect(b.local.sort()).toEqual(["feature-a", "feature-b", "main"]);
+    expect(b.remote).toEqual([]);
+  });
+
+  test("returns current=null when HEAD is detached", async () => {
+    const repo = await tempRepo();
+    const head = (await $`git -C ${repo} rev-parse HEAD`.quiet()).stdout.toString().trim();
+    await $`git -C ${repo} checkout --detach ${head}`.quiet().nothrow();
+    const b = await listBranches(repo);
+    expect(b.current).toBeNull();
+  });
+});
+
+describe("checkoutBranch against real git", () => {
+  test("checks out an existing branch in a clean worktree", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} branch feat-x`.quiet();
+    await checkoutBranch(repo, "feat-x");
+    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    expect(head).toBe("feat-x");
+  });
+
+  test("refuses to checkout when the worktree is dirty", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} branch feat-y`.quiet();
+    await writeFile(join(repo, "dirty.txt"), "uncommitted\n");
+    let thrown: Error | null = null;
+    try {
+      await checkoutBranch(repo, "feat-y");
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).not.toBeNull();
+    // still on main
+    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    expect(head).toBe("main");
+  });
+
+  test("force=true checks out anyway when dirty (untracked file is preserved)", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} branch feat-z`.quiet();
+    await writeFile(join(repo, "stray.txt"), "untracked\n");
+    await checkoutBranch(repo, "feat-z", { force: true });
+    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    expect(head).toBe("feat-z");
   });
 });

@@ -117,6 +117,90 @@ export async function removeWorktree(
   }
 }
 
+export interface BranchListing {
+  /** Branch currently checked out in this worktree (null if detached). */
+  current: string | null;
+  /** Local refs (refs/heads/*). */
+  local: string[];
+  /** Remote refs as "<remote>/<branch>", e.g. "origin/main". */
+  remote: string[];
+}
+
+export async function listBranches(repoPath: string): Promise<BranchListing> {
+  let current: string | null = null;
+  try {
+    const out = await $`git -C ${repoPath} symbolic-ref --quiet --short HEAD`
+      .quiet()
+      .nothrow();
+    const s = out.stdout.toString().trim();
+    if (s) current = s;
+  } catch {
+    current = null;
+  }
+  const local: string[] = [];
+  const remote: string[] = [];
+  try {
+    const out = await $`git -C ${repoPath} for-each-ref --format=${"%(refname)"} refs/heads refs/remotes`
+      .quiet()
+      .nothrow();
+    for (const raw of out.stdout.toString().split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith("refs/heads/")) {
+        local.push(line.slice("refs/heads/".length));
+      } else if (line.startsWith("refs/remotes/")) {
+        const name = line.slice("refs/remotes/".length);
+        if (name.endsWith("/HEAD")) continue;
+        remote.push(name);
+      }
+    }
+  } catch {
+    // best effort
+  }
+  return { current, local, remote };
+}
+
+/** Run `git checkout <branch>` inside a worktree. Refuses on dirty
+ *  working tree unless `force` is true. Existing-branch checkouts only
+ *  for now — caller passes a name from listBranches's local set, or a
+ *  remote name (e.g. "origin/foo") to create a local tracking branch
+ *  implicitly via `git checkout -t`. */
+export async function checkoutBranch(
+  worktreePath: string,
+  branch: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  // Dirty-state guard: if `git status --porcelain` is non-empty and we
+  // weren't given force, bail out.
+  if (!options.force) {
+    const dirty = await $`git -C ${worktreePath} status --porcelain`
+      .quiet()
+      .nothrow();
+    if (dirty.stdout.toString().trim().length > 0) {
+      throw new Error(
+        "worktree has uncommitted/untracked changes — commit, stash, or force",
+      );
+    }
+  }
+  // If the user picked a remote branch, use -t so we create the tracking
+  // local branch in one step.
+  const isRemote = branch.includes("/") && !branch.startsWith("refs/");
+  const args = ["git", "-C", worktreePath, "checkout"];
+  if (options.force) args.push("--force");
+  if (isRemote) args.push("-t");
+  args.push(branch);
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  const stderr = await new Response(proc.stderr).text();
+  const exit = await proc.exited;
+  if (exit !== 0) {
+    throw new Error(`git checkout failed: ${stderr.trim() || "exit " + exit}`);
+  }
+}
+
 export async function fetchAll(repoPath: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(
