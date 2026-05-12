@@ -18,6 +18,8 @@ import {
   removeWorktree,
   listBranches,
   checkoutBranch,
+  resolveSubmoduleWorktreePaths,
+  type Worktree,
 } from "../src/git";
 import { stat } from "node:fs/promises";
 
@@ -158,6 +160,102 @@ describe("getDiff against real git", () => {
   });
 });
 
+describe("resolveSubmoduleWorktreePaths", () => {
+  // Pure unit-style test: pass crafted worktree records and verify the
+  // .git/modules path gets substituted with rev-parse --show-toplevel
+  // for the registered repo path. No submodule fixture needed.
+  test("substitutes .git/modules paths with the actual toplevel", async () => {
+    const repo = await tempRepo();
+    const fake: Worktree[] = [
+      {
+        path: `${repo}/.git/modules/some-submodule`,
+        branch: "main",
+        head: "deadbeef",
+        bare: false,
+        detached: false,
+      },
+    ];
+    const fixed = await resolveSubmoduleWorktreePaths(repo, fake);
+    expect(fixed[0]!.path).toBe(repo);
+  });
+
+  test("leaves non-submodule paths alone", async () => {
+    const repo = await tempRepo();
+    const ok: Worktree[] = [
+      {
+        path: repo,
+        branch: "main",
+        head: "abc",
+        bare: false,
+        detached: false,
+      },
+      {
+        path: "/some/random/worktree",
+        branch: "feat",
+        head: "def",
+        bare: false,
+        detached: false,
+      },
+    ];
+    const fixed = await resolveSubmoduleWorktreePaths(repo, ok);
+    expect(fixed[0]!.path).toBe(repo);
+    expect(fixed[1]!.path).toBe("/some/random/worktree");
+  });
+
+  test("end-to-end: a real submodule's listWorktrees no longer points at .git/modules", async () => {
+    // Build a parent repo with a real submodule and verify our top-level
+    // listWorktrees(submodulePath) returns the submodule's working
+    // tree, not its gitdir under .git/modules.
+    const parent = await tempRepo();
+    const sub = await tempRepo();
+    // Move the submodule contents into <parent>/sub/ via `git submodule add`.
+    // Use file:// URL since the submodule is local on disk.
+    await $`git -C ${parent} -c protocol.file.allow=always submodule add ${sub} sub`
+      .quiet();
+    await $`git -C ${parent} commit -q -m add-sub`.quiet();
+    const submoduleWorkdir = `${parent}/sub`;
+    const list = await listWorktrees(submoduleWorkdir);
+    // The reported path must NOT contain `.git/modules` — our resolver
+    // should have flipped it to the real working tree.
+    expect(list.length).toBeGreaterThan(0);
+    for (const wt of list) {
+      expect(wt.path).not.toContain("/.git/modules/");
+    }
+  });
+});
+
+describe("createWorktree against real git", () => {
+  test("creates a NEW branch when the requested branch doesn't exist", async () => {
+    const repo = await tempRepo();
+    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const result = await createWorktree(repo, "fresh-branch", { wtRoot });
+    expect(result.created).toBe(true);
+    // The branch ref now exists.
+    const ref = (
+      await $`git -C ${repo} show-ref --verify --quiet refs/heads/fresh-branch`
+        .quiet()
+        .nothrow()
+    ).exitCode;
+    expect(ref).toBe(0);
+  });
+
+  test("reuses an EXISTING branch when one with that name already exists", async () => {
+    const repo = await tempRepo();
+    // Create the branch first via raw git, then ask createWorktree for
+    // a worktree on the same name. Previously this would error out
+    // with `a branch named '<x>' already exists`.
+    await $`git -C ${repo} branch existing-branch`.quiet();
+    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const result = await createWorktree(repo, "existing-branch", { wtRoot });
+    expect(result.created).toBe(false);
+    expect(result.branch).toBe("existing-branch");
+    // The new worktree should have existing-branch checked out.
+    const wts = await listWorktrees(repo);
+    const wt = wts.find((w) => w.path === result.path);
+    expect(wt?.branch).toBe("existing-branch");
+  });
+});
+
 describe("removeWorktree against real git", () => {
   test("clean removal deletes the directory and the .git slot", async () => {
     const repo = await tempRepo();
@@ -216,6 +314,49 @@ describe("listBranches against real git", () => {
     expect(b.remote).toEqual([]);
   });
 
+  test("local branches are sorted by committer date (most recent first)", async () => {
+    const repo = await tempRepo();
+    // Make commits on three branches at distinct times so ordering is
+    // unambiguous. Commit on each branch as separate operations and use
+    // GIT_COMMITTER_DATE to fix the ordering deterministically.
+    async function commitAt(branch: string, dateIso: string, file: string) {
+      await $`git -C ${repo} checkout -q -b ${branch}`.quiet().nothrow();
+      await writeFile(join(repo, file), `${branch}\n`);
+      await $`git -C ${repo} add ${file}`.quiet();
+      // Bun.$ doesn't expose an env-injection API on the tag itself,
+      // so we use git's own env-var syntax via inline assignment in
+      // the spawn args.
+      const proc = Bun.spawn(
+        ["git", "-C", repo, "commit", "-q", "-m", `on-${branch}`],
+        {
+          env: {
+            ...process.env,
+            GIT_COMMITTER_DATE: dateIso,
+            GIT_AUTHOR_DATE: dateIso,
+          },
+          stdout: "ignore",
+          stderr: "pipe",
+        },
+      );
+      await proc.exited;
+      await $`git -C ${repo} checkout -q main`.quiet().nothrow();
+    }
+    await commitAt("oldest", "2026-01-01T00:00:00Z", "a.txt");
+    await commitAt("middle", "2026-02-01T00:00:00Z", "b.txt");
+    await commitAt("newest", "2026-03-01T00:00:00Z", "c.txt");
+
+    const b = await listBranches(repo);
+    // `main` could appear anywhere depending on when our initial commit
+    // happened; just assert the three test branches are in the right
+    // relative order.
+    const idx = (name: string) => b.local.indexOf(name);
+    expect(idx("newest")).toBeGreaterThanOrEqual(0);
+    expect(idx("middle")).toBeGreaterThanOrEqual(0);
+    expect(idx("oldest")).toBeGreaterThanOrEqual(0);
+    expect(idx("newest")).toBeLessThan(idx("middle"));
+    expect(idx("middle")).toBeLessThan(idx("oldest"));
+  });
+
   test("returns current=null when HEAD is detached", async () => {
     const repo = await tempRepo();
     const head = (await $`git -C ${repo} rev-parse HEAD`.quiet()).stdout.toString().trim();
@@ -248,6 +389,33 @@ describe("checkoutBranch against real git", () => {
     // still on main
     const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
     expect(head).toBe("main");
+  });
+
+  test("preStash=true stashes the dirty work, then checks out cleanly", async () => {
+    const repo = await tempRepo();
+    // Track a file first so the modification is detectable as dirty,
+    // and create the branch FROM that commit so the file exists on
+    // both branches.
+    await writeFile(join(repo, "tracked.txt"), "v1\n");
+    await $`git -C ${repo} add tracked.txt`.quiet();
+    await $`git -C ${repo} commit -m add-tracked -q`.quiet();
+    await $`git -C ${repo} branch feat-stash`.quiet();
+    // Now make a modification — this is the dirty state.
+    await writeFile(join(repo, "tracked.txt"), "v2-uncommitted\n");
+
+    const result = await checkoutBranch(repo, "feat-stash", { preStash: true });
+    expect(result.stashed).toBe(true);
+
+    // On feat-stash, the file should be back to v1 (the committed version).
+    const onDisk = (await $`cat ${join(repo, "tracked.txt")}`.quiet()).stdout
+      .toString()
+      .trim();
+    expect(onDisk).toBe("v1");
+
+    // The stash should be present with our recognizable supergit-auto tag.
+    const stashList = (await $`git -C ${repo} stash list`.quiet()).stdout
+      .toString();
+    expect(stashList).toContain("supergit-auto");
   });
 
   test("force=true checks out anyway when dirty (untracked file is preserved)", async () => {

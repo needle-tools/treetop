@@ -3,6 +3,7 @@
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
+  import TerminalView from "./TerminalView.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -84,7 +85,51 @@
   let editors: EditorDescriptor[] = [];
   let newRepoPath = "";
   let loading = false;
+  // Legacy single-string error slot — kept for code paths that still set
+  // it directly. New code should call `addToast({ kind: "error", ... })`
+  // instead. Anything assigned to `error` is mirrored into the toast
+  // stack via a reactive watcher below.
   let error = "";
+
+  /** Toast stack. Errors and notices both render as floating cards in
+   *  the bottom-right; each auto-dismisses on its own timer and can be
+   *  closed manually. Designed to coexist with the stash banner that
+   *  was wired earlier (which now uses this same machinery). */
+  interface Toast {
+    id: number;
+    kind: "error" | "info" | "success";
+    message: string;
+    title?: string;
+  }
+  let toasts: Toast[] = [];
+  let toastSeq = 0;
+  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  function addToast(opts: { kind: Toast["kind"]; message: string; title?: string; ttlMs?: number }): number {
+    if (!opts.message) return -1;
+    const id = ++toastSeq;
+    toasts = [...toasts, { id, kind: opts.kind, message: opts.message, title: opts.title }];
+    const ttl = opts.ttlMs ?? (opts.kind === "error" ? 12_000 : 7_000);
+    toastTimers.set(
+      id,
+      setTimeout(() => dismissToast(id), ttl),
+    );
+    return id;
+  }
+  function dismissToast(id: number) {
+    const t = toastTimers.get(id);
+    if (t) {
+      clearTimeout(t);
+      toastTimers.delete(id);
+    }
+    toasts = toasts.filter((x) => x.id !== id);
+  }
+  // Mirror any direct `error = "…"` assignment into the toast stack so
+  // we don't have to chase every call site at once. Cleared as soon as
+  // it's surfaced.
+  $: if (error) {
+    addToast({ kind: "error", message: error });
+    error = "";
+  }
   let streamConnected = false;
 
   // The unique row key (repoId + worktree path) currently being renamed.
@@ -212,6 +257,201 @@
   // unified worktree picker open? The picker lets you jump to a
   // worktree row, remove one, or create a new one.
   let wtPickerOpen: Record<string, boolean> = {};
+  // Agent CLIs we detected on PATH at the daemon. Loaded once on mount.
+  let installedAgents: { name: string; path: string }[] = [];
+  // Per-worktree: is the "+ new agent" popover open?
+  let newAgentPopoverOpen: Record<string, boolean> = {};
+
+  // Per-worktree branch picker state (the dropdown that opens when the
+  // user clicks the branch chip).
+  interface BranchListing {
+    current: string | null;
+    local: string[];
+    remote: string[];
+  }
+  let branchPickerOpen: Record<string, boolean> = {};
+  let branchesByWt: Record<string, BranchListing> = {};
+  let branchesLoading: Record<string, boolean> = {};
+  let branchSortMode: "recency" | "alpha" = "recency";
+
+  function sortBranches(list: string[], mode: "recency" | "alpha"): string[] {
+    if (mode === "alpha") return [...list].sort((a, b) => a.localeCompare(b));
+    // Recency: daemon already returns these in committerdate-desc order.
+    return list;
+  }
+
+  async function loadBranchesFor(repoId: string, wtPath: string) {
+    branchesLoading = { ...branchesLoading, [wtPath]: true };
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/branches?path=${encodeURIComponent(wtPath)}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as BranchListing;
+      branchesByWt = { ...branchesByWt, [wtPath]: body };
+    } catch {
+      branchesByWt = {
+        ...branchesByWt,
+        [wtPath]: { current: null, local: [], remote: [] },
+      };
+    } finally {
+      branchesLoading = { ...branchesLoading, [wtPath]: false };
+    }
+  }
+
+  // Dirty-state checkout dialog: the user clicked a branch, the daemon
+  // refused because the worktree is dirty; we surface a modal with
+  // explicit Stash / Force / Cancel choices.
+  let dirtyCheckout:
+    | null
+    | {
+        repoId: string;
+        wtPath: string;
+        branch: string;
+        message: string;
+      } = null;
+
+  /** Surface a successful "stash & switch" as a toast. Uses the generic
+   *  toast stack so dismiss + ttl behave consistently with errors. */
+  function showStashToast(_wtPath: string, message: string) {
+    addToast({
+      kind: "info",
+      title: "Stashed.",
+      message,
+      ttlMs: 12_000,
+    });
+  }
+
+  async function doCheckout(
+    repoId: string,
+    wtPath: string,
+    branch: string,
+    options: { force?: boolean; preStash?: boolean } = {},
+  ): Promise<{ ok: boolean; dirty?: boolean; error?: string; stashed?: boolean }> {
+    try {
+      const res = await fetch(`/api/repos/${repoId}/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: wtPath, branch, ...options }),
+      });
+      if (res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { stashed?: boolean };
+        return { ok: true, stashed: body.stashed };
+      }
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        dirty?: boolean;
+      };
+      return { ok: false, dirty: body.dirty, error: body.error ?? `HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Branch-picker entrypoint: try a clean checkout; if it fails because
+   *  of dirty state, surface the dirty-checkout dialog so the user
+   *  picks Stash / Force / Cancel. */
+  async function tryCheckout(repoId: string, wtPath: string, branch: string) {
+    branchPickerOpen = { ...branchPickerOpen, [wtPath]: false };
+    const result = await doCheckout(repoId, wtPath, branch);
+    if (result.ok) {
+      if (result.stashed) {
+        showStashToast(
+          wtPath,
+          "Your changes are stashed. Run `git stash pop` (or use Fork) to restore.",
+        );
+      }
+      await load();
+      return;
+    }
+    if (result.dirty) {
+      dirtyCheckout = {
+        repoId,
+        wtPath,
+        branch,
+        message: result.error ?? "worktree has uncommitted changes",
+      };
+      return;
+    }
+    error = result.error ?? "checkout failed";
+  }
+
+  async function resolveDirty(action: "stash" | "force" | "cancel") {
+    if (!dirtyCheckout) return;
+    const ctx = dirtyCheckout;
+    dirtyCheckout = null;
+    if (action === "cancel") return;
+    if (action === "force") {
+      const confirmed = confirm(
+        `Force-checkout will discard your uncommitted changes in\n  ${ctx.wtPath}\n\nThis cannot be undone. Continue?`,
+      );
+      if (!confirmed) return;
+    }
+    const result = await doCheckout(ctx.repoId, ctx.wtPath, ctx.branch, {
+      preStash: action === "stash",
+      force: action === "force",
+    });
+    if (result.ok) {
+      if (result.stashed) {
+        showStashToast(
+          ctx.wtPath,
+          `Stashed your changes before switching to \`${ctx.branch}\`. Run \`git stash pop\` to restore.`,
+        );
+      }
+      await load();
+    } else {
+      error = result.error ?? "checkout failed";
+    }
+  }
+
+  async function loadInstalledAgents() {
+    try {
+      const res = await fetch("/api/agents/installed");
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        installed: { name: string; path: string }[];
+      };
+      installedAgents = body.installed ?? [];
+    } catch {
+      installedAgents = [];
+    }
+  }
+
+  /** Open a brand-new agent session in this worktree. Adds a transient
+   *  open-session entry whose source is sentinel-prefixed with
+   *  `__new__:` — the column rendering branches on that to render
+   *  TerminalView directly instead of the read-mode SessionView. */
+  function openNewAgentSession(wtPath: string, agent: "claude" | "codex") {
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__new__:${agent}:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: [{ agent, source: synthetic }, ...existing],
+    };
+  }
+
+  /** Faster poll cadence while a transient new-agent TUI is open — the
+   *  agent is in the process of writing its first JSONL line, and we
+   *  want it to surface in the worktree's agent strip within a few
+   *  seconds rather than waiting for the next manual refresh.
+   *  Stops itself as soon as no `__new__:` sessions remain.
+   *
+   *  Why bound the lifetime to "has transient sessions" instead of just
+   *  always-polling: the rest of the time the SSE 'change' stream is
+   *  enough; we don't want a 3s heartbeat for no reason. */
+  let newSessionPollTimer: ReturnType<typeof setInterval> | null = null;
+  $: hasTransientSessions = Object.values(openSessionsByWt).some((arr) =>
+    arr.some((s) => s.source.startsWith("__new__:")),
+  );
+  $: if (hasTransientSessions && !newSessionPollTimer) {
+    newSessionPollTimer = setInterval(() => {
+      void load();
+    }, 3_000);
+  } else if (!hasTransientSessions && newSessionPollTimer) {
+    clearInterval(newSessionPollTimer);
+    newSessionPollTimer = null;
+  }
 
   function repoName(repo: Repo): string {
     return (repo as { name?: string }).name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
@@ -245,6 +485,20 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
+      const body = (await res.json().catch(() => ({}))) as {
+        branch?: string;
+        path?: string;
+        created?: boolean;
+      };
+      // Tell the user whether we created a fresh branch or reused an
+      // existing one. (Daemon's createWorktree now auto-detects.)
+      addToast({
+        kind: "success",
+        title: body.created ? "Worktree created." : "Worktree for existing branch.",
+        message: body.created
+          ? `New branch \`${body.branch ?? branch}\` and worktree at ${body.path ?? ""}`
+          : `Checked out existing \`${body.branch ?? branch}\` into ${body.path ?? ""}`,
+      });
       newWtBranch = { ...newWtBranch, [repoId]: "" };
       newWtOpen = { ...newWtOpen, [repoId]: false };
       await load();
@@ -607,11 +861,11 @@
       if (!result.ok) throw new Error(result.error ?? "remove failed");
       // Drop any session columns / terminal state pointed at this worktree
       // from local state so the UI doesn't try to resume into a path that
-      // no longer exists.
+      // no longer exists. (The reactive watcher persists this back to
+      // storage; we don't need to call .save directly.)
       const next = { ...openSessionsByWt };
       delete next[wt.path];
       openSessionsByWt = next;
-      void openSessionsPersistence.write(openSessionsByWt);
       await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -956,6 +1210,22 @@
       tuisOpen = false;
       stopTuiPolling();
     }
+    // Close any open "new agent" picker the click landed outside of.
+    for (const key of Object.keys(newAgentPopoverOpen)) {
+      if (!newAgentPopoverOpen[key]) continue;
+      const anchor = target?.closest(`[data-new-agent-anchor="${key}"]`);
+      if (!anchor) {
+        newAgentPopoverOpen = { ...newAgentPopoverOpen, [key]: false };
+      }
+    }
+    // Close any open branch picker the click landed outside of.
+    for (const key of Object.keys(branchPickerOpen)) {
+      if (!branchPickerOpen[key]) continue;
+      const anchor = target?.closest(`[data-branch-anchor="${key}"]`);
+      if (!anchor) {
+        branchPickerOpen = { ...branchPickerOpen, [key]: false };
+      }
+    }
     // Close any open worktree-picker popover the click landed outside of.
     for (const key of Object.keys(wtPickerOpen)) {
       if (!wtPickerOpen[key]) continue;
@@ -986,6 +1256,7 @@
     restoreExpanded();
     restoreOpenSessions();
     restoreVisibleWorktrees();
+    void loadInstalledAgents();
     void loadEditors();
     void load().then(() => {
       for (const [path, expanded] of Object.entries(commitsExpanded)) {
@@ -1134,9 +1405,6 @@
     <button class="refresh" on:click={load}>Refresh</button>
   </section>
 
-  {#if error}
-    <div class="error">{error}</div>
-  {/if}
 
   {#if loading && repos.length === 0}
     <p class="muted">Loading…</p>
@@ -1148,19 +1416,6 @@
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
         <li class="row" data-wt-row={wt ? wt.path : `${repo.id}|none`}>
-          <div class="row-left">
-            {#if wt && wt.lastCommit}
-              <button
-                class="chevron"
-                class:open={commitsExpanded[wt.path]}
-                title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                on:click={() => toggleCommits(wt.path)}
-              >
-                <span class="arrow">▸</span>
-              </button>
-            {/if}
-          </div>
           <div class="row-content">
           <div class="row-head">
             {#if editingRowKey === row.key}
@@ -1191,11 +1446,133 @@
               {:else if wt.bare}
                 <span class="branch bare">bare</span>
               {:else}
-                <span class="branch">{wt.branch}</span>
+                <span class="branch-anchor" data-branch-anchor={wt.path}>
+                  <button
+                    class="branch branch-button"
+                    title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
+                    on:click|stopPropagation={() => {
+                      const opening = !branchPickerOpen[wt.path];
+                      branchPickerOpen = { ...branchPickerOpen, [wt.path]: opening };
+                      if (opening) void loadBranchesFor(repo.id, wt.path);
+                    }}
+                  >{wt.branch} <span class="branch-caret" aria-hidden="true">▾</span></button>
+                  {#if branchPickerOpen[wt.path]}
+                    <div class="agents-popover branch-popover" role="menu" use:clampToViewport>
+                      <div class="popover-head branch-popover-head">
+                        <span>Switch branch in {wt.branch}</span>
+                        <button
+                          class="branch-sort-toggle"
+                          title="Toggle branch sort order"
+                          on:click|stopPropagation={() => {
+                            branchSortMode = branchSortMode === "recency" ? "alpha" : "recency";
+                          }}
+                        >
+                          sort: {branchSortMode === "recency" ? "recency" : "A–Z"} ↻
+                        </button>
+                      </div>
+                      {#if branchesLoading[wt.path]}
+                        <p class="muted small nopad">Loading branches…</p>
+                      {:else}
+                        {@const b = branchesByWt[wt.path]}
+                        {#if !b || (b.local.length === 0 && b.remote.length === 0)}
+                          <p class="muted small nopad">No branches found.</p>
+                        {:else}
+                          {@const sortedLocal = sortBranches(b.local, branchSortMode)}
+                          {@const sortedRemote = sortBranches(b.remote, branchSortMode)}
+                          <ul class="agents-list">
+                            {#each sortedLocal as bname (bname)}
+                              <li>
+                                <button
+                                  class="agent-row branch-row"
+                                  class:branch-row-current={bname === b.current}
+                                  disabled={bname === b.current}
+                                  on:click={() => tryCheckout(repo.id, wt.path, bname)}
+                                  title={bname === b.current
+                                    ? "Currently checked out"
+                                    : `Run \`git checkout ${bname}\` here`}
+                                >
+                                  <span class="branch-tick" aria-hidden="true">
+                                    {bname === b.current ? "●" : ""}
+                                  </span>
+                                  <span class="agent-row-name">{bname}</span>
+                                  <span class="agent-title muted">local</span>
+                                </button>
+                              </li>
+                            {/each}
+                            {#each sortedRemote as bname (bname)}
+                              <li>
+                                <button
+                                  class="agent-row branch-row"
+                                  on:click={() => tryCheckout(repo.id, wt.path, bname)}
+                                  title={`Create local tracking branch from \`${bname}\` and check it out`}
+                                >
+                                  <span class="branch-tick" aria-hidden="true"></span>
+                                  <span class="agent-row-name">{bname}</span>
+                                  <span class="agent-title muted">remote</span>
+                                </button>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      {/if}
+                    </div>
+                  {/if}
+                </span>
               {/if}
-              {#if wt.agents && wt.agents.length > 0}
-                {@const a = wt.agents[0]}
-                <span class="agent-wrap" data-agents-anchor={wt.path}>
+              {#if wt}
+                {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
+                <span class="agent-wrap" data-agents-anchor={wt.path} data-new-agent-anchor={wt.path}>
+                  <button
+                    class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
+                    title={installedAgents.length > 0
+                      ? "Start a new agent session in this worktree"
+                      : "No agent CLIs found on PATH"}
+                    on:click|stopPropagation={() => {
+                      newAgentPopoverOpen = {
+                        ...newAgentPopoverOpen,
+                        [wt.path]: !newAgentPopoverOpen[wt.path],
+                      };
+                    }}
+                    disabled={installedAgents.length === 0}
+                  >+</button>
+                  {#if newAgentPopoverOpen[wt.path]}
+                    <div class="agents-popover new-agent-popover" role="menu" use:clampToViewport>
+                      <div class="popover-head">Start a new session</div>
+                      {#if installedAgents.length === 0}
+                        <p class="muted small nopad">No agent CLIs found on PATH.</p>
+                      {:else}
+                        <ul class="agents-list">
+                          {#each installedAgents as ag (ag.name)}
+                            <li>
+                              <button
+                                class="agent-row new-agent-row"
+                                on:click={() => {
+                                  newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                                  openNewAgentSession(wt.path, ag.name as "claude" | "codex");
+                                }}
+                                title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
+                              >
+                                {#if ag.name === "claude"}
+                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                                {:else if ag.name === "codex"}
+                                  <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                                {:else}
+                                  <span class="agent-dot agent-shell"></span>
+                                {/if}
+                                <span class="agent-row-name">
+                                  {ag.name === "claude" ? "Claude"
+                                    : ag.name === "codex" ? "Codex"
+                                    : ag.name}
+                                </span>
+                                <span class="agent-title muted">{ag.path}</span>
+                              </button>
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if a}
                   <button
                     class="agent-badge agent-{a.agent}"
                     class:active={isOpenInWt(wt.path, a.source)}
@@ -1209,7 +1586,8 @@
                     <span class="agent-dot"></span>
                     {a.agent} · {relTime(a.lastActive)}
                   </button>
-                  {#if wt.agents.length > 1}
+                  {/if}
+                  {#if a && wt.agents.length > 1}
                     <button
                       class="agent-more agent-{a.agent}"
                       title={`Pick from ${wt.agents.length} sessions in this worktree`}
@@ -1400,11 +1778,17 @@
                   <button
                     class="wt-pick-remove-repo"
                     on:click|stopPropagation={() => {
+                      const ok = confirm(
+                        `Remove repository \`${repoName(repo)}\` and all its worktree rows from supergit?\n\n` +
+                        `This only untracks the repo from supergit's workspace — your repo at\n  ${repo.path}\nand any worktree directories on disk are NOT deleted.\n\n` +
+                        `You can re-add it later via "+ Add" if you change your mind.`,
+                      );
+                      if (!ok) return;
                       wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
                       void removeRepo(repo.id);
                     }}
-                    title="Untrack this repo entirely. Worktrees on disk are not deleted."
-                  >Remove repo from supergit</button>
+                    title="Untrack the repo from supergit (the repo dir + worktrees on disk are kept)"
+                  >Remove repository and all worktree rows from supergit</button>
                 </div>
               {/if}
             </span>
@@ -1514,13 +1898,6 @@
             </div>
 
             {#if wt.lastCommit}
-              <div class="row-commit muted small">
-                <code class="sha">{wt.lastCommit.shortSha}</code>
-                <span class="commit-subject">{wt.lastCommit.subject}</span>
-                <span class="commit-author">{wt.lastCommit.author}</span>
-                <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
-              </div>
-
               {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
                 {@const existingSources = new Set(
                   (wt.agents ?? []).map((a) => a.source),
@@ -1539,18 +1916,62 @@
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
                       >
-                        <SessionView
-                          agent={s.agent}
-                          source={s.source}
-                          onClose={() => closeSessionInWt(wt.path, s)}
-                          onDragStart={(e) =>
-                            handleSessionDragStart(e, wt.path, i)}
-                        />
+                        {#if s.source.startsWith("__new__:")}
+                          <!-- Transient column: a brand-new agent we just
+                               spawned, before its JSONL has been created on
+                               disk. Renders the TUI directly. Once the user
+                               closes it, we drop the entry from the open list. -->
+                          <div class="session new-session-col">
+                            <header class="new-session-head">
+                              <span class="agent-pill agent-{s.agent}">{s.agent}</span>
+                              <span class="muted small">new session — TUI</span>
+                              <button
+                                class="close"
+                                on:click={() => closeSessionInWt(wt.path, s)}
+                                title="Close + dispose this terminal"
+                              >×</button>
+                            </header>
+                            <TerminalView
+                              cmd={[s.agent]}
+                              cwd={wt.path}
+                              procName={`supergit-tui-new-${s.agent}`}
+                              onExit={() => closeSessionInWt(wt.path, s)}
+                            />
+                          </div>
+                        {:else}
+                          <SessionView
+                            agent={s.agent}
+                            source={s.source}
+                            onClose={() => closeSessionInWt(wt.path, s)}
+                            onDragStart={(e) =>
+                              handleSessionDragStart(e, wt.path, i)}
+                          />
+                        {/if}
                       </div>
                     {/each}
                   </div>
                 {/if}
               {/if}
+
+              <!-- "Topmost commit" row: chevron + last-commit summary,
+                   placed BELOW the sessions strip so the chat columns
+                   are the row's primary content. The chevron toggles
+                   the full History block below. -->
+              <div class="row-commit muted small">
+                <button
+                  class="chevron"
+                  class:open={commitsExpanded[wt.path]}
+                  title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                  aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                  on:click={() => toggleCommits(wt.path)}
+                >
+                  <span class="arrow">▸</span>
+                </button>
+                <span class="sha">{wt.lastCommit.shortSha}</span>
+                <span class="commit-subject">{wt.lastCommit.subject}</span>
+                <span class="commit-author">{wt.lastCommit.author}</span>
+                <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
+              </div>
 
               {#if commitsExpanded[wt.path]}
                 <div class="expanded">
@@ -1653,6 +2074,56 @@
     </ul>
   {/if}
 </main>
+
+{#if dirtyCheckout}
+  <div class="modal-scrim" role="dialog" aria-modal="true" aria-labelledby="dirty-title">
+    <div class="modal">
+      <h3 id="dirty-title">Worktree has uncommitted changes</h3>
+      <p class="modal-body">
+        Switching to <code>{dirtyCheckout.branch}</code> in
+        <code class="muted small">{dirtyCheckout.wtPath}</code>
+        is blocked because the worktree is dirty. How would you like to handle
+        your local changes?
+      </p>
+      <p class="modal-meta muted small">
+        {dirtyCheckout.message}
+      </p>
+      <div class="modal-actions">
+        <button class="modal-action primary" on:click={() => resolveDirty("stash")}>
+          Stash &amp; switch
+          <span class="modal-hint">git stash push (recoverable with stash pop)</span>
+        </button>
+        <button class="modal-action danger" on:click={() => resolveDirty("force")}>
+          Force &amp; switch
+          <span class="modal-hint">discards uncommitted changes — cannot be undone</span>
+        </button>
+        <button class="modal-action neutral" on:click={() => resolveDirty("cancel")}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if toasts.length > 0}
+  <div class="toast-stack" role="region" aria-label="Notifications">
+    {#each toasts as t (t.id)}
+      <div class="toast toast-{t.kind}" role={t.kind === "error" ? "alert" : "status"}>
+        <span class="toast-icon" aria-hidden="true">
+          {#if t.kind === "error"}!{:else if t.kind === "success"}✓{:else}ℹ{/if}
+        </span>
+        <div class="toast-body">
+          {#if t.title}<strong>{t.title}</strong> {/if}{t.message}
+        </div>
+        <button
+          class="toast-close"
+          on:click={() => dismissToast(t.id)}
+          aria-label="Dismiss"
+        >×</button>
+      </div>
+    {/each}
+  </div>
+{/if}
 
 <style>
   :global(body) {
@@ -2039,18 +2510,9 @@
     padding: 0.65rem 0.75rem;
     margin: 0 0 0.6rem;
     min-width: 0;
-    display: grid;
-    grid-template-columns: 28px 1fr;
-    gap: 0.5rem;
-    align-items: start;
-  }
-  .row-left {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    /* Stay pinned to the top of the row so the chevron sits next to the
-       row header, not centered across the (much taller) expanded row. */
-    height: 28px;
+    /* The chevron lives next to the row-commit line (below the sessions
+       strip) now, so no separate left-rail column — row-content takes
+       the full width. */
   }
   .row-content {
     min-width: 0;
@@ -2107,8 +2569,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: ui-monospace, monospace;
-    font-size: 0.82rem;
-    color: var(--text-3);
+    /* Matches the branch chip's font-size + uses muted text so the
+       path reads as supporting metadata, not primary content. */
+    font-size: 0.78rem;
+    color: var(--text-muted);
   }
   .branch {
     background: var(--chip-blue-bg);
@@ -2117,6 +2581,236 @@
     border-radius: var(--radius-sm);
     font-size: 0.78rem;
     white-space: nowrap;
+  }
+  /* Make the branch chip look clickable when it's actually a button. */
+  button.branch-button {
+    border: 0;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  button.branch-button:hover {
+    filter: brightness(1.15);
+  }
+  .branch-caret {
+    font-size: 0.65rem;
+    opacity: 0.7;
+    line-height: 1;
+  }
+  .branch-anchor {
+    position: relative;
+    display: inline-flex;
+  }
+  .branch-popover {
+    width: 360px;
+    max-width: 90vw;
+  }
+  /* Popover head with the title on the left and the sort toggle on
+     the right. Sort toggle is a tiny pill so it doesn't compete with
+     the actual branch list. */
+  .branch-popover-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .branch-sort-toggle {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    padding: 0.1rem 0.45rem;
+    font-size: 0.68rem;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .branch-sort-toggle:hover {
+    color: var(--text-1);
+    border-color: var(--text-faint);
+  }
+  /* Branch picker row: 3 cells (dot · name · local|remote). Override
+     .agent-row's session-popover grid. */
+  .branch-row {
+    grid-template-columns: 12px auto 1fr;
+  }
+  .branch-row[disabled] {
+    cursor: default;
+  }
+  .branch-tick {
+    width: 12px;
+    text-align: center;
+    color: var(--brand);
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+  .branch-row-current .agent-row-name {
+    color: var(--text-1);
+    font-weight: 600;
+  }
+
+  /* Modal for dirty-state checkout confirmation. */
+  .modal-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .modal {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-md);
+    padding: 1rem 1.1rem;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+    color: var(--text-1);
+  }
+  .modal h3 {
+    margin: 0 0 0.6rem;
+    font-size: 1rem;
+  }
+  .modal-body {
+    margin: 0 0 0.4rem;
+    font-size: 0.88rem;
+    color: var(--text-2);
+  }
+  .modal-body code {
+    background: var(--surface-2);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+  }
+  .modal-meta {
+    margin: 0 0 0.8rem;
+    font-family: ui-monospace, monospace;
+    word-break: break-word;
+  }
+  .modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .modal-action {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--surface-3);
+    background: var(--surface-2);
+    color: var(--text-1);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+  .modal-action:hover {
+    background: var(--surface-3);
+  }
+  .modal-action.primary {
+    border-color: color-mix(in srgb, var(--brand) 50%, transparent);
+  }
+  .modal-action.primary:hover {
+    border-color: var(--brand);
+  }
+  .modal-action.danger {
+    border-color: color-mix(in srgb, #efaaaa 35%, transparent);
+    color: #efcccc;
+  }
+  .modal-action.danger:hover {
+    background: color-mix(in srgb, var(--error-bg) 60%, var(--surface-2));
+  }
+  .modal-action.neutral {
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .modal-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  /* Bottom-right toast stack. Errors + notices share the layout; the
+     left-edge accent line + icon colour pick up `--kind`. */
+  .toast-stack {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 250;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    max-width: 420px;
+    padding: 0.7rem 0.9rem;
+    background: var(--surface-2);
+    border: 1px solid var(--surface-3);
+    border-left: 3px solid var(--brand);
+    border-radius: var(--radius-md);
+    color: var(--text-1);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+  .toast-error {
+    border-left-color: var(--error-text);
+    background: color-mix(in srgb, var(--error-bg) 50%, var(--surface-2));
+  }
+  .toast-success {
+    border-left-color: var(--status-clean);
+  }
+  .toast-icon {
+    width: 1.1rem;
+    height: 1.1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 0.72rem;
+    line-height: 1;
+    flex: 0 0 auto;
+    color: var(--text-1);
+  }
+  .toast-error .toast-icon {
+    background: color-mix(in srgb, var(--error-text) 35%, transparent);
+    color: var(--error-text);
+  }
+  .toast-success .toast-icon {
+    background: color-mix(in srgb, var(--status-clean) 35%, transparent);
+    color: white;
+  }
+  .toast-info .toast-icon {
+    background: color-mix(in srgb, var(--brand) 35%, transparent);
+    color: var(--brand);
+  }
+  .toast-body {
+    flex: 1;
+    word-break: break-word;
+  }
+  .toast-close {
+    background: transparent;
+    color: var(--text-muted);
+    border: 0;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0.2rem;
+  }
+  .toast-close:hover {
+    color: var(--text-1);
   }
   .branch.detached {
     background: var(--chip-orange-bg);
@@ -2191,6 +2885,108 @@
     border-bottom-left-radius: 0;
     border-top-right-radius: var(--radius-sm);
     border-bottom-right-radius: var(--radius-sm);
+  }
+  /* "+" chip glued to the LEFT of the agent badge — mirror of
+     .agent-more but anchored to the start. Color picked up from the
+     agent name modifier (.agent-claude / .agent-codex / …) so the
+     pill looks like one continuous coloured group. */
+  .agent-add {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
+    border: 0;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.7rem;
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+    cursor: pointer;
+    border-top-left-radius: var(--radius-sm);
+    border-bottom-left-radius: var(--radius-sm);
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: 1px solid rgba(0, 0, 0, 0.25);
+  }
+  .agent-add.agent-claude {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
+  }
+  .agent-add.agent-codex {
+    background: var(--chip-codex-bg);
+    color: var(--chip-codex-text);
+  }
+  .agent-add.agent-copilot {
+    background: var(--chip-blue-bg);
+    color: var(--chip-blue-text);
+  }
+  /* When there's no agent badge next to it (no sessions in this
+     worktree yet), the "+" lives on its own — neutral muted color so
+     it's discoverable but doesn't shout, and rounded on BOTH sides
+     since there's no sibling pill to join with. */
+  .agent-add.agent-empty {
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border-right: 0;
+    border-top-right-radius: var(--radius-sm);
+    border-bottom-right-radius: var(--radius-sm);
+  }
+  .agent-add.agent-empty:hover:not(:disabled) {
+    color: var(--text-1);
+    background: var(--surface-3);
+    filter: none;
+  }
+  .agent-add:hover:not(:disabled) {
+    filter: brightness(1.2);
+  }
+  .agent-add:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  /* Adding a "+" to the left means the badge's left edge is no longer
+     a corner — make sure the badge plays along by un-rounding its
+     left side when there's an .agent-add sibling before it. */
+  .agent-wrap > .agent-add + .agent-badge {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  /* New-agent popover layout: 480px feels right for the agent rows. */
+  .new-agent-popover {
+    width: 360px;
+    max-width: 90vw;
+  }
+  /* Transient new-session column: simple bordered shell with a small
+     header strip. The TerminalView inside fills the column body. */
+  .new-session-col {
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    background: var(--surface-1);
+    overflow: hidden;
+  }
+  .new-session-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--surface-3);
+  }
+  .new-session-head .close {
+    margin-left: auto;
+    background: transparent;
+    color: var(--text-muted);
+    border: 0;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 1.05rem;
+    line-height: 1;
+  }
+  .new-session-head .close:hover {
+    color: var(--text-1);
+    background: var(--surface-3);
   }
   .agent-more.agent-claude {
     background: var(--chip-orange-bg);
@@ -2440,12 +3236,18 @@
     margin-top: 0.45rem;
     display: flex;
     gap: 0.5rem;
-    align-items: baseline;
+    align-items: center;
     overflow: hidden;
   }
+  /* Chevron lives inside .row-commit now. Make sure it sits aligned to
+     the commit-line text and is interactive without disturbing
+     baseline alignment of the sha/subject/author/time. */
+  .row-commit > .chevron {
+    flex: 0 0 auto;
+  }
   .sha {
-    font-family: ui-monospace, monospace;
-    color: var(--text-5);
+    /* Inherit font + color from .row-commit so the sha reads as part
+       of the same one-line commit summary, not a code chip. */
   }
   .commit-subject {
     overflow: hidden;

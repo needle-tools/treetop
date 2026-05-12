@@ -499,6 +499,28 @@ const server = Bun.serve<TermWsData, never>({
       return json({ ok: true });
     }
 
+    if (url.pathname === "/api/agents/installed" && req.method === "GET") {
+      // Which interactive agent CLIs are on PATH right now? Used by the
+      // worktree row's "+" button to populate its spawn dropdown.
+      // Cheap shell-out per candidate; we cache nothing because PATH and
+      // installs change between requests rarely enough that the cost is
+      // negligible.
+      const candidates = ["claude", "codex"];
+      const installed: { name: string; path: string }[] = [];
+      for (const name of candidates) {
+        try {
+          const r = await Bun.$`which ${name}`.quiet().nothrow();
+          const out = r.stdout.toString().trim();
+          if (r.exitCode === 0 && out.length > 0) {
+            installed.push({ name, path: out.split("\n")[0]! });
+          }
+        } catch {
+          // skip
+        }
+      }
+      return json({ installed });
+    }
+
     if (url.pathname === "/api/active-sends" && req.method === "GET") {
       const sessionId = url.searchParams.get("sessionId") ?? undefined;
       return json(inflight.list({ sessionId }));
@@ -647,11 +669,12 @@ const server = Bun.serve<TermWsData, never>({
       if (m && req.method === "POST") {
         const id = m[1]!;
         const body = (await req.json().catch(() => null)) as
-          | { path?: unknown; branch?: unknown; force?: unknown }
+          | { path?: unknown; branch?: unknown; force?: unknown; preStash?: unknown }
           | null;
         const wtPath = body?.path;
         const branch = body?.branch;
         const force = body?.force === true;
+        const preStash = body?.preStash === true;
         if (
           typeof wtPath !== "string" ||
           wtPath.trim().length === 0 ||
@@ -667,14 +690,23 @@ const server = Bun.serve<TermWsData, never>({
         const repo = repos.find((r) => r.id === id);
         if (!repo) return json({ error: "repo not found" }, { status: 404 });
         try {
-          await checkoutBranch(wtPath, branch.trim(), { force });
+          const result = await checkoutBranch(wtPath, branch.trim(), {
+            force,
+            preStash,
+          });
           await events.append({
             type: "checkout_branch",
             actor: "user",
-            payload: { repoId: id, path: wtPath, branch: branch.trim(), force },
+            payload: {
+              repoId: id,
+              path: wtPath,
+              branch: branch.trim(),
+              force,
+              stashed: result.stashed,
+            },
           });
           broadcast("change", { kind: "checkout_branch", path: wtPath });
-          return json({ ok: true });
+          return json({ ok: true, stashed: result.stashed });
         } catch (e) {
           const msg = String(e instanceof Error ? e.message : e);
           const isDirty = /uncommitted|untracked|stash/i.test(msg);

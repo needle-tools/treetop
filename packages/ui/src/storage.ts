@@ -147,7 +147,14 @@ export function filterToExistingSessions(
   persisted: PersistedSession[],
   existingSources: ReadonlySet<string>,
 ): PersistedSession[] {
-  return persisted.filter((s) => existingSources.has(s.source));
+  return persisted.filter(
+    (s) =>
+      // Transient "just-spawned a new agent, no JSONL on disk yet" entries
+      // are kept through render-time filtering. Their lifetime is bounded
+      // by the TUI column's close button (which removes them from the
+      // persisted list directly).
+      s.source.startsWith("__new__:") || existingSources.has(s.source),
+  );
 }
 
 /**

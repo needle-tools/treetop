@@ -711,3 +711,47 @@ Open complexities to think through before this lands:
 
 This isn't a near-term priority — the `bun run start` path is enough
 for now. Park as "phase N, once the feature surface settles."
+
+---
+
+## UX ideation
+
+### Git diff as a pinnable pane in the sessions strip
+
+Worktree-row idea: treat the **git changes view** (Unstaged / Staged
+tabs + the DiffViewer) as a column in the same horizontal strip as
+chat / terminal sessions, pinned to the **left** of the strip's scroll
+viewport. As the user scrolls right through chat columns, the diff
+pane stays glued to their viewport's left edge.
+
+Implementation primitive: `position: sticky; left: 0` on a flex child
+of the horizontally-scrolling sessions-strip. Modern browsers support
+this natively.
+
+**Why this might be the right shape:**
+- Unifies the dashboard's mental model — chats, terminals, diffs are
+  all *panes* below the worktree row. One header treatment, one close
+  affordance, one drag-to-reorder pattern.
+- Reviewing the diff *while chatting with an agent about it* becomes
+  the canonical layout: diff anchored left, agent on the right. Today
+  this requires alt-tabbing or shuffling tabs.
+- The diff pane's tabs (Unstaged / Staged) live in the pane header,
+  matching SessionView's pattern.
+
+**Trade-offs:**
+- Diff content typically wants more horizontal room than chat columns
+  (60–90ch). Either the diff pane is wider (min ~100ch, max ~50vw) or
+  it stays at chat-column width and the DiffViewer handles its own
+  horizontal scroll.
+- History (commits) — leave inline below for now; revisit later if it
+  feels like it should also be a pane.
+- The expand chevron / "show changes" toggle would gain a slightly
+  different meaning ("show/hide the diff pane" rather than "show/hide
+  the whole expanded block"). Acceptable.
+
+**Cost estimate:** ~200–400 LOC. Pull diff/tabs out of the row's
+expanded block into a `DiffPane.svelte` mirroring SessionView's
+shape, slot it into the strip as a sticky-left first child when the
+row is expanded.
+
+Park as future work; the current expanded layout works for now.

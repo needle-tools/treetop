@@ -40,10 +40,47 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
     const result = await $`git -C ${repoPath} worktree list --porcelain`
       .quiet()
       .text();
-    return parseWorktreeList(result);
+    const worktrees = parseWorktreeList(result);
+    return resolveSubmoduleWorktreePaths(repoPath, worktrees);
   } catch {
     return [];
   }
+}
+
+/**
+ * `git worktree list --porcelain` reports the **gitdir** for submodules,
+ * not the actual working-tree directory. That gitdir lives somewhere
+ * like `<parent-repo>/.git/modules/<submodule-name>/` — opening it in
+ * Finder/VSCode/Terminal exposes git's internal database instead of
+ * the user's source files. For each worktree whose path is inside a
+ * `.git/` tree, substitute the real working-tree root by asking git
+ * itself via `rev-parse --show-toplevel`, anchored at the user's
+ * registered repo path (which IS in the working tree).
+ *
+ * Non-submodule worktrees pass through unchanged.
+ */
+export async function resolveSubmoduleWorktreePaths(
+  repoPath: string,
+  worktrees: Worktree[],
+): Promise<Worktree[]> {
+  const needsFix = worktrees.some((w) => w.path.includes("/.git/"));
+  if (!needsFix) return worktrees;
+  let toplevel: string | null = null;
+  try {
+    const r = await $`git -C ${repoPath} rev-parse --show-toplevel`
+      .quiet()
+      .nothrow();
+    if (r.exitCode === 0) {
+      const out = r.stdout.toString().trim();
+      if (out.length > 0) toplevel = out;
+    }
+  } catch {
+    // best effort — leave paths as-is if rev-parse fails
+  }
+  if (!toplevel) return worktrees;
+  return worktrees.map((w) =>
+    w.path.includes("/.git/") ? { ...w, path: toplevel! } : w,
+  );
 }
 
 /**
@@ -67,11 +104,35 @@ function sanitizeBranchForPath(branch: string): string {
  * Defaults to `~/wt/<repoBasename>/<sanitizedBranch>` for the worktree path,
  * which matches the convention in PLAN.md.
  */
+export async function branchExists(
+  repoPath: string,
+  branch: string,
+): Promise<boolean> {
+  const r = await $`git -C ${repoPath} show-ref --verify --quiet refs/heads/${branch}`
+    .quiet()
+    .nothrow();
+  return r.exitCode === 0;
+}
+
+/**
+ * Add a worktree for the given branch. Detects whether the branch
+ * already exists:
+ *
+ *   - **Branch exists** → `git worktree add <path> <branch>` (checks
+ *     out the existing branch into the new worktree). Returns
+ *     `{ created: false }`.
+ *   - **Branch is new**  → `git worktree add <path> -b <branch> <base>`
+ *     (creates a new branch from `base` and checks it out). Returns
+ *     `{ created: true }`.
+ *
+ * Either way, the worktree path defaults to
+ * `~/wt/<repoBasename>/<sanitizedBranch>`.
+ */
 export async function createWorktree(
   repoPath: string,
   branch: string,
   options: { base?: string; wtRoot?: string } = {},
-): Promise<CreatedWorktree> {
+): Promise<CreatedWorktree & { created: boolean }> {
   const { homedir } = await import("node:os");
   const { mkdir } = await import("node:fs/promises");
   const { join, basename } = await import("node:path");
@@ -80,16 +141,21 @@ export async function createWorktree(
   await mkdir(root, { recursive: true });
   const wtPath = join(root, sanitizeBranchForPath(branch));
   const base = options.base ?? "HEAD";
-  const proc = Bun.spawn(
-    ["git", "-C", repoPath, "worktree", "add", wtPath, "-b", branch, base],
-    { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
-  );
+  const exists = await branchExists(repoPath, branch);
+  const args = exists
+    ? ["git", "-C", repoPath, "worktree", "add", wtPath, branch]
+    : ["git", "-C", repoPath, "worktree", "add", wtPath, "-b", branch, base];
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
   const stderr = await new Response(proc.stderr).text();
   const exit = await proc.exited;
   if (exit !== 0) {
     throw new Error(`git worktree add failed: ${stderr.trim() || "exit " + exit}`);
   }
-  return { path: wtPath, branch };
+  return { path: wtPath, branch, created: !exists };
 }
 
 /**
@@ -140,7 +206,10 @@ export async function listBranches(repoPath: string): Promise<BranchListing> {
   const local: string[] = [];
   const remote: string[] = [];
   try {
-    const out = await $`git -C ${repoPath} for-each-ref --format=${"%(refname)"} refs/heads refs/remotes`
+    // Sort by committer date descending so the branch picker shows
+    // recently-touched branches first — most "switch to X" intents
+    // target something the user worked on lately.
+    const out = await $`git -C ${repoPath} for-each-ref --sort=-committerdate --format=${"%(refname)"} refs/heads refs/remotes`
       .quiet()
       .nothrow();
     for (const raw of out.stdout.toString().split("\n")) {
@@ -161,29 +230,53 @@ export async function listBranches(repoPath: string): Promise<BranchListing> {
 }
 
 /** Run `git checkout <branch>` inside a worktree. Refuses on dirty
- *  working tree unless `force` is true. Existing-branch checkouts only
- *  for now — caller passes a name from listBranches's local set, or a
- *  remote name (e.g. "origin/foo") to create a local tracking branch
- *  implicitly via `git checkout -t`. */
+ *  working tree unless `force` is true or `preStash` is true.
+ *
+ *  Options:
+ *    - `force`: pass `--force` to git checkout (discards local changes).
+ *    - `preStash`: if the worktree is dirty, run `git stash push` first
+ *      (with a recognizable message and --include-untracked) so the
+ *      user can `git stash pop` later. Then proceed with a clean
+ *      checkout. Returns `{ stashed: true }` so the caller can tell.
+ *
+ *  Existing-branch checkouts only — caller passes a name from
+ *  listBranches's local set, or a remote name (e.g. "origin/foo") to
+ *  create a local tracking branch implicitly via `git checkout -t`. */
 export async function checkoutBranch(
   worktreePath: string,
   branch: string,
-  options: { force?: boolean } = {},
-): Promise<void> {
-  // Dirty-state guard: if `git status --porcelain` is non-empty and we
-  // weren't given force, bail out.
-  if (!options.force) {
-    const dirty = await $`git -C ${worktreePath} status --porcelain`
+  options: { force?: boolean; preStash?: boolean } = {},
+): Promise<{ stashed: boolean }> {
+  let stashed = false;
+  const isDirty = async (): Promise<boolean> => {
+    const r = await $`git -C ${worktreePath} status --porcelain`
       .quiet()
       .nothrow();
-    if (dirty.stdout.toString().trim().length > 0) {
-      throw new Error(
-        "worktree has uncommitted/untracked changes — commit, stash, or force",
-      );
+    return r.stdout.toString().trim().length > 0;
+  };
+
+  if (!options.force) {
+    if (await isDirty()) {
+      if (options.preStash) {
+        const message = `supergit-auto ${new Date().toISOString()}`;
+        const stashRes =
+          await $`git -C ${worktreePath} stash push --include-untracked -m ${message}`
+            .quiet()
+            .nothrow();
+        if (stashRes.exitCode !== 0) {
+          throw new Error(
+            `git stash failed: ${stashRes.stderr.toString().trim() || "exit " + stashRes.exitCode}`,
+          );
+        }
+        stashed = true;
+      } else {
+        throw new Error(
+          "worktree has uncommitted/untracked changes — commit, stash, or force",
+        );
+      }
     }
   }
-  // If the user picked a remote branch, use -t so we create the tracking
-  // local branch in one step.
+
   const isRemote = branch.includes("/") && !branch.startsWith("refs/");
   const args = ["git", "-C", worktreePath, "checkout"];
   if (options.force) args.push("--force");
@@ -199,6 +292,7 @@ export async function checkoutBranch(
   if (exit !== 0) {
     throw new Error(`git checkout failed: ${stderr.trim() || "exit " + exit}`);
   }
+  return { stashed };
 }
 
 export async function fetchAll(repoPath: string): Promise<boolean> {

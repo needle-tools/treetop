@@ -103,6 +103,11 @@ export async function openIn(
   path: string,
   app: string,
 ): Promise<{ via: string }> {
+  // Trace the actual path we received so we can diagnose "VSCode opens
+  // the wrong dir" / "Finder opens some git path" reports — almost
+  // always a misunderstanding about which path supergit sent vs which
+  // path the OS expanded it to.
+  console.log(`openIn: app=${app} path=${path}`);
   if (app === "fork") {
     if (process.platform !== "darwin") {
       throw new Error("Fork integration is currently macOS-only");
