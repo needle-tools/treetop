@@ -619,6 +619,42 @@
    *  reattaches via WS. Dead shells get `__transcript__:shell:<termId>`
    *  — ShellView fetches the JSONL and renders the command history with
    *  a Resume button. */
+  /** Sources the user explicitly closed (× on a shell column, or toggled-
+   *  off via the picker). Persisted so the close decision survives a
+   *  reload — otherwise `restoreLiveShells` would re-add any live PTY
+   *  inside the grace window and the close button would feel broken. */
+  const DISMISSED_KEY = "supergit:dismissedShells";
+  let dismissedShells: Set<string> = (() => {
+    try {
+      const raw = localStorage.getItem(DISMISSED_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
+    } catch {
+      return new Set();
+    }
+  })();
+  function saveDismissedShells() {
+    try {
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissedShells]));
+    } catch {
+      // localStorage full / disabled — best effort; runtime state stays consistent.
+    }
+  }
+  function dismissShellSource(source: string): void {
+    if (!source.startsWith("__attached__:shell:") && !source.startsWith("__transcript__:shell:")) return;
+    if (dismissedShells.has(source)) return;
+    dismissedShells = new Set([...dismissedShells, source]);
+    saveDismissedShells();
+  }
+  function undismissShellSource(source: string): void {
+    if (!dismissedShells.has(source)) return;
+    const next = new Set(dismissedShells);
+    next.delete(source);
+    dismissedShells = next;
+    saveDismissedShells();
+  }
+
   async function restoreLiveShells() {
     try {
       const res = await fetch("/api/shells");
@@ -632,9 +668,12 @@
       }>;
       const next = { ...openSessionsByWt };
       for (const sh of list) {
-        const source = sh.alive
-          ? `__attached__:shell:${sh.termId}`
-          : `__transcript__:shell:${sh.termId}`;
+        // Past shells aren't "live" — they should only appear via the
+        // worktree session picker, not auto-open on every reload.
+        if (!sh.alive) continue;
+        const source = `__attached__:shell:${sh.termId}`;
+        // Skip terminals the user explicitly closed before reload.
+        if (dismissedShells.has(source)) continue;
         const existing = next[sh.wt] ?? [];
         if (existing.some((s) => s.source === source)) continue;
         next[sh.wt] = [{ agent: "shell", source }, ...existing];
@@ -858,13 +897,17 @@
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
     if (i >= 0) {
-      // Already open — close it.
+      // Already open — close it. Same dismiss semantics as ×.
+      dismissIfShell(s);
       openSessionsByWt = {
         ...openSessionsByWt,
         [wtPath]: [...list.slice(0, i), ...list.slice(i + 1)],
       };
       return;
     }
+    // Opening (or re-opening) — undo any prior dismissal so the column
+    // sticks across the next reload.
+    if (s.agent === "shell") undismissShellSource(s.source);
 
     // Opening a new session: insert it just left of the column the user is
     // currently looking at, so it appears on the left of their *visible*
@@ -909,7 +952,23 @@
       strip2.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
     });
   }
+  /** Mark a shell column as user-dismissed so `restoreLiveShells` won't
+   *  re-add it on the next page load. Handles both the synthetic
+   *  `__new__:` and the termId-based `__attached__:` forms: if the user
+   *  × a fresh column, we also dismiss the attached-form (looked up via
+   *  newShellTermIds) so the live PTY's own listing entry stays away. */
+  function dismissIfShell(s: OpenSession): void {
+    if (s.agent !== "shell") return;
+    if (s.source.startsWith("__attached__:shell:") || s.source.startsWith("__transcript__:shell:")) {
+      dismissShellSource(s.source);
+    } else if (s.source.startsWith("__new__:shell:")) {
+      const termId = newShellTermIds[s.source];
+      if (termId) dismissShellSource(`__attached__:shell:${termId}`);
+    }
+  }
+
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
+    dismissIfShell(s);
     openSessionsByWt = {
       ...openSessionsByWt,
       [wtPath]: (openSessionsByWt[wtPath] ?? []).filter(
