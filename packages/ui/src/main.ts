@@ -9,6 +9,16 @@ import App from "./App.svelte";
 // `vite` (port 7779), false in the production `bun run start` build.
 document.title = import.meta.env.DEV ? "supergit · dev" : "supergit";
 
+// Block browser back navigation (trackpad swipe, back button, Cmd+[).
+// supergit is a single-screen dashboard; "going back" lands on whatever
+// the user was on before, which is never what they want here. Seed one
+// extra history entry and re-push on every popstate so the back gesture
+// is a no-op.
+history.pushState(null, "", location.href);
+window.addEventListener("popstate", () => {
+  history.pushState(null, "", location.href);
+});
+
 const target = document.getElementById("app");
 if (!target) throw new Error("#app element missing in index.html");
 

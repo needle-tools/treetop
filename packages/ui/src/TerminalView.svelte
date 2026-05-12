@@ -165,6 +165,70 @@
   function focusTerminal() {
     xterm?.focus();
   }
+
+  /** Upload a Blob/File to /api/attach and write the returned absolute
+   *  path into the PTY's stdin. This is the same dance VSCode terminal-
+   *  paste-image extensions do (save → insert path) — the difference is
+   *  the upload goes through the daemon instead of an extension host.
+   *  We append a trailing space so consecutive drops/pastes don't
+   *  concatenate into one unreadable line, and so an agent's prompt
+   *  ends up with `prompt @path1 @path2 ` shape if the user pastes
+   *  several in a row. */
+  async function uploadAndInsert(blob: Blob, filename?: string): Promise<void> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      const form = new FormData();
+      form.append(
+        "file",
+        filename ? new File([blob], filename, { type: blob.type }) : blob,
+      );
+      const res = await fetch("/api/attach", { method: "POST", body: form });
+      if (!res.ok) return;
+      const { path } = (await res.json()) as { path: string };
+      ws.send(new TextEncoder().encode(path + " "));
+    } catch {
+      // Silent — paste failures shouldn't surface a noisy error in the
+      // terminal panel; the user will notice nothing was inserted and
+      // can try again.
+    }
+  }
+
+  function onPaste(e: ClipboardEvent): void {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        const blob = it.getAsFile();
+        if (blob) {
+          e.preventDefault();
+          void uploadAndInsert(blob);
+          // Only handle the first image item; otherwise multiple PNGs
+          // in the same clipboard event would race to land in the PTY.
+          return;
+        }
+      }
+    }
+    // No image → let xterm's normal text-paste handling run.
+  }
+
+  function onDragOver(e: DragEvent): void {
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function onDrop(e: DragEvent): void {
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    e.preventDefault();
+    // Upload sequentially so the inserted path order matches drop order.
+    void (async () => {
+      for (const f of Array.from(files)) {
+        await uploadAndInsert(f, f.name);
+      }
+    })();
+  }
 </script>
 
 <div class="terminal-wrap">
@@ -181,6 +245,9 @@
     class="xterm-host"
     bind:this={containerEl}
     on:click={focusTerminal}
+    on:paste={onPaste}
+    on:dragover={onDragOver}
+    on:drop={onDrop}
     role="presentation"
   ></div>
 </div>

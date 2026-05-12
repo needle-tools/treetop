@@ -223,14 +223,23 @@
   let tuisOpen = false;
   let tuiProcs: TuiProc[] = [];
   let tuiPollTimer: ReturnType<typeof setInterval> | null = null;
+  // `/api/processes` samples cpu/mem per pid and can take a beat on a
+  // busy machine. Without this flag the popover flashes "Nothing running"
+  // during the first fetch even when there are TUIs.
+  let tuisEverLoaded = false;
+  let tuisLoading = false;
 
   async function refreshTuis() {
+    tuisLoading = true;
     try {
       const res = await fetch("/api/processes");
       if (!res.ok) return;
       tuiProcs = (await res.json()) as TuiProc[];
+      tuisEverLoaded = true;
     } catch {
       // ignore network blips; we'll catch up on the next tick
+    } finally {
+      tuisLoading = false;
     }
   }
 
@@ -1559,8 +1568,15 @@
         </button>
         {#if tuisOpen}
           <div class="actions-popover tuis-popover" role="menu" use:clampToViewport>
-            <div class="popover-head">Active TUIs</div>
-            {#if tuiProcs.length === 0}
+            <div class="popover-head">
+              Active TUIs
+              {#if tuisLoading}
+                <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
+              {/if}
+            </div>
+            {#if !tuisEverLoaded}
+              <p class="muted small nopad">Loading…</p>
+            {:else if tuiProcs.length === 0}
               <p class="muted small nopad">Nothing running.</p>
             {:else}
               <ul class="agents-list">
@@ -2361,9 +2377,13 @@
                             />
                           </div>
                         {:else}
+                          {@const agentMeta = (wt.agents ?? []).find(
+                            (a) => a.source === s.source,
+                          )}
                           <SessionView
                             agent={s.agent}
                             source={s.source}
+                            totalMessageCount={agentMeta?.messageCount}
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
@@ -2574,6 +2594,15 @@
 {/if}
 
 <style>
+  /* Disable trackpad two-finger swipe-back/forward at the CSS level.
+     The popstate guard in main.ts isn't enough on Safari/Chrome: the
+     swipe gesture is intercepted by the browser before any popstate
+     handler runs. `overscroll-behavior-x: none` is the supported way
+     to opt out of the horizontal overscroll → history navigation. */
+  :global(html),
+  :global(body) {
+    overscroll-behavior-x: none;
+  }
   :global(body) {
     font-family:
       -apple-system,
@@ -2741,6 +2770,20 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
     margin-bottom: 0.4rem;
+  }
+  .popover-spinner {
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    margin-left: 0.4rem;
+    vertical-align: -1px;
+    border: 1.5px solid var(--text-muted);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: popover-spin 0.8s linear infinite;
+  }
+  @keyframes popover-spin {
+    to { transform: rotate(360deg); }
   }
   /* Events popover ("diagnostics"): same width/look as the TUIs popover.
      The button gets a subtle error-tint when there are entries, so the

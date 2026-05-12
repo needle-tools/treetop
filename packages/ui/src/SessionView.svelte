@@ -52,6 +52,13 @@
    *  the "+N sessions" popover reflect the new title immediately,
    *  without waiting on SSE / a poll cycle. */
   export let onTitleChange: () => void = () => {};
+  /** Whole-file message count for this session, supplied by the parent
+   *  from `/api/repos`'s pre-scanned agent metadata. `/api/session`
+   *  only ships the trimmed tail (last MAX_CACHED_MESSAGES = 100), so
+   *  the header reads "{loaded} of {total} messages" whenever total
+   *  exceeds the loaded slice. undefined → fall back to just the
+   *  loaded count. */
+  export let totalMessageCount: number | undefined = undefined;
 
   interface NormalizedBlock {
     type:
@@ -468,7 +475,19 @@
           </button>
         {/if}
         {#if session}
-          <span class="muted small">{session.messages.length} messages</span>
+          <span
+            class="muted small"
+            title={totalMessageCount !== undefined &&
+            totalMessageCount > session.messages.length
+              ? `Showing the last ${session.messages.length} of ${totalMessageCount.toLocaleString()} messages. /api/session ships at most 100; the full count comes from /api/repos' pre-scanned agent metadata.`
+              : `${session.messages.length} message${session.messages.length === 1 ? "" : "s"} in this session`}
+          >
+            {#if totalMessageCount !== undefined && totalMessageCount > session.messages.length}
+              {session.messages.length} of {totalMessageCount.toLocaleString()} messages
+            {:else}
+              {session.messages.length} messages
+            {/if}
+          </span>
           {#if session.sessionId}
             <code class="muted small sid" title={session.sessionId}>
               {session.sessionId.slice(0, 8)}

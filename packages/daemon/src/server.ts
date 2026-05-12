@@ -28,6 +28,8 @@ import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
+import { watchWorktree } from "./worktree-watcher";
+import { saveAttachment } from "./attachments";
 import { sampleProcs, renameArgv, resolveAgentBinary } from "./procs";
 
 const WORKSPACE_PATH =
@@ -129,6 +131,43 @@ function broadcast(event: string, data: unknown): void {
     } catch {
       sseSubscribers.delete(ctrl);
     }
+  }
+}
+
+// FS watcher registry. One watcher per worktree path; events from the
+// watcher debounce to a single broadcast("change", ...) so the UI
+// re-fetches /api/repos and the affected row refreshes its status +
+// open diffs. Watcher ignores node_modules/ and .git/ — see
+// worktree-watcher.ts. Reconciled at startup and after any route that
+// adds/removes a repo or worktree.
+const worktreeWatchers = new Map<string, () => void>();
+
+async function reconcileWorktreeWatchers(): Promise<void> {
+  const repos = await workspace.listRepos();
+  const wanted = new Set<string>();
+  for (const repo of repos) {
+    try {
+      const wts = await listWorktrees(repo.path);
+      for (const wt of wts) wanted.add(wt.path);
+    } catch {
+      // repo dir gone — skip silently; the next mutation will clean
+      // it from the workspace anyway.
+    }
+  }
+  // Stop watchers for paths no longer in the workspace.
+  for (const [path, stop] of worktreeWatchers) {
+    if (!wanted.has(path)) {
+      stop();
+      worktreeWatchers.delete(path);
+    }
+  }
+  // Start watchers for new paths.
+  for (const path of wanted) {
+    if (worktreeWatchers.has(path)) continue;
+    const stop = watchWorktree(path, () => {
+      broadcast("change", { kind: "fs_change", path });
+    });
+    worktreeWatchers.set(path, stop);
   }
 }
 
@@ -291,6 +330,40 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
+    if (url.pathname === "/api/attach" && req.method === "POST") {
+      // Browser-side TerminalView posts a multipart form here when the
+      // user pastes an image or drops a file onto an xterm column. We
+      // write the bytes under `<workspace>/attachments/` and return the
+      // absolute path so the client can write it into the PTY's stdin —
+      // exactly the dance the VSCode terminal-image-paste extensions
+      // do, with the upload going through the daemon instead of an
+      // extension host. The agent then sees the path on its input line
+      // and can attach it like any other file reference.
+      //
+      // The destination is daemon-owned (one folder per workspace);
+      // callers can't influence where bytes land, so no worktree-path
+      // validation needed.
+      const form = await req.formData().catch(() => null);
+      if (!form) {
+        return json({ error: "multipart/form-data body required" }, {
+          status: 400,
+        });
+      }
+      const file = form.get("file");
+      if (!(file instanceof File)) {
+        return json({ error: "file (Blob) is required" }, { status: 400 });
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const filename = file.name && file.name !== "blob" ? file.name : undefined;
+      const mimeType = file.type || undefined;
+      const result = await saveAttachment(
+        join(WORKSPACE_PATH, "attachments"),
+        bytes,
+        { filename, mimeType },
+      );
+      return json(result, { status: 201 });
+    }
+
     if (url.pathname === "/api/image" && req.method === "GET") {
       // Serve a local image file referenced from a Claude session message
       // (e.g. "[Image: source: /var/folders/.../shot.png]"). The validation
@@ -317,6 +390,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
           { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
+          { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
@@ -714,6 +788,7 @@ const server = Bun.serve<TermWsData, never>({
           inverse: { repo },
         });
         broadcast("change", { kind: "add_repo", repo });
+        void reconcileWorktreeWatchers();
         return json(repo, { status: 201 });
       } catch (e) {
         return json({ error: String(e instanceof Error ? e.message : e) }, {
@@ -751,6 +826,7 @@ const server = Bun.serve<TermWsData, never>({
           payload: { repoId: id, branch: created.branch, path: created.path },
         });
         broadcast("change", { kind: "create_worktree", path: created.path });
+        void reconcileWorktreeWatchers();
         return json(created, { status: 201 });
       } catch (e) {
         return json(
@@ -784,6 +860,7 @@ const server = Bun.serve<TermWsData, never>({
           payload: { repoId: id, path: wtPath, force },
         });
         broadcast("change", { kind: "remove_worktree", path: wtPath });
+        void reconcileWorktreeWatchers();
         return json({ ok: true });
       } catch (e) {
         const msg = String(e instanceof Error ? e.message : e);
@@ -917,6 +994,7 @@ const server = Bun.serve<TermWsData, never>({
         inverse: { repo },
       });
       broadcast("change", { kind: "remove_repo", id });
+      void reconcileWorktreeWatchers();
       return new Response(null, { status: 204, headers: CORS });
     }
 
@@ -1353,6 +1431,11 @@ async function runFetchCycle(): Promise<void> {
 const stopActivity = await startActivityTail();
 onActivity((ev) => broadcast("activity", ev));
 console.log("supergit daemon: agent activity tail started");
+
+await reconcileWorktreeWatchers();
+console.log(
+  `supergit daemon: watching ${worktreeWatchers.size} worktree(s) for FS changes`,
+);
 
 if (FETCH_INTERVAL_MS > 0) {
   // Kick off shortly after startup so the dashboard doesn't show stale
