@@ -18,11 +18,12 @@ import {
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
-import { parseSessionFile } from "./sessions";
+import { getSessionResponseJson } from "./sessions";
 import { serveImage } from "./images";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
+import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
@@ -72,6 +73,7 @@ process.title =
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
+const errors = await ErrorLog.open(WORKSPACE_PATH);
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 console.log(`supergit daemon: listening on http://localhost:${PORT}`);
@@ -130,6 +132,24 @@ function broadcast(event: string, data: unknown): void {
   }
 }
 
+async function recordServerError(
+  req: Request,
+  status: number,
+  err: unknown,
+): Promise<void> {
+  const url = new URL(req.url);
+  const entry = await errors.append({
+    kind: "server",
+    source: "daemon",
+    route: url.pathname,
+    method: req.method,
+    status,
+    message: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
+  broadcast("error", entry);
+}
+
 // Per-terminal grace timers. When the last WS subscriber detaches we
 // don't kill the PTY immediately — we wait `GRACE_MS` so a page reload
 // can reconnect without losing the agent. Closing the panel for real
@@ -179,6 +199,8 @@ const server = Bun.serve<TermWsData, never>({
         },
       });
 
+    try {
+
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
     }
@@ -208,6 +230,29 @@ const server = Bun.serve<TermWsData, never>({
       return json({ status: "ok", workspace: WORKSPACE_PATH });
     }
 
+    // Diagnostics: process.memoryUsage() + an optional forced sync GC.
+    // When ?gc=1 we run a full GC first and report the after-GC numbers so
+    // you can tell V8-reserved-but-unused pages apart from a true working
+    // set. Bounded, no side effects beyond GC pressure.
+    if (url.pathname === "/api/debug/mem") {
+      const force = url.searchParams.get("gc") === "1";
+      const before = process.memoryUsage();
+      let gcMs = 0;
+      if (force) {
+        const t = performance.now();
+        Bun.gc(true);
+        gcMs = performance.now() - t;
+      }
+      const after = process.memoryUsage();
+      return json({
+        pid: process.pid,
+        uptimeSec: process.uptime(),
+        gcRanMs: force ? gcMs : null,
+        before,
+        after,
+      });
+    }
+
     if (url.pathname === "/api/image" && req.method === "GET") {
       // Serve a local image file referenced from a Claude session message
       // (e.g. "[Image: source: /var/folders/.../shot.png]"). The validation
@@ -232,6 +277,7 @@ const server = Bun.serve<TermWsData, never>({
         endpoints: [
           { method: "GET", path: "/api", description: "this index (agent-discoverable route list)" },
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
+          { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
           { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
@@ -263,6 +309,9 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/events", description: "list recent events (mutations + observations) with undone/reversible flags" },
           { method: "POST", path: "/api/events/:id/undo", description: "reverse a reversible event" },
           { method: "POST", path: "/api/events/:id/redo", description: "re-apply a previously undone event" },
+          { method: "GET", path: "/api/errors", description: "list recent errors (server 5xx, browser fetch failures, uncaught exceptions). Optional ?limit=<n>." },
+          { method: "POST", path: "/api/errors", body: { kind: "string?", source: "string?", message: "string", stack: "string?", route: "string?", method: "string?", status: "number?", extra: "object?" }, description: "report a browser-side error so it lands in the workspace errors.jsonl and the Events popover." },
+          { method: "DELETE", path: "/api/errors", description: "clear the recorded error log" },
           { method: "GET", path: "/mcp", description: "MCP server info" },
           { method: "POST", path: "/mcp", description: "MCP JSON-RPC: initialize, tools/list, tools/call" },
         ],
@@ -365,10 +414,18 @@ const server = Bun.serve<TermWsData, never>({
           { status: 403 },
         );
       }
-      const session = await parseSessionFile(agentKind, source);
+      // Use the JSON-string cache: on a cache hit this skips readFile,
+      // parsing, *and* JSON.stringify, which were the three large allocations
+      // that ballooned RSS for big (30k-message) Claude sessions.
       const titles = await workspace.listSessionTitles();
-      if (titles[source]) session.manualTitle = titles[source];
-      return json(session);
+      const body = await getSessionResponseJson(
+        agentKind,
+        source,
+        titles[source],
+      );
+      return new Response(body, {
+        headers: { "Content-Type": "application/json", ...CORS },
+      });
     }
 
     if (url.pathname === "/api/session/send" && req.method === "POST") {
@@ -954,6 +1011,49 @@ const server = Bun.serve<TermWsData, never>({
       return json(all.slice().reverse());
     }
 
+    if (url.pathname === "/api/errors" && req.method === "GET") {
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? Math.max(1, Number(limitParam)) : undefined;
+      return json(await errors.list(limit ? { limit } : {}));
+    }
+
+    if (url.pathname === "/api/errors" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | {
+            id?: string;
+            kind?: ErrorKind;
+            source?: ErrorSource;
+            route?: string;
+            method?: string;
+            status?: number;
+            message?: string;
+            stack?: string;
+            extra?: Record<string, unknown>;
+          }
+        | null;
+      if (!body || typeof body.message !== "string" || !body.message) {
+        return json({ error: "body.message (string) is required" }, { status: 400 });
+      }
+      const entry = await errors.append({
+        kind: body.kind ?? "uncaught",
+        source: body.source ?? "browser",
+        route: body.route,
+        method: body.method,
+        status: body.status,
+        message: body.message,
+        stack: body.stack,
+        extra: body.extra,
+      }, body.id);
+      broadcast("error", entry);
+      return json(entry);
+    }
+
+    if (url.pathname === "/api/errors" && req.method === "DELETE") {
+      await errors.clear();
+      broadcast("error_clear", { ts: new Date().toISOString() });
+      return json({ ok: true });
+    }
+
     const toggleMatch = url.pathname.match(
       /^\/api\/events\/([^/]+)\/(undo|redo)$/,
     );
@@ -1087,6 +1187,14 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     return json({ error: "not found" }, { status: 404 });
+    } catch (err) {
+      // An exception escaped a route handler. Log with stack so the
+      // browser-side Events popover can surface it for debugging, then
+      // return a generic 500 to the caller.
+      await recordServerError(req, 500, err).catch(() => {});
+      const msg = err instanceof Error ? err.message : String(err);
+      return json({ error: msg }, { status: 500 });
+    }
   },
 
   websocket: {

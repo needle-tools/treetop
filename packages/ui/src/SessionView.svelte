@@ -573,7 +573,9 @@
   {:else if error}
     <p class="error">{error}</p>
   {:else if loading && !session}
-    <p class="muted small">Loading session…</p>
+    <div class="loading-overlay">
+      <span class="spinner" aria-hidden="true"></span> loading session…
+    </div>
   {:else if session && session.messages.length === 0}
     <p class="muted small">No messages parsed from this session.</p>
   {:else if session}
@@ -952,6 +954,26 @@
   }
   .composer-send:disabled:not(.is-sending) {
     color: var(--text-faint);
+  }
+  /* Matches the TerminalView "starting terminal…" pill so the
+     read-mode load state and the live-TUI load state read identically. */
+  .loading-overlay {
+    align-self: center;
+    margin-top: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--surface-2);
+    color: var(--text-1);
+    padding: 0.3rem 0.7rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  .loading-overlay .spinner {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-width: 2px;
   }
   .spinner {
     width: 0.9rem;

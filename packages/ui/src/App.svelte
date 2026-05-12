@@ -10,6 +10,21 @@
     effectiveVisibleWorktrees,
     filterToExistingSessions,
   } from "./storage";
+  import {
+    installFetchTracking,
+    installGlobalErrorHandlers,
+    subscribeErrors,
+    hydrateFromServer,
+    pushError,
+    clearErrors,
+    type FrontendErrorEntry,
+  } from "./errors";
+
+  // Wire fetch + global handlers as early as possible — before the first
+  // load() fires — so even the initial /api/repos failure ends up in
+  // the Events popover.
+  installFetchTracking();
+  installGlobalErrorHandlers();
 
   interface FileStatus {
     staged: number;
@@ -88,7 +103,6 @@
   let repos: Repo[] = [];
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
-  let newRepoPath = "";
   let loading = false;
   // Legacy single-string error slot — kept for code paths that still set
   // it directly. New code should call `addToast({ kind: "error", ... })`
@@ -146,6 +160,26 @@
   let editRepoName = "";
 
   let actionsOpen = false;
+  let eventsOpen = false;
+  /** Recent diagnostics: daemon 5xx, frontend fetch failures, browser
+   *  uncaught/unhandledrejection. Populated reactively via the
+   *  errors store (which is the source of truth — this is just a
+   *  Svelte-reactive mirror). */
+  let errorEntries: FrontendErrorEntry[] = [];
+  /** id -> true when the user has expanded its stack trace inline. */
+  let errorExpanded: Record<string, boolean> = {};
+  function toggleErrorExpanded(id: string) {
+    errorExpanded = { ...errorExpanded, [id]: !errorExpanded[id] };
+  }
+  function errorKindLabel(e: FrontendErrorEntry): string {
+    if (e.kind === "server") return "server";
+    if (e.kind === "fetch") return "fetch";
+    if (e.kind === "rejection") return "unhandled";
+    return "uncaught";
+  }
+  async function clearAllErrors() {
+    await clearErrors();
+  }
 
   /** "TUIs" header popover — global view of every PTY supergit is
    *  hosting right now (cpu/mem per row, click × to dispose). */
@@ -870,38 +904,26 @@
     }
   }
 
-  async function addRepo() {
-    if (!newRepoPath.trim()) return;
-    error = "";
-    try {
-      const res = await fetch("/api/repos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: newRepoPath.trim() }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-      newRepoPath = "";
-      await load();
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
   async function pickAndAdd() {
     error = "";
     try {
-      const res = await fetch("/api/pick-folder", { method: "POST" });
-      if (res.status === 204) return;
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
+      const pick = await fetch("/api/pick-folder", { method: "POST" });
+      if (pick.status === 204) return;
+      if (!pick.ok) {
+        const body = await pick.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${pick.status}`);
       }
-      const { path } = (await res.json()) as { path: string };
-      newRepoPath = path;
-      await addRepo();
+      const { path } = (await pick.json()) as { path: string };
+      const add = await fetch("/api/repos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!add.ok) {
+        const body = await add.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${add.status}`);
+      }
+      await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -1249,6 +1271,24 @@
         // ignore malformed
       }
     });
+    es.addEventListener("error", (rawEvt: MessageEvent) => {
+      // Custom "error" event from the daemon (a recorded ErrorEntry).
+      // EventSource also fires `error` for transport errors but those
+      // arrive as plain Events without a `data` field, so the try/parse
+      // guards us either way.
+      const data = (rawEvt as MessageEvent).data;
+      if (typeof data !== "string") return;
+      try {
+        const entry = JSON.parse(data) as FrontendErrorEntry;
+        if (entry?.id && entry?.message) pushError(entry);
+      } catch {
+        // ignore malformed
+      }
+    });
+    es.addEventListener("error_clear", () => {
+      errorEntries = [];
+      errorExpanded = {};
+    });
     es.onopen = () => {
       streamConnected = true;
     };
@@ -1375,6 +1415,9 @@
     if (actionsOpen && !target?.closest(".actions-anchor")) {
       actionsOpen = false;
     }
+    if (eventsOpen && !target?.closest(".events-anchor")) {
+      eventsOpen = false;
+    }
     if (tuisOpen && !target?.closest(".tuis-anchor")) {
       tuisOpen = false;
       stopTuiPolling();
@@ -1433,11 +1476,16 @@
         if (expanded) void loadCommitsInitial(path);
       }
     });
+    const unsubErrors = subscribeErrors((list) => {
+      errorEntries = list;
+    });
+    void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
     const unsubStream = subscribeToStream();
     return () => {
       document.removeEventListener("click", handleDocClick);
       unsubStream();
+      unsubErrors();
     };
   });
 </script>
@@ -1454,6 +1502,12 @@
       >
         {streamConnected ? "● live" : "○ offline"}
       </span>
+
+      <button
+        class="actions-btn add-folder-btn"
+        on:click={pickAndAdd}
+        title="Pick a folder to register as a repo"
+      >Add folder</button>
 
       <div class="actions-anchor tuis-anchor">
         <button
@@ -1514,9 +1568,9 @@
           class="actions-btn"
           class:open={actionsOpen}
           on:click={() => (actionsOpen = !actionsOpen)}
-          title="Recent actions"
+          title="Reversible workspace actions (undo / redo)"
         >
-          Actions
+          Undo
           {#if visibleEvents.length > 0}
             <span class="count">{visibleEvents.length}</span>
           {/if}
@@ -1557,27 +1611,83 @@
           </div>
         {/if}
       </div>
+
+      <div class="actions-anchor events-anchor">
+        <button
+          class="actions-btn"
+          class:open={eventsOpen}
+          class:has-errors={errorEntries.length > 0}
+          on:click={() => (eventsOpen = !eventsOpen)}
+          title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
+        >
+          Events
+          {#if errorEntries.length > 0}
+            <span class="count">{errorEntries.length}</span>
+          {/if}
+        </button>
+        {#if eventsOpen}
+          <div class="actions-popover events-popover" role="menu">
+            <div class="popover-head">
+              Events
+              {#if errorEntries.length > 0}
+                <button
+                  class="undo events-clear"
+                  on:click={clearAllErrors}
+                  title="Clear the recorded error log"
+                >Clear</button>
+              {/if}
+            </div>
+            {#if errorEntries.length === 0}
+              <p class="muted small nopad">No errors. 🎉</p>
+            {:else}
+              <ul class="events err-list">
+                {#each errorEntries.slice(0, 50) as e (e.id)}
+                  <li>
+                    <button
+                      class="err-row"
+                      class:expanded={errorExpanded[e.id]}
+                      on:click={() => toggleErrorExpanded(e.id)}
+                    >
+                      <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
+                      <span class="err-msg" title={e.message}>{e.message}</span>
+                      <span class="muted ev-time">{relTime(e.timestamp)}</span>
+                    </button>
+                    {#if errorExpanded[e.id]}
+                      <div class="err-detail">
+                        <div class="err-meta">
+                          <span class="actor actor-{e.source === 'daemon' ? 'supergit' : 'user'}">{e.source}</span>
+                          {#if e.method || e.route}
+                            <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code>
+                          {/if}
+                          {#if e.status !== undefined}
+                            <span class="err-status">{e.status}</span>
+                          {/if}
+                        </div>
+                        {#if e.stack}
+                          <pre class="err-stack">{e.stack}</pre>
+                        {/if}
+                        {#if e.extra && Object.keys(e.extra).length > 0}
+                          <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </div>
     </h1>
     <p class="muted">v0 — multi-repo, multi-agent, worktree-first dashboard</p>
   </header>
 
-  <section class="add">
-    <button
-      on:click={pickAndAdd}>Pick folder…</button
-    >
-    <input
-      type="text"
-      placeholder="…or paste an absolute path"
-      bind:value={newRepoPath}
-      on:keydown={(e) => e.key === "Enter" && addRepo()}
-    />
-    <button on:click={addRepo} disabled={!newRepoPath.trim()}>Add</button>
-    <button class="refresh" on:click={load}>Refresh</button>
-  </section>
-
-
   {#if loading && repos.length === 0}
-    <p class="muted">Loading…</p>
+    <div class="loading-screen">
+      <div class="loading-overlay">
+        <span class="spinner" aria-hidden="true"></span> loading repos…
+      </div>
+    </div>
   {:else if rows.length === 0}
     <p class="muted">No repos registered yet. Pick a folder above to start.</p>
   {:else}
@@ -2419,6 +2529,36 @@
     padding: 1.5rem 1.5rem 1.5rem;
     min-width: 0;
   }
+  /* Initial app-wide "loading repos…" state: centered pill, mirroring the
+     TUI / SessionView load indicators so all three reads as one design. */
+  .loading-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+  }
+  .loading-overlay {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--surface-2);
+    color: var(--text-1);
+    padding: 0.4rem 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  .loading-overlay .spinner {
+    width: 0.85rem;
+    height: 0.85rem;
+    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: app-spin 0.6s linear infinite;
+  }
+  @keyframes app-spin {
+    to { transform: rotate(360deg); }
+  }
   @media (max-width: 900px) {
     main {
       max-width: 100%;
@@ -2538,6 +2678,113 @@
     color: var(--text-muted);
     margin-bottom: 0.4rem;
   }
+  /* Events popover ("diagnostics"): same width/look as the TUIs popover.
+     The button gets a subtle error-tint when there are entries, so the
+     header strip visually nudges the user toward it without being noisy. */
+  .events-anchor {
+    margin-left: 0.4rem;
+  }
+  .actions-btn.has-errors {
+    color: var(--error-text, #ffb4ad);
+  }
+  .events-popover {
+    width: 540px;
+    max-width: 90vw;
+  }
+  .events-popover .popover-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .events-clear {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.45rem;
+  }
+  .err-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .err-list > li {
+    border-top: 1px solid var(--surface-2);
+  }
+  .err-list > li:first-child {
+    border-top: 0;
+  }
+  .err-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 5.5rem 1fr auto;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.4rem 0.2rem;
+    background: transparent;
+    border: 0;
+    color: var(--text-1);
+    text-align: left;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .err-row:hover {
+    background: var(--surface-2);
+  }
+  .err-kind {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: var(--surface-3);
+    color: var(--text-3);
+    text-align: center;
+  }
+  .err-kind-server { background: color-mix(in srgb, var(--error-bg, #5a1d1d) 70%, transparent); color: var(--error-text, #ffb4ad); }
+  .err-kind-fetch { background: color-mix(in srgb, #5a4500 70%, transparent); color: #ffd58a; }
+  .err-kind-rejection,
+  .err-kind-uncaught { background: color-mix(in srgb, #1d3a5a 70%, transparent); color: #a8d0ff; }
+  .err-msg {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+  }
+  .err-detail {
+    padding: 0.2rem 0.4rem 0.6rem 0.4rem;
+    font-size: 0.75rem;
+  }
+  .err-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text-3);
+    margin-bottom: 0.3rem;
+  }
+  .err-route {
+    background: var(--surface-2);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm, 4px);
+  }
+  .err-status {
+    background: color-mix(in srgb, var(--error-bg, #5a1d1d) 60%, transparent);
+    color: var(--error-text, #ffb4ad);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm, 4px);
+  }
+  .err-stack {
+    background: var(--surface-2);
+    color: var(--text-2);
+    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm, 4px);
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre;
+    font-size: 0.7rem;
+    line-height: 1.35;
+    margin: 0.2rem 0 0 0;
+  }
+
   /* TUIs popover reuses the agents-popover row look — same grid, same
      0.78rem font, same hover-reveal × — so both popovers feel like
      siblings. Only difference: a TUI row isn't a button (no click
@@ -2585,11 +2832,14 @@
     margin: 0.5rem 0 0 0;
   }
 
-  .add {
-    display: flex;
-    gap: 0.5rem;
-    margin: 1rem 0 1.5rem;
-    align-items: center;
+  /* Add folder button in the header strip — claims the auto-margin so
+     it pins to the right edge; the TUIs anchor that follows sits flush
+     beside it. */
+  .add-folder-btn {
+    margin-left: auto;
+  }
+  .add-folder-btn + .actions-anchor {
+    margin-left: 0.4rem;
   }
   input {
     flex: 1;
@@ -2627,9 +2877,6 @@
   }
   button.primary:hover:not(:disabled) {
     background: var(--brand-hover);
-  }
-  button.refresh {
-    margin-left: auto;
   }
   button.tiny {
     padding: 0.2rem 0.55rem;

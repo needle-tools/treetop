@@ -9,7 +9,7 @@
  * third. We keep that mess contained here.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -340,4 +340,94 @@ export async function parseSessionFile(
   if (agent === "codex") return parseCodexJsonl(text);
   // No reader for copilot yet — its data isn't a tail-friendly JSONL.
   return emptySession(agent);
+}
+
+/**
+ * Response-string cache for /api/session, keyed by absolute path. Holds the
+ * already-stringified JSON of the session (without manualTitle) so a poll on
+ * an unchanged file does zero IO, zero parse, *and* zero JSON.stringify work.
+ *
+ * Why this exists: SessionView polls /api/session every 2s per open column.
+ * For a 30k-message Claude JSONL (~50–100 MB on disk) the previous code did
+ * readFile + parseClaudeJsonl + JSON.stringify on every poll — ~300 MB
+ * allocated per poll, churning V8 hard enough that RSS climbed at 10–15 MB/s
+ * even with GC running. Caching the response string short-circuits all three
+ * steps on a hit.
+ *
+ * Invariant: the cached JSON does *not* include `manualTitle` — it's
+ * injected per-request by `injectManualTitle()` so we never need to bust the
+ * cache when only the title changes.
+ *
+ * Memory cost: at most MAX_CACHED entries × (response-size). Each entry
+ * holds one string of roughly the same order as the raw JSONL. We cap small
+ * because the resident parsed-session heap is the main thing we're trying to
+ * keep down — see the GC analysis in /api/debug/mem.
+ */
+const MAX_CACHED = 4;
+interface JsonCacheEntry {
+  mtimeMs: number;
+  size: number;
+  /** Serialized NormalizedSession with no `manualTitle` field. */
+  jsonNoTitle: string;
+}
+const jsonCache = new Map<string, JsonCacheEntry>();
+
+export function clearParseCache(): void {
+  jsonCache.clear();
+}
+
+function injectManualTitle(
+  jsonNoTitle: string,
+  manualTitle: string | undefined,
+): string {
+  if (!manualTitle) return jsonNoTitle;
+  // The cached JSON serializes a NormalizedSession with no manualTitle, so
+  // it ends with the closing brace of the top-level object. We splice the
+  // field in just before that brace. JSON.stringify on the title handles
+  // escaping for us.
+  return (
+    jsonNoTitle.slice(0, -1) +
+    ',"manualTitle":' +
+    JSON.stringify(manualTitle) +
+    "}"
+  );
+}
+
+/**
+ * Return the /api/session response body as a JSON string, using a
+ * (path, mtime, size)-keyed cache. The optional manualTitle is injected per
+ * call so the cache key doesn't depend on workspace title state.
+ */
+export async function getSessionResponseJson(
+  agent: AgentKind,
+  path: string,
+  manualTitle?: string,
+): Promise<string> {
+  const st = await stat(path).catch(() => null);
+  if (!st) {
+    return injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
+  }
+
+  const cached = jsonCache.get(path);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    // LRU touch — re-insert so it's the newest entry.
+    jsonCache.delete(path);
+    jsonCache.set(path, cached);
+    return injectManualTitle(cached.jsonNoTitle, manualTitle);
+  }
+
+  const session = await parseSessionFile(agent, path);
+  const jsonNoTitle = JSON.stringify(session);
+
+  jsonCache.set(path, {
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    jsonNoTitle,
+  });
+  while (jsonCache.size > MAX_CACHED) {
+    const oldestKey = jsonCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    jsonCache.delete(oldestKey);
+  }
+  return injectManualTitle(jsonNoTitle, manualTitle);
 }

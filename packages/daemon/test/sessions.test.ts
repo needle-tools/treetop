@@ -1,9 +1,15 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeEach } from "bun:test";
+import { mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseClaudeJsonl,
   parseCodexJsonl,
   splitInjectedTags,
   isMarker,
+  parseSessionFile,
+  getSessionResponseJson,
+  clearParseCache,
 } from "../src/sessions";
 
 describe("parseClaudeJsonl", () => {
@@ -460,5 +466,108 @@ describe("parseCodexJsonl with a real sanitized fixture", () => {
       (m) => m.blocks.length > 0 && m.blocks[0]?.text,
     );
     expect(everyHasContent).toBe(true);
+  });
+});
+
+describe("getSessionResponseJson cache", () => {
+  beforeEach(() => clearParseCache());
+
+  function claudeLine(content: string, ts: string) {
+    return JSON.stringify({
+      type: "user",
+      message: { role: "user", content },
+      timestamp: ts,
+    });
+  }
+
+  test("re-parses when the file's mtime+size changes (append)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
+
+    const first = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(first.messages).toHaveLength(1);
+
+    // Append a second line. Size changes, so even if mtime resolution is
+    // coarse the cache must invalidate.
+    await appendFile(path, claudeLine("second", "2026-05-12T01:00:01Z") + "\n");
+    const second = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(second.messages).toHaveLength(2);
+    expect(second.messages[1]?.blocks[0]?.text).toBe("second");
+  });
+
+  test("returns cached response when mtime+size are unchanged", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("only", "2026-05-12T01:00:00Z") + "\n");
+
+    // Prime the cache.
+    const fixedTime = new Date("2026-05-12T01:00:00Z");
+    await utimes(path, fixedTime, fixedTime);
+    await getSessionResponseJson("claude", path);
+
+    // Overwrite the content but restore mtime+size so the cache key is
+    // unchanged. A cache hit should return the original ("only") payload.
+    const sameLengthReplacement =
+      claudeLine("xxxx", "2026-05-12T01:00:00Z") + "\n";
+    expect(sameLengthReplacement.length).toBe(
+      (claudeLine("only", "2026-05-12T01:00:00Z") + "\n").length,
+    );
+    await writeFile(path, sameLengthReplacement);
+    await utimes(path, fixedTime, fixedTime);
+
+    const b = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(b.messages[0]?.blocks[0]?.text).toBe("only");
+  });
+
+  test("returns an empty session for a non-existent path", async () => {
+    const s = JSON.parse(
+      await getSessionResponseJson("claude", "/does/not/exist.jsonl"),
+    );
+    expect(s.messages).toEqual([]);
+    expect(s.agent).toBe("claude");
+  });
+
+  test("injects manualTitle into cached JSON without busting the cache", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("hi", "2026-05-12T01:00:00Z") + "\n");
+
+    const fixedTime = new Date("2026-05-12T01:00:00Z");
+    await utimes(path, fixedTime, fixedTime);
+
+    const a = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(a.manualTitle).toBeUndefined();
+
+    const b = JSON.parse(
+      await getSessionResponseJson("claude", path, "my title"),
+    );
+    expect(b.manualTitle).toBe("my title");
+    expect(b.messages).toHaveLength(1);
+    // The "without title" cache entry must survive — a subsequent call
+    // without a title still returns the bare session.
+    const c = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(c.manualTitle).toBeUndefined();
+  });
+
+  test("escapes manualTitle so injection can't break the JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("hi", "2026-05-12T01:00:00Z") + "\n");
+
+    const raw = await getSessionResponseJson(
+      "claude",
+      path,
+      'evil "title" with\nnewline',
+    );
+    const parsed = JSON.parse(raw);
+    expect(parsed.manualTitle).toBe('evil "title" with\nnewline');
+  });
+});
+
+describe("parseSessionFile", () => {
+  test("returns an empty session for a non-existent path", async () => {
+    const s = await parseSessionFile("claude", "/does/not/exist.jsonl");
+    expect(s.messages).toEqual([]);
   });
 });
