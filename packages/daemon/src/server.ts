@@ -196,7 +196,15 @@ async function recordServerError(
 // don't kill the PTY immediately — we wait `GRACE_MS` so a page reload
 // can reconnect without losing the agent. Closing the panel for real
 // just lets the timer fire and the PTY dies cleanly.
-const GRACE_MS = 3_000;
+//
+// 30s instead of 3s: with the Terminal-column reattach flow (GET
+// /api/shells on mount, then attach via WS), the round-trip from
+// "reload pressed" to "WS open frame" is dominated by browser cache
+// behaviour and the SPA's JS evaluation — easily 5–10s on a cold
+// devtools-disabled reload. 3s killed every shell before the new tab
+// could attach. 30s is generous; a column the user actually closed
+// will linger for that long but cost nothing.
+const GRACE_MS = 30_000;
 const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function cancelGrace(termId: string) {
