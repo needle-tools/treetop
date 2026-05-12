@@ -1,0 +1,7 @@
+{"timestamp":"2026-05-12T10:35:34.510Z","type":"session_meta","payload":{"id":"019e1bc1-9658-7a70-8529-42744e0c08ed","timestamp":"2026-05-12T10:35:32.312Z","cwd":"/Users/sanitized/proj","originator":"codex-tui","cli_version":"0.130.0","source":"cli"}}
+{"timestamp":"2026-05-12T10:35:34.511Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019e1bc1-9b60-70c1-8f6a-cc91cb39dbd8"}}
+{"timestamp":"2026-05-12T10:35:34.511Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nFilesystem sandboxing enabled\n</permissions instructions>"}]}}
+{"timestamp":"2026-05-12T10:35:34.511Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/sanitized/proj</cwd>\n  <shell>zsh</shell>\n</environment_context>"}]}}
+{"timestamp":"2026-05-12T10:36:00.000Z","type":"turn_context","payload":{"turn_id":"019e1bc1-9b60-70c1-8f6a-cc91cb39dbd8","cwd":"/Users/sanitized/proj"}}
+{"timestamp":"2026-05-12T10:36:05.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"test"}]}}
+{"timestamp":"2026-05-12T10:36:06.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Test received."}],"phase":"final_answer"}}

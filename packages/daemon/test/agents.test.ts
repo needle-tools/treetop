@@ -265,7 +265,7 @@ describe("scanCodex", () => {
     expect(await scanCodex(["/no/such/root"])).toEqual([]);
   });
 
-  test("returns sessions from the first root that exists", async () => {
+  test("returns sessions from the first root that exists (flat layout)", async () => {
     const a = await tempDir("supergit-codex-a-");
     const b = await tempDir("supergit-codex-b-");
     await writeFile(
@@ -279,6 +279,67 @@ describe("scanCodex", () => {
     expect(sessions2).toHaveLength(1);
     expect(sessions2[0]?.agent).toBe("codex");
     expect(sessions2[0]?.cwd).toBe("/Users/marcel/codex/proj");
+  });
+
+  test("recurses into date-partitioned subdirs (codex 0.130+ layout)", async () => {
+    // Codex 0.130 puts each session at:
+    //   ~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<id>.jsonl
+    // and stores cwd + session id under session_meta.payload, not at
+    // the top level. Earlier versions used a flat root with a top-level
+    // `cwd` field — both must still resolve.
+    const root = await tempDir("supergit-codex-recurse-");
+    const dated = join(root, "2026", "05", "12");
+    await mkdir(dated, { recursive: true });
+    await writeFile(
+      join(dated, "rollout-2026-05-12T17-35-32-019e1bc1-9658-7a70-8529-42744e0c08ed.jsonl"),
+      JSON.stringify({
+        timestamp: "2026-05-12T10:35:34.510Z",
+        type: "session_meta",
+        payload: {
+          id: "019e1bc1-9658-7a70-8529-42744e0c08ed",
+          cwd: "/Users/marcel/needle-engine",
+          cli_version: "0.130.0",
+        },
+      }) + "\n",
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.cwd).toBe("/Users/marcel/needle-engine");
+    // Prefer the payload.id (what `codex resume <id>` accepts) over
+    // the filename, which is "rollout-<iso>-<id>" — calling resume
+    // with that would fail.
+    expect(sessions[0]?.sessionId).toBe(
+      "019e1bc1-9658-7a70-8529-42744e0c08ed",
+    );
+  });
+
+  test("the global history.jsonl is not treated as a session", async () => {
+    // ~/.codex/history.jsonl is codex's shell-style command history,
+    // not a session file. It has no cwd / no session_meta and would
+    // confuse the agent strip if we picked it up.
+    const root = await tempDir("supergit-codex-history-");
+    // Drop a top-level history-like file with miscellaneous fields.
+    await writeFile(
+      join(root, "history.jsonl"),
+      '{"command":"test","timestamp":"2026-05-12"}\n',
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toEqual([]);
+  });
+
+  test("falls back to top-level `cwd` when session_meta isn't present", async () => {
+    // Backwards compat: pre-0.130 codex (and the test-codex-rendering
+    // fixture) put `cwd` on every line at the top level. Don't break
+    // those when adding session_meta support.
+    const root = await tempDir("supergit-codex-flat-");
+    await writeFile(
+      join(root, "flat.jsonl"),
+      '{"cwd":"/proj","role":"user","content":"hi"}\n',
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.cwd).toBe("/proj");
+    expect(sessions[0]?.sessionId).toBe("flat");
   });
 });
 

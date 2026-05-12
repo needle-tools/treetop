@@ -277,6 +277,78 @@ export async function scanClaude(
   return sessions;
 }
 
+/** Recursively collect `.jsonl` / `.json` files under `dir`. Codex
+ *  0.130+ partitions sessions by date (`YYYY/MM/DD/rollout-...jsonl`),
+ *  so a flat readdir misses everything. Bounded to a small max depth
+ *  so a malformed root can't run away. */
+async function collectCodexSessionFiles(
+  dir: string,
+  depth = 0,
+): Promise<string[]> {
+  if (depth > 5) return [];
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const e of entries) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      out.push(...(await collectCodexSessionFiles(full, depth + 1)));
+    } else if (
+      e.isFile() &&
+      (e.name.endsWith(".jsonl") || e.name.endsWith(".json"))
+    ) {
+      // ~/.codex/history.jsonl is codex's shell-style global command
+      // history, not a session file. Skip files named "history.*" at
+      // the root so they don't show up as ghost sessions.
+      if (depth === 0 && /^history\.(jsonl|json)$/.test(e.name)) continue;
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/** Pull cwd + session id out of a codex JSONL. Codex 0.130+ stores
+ *  these under a `session_meta` block (`payload.cwd`, `payload.id`);
+ *  older codex versions and our flat fixtures put `cwd` at the top
+ *  level. Returns whichever is found first; `id` defaults to null so
+ *  callers can fall back to the filename basename. */
+async function readCodexSessionMeta(
+  path: string,
+): Promise<{ cwd?: string; id?: string }> {
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return {};
+  }
+  let topCwd: string | undefined;
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    // 0.130+ form: { type: "session_meta", payload: { id, cwd, ... } }
+    if (obj.type === "session_meta" && typeof obj.payload === "object" && obj.payload !== null) {
+      const p = obj.payload as Record<string, unknown>;
+      const cwd = typeof p.cwd === "string" ? p.cwd : undefined;
+      const id = typeof p.id === "string" ? p.id : undefined;
+      if (cwd || id) return { cwd, id };
+    }
+    // Pre-0.130 / fixture form: top-level cwd somewhere in the file.
+    if (!topCwd && typeof obj.cwd === "string") {
+      topCwd = obj.cwd;
+    }
+  }
+  return { cwd: topCwd };
+}
+
 export async function scanCodex(
   roots: string[] = CODEX_ROOTS(),
 ): Promise<AgentSession[]> {
@@ -284,25 +356,28 @@ export async function scanCodex(
   // sessions in different places; we don't want to merge stale data from
   // an old install with the current one.
   for (const root of roots) {
-    let files: string[];
+    let rootExists = true;
     try {
-      files = await readdir(root);
+      await stat(root);
     } catch {
-      continue;
+      rootExists = false;
     }
+    if (!rootExists) continue;
+    const files = await collectCodexSessionFiles(root);
     const sessions: AgentSession[] = [];
-    for (const file of files) {
-      if (!file.endsWith(".jsonl") && !file.endsWith(".json")) continue;
-      const sessionPath = join(root, file);
+    for (const sessionPath of files) {
       try {
         const stats = await stat(sessionPath);
-        const cwd = await readJsonlField(sessionPath, "cwd");
-        if (!cwd) continue;
+        const meta = await readCodexSessionMeta(sessionPath);
+        if (!meta.cwd) continue;
         sessions.push({
           agent: "codex",
-          cwd: resolve(cwd),
+          cwd: resolve(meta.cwd),
           lastActive: stats.mtime.toISOString(),
-          sessionId: file.replace(/\.(jsonl|json)$/, ""),
+          // Prefer the in-file id (what `codex resume <id>` expects)
+          // over the filename basename, since the filename includes a
+          // `rollout-<iso>-` prefix that's not a valid id.
+          sessionId: meta.id ?? sessionPath.split("/").pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
         });
       } catch {

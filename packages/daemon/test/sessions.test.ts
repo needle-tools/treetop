@@ -387,4 +387,78 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[0]?.blocks[0]?.text).toBe("via text");
     expect(s.messages[1]?.blocks[0]?.text).toBe("via message");
   });
+
+  test("extracts cwd + sessionId from session_meta.payload (codex 0.130+)", () => {
+    const text = JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id: "019e1bc1-9658-7a70-8529-42744e0c08ed",
+        cwd: "/Users/me/proj",
+        cli_version: "0.130.0",
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.cwd).toBe("/Users/me/proj");
+    expect(s.sessionId).toBe("019e1bc1-9658-7a70-8529-42744e0c08ed");
+    // session_meta is metadata only, not a message.
+    expect(s.messages).toEqual([]);
+  });
+
+  test("renders response_item messages (codex 0.130+)", () => {
+    const text = [
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "world" }],
+        },
+      }),
+    ].join("\n");
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(s.messages[0]?.blocks[0]).toEqual({ type: "text", text: "hello" });
+    expect(s.messages[1]?.blocks[0]).toEqual({ type: "text", text: "world" });
+  });
+
+  test("event_msg and turn_context lines are skipped (not rendered as messages)", () => {
+    const text = [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({ type: "turn_context", payload: { cwd: "/x" } }),
+    ].join("\n");
+    expect(parseCodexJsonl(text).messages).toEqual([]);
+  });
+});
+
+describe("parseCodexJsonl with a real sanitized fixture", () => {
+  test("0.130 layout: extracts metadata, user prompt, and assistant reply", async () => {
+    const text = await Bun.file(
+      new URL("./fixtures/codex-real-sample.jsonl", import.meta.url).pathname,
+    ).text();
+    const s = parseCodexJsonl(text);
+    expect(s.cwd).toBe("/Users/sanitized/proj");
+    expect(s.sessionId).toBe("019e1bc1-9658-7a70-8529-42744e0c08ed");
+    // Should find the user prompt + the assistant reply.
+    const userMsgs = s.messages.filter((m) => m.role === "user");
+    const assistantMsgs = s.messages.filter((m) => m.role === "assistant");
+    expect(userMsgs.length).toBeGreaterThanOrEqual(1);
+    expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
+    expect(userMsgs.some((m) => m.blocks[0]?.text === "test")).toBe(true);
+    expect(
+      assistantMsgs.some((m) => m.blocks[0]?.text === "Test received."),
+    ).toBe(true);
+    // event_msg / turn_context lines aren't messages.
+    const everyHasContent = s.messages.every(
+      (m) => m.blocks.length > 0 && m.blocks[0]?.text,
+    );
+    expect(everyHasContent).toBe(true);
+  });
 });

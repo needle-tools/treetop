@@ -213,6 +213,60 @@ export function parseCodexJsonl(text: string): NormalizedSession {
     } catch {
       continue;
     }
+
+    // codex 0.130+ wraps metadata in a top-level `session_meta` event
+    // and actual chat turns in `response_item` events. Handle those
+    // first; non-matching shapes fall through to the older flat
+    // format below for backwards compat with the pre-0.130 layout
+    // and our own test fixtures.
+    if (obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+      const p = obj.payload as Record<string, unknown>;
+      if (typeof p.cwd === "string" && !out.cwd) out.cwd = p.cwd;
+      if (typeof p.id === "string" && !out.sessionId) out.sessionId = p.id;
+      const ts =
+        typeof p.timestamp === "string"
+          ? p.timestamp
+          : typeof obj.timestamp === "string"
+            ? obj.timestamp
+            : undefined;
+      if (ts && !out.startedAt) out.startedAt = ts;
+      if (ts) out.endedAt = ts;
+      continue;
+    }
+    if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
+      const p = obj.payload as Record<string, unknown>;
+      if (p.type !== "message") continue;
+      const role: NormalizedRole = (() => {
+        if (typeof p.role !== "string") return "user";
+        if (p.role === "assistant") return "assistant";
+        if (p.role === "system" || p.role === "developer") return "system";
+        return "user";
+      })();
+      const blocks: NormalizedBlock[] = [];
+      if (Array.isArray(p.content)) {
+        for (const raw of p.content) {
+          if (typeof raw !== "object" || raw === null) continue;
+          const b = raw as Record<string, unknown>;
+          if (typeof b.text === "string") {
+            blocks.push({ type: "text", text: b.text });
+          }
+        }
+      } else if (typeof p.content === "string") {
+        blocks.push({ type: "text", text: p.content });
+      }
+      if (blocks.length === 0) continue;
+      const ts =
+        typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+      if (ts && !out.startedAt) out.startedAt = ts;
+      if (ts) out.endedAt = ts;
+      out.messages.push({ role, blocks, timestamp: ts });
+      continue;
+    }
+    if (obj.type === "event_msg" || obj.type === "turn_context") {
+      // Non-message metadata events — skip rendering.
+      continue;
+    }
+
     if (typeof obj.cwd === "string" && !out.cwd) out.cwd = obj.cwd;
     if (typeof obj.sessionId === "string" && !out.sessionId)
       out.sessionId = obj.sessionId;

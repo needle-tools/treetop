@@ -404,12 +404,14 @@
         {/if}
       </div>
     </div>
-    {#if session?.sessionId && agent === "claude"}
+    {#if session?.sessionId && (agent === "claude" || agent === "codex")}
       {#if mode === "read"}
         <button
           class="resume-btn"
           on:click={() => (mode = "terminal")}
-          title="Spawn a live `claude --resume` PTY in this session's cwd"
+          title={agent === "codex"
+            ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
+            : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
         >
           Resume in terminal
         </button>
@@ -432,17 +434,30 @@
 
   {#if mode === "terminal" && session?.sessionId && session.cwd}
     <TerminalView
-      cmd={[
-        "claude",
-        "--resume",
-        session.sessionId,
-        // Unlocks the in-TUI option to switch to dangerously-skip-permissions
-        // (without enabling it by default). This is the flag from
-        // `claude --help` whose description is exactly "Enable bypassing all
-        // permission checks as an option, without it being enabled by default".
-        // Without it, the slash-command toggle inside the TUI is unavailable.
-        "--allow-dangerously-skip-permissions",
-      ]}
+      cmd={agent === "codex"
+        ? [
+            // codex's `resume` subcommand takes a session id as a
+            // positional arg (per `codex resume --help`: picker by
+            // default, --last for most recent, or pass an id). We
+            // don't pass `--dangerously-bypass-approvals-and-sandbox`
+            // — that's the analog of claude's
+            // `--allow-dangerously-skip-permissions` and we leave
+            // approval policy to the user's codex config.
+            "codex",
+            "resume",
+            session.sessionId,
+          ]
+        : [
+            "claude",
+            "--resume",
+            session.sessionId,
+            // Unlocks the in-TUI option to switch to dangerously-skip-permissions
+            // (without enabling it by default). This is the flag from
+            // `claude --help` whose description is exactly "Enable bypassing all
+            // permission checks as an option, without it being enabled by default".
+            // Without it, the slash-command toggle inside the TUI is unavailable.
+            "--allow-dangerously-skip-permissions",
+          ]}
       cwd={session.cwd}
       ownerId={session.sessionId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
