@@ -300,6 +300,14 @@ const server = Bun.serve<TermWsData, never>({
       return json({ status: "ok", workspace: WORKSPACE_PATH });
     }
 
+    // The user's default login shell — populated from $SHELL with a
+    // /bin/zsh fallback (macOS default). The frontend hits this once
+    // on mount so the "Terminal" entry in the new-session picker can
+    // spawn the right shell without hardcoding bash/zsh in the UI.
+    if (url.pathname === "/api/shell-default") {
+      return json({ shell: process.env.SHELL || "/bin/zsh" });
+    }
+
     // Diagnostics: snapshot of the /api/session cache. Shows entries,
     // bounds, per-entry sizes, total bytes held. Used to find out where
     // heapUsed is actually going when the totals don't match the cache cap.
@@ -388,6 +396,7 @@ const server = Bun.serve<TermWsData, never>({
         endpoints: [
           { method: "GET", path: "/api", description: "this index (agent-discoverable route list)" },
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
+          { method: "GET", path: "/api/shell-default", description: "the user's default login shell ($SHELL, falling back to /bin/zsh). Used by the new-session picker's 'Terminal' entry." },
           { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
           { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },

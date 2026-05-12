@@ -512,6 +512,32 @@
     };
   }
 
+  /** Open a brand-new "Terminal" column in this worktree — a plain PTY
+   *  running the user's $SHELL. Mirrors `openNewAgentSession` but uses
+   *  agent="shell"; the render branch picks `defaultShell` as the cmd. */
+  function openNewTerminalInWt(wtPath: string) {
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__new__:shell:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: [{ agent: "shell", source: synthetic }, ...existing],
+    };
+  }
+
+  async function loadDefaultShell() {
+    try {
+      const res = await fetch("/api/shell-default");
+      if (!res.ok) return;
+      const body = (await res.json()) as { shell?: unknown };
+      if (typeof body.shell === "string" && body.shell.length > 0) {
+        defaultShell = body.shell;
+      }
+    } catch {
+      // best-effort — keeps the /bin/zsh fallback
+    }
+  }
+
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
    *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
    *  key change unmounts the old TerminalView (closing its WS, which
@@ -681,10 +707,18 @@
   // repo stays visually obvious) but can be opened side-by-side as a
   // horizontal strip below the row.
   interface OpenSession {
-    agent: AgentSession["agent"];
+    /** Includes `"shell"` for plain-terminal columns (no JSONL transcript;
+     *  the daemon spawns the user's $SHELL as a PTY). */
+    agent: AgentSession["agent"] | "shell";
     source: string;
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
+
+  /** The user's default login shell (env $SHELL), fetched once on mount
+   *  from /api/shell-default. Used when the user picks "Terminal" from
+   *  the new-session menu so we spawn the right shell instead of
+   *  hardcoding bash/zsh in the frontend. */
+  let defaultShell: string = "/bin/zsh";
 
   function isOpenInWt(wtPath: string, source: string): boolean {
     return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
@@ -1556,6 +1590,7 @@
     restoreFoldedRepos();
     void loadInstalledAgents();
     void loadEditors();
+    void loadDefaultShell();
     void load().then(() => {
       for (const [path, expanded] of Object.entries(commitsExpanded)) {
         if (expanded) void loadCommitsInitial(path);
@@ -1922,52 +1957,63 @@
                 <span class="agent-wrap" data-agents-anchor={wt.path} data-new-agent-anchor={wt.path}>
                   <button
                     class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
-                    title={installedAgents.length > 0
-                      ? "Start a new agent session in this worktree"
-                      : "No agent CLIs found on PATH"}
+                    title="Start a new session in this worktree"
                     on:click|stopPropagation={() => {
                       newAgentPopoverOpen = {
                         ...newAgentPopoverOpen,
                         [wt.path]: !newAgentPopoverOpen[wt.path],
                       };
                     }}
-                    disabled={installedAgents.length === 0}
                   >+</button>
                   {#if newAgentPopoverOpen[wt.path]}
                     <div class="agents-popover new-agent-popover" role="menu" use:clampToViewport>
                       <div class="popover-head">Start a new session</div>
-                      {#if installedAgents.length === 0}
-                        <p class="muted small nopad">No agent CLIs found on PATH.</p>
-                      {:else}
-                        <ul class="agents-list">
-                          {#each installedAgents as ag (ag.name)}
-                            <li>
-                              <button
-                                class="agent-row new-agent-row"
-                                on:click={() => {
-                                  newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                                  openNewAgentSession(wt.path, ag.name as "claude" | "codex");
-                                }}
-                                title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
-                              >
-                                {#if ag.name === "claude"}
-                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                                {:else if ag.name === "codex"}
-                                  <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                                {:else}
-                                  <span class="agent-dot agent-shell"></span>
-                                {/if}
-                                <span class="agent-row-name">
-                                  {ag.name === "claude" ? "Claude"
-                                    : ag.name === "codex" ? "Codex"
-                                    : ag.name}
-                                </span>
-                                <span class="agent-title muted">{ag.path}</span>
-                              </button>
-                            </li>
-                          {/each}
-                        </ul>
-                      {/if}
+                      <ul class="agents-list">
+                        {#each installedAgents as ag (ag.name)}
+                          <li>
+                            <button
+                              class="agent-row new-agent-row"
+                              on:click={() => {
+                                newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                                openNewAgentSession(wt.path, ag.name as "claude" | "codex");
+                              }}
+                              title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
+                            >
+                              {#if ag.name === "claude"}
+                                <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                              {:else if ag.name === "codex"}
+                                <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                              {:else}
+                                <span class="agent-dot agent-shell"></span>
+                              {/if}
+                              <span class="agent-row-name">
+                                {ag.name === "claude" ? "Claude"
+                                  : ag.name === "codex" ? "Codex"
+                                  : ag.name}
+                              </span>
+                              <span class="agent-title muted">{ag.path}</span>
+                            </button>
+                          </li>
+                        {/each}
+                        <!-- Always-present Terminal entry. Spawns the user's
+                             $SHELL (resolved server-side via /api/shell-default)
+                             as a plain PTY in this worktree — no JSONL
+                             transcript, just an interactive shell column. -->
+                        <li>
+                          <button
+                            class="agent-row new-agent-row"
+                            on:click={() => {
+                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                              openNewTerminalInWt(wt.path);
+                            }}
+                            title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
+                          >
+                            <span class="agent-dot agent-shell"></span>
+                            <span class="agent-row-name">Terminal</span>
+                            <span class="agent-title muted">{defaultShell}</span>
+                          </button>
+                        </li>
+                      </ul>
                     </div>
                   {/if}
                   {#if a}
@@ -2373,7 +2419,9 @@
                                     "Name this session…"}
                                 </button>
                               {/if}
-                              <span class="muted small">new session — TUI</span>
+                              <span class="muted small">
+                                {s.agent === "shell" ? "new session — Terminal" : "new session — TUI"}
+                              </span>
                               {#if transientAwaiting[s.source]}
                                 <span class="awaiting-pill" title="The agent is paused waiting for input — click the terminal and respond.">
                                   needs input
@@ -2403,7 +2451,7 @@
                               >×</button>
                             </header>
                             <TerminalView
-                              cmd={[s.agent]}
+                              cmd={s.agent === "shell" ? [defaultShell] : [s.agent]}
                               cwd={wt.path}
                               procName={`supergit-tui-new-${s.agent}`}
                               onAwaitingChange={(awaiting) => {
