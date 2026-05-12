@@ -161,12 +161,13 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
-  /** Dashboard-level "zen" mode — hides the top bar + subtitle so the
-   *  worktree rows / sessions fill the viewport. Toggled from the top
-   *  bar; Esc exits. Purely cosmetic, no state persisted to workspace. */
-  let zenMode = false;
-  function toggleZen() {
-    zenMode = !zenMode;
+  /** Per-row "zen" focus — one worktree row takes over the viewport,
+   *  hiding the top bar and all other rows. `null` = no row focused.
+   *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
+   *  persisted to workspace. */
+  let zenRowKey: string | null = null;
+  function toggleZenRow(key: string) {
+    zenRowKey = zenRowKey === key ? null : key;
   }
   /** Toggle browser fullscreen on the given element. If we're already
    *  fullscreen *and* it's the same element, exit. If we're fullscreen
@@ -1510,8 +1511,8 @@
     // fullscreen-exit-on-Esc still works independently because the API
     // fires Esc against fullscreen before document keydown ever sees it.
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && zenMode && !document.fullscreenElement) {
-        zenMode = false;
+      if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
+        zenRowKey = null;
       }
     };
     document.addEventListener("keydown", handleKey);
@@ -1525,7 +1526,7 @@
   });
 </script>
 
-<main class:zen={zenMode}>
+<main class:zen-row={zenRowKey !== null}>
   <header>
     <h1>
       <img src="/needle-logo.svg" alt="" class="brand-mark" />
@@ -1647,15 +1648,6 @@
         {/if}
       </div>
 
-      <button
-        class="actions-btn zen-btn"
-        class:open={zenMode}
-        on:click={toggleZen}
-        title={zenMode
-          ? "Exit zen mode (Esc)"
-          : "Hide the top bar so worktree rows fill the viewport"}
-      >Zen</button>
-
       <div class="actions-anchor events-anchor">
         <button
           class="actions-btn"
@@ -1742,6 +1734,7 @@
         <li
           class="row"
           class:row-folded={rowFolded[row.key]}
+          class:row-zen={zenRowKey === row.key}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
         >
           <div class="row-content">
@@ -2144,6 +2137,15 @@
               {/if}
             </span>
             <button
+              class="row-zen-btn"
+              class:open={zenRowKey === row.key}
+              title={zenRowKey === row.key
+                ? "Exit zen — restore the rest of the dashboard (Esc)"
+                : `Zen — make \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` fill the viewport`}
+              aria-label={zenRowKey === row.key ? "Exit zen" : "Enter zen"}
+              on:click|stopPropagation={() => toggleZenRow(row.key)}
+            >{zenRowKey === row.key ? "◱" : "▣"}</button>
+            <button
               class="remove"
               title={wt
                 ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
@@ -2396,6 +2398,13 @@
 
               {#if commitsExpanded[wt.path]}
                 <div class="expanded">
+                  {#if zenRowKey === row.key}
+                    <button
+                      class="hide-history-btn"
+                      title="Hide history / staging view"
+                      on:click={() => toggleCommits(wt.path)}
+                    >Hide history ✕</button>
+                  {/if}
                   <div class="tabs-row">
                     <div class="tabs">
                       <button
@@ -3591,11 +3600,10 @@
   .new-session-head .close {
     margin-left: auto;
   }
-  /* The trailing-actions cluster all wants to sit flush on the right.
-     The first sibling (whichever runs first) claims the auto margin;
-     the rest just butt up against it. */
+  /* The trailing-actions cluster sits flush on the right: restart
+     claims the auto-margin (or close does if restart isn't there),
+     and the rest just butt up against it. */
   .new-session-head .restart-btn + .fullscreen-btn,
-  .new-session-head .restart-btn + .close,
   .new-session-head .fullscreen-btn + .close {
     margin-left: 0;
   }
@@ -4168,32 +4176,113 @@
     color: var(--chip-orange-text);
   }
 
-  /* Zen mode — dashboard-level "less chrome" toggle. Hides the top bar
-     and the v0 subtitle so the worktree rows + sessions strips claim
-     the full viewport. Esc exits (handled in onMount). */
-  main.zen > header {
+  /* Per-row zen — one row takes over the viewport, every other row +
+     the top bar are hidden. Esc exits (handled in onMount). */
+  main.zen-row > header {
     display: none;
   }
-  .zen-btn.open {
-    background: var(--chip-purple-bg);
-    color: var(--chip-purple-text);
+  main.zen-row .row:not(.row-zen) {
+    display: none;
   }
-  /* While zen is on, drop the floating "Exit zen" pill top-right so
-     the user has a discoverable way out even if they forgot Esc. */
-  main.zen::before {
-    content: "Exit zen (Esc)";
+  /* The focused row pops out of flow and fills the viewport. The
+     row's normal content tree (.row-content → .row-head + body) keeps
+     working unchanged; we just give it a viewport-sized canvas. */
+  .row.row-zen {
     position: fixed;
-    top: 0.6rem;
-    right: 0.8rem;
-    z-index: 60;
-    padding: 0.25rem 0.6rem;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg-0, var(--surface-1));
+    margin: 0;
+    border-radius: 0;
+    overflow: hidden;
+    padding: 0.6rem 1rem;
+    box-sizing: border-box;
+  }
+  /* In zen, .row-content is a viewport-pinned column flex. We anchor
+     each section explicitly so any extra siblings (new-wt-form, etc.)
+     can't shift the "elastic" slot onto the wrong child:
+       - .row-head / .row-commit / everything else → natural height
+         (flex: 0 0 auto) so the chevron bar can never get squeezed.
+       - .sessions-strip → flex: 1 1 0; the only grower when history
+         is closed.
+       - .expanded → flex: 1 1 0; only present when history is open,
+         in which case it shares with the strip 50/50.
+     min-height:0 unlocks shrinking below intrinsic content; each
+     elastic child has its own internal scroll. */
+  .row.row-zen > .row-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
+  }
+  .row.row-zen > .row-content > * {
+    flex: 0 0 auto;
+  }
+  .row.row-zen .sessions-strip {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+  .row.row-zen .expanded {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+    position: relative;
+  }
+  /* Zen-only close affordance for the history pane. The existing
+     chevron in .row-commit also toggles it, but in zen the chevron is
+     a small icon between the strip and the panel — easy to miss when
+     scanning the diff. This sticky button stays visible at the panel's
+     top-right even as the diff scrolls. */
+  .hide-history-btn {
+    position: sticky;
+    top: 0;
+    margin-left: auto;
+    margin-bottom: -1.5rem;
+    z-index: 2;
+    display: block;
+    width: max-content;
     background: var(--surface-2);
     color: var(--text-2);
     border: 1px solid var(--surface-3);
+    padding: 0.2rem 0.55rem;
     border-radius: var(--radius-sm);
     font-size: 0.72rem;
-    pointer-events: none;
-    opacity: 0.7;
+    cursor: pointer;
+  }
+  .hide-history-btn:hover {
+    background: var(--surface-3);
+    color: var(--text-1);
+  }
+  /* TerminalView caps its height at 60vh in the normal dashboard so
+     a single TUI doesn't dominate the page. In zen that cap defeats
+     the point — let it grow. xterm's FitAddon re-fits via the
+     ResizeObserver TerminalView already wires up. Same override for
+     SessionView's .session wrapper so its message list / inline TUI
+     fills the column. */
+  .row.row-zen :global(.terminal-wrap) {
+    max-height: none;
+    min-height: 0;
+    flex: 1 1 0;
+  }
+  /* Row-head Zen toggle. Sits next to the row's × remove; the icon
+     swap (▣ → ◱) gives a quick visual read of state. */
+  .row-zen-btn {
+    background: transparent;
+    color: var(--text-muted);
+    border: 0;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .row-zen-btn:hover {
+    color: var(--text-1);
+    background: var(--surface-3);
+  }
+  .row-zen-btn.open {
+    color: var(--chip-purple-text);
+    background: var(--chip-purple-bg);
   }
 
   /* Fullscreen styling for an individual transient-TUI column. The

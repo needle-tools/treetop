@@ -811,6 +811,34 @@
     opacity: 0.55;
     cursor: not-allowed;
   }
+  /* Inline fullscreen toggle next to Dispose. Matches the
+     transparent-icon look of header .close so the header doesn't gain
+     a third button-weight; just a glyph that lights up on hover. */
+  .fullscreen-btn {
+    flex: 0 0 auto;
+    align-self: center;
+    background: transparent;
+    color: var(--text-muted);
+    border: 0;
+    padding: 0.1rem 0.5rem;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .fullscreen-btn:hover {
+    color: var(--text-1);
+    background: var(--surface-3);
+    border-radius: var(--radius-sm);
+  }
+  /* When this column goes fullscreen, drop the rounded border + fill
+     the viewport. TerminalView's ResizeObserver re-fits xterm for us. */
+  .session:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    border: 0;
+    background: var(--surface-1);
+  }
   .agent-pill {
     padding: 0.1rem 0.5rem;
     border-radius: var(--radius-sm);
