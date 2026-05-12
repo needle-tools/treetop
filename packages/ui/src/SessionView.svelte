@@ -47,6 +47,11 @@
   export let source: string;
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
+  /** Called when the user successfully renames this session. Lets the
+   *  parent refresh its `/api/repos` snapshot so the worktree row and
+   *  the "+N sessions" popover reflect the new title immediately,
+   *  without waiting on SSE / a poll cycle. */
+  export let onTitleChange: () => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -176,6 +181,11 @@
       if (session) {
         session = { ...session, manualTitle: next.trim() || undefined };
       }
+      // Nudge the parent to re-fetch /api/repos so the worktree row's
+      // agent badge and the "+N sessions" popover pick the new title
+      // up right away (defense in depth — the daemon also broadcasts a
+      // change event over SSE).
+      onTitleChange();
     } catch {
       // best-effort — leave the edit open so the user can retry / cancel
     } finally {

@@ -493,6 +493,9 @@
       newSessionTitles = next
         ? { ...newSessionTitles, [source]: next }
         : (({ [source]: _, ...rest }) => rest)(newSessionTitles);
+      // Refresh /api/repos so a worktree row reflects the new title the
+      // moment its real JSONL takes over from the synthetic source.
+      void load();
     } catch {
       // best-effort
     }
@@ -760,16 +763,20 @@
   let visibleWorktreesByRepo: Record<string, string[]> = {};
   let visibleHydrated = false;
 
-  // Per-repo "fold this repo's rows to a minimal one-line format". Keyed
-  // by repo.id. Persisted in localStorage so a folded repo stays folded
-  // across reloads. Reuses ExpandedStore — it's just a Set<string>.
-  const foldedReposStore = new ExpandedStore(
+  // Per-row "fold this worktree row to a minimal one-line format". Keyed
+  // by row.key (`${repo.id}|${wt.path}`) so each worktree of a multi-
+  // worktree repo can be folded independently. Persisted in localStorage
+  // so a folded row stays folded across reloads. Reuses ExpandedStore —
+  // it's just a Set<string>.
+  // Storage key was renamed from `foldedRepos` (repo-keyed) so stale
+  // repo-id entries don't accidentally collapse rows on first load.
+  const foldedRowsStore = new ExpandedStore(
     typeof window !== "undefined"
       ? window.localStorage
       : ({ getItem: () => null, setItem: () => {} }),
-    "supergit:foldedRepos",
+    "supergit:foldedRows",
   );
-  let repoFolded: Record<string, boolean> = {};
+  let rowFolded: Record<string, boolean> = {};
   let foldedHydrated = false;
   // Don't persist until the initial restore has run, otherwise the first
   // reactive write wipes saved state with our empty starting value.
@@ -802,23 +809,23 @@
   $: if (visibleHydrated) visibleWorktreesPersistence.save(visibleWorktreesByRepo);
 
   function restoreFoldedRepos() {
-    const ids = foldedReposStore.load();
-    if (ids.size > 0) {
+    const keys = foldedRowsStore.load();
+    if (keys.size > 0) {
       const next: Record<string, boolean> = {};
-      for (const id of ids) next[id] = true;
-      repoFolded = next;
+      for (const k of keys) next[k] = true;
+      rowFolded = next;
     }
     foldedHydrated = true;
   }
   $: if (foldedHydrated) {
-    foldedReposStore.save(
-      Object.entries(repoFolded)
+    foldedRowsStore.save(
+      Object.entries(rowFolded)
         .filter(([, v]) => v)
         .map(([k]) => k),
     );
   }
-  function toggleRepoFolded(repoId: string) {
-    repoFolded = { ...repoFolded, [repoId]: !repoFolded[repoId] };
+  function toggleRowFolded(rowKey: string) {
+    rowFolded = { ...rowFolded, [rowKey]: !rowFolded[rowKey] };
   }
 
   /** Hide a worktree row from the dashboard. Disk is untouched; the
@@ -1537,19 +1544,19 @@
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
         <li
           class="row"
-          class:row-folded={repoFolded[repo.id]}
+          class:row-folded={rowFolded[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
         >
           <div class="row-content">
           <div class="row-head">
             <button
               class="chevron fold-toggle"
-              class:open={!repoFolded[repo.id]}
-              title={repoFolded[repo.id]
-                ? `Expand \`${repo.name}\``
-                : `Fold \`${repo.name}\` to a minimal row`}
-              aria-label={repoFolded[repo.id] ? "Expand repo" : "Fold repo"}
-              on:click|stopPropagation={() => toggleRepoFolded(repo.id)}
+              class:open={!rowFolded[row.key]}
+              title={rowFolded[row.key]
+                ? `Expand \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\``
+                : `Fold \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` to a minimal row`}
+              aria-label={rowFolded[row.key] ? "Expand row" : "Fold row"}
+              on:click|stopPropagation={() => toggleRowFolded(row.key)}
             >
               <span class="arrow">▸</span>
             </button>
@@ -1952,7 +1959,7 @@
             >
           </div>
 
-          {#if !repoFolded[repo.id]}
+          {#if !rowFolded[row.key]}
           {#if newWtOpen[repo.id]}
             <div class="new-wt-form">
               <input
@@ -2144,6 +2151,7 @@
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
+                            onTitleChange={() => void load()}
                           />
                         {/if}
                       </div>
