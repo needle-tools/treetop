@@ -517,6 +517,22 @@
           <span class="awaiting-pill" title="The agent is paused on a prompt — focus the terminal and respond.">needs input</span>
         {/if}
         <button
+          class="fullscreen-btn"
+          on:click={(e) => {
+            const el = (e.currentTarget as HTMLElement).closest(
+              ".session",
+            ) as HTMLElement | null;
+            if (!el) return;
+            if (document.fullscreenElement === el) {
+              void document.exitFullscreen().catch(() => {});
+            } else {
+              void el.requestFullscreen().catch(() => {});
+            }
+          }}
+          title="Fullscreen this terminal (Esc to exit)"
+          aria-label="Fullscreen"
+        >⛶</button>
+        <button
           class="resume-btn dispose-btn"
           on:click={disposeTerminal}
           disabled={disposing}

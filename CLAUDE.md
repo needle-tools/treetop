@@ -128,6 +128,18 @@ whatever the user is doing in the running dashboard. The rule:
   Background tasks spawned by AI tooling get SIGTERM'd after a few minutes;
   detaching reparents the process to `launchd` so the harness can't kill it.
 
+### Don't auto-restart the daemon (would kill TUIs)
+
+Don't wrap `bun run start` in a supervisor that respawns the daemon on
+an RSS threshold. The daemon spawns `packages/daemon/src/terminals/helper.mjs`
+as a child via `Bun.spawn`, and the helper has a `SIGTERM` handler that
+walks `terms.values()` and kills every PTY before exiting. So killing
+the daemon → kills the helper → kills every Claude/Codex TUI session
+the user is hosting. We tried this once; don't reintroduce it without
+first re-architecting the helper to survive daemon restarts (e.g.
+detached + Unix socket IPC so the daemon can attach to an existing
+helper instead of owning it as a child).
+
 ### Port collision footgun (don't reintroduce)
 
 `bunx portless supergit …` exports `PORT=<supergit's port>`,

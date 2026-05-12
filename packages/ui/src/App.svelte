@@ -161,6 +161,31 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  /** Dashboard-level "zen" mode — hides the top bar + subtitle so the
+   *  worktree rows / sessions fill the viewport. Toggled from the top
+   *  bar; Esc exits. Purely cosmetic, no state persisted to workspace. */
+  let zenMode = false;
+  function toggleZen() {
+    zenMode = !zenMode;
+  }
+  /** Toggle browser fullscreen on the given element. If we're already
+   *  fullscreen *and* it's the same element, exit. If we're fullscreen
+   *  on a different element, swap (exit → request on new). xterm's
+   *  FitAddon already listens to ResizeObserver so it re-fits on the
+   *  size change without extra wiring. */
+  async function toggleFullscreen(el: HTMLElement | null) {
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await el.requestFullscreen();
+      }
+    } catch {
+      // Browser refused (permissions, already exiting, etc.) — silent.
+    }
+  }
   /** Recent diagnostics: daemon 5xx, frontend fetch failures, browser
    *  uncaught/unhandledrejection. Populated reactively via the
    *  errors store (which is the source of truth — this is just a
@@ -1481,16 +1506,26 @@
     });
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
+    // Esc exits zen mode. We don't preventDefault — the browser's own
+    // fullscreen-exit-on-Esc still works independently because the API
+    // fires Esc against fullscreen before document keydown ever sees it.
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && zenMode && !document.fullscreenElement) {
+        zenMode = false;
+      }
+    };
+    document.addEventListener("keydown", handleKey);
     const unsubStream = subscribeToStream();
     return () => {
       document.removeEventListener("click", handleDocClick);
+      document.removeEventListener("keydown", handleKey);
       unsubStream();
       unsubErrors();
     };
   });
 </script>
 
-<main>
+<main class:zen={zenMode}>
   <header>
     <h1>
       <img src="/needle-logo.svg" alt="" class="brand-mark" />
@@ -1611,6 +1646,15 @@
           </div>
         {/if}
       </div>
+
+      <button
+        class="actions-btn zen-btn"
+        class:open={zenMode}
+        on:click={toggleZen}
+        title={zenMode
+          ? "Exit zen mode (Esc)"
+          : "Hide the top bar so worktree rows fill the viewport"}
+      >Zen</button>
 
       <div class="actions-anchor events-anchor">
         <button
@@ -2273,6 +2317,17 @@
                                 title={`Re-run \`${s.agent}\` in this column (use after a self-update)`}
                                 aria-label="Restart"
                               >↻</button>
+                              <button
+                                class="fullscreen-btn"
+                                on:click={(e) =>
+                                  toggleFullscreen(
+                                    (e.currentTarget as HTMLElement).closest(
+                                      ".new-session-col",
+                                    ) as HTMLElement | null,
+                                  )}
+                                title="Fullscreen this terminal (Esc to exit)"
+                                aria-label="Fullscreen"
+                              >⛶</button>
                               <button
                                 class="close"
                                 on:click={() => closeSessionInWt(wt.path, s)}
@@ -3520,7 +3575,8 @@
      transparent bg, same red-on-hover destructive treatment for ×.
      Restart (↻) sits beside it with a neutral hover. */
   .new-session-head .close,
-  .new-session-head .restart-btn {
+  .new-session-head .restart-btn,
+  .new-session-head .fullscreen-btn {
     background: transparent;
     color: var(--text-muted);
     border: 0;
@@ -3535,12 +3591,16 @@
   .new-session-head .close {
     margin-left: auto;
   }
-  /* Both buttons present: restart owns the auto-margin (anchors right),
-     close just sits beside it. */
-  .new-session-head .restart-btn + .close {
+  /* The trailing-actions cluster all wants to sit flush on the right.
+     The first sibling (whichever runs first) claims the auto margin;
+     the rest just butt up against it. */
+  .new-session-head .restart-btn + .fullscreen-btn,
+  .new-session-head .restart-btn + .close,
+  .new-session-head .fullscreen-btn + .close {
     margin-left: 0;
   }
-  .new-session-head .restart-btn:hover {
+  .new-session-head .restart-btn:hover,
+  .new-session-head .fullscreen-btn:hover {
     color: var(--text-1);
     background: var(--surface-3);
   }
@@ -4106,5 +4166,46 @@
   .undo:hover {
     background: var(--chip-orange-bg);
     color: var(--chip-orange-text);
+  }
+
+  /* Zen mode — dashboard-level "less chrome" toggle. Hides the top bar
+     and the v0 subtitle so the worktree rows + sessions strips claim
+     the full viewport. Esc exits (handled in onMount). */
+  main.zen > header {
+    display: none;
+  }
+  .zen-btn.open {
+    background: var(--chip-purple-bg);
+    color: var(--chip-purple-text);
+  }
+  /* While zen is on, drop the floating "Exit zen" pill top-right so
+     the user has a discoverable way out even if they forgot Esc. */
+  main.zen::before {
+    content: "Exit zen (Esc)";
+    position: fixed;
+    top: 0.6rem;
+    right: 0.8rem;
+    z-index: 60;
+    padding: 0.25rem 0.6rem;
+    background: var(--surface-2);
+    color: var(--text-2);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    pointer-events: none;
+    opacity: 0.7;
+  }
+
+  /* Fullscreen styling for an individual transient-TUI column. The
+     browser paints a black backdrop by default; we just make sure the
+     column fills it without its rounded corners + border looking
+     awkward on a black surround. xterm's FitAddon reacts to the size
+     change via TerminalView's ResizeObserver — no extra wiring. */
+  .new-session-col:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    border: 0;
+    background: var(--surface-1);
   }
 </style>
