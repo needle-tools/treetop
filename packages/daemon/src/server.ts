@@ -185,6 +185,37 @@ interface TermWsData {
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
+  // Bun's default per-request idle timeout is 10s. Some of our routes —
+  // /api/diff on a large changeset, /api/session priming the cache on a
+  // 100 MB+ JSONL, /api/fetch over a slow network — can legitimately
+  // exceed that. When the timeout fires we observed `Bun.serve` (1.3.x)
+  // leaving the listener in a broken state where new connections were
+  // accepted-but-never-answered (`[Bun.serve]: request timed out…`
+  // followed by silent listener death). 30s gives every legitimate
+  // operation room and effectively eliminates the wedge in practice.
+  idleTimeout: 30,
+  // Top-level escape hatch. The fetch handler wraps its body in a
+  // try/catch and returns 500 on a thrown error — but if a handler
+  // ever returns `undefined` (a missing `return`), or if Bun.serve
+  // itself throws synchronously, this is the only place we hear about
+  // it. Logged + persisted so the Events popover surfaces it.
+  error(err: Error) {
+    console.error(`supergit daemon: Bun.serve error: ${err.stack ?? err}`);
+    void errors
+      .append({
+        kind: "server",
+        source: "daemon",
+        status: 500,
+        message: err?.message ?? String(err),
+        stack: err?.stack,
+      })
+      .then((entry) => broadcast("error", entry))
+      .catch(() => {});
+    return new Response(
+      JSON.stringify({ error: err?.message ?? "internal error" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  },
   async fetch(req, srv) {
     const url = new URL(req.url);
     const CORS = corsHeaders(req);
