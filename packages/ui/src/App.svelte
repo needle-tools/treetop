@@ -92,8 +92,111 @@
 
   let actionsOpen = false;
 
+  /** "TUIs" header popover — global view of every PTY supergit is
+   *  hosting right now (cpu/mem per row, click × to dispose). */
+  interface TuiProc {
+    id: string;
+    pid: number;
+    agent?: string;
+    cmd: string[];
+    cwd: string;
+    ownerId?: string;
+    createdAt: string;
+    cpuPercent: number;
+    memBytes: number;
+  }
+  let tuisOpen = false;
+  let tuiProcs: TuiProc[] = [];
+  let tuiPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshTuis() {
+    try {
+      const res = await fetch("/api/processes");
+      if (!res.ok) return;
+      tuiProcs = (await res.json()) as TuiProc[];
+    } catch {
+      // ignore network blips; we'll catch up on the next tick
+    }
+  }
+
+  function startTuiPolling() {
+    if (tuiPollTimer) return;
+    void refreshTuis();
+    tuiPollTimer = setInterval(refreshTuis, 2_000);
+  }
+  function stopTuiPolling() {
+    if (tuiPollTimer) {
+      clearInterval(tuiPollTimer);
+      tuiPollTimer = null;
+    }
+  }
+  function toggleTuisOpen() {
+    tuisOpen = !tuisOpen;
+    if (tuisOpen) startTuiPolling();
+    else stopTuiPolling();
+  }
+  async function killTui(id: string) {
+    await fetch(`/api/terminals/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => {});
+    void refreshTuis();
+  }
+
+  function formatBytes(n: number): string {
+    if (!n) return "—";
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+  function prettyTuiName(p: TuiProc): string {
+    if (p.agent === "claude") return "Claude";
+    if (p.agent === "codex") return "Codex";
+    if (p.agent === "copilot") return "Copilot";
+    // Fall through: show the actual executable basename (e.g. "bash",
+    // "zsh") for shell sessions, or whatever cmd[0] resolves to.
+    const head = p.cmd[0]?.split(/[\\/]/).pop();
+    return head || "tui";
+  }
+  function formatUptime(iso: string): string {
+    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  }
+
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
+
+  /** Svelte action: keep a popover inside the viewport horizontally by
+   *  translating it sideways when its left/right edge would clip. The
+   *  CSS `max-width` can't see where the trigger sits, so a wide-ish
+   *  popover anchored near the right edge of the page overflows
+   *  off-screen no matter what `max-width` you set in absolute terms.
+   *  This action measures on mount, on resize, and on scroll. */
+  function clampToViewport(node: HTMLElement) {
+    const MARGIN = 8;
+    function clamp() {
+      // Reset any prior offset before measuring, otherwise our own
+      // correction gets compounded on resize.
+      node.style.transform = "";
+      const rect = node.getBoundingClientRect();
+      const overRight = rect.right - window.innerWidth + MARGIN;
+      const overLeft = MARGIN - rect.left;
+      if (overRight > 0) {
+        node.style.transform = `translateX(-${overRight}px)`;
+      } else if (overLeft > 0) {
+        node.style.transform = `translateX(${overLeft}px)`;
+      }
+    }
+    clamp();
+    window.addEventListener("resize", clamp);
+    window.addEventListener("scroll", clamp, { passive: true });
+    return {
+      destroy() {
+        window.removeEventListener("resize", clamp);
+        window.removeEventListener("scroll", clamp);
+      },
+    };
+  }
 
   // Per repo id: is the "new worktree" inline form open?
   let newWtOpen: Record<string, boolean> = {};
@@ -730,6 +833,10 @@
     if (actionsOpen && !target?.closest(".actions-anchor")) {
       actionsOpen = false;
     }
+    if (tuisOpen && !target?.closest(".tuis-anchor")) {
+      tuisOpen = false;
+      stopTuiPolling();
+    }
     // Any open agents popovers that the click landed outside of: close them.
     for (const key of Object.keys(agentsPopoverOpen)) {
       if (!agentsPopoverOpen[key]) continue;
@@ -778,6 +885,57 @@
       >
         {streamConnected ? "● live" : "○ offline"}
       </span>
+
+      <div class="actions-anchor tuis-anchor">
+        <button
+          class="actions-btn"
+          class:open={tuisOpen}
+          on:click={toggleTuisOpen}
+          title="Active TUIs (terminals supergit is hosting)"
+        >
+          TUIs
+          <!-- Always-rendered so the button width stays stable whether
+               there are 0 TUIs or 12. -->
+          <span class="count">{tuiProcs.length}</span>
+        </button>
+        {#if tuisOpen}
+          <div class="actions-popover tuis-popover" role="menu" use:clampToViewport>
+            <div class="popover-head">Active TUIs</div>
+            {#if tuiProcs.length === 0}
+              <p class="muted small nopad">Nothing running.</p>
+            {:else}
+              <ul class="agents-list">
+                {#each tuiProcs as p (p.id)}
+                  <li>
+                    <div class="agent-row brand-{p.agent ?? 'shell'} tui-row-static">
+                      {#if p.agent === "claude"}
+                        <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                      {:else if p.agent === "codex"}
+                        <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                      {:else}
+                        <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
+                      {/if}
+                      <span class="agent-row-name">{prettyTuiName(p)}</span>
+                      <span
+                        class="tui-stats"
+                        title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
+                      >
+                        {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}
+                      </span>
+                      <button
+                        class="row-close tui-kill-x"
+                        on:click={() => killTui(p.id)}
+                        title="Dispose (SIGTERM → SIGKILL)"
+                        aria-label="Kill terminal"
+                      >×</button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </div>
 
       <div class="actions-anchor">
         <button
@@ -933,7 +1091,7 @@
                       }}
                     >+{wt.agents.length - 1}</button>
                     {#if agentsPopoverOpen[wt.path]}
-                      <div class="agents-popover" role="menu">
+                      <div class="agents-popover" role="menu" use:clampToViewport>
                         <div class="popover-head">
                           {wt.agents.length} sessions in this worktree
                         </div>
@@ -1302,7 +1460,10 @@
      overflow-x means a horizontal scrollbar appears once columns stop
      fitting. */
   .sessions-strip {
-    margin-top: 0.5rem;
+    /* Was 0.5rem; bumped to 1rem because the column's .session lost its
+       own 0.5rem margin-top (which combined with height:100% was clipping
+       the bottom border under the strip's overflow-y:hidden). */
+    margin-top: 1rem;
     display: flex;
     gap: 0.6rem;
     overflow-x: auto;
@@ -1348,6 +1509,14 @@
   .actions-anchor {
     position: relative;
     margin-left: auto;
+  }
+  /* When TUIs sits left of Actions in the same header strip, the TUIs
+     anchor claims the auto-margin (pushed to the right edge) and the
+     Actions anchor sits flush next to it with just a small gap.
+     Without this, both `margin-left: auto` siblings produce a big
+     equal gap between them. */
+  .tuis-anchor + .actions-anchor {
+    margin-left: 0.4rem;
   }
   .actions-btn {
     padding: 0.4rem 0.75rem;
@@ -1397,6 +1566,42 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
     margin-bottom: 0.4rem;
+  }
+  /* TUIs popover reuses the agents-popover row look — same grid, same
+     0.78rem font, same hover-reveal × — so both popovers feel like
+     siblings. Only difference: a TUI row isn't a button (no click
+     target on the row body); only its × button kills. */
+  .tuis-popover {
+    width: 540px;
+    max-width: 90vw;
+  }
+  .tui-row-static {
+    cursor: default;
+    /* 4 grid columns: icon (fixed 16px) · name (auto) · stats (auto)
+       · × (fixed 18px). Fixed widths on the icon and × cells keep them
+       from collapsing into adjacent text when content is short. */
+    grid-template-columns: 16px auto auto 18px;
+    justify-content: end;
+  }
+  .tui-row-static:hover {
+    background: var(--surface-2);
+  }
+  /* Stats are mono + tabular so columns of digits line up across rows. */
+  .tui-stats {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-4);
+    white-space: nowrap;
+  }
+  /* X always reserves the 18px column (no layout shift between hover
+     states), revealed on row hover like the agents popover's × is on
+     hover of a dimmed row. */
+  .tui-row-static:hover .tui-kill-x {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .tui-kill-x:hover {
+    color: var(--error-text);
+    background: var(--error-bg);
   }
 
   .muted {
@@ -1681,7 +1886,7 @@
     /* icon · agent-name · title · time · short-sha · close-x
        The close column is reserved on every row (open or not) so opening
        and closing sessions doesn't shift other rows' columns. */
-    grid-template-columns: 16px auto 1fr auto auto 18px;
+    grid-template-columns: 16px auto 1fr auto auto;
     gap: 0.5rem;
     align-items: center;
     width: 100%;

@@ -11,11 +11,16 @@
   /** Optional tag (we pass the sessionId so /api/terminals?ownerId=sid
    *  later lets us reconnect). */
   export let ownerId: string | undefined = undefined;
+  /** Optional argv[0] override the daemon applies via `exec -a` so this
+   *  PTY is findable in Activity Monitor / htop / ps as e.g.
+   *  "supergit-tui-abc12345-claude". */
+  export let procName: string | undefined = undefined;
   /** Called when the underlying PTY exits. Parent flips column back to
    *  the read-only view. */
   export let onExit: (info: { code: number; signal?: string }) => void = () => {};
-  /** Called when the user clicks the close button in the terminal header. */
-  export let onClose: () => void = () => {};
+  /** Fires once the daemon hands us back the terminal id. Lets the parent
+   *  drive dispose via DELETE /api/terminals/:id from its own header. */
+  export let onSpawn: (id: string) => void = () => {};
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -34,7 +39,7 @@
       const res = await fetch("/api/terminals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cmd, cwd, cols, rows, ownerId }),
+        body: JSON.stringify({ cmd, cwd, cols, rows, ownerId, procName }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
@@ -42,6 +47,7 @@
       }
       const { id } = (await res.json()) as { id: string; pid: number };
       terminalId = id;
+      onSpawn(id);
       // Build WS URL relative to current origin so it works behind the
       // Vite proxy or directly against the daemon.
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -155,19 +161,13 @@
 </script>
 
 <div class="terminal-wrap">
-  <header>
-    <span class="muted small">
-      {cmd.join(" ")}
-      {#if phase === "starting"}<span class="spinner" aria-hidden="true"></span> starting…{/if}
-      {#if phase === "live"}<span class="live-dot" aria-hidden="true"></span> live{/if}
-      {#if phase === "exited"}exited{exitInfo ? ` (${exitInfo.code})` : ""}{/if}
-      {#if phase === "error"}error{/if}
-    </span>
-    <button class="close" on:click={onClose} title="Close & dispose">×</button>
-  </header>
-
+  {#if phase === "starting"}
+    <div class="overlay">
+      <span class="spinner" aria-hidden="true"></span> starting terminal…
+    </div>
+  {/if}
   {#if phase === "error"}
-    <p class="error">{error}</p>
+    <div class="overlay error">{error || "terminal error"}</div>
   {/if}
 
   <div
@@ -180,55 +180,45 @@
 
 <style>
   .terminal-wrap {
+    position: relative;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 24rem;
+    /* As a flex child of .session (column-flex), claim whatever space
+       the row gives us. min-height is the usable floor; max-height
+       caps growth on tall displays so the TUI never dominates. */
+    flex: 1 1 28rem;
+    min-height: 28rem;
+    max-height: 60vh;
+    min-width: 0;
     background: #1a1a1b;
     border-radius: var(--radius-md);
     overflow: hidden;
     border: 1px solid var(--surface-2);
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.3rem 0.6rem;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--surface-3);
-    color: var(--text-1);
-  }
-  header .muted {
+  .xterm-host {
     flex: 1;
+    padding: 0.4rem 0.5rem;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+  .overlay {
+    position: absolute;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+    background: var(--surface-2);
+    color: var(--text-1);
+    padding: 0.3rem 0.7rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
-  .close {
-    background: transparent;
-    color: var(--text-muted);
-    border: 0;
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 1.1rem;
-    line-height: 1;
-  }
-  .close:hover {
-    color: var(--text-1);
-    background: var(--surface-3);
-  }
-  .live-dot {
-    display: inline-block;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 50%;
-    background: var(--status-clean);
-    box-shadow: 0 0 6px var(--status-clean);
+  .overlay.error {
+    background: var(--error-bg);
+    color: var(--error-text);
   }
   .spinner {
     display: inline-block;
@@ -241,17 +231,5 @@
   }
   @keyframes t-spin {
     to { transform: rotate(360deg); }
-  }
-  .error {
-    color: var(--error-text);
-    padding: 0.5rem 0.6rem;
-    margin: 0;
-    font-size: 0.85rem;
-  }
-  .xterm-host {
-    flex: 1;
-    padding: 0.4rem 0.5rem;
-    min-height: 20rem;
-    overflow: hidden;
   }
 </style>

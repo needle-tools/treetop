@@ -34,6 +34,9 @@ export interface SpawnOptions {
   size: TerminalSize;
   ownerId?: string;
   env?: Record<string, string>;
+  /** Optional override so callers can label the agent before any `bash -c`
+   *  wrapping (which would otherwise make detectAgent see "bash"). */
+  agent?: string;
 }
 
 export interface TerminalSubscriber {

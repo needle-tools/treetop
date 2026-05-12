@@ -230,7 +230,7 @@ export class NodePtyBackend implements PtyBackend {
       ownerId: opts.ownerId,
       cmd: opts.cmd,
       cwd: opts.cwd,
-      agent: detectAgent(opts.cmd),
+      agent: opts.agent ?? detectAgent(opts.cmd),
       size: opts.size,
       createdAt: new Date().toISOString(),
       buffer: [],

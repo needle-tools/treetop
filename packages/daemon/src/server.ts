@@ -24,6 +24,7 @@ import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
+import { sampleProcs, renameArgv } from "./procs";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -196,6 +197,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/terminals", description: "list active terminals. Optional ?ownerId=<id> filter." },
           { method: "DELETE", path: "/api/terminals/:id", description: "SIGTERM (then SIGKILL after 500ms) the PTY." },
           { method: "WS", path: "/api/terminals/:id/io", description: "bidirectional byte stream: binary frames are PTY bytes both ways; text frames are JSON control (e.g. {type:'resize',cols,rows})." },
+          { method: "GET", path: "/api/processes", description: "list of currently-alive PTYs with a live cpu%/memory sample per pid. Feeds the dashboard's TUIs popover." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -370,16 +372,43 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/terminals" && req.method === "POST") {
       const body = (await req.json().catch(() => null)) as
-        | { cmd?: string[]; cwd?: string; cols?: number; rows?: number; ownerId?: string }
+        | {
+            cmd?: string[];
+            cwd?: string;
+            cols?: number;
+            rows?: number;
+            ownerId?: string;
+            procName?: string;
+          }
         | null;
       if (!body || !Array.isArray(body.cmd) || body.cmd.length === 0 || !body.cwd) {
         return json({ error: "cmd[] and cwd required" }, { status: 400 });
       }
+      // Detect the agent label from the ORIGINAL cmd before we wrap.
+      // Otherwise wrapping with `bash -c '…'` would make the backend
+      // see cmd[0]="bash" and mis-label every TUI as a shell.
+      const agentHint = ((): string | undefined => {
+        const head = body.cmd[0]?.split(/[\\/]/).pop()?.toLowerCase();
+        if (!head) return undefined;
+        if (head === "claude") return "claude";
+        if (head === "codex") return "codex";
+        if (head === "bash" || head === "zsh" || head === "sh" || head === "fish") return "shell";
+        return undefined;
+      })();
+      // Optional argv[0] rename via `bash -c 'exec -a NAME …'` so the PTY
+      // shows up in `ps`/`top`/`htop` (and macOS Activity Monitor's
+      // command column) as e.g. "supergit-tui-abc12345-claude" instead
+      // of just "claude". Unix only; Windows ignores the hint.
+      const cmd =
+        body.procName && process.platform !== "win32"
+          ? renameArgv(body.procName, body.cmd)
+          : body.cmd;
       try {
         const handle = await terminalBackend.spawn({
-          cmd: body.cmd,
+          cmd,
           cwd: body.cwd,
           ownerId: body.ownerId,
+          agent: agentHint,
           size: { cols: body.cols ?? 80, rows: body.rows ?? 24 },
         });
         return json({ id: handle.id, pid: handle.pid });
@@ -395,6 +424,30 @@ const server = Bun.serve<TermWsData, never>({
       const ownerId = url.searchParams.get("ownerId") ?? undefined;
       const records = terminalBackend.list();
       return json(ownerId ? records.filter((r) => r.ownerId === ownerId) : records);
+    }
+
+    if (url.pathname === "/api/processes" && req.method === "GET") {
+      // Same set as /api/terminals, plus a live cpu/mem sample per pid.
+      // Used by the "TUIs" popover in the dashboard header to give a
+      // global view of everything supergit is running.
+      const records = terminalBackend.list().filter((r) => !r.exitedAt);
+      const samples = await sampleProcs(records.map((r) => r.pid));
+      return json(
+        records.map((r) => {
+          const s = samples.get(r.pid);
+          return {
+            id: r.id,
+            pid: r.pid,
+            agent: r.agent,
+            cmd: r.cmd,
+            cwd: r.cwd,
+            ownerId: r.ownerId,
+            createdAt: r.createdAt,
+            cpuPercent: s?.cpuPercent ?? 0,
+            memBytes: s?.memBytes ?? 0,
+          };
+        }),
+      );
     }
 
     if (url.pathname.startsWith("/api/terminals/") && req.method === "DELETE") {

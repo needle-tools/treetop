@@ -93,6 +93,31 @@
    *  running `claude --resume <sid>` against the same session id. The
    *  Resume button toggles this; closing the terminal flips back. */
   let mode: "read" | "terminal" = "read";
+  /** The daemon-assigned terminal id once TerminalView spawns the PTY.
+   *  The Dispose button DELETEs against this. */
+  let terminalId: string | null = null;
+  let disposing = false;
+
+  async function disposeTerminal() {
+    if (disposing) return;
+    disposing = true;
+    try {
+      if (terminalId) {
+        await fetch(`/api/terminals/${encodeURIComponent(terminalId)}`, {
+          method: "DELETE",
+        }).catch(() => {});
+      }
+    } finally {
+      // Flip back to read mode and force a scroll-to-bottom on the next
+      // render — the user expects to land at the newest messages, not
+      // wherever they last scrolled to before opening the terminal.
+      terminalId = null;
+      disposing = false;
+      hasRenderedOnce = false;
+      mode = "read";
+      void load();
+    }
+  }
   /** Live count of claude subprocesses the daemon is still running for
    *  THIS session — set from /api/active-sends polling. Renders an
    *  in-header indicator with a cancel-all button. */
@@ -374,36 +399,54 @@
         {/if}
       </div>
     </div>
-    {#if session?.sessionId && agent === "claude" && mode === "read"}
-      <button
-        class="resume-btn"
-        on:click={() => (mode = "terminal")}
-        title="Spawn a live `claude --resume` PTY in this session's cwd"
-      >
-        Resume in terminal
-      </button>
+    {#if session?.sessionId && agent === "claude"}
+      {#if mode === "read"}
+        <button
+          class="resume-btn"
+          on:click={() => (mode = "terminal")}
+          title="Spawn a live `claude --resume` PTY in this session's cwd"
+        >
+          Resume in terminal
+        </button>
+      {:else}
+        <button
+          class="resume-btn dispose-btn"
+          on:click={disposeTerminal}
+          disabled={disposing}
+          title="SIGTERM the PTY and flip back to the chat view"
+        >
+          {disposing ? "Disposing…" : "Dispose terminal"}
+        </button>
+      {/if}
     {/if}
     <button class="close" on:click={onClose} title="Close">×</button>
   </header>
 
   {#if mode === "terminal" && session?.sessionId && session.cwd}
     <TerminalView
-      cmd={["claude", "--resume", session.sessionId]}
+      cmd={[
+        "claude",
+        "--resume",
+        session.sessionId,
+        // Unlocks the in-TUI option to switch to dangerously-skip-permissions
+        // (without enabling it by default). This is the flag from
+        // `claude --help` whose description is exactly "Enable bypassing all
+        // permission checks as an option, without it being enabled by default".
+        // Without it, the slash-command toggle inside the TUI is unavailable.
+        "--allow-dangerously-skip-permissions",
+      ]}
       cwd={session.cwd}
       ownerId={session.sessionId}
+      procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
+      onSpawn={(id) => (terminalId = id)}
       onExit={() => {
-        // PTY finished — flip back to the read view; the JSONL will have
-        // grown with whatever was sent/received, and the existing poll
-        // already picked it up.
+        // PTY finished by itself (user typed `exit`, agent crashed, ...).
+        // Same effect as Dispose: flip to read, scroll to the newest
+        // messages on the next render.
+        terminalId = null;
+        hasRenderedOnce = false;
         mode = "read";
-        // Bump the session poll so the user sees fresh messages right
-        // away rather than waiting up to 2s for the next tick.
         void load();
-      }}
-      onClose={() => {
-        // Same effect: closing the terminal disposes the PTY (handled
-        // server-side on WS close after the grace window) and we flip.
-        mode = "read";
       }}
     />
   {:else if error}
@@ -495,60 +538,26 @@
     </ul>
   {/if}
 
-  {#if session && agent === "claude" && mode === "read"}
-    <form class="composer" on:submit|preventDefault={sendMessage}>
-      <div class="composer-box">
-        <textarea
-          class="composer-input"
-          bind:value={inputText}
-          on:keydown={onComposerKey}
-          placeholder="Reply to Claude…  Shift+Enter for newline"
-          rows="2"
-          disabled={sending}
-        ></textarea>
-        <button
-          type="submit"
-          class="composer-send"
-          class:is-sending={sending}
-          disabled={!inputText.trim() || sending}
-          title={sending ? "Sending…" : "Send (Enter)"}
-          aria-label={sending ? "Sending" : "Send"}
-        >
-          {#if sending}
-            <span class="spinner" aria-hidden="true"></span>
-          {:else}
-            <!-- paper-plane glyph; currentColor so we control via CSS -->
-            <svg
-              viewBox="0 0 24 24"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M22 2 11 13" />
-              <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
-            </svg>
-          {/if}
-        </button>
-      </div>
-      {#if sendError}
-        <span class="composer-error" title={sendError}>{sendError}</span>
-      {/if}
-    </form>
-  {/if}
 </div>
 
 <style>
   .session {
-    margin-top: 0.5rem;
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-md);
     background: var(--surface-1);
     overflow: hidden;
+    /* Fill the column so the row's height (which is set by the tallest
+       sibling via the strip's default flex stretch) reaches the body —
+       header takes its natural height, the body (TerminalView or
+       .messages) grows to fill what's left via flex:1.
+       No margin-top here: the parent .sessions-strip already provides
+       its own spacing from the row above, and a margin combined with
+       height:100% would push the bottom border under the strip's
+       overflow-y:hidden and clip it. */
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
   header {
     /* Outer header: keeps the × pinned to the right at any width. The
@@ -622,6 +631,20 @@
   .resume-btn:hover {
     color: var(--text-1);
     border-color: var(--text-faint);
+  }
+  /* Dispose variant: soft red tint, never alarm-bright. */
+  .resume-btn.dispose-btn {
+    color: #efaaaa;
+    border-color: color-mix(in srgb, #efaaaa 30%, transparent);
+    background: color-mix(in srgb, var(--error-bg) 50%, transparent);
+  }
+  .resume-btn.dispose-btn:hover:not(:disabled) {
+    color: #ffcaca;
+    border-color: color-mix(in srgb, #efaaaa 55%, transparent);
+  }
+  .resume-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
   .agent-pill {
     padding: 0.1rem 0.5rem;
