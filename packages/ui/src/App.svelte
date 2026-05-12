@@ -922,6 +922,9 @@
                       >
                         {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}
                       </span>
+                      <span>
+                        <!-- empty -->
+                      </span>
                       <button
                         class="row-close tui-kill-x"
                         on:click={() => killTui(p.id)}
@@ -1886,7 +1889,7 @@
     /* icon · agent-name · title · time · short-sha · close-x
        The close column is reserved on every row (open or not) so opening
        and closing sessions doesn't shift other rows' columns. */
-    grid-template-columns: 16px auto 1fr auto auto;
+    grid-template-columns: 16px auto 1fr auto auto 18px;
     gap: 0.5rem;
     align-items: center;
     width: 100%;

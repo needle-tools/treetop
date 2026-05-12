@@ -1,0 +1,5 @@
+{
+  "name": "supergit",
+  "script": "start",
+  "appPort": 7787
+}

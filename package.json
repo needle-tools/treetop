@@ -11,10 +11,12 @@
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
-    "build": "bun run --filter '*' build"
+    "build": "cd packages/ui && bun run build",
+    "start": "bun run build && SUPERGIT_PORT=${SUPERGIT_PORT:-7787} SUPERGIT_UI_DIR=packages/ui/dist bun run packages/daemon/src/server.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "portless": "^0.13.0",
     "typescript": "^5"
   }
 }

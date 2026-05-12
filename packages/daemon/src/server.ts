@@ -1,6 +1,7 @@
-import { join } from "node:path";
+import { join, resolve, normalize } from "node:path";
 import { homedir } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { Workspace } from "./workspace";
 import {
   listWorktrees,
@@ -30,7 +31,33 @@ const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
   join(homedir(), "supergit", "workspaces", "default");
 
-const PORT = Number(process.env.SUPERGIT_PORT ?? 7777);
+// Port resolution order:
+//   1. SUPERGIT_PORT — explicit override, wins.
+//   2. PORT          — set by portless (and most npm tooling) when
+//                      wrapping us; lets `portless` inject its own port.
+//   3. 7777          — default.
+const PORT = Number(
+  process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777,
+);
+
+/** Path to a built UI's `dist/` directory. When non-null the daemon
+ *  serves static files from it for any GET that doesn't match an API
+ *  route (with a SPA fallback to index.html for client-side routes).
+ *  Resolution order:
+ *    1. SUPERGIT_UI_DIR env — explicit override.
+ *    2. ../../ui/dist relative to this file — auto-detected when the
+ *       SPA has been built (handy when portless / a sidecar invokes
+ *       the daemon's own start script and bypasses the root env vars).
+ *    3. null — dev mode, Vite handles UI hosting.
+ */
+const UI_DIR = ((): string | null => {
+  if (process.env.SUPERGIT_UI_DIR) {
+    return resolve(process.cwd(), process.env.SUPERGIT_UI_DIR);
+  }
+  const sibling = resolve(import.meta.dir, "../../ui/dist");
+  return existsSync(sibling) ? sibling : null;
+})();
+if (UI_DIR) console.log(`supergit daemon: serving UI from ${UI_DIR}`);
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
@@ -46,6 +73,14 @@ console.log(`supergit daemon: listening on http://localhost:${PORT}`);
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:7779",
   "http://127.0.0.1:7779",
+  // `portless` setups (https://github.com/vercel-labs/portless) put the
+  // browser on `*.localhost`. Same-origin fetches from inside the SPA
+  // bypass CORS already; we allowlist these explicitly so external
+  // tools / curl with a forged Origin still work.
+  "http://supergit.localhost",
+  "https://supergit.localhost",
+  "http://supergit-dev.localhost",
+  "https://supergit-dev.localhost",
   ...(process.env.SUPERGIT_EXTRA_ORIGINS?.split(",")
     .map((o) => o.trim())
     .filter(Boolean) ?? []),
@@ -832,6 +867,28 @@ const server = Bun.serve<TermWsData, never>({
       }
       const result = await handleMcp(body, { workspace, events });
       return json(result);
+    }
+
+    // Production UI fallback: when SUPERGIT_UI_DIR is set, serve the
+    // built SPA from there for any GET request that didn't match an
+    // /api/* route. In dev mode UI_DIR is unset and Vite handles UI
+    // hosting, so this block is a no-op.
+    if (UI_DIR && req.method === "GET") {
+      // Resolve safely — normalize and reject anything escaping UI_DIR.
+      const reqPath = url.pathname === "/" ? "/index.html" : url.pathname;
+      const candidate = resolve(UI_DIR, "." + normalize(reqPath));
+      if (candidate === UI_DIR || candidate.startsWith(UI_DIR + "/")) {
+        const file = Bun.file(candidate);
+        if (await file.exists()) {
+          // Same-origin response, no CORS headers needed.
+          return new Response(file);
+        }
+      }
+      // SPA fallback: unknown route → serve index.html so the client
+      // router can take over. We never reach this for /api/* paths
+      // because they're handled above.
+      const index = Bun.file(join(UI_DIR, "index.html"));
+      if (await index.exists()) return new Response(index);
     }
 
     return json({ error: "not found" }, { status: 404 });

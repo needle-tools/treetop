@@ -641,3 +641,73 @@ their own plan; group them into one polish PR when convenient.
   UI revalidates the affected row only. Watch out for node_modules /
   build-output noise — use a gitignore-aware filter or a small
   allowlist of git's own touched paths.
+
+---
+
+## Distribution
+
+### Today: `bun run start` (+ optional `portless`)
+
+`bun run build` produces `packages/ui/dist/`. `bun run start` runs the
+daemon in production mode, serving the built UI from the same port
+(default **7787** — deliberately different from dev's 7777/7779 so you
+can have both running side-by-side). No `--hot`, no Vite, no svelte
+HMR — memory and CPU drop substantially compared to `bun run dev`.
+
+Still requires `bun install` plus a Node runtime on the machine (the
+supernode helper for PTYs is a Node script). Not a "single binary"
+but it's a real production posture for daily use while we iterate.
+
+**Clean URL via `portless`.** [vercel-labs/portless](https://github.com/vercel-labs/portless)
+is the Node tool that maps `*.localhost` hostnames to local ports
+with auto-HTTPS (`.localhost` resolves to 127.0.0.1 per RFC 6761 — no
+DNS or `/etc/hosts` changes needed). A `portless.json` at the repo
+root configures supergit:
+
+```json
+{ "name": "supergit", "script": "start", "appPort": 7787 }
+```
+
+Then:
+
+```bash
+# Portless is a devDep — `bun install` already brought it in.
+bunx portless            # spawns the proxy + `bun run start`
+# browser → https://supergit.localhost/
+```
+
+The daemon's port resolver respects `PORT` (set by portless) in
+addition to `SUPERGIT_PORT`, and the CORS allowlist already includes
+`supergit.localhost` / `supergit-dev.localhost`. For dev, either
+bookmark `http://localhost:7779/` or run a second portless mapping
+against the dev Vite port.
+
+### Future: real desktop app (Tauri)
+
+The end state is a double-clickable macOS / Windows / Linux app with
+an icon, no terminal involvement to launch. The plan is **Tauri**
+(not Electron) because:
+
+- Tauri ships a tiny webview-based shell (~15 MB vs Electron's ~150 MB).
+- The same Svelte UI runs unchanged inside it.
+- The daemon can be embedded as a Rust sidecar (`tauri::api::process::Command`),
+  starting and stopping with the app's lifecycle, exposing the same
+  HTTP/WS routes to the in-app webview.
+- Cross-platform packaging is built in (`tauri build`).
+
+Open complexities to think through before this lands:
+- **node-pty native module + Node helper.** The Tauri sidecar
+  approach needs Node bundled inside the app, plus node-pty's prebuilt
+  binary for each platform. Doable; not trivial. Alternative: rewrite
+  the PTY backend in Rust (using `portable-pty` or `tokio-pty-process`)
+  and drop the Node helper entirely. Bigger change, cleaner result.
+- **Workspace + state paths.** Inside an app bundle, `~/supergit/...`
+  still works, but we should consider `~/Library/Application Support/supergit/`
+  on macOS for proper convention.
+- **Auto-update.** Tauri has a built-in updater. Worth wiring once we
+  ship 1.0.
+- **Icon + branding.** Needs design pass; we have a Needle logo but
+  not a supergit one.
+
+This isn't a near-term priority — the `bun run start` path is enough
+for now. Park as "phase N, once the feature surface settles."
