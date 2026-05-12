@@ -61,12 +61,24 @@ rl.on("line", (line) => {
         return;
       }
       try {
+        // Scrub portless-injected env vars before handing the env to a PTY.
+        // When supergit runs under `bunx portless supergit …`, portless sets
+        // PORT=<our port> + PORTLESS_URL + NODE_EXTRA_CA_CERTS in the daemon's
+        // env. Those propagate to every spawned shell/agent via process.env
+        // and silently break neighbouring dev servers — Vite reads
+        // `process.env.PORT` and tries to bind supergit's port, which
+        // strictPort then refuses. supergit's port choice should be its own
+        // private concern; spawned terminals get a clean baseline.
+        const cleaned = { ...process.env };
+        delete cleaned.PORT;
+        delete cleaned.PORTLESS_URL;
+        delete cleaned.NODE_EXTRA_CA_CERTS;
         const term = ptySpawn(cmd[0], cmd.slice(1), {
           name: "xterm-256color",
           cols: cols ?? 80,
           rows: rows ?? 24,
           cwd: cwd || process.cwd(),
-          env: { ...process.env, ...(env || {}) },
+          env: { ...cleaned, ...(env || {}) },
         });
         terms.set(id, term);
         emit({ ev: "spawned", id, pid: term.pid });

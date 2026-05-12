@@ -29,7 +29,7 @@ await killOnPort(7777);
 // Strip PORT from the daemon's env. A prior `bunx portless` (in this
 // or a parent shell) may have leaked PORT=<ephemeral> upward; our
 // daemon's port resolver respects PORT as a fallback, which would
-// otherwise make the dev daemon try to bind to (e.g.) prod's 7787
+// otherwise make the dev daemon try to bind to (e.g.) prod's 27787
 // and EADDRINUSE-crash. Dev always wants 7777.
 const daemonEnv: Record<string, string> = {};
 for (const [k, v] of Object.entries(process.env)) {

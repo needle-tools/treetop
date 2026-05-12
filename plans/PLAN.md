@@ -650,7 +650,7 @@ their own plan; group them into one polish PR when convenient.
 
 `bun run build` produces `packages/ui/dist/`. `bun run start` runs the
 daemon in production mode, serving the built UI from the same port
-(default **7787** — deliberately different from dev's 7777/7779 so you
+(default **27787** — deliberately different from dev's 7777/7779 so you
 can have both running side-by-side). No `--hot`, no Vite, no svelte
 HMR — memory and CPU drop substantially compared to `bun run dev`.
 
@@ -665,7 +665,7 @@ DNS or `/etc/hosts` changes needed). A `portless.json` at the repo
 root configures supergit:
 
 ```json
-{ "name": "supergit", "script": "start", "appPort": 7787 }
+{ "name": "supergit", "script": "start", "appPort": 27787 }
 ```
 
 Then:
