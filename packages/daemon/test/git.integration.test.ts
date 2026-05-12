@@ -130,12 +130,48 @@ describe("getDiff against real git", () => {
     expect(await getDiff(repo)).toBe("");
   });
 
-  test("includes a section listing untracked files", async () => {
+  test("renders untracked files as synthetic +new-file diffs (no legacy header)", async () => {
     const repo = await tempRepo();
-    await writeFile(join(repo, "new.txt"), "hi");
+    await writeFile(join(repo, "new.txt"), "line1\nline2\n");
     const diff = await getDiff(repo);
-    expect(diff).toContain("# untracked files");
-    expect(diff).toContain("new.txt");
+
+    // No legacy "# untracked files" comment header — they now render
+    // as proper diff blocks so the Unstaged tab reads as one unified list.
+    expect(diff).not.toContain("# untracked files");
+
+    // Standard `git diff --no-index /dev/null <file>` output shape:
+    //   diff --git a/dev/null b/new.txt   (git's quirk for /dev/null vs file)
+    //   new file mode …
+    //   --- /dev/null
+    //   +++ b/new.txt
+    //   @@ -0,0 +1,2 @@
+    //   +line1
+    //   +line2
+    expect(diff).toMatch(/diff --git .* b\/new\.txt/);
+    expect(diff).toContain("new file mode");
+    expect(diff).toContain("--- /dev/null");
+    expect(diff).toContain("+++ b/new.txt");
+    expect(diff).toContain("+line1");
+    expect(diff).toContain("+line2");
+  });
+
+  test("untracked + modified appear in the same diff payload", async () => {
+    const repo = await tempRepo();
+    // Existing committed file we'll modify.
+    await writeFile(join(repo, "a.txt"), "v1\n");
+    await $`git -C ${repo} add a.txt`.quiet();
+    await $`git -C ${repo} commit -m add -q`.quiet();
+    await writeFile(join(repo, "a.txt"), "v2\n");
+    // Plus a brand-new untracked file.
+    await writeFile(join(repo, "fresh.txt"), "hello\n");
+
+    const diff = await getDiff(repo);
+    // Both file paths are present, both as proper diff blocks.
+    expect(diff).toContain("a.txt");
+    expect(diff).toContain("-v1");
+    expect(diff).toContain("+v2");
+    expect(diff).toContain("fresh.txt");
+    expect(diff).toContain("+hello");
   });
 
   test("workdir diff shows unstaged modifications", async () => {

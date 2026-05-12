@@ -1293,8 +1293,41 @@
 
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
-    es.addEventListener("change", () => {
+    es.addEventListener("change", (rawEvt: MessageEvent) => {
+      // Always refresh /api/repos so worktree-row counters (unstaged /
+      // staged / untracked) reflect the change.
       void load();
+
+      // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
+      // If the change happened inside a worktree whose diff panel is
+      // open, invalidate the cached diff so the visible content
+      // re-fetches instead of staying stale ("Nothing unstaged" while
+      // the row already shows "Unstaged 1").
+      const data = rawEvt?.data;
+      if (typeof data !== "string") return;
+      let payload: { kind?: string; path?: string };
+      try {
+        payload = JSON.parse(data);
+      } catch {
+        return;
+      }
+      if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
+      const wtPath = payload.path;
+      // Drop cached entries for this worktree; the active-tab refetch
+      // below repopulates whichever one the user is looking at.
+      if (workdirDiff[wtPath] !== undefined) {
+        const wd = { ...workdirDiff };
+        delete wd[wtPath];
+        workdirDiff = wd;
+      }
+      if (stagedDiff[wtPath] !== undefined) {
+        const sd = { ...stagedDiff };
+        delete sd[wtPath];
+        stagedDiff = sd;
+      }
+      const tab = diffTab[wtPath];
+      if (tab === "workdir") void loadWorkdirDiff(wtPath);
+      else if (tab === "staged") void loadStagedDiff(wtPath);
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
       try {

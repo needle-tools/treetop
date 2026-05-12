@@ -493,8 +493,15 @@ function clampContext(context: number): number {
  * Return the textual diff for a worktree. `workdir` = unstaged changes;
  * `staged` = the index vs HEAD. `context` controls -U<n>; pass a very large
  * value (e.g. 99999) to effectively get the full file. Default 2 lines.
- * Empty string when there's nothing. Untracked files are summarised at the
- * top so reviewers see them too — git diff doesn't otherwise mention them.
+ * Empty string when there's nothing.
+ *
+ * Untracked files: `git diff` on its own doesn't mention them. We
+ * synthesise `git diff --no-index /dev/null <file>` per untracked path
+ * so they show up inline as proper "new file" diffs (lines all `+`),
+ * letting the Unstaged tab read as one unified list. Binary files render
+ * as git's "Binary files differ" placeholder via `--no-index`'s default
+ * behaviour. Files vanishing between `ls-files` and the per-file diff
+ * (race on a fast `rm`) are skipped silently.
  */
 export async function getDiff(
   worktreePath: string,
@@ -515,11 +522,23 @@ export async function getDiff(
         .text();
       const untrackedFiles = untracked.split("\n").filter((l) => l.length > 0);
       if (untrackedFiles.length > 0) {
-        const header =
-          `# untracked files (${untrackedFiles.length}):\n` +
-          untrackedFiles.map((f) => `?  ${f}`).join("\n") +
-          "\n\n";
-        return header + diff;
+        const synthetic: string[] = [];
+        for (const file of untrackedFiles) {
+          // `git diff --no-index` exits 1 when files differ (which is
+          // always, for /dev/null vs a real file) — .nothrow() lets us
+          // capture the diff body without throwing on that exit code.
+          const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
+            .quiet()
+            .nothrow();
+          const text = result.stdout.toString();
+          if (text.length > 0) synthetic.push(text);
+        }
+        if (synthetic.length > 0) {
+          // Append the modified-file diff *after* the synthetic untracked
+          // diffs so they appear first in the list — matches the order a
+          // reviewer expects (new things on top).
+          return synthetic.join("") + diff;
+        }
       }
     }
 
