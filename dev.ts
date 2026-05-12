@@ -35,9 +35,8 @@ await killOnPort(7779);
 // is a clean restart, so memory stays flat; cost is a manual browser
 // reload to reconnect SSE/WebSocket.
 // argv[0] rewrite so `ps` shows "supergit dev" instead of
-// "bun --watch run src/server.ts". See dev-portless.ts for the
-// same trick; same reason (Bun's process.title doesn't propagate
-// to the kernel on macOS).
+// "bun --watch run src/server.ts" (Bun's process.title doesn't
+// propagate to the kernel on macOS, so we use `exec -a` instead).
 const daemon = Bun.spawn(
   [
     "bash",
