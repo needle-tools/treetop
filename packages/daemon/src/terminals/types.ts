@@ -42,6 +42,10 @@ export interface SpawnOptions {
 export interface TerminalSubscriber {
   onData(chunk: Uint8Array): void;
   onExit(info: { code: number; signal?: string }): void;
+  /** Daemon-detected state changes (e.g. agent paused on a "press
+   *  enter to continue" / permission prompt). Optional so existing
+   *  subscribers don't need to implement it. */
+  onState?(state: { awaitingInput: boolean }): void;
 }
 
 export interface TerminalHandle {

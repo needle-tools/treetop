@@ -27,7 +27,7 @@ import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
-import { sampleProcs, renameArgv } from "./procs";
+import { sampleProcs, renameArgv, resolveAgentBinary } from "./procs";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -427,22 +427,34 @@ const server = Bun.serve<TermWsData, never>({
       // Detect the agent label from the ORIGINAL cmd before we wrap.
       // Otherwise wrapping with `bash -c '…'` would make the backend
       // see cmd[0]="bash" and mis-label every TUI as a shell.
+      const head0 = body.cmd[0]?.split(/[\\/]/).pop()?.toLowerCase();
       const agentHint = ((): string | undefined => {
-        const head = body.cmd[0]?.split(/[\\/]/).pop()?.toLowerCase();
-        if (!head) return undefined;
-        if (head === "claude") return "claude";
-        if (head === "codex") return "codex";
-        if (head === "bash" || head === "zsh" || head === "sh" || head === "fish") return "shell";
+        if (!head0) return undefined;
+        if (head0 === "claude") return "claude";
+        if (head0 === "codex") return "codex";
+        if (head0 === "bash" || head0 === "zsh" || head0 === "sh" || head0 === "fish") return "shell";
         return undefined;
       })();
+      // If cmd[0] is a BARE agent name (no path separators), resolve it
+      // to an absolute path picking the newest install across known
+      // prefixes. This sidesteps the "two installs of codex, PATH
+      // points at the old one" trap: codex's self-update writes to
+      // `~/.bun/bin/`, but a pre-existing `/opt/homebrew/bin/codex`
+      // shadows it on PATH. resolveAgentBinary returns the newest
+      // mtime, so a freshly-bun-installed codex wins.
+      let resolvedCmd = body.cmd.slice();
+      if (head0 && !body.cmd[0]!.includes("/") && (head0 === "claude" || head0 === "codex")) {
+        const abs = await resolveAgentBinary(head0);
+        if (abs) resolvedCmd[0] = abs;
+      }
       // Optional argv[0] rename via `bash -c 'exec -a NAME …'` so the PTY
       // shows up in `ps`/`top`/`htop` (and macOS Activity Monitor's
       // command column) as e.g. "supergit-tui-abc12345-claude" instead
       // of just "claude". Unix only; Windows ignores the hint.
       const cmd =
         body.procName && process.platform !== "win32"
-          ? renameArgv(body.procName, body.cmd)
-          : body.cmd;
+          ? renameArgv(body.procName, resolvedCmd)
+          : resolvedCmd;
       try {
         const handle = await terminalBackend.spawn({
           cmd,
@@ -500,23 +512,15 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/agents/installed" && req.method === "GET") {
-      // Which interactive agent CLIs are on PATH right now? Used by the
-      // worktree row's "+" button to populate its spawn dropdown.
-      // Cheap shell-out per candidate; we cache nothing because PATH and
-      // installs change between requests rarely enough that the cost is
-      // negligible.
+      // Which interactive agent CLIs are installed? Uses
+      // `resolveAgentBinary` so multi-install setups (e.g. homebrew
+      // codex + bun-installed codex from a self-update) report the
+      // newest binary, not whatever PATH order happens to pick.
       const candidates = ["claude", "codex"];
       const installed: { name: string; path: string }[] = [];
       for (const name of candidates) {
-        try {
-          const r = await Bun.$`which ${name}`.quiet().nothrow();
-          const out = r.stdout.toString().trim();
-          if (r.exitCode === 0 && out.length > 0) {
-            installed.push({ name, path: out.split("\n")[0]! });
-          }
-        } catch {
-          // skip
-        }
+        const path = await resolveAgentBinary(name);
+        if (path) installed.push({ name, path });
       }
       return json({ installed });
     }
@@ -1046,6 +1050,15 @@ const server = Bun.serve<TermWsData, never>({
         onData(chunk) {
           // Binary frame — raw PTY bytes for xterm.js.
           ws.send(chunk);
+        },
+        onState(state) {
+          // Text frame carrying daemon-detected terminal state (e.g.
+          // "awaiting input"). The UI uses this to outline the column.
+          try {
+            ws.send(JSON.stringify({ type: "state", ...state }));
+          } catch {
+            // ws may be mid-close; ignore
+          }
         },
         onExit(info) {
           ws.send(JSON.stringify({ type: "exit", ...info }));

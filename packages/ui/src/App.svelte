@@ -262,6 +262,13 @@
   // Per-worktree: is the "+ new agent" popover open?
   let newAgentPopoverOpen: Record<string, boolean> = {};
 
+  // Per transient session source: is the agent paused on a prompt
+  // waiting for user input? Surfaced as an outlined column + a small
+  // "needs input" pill in the header. Cleared when the agent emits
+  // any output that no longer matches the prompt pattern, or when
+  // the user types something.
+  let transientAwaiting: Record<string, boolean> = {};
+
   // Per-worktree branch picker state (the dropdown that opens when the
   // user clicks the branch chip).
   interface BranchListing {
@@ -428,6 +435,28 @@
     openSessionsByWt = {
       ...openSessionsByWt,
       [wtPath]: [{ agent, source: synthetic }, ...existing],
+    };
+  }
+
+  /** Restart a transient `__new__:` session IN PLACE. Replaces its
+   *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
+   *  key change unmounts the old TerminalView (closing its WS, which
+   *  triggers the daemon's grace-then-dispose for the dead PTY) and
+   *  mounts a new one with the same cmd[]. Used when an agent
+   *  self-updates and exits — codex prints "restart Codex" and we
+   *  want a one-click rerun without losing the user's column slot. */
+  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string }) {
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const replacement = {
+      agent: current.agent as "claude" | "codex" | "copilot",
+      source: `__new__:${current.agent}:${id}`,
+    };
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((x) =>
+        x.source === current.source ? replacement : x,
+      ),
     };
   }
 
@@ -1921,10 +1950,24 @@
                                spawned, before its JSONL has been created on
                                disk. Renders the TUI directly. Once the user
                                closes it, we drop the entry from the open list. -->
-                          <div class="session new-session-col">
+                          <div
+                            class="session new-session-col"
+                            class:awaiting-input={transientAwaiting[s.source]}
+                          >
                             <header class="new-session-head">
                               <span class="agent-pill agent-{s.agent}">{s.agent}</span>
                               <span class="muted small">new session — TUI</span>
+                              {#if transientAwaiting[s.source]}
+                                <span class="awaiting-pill" title="The agent is paused waiting for input — click the terminal and respond.">
+                                  needs input
+                                </span>
+                              {/if}
+                              <button
+                                class="restart-btn"
+                                on:click={() => restartNewAgentSession(wt.path, s)}
+                                title={`Re-run \`${s.agent}\` in this column (use after a self-update)`}
+                                aria-label="Restart"
+                              >↻</button>
                               <button
                                 class="close"
                                 on:click={() => closeSessionInWt(wt.path, s)}
@@ -1935,7 +1978,24 @@
                               cmd={[s.agent]}
                               cwd={wt.path}
                               procName={`supergit-tui-new-${s.agent}`}
-                              onExit={() => closeSessionInWt(wt.path, s)}
+                              onAwaitingChange={(awaiting) => {
+                                transientAwaiting = {
+                                  ...transientAwaiting,
+                                  [s.source]: awaiting,
+                                };
+                              }}
+                              onExit={() => {
+                                // Deliberately NOT closing the column on
+                                // PTY exit. Some agents (notably `codex`)
+                                // restart themselves after an in-place
+                                // update — they exit, then a fresh
+                                // process spawns. If we auto-disposed
+                                // here, the user would lose the new
+                                // process and the update notice. Instead
+                                // we leave the column open showing the
+                                // final output; the user dismisses via
+                                // the × in the header.
+                              }}
                             />
                           </div>
                         {:else}
@@ -2992,21 +3052,59 @@
     background: var(--surface-2);
     border-bottom: 1px solid var(--surface-3);
   }
-  .new-session-head .close {
-    margin-left: auto;
+  /* Match SessionView's .close so the transient-TUI column header
+     reads exactly like a Claude chat's header — same padding,
+     transparent bg, same red-on-hover destructive treatment for ×.
+     Restart (↻) sits beside it with a neutral hover. */
+  .new-session-head .close,
+  .new-session-head .restart-btn {
     background: transparent;
     color: var(--text-muted);
     border: 0;
-    width: 1.6rem;
-    height: 1.6rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 1.05rem;
+    padding: 0.1rem 0.5rem;
+    font-size: 1rem;
     line-height: 1;
+    cursor: pointer;
   }
-  .new-session-head .close:hover {
+  .new-session-head .restart-btn {
+    margin-left: auto;
+  }
+  .new-session-head .close {
+    margin-left: auto;
+  }
+  /* Both buttons present: restart owns the auto-margin (anchors right),
+     close just sits beside it. */
+  .new-session-head .restart-btn + .close {
+    margin-left: 0;
+  }
+  .new-session-head .restart-btn:hover {
     color: var(--text-1);
     background: var(--surface-3);
+  }
+  .new-session-head .close:hover {
+    background: var(--error-bg);
+    color: var(--error-text);
+  }
+  /* "Awaiting input" affordance — column gains a soft amber outline
+     that pulses gently, plus a small chip in the header. Both clear
+     the moment the user types or the agent prints non-prompt output. */
+  .awaiting-pill {
+    background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
+    color: var(--status-dirty);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+  }
+  .new-session-col.awaiting-input {
+    border-color: var(--status-dirty);
+    animation: awaiting-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes awaiting-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
+    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
   }
   .agent-more.agent-claude {
     background: var(--chip-orange-bg);

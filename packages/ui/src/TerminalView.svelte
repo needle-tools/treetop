@@ -21,6 +21,11 @@
   /** Fires once the daemon hands us back the terminal id. Lets the parent
    *  drive dispose via DELETE /api/terminals/:id from its own header. */
   export let onSpawn: (id: string) => void = () => {};
+  /** Fires whenever the daemon detects the PTY is paused waiting for
+   *  user input (Claude permission prompts, Codex update notices, y/n
+   *  shell confirms, …). Parent uses it to outline the column so the
+   *  user notices the agent's blocked. */
+  export let onAwaitingChange: (awaiting: boolean) => void = () => {};
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -59,13 +64,15 @@
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
-          // Control frame from the daemon — currently only {type:"exit",...}
+          // Control frame from the daemon. Currently: exit + state.
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.type === "exit") {
               exitInfo = { code: obj.code, signal: obj.signal };
               phase = "exited";
               onExit(exitInfo);
+            } else if (obj?.type === "state") {
+              onAwaitingChange(obj.awaitingInput === true);
             }
           } catch {
             // ignore

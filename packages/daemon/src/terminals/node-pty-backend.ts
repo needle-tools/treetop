@@ -37,6 +37,57 @@ interface InternalTerm {
   bufferBytes: number;
   subs: Set<TerminalSubscriber>;
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
+  awaitingInput: boolean;
+}
+
+/** Patterns that mean "the agent is paused, waiting for me to press a
+ *  key". Conservative on purpose — false positives would constantly
+ *  light up columns for no reason. Tested against:
+ *    - Claude permission prompts (numbered "1. Allow / 2. ..." with
+ *      footer "enter to submit | esc to cancel").
+ *    - Codex update prompts (numbered choices ending in
+ *      "Press enter to continue").
+ *    - Generic shell y/n confirmations. */
+const AWAITING_INPUT_PATTERNS: RegExp[] = [
+  /enter to submit\s*\|\s*esc to cancel/i,
+  /press enter to continue/i,
+  /\(y\/n\)\s*[?:]/i,
+  /\[Y\/n\]\s*$/m,
+  /\[y\/N\]\s*$/m,
+];
+
+/** Strip common ANSI/terminal escape sequences from a chunk so the
+ *  prompt-pattern regexes can match the plain text. We don't try to
+ *  be exhaustive — just enough to neutralize colour codes and cursor
+ *  positioning so the words we look for line up. */
+function stripAnsi(text: string): string {
+  return text
+    // CSI sequences (most colours, cursor movement)
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    // OSC sequences (title, hyperlinks, etc.)
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+    // bare ESC
+    .replace(/\x1b/g, "");
+}
+
+function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
+  // Only look at the tail — prompts always appear at the bottom of the
+  // visible terminal area. ~4KB is comfortably larger than any single
+  // permission prompt block.
+  const tailBytes = Math.min(4096, bufferBytes);
+  if (tailBytes === 0) return false;
+  const tail = new Uint8Array(tailBytes);
+  let offset = 0;
+  let remaining = tailBytes;
+  for (let i = buffer.length - 1; i >= 0 && remaining > 0; i--) {
+    const chunk = buffer[i]!;
+    const take = Math.min(chunk.byteLength, remaining);
+    tail.set(chunk.subarray(chunk.byteLength - take), tailBytes - offset - take);
+    offset += take;
+    remaining -= take;
+  }
+  const text = stripAnsi(new TextDecoder("utf-8", { fatal: false }).decode(tail));
+  return AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
 }
 
 function detectAgent(cmd: string[]): string | undefined {
@@ -176,6 +227,13 @@ export class NodePtyBackend implements PtyBackend {
         const buf = Uint8Array.from(Buffer.from(evt.dataB64 as string ?? "", "base64"));
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
+        // Recompute awaiting-input state after each output chunk. If
+        // the flag flips, notify subscribers so the UI can outline.
+        const nextAwaiting = isAwaitingInput(t.buffer, t.bufferBytes);
+        if (nextAwaiting !== t.awaitingInput) {
+          t.awaitingInput = nextAwaiting;
+          for (const s of t.subs) s.onState?.({ awaitingInput: nextAwaiting });
+        }
         return;
       }
       case "exit": {
@@ -236,6 +294,7 @@ export class NodePtyBackend implements PtyBackend {
       buffer: [],
       bufferBytes: 0,
       subs: new Set(),
+      awaitingInput: false,
     };
     const pidPromise = new Promise<number>((resolve, reject) => {
       t.spawnedAck = { resolve, reject };
@@ -274,6 +333,14 @@ export class NodePtyBackend implements PtyBackend {
           ? Buffer.from(data, "utf-8")
           : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
         this.send({ op: "write", id: t.id, dataB64: buf.toString("base64") });
+        // Any keystroke clears the awaiting-input flag eagerly. The
+        // detector will re-arm it on the next matching prompt; this
+        // just stops the UI outlining the panel between the user
+        // typing and the next render arriving.
+        if (t.awaitingInput) {
+          t.awaitingInput = false;
+          for (const s of t.subs) s.onState?.({ awaitingInput: false });
+        }
       },
       resize: (size) => {
         t.size = size;
@@ -296,6 +363,9 @@ export class NodePtyBackend implements PtyBackend {
         // Replay the recent scrollback first so a re-attaching client
         // sees the agent's recent output before live frames stream in.
         if (t.bufferBytes > 0) sub.onData(this.concatBuffer(t));
+        // Deliver current awaiting-input state so a freshly-attached
+        // client immediately knows whether to outline the panel.
+        sub.onState?.({ awaitingInput: t.awaitingInput });
         if (t.exitedAt) sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
         return () => { t.subs.delete(sub); };
       },

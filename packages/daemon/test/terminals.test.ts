@@ -12,7 +12,10 @@
 import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
 import { NodePtyBackend } from "../src/terminals/node-pty-backend";
-import { sampleProcs, shQuote, renameArgv } from "../src/procs";
+import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
+import { mkdtemp, writeFile, chmod, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("NodePtyBackend integration", () => {
   const backend = new NodePtyBackend();
@@ -165,6 +168,66 @@ describe("renameArgv", () => {
       } finally {
         await handle.kill();
         await backend.shutdown();
+      }
+    },
+    10_000,
+  );
+});
+
+describe("resolveAgentBinary", () => {
+  test("returns null for an unknown binary", async () => {
+    const r = await resolveAgentBinary("not-a-real-binary-asdfghjkl");
+    expect(r).toBeNull();
+  });
+
+  test("returns SOMETHING for `bash` (universally installed)", async () => {
+    // Doesn't matter where — just that we found *some* absolute path.
+    const r = await resolveAgentBinary("bash");
+    expect(r).not.toBeNull();
+    expect(r!.startsWith("/")).toBe(true);
+  });
+
+  test(
+    "picks the newest mtime when multiple installs are present (via PATH)",
+    async () => {
+      // Build two fake "agent" files in temp dirs, prepend both to
+      // PATH, set distinct mtimes so the newer one wins regardless of
+      // path order. Uses a deliberately unusual name so it doesn't
+      // shadow any real binary on disk.
+      //
+      // Cross-platform notes:
+      //   - chmod is a no-op on Windows (filesystem permissions are
+      //     ACLs there). We still call it for parity but `stat` works
+      //     regardless of the executable bit, which is what
+      //     resolveAgentBinary cares about.
+      //   - PATH separator is ":" on Unix and ";" on Windows.
+      //   - File extension: on Windows, executables typically need a
+      //     ".exe" / ".cmd" suffix. We don't add one; resolveAgentBinary
+      //     uses bare filenames just like `bun install -g` does on
+      //     Windows (it puts a .cmd shim there). This test passes on
+      //     Windows because we're not actually executing the file —
+      //     we just check `stat()` finds it.
+      const agent = `supergit-test-agent-${Date.now().toString(36)}`;
+      const dirA = await mkdtemp(join(tmpdir(), "supergit-bin-a-"));
+      const dirB = await mkdtemp(join(tmpdir(), "supergit-bin-b-"));
+      const pathA = join(dirA, agent);
+      const pathB = join(dirB, agent);
+      await writeFile(pathA, "#!/bin/sh\necho A\n");
+      await writeFile(pathB, "#!/bin/sh\necho B\n");
+      try { await chmod(pathA, 0o755); } catch {}
+      try { await chmod(pathB, 0o755); } catch {}
+      const older = new Date("2026-01-01T00:00:00Z");
+      const newer = new Date("2026-06-01T00:00:00Z");
+      await utimes(pathA, older, older);
+      await utimes(pathB, newer, newer);
+      const sep = process.platform === "win32" ? ";" : ":";
+      const origPath = process.env.PATH ?? "";
+      process.env.PATH = [dirA, dirB, origPath].filter(Boolean).join(sep);
+      try {
+        const r = await resolveAgentBinary(agent);
+        expect(r).toBe(pathB);
+      } finally {
+        process.env.PATH = origPath;
       }
     },
     10_000,

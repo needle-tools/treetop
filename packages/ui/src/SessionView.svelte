@@ -97,6 +97,11 @@
    *  The Dispose button DELETEs against this. */
   let terminalId: string | null = null;
   let disposing = false;
+  /** Daemon-detected "agent is paused on a prompt" flag. Drives the
+   *  amber outline on the column + a "needs input" pill in the
+   *  header. Cleared automatically when the agent prints non-prompt
+   *  output or the user types. */
+  let awaitingInput = false;
 
   async function disposeTerminal() {
     if (disposing) return;
@@ -360,7 +365,7 @@
   });
 </script>
 
-<div class="session">
+<div class="session" class:awaiting-input={mode === "terminal" && awaitingInput}>
   <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
     <div class="header-main">
       <span class="agent-pill agent-{agent}">{agent}</span>
@@ -409,6 +414,9 @@
           Resume in terminal
         </button>
       {:else}
+        {#if awaitingInput}
+          <span class="awaiting-pill" title="The agent is paused on a prompt — focus the terminal and respond.">needs input</span>
+        {/if}
         <button
           class="resume-btn dispose-btn"
           on:click={disposeTerminal}
@@ -439,6 +447,7 @@
       ownerId={session.sessionId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       onSpawn={(id) => (terminalId = id)}
+      onAwaitingChange={(a) => (awaitingInput = a)}
       onExit={() => {
         // PTY finished by itself (user typed `exit`, agent crashed, ...).
         // Same effect as Dispose: flip to read, scroll to the newest
@@ -558,6 +567,32 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
+    transition: border-color 0.2s ease;
+  }
+  /* When the daemon detects this column's PTY is paused on a prompt,
+     outline the panel in soft amber + a gentle pulse, and surface a
+     small "needs input" pill in the header. Matches the visual
+     treatment on the App-side new-session-col so the language is
+     consistent across read-mode-resumed terminals and brand-new
+     transient TUI columns. */
+  .session.awaiting-input {
+    border-color: var(--status-dirty);
+    animation: session-awaiting-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes session-awaiting-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
+    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
+  }
+  .awaiting-pill {
+    background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
+    color: var(--status-dirty);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    align-self: center;
   }
   header {
     /* Outer header: keeps the × pinned to the right at any width. The

@@ -9,6 +9,73 @@
  */
 
 import { $ } from "bun";
+import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+
+/**
+ * Find the best on-disk binary for an agent CLI name.
+ *
+ * Why this is needed: codex's self-update command is `bun install -g
+ * @openai/codex`, which writes to `~/.bun/bin/`. If the user already
+ * has codex installed via Homebrew (`/opt/homebrew/bin/codex`), PATH
+ * order means the OLDER homebrew copy still wins — so "Update Codex"
+ * from inside the TUI installs the new version, but the next spawn
+ * re-runs the old one and the update notice appears again forever.
+ *
+ * Strategy: probe a small list of well-known install prefixes plus
+ * everything `which -a <name>` returns, then pick whichever physical
+ * file has the most recent mtime (follows symlinks so `~/.bun/bin/`
+ * shims pick up their target file's mtime). Falls back to null if
+ * nothing's found.
+ *
+ * Returns absolute paths only — callers should pass to Bun.spawn so
+ * PATH ordering is no longer a factor.
+ */
+export async function resolveAgentBinary(name: string): Promise<string | null> {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const wellKnown = [
+    `${homedir()}/.bun/bin/${name}`,
+    `${homedir()}/.local/bin/${name}`,
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    `/usr/bin/${name}`,
+  ];
+  const all = [...wellKnown];
+  // Scan PATH manually — Bun's built-in `which` doesn't support `-a`,
+  // so we'd only see the first hit. Walking PATH lets us find every
+  // copy of the binary across all install prefixes the user has.
+  // Path separator is platform-specific: ";" on Windows, ":" elsewhere.
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const pathDirs = (process.env.PATH ?? "").split(pathSep).filter(Boolean);
+  for (const dir of pathDirs) {
+    all.push(`${dir}/${name}`);
+  }
+  for (const p of all) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    try {
+      await stat(p);
+      candidates.push(p);
+    } catch {
+      // not present
+    }
+  }
+  if (candidates.length === 0) return null;
+  // Pick the path with the newest mtime (follows symlinks).
+  let best: { path: string; mtimeMs: number } | null = null;
+  for (const p of candidates) {
+    try {
+      const st = await stat(p);
+      if (!best || st.mtimeMs > best.mtimeMs) {
+        best = { path: p, mtimeMs: st.mtimeMs };
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return best?.path ?? candidates[0] ?? null;
+}
 
 /** Single-quote a shell argument robustly. Empty strings are fine; any
  *  single-quote inside the value is escaped as the canonical `'\''`. */
