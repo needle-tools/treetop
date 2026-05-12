@@ -2,9 +2,9 @@
 // with hot reload. Ctrl-C kills both.
 //
 // Pre-flight: any stale processes still holding ports 7777 (daemon) or
-// 5173 (Vite) from a previous run get killed first. Otherwise --hot
+// 7779 (Vite) from a previous run get killed first. Otherwise --hot
 // occasionally leaves an orphan and the next `bun dev` fails with
-// EADDRINUSE / "Port 5173 is in use".
+// EADDRINUSE / "Port 7779 is in use".
 
 import { $ } from "bun";
 
@@ -27,7 +27,7 @@ async function killOnPort(port: number): Promise<void> {
 }
 
 await killOnPort(7777);
-await killOnPort(5173);
+await killOnPort(7779);
 
 const daemon = Bun.spawn(["bun", "--hot", "run", "src/server.ts"], {
   cwd: "packages/daemon",

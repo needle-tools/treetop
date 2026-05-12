@@ -403,5 +403,5 @@ suite uses real git.
   capped per terminal; nothing on disk.
 - **Security:** terminals run arbitrary user commands; we accept this
   (it's a local dashboard, not multi-tenant). CORS stays locked to
-  `localhost:5173`. The WS endpoint validates terminal IDs against the
+  `localhost:7779`. The WS endpoint validates terminal IDs against the
   in-memory manager before bridging bytes.

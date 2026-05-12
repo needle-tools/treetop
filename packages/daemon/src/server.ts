@@ -41,8 +41,8 @@ console.log(`supergit daemon: listening on http://localhost:${PORT}`);
 // origin and nothing else. Programmatic clients (curl, agents, MCP) ignore
 // CORS, so they keep working.
 const ALLOWED_ORIGINS = new Set([
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
+  "http://localhost:7779",
+  "http://127.0.0.1:7779",
   ...(process.env.SUPERGIT_EXTRA_ORIGINS?.split(",")
     .map((o) => o.trim())
     .filter(Boolean) ?? []),
@@ -154,7 +154,7 @@ const server = Bun.serve({
           { method: "GET", path: "/mcp", description: "MCP server info" },
           { method: "POST", path: "/mcp", description: "MCP JSON-RPC: initialize, tools/list, tools/call" },
         ],
-        note: "All routes reachable at http://localhost:7777/api/* (daemon direct) or http://localhost:5173/api/* (Vite dev proxy). CORS is locked to the dev UI origin — set SUPERGIT_EXTRA_ORIGINS to allow others. Programmatic clients (curl, agents, MCP) ignore CORS and work either way.",
+        note: "All routes reachable at http://localhost:7777/api/* (daemon direct) or http://localhost:7779/api/* (Vite dev proxy). CORS is locked to the dev UI origin — set SUPERGIT_EXTRA_ORIGINS to allow others. Programmatic clients (curl, agents, MCP) ignore CORS and work either way.",
       });
     }
 

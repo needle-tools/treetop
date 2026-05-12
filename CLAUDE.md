@@ -92,11 +92,11 @@ supergit/
 ## Working on the code
 
 - `bun install` once at root → installs workspaces.
-- `bun dev` → starts daemon (port 7777) and UI (port 5173) with hot reload.
+- `bun dev` → starts daemon (port 7777) and UI (port 7779) with hot reload.
 - `bun test` → runs all tests across packages (daemon + UI).
 - `bun run test:watch` → same, but re-runs on file changes.
 - `bun run test:coverage` → emits a line/function coverage table.
-- Open `http://localhost:5173` to use the dashboard.
+- Open `http://localhost:7779` to use the dashboard.
 
 ## Test coverage
 
