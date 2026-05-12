@@ -293,6 +293,50 @@ describe("filterToExistingSessions", () => {
     filterToExistingSessions(persisted, new Set(["/keep.jsonl"]));
     expect(JSON.stringify(persisted)).toBe(beforeJson);
   });
+
+  // Regression: the "Terminal" column flow uses three synthetic source
+  // prefixes that don't exist in /api/agents — they're supergit-internal
+  // markers. The render-time filter must not drop them even when the
+  // existing-sources set is empty (which it always is for shells, since
+  // agentsForWorktree() only returns Claude/Codex/Copilot sessions).
+  test("keeps __new__: synthetic sources even when existing is empty (brand-new TUI)", () => {
+    const persisted = [mkSess("__new__:claude:abc")];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual(
+      persisted,
+    );
+  });
+
+  test("keeps __attached__:shell: synthetic sources (reattached live shell after reload)", () => {
+    // Without this, restoreLiveShells() in App.svelte would add the
+    // column to openSessionsByWt but the render-time filter would
+    // silently drop it because shells aren't in wt.agents.
+    const persisted = [mkSess("__attached__:shell:t_abc_1")];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual(
+      persisted,
+    );
+  });
+
+  test("keeps __transcript__:shell: synthetic sources (past-shell read-mode view)", () => {
+    const persisted = [mkSess("__transcript__:shell:t_abc_1")];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual(
+      persisted,
+    );
+  });
+
+  test("keeps synthetic sources mixed with file-backed ones", () => {
+    const persisted = [
+      mkSess("__attached__:shell:t_1"),
+      mkSess("/agents/claude.jsonl"),
+      mkSess("__transcript__:shell:t_2"),
+      mkSess("/agents/missing.jsonl"),
+    ];
+    const existing = new Set(["/agents/claude.jsonl"]);
+    expect(filterToExistingSessions(persisted, existing)).toEqual([
+      mkSess("__attached__:shell:t_1"),
+      mkSess("/agents/claude.jsonl"),
+      mkSess("__transcript__:shell:t_2"),
+    ]);
+  });
 });
 
 describe("VisibleWorktreesStore", () => {

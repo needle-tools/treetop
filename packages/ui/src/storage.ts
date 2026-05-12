@@ -133,9 +133,29 @@ export class OpenSessionsStore {
   }
 }
 
+/** Source prefixes the daemon doesn't list in `/api/agents` but the UI
+ *  still wants to render: brand-new agent sessions before their JSONL
+ *  has appeared on disk, plus Terminal-column shells (which are entirely
+ *  workspace-owned and never show up in the agent snapshot). Centralised
+ *  so the render-time filter and the persistence layer agree on what
+ *  counts as a "synthetic" source. */
+export const SYNTHETIC_SOURCE_PREFIXES = [
+  // Brand-new agent or shell session — TUI is up, JSONL not yet on disk
+  // (or, for shells, never indexed by agentsForWorktree at all).
+  "__new__:",
+  // Reattached shell after a UI reload — TerminalView skips spawn and
+  // connects to an existing live PTY via WS.
+  "__attached__:",
+  // Past-shell read-mode column — ShellView renders the transcript and
+  // a Resume button.
+  "__transcript__:",
+] as const;
+
 /**
  * Filter a persisted list to sessions whose source file is still detected
- * by the daemon (i.e. present in the current `/api/agents` snapshot).
+ * by the daemon (i.e. present in the current `/api/agents` snapshot) OR
+ * whose source is a known supergit-internal synthetic prefix (new TUI
+ * spawns, live shell reattaches, past-shell read-mode columns).
  *
  * IMPORTANT: this is a *render-time* filter. Callers must keep the
  * unfiltered list in persistence — if a session file vanishes
@@ -149,11 +169,8 @@ export function filterToExistingSessions(
 ): PersistedSession[] {
   return persisted.filter(
     (s) =>
-      // Transient "just-spawned a new agent, no JSONL on disk yet" entries
-      // are kept through render-time filtering. Their lifetime is bounded
-      // by the TUI column's close button (which removes them from the
-      // persisted list directly).
-      s.source.startsWith("__new__:") || existingSources.has(s.source),
+      SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
+      existingSources.has(s.source),
   );
 }
 
