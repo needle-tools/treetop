@@ -10,7 +10,12 @@ export default defineConfig({
     port: 7779,
     strictPort: true,
     proxy: {
-      "/api": "http://localhost:7777",
+      "/api": {
+        target: "http://localhost:7777",
+        // Forward WebSocket upgrades too — used by /api/terminals/:id/io
+        // for xterm.js byte streaming.
+        ws: true,
+      },
     },
   },
 });

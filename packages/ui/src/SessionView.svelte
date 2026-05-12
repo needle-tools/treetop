@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { marked } from "marked";
   import ToolIcon from "./ToolIcon.svelte";
+  import TerminalView from "./TerminalView.svelte";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -87,6 +88,11 @@
   let inputText = "";
   let sending = false;
   let sendError = "";
+  /** Render mode for this column. "read" is the markdown-rendered chat
+   *  view (default). "terminal" flips the panel to an xterm.js TUI
+   *  running `claude --resume <sid>` against the same session id. The
+   *  Resume button toggles this; closing the terminal flips back. */
+  let mode: "read" | "terminal" = "read";
   /** Live count of claude subprocesses the daemon is still running for
    *  THIS session — set from /api/active-sends polling. Renders an
    *  in-header indicator with a cancel-all button. */
@@ -368,10 +374,39 @@
         {/if}
       </div>
     </div>
+    {#if session?.sessionId && agent === "claude" && mode === "read"}
+      <button
+        class="resume-btn"
+        on:click={() => (mode = "terminal")}
+        title="Spawn a live `claude --resume` PTY in this session's cwd"
+      >
+        Resume in terminal
+      </button>
+    {/if}
     <button class="close" on:click={onClose} title="Close">×</button>
   </header>
 
-  {#if error}
+  {#if mode === "terminal" && session?.sessionId && session.cwd}
+    <TerminalView
+      cmd={["claude", "--resume", session.sessionId]}
+      cwd={session.cwd}
+      ownerId={session.sessionId}
+      onExit={() => {
+        // PTY finished — flip back to the read view; the JSONL will have
+        // grown with whatever was sent/received, and the existing poll
+        // already picked it up.
+        mode = "read";
+        // Bump the session poll so the user sees fresh messages right
+        // away rather than waiting up to 2s for the next tick.
+        void load();
+      }}
+      onClose={() => {
+        // Same effect: closing the terminal disposes the PTY (handled
+        // server-side on WS close after the grace window) and we flip.
+        mode = "read";
+      }}
+    />
+  {:else if error}
     <p class="error">{error}</p>
   {:else if loading && !session}
     <p class="muted small">Loading session…</p>
@@ -460,7 +495,7 @@
     </ul>
   {/if}
 
-  {#if session && agent === "claude"}
+  {#if session && agent === "claude" && mode === "read"}
     <form class="composer" on:submit|preventDefault={sendMessage}>
       <div class="composer-box">
         <textarea
@@ -572,6 +607,21 @@
   header .close {
     flex: 0 0 auto;
     align-self: flex-start;
+  }
+  .resume-btn {
+    flex: 0 0 auto;
+    align-self: center;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--surface-3);
+    padding: 0.25rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+  .resume-btn:hover {
+    color: var(--text-1);
+    border-color: var(--text-faint);
   }
   .agent-pill {
     padding: 0.1rem 0.5rem;

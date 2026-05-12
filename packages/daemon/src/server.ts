@@ -22,6 +22,8 @@ import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
+import { terminalBackend } from "./terminals/node-pty-backend";
+import type { TerminalSubscriber } from "./terminals/types";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -81,9 +83,42 @@ function broadcast(event: string, data: unknown): void {
   }
 }
 
-const server = Bun.serve({
+// Per-terminal grace timers. When the last WS subscriber detaches we
+// don't kill the PTY immediately — we wait `GRACE_MS` so a page reload
+// can reconnect without losing the agent. Closing the panel for real
+// just lets the timer fire and the PTY dies cleanly.
+const GRACE_MS = 3_000;
+const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelGrace(termId: string) {
+  const t = graceTimers.get(termId);
+  if (!t) return;
+  clearTimeout(t);
+  graceTimers.delete(termId);
+}
+
+function startGraceIfIdle(termId: string) {
+  const handle = terminalBackend.get(termId);
+  if (!handle) return;
+  if (handle.subscriberCount() > 0) return;
+  if (graceTimers.has(termId)) return;
+  const timer = setTimeout(() => {
+    graceTimers.delete(termId);
+    const h = terminalBackend.get(termId);
+    if (!h) return;
+    if (h.subscriberCount() === 0 && h.isAlive()) void h.kill();
+  }, GRACE_MS);
+  graceTimers.set(termId, timer);
+}
+
+interface TermWsData {
+  termId: string;
+  unsubscribe: (() => void) | null;
+}
+
+const server = Bun.serve<TermWsData, never>({
   port: PORT,
-  async fetch(req) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
     const CORS = corsHeaders(req);
 
@@ -99,6 +134,27 @@ const server = Bun.serve({
 
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
+    }
+
+    // WebSocket upgrade for terminal I/O — /api/terminals/:id/io.
+    // CORS does not apply to WS handshakes, but we still validate the
+    // termId exists in our manager before upgrading.
+    {
+      const m = url.pathname.match(/^\/api\/terminals\/([^/]+)\/io$/);
+      if (m) {
+        const termId = m[1]!;
+        if (!terminalBackend.get(termId)) {
+          return json({ error: "terminal not found" }, { status: 404 });
+        }
+        if (
+          srv.upgrade(req, {
+            data: { termId, unsubscribe: null },
+          })
+        ) {
+          return undefined as unknown as Response;
+        }
+        return json({ error: "upgrade failed" }, { status: 500 });
+      }
     }
 
     if (url.pathname === "/api/health") {
@@ -136,6 +192,10 @@ const server = Bun.serve({
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
           { method: "GET", path: "/api/active-sends", description: "list claude subprocesses still in flight from /api/session/send. Optional ?sessionId=<id> to filter." },
           { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
+          { method: "POST", path: "/api/terminals", body: { cmd: ["string"], cwd: "string", cols: "number?", rows: "number?", ownerId: "string?" }, description: "spawn a PTY via the supernode helper. Returns { id, pid }." },
+          { method: "GET", path: "/api/terminals", description: "list active terminals. Optional ?ownerId=<id> filter." },
+          { method: "DELETE", path: "/api/terminals/:id", description: "SIGTERM (then SIGKILL after 500ms) the PTY." },
+          { method: "WS", path: "/api/terminals/:id/io", description: "bidirectional byte stream: binary frames are PTY bytes both ways; text frames are JSON control (e.g. {type:'resize',cols,rows})." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -306,6 +366,44 @@ const server = Bun.serve({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/terminals" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { cmd?: string[]; cwd?: string; cols?: number; rows?: number; ownerId?: string }
+        | null;
+      if (!body || !Array.isArray(body.cmd) || body.cmd.length === 0 || !body.cwd) {
+        return json({ error: "cmd[] and cwd required" }, { status: 400 });
+      }
+      try {
+        const handle = await terminalBackend.spawn({
+          cmd: body.cmd,
+          cwd: body.cwd,
+          ownerId: body.ownerId,
+          size: { cols: body.cols ?? 80, rows: body.rows ?? 24 },
+        });
+        return json({ id: handle.id, pid: handle.pid });
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e) },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (url.pathname === "/api/terminals" && req.method === "GET") {
+      const ownerId = url.searchParams.get("ownerId") ?? undefined;
+      const records = terminalBackend.list();
+      return json(ownerId ? records.filter((r) => r.ownerId === ownerId) : records);
+    }
+
+    if (url.pathname.startsWith("/api/terminals/") && req.method === "DELETE") {
+      const termId = url.pathname.slice("/api/terminals/".length);
+      const handle = terminalBackend.get(termId);
+      if (!handle) return json({ error: "not found" }, { status: 404 });
+      cancelGrace(termId);
+      void handle.kill();
+      return json({ ok: true });
     }
 
     if (url.pathname === "/api/active-sends" && req.method === "GET") {
@@ -684,6 +782,67 @@ const server = Bun.serve({
     }
 
     return json({ error: "not found" }, { status: 404 });
+  },
+
+  websocket: {
+    /** Subscribe the connecting client to the terminal's byte stream.
+     *  Stays attached for the WS lifetime; on close we detach and start
+     *  a grace timer that disposes the PTY if nothing else attaches. */
+    open(ws) {
+      const { termId } = ws.data;
+      const handle = terminalBackend.get(termId);
+      if (!handle) {
+        ws.close(1011, "terminal not found");
+        return;
+      }
+      cancelGrace(termId);
+      const sub: TerminalSubscriber = {
+        onData(chunk) {
+          // Binary frame — raw PTY bytes for xterm.js.
+          ws.send(chunk);
+        },
+        onExit(info) {
+          ws.send(JSON.stringify({ type: "exit", ...info }));
+          // Give the client a beat to render the exit notice, then close.
+          setTimeout(() => {
+            try { ws.close(1000, "exited"); } catch {}
+          }, 50);
+        },
+      };
+      ws.data.unsubscribe = handle.subscribe(sub);
+    },
+
+    /** Client messages: binary = bytes to write to the PTY (keystrokes).
+     *  Text = JSON control frames; currently just `{type:"resize",cols,rows}`. */
+    message(ws, msg) {
+      const handle = terminalBackend.get(ws.data.termId);
+      if (!handle) return;
+      if (typeof msg === "string") {
+        try {
+          const parsed = JSON.parse(msg);
+          if (parsed?.type === "resize") {
+            handle.resize({
+              cols: Number(parsed.cols) || 80,
+              rows: Number(parsed.rows) || 24,
+            });
+          }
+        } catch {
+          // ignore garbage control frames
+        }
+        return;
+      }
+      // Binary keystrokes from xterm.js — write through to the PTY.
+      const buf = msg instanceof Uint8Array ? msg : new Uint8Array(msg as ArrayBuffer);
+      handle.write(buf);
+    },
+
+    close(ws) {
+      const termId = ws.data.termId;
+      try { ws.data.unsubscribe?.(); } catch {}
+      ws.data.unsubscribe = null;
+      // If this was the last subscriber, schedule a grace-then-dispose.
+      startGraceIfIdle(termId);
+    },
   },
 });
 
