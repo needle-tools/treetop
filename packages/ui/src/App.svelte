@@ -2076,8 +2076,22 @@
 </main>
 
 {#if dirtyCheckout}
-  <div class="modal-scrim" role="dialog" aria-modal="true" aria-labelledby="dirty-title">
-    <div class="modal">
+  <div
+    class="modal-scrim"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="dirty-title"
+    tabindex="-1"
+    on:click={(e) => {
+      // Scrim click (NOT clicks on the modal itself) cancels — same as
+      // hitting Esc in a real dialog. Modal contents stop the event.
+      if (e.target === e.currentTarget) resolveDirty("cancel");
+    }}
+    on:keydown={(e) => {
+      if (e.key === "Escape") resolveDirty("cancel");
+    }}
+  >
+    <div class="modal" on:click|stopPropagation>
       <h3 id="dirty-title">Worktree has uncommitted changes</h3>
       <p class="modal-body">
         Switching to <code>{dirtyCheckout.branch}</code> in
@@ -2089,15 +2103,18 @@
         {dirtyCheckout.message}
       </p>
       <div class="modal-actions">
-        <button class="modal-action primary" on:click={() => resolveDirty("stash")}>
+        <button
+          class="modal-action modal-action-recommended"
+          on:click={() => resolveDirty("stash")}
+        >
           Stash &amp; switch
           <span class="modal-hint">git stash push (recoverable with stash pop)</span>
         </button>
-        <button class="modal-action danger" on:click={() => resolveDirty("force")}>
+        <button class="modal-action modal-action-danger" on:click={() => resolveDirty("force")}>
           Force &amp; switch
           <span class="modal-hint">discards uncommitted changes — cannot be undone</span>
         </button>
-        <button class="modal-action neutral" on:click={() => resolveDirty("cancel")}>
+        <button class="modal-action modal-action-neutral" on:click={() => resolveDirty("cancel")}>
           Cancel
         </button>
       </div>
@@ -2714,20 +2731,23 @@
   .modal-action:hover {
     background: var(--surface-3);
   }
-  .modal-action.primary {
-    border-color: color-mix(in srgb, var(--brand) 50%, transparent);
+  /* Recommended action: a subtle brand-tinted border all around,
+     background stays a dark surface so the title and hint are
+     legible. No accent stripe — just a quiet hint of brand. */
+  .modal-action-recommended {
+    border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-3));
   }
-  .modal-action.primary:hover {
-    border-color: var(--brand);
+  .modal-action-recommended:hover {
+    background: color-mix(in srgb, var(--brand) 12%, var(--surface-2));
   }
-  .modal-action.danger {
+  .modal-action-danger {
     border-color: color-mix(in srgb, #efaaaa 35%, transparent);
     color: #efcccc;
   }
-  .modal-action.danger:hover {
+  .modal-action-danger:hover {
     background: color-mix(in srgb, var(--error-bg) 60%, var(--surface-2));
   }
-  .modal-action.neutral {
+  .modal-action-neutral {
     background: transparent;
     color: var(--text-muted);
   }
