@@ -194,6 +194,29 @@ describe("getDiff against real git", () => {
     expect(diff).toContain("a.txt");
     expect(diff).toContain("+v1");
   });
+
+  test("untracked embedded git repo is labelled as such (unregistered submodule)", async () => {
+    // The real-world version: someone `git clone`-ed a dependency into
+    // a subdirectory of their repo without `git submodule add`-ing it.
+    // The inner `.git/` makes `git ls-files --others` treat the whole
+    // dir as opaque; we surface it with a distinct label so the user
+    // knows the fix is `git submodule add` or `.gitignore`, not `git add`.
+    const repo = await tempRepo();
+    const inner = join(repo, "modules", "lib");
+    await $`mkdir -p ${inner}`.quiet();
+    await $`git -C ${inner} init -q -b main`.quiet();
+    await $`git -C ${inner} config user.email t@example.com`.quiet();
+    await $`git -C ${inner} config user.name T`.quiet();
+    await writeFile(join(inner, "README.md"), "hi\n");
+    await $`git -C ${inner} add README.md`.quiet();
+    await $`git -C ${inner} commit -m initial -q`.quiet();
+
+    const diff = await getDiff(repo);
+    expect(diff).toMatch(/diff --git a\/modules\/lib\/ b\/modules\/lib\//);
+    expect(diff).toContain("new file mode 040000");
+    expect(diff).toContain("untracked embedded git repo");
+    expect(diff).toContain("git submodule add");
+  });
 });
 
 describe("resolveSubmoduleWorktreePaths", () => {

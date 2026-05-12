@@ -1198,6 +1198,23 @@
       diffLoading = { ...diffLoading, [wtPath]: false };
     }
   }
+  /** Auto-fetch the workdir diff for every row whose status is dirty,
+   *  so the Unstaged tab + diff body can render under the row head
+   *  without the user having to expand the History chevron first.
+   *  Idempotent: skipped when the diff is already cached or in flight. */
+  $: for (const row of rows) {
+    const wt = row.wt;
+    if (!wt) continue;
+    const summary = statusSummary(wt.fileStatus);
+    if (
+      summary.text !== "clean" &&
+      workdirDiff[wt.path] === undefined &&
+      !diffLoading[wt.path]
+    ) {
+      void loadWorkdirDiff(wt.path);
+    }
+  }
+
   function setDiffTab(wtPath: string, tab: DiffTab) {
     diffTab = { ...diffTab, [wtPath]: tab };
     if (tab === "workdir" && workdirDiff[wtPath] === undefined)
@@ -2429,35 +2446,13 @@
                 {/if}
               {/if}
 
-              <!-- "Topmost commit" row: chevron + last-commit summary,
-                   placed BELOW the sessions strip so the chat columns
-                   are the row's primary content. The chevron toggles
-                   the full History block below. -->
-              <div class="row-commit muted small">
-                <button
-                  class="chevron"
-                  class:open={commitsExpanded[wt.path]}
-                  title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                  aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
-                  on:click={() => toggleCommits(wt.path)}
-                >
-                  <span class="arrow">▸</span>
-                </button>
-                <span class="sha">{wt.lastCommit.shortSha}</span>
-                <span class="commit-subject">{wt.lastCommit.subject}</span>
-                <span class="commit-author">{wt.lastCommit.author}</span>
-                <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
-              </div>
-
-              {#if commitsExpanded[wt.path]}
-                <div class="expanded">
-                  {#if zenRowKey === row.key}
-                    <button
-                      class="hide-history-btn"
-                      title="Hide history / staging view"
-                      on:click={() => toggleCommits(wt.path)}
-                    >Hide history ✕</button>
-                  {/if}
+              <!-- Inline diff block: surfaces unstaged/staged changes
+                   without requiring the user to expand the History
+                   chevron first. Only renders when the worktree is
+                   dirty; the workdir diff auto-loads via the
+                   reactive `$:` block at script scope. -->
+              {#if summary.text !== "clean" || wt.fileStatus.staged > 0}
+                <div class="inline-diff">
                   <div class="tabs-row">
                     <div class="tabs">
                       <button
@@ -2508,7 +2503,38 @@
                       <p class="muted small nopad">Nothing staged.</p>
                     {/if}
                   {/if}
+                </div>
+              {/if}
 
+              <!-- "Topmost commit" row: chevron + last-commit summary,
+                   placed BELOW the sessions strip so the chat columns
+                   are the row's primary content. The chevron toggles
+                   the full History block below. -->
+              <div class="row-commit muted small">
+                <button
+                  class="chevron"
+                  class:open={commitsExpanded[wt.path]}
+                  title={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                  aria-label={commitsExpanded[wt.path] ? "Hide history" : "Show history"}
+                  on:click={() => toggleCommits(wt.path)}
+                >
+                  <span class="arrow">▸</span>
+                </button>
+                <span class="sha">{wt.lastCommit.shortSha}</span>
+                <span class="commit-subject">{wt.lastCommit.subject}</span>
+                <span class="commit-author">{wt.lastCommit.author}</span>
+                <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
+              </div>
+
+              {#if commitsExpanded[wt.path]}
+                <div class="expanded">
+                  {#if zenRowKey === row.key}
+                    <button
+                      class="hide-history-btn"
+                      title="Hide history / staging view"
+                      on:click={() => toggleCommits(wt.path)}
+                    >Hide history ✕</button>
+                  {/if}
                   <h3 class="commits-heading">History</h3>
                   <div class="commits">
                     {#if commitsLoading[wt.path] && !commitsByPath[wt.path]}
@@ -4051,6 +4077,15 @@
 
   /* Expanded section */
   .expanded {
+    margin-top: 0.6rem;
+    padding-left: 0.8rem;
+    border-left: 2px solid var(--surface-2);
+    min-width: 0;
+  }
+  /* Inline diff block (tabs + workdir/staged diff) that renders above
+     the row-commit when the worktree is dirty. Same indent + left rule
+     as `.expanded` so the column structure stays aligned. */
+  .inline-diff {
     margin-top: 0.6rem;
     padding-left: 0.8rem;
     border-left: 2px solid var(--surface-2);

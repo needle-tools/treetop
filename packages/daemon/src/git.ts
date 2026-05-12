@@ -1,4 +1,17 @@
 import { $ } from "bun";
+import { access } from "node:fs/promises";
+import { join as joinPath } from "node:path";
+
+/** Best-effort filesystem existence check. Returns false on any error so
+ *  callers can use it as a pure boolean test. */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface Worktree {
   path: string;
@@ -520,14 +533,39 @@ export async function getDiff(
       const untracked = await $`git -C ${worktreePath} ls-files --others --exclude-standard`
         .quiet()
         .text();
-      const untrackedFiles = untracked.split("\n").filter((l) => l.length > 0);
-      if (untrackedFiles.length > 0) {
+      const untrackedEntries = untracked.split("\n").filter((l) => l.length > 0);
+      if (untrackedEntries.length > 0) {
         const synthetic: string[] = [];
-        for (const file of untrackedFiles) {
-          // `git diff --no-index` exits 1 when files differ (which is
-          // always, for /dev/null vs a real file) — .nothrow() lets us
-          // capture the diff body without throwing on that exit code.
-          const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
+        for (const entry of untrackedEntries) {
+          if (entry.endsWith("/")) {
+            // `git ls-files --others` collapses entire untracked dirs into
+            // one entry. We can't sensibly diff every file inside (one
+            // such dir had 16k files in practice). Two flavours to
+            // distinguish for the user:
+            //   - **embedded git repo** (a submodule that was never
+            //     registered with `git submodule add` — has its own
+            //     `.git/`). Common when you `git clone …` into a
+            //     subdirectory by mistake or vendor a dependency.
+            //   - plain untracked directory.
+            const abs = joinPath(worktreePath, entry);
+            const isEmbeddedRepo = await fileExists(joinPath(abs, ".git"));
+            const label = isEmbeddedRepo
+              ? "(untracked embedded git repo — register with `git submodule add` or add to .gitignore)"
+              : "(untracked directory)";
+            synthetic.push(
+              `diff --git a/${entry} b/${entry}\n` +
+              `new file mode 040000\n` +
+              `--- /dev/null\n` +
+              `+++ b/${entry}\n` +
+              `@@ -0,0 +1,1 @@\n` +
+              `+${label}\n`,
+            );
+            continue;
+          }
+          // Regular file — `git diff --no-index` exits 1 when files
+          // differ (which is always, for /dev/null vs a real file).
+          // .nothrow() lets us capture the body without throwing.
+          const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
             .quiet()
             .nothrow();
           const text = result.stdout.toString();
