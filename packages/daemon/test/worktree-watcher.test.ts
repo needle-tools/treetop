@@ -65,15 +65,59 @@ describe("watchWorktree", () => {
     }
   });
 
-  test("ignores changes inside .git/", async () => {
+  test("ignores chatty writes inside .git/ (objects, logs, lock files)", async () => {
     const dir = await tempDir();
-    await mkdir(join(dir, ".git", "objects"), { recursive: true });
+    await mkdir(join(dir, ".git", "objects", "ab"), { recursive: true });
+    await mkdir(join(dir, ".git", "logs", "refs", "heads"), { recursive: true });
     let calls = 0;
     const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
     try {
-      await writeFile(join(dir, ".git", "objects", "abc"), "obj");
+      await writeFile(join(dir, ".git", "objects", "ab", "cdef"), "obj");
+      await writeFile(join(dir, ".git", "logs", "HEAD"), "reflog line");
+      await writeFile(join(dir, ".git", "logs", "refs", "heads", "main"), "x");
+      await writeFile(join(dir, ".git", "index.lock"), "lock");
+      await writeFile(join(dir, ".git", "HEAD.lock"), "lock");
+      await writeFile(join(dir, ".git", "COMMIT_EDITMSG"), "wip");
       await sleep(SETTLE_MS);
       expect(calls).toBe(0);
+    } finally {
+      stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // After `git commit`, git writes .git/HEAD, .git/refs/heads/<branch>,
+  // and .git/index — all of which mean fileStatus/lastCommit just
+  // changed in the worktree. The watcher must let these through so the
+  // dashboard can re-fetch /api/repos and clear the stale "Unstaged 1"
+  // count it had before the commit.
+  test("fires for HEAD / refs/ / index writes inside .git/", async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, ".git", "refs", "heads"), { recursive: true });
+    let calls = 0;
+    const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
+    try {
+      await writeFile(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+      await writeFile(join(dir, ".git", "index"), "fake-index");
+      await writeFile(join(dir, ".git", "refs", "heads", "main"), "deadbeef\n");
+      await sleep(SETTLE_MS);
+      expect(calls).toBe(1);
+    } finally {
+      stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fires for packed-refs and FETCH_HEAD writes inside .git/", async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, ".git"), { recursive: true });
+    let calls = 0;
+    const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
+    try {
+      await writeFile(join(dir, ".git", "packed-refs"), "# pack-refs\n");
+      await writeFile(join(dir, ".git", "FETCH_HEAD"), "abc123\trefs/heads/main\n");
+      await sleep(SETTLE_MS);
+      expect(calls).toBe(1);
     } finally {
       stop();
       await rm(dir, { recursive: true, force: true });
