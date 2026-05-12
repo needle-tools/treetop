@@ -25,6 +25,7 @@ import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { ShellsLog } from "./shells";
+import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
@@ -717,6 +718,28 @@ const server = Bun.serve<TermWsData, never>({
                 `supergit daemon: shells.writeHeader failed for ${handle.id}: ${err}`,
               );
             });
+          shellTermIds.add(handle.id);
+          // Cleanup-only subscriber: when the PTY exits we drop the
+          // in-memory bookkeeping and append a closing `exit` entry so
+          // the JSONL becomes a complete transcript. We ignore onData
+          // here — keystroke capture happens in the WS message handler.
+          const cleanup = handle.subscribe({
+            onData() {},
+            onExit(info) {
+              shellTermIds.delete(handle.id);
+              clearShellInputBuffer(handle.id);
+              shellCwds.delete(handle.id);
+              void shells
+                .append(handle.id, {
+                  kind: "exit",
+                  ts: new Date().toISOString(),
+                  code: info.code,
+                  signal: info.signal,
+                })
+                .catch(() => {});
+              cleanup();
+            },
+          });
         }
         return json({ id: handle.id, pid: handle.pid });
       } catch (e) {
@@ -1423,6 +1446,25 @@ const server = Bun.serve<TermWsData, never>({
       }
       // Binary keystrokes from xterm.js — write through to the PTY.
       const buf = msg instanceof Uint8Array ? msg : new Uint8Array(msg as ArrayBuffer);
+      // For shell PTYs, also feed the keystrokes into the per-shell
+      // line buffer. Any Enter-terminated lines get appended to the
+      // shell's JSONL as `kind: "cmd"` entries — the command history
+      // transcript. cwd at log time comes from the cwd sampler's
+      // latest known value for this shell (falls back to "" if it
+      // hasn't sampled yet).
+      const termId = ws.data.termId;
+      if (shellTermIds.has(termId)) {
+        const lines = feedShellInput(termId, buf);
+        if (lines.length > 0) {
+          const ts = new Date().toISOString();
+          const cwd = shellCwds.get(termId) ?? "";
+          for (const line of lines) {
+            void shells
+              .append(termId, { kind: "cmd", ts, line, cwd })
+              .catch(() => {});
+          }
+        }
+      }
       handle.write(buf);
     },
 
@@ -1509,6 +1551,9 @@ if (FETCH_INTERVAL_MS > 0) {
 // /api/shells lookup is a direct hit.
 const SHELL_CWD_INTERVAL_MS = 5_000;
 const shellCwds = new Map<string, string>();
+/** Termids of currently-live shell PTYs. Used as an O(1) gate in the
+ *  hot WS keystroke path before we do any line-buffer work. */
+const shellTermIds = new Set<string>();
 
 async function sampleShellCwds(): Promise<void> {
   // Filter terminalBackend's full list to shell PTYs only — no point

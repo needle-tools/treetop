@@ -407,6 +407,14 @@ Implementation-wise these are just user-authored events on the event log,
 discriminated by `actor: user`. Same storage, same query path, same
 notification surface — they show up as pills in the dashboard like reminders.
 
+The single-user, file-backed companion to this — markdown notes with
+rich anchors (file:line, folder, commit, session) and a floating-overlay
+UI — is sketched separately under
+[Notes with anchors + floating overlay](#notes-with-anchors--floating-overlay)
+in the UX ideation section. The shared-multi-user surface above collapses
+to events on the log; the single-user surface below collapses to files in
+the workspace. They co-exist.
+
 **Multi-user sync (subsumed by the workspace).**
 The original "git-tracked state" idea — peer-to-peer dashboard state
 without a backend — collapsed into the workspace concept above. The
@@ -472,6 +480,11 @@ other.
 - **Auto-fetch all registered repos on a timer** so ahead/behind stays
   accurate without manual fetches. Configurable interval, default 5min;
   set `SUPERGIT_FETCH_INTERVAL_MS=0` to disable.
+- **Notes with anchors (single-user, file-backed).** Markdown notes in
+  `<workspace>/notes/*.md` with frontmatter anchors (file:line, folder,
+  commit, session). Surfaced first as a row-foldout subtab; the
+  floating-overlay UI is a follow-up sub-phase. Full design under
+  [Notes with anchors + floating overlay](#notes-with-anchors--floating-overlay).
 - **v1.1 — Live agent activity** (Claude + Codex). **Shipped.** Each
   session's JSONL is tailed with a file watcher, the translation layer
   (`sessions.ts`) normalises Claude's and Codex's wildly different
@@ -742,3 +755,75 @@ shape, slot it into the strip as a sticky-left first child when the
 row is expanded.
 
 Park as future work; the current expanded layout works for now.
+
+### Notes with anchors + floating overlay
+
+Recurring need while reviewing AI output across many repos: a
+scratchpad that *outlives the session* but stays *anchored* to the
+thing it's about. Quote from the author: "a way to keep notes and
+maybe link them to files / markdown files+lines / folders, attached
+to the UI, floats on another layer."
+
+**Data shape.** Notes as workspace files at
+`<workspace>/notes/*.md`; frontmatter carries the anchors:
+
+```yaml
+---
+id: 2026-05-13-audio-merge
+anchors:
+  - repo:needle-engine/src/audio/AudioSource.ts:42
+  - repo:needle-engine/src/audio/          # folder
+  - commit:abc123
+  - worktree:~/wt/needle/audio
+  - session:claude/abc-def
+tags: [followup, xr]
+---
+Body. Standard markdown — supergit renders it.
+```
+
+Files, not events, because notes want edit / delete / multi-line
+bodies and markdown is the right primitive. This is the single-user
+companion to the shared
+[Annotations](#views-annotations--multi-user-state) idea — those
+collapse to events on the log (one author per entry, broadcast to the
+team), these collapse to files in the workspace (full markdown,
+mutable, versions with everything else). Same workspace as source of
+truth; the two co-exist.
+
+**UI: floating overlay, anchored.** Notes don't fit cleanly into the
+row layout, so:
+
+- A draggable / pinnable card overlay (`position: fixed`, drag-to-move,
+  snap-to-edge, "always on top" of the dashboard). When the matching
+  row / file / line scrolls into view, a faint ribbon connects card
+  to anchor.
+- Gutter pin icons in the diff viewer for lines that have notes
+  anchored to them.
+- A "notes" subtab in the row foldout listing every note anchored
+  inside the worktree.
+- Global notes index (keyboard shortcut, e.g. ⌘⇧N) — side panel,
+  filterable by anchor type / tag, fuzzy search over body.
+
+**Anchor resolution is the hard half.** A `file.ts:42` anchor should
+follow renames and survive line shifts. Cheapest start: store
+verbatim, mark "stale" when they no longer resolve, let the user
+re-anchor by clicking the warning chip. Smarter pass: `git log
+--follow` for rename tracking, then a fuzzy match on the snippet
+that was at `:42` when the anchor was created.
+
+**Phasing.**
+- v1.x — file-backed storage, anchor types (file, file:line, folder,
+  commit), a row foldout subtab, plain markdown rendering. No
+  floating overlay yet — start with the row-anchored surface that
+  matches the rest of the dashboard.
+- v1.y — the floating-overlay card + gutter pins. UX-heavy; prototype
+  before locking interaction model.
+- v2 — stale-anchor handling + smart migration via `git log --follow`.
+- v2+ — folds the multi-user case back into the
+  [Annotations](#views-annotations--multi-user-state) story.
+
+**Cost estimate.** v1.x storage layer + foldout subtab is small
+(~300 LOC daemon + UI). The floating overlay is the open-ended part —
+half a week of UX prototyping, easy to scope-creep. Don't ship the
+overlay until the foldout surface has been used enough to know what
+notes are really for.

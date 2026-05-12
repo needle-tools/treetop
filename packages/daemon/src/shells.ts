@@ -50,7 +50,18 @@ export interface ShellExitEntry {
   signal?: string;
 }
 
-export type ShellEntry = ShellHeader | ShellExitEntry;
+/** A single Enter-terminated command line captured from the user's
+ *  keystrokes. `cwd` is the daemon's latest-known working directory for
+ *  this shell at the moment the line was flushed (best-effort; may lag
+ *  by up to SHELL_CWD_INTERVAL_MS). */
+export interface ShellCmdEntry {
+  kind: "cmd";
+  ts: string;
+  line: string;
+  cwd: string;
+}
+
+export type ShellEntry = ShellHeader | ShellExitEntry | ShellCmdEntry;
 
 /** Read-side projection of a shell record. `alive` reflects whether the
  *  termId is still present in `terminalBackend` at lookup time; the daemon
