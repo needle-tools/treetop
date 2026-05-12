@@ -26,6 +26,11 @@
    *  shell confirms, …). Parent uses it to outline the column so the
    *  user notices the agent's blocked. */
   export let onAwaitingChange: (awaiting: boolean) => void = () => {};
+  /** When set, skip spawning a new PTY and attach to this existing one
+   *  via WS. Used to reattach to live shells after a page reload (the
+   *  daemon's GET /api/shells returns the live termIds + their worktrees).
+   *  `cmd` and `cwd` are ignored when this is set. */
+  export let attachTermId: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -39,18 +44,25 @@
 
   async function spawnPtyAndConnect() {
     try {
-      const cols = xterm?.cols ?? 80;
-      const rows = xterm?.rows ?? 24;
-      const res = await fetch("/api/terminals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cmd, cwd, cols, rows, ownerId, procName }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      let id: string;
+      if (attachTermId) {
+        // Reattach path — daemon already has this PTY alive (see GET
+        // /api/shells). Skip the spawn POST and go straight to WS.
+        id = attachTermId;
+      } else {
+        const cols = xterm?.cols ?? 80;
+        const rows = xterm?.rows ?? 24;
+        const res = await fetch("/api/terminals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cmd, cwd, cols, rows, ownerId, procName }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        ({ id } = (await res.json()) as { id: string; pid: number });
       }
-      const { id } = (await res.json()) as { id: string; pid: number };
       terminalId = id;
       onSpawn(id);
       // Build WS URL relative to current origin so it works behind the

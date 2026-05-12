@@ -538,6 +538,35 @@
     }
   }
 
+  /** Reattach Terminal columns that were live before this page reload.
+   *  The daemon's GET /api/shells returns the surviving shell PTYs, each
+   *  with its worktree path. We add a `__attached__:shell:<termId>`
+   *  pseudo-source per shell to the matching worktree's column list;
+   *  TerminalView skips the spawn step when given `attachTermId`. */
+  async function restoreLiveShells() {
+    try {
+      const res = await fetch("/api/shells");
+      if (!res.ok) return;
+      const list = (await res.json()) as Array<{
+        termId: string;
+        wt: string;
+        spawnCwd: string;
+        currentCwd?: string;
+      }>;
+      const next = { ...openSessionsByWt };
+      for (const sh of list) {
+        const source = `__attached__:shell:${sh.termId}`;
+        const existing = next[sh.wt] ?? [];
+        if (existing.some((s) => s.source === source)) continue;
+        next[sh.wt] = [{ agent: "shell", source }, ...existing];
+      }
+      openSessionsByWt = next;
+    } catch {
+      // best-effort — failing to restore just means the user has to
+      // re-open their Terminal columns manually after a reload.
+    }
+  }
+
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
    *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
    *  key change unmounts the old TerminalView (closing its WS, which
@@ -1574,6 +1603,7 @@
     void loadInstalledAgents();
     void loadEditors();
     void loadDefaultShell();
+    void restoreLiveShells();
     void load().then(() => {
       for (const [path, expanded] of Object.entries(commitsExpanded)) {
         if (expanded) void loadCommitsInitial(path);
@@ -2373,7 +2403,7 @@
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
                       >
-                        {#if s.source.startsWith("__new__:")}
+                        {#if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
                           <!-- Transient column: a brand-new agent we just
                                spawned, before its JSONL has been created on
                                disk. Renders the TUI directly. Once the user
@@ -2445,6 +2475,9 @@
                               cmd={s.agent === "shell" ? [defaultShell] : [s.agent]}
                               cwd={wt.path}
                               procName={`supergit-tui-new-${s.agent}`}
+                              attachTermId={s.source.startsWith("__attached__:")
+                                ? s.source.split(":").pop()
+                                : undefined}
                               onAwaitingChange={(awaiting) => {
                                 transientAwaiting = {
                                   ...transientAwaiting,

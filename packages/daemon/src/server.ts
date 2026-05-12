@@ -24,6 +24,7 @@ import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
+import { ShellsLog } from "./shells";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { terminalBackend } from "./terminals/node-pty-backend";
@@ -76,6 +77,7 @@ process.title =
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
+const shells = await ShellsLog.open(WORKSPACE_PATH);
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 console.log(`supergit daemon: listening on http://localhost:${PORT}`);
@@ -409,6 +411,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
           { method: "POST", path: "/api/terminals", body: { cmd: ["string"], cwd: "string", cols: "number?", rows: "number?", ownerId: "string?" }, description: "spawn a PTY via the supernode helper. Returns { id, pid }." },
           { method: "GET", path: "/api/terminals", description: "list active terminals. Optional ?ownerId=<id> filter." },
+          { method: "GET", path: "/api/shells", description: "list currently-live shell-column PTYs whose `<workspace>/shells/<termId>.jsonl` header is on disk. The UI calls this on mount to reattach Terminal columns after a page reload." },
           { method: "DELETE", path: "/api/terminals/:id", description: "SIGTERM (then SIGKILL after 500ms) the PTY." },
           { method: "WS", path: "/api/terminals/:id/io", description: "bidirectional byte stream: binary frames are PTY bytes both ways; text frames are JSON control (e.g. {type:'resize',cols,rows})." },
           { method: "GET", path: "/api/processes", description: "list of currently-alive PTYs with a live cpu%/memory sample per pid. Feeds the dashboard's TUIs popover." },
@@ -696,6 +699,25 @@ const server = Bun.serve<TermWsData, never>({
           agent: agentHint,
           size: { cols: body.cols ?? 80, rows: body.rows ?? 24 },
         });
+        // For shell PTYs, persist a header into <workspace>/shells/<id>.jsonl
+        // so the workspace (not the browser's localStorage) is the source
+        // of truth for "which Terminal columns are open." On reload the UI
+        // hits GET /api/shells, gets the live set, and reattaches.
+        if (agentHint === "shell") {
+          await shells
+            .writeHeader({
+              kind: "header",
+              termId: handle.id,
+              wt: body.cwd,
+              spawnCwd: body.cwd,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((err) => {
+              console.error(
+                `supergit daemon: shells.writeHeader failed for ${handle.id}: ${err}`,
+              );
+            });
+        }
         return json({ id: handle.id, pid: handle.pid });
       } catch (e) {
         return json(
@@ -703,6 +725,24 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    // List currently-live shell columns (PTY still alive AND its header
+    // file is still present in `<workspace>/shells/`). The UI calls this
+    // on mount to repopulate Terminal columns after a reload.
+    if (url.pathname === "/api/shells" && req.method === "GET") {
+      const headers = await shells.listHeaders();
+      const live = headers
+        .filter((h) => terminalBackend.get(h.termId) !== undefined)
+        .map((h) => ({
+          termId: h.termId,
+          wt: h.wt,
+          spawnCwd: h.spawnCwd,
+          createdAt: h.createdAt,
+          currentCwd: h.spawnCwd, // upgraded in step #3
+          alive: true,
+        }));
+      return json(live);
     }
 
     if (url.pathname === "/api/terminals" && req.method === "GET") {
