@@ -3128,20 +3128,29 @@
     min-width: 1.2rem;
     text-align: center;
   }
-  .actions-popover {
+  /* Shared shell for every popover in the dashboard. Two concrete
+     anchorings layer on top: `.actions-popover` (header-bar buttons,
+     anchored top-right) and `.agents-popover` (worktree-row buttons,
+     anchored top-left). Each variant adds *only* its anchoring +
+     sizing; the surface, border, radius, shadow, and scroll behaviour
+     live here so we don't keep restating them. */
+  .actions-popover,
+  .agents-popover {
     position: absolute;
+    overflow: auto;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .actions-popover {
     top: calc(100% + 0.4rem);
     right: 0;
     width: 380px;
     max-width: 90vw;
     max-height: 520px;
-    overflow: auto;
-    background: var(--surface-1);
-    border: 1px solid var(--surface-2);
-    border-radius: var(--radius-md);
     padding: 0.6rem 0.7rem;
     z-index: 100;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   }
   .popover-head {
     font-size: 0.75rem;
@@ -4144,8 +4153,9 @@
   .agent-more:hover {
     filter: brightness(1.2);
   }
+  /* See the grouped `.actions-popover, .agents-popover` rule above for
+     the shared shell (surface, border, radius, shadow, overflow). */
   .agents-popover {
-    position: absolute;
     top: calc(100% + 0.3rem);
     left: 0;
     z-index: 50;
@@ -4155,12 +4165,7 @@
     min-width: 380px;
     max-width: min(250ch, 90vw);
     max-height: 60vh;
-    overflow: auto;
-    background: var(--surface-1);
-    border: 1px solid var(--surface-2);
-    border-radius: var(--radius-md);
     padding: 0.4rem 0.5rem;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   }
   .agents-list {
     list-style: none;
