@@ -34,11 +34,22 @@ await killOnPort(7779);
 // across reloads — we measured 50GB RSS after ~1h of editing. --watch
 // is a clean restart, so memory stays flat; cost is a manual browser
 // reload to reconnect SSE/WebSocket.
-const daemon = Bun.spawn(["bun", "--watch", "run", "src/server.ts"], {
-  cwd: "packages/daemon",
-  stdout: "inherit",
-  stderr: "inherit",
-});
+// argv[0] rewrite so `ps` shows "supergit dev" instead of
+// "bun --watch run src/server.ts". See dev-portless.ts for the
+// same trick; same reason (Bun's process.title doesn't propagate
+// to the kernel on macOS).
+const daemon = Bun.spawn(
+  [
+    "bash",
+    "-c",
+    "exec -a 'supergit dev' bun --watch run src/server.ts",
+  ],
+  {
+    cwd: "packages/daemon",
+    stdout: "inherit",
+    stderr: "inherit",
+  },
+);
 
 const ui = Bun.spawn(["bun", "run", "dev"], {
   cwd: "packages/ui",

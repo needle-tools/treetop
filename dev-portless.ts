@@ -42,12 +42,24 @@ for (const [k, v] of Object.entries(process.env)) {
 // across reloads — we measured 50GB RSS after ~1h of editing. --watch
 // is a clean restart, so memory stays flat; cost is a manual browser
 // reload to reconnect SSE/WebSocket.
-const daemon = Bun.spawn(["bun", "--watch", "run", "src/server.ts"], {
-  cwd: "packages/daemon",
-  env: daemonEnv,
-  stdout: "inherit",
-  stderr: "inherit",
-});
+// `exec -a "supergit dev"` rewrites argv[0] so `ps` / Activity Monitor's
+// command column show "supergit dev …" instead of "bun --watch run
+// src/server.ts". Bun's process.title setter doesn't rewrite the
+// kernel-visible name on macOS, so we go through bash. Unix-only;
+// Windows callers would just see the raw bun command (acceptable).
+const daemon = Bun.spawn(
+  [
+    "bash",
+    "-c",
+    "exec -a 'supergit dev' bun --watch run src/server.ts",
+  ],
+  {
+    cwd: "packages/daemon",
+    env: daemonEnv,
+    stdout: "inherit",
+    stderr: "inherit",
+  },
+);
 
 const ui = Bun.spawn(
   ["bunx", "portless", "supergit-dev", "bun", "run", "dev"],

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "bun --hot run src/server.ts",
-    "start": "bun run src/server.ts",
+    "start": "bash -c 'exec -a \"supergit prod\" bun run src/server.ts'",
     "test": "bun test"
   },
   "type": "module",
