@@ -37,6 +37,7 @@
     upstream: string | null;
     ahead: number;
     behind: number;
+    aheadOldestTime: string | null;
   }
   interface LastCommit {
     sha: string;
@@ -46,7 +47,11 @@
     time: string;
   }
   interface AgentSession {
-    agent: "claude" | "codex" | "copilot";
+    /** "shell" is synthetic — produced client-side from `/api/shells`
+     *  so we can render Terminal sessions in the same worktree picker
+     *  alongside Claude/Codex/Copilot. The daemon only ever returns
+     *  "claude" / "codex" / "copilot" here. */
+    agent: "claude" | "codex" | "copilot" | "shell";
     cwd: string;
     lastActive: string;
     sessionId?: string;
@@ -58,6 +63,14 @@
     lastUserMessages?: string[];
     userMessageCount?: number;
     messageCount?: number;
+  }
+  interface ShellRecord {
+    termId: string;
+    wt: string;
+    spawnCwd: string;
+    currentCwd?: string;
+    createdAt: string;
+    alive: boolean;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -104,6 +117,11 @@
   let repos: Repo[] = [];
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
+  /** Shells (Terminal columns the daemon is hosting / has hosted). Used
+   *  by the worktree session picker so past + live shells appear next
+   *  to Claude/Codex agent sessions instead of hiding under a separate
+   *  affordance. Refreshed alongside /api/repos in `load()`. */
+  let allShells: ShellRecord[] = [];
   let loading = false;
   // Legacy single-string error slot — kept for code paths that still set
   // it directly. New code should call `addToast({ kind: "error", ... })`
@@ -343,6 +361,57 @@
   // any output that no longer matches the prompt pattern, or when
   // the user types something.
   let transientAwaiting: Record<string, boolean> = {};
+  /** `__new__:shell:<id>` source → daemon-assigned termId. Set by the
+   *  TerminalView's onSpawn callback in the new-session-col render
+   *  branch, used by the Dispose button to DELETE /api/terminals/:id
+   *  and then flip the column to a __transcript__: ShellView. */
+  let newShellTermIds: Record<string, string> = {};
+
+  /** Dispose a live shell column: DELETE the PTY, then swap its
+   *  source in openSessionsByWt from `__new__:shell:<id>` or
+   *  `__attached__:shell:<termId>` to `__transcript__:shell:<termId>`
+   *  so the column re-renders as ShellView (command history + Resume).
+   *  Mirrors the Claude/Codex TUI dispose flow, which flips the column
+   *  to read-mode rather than closing it outright. */
+  async function disposeShellColumn(
+    wtPath: string,
+    s: { agent: string; source: string },
+  ): Promise<void> {
+    if (s.agent !== "shell") return;
+    let termId: string | undefined;
+    if (s.source.startsWith("__attached__:shell:")) {
+      termId = s.source.split(":").pop();
+    } else if (s.source.startsWith("__new__:shell:")) {
+      termId = newShellTermIds[s.source];
+    }
+    if (!termId) {
+      // PTY hasn't been spawned yet (we'd need a daemon termId to
+      // DELETE). Fall back to a plain close — the grace timer disposes
+      // the half-spawned PTY soon enough.
+      closeSessionInWt(wtPath, s);
+      return;
+    }
+    try {
+      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, {
+        method: "DELETE",
+      }).catch(() => {});
+    } finally {
+      // Replace the source in place so the column survives but flips to
+      // ShellView. Drop the now-stale termId mapping.
+      const transcriptSource = `__transcript__:shell:${termId}`;
+      const next = { ...newShellTermIds };
+      delete next[s.source];
+      newShellTermIds = next;
+      openSessionsByWt = {
+        ...openSessionsByWt,
+        [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
+          x.source === s.source
+            ? { agent: "shell", source: transcriptSource }
+            : x,
+        ),
+      };
+    }
+  }
 
   // Per-worktree branch picker state (the dropdown that opens when the
   // user clicks the branch chip).
@@ -1020,14 +1089,18 @@
     loading = true;
     error = "";
     try {
-      const [r, e] = await Promise.all([
+      const [r, e, s] = await Promise.all([
         fetch("/api/repos"),
         fetch("/api/events"),
+        fetch("/api/shells"),
       ]);
       if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
       repos = await r.json();
       events = await e.json();
+      // /api/shells failing is non-fatal — empty list just means no
+      // shell entries surface in the worktree picker this cycle.
+      if (s.ok) allShells = (await s.json()) as ShellRecord[];
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1498,6 +1571,25 @@
     return `${Math.floor(d / 86400)}d ago`;
   }
 
+  /** Once the oldest unpushed commit is older than this, the green
+   *  "ahead" pill brightens + thickens to signal staleness. Matches
+   *  the tentative threshold in PLAN.md's reminder-rules section. */
+  const STALE_AHEAD_HOURS = 4;
+
+  function aheadStale(b: BranchStatus): boolean {
+    if (!b.aheadOldestTime) return false;
+    const ageH = (Date.now() - Date.parse(b.aheadOldestTime)) / 3_600_000;
+    return ageH >= STALE_AHEAD_HOURS;
+  }
+
+  function aheadTooltip(b: BranchStatus): string {
+    const count = b.ahead;
+    const noun = count === 1 ? "commit" : "commits";
+    const base = `${count} ${noun} to push → ${b.upstream}`;
+    if (!b.aheadOldestTime) return base;
+    return `${base} · oldest ${relTime(b.aheadOldestTime)}`;
+  }
+
   /** Build the multi-line tooltip for a session row in the agents
    *  popover: title → first user prompt → "[… N more messages …]" →
    *  last 3 (oldest-first). Falls back to the simple "last user
@@ -1573,6 +1665,42 @@
   $: visibleEvents = events.filter(
     (e) => e.type !== "undo" && e.type !== "redo",
   );
+
+  /** Map shell records into the same shape as AgentSession so the picker
+   *  can iterate one merged list. The `source` is the synthetic
+   *  attached/transcript token openSessionsByWt expects, so clicking a
+   *  picker row routes through `toggleOpenSessionInWt` unchanged. */
+  function shellToSession(sh: ShellRecord): AgentSession {
+    return {
+      agent: "shell",
+      cwd: sh.wt,
+      lastActive: sh.createdAt,
+      source: sh.alive
+        ? `__attached__:shell:${sh.termId}`
+        : `__transcript__:shell:${sh.termId}`,
+      title: sh.currentCwd ?? sh.spawnCwd,
+      sessionId: sh.termId,
+    };
+  }
+
+  /** wt.path → agents + shells merged, sorted by lastActive desc.
+   *  Drives the "+N sessions in this worktree" picker. */
+  $: pickerSessionsByWt = ((): Record<string, AgentSession[]> => {
+    const m: Record<string, AgentSession[]> = {};
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        const merged: AgentSession[] = [...(wt.agents ?? [])];
+        for (const sh of allShells) {
+          if (sh.wt === wt.path) merged.push(shellToSession(sh));
+        }
+        merged.sort(
+          (a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive),
+        );
+        m[wt.path] = merged;
+      }
+    }
+    return m;
+  })();
 
   function handleDocClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
@@ -2000,6 +2128,7 @@
               {/if}
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
+                {@const pickerSessions = pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
                 <span class="agent-wrap" data-agents-anchor={wt.path} data-new-agent-anchor={wt.path}>
                   <button
                     class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
@@ -2082,24 +2211,24 @@
                     {/if}
                   </button>
                   {/if}
-                  {#if a && wt.agents.length > 1}
+                  {#if a && pickerSessions.length > 1}
                     <button
                       class="agent-more agent-{a.agent}"
-                      title={`Pick from ${wt.agents.length} sessions in this worktree`}
+                      title={`Pick from ${pickerSessions.length} sessions in this worktree`}
                       on:click|stopPropagation={() => {
                         agentsPopoverOpen = {
                           ...agentsPopoverOpen,
                           [wt.path]: !agentsPopoverOpen[wt.path],
                         };
                       }}
-                    >+{wt.agents.length - 1}</button>
+                    >+{pickerSessions.length - 1}</button>
                     {#if agentsPopoverOpen[wt.path]}
                       <div class="agents-popover" role="menu" use:clampToViewport>
                         <div class="popover-head">
-                          {wt.agents.length} sessions in this worktree
+                          {pickerSessions.length} sessions in this worktree
                         </div>
                         <ul class="agents-list">
-                          {#each wt.agents as sess (sess.source)}
+                          {#each pickerSessions as sess (sess.source)}
                             <li>
                               <button
                                 class="agent-row brand-{sess.agent}"
@@ -2375,7 +2504,8 @@
                   {#if wt.branchStatus.ahead > 0}
                     <span
                       class="ab ab-ahead"
-                      title={`${wt.branchStatus.ahead} commit${wt.branchStatus.ahead === 1 ? "" : "s"} to push → ${wt.branchStatus.upstream}`}
+                      class:ab-ahead-stale={aheadStale(wt.branchStatus)}
+                      title={aheadTooltip(wt.branchStatus)}
                     >↑{wt.branchStatus.ahead}</span>
                   {/if}
                   {#if wt.branchStatus.behind > 0}
@@ -2512,6 +2642,13 @@
                                 title="Fullscreen this terminal (Esc to exit)"
                                 aria-label="Fullscreen"
                               >⛶</button>
+                              {#if s.agent === "shell"}
+                                <button
+                                  class="dispose-btn"
+                                  on:click={() => disposeShellColumn(wt.path, s)}
+                                  title="Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
+                                >Dispose</button>
+                              {/if}
                               <button
                                 class="close"
                                 on:click={() => closeSessionInWt(wt.path, s)}
@@ -2525,6 +2662,17 @@
                               attachTermId={s.source.startsWith("__attached__:")
                                 ? s.source.split(":").pop()
                                 : undefined}
+                              onSpawn={(id) => {
+                                // Capture the daemon-assigned termId for
+                                // __new__: sources so disposeShellColumn
+                                // can DELETE /api/terminals/:id later.
+                                if (s.source.startsWith("__new__:shell:")) {
+                                  newShellTermIds = {
+                                    ...newShellTermIds,
+                                    [s.source]: id,
+                                  };
+                                }
+                              }}
                               onAwaitingChange={(awaiting) => {
                                 transientAwaiting = {
                                   ...transientAwaiting,
@@ -3809,6 +3957,26 @@
     line-height: 1;
     cursor: pointer;
   }
+  /* Mirror SessionView's `.resume-btn.dispose-btn` so the Dispose
+     affordance reads identically between AI session columns and
+     regular-terminal columns: transparent surface, thin border, small
+     muted text, soft-red tint to signal "destructive but reversible". */
+  .new-session-head .dispose-btn {
+    flex: 0 0 auto;
+    align-self: center;
+    background: color-mix(in srgb, var(--error-bg) 50%, transparent);
+    color: #efaaaa;
+    border: 1px solid color-mix(in srgb, #efaaaa 30%, transparent);
+    padding: 0.25rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .new-session-head .dispose-btn:hover:not(:disabled) {
+    color: #ffcaca;
+    border-color: color-mix(in srgb, #efaaaa 55%, transparent);
+  }
   .new-session-head .restart-btn {
     margin-left: auto;
   }
@@ -3819,13 +3987,19 @@
      claims the auto-margin (or close does if restart isn't there),
      and the rest just butt up against it. */
   .new-session-head .restart-btn + .fullscreen-btn,
-  .new-session-head .fullscreen-btn + .close {
+  .new-session-head .fullscreen-btn + .dispose-btn,
+  .new-session-head .fullscreen-btn + .close,
+  .new-session-head .dispose-btn + .close {
     margin-left: 0;
   }
   .new-session-head .restart-btn:hover,
   .new-session-head .fullscreen-btn:hover {
     color: var(--text-1);
     background: var(--surface-3);
+  }
+  .new-session-head .dispose-btn:hover {
+    background: var(--surface-3);
+    color: var(--text-1);
   }
   .new-session-head .close:hover {
     background: var(--error-bg);
@@ -4163,6 +4337,15 @@
   .ab-ahead {
     background: var(--chip-green-bg);
     color: var(--chip-green-text);
+  }
+  /* Stale variant: the oldest unpushed commit is older than
+     STALE_AHEAD_HOURS. Keep the chip green so behind=orange stays
+     distinct, but brighten the text and thicken the outline so the
+     pill *reads as a nudge* in a glanceable row. The 1px green ring
+     uses currentColor so it picks up the brightened text colour. */
+  .ab-ahead-stale {
+    color: color-mix(in srgb, var(--chip-green-text) 100%, white 15%);
+    box-shadow: 0 0 0 1px currentColor;
   }
   /* Behind = upstream has commits you don't. Orange = stale / needs
      attention, parallel to the dirty-status dot. */

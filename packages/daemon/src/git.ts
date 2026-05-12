@@ -32,6 +32,11 @@ export interface BranchStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /** ISO timestamp of the oldest commit on local that isn't on upstream.
+   *  Null when ahead === 0 or when there's no upstream / the lookup
+   *  failed. The UI uses this to age the unpushed-commits pill so it
+   *  reads more urgently after a threshold. */
+  aheadOldestTime: string | null;
 }
 
 export interface LastCommit {
@@ -365,16 +370,32 @@ export async function getWorktreeDetails(
   worktreePath: string,
 ): Promise<WorktreeDetails> {
   try {
-    const [statusOut, logOut] = await Promise.all([
+    // Speculative third call: oldest local commit not on upstream. Errors
+    // when there's no upstream — caught into "" and discarded. Running
+    // it in parallel with status keeps the happy path one round-trip.
+    const [statusOut, logOut, aheadOldestOut] = await Promise.all([
       $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
       $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
         .quiet()
         .text()
         .catch(() => ""),
+      // `--reverse -1` doesn't work the way you'd hope — git applies
+      // `-1` *before* the reverse, so it returns the newest commit, not
+      // the oldest. Emit every unpushed commit's time in reverse-chrono
+      // order (oldest first) and take the first line.
+      $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
+        .quiet()
+        .text()
+        .catch(() => ""),
     ]);
+    const branchStatus = parseBranchStatus(statusOut);
+    if (branchStatus && branchStatus.ahead > 0) {
+      const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
+      if (oldest.length > 0) branchStatus.aheadOldestTime = oldest;
+    }
     return {
       fileStatus: parseFileStatus(statusOut),
-      branchStatus: parseBranchStatus(statusOut),
+      branchStatus,
       lastCommit: parseLastCommit(logOut),
     };
   } catch {
@@ -430,7 +451,7 @@ export function parseBranchStatus(porcelain: string): BranchStatus | null {
     }
   }
   if (branch === null) return null;
-  return { branch, upstream, ahead, behind };
+  return { branch, upstream, ahead, behind, aheadOldestTime: null };
 }
 
 export function parseLastCommit(logOut: string): LastCommit | null {
@@ -535,42 +556,47 @@ export async function getDiff(
         .text();
       const untrackedEntries = untracked.split("\n").filter((l) => l.length > 0);
       if (untrackedEntries.length > 0) {
-        const synthetic: string[] = [];
-        for (const entry of untrackedEntries) {
-          if (entry.endsWith("/")) {
-            // `git ls-files --others` collapses entire untracked dirs into
-            // one entry. We can't sensibly diff every file inside (one
-            // such dir had 16k files in practice). Two flavours to
-            // distinguish for the user:
-            //   - **embedded git repo** (a submodule that was never
-            //     registered with `git submodule add` — has its own
-            //     `.git/`). Common when you `git clone …` into a
-            //     subdirectory by mistake or vendor a dependency.
-            //   - plain untracked directory.
-            const abs = joinPath(worktreePath, entry);
-            const isEmbeddedRepo = await fileExists(joinPath(abs, ".git"));
-            const label = isEmbeddedRepo
-              ? "(untracked embedded git repo — register with `git submodule add` or add to .gitignore)"
-              : "(untracked directory)";
-            synthetic.push(
-              `diff --git a/${entry} b/${entry}\n` +
-              `new file mode 040000\n` +
-              `--- /dev/null\n` +
-              `+++ b/${entry}\n` +
-              `@@ -0,0 +1,1 @@\n` +
-              `+${label}\n`,
-            );
-            continue;
-          }
-          // Regular file — `git diff --no-index` exits 1 when files
-          // differ (which is always, for /dev/null vs a real file).
-          // .nothrow() lets us capture the body without throwing.
-          const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
-            .quiet()
-            .nothrow();
-          const text = result.stdout.toString();
-          if (text.length > 0) synthetic.push(text);
-        }
+        // Spawn one git subprocess per entry in parallel. With many
+        // untracked files (e.g. 50+) the previous serial loop dominated
+        // diff latency, especially under load. Promise.all preserves
+        // array order so the joined output stays byte-identical.
+        const synthetic = (
+          await Promise.all(
+            untrackedEntries.map(async (entry) => {
+              if (entry.endsWith("/")) {
+                // `git ls-files --others` collapses entire untracked dirs into
+                // one entry. We can't sensibly diff every file inside (one
+                // such dir had 16k files in practice). Two flavours to
+                // distinguish for the user:
+                //   - **embedded git repo** (a submodule that was never
+                //     registered with `git submodule add` — has its own
+                //     `.git/`). Common when you `git clone …` into a
+                //     subdirectory by mistake or vendor a dependency.
+                //   - plain untracked directory.
+                const abs = joinPath(worktreePath, entry);
+                const isEmbeddedRepo = await fileExists(joinPath(abs, ".git"));
+                const label = isEmbeddedRepo
+                  ? "(untracked embedded git repo — register with `git submodule add` or add to .gitignore)"
+                  : "(untracked directory)";
+                return (
+                  `diff --git a/${entry} b/${entry}\n` +
+                  `new file mode 040000\n` +
+                  `--- /dev/null\n` +
+                  `+++ b/${entry}\n` +
+                  `@@ -0,0 +1,1 @@\n` +
+                  `+${label}\n`
+                );
+              }
+              // Regular file — `git diff --no-index` exits 1 when files
+              // differ (which is always, for /dev/null vs a real file).
+              // .nothrow() lets us capture the body without throwing.
+              const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
+                .quiet()
+                .nothrow();
+              return result.stdout.toString();
+            }),
+          )
+        ).filter((s) => s.length > 0);
         if (synthetic.length > 0) {
           // Append the modified-file diff *after* the synthetic untracked
           // diffs so they appear first in the list — matches the order a

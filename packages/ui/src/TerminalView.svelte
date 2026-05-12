@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { Terminal } from "xterm";
   import { FitAddon } from "@xterm/addon-fit";
+  import { WebLinksAddon } from "@xterm/addon-web-links";
   import "xterm/css/xterm.css";
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
@@ -41,6 +42,41 @@
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
   let exitInfo: { code: number; signal?: string } | null = null;
+  /** Live cwd for shell-kind terminals — polled from /api/shells so it
+   *  reflects `cd` inside the shell. Non-shell TUIs (claude/codex) never
+   *  appear in that listing; we fall back to the `cwd` prop, which is
+   *  the spawn dir and doesn't change for them. */
+  let liveCwd: string | null = null;
+  let cwdPollTimer: ReturnType<typeof setInterval> | null = null;
+  $: displayCwd = collapseHome(liveCwd ?? cwd);
+
+  function collapseHome(p: string): string {
+    if (!p) return "";
+    // The daemon sends absolute paths. Collapse a leading $HOME to "~"
+    // when we can guess it (the cwd prop always starts with /Users/<u>/
+    // on macOS — we slice from a leading match against that pattern).
+    const m = p.match(/^\/Users\/[^/]+/);
+    if (m) return "~" + p.slice(m[0].length);
+    const m2 = p.match(/^\/home\/[^/]+/);
+    if (m2) return "~" + p.slice(m2[0].length);
+    return p;
+  }
+
+  async function refreshCwd() {
+    if (!terminalId) return;
+    try {
+      const res = await fetch("/api/shells");
+      if (!res.ok) return;
+      const list = (await res.json()) as Array<{
+        termId: string;
+        currentCwd?: string;
+      }>;
+      const me = list.find((s) => s.termId === terminalId);
+      if (me?.currentCwd) liveCwd = me.currentCwd;
+    } catch {
+      // Network blip — keep the last good value.
+    }
+  }
 
   async function spawnPtyAndConnect() {
     try {
@@ -142,6 +178,11 @@
     });
     fit = new FitAddon();
     xterm.loadAddon(fit);
+    // Cmd/Ctrl-click on URLs in terminal output opens them in the
+    // user's default browser, the same as in a real terminal. The
+    // addon's default handler calls `window.open(url, "_blank")`,
+    // which the browser routes to the OS default. No callback needed.
+    xterm.loadAddon(new WebLinksAddon());
     xterm.open(containerEl);
     fit.fit();
 
@@ -163,9 +204,14 @@
     resizeObs.observe(containerEl);
 
     void spawnPtyAndConnect();
+    // Poll the daemon's live-cwd list. Cheap (~few KB) and shared across
+    // shells; non-shell TUIs (claude/codex) simply won't appear in the
+    // listing and stay on the static cwd prop.
+    cwdPollTimer = setInterval(() => void refreshCwd(), 3_000);
   });
 
   onDestroy(() => {
+    if (cwdPollTimer !== null) clearInterval(cwdPollTimer);
     resizeObs?.disconnect();
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
@@ -262,6 +308,10 @@
     on:drop={onDrop}
     role="presentation"
   ></div>
+
+  {#if displayCwd}
+    <div class="cwd-row" title={liveCwd ?? cwd}>{displayCwd}</div>
+  {/if}
 </div>
 
 <style>
@@ -280,6 +330,23 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     border: 1px solid var(--surface-2);
+  }
+  .cwd-row {
+    /* Thin breadcrumb below the terminal showing the live cwd. Mirrors a
+       prompt's "where am I" cue without taking the user's attention from
+       the terminal itself — small, muted, single-line, ellipsized. No
+       background/border so it blends into the terminal surface. */
+    padding: 0 0.6rem 0.2rem;
+    font-size: 0.7rem;
+    font-family:
+      "SF Mono", "JetBrains Mono", Menlo, Consolas,
+      "Liberation Mono", monospace;
+    color: color-mix(in srgb, #e8e8e8 45%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl; /* show the tail of long paths instead of the head */
+    text-align: left;
   }
   .xterm-host {
     flex: 1;

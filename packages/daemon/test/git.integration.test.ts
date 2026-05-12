@@ -88,6 +88,58 @@ describe("getWorktreeDetails against real git", () => {
     expect(details.fileStatus.unstaged).toBe(1);
     expect(details.fileStatus.staged).toBe(0);
   });
+
+  // aheadOldestTime drives the "stale unpushed" pill in the UI. The
+  // contract: when ahead > 0 and an upstream exists, it's the ISO
+  // timestamp of the *oldest* local commit not on upstream (so the UI
+  // can compute "N hours unpushed" from the moment the first one
+  // landed). When ahead === 0 or there's no upstream, it's null.
+  test("aheadOldestTime is null when in sync with upstream", async () => {
+    const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-bare-")));
+    await $`git -C ${bare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin ${bare}`.quiet();
+    await $`git -C ${repo} push -u origin main -q`.quiet();
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.ahead).toBe(0);
+    expect(details.branchStatus?.aheadOldestTime).toBeNull();
+  });
+
+  test("aheadOldestTime is null when there's no upstream", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} commit --allow-empty -m unpushed -q`.quiet();
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.upstream).toBeNull();
+    expect(details.branchStatus?.aheadOldestTime).toBeNull();
+  });
+
+  test("aheadOldestTime is the OLDEST unpushed commit when ahead", async () => {
+    const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-bare-")));
+    await $`git -C ${bare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin ${bare}`.quiet();
+    await $`git -C ${repo} push -u origin main -q`.quiet();
+
+    // Two unpushed commits, date-pinned so we can assert exactly which
+    // one's timestamp comes back. Use a non-zero TZ offset because git
+    // canonicalises `+00:00` to `Z` on output. Older = the one whose
+    // committer-date is earlier; that's the one the UI starts the
+    // "N hours unpushed" countdown from.
+    const olderDate = "2026-01-01T10:00:00+02:00";
+    const newerDate = "2026-01-01T11:00:00+02:00";
+    await $`git -C ${repo} commit --allow-empty -m older -q --date=${olderDate}`.env({
+      ...process.env,
+      GIT_COMMITTER_DATE: olderDate,
+    }).quiet();
+    await $`git -C ${repo} commit --allow-empty -m newer -q --date=${newerDate}`.env({
+      ...process.env,
+      GIT_COMMITTER_DATE: newerDate,
+    }).quiet();
+
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.ahead).toBe(2);
+    expect(details.branchStatus?.aheadOldestTime).toBe("2026-01-01T10:00:00+02:00");
+  });
 });
 
 describe("listCommits against real git", () => {

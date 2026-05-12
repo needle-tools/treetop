@@ -764,6 +764,10 @@ const server = Bun.serve<TermWsData, never>({
     // on mount to repopulate Terminal columns after a reload.
     if (url.pathname === "/api/shells" && req.method === "GET") {
       const headers = await shells.listHeaders();
+      // Pull manual titles keyed by `shell:<termId>` so past-shell columns
+      // can show / edit a user-set name (same workspace storage the AI
+      // session titles use, just a different key prefix).
+      const titles = await workspace.listSessionTitles();
       const records = headers.map((h) => {
         const alive = terminalBackend.get(h.termId) !== undefined;
         return {
@@ -776,6 +780,7 @@ const server = Bun.serve<TermWsData, never>({
           // *something* immediately and refine on the next poll cycle.
           currentCwd: shellCwds.get(h.termId) ?? h.spawnCwd,
           alive,
+          manualTitle: titles[`shell:${h.termId}`],
         };
       });
       // Newest first so the UI's restore loop renders recent shells at
@@ -799,10 +804,12 @@ const server = Bun.serve<TermWsData, never>({
       if (!transcript) {
         return json({ error: "shell not found" }, { status: 404 });
       }
+      const titles = await workspace.listSessionTitles();
       return json({
         ...transcript,
         alive: terminalBackend.get(termId) !== undefined,
         currentCwd: shellCwds.get(termId) ?? transcript.lastCwd,
+        manualTitle: titles[`shell:${termId}`],
       });
     }
 

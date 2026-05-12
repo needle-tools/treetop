@@ -47,11 +47,72 @@
     lastCwd: string;
     alive: boolean;
     currentCwd: string;
+    manualTitle?: string;
   }
 
   let transcript: Transcript | null = null;
   let loading = false;
   let error = "";
+  /** Editable title for this past shell. Persisted via the workspace's
+   *  session-titles store under the key `shell:<termId>` so it survives
+   *  daemon restarts and shows up in the worktree session picker. */
+  let manualTitleEditing = false;
+  let manualTitleDraft = "";
+  let manualTitleSaving = false;
+  let manualTitleInputEl: HTMLInputElement | null = null;
+  $: manualTitle = transcript?.manualTitle ?? "";
+
+  function startManualTitleEdit() {
+    manualTitleDraft = manualTitle;
+    manualTitleEditing = true;
+    requestAnimationFrame(() => {
+      manualTitleInputEl?.focus();
+      manualTitleInputEl?.select();
+    });
+  }
+
+  async function saveManualTitle() {
+    const next = manualTitleDraft;
+    if (next === manualTitle) {
+      manualTitleEditing = false;
+      return;
+    }
+    manualTitleSaving = true;
+    try {
+      const res = await fetch("/api/session/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: `shell:${termId}`, title: next }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      if (transcript) {
+        transcript = { ...transcript, manualTitle: next.trim() || undefined };
+      }
+    } catch {
+      // best-effort — drop back to view-only so the user can retry
+    } finally {
+      manualTitleSaving = false;
+      manualTitleEditing = false;
+    }
+  }
+
+  function cancelManualTitleEdit() {
+    manualTitleEditing = false;
+    manualTitleDraft = "";
+  }
+
+  function onManualTitleKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void saveManualTitle();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelManualTitleEdit();
+    }
+  }
 
   async function load() {
     if (loading) return;
@@ -97,6 +158,30 @@
 <div class="session shell-session">
   <header>
     <span class="agent-pill agent-shell">shell</span>
+    {#if manualTitleEditing}
+      <input
+        class="manual-title-input"
+        bind:this={manualTitleInputEl}
+        bind:value={manualTitleDraft}
+        on:keydown={onManualTitleKey}
+        on:blur={() => void saveManualTitle()}
+        placeholder="Name this terminal…"
+        maxlength="120"
+        disabled={manualTitleSaving}
+      />
+    {:else}
+      <button
+        type="button"
+        class="manual-title"
+        class:placeholder={!manualTitle}
+        title={manualTitle
+          ? "Click to rename this past terminal"
+          : "Click to name this past terminal"}
+        on:click={startManualTitleEdit}
+      >
+        {manualTitle || "Name this terminal…"}
+      </button>
+    {/if}
     <span class="muted small">past terminal</span>
     {#if transcript}
       <span class="cwd-pill muted small" title={transcript.lastCwd}>
@@ -108,8 +193,8 @@
       class="resume-btn"
       on:click={resume}
       disabled={!transcript}
-      title="Spawn a new shell here at the last known cwd"
-    >Resume ▶</button>
+      title="Spawn a fresh shell at this past terminal's last known cwd"
+    >Resume in terminal</button>
     <button
       class="close"
       on:click={onClose}
@@ -157,6 +242,18 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    /* Single font scale for the header strip + the empty/loading/error
+       blurbs below it. .muted + .small / .agent-pill / cwd-pill / Resume
+       button / × all match. */
+    font-size: 0.7rem;
+  }
+  /* Local equivalents of the App.svelte muted/small tokens — Svelte
+     scopes styles per-component so we re-declare here. */
+  .muted {
+    color: var(--text-muted);
+  }
+  .small {
+    font-size: 0.7rem;
   }
   header {
     display: flex;
@@ -165,18 +262,24 @@
     padding: 0.4rem 0.6rem;
     border-bottom: 1px solid var(--surface-2);
   }
+  /* Mirror SessionView's `.resume-btn` so the Resume affordance reads
+     identically between AI session columns and past-shell columns:
+     transparent surface, thin border, small muted text. */
   .resume-btn {
     margin-left: auto;
-    padding: 0.2rem 0.55rem;
-    font-size: 0.75rem;
-    background: var(--surface-2);
-    border: 0;
-    color: var(--text-1);
+    flex: 0 0 auto;
+    align-self: center;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--surface-3);
+    padding: 0.25rem 0.6rem;
     border-radius: var(--radius-sm);
+    font-size: 0.7rem;
     cursor: pointer;
   }
   .resume-btn:hover:not(:disabled) {
-    background: var(--surface-3);
+    background: var(--surface-2);
+    color: var(--text-1);
   }
   .resume-btn:disabled {
     opacity: 0.5;
@@ -188,7 +291,8 @@
     border: 0;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 0.95rem;
+    font-size: 0.85rem;
+    line-height: 1;
   }
   .close:hover {
     color: var(--error-text, #ffb4ad);
@@ -221,7 +325,7 @@
   }
   .line {
     font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    font-size: 0.8rem;
+    font-size: 0.7rem;
     color: var(--text-1);
     white-space: pre-wrap;
     word-break: break-word;
@@ -252,5 +356,40 @@
     border-radius: 999px;
     background: var(--surface-2);
     color: var(--text-2);
+  }
+  /* Editable past-terminal title. Same visual language as SessionView's
+     manualTitle widget: muted placeholder when unset, plain inline button
+     when set, becomes a slim input on click. */
+  .manual-title {
+    background: transparent;
+    border: 0;
+    padding: 0.1rem 0.3rem;
+    color: var(--text-1);
+    font-size: 0.7rem;
+    font-family: inherit;
+    cursor: text;
+    border-radius: var(--radius-sm);
+    text-align: left;
+  }
+  .manual-title:hover {
+    background: var(--surface-2);
+  }
+  .manual-title.placeholder {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .manual-title-input {
+    background: var(--surface-2);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    padding: 0.1rem 0.35rem;
+    font-size: 0.7rem;
+    font-family: inherit;
+    min-width: 12rem;
+  }
+  .manual-title-input:focus {
+    outline: none;
+    border-color: var(--brand);
   }
 </style>
