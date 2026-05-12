@@ -31,7 +31,7 @@ import { terminalBackend } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
-import { sampleProcs, renameArgv, resolveAgentBinary } from "./procs";
+import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -739,7 +739,10 @@ const server = Bun.serve<TermWsData, never>({
           wt: h.wt,
           spawnCwd: h.spawnCwd,
           createdAt: h.createdAt,
-          currentCwd: h.spawnCwd, // upgraded in step #3
+          // The cwd sampler hasn't necessarily run yet for a freshly
+          // spawned shell — fall back to spawnCwd so the UI can show
+          // *something* immediately and refine on the next poll cycle.
+          currentCwd: shellCwds.get(h.termId) ?? h.spawnCwd,
           alive: true,
         }));
       return json(live);
@@ -1497,3 +1500,37 @@ if (FETCH_INTERVAL_MS > 0) {
 } else {
   console.log("supergit daemon: auto-fetch disabled (SUPERGIT_FETCH_INTERVAL_MS=0)");
 }
+
+// Per-shell live cwd cache. We sample `lsof -p <pid> -d cwd` every
+// SHELL_CWD_INTERVAL_MS and remember the latest path so GET /api/shells
+// can surface where the user has `cd`-ed to. In-memory only — a daemon
+// restart kills the helper which kills every PTY, so there's nothing
+// to persist across restarts. Map key is termId, not pid, so the
+// /api/shells lookup is a direct hit.
+const SHELL_CWD_INTERVAL_MS = 5_000;
+const shellCwds = new Map<string, string>();
+
+async function sampleShellCwds(): Promise<void> {
+  // Filter terminalBackend's full list to shell PTYs only — no point
+  // running lsof on a Claude/Codex agent process.
+  const shellRecords = terminalBackend
+    .list()
+    .filter((r) => r.agent === "shell");
+  if (shellRecords.length === 0) return;
+  const pidToTerm = new Map<number, string>();
+  for (const r of shellRecords) pidToTerm.set(r.pid, r.id);
+  const cwds = await sampleCwds([...pidToTerm.keys()]);
+  for (const [pid, cwd] of cwds) {
+    const termId = pidToTerm.get(pid);
+    if (termId) shellCwds.set(termId, cwd);
+  }
+  // Drop entries for shells that have exited (their pid is gone from
+  // pidToTerm). Iterate the cache, not the live set, so we don't keep
+  // them indefinitely.
+  for (const termId of [...shellCwds.keys()]) {
+    if (!shellRecords.some((r) => r.id === termId)) shellCwds.delete(termId);
+  }
+}
+setInterval(() => {
+  void sampleShellCwds();
+}, SHELL_CWD_INTERVAL_MS);

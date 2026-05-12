@@ -135,3 +135,47 @@ export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage
   }
   return out;
 }
+
+/**
+ * Read the current working directory of each given pid.
+ *
+ * Used to track where a shell PTY has `cd`-ed to so the dashboard can
+ * surface the live cwd and respawn at the same place on restart. macOS
+ * doesn't expose `/proc`; `lsof -p <pid> -d cwd -F n` is the portable
+ * answer (works on macOS + Linux). Output for two PIDs:
+ *
+ *   p12345
+ *   n/Users/me/git/foo
+ *   p67890
+ *   n/Users/me/git/bar
+ *
+ * Each `pN` line names a pid, the next `nPATH` line is that pid's cwd.
+ * Pids we can't read (race with exit, permission denied on someone
+ * else's process) are silently absent from the result map. Windows is
+ * unsupported — returns an empty map. */
+export async function sampleCwds(pids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (pids.length === 0) return out;
+  if (process.platform === "win32") return out;
+  const list = pids.join(",");
+  try {
+    const result = await $`lsof -p ${list} -d cwd -F n`.quiet().nothrow();
+    const text = result.stdout.toString();
+    let curPid: number | null = null;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("p")) {
+        const pid = Number(line.slice(1));
+        curPid = Number.isFinite(pid) ? pid : null;
+      } else if (line.startsWith("n") && curPid !== null) {
+        out.set(curPid, line.slice(1));
+        // Reset — lsof's `n` lines are followed by another `p` for the
+        // next pid, but defensively clear so a missing `n` doesn't
+        // smear into a later pid's slot.
+        curPid = null;
+      }
+    }
+  } catch {
+    // best-effort; UI degrades to the spawnCwd
+  }
+  return out;
+}
