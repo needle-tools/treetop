@@ -4,6 +4,7 @@
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import TerminalView from "./TerminalView.svelte";
+  import ShellView from "./ShellView.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -538,11 +539,17 @@
     }
   }
 
-  /** Reattach Terminal columns that were live before this page reload.
-   *  The daemon's GET /api/shells returns the surviving shell PTYs, each
-   *  with its worktree path. We add a `__attached__:shell:<termId>`
-   *  pseudo-source per shell to the matching worktree's column list;
-   *  TerminalView skips the spawn step when given `attachTermId`. */
+  /** Per-source cwd override for shell columns spawned via Resume.
+   *  When the user Resumes a past shell, we want the new PTY at the
+   *  *last* known cwd of that shell, not the worktree root. Keyed by
+   *  the `__new__:shell:<id>` source the Resume action created. */
+  let shellResumeCwd: Record<string, string> = {};
+
+  /** Restore shell columns from the workspace. Live shells (PTY still
+   *  alive) get an `__attached__:shell:<termId>` source so TerminalView
+   *  reattaches via WS. Dead shells get `__transcript__:shell:<termId>`
+   *  — ShellView fetches the JSONL and renders the command history with
+   *  a Resume button. */
   async function restoreLiveShells() {
     try {
       const res = await fetch("/api/shells");
@@ -552,10 +559,13 @@
         wt: string;
         spawnCwd: string;
         currentCwd?: string;
+        alive: boolean;
       }>;
       const next = { ...openSessionsByWt };
       for (const sh of list) {
-        const source = `__attached__:shell:${sh.termId}`;
+        const source = sh.alive
+          ? `__attached__:shell:${sh.termId}`
+          : `__transcript__:shell:${sh.termId}`;
         const existing = next[sh.wt] ?? [];
         if (existing.some((s) => s.source === source)) continue;
         next[sh.wt] = [{ agent: "shell", source }, ...existing];
@@ -565,6 +575,29 @@
       // best-effort — failing to restore just means the user has to
       // re-open their Terminal columns manually after a reload.
     }
+  }
+
+  /** Click handler for a past-shell's "Resume" button. Replaces the
+   *  `__transcript__:` column with a `__new__:shell:<id>` one and
+   *  remembers `lastCwd` so the render branch can pass it to TerminalView
+   *  as the spawn cwd. */
+  function resumePastShell(
+    wtPath: string,
+    transcriptSource: string,
+    lastCwd: string,
+  ) {
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const newSource = `__new__:shell:${id}`;
+    shellResumeCwd = { ...shellResumeCwd, [newSource]: lastCwd };
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((x) =>
+        x.source === transcriptSource
+          ? { agent: "shell", source: newSource }
+          : x,
+      ),
+    };
   }
 
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
@@ -2403,7 +2436,21 @@
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
                       >
-                        {#if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
+                        {#if s.source.startsWith("__transcript__:")}
+                          <!-- Read-mode column for a past shell session.
+                               Renders the captured commands from the
+                               JSONL and exposes a Resume button that
+                               spawns a new PTY at the last cwd. -->
+                          <div class="session shell-transcript-col">
+                            <ShellView
+                              termId={s.source.split(":").pop() ?? ""}
+                              wt={wt.path}
+                              onResume={(lastCwd) =>
+                                resumePastShell(wt.path, s.source, lastCwd)}
+                              onClose={() => closeSessionInWt(wt.path, s)}
+                            />
+                          </div>
+                        {:else if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
                           <!-- Transient column: a brand-new agent we just
                                spawned, before its JSONL has been created on
                                disk. Renders the TUI directly. Once the user
@@ -2473,7 +2520,7 @@
                             </header>
                             <TerminalView
                               cmd={s.agent === "shell" ? [defaultShell] : [s.agent]}
-                              cwd={wt.path}
+                              cwd={shellResumeCwd[s.source] ?? wt.path}
                               procName={`supergit-tui-new-${s.agent}`}
                               attachTermId={s.source.startsWith("__attached__:")
                                 ? s.source.split(":").pop()

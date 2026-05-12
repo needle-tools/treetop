@@ -154,4 +154,50 @@ export class ShellsLog {
     }
     return out;
   }
+
+  /** Read the full transcript of a shell: header, every command, and the
+   *  exit entry if the PTY has ended. Returns null when the file is
+   *  missing or the header line is invalid (we treat that as "no real
+   *  transcript"; the read-mode view doesn't surface those). */
+  async readTranscript(termId: string): Promise<{
+    header: ShellHeader;
+    cmds: ShellCmdEntry[];
+    exit: ShellExitEntry | null;
+    /** Most recent `cwd` from any cmd entry, falling back to spawnCwd.
+     *  Used by the UI's "Resume" button to spawn the new shell where the
+     *  user actually left off, not where the PTY originally started. */
+    lastCwd: string;
+  } | null> {
+    let text: string;
+    try {
+      text = await readFile(this.pathFor(termId), "utf-8");
+    } catch {
+      return null;
+    }
+    const lines = text.split("\n").filter((l) => l.length > 0);
+    if (lines.length === 0) return null;
+    let header: ShellHeader | null = null;
+    const cmds: ShellCmdEntry[] = [];
+    let exit: ShellExitEntry | null = null;
+    for (const line of lines) {
+      let obj: { kind?: unknown };
+      try {
+        obj = JSON.parse(line) as { kind?: unknown };
+      } catch {
+        continue;
+      }
+      if (obj.kind === "header" && header === null) {
+        header = obj as ShellHeader;
+      } else if (obj.kind === "cmd") {
+        cmds.push(obj as ShellCmdEntry);
+      } else if (obj.kind === "exit") {
+        exit = obj as ShellExitEntry;
+      }
+    }
+    if (!header) return null;
+    const lastCwd = cmds.length > 0
+      ? (cmds[cmds.length - 1]!.cwd || header.spawnCwd)
+      : header.spawnCwd;
+    return { header, cmds, exit, lastCwd };
+  }
 }

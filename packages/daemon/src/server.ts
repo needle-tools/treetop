@@ -420,7 +420,8 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
           { method: "POST", path: "/api/terminals", body: { cmd: ["string"], cwd: "string", cols: "number?", rows: "number?", ownerId: "string?" }, description: "spawn a PTY via the supernode helper. Returns { id, pid }." },
           { method: "GET", path: "/api/terminals", description: "list active terminals. Optional ?ownerId=<id> filter." },
-          { method: "GET", path: "/api/shells", description: "list currently-live shell-column PTYs whose `<workspace>/shells/<termId>.jsonl` header is on disk. The UI calls this on mount to reattach Terminal columns after a page reload." },
+          { method: "GET", path: "/api/shells", description: "list every shell-column transcript we have on disk (`<workspace>/shells/<termId>.jsonl`), with `alive: true` for those whose PTY is still running and `alive: false` for past sessions the UI can render in read-mode." },
+          { method: "GET", path: "/api/shell-transcript", description: "?termId=<id> — full transcript: header, every captured command, exit info, last cwd. Used by ShellView for past-shell read mode + the Resume button." },
           { method: "DELETE", path: "/api/terminals/:id", description: "SIGTERM (then SIGKILL after 500ms) the PTY." },
           { method: "WS", path: "/api/terminals/:id/io", description: "bidirectional byte stream: binary frames are PTY bytes both ways; text frames are JSON control (e.g. {type:'resize',cols,rows})." },
           { method: "GET", path: "/api/processes", description: "list of currently-alive PTYs with a live cpu%/memory sample per pid. Feeds the dashboard's TUIs popover." },
@@ -763,9 +764,9 @@ const server = Bun.serve<TermWsData, never>({
     // on mount to repopulate Terminal columns after a reload.
     if (url.pathname === "/api/shells" && req.method === "GET") {
       const headers = await shells.listHeaders();
-      const live = headers
-        .filter((h) => terminalBackend.get(h.termId) !== undefined)
-        .map((h) => ({
+      const records = headers.map((h) => {
+        const alive = terminalBackend.get(h.termId) !== undefined;
+        return {
           termId: h.termId,
           wt: h.wt,
           spawnCwd: h.spawnCwd,
@@ -774,9 +775,35 @@ const server = Bun.serve<TermWsData, never>({
           // spawned shell — fall back to spawnCwd so the UI can show
           // *something* immediately and refine on the next poll cycle.
           currentCwd: shellCwds.get(h.termId) ?? h.spawnCwd,
-          alive: true,
-        }));
-      return json(live);
+          alive,
+        };
+      });
+      // Newest first so the UI's restore loop renders recent shells at
+      // the front of each worktree's column strip.
+      records.sort((a, b) =>
+        a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0,
+      );
+      return json(records);
+    }
+
+    // Full transcript of one shell — header + every captured command +
+    // the exit entry if the PTY has ended. Powers the read-mode column
+    // (ShellView) that lets the user re-read past shell sessions and
+    // resume a new one at the last cwd.
+    if (url.pathname === "/api/shell-transcript" && req.method === "GET") {
+      const termId = url.searchParams.get("termId");
+      if (!termId) {
+        return json({ error: "?termId required" }, { status: 400 });
+      }
+      const transcript = await shells.readTranscript(termId);
+      if (!transcript) {
+        return json({ error: "shell not found" }, { status: 404 });
+      }
+      return json({
+        ...transcript,
+        alive: terminalBackend.get(termId) !== undefined,
+        currentCwd: shellCwds.get(termId) ?? transcript.lastCwd,
+      });
     }
 
     if (url.pathname === "/api/terminals" && req.method === "GET") {

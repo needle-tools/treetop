@@ -125,4 +125,54 @@ describe("ShellsLog", () => {
     expect(JSON.parse(lines[0]!).kind).toBe("header");
     expect(JSON.parse(lines[1]!).kind).toBe("exit");
   });
+
+  test("readTranscript reconstructs header + commands + exit + lastCwd", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    await log.writeHeader({
+      kind: "header",
+      termId: "t",
+      wt: "/wt",
+      spawnCwd: "/wt",
+      createdAt: "t0",
+    });
+    await log.append("t", { kind: "cmd", ts: "t1", line: "ls", cwd: "/wt" });
+    await log.append("t", {
+      kind: "cmd",
+      ts: "t2",
+      line: "cd sub && echo hi",
+      cwd: "/wt/sub",
+    });
+    await log.append("t", { kind: "exit", ts: "t3", code: 0 });
+
+    const tr = await log.readTranscript("t");
+    expect(tr).not.toBeNull();
+    expect(tr!.header.termId).toBe("t");
+    expect(tr!.cmds.map((c) => c.line)).toEqual(["ls", "cd sub && echo hi"]);
+    expect(tr!.exit?.code).toBe(0);
+    // Last cwd should reflect where the user `cd`-ed to, not the spawn dir.
+    expect(tr!.lastCwd).toBe("/wt/sub");
+  });
+
+  test("readTranscript falls back to spawnCwd when no cmds were captured", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    await log.writeHeader({
+      kind: "header",
+      termId: "t",
+      wt: "/wt",
+      spawnCwd: "/wt",
+      createdAt: "t0",
+    });
+    const tr = await log.readTranscript("t");
+    expect(tr).not.toBeNull();
+    expect(tr!.cmds).toEqual([]);
+    expect(tr!.lastCwd).toBe("/wt");
+  });
+
+  test("readTranscript returns null for an unknown termId", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    expect(await log.readTranscript("nope")).toBeNull();
+  });
 });
