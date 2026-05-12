@@ -18,7 +18,7 @@ import {
 } from "./git";
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
-import { getSessionResponseJson } from "./sessions";
+import { getSessionResponseJson, sessionCacheStats } from "./sessions";
 import { serveImage } from "./images";
 import { pickFolder } from "./picker";
 import { openIn, detectEditors } from "./open";
@@ -228,6 +228,13 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/health") {
       return json({ status: "ok", workspace: WORKSPACE_PATH });
+    }
+
+    // Diagnostics: snapshot of the /api/session cache. Shows entries,
+    // bounds, per-entry sizes, total bytes held. Used to find out where
+    // heapUsed is actually going when the totals don't match the cache cap.
+    if (url.pathname === "/api/debug/session-cache") {
+      return json(sessionCacheStats());
     }
 
     // Diagnostics: process.memoryUsage() + an optional forced sync GC.

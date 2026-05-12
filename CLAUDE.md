@@ -100,6 +100,17 @@ supergit/
 
 ## Running prod
 
+**Always ask before restarting prod.** Even if the user just authorized a
+code change, picking a fix is *not* the same as authorising a process
+kill. Prod runs detached and survives this shell; killing it interrupts
+whatever the user is doing in the running dashboard. The rule:
+> Whenever you would `kill -9` the prod listener (typically the one on
+> `:27787`) or otherwise restart it, **first send a one-line message
+> asking for permission** — even after the user just said "deploy this"
+> or "try X." Wait for an explicit go-ahead before issuing the kill.
+> Dev daemon restarts under `bun dev:portless` are fine without asking
+> (hot reload is the point); only prod is sensitive.
+
 - `bun run start` builds the SPA, then runs the daemon serving
   `packages/ui/dist`. Default port: **27787** (override with
   `SUPERGIT_PORT=…`). Open `http://localhost:27787`.

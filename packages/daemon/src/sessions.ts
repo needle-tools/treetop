@@ -448,6 +448,47 @@ export function clearParseCache(): void {
   sessionCache.clear();
 }
 
+/** Snapshot of the session cache for diagnostics. Reports per-entry sizes
+ *  in bytes (using the serialized `jsonNoTitle` as the proxy — it's the
+ *  exact wire size, and the parsed structure is roughly in the same
+ *  order of magnitude). Total covers the JSON strings; the live parsed
+ *  graph adds roughly another 1× on top. */
+export function sessionCacheStats(): {
+  entries: number;
+  maxEntries: number;
+  maxMessagesPerEntry: number;
+  totalJsonBytes: number;
+  perEntry: Array<{
+    path: string;
+    mtimeMs: number;
+    sizeOnDisk: number;
+    messages: number;
+    jsonBytes: number;
+    partialLineBytes: number;
+  }>;
+} {
+  let total = 0;
+  const perEntry = [...sessionCache.entries()].map(([path, e]) => {
+    const jsonBytes = Buffer.byteLength(e.jsonNoTitle, "utf-8");
+    total += jsonBytes;
+    return {
+      path,
+      mtimeMs: e.mtimeMs,
+      sizeOnDisk: e.size,
+      messages: e.parsed.messages.length,
+      jsonBytes,
+      partialLineBytes: e.partialLine.length,
+    };
+  });
+  return {
+    entries: sessionCache.size,
+    maxEntries: MAX_CACHED,
+    maxMessagesPerEntry: MAX_CACHED_MESSAGES,
+    totalJsonBytes: total,
+    perEntry,
+  };
+}
+
 function injectManualTitle(
   jsonNoTitle: string,
   manualTitle: string | undefined,
