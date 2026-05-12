@@ -563,6 +563,106 @@ describe("getSessionResponseJson cache", () => {
     const parsed = JSON.parse(raw);
     expect(parsed.manualTitle).toBe('evil "title" with\nnewline');
   });
+
+  test("appends incrementally: a second poll after one new line shows N+1 messages", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
+
+    const a = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(a.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text)).toEqual(["first"]);
+
+    // Append one line — the tail parser should pick up just the new line.
+    await appendFile(
+      path,
+      claudeLine("second", "2026-05-12T01:00:01Z") + "\n",
+    );
+    const b = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(b.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text)).toEqual(["first", "second"]);
+
+    // Append a third — same path again.
+    await appendFile(
+      path,
+      claudeLine("third", "2026-05-12T01:00:02Z") + "\n",
+    );
+    const c = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(c.messages).toHaveLength(3);
+    expect(c.messages[2]?.blocks[0]?.text).toBe("third");
+  });
+
+  test("defers a partial last line until its trailing newline arrives", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
+
+    // Prime the cache.
+    await getSessionResponseJson("claude", path);
+
+    // Write a line *without* a trailing newline — simulates an agent
+    // mid-write. The tail parser must not try to JSON.parse it yet.
+    const half = claudeLine("inprogress", "2026-05-12T01:00:01Z");
+    await appendFile(path, half);
+    const b = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(b.messages).toHaveLength(1); // still just "first"
+
+    // Finish the line by appending the missing newline.
+    await appendFile(path, "\n");
+    const c = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(c.messages).toHaveLength(2);
+    expect(c.messages[1]?.blocks[0]?.text).toBe("inprogress");
+  });
+
+  test("caps cached/returned messages at MAX_CACHED_MESSAGES (~300), keeping the most recent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    // Build a file with more than the cap. We use 400 lines — the cap is
+    // 300, so we expect the returned messages to be the last 300.
+    const lines: string[] = [];
+    for (let i = 0; i < 400; i++) {
+      lines.push(claudeLine(`msg-${i}`, `2026-05-12T01:00:00Z`));
+    }
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const a = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(a.messages).toHaveLength(300);
+    // Most recent comes last, and it's "msg-399".
+    expect(a.messages[299]?.blocks[0]?.text).toBe("msg-399");
+    // First retained one is msg-100 (we dropped msg-0..msg-99).
+    expect(a.messages[0]?.blocks[0]?.text).toBe("msg-100");
+
+    // Append a few more — cache stays bounded.
+    await appendFile(
+      path,
+      claudeLine("after-1", "2026-05-12T01:00:01Z") + "\n" +
+        claudeLine("after-2", "2026-05-12T01:00:02Z") + "\n",
+    );
+    const b = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(b.messages).toHaveLength(300);
+    expect(b.messages[299]?.blocks[0]?.text).toBe("after-2");
+    expect(b.messages[298]?.blocks[0]?.text).toBe("after-1");
+    // The trim still drops from the head — msg-102 is now the oldest kept.
+    expect(b.messages[0]?.blocks[0]?.text).toBe("msg-102");
+  });
+
+  test("falls back to a full re-parse if the file shrinks (truncation)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(
+      path,
+      claudeLine("a", "2026-05-12T01:00:00Z") + "\n" +
+        claudeLine("b", "2026-05-12T01:00:01Z") + "\n",
+    );
+    const before = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(before.messages).toHaveLength(2);
+
+    // Replace the file with shorter content — simulates the agent
+    // rolling its own log or starting fresh.
+    await writeFile(path, claudeLine("only", "2026-05-12T01:00:02Z") + "\n");
+    const after = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0]?.blocks[0]?.text).toBe("only");
+  });
 });
 
 describe("parseSessionFile", () => {

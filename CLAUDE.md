@@ -98,6 +98,41 @@ supergit/
 - `bun run test:coverage` → emits a line/function coverage table.
 - Open `http://localhost:7779` to use the dashboard.
 
+## Running prod
+
+- `bun run start` builds the SPA, then runs the daemon serving
+  `packages/ui/dist`. Default port: **27787** (override with
+  `SUPERGIT_PORT=…`). Open `http://localhost:27787`.
+- For the clean `https://supergit.localhost/` URL, wrap with
+  `bunx portless supergit …`. The portless proxy daemon must be running
+  first; it binds `:443` and so needs sudo:
+  ```
+  sudo portless proxy start --https
+  ```
+  Then `bunx portless supergit bun run packages/daemon/src/server.ts`
+  (or just `bun start` if you keep the port in env). `supergit-dev.localhost`
+  works the same way via `bun run dev:portless`.
+- For a long-lived prod (survives this shell / a tool sandbox), launch
+  detached with `nohup … >/tmp/supergit-prod.log 2>&1 </dev/null &; disown`.
+  Background tasks spawned by AI tooling get SIGTERM'd after a few minutes;
+  detaching reparents the process to `launchd` so the harness can't kill it.
+
+### Port collision footgun (don't reintroduce)
+
+`bunx portless supergit …` exports `PORT=<supergit's port>`,
+`PORTLESS_URL=…`, and `NODE_EXTRA_CA_CERTS=…` into the daemon's env.
+Those would propagate to every PTY supergit spawns and break neighbouring
+dev servers (Vite reads `process.env.PORT` + `strictPort: true` → refuses
+to start). `packages/daemon/src/terminals/helper.mjs` strips those three
+vars before handing the env to a PTY; keep that scrub in place if you
+refactor terminal spawning.
+
+### Debug endpoint
+
+`/api/debug/mem` returns `process.memoryUsage()`. `?gc=1` runs a sync
+full GC first and reports before+after — useful when triaging "is RSS
+high because of live data or V8 reservation?".
+
 ## Test coverage
 
 We don't enforce a hard percentage gate (chasing 100% rewards bad tests),

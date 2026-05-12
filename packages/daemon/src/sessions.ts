@@ -9,7 +9,7 @@
  * third. We keep that mess contained here.
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, open } from "node:fs/promises";
 import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -110,98 +110,221 @@ function emptySession(agent: AgentKind): NormalizedSession {
   return { agent, cwd: "", sessionId: "", messages: [] };
 }
 
+/** Process a single JSONL line into `out`. Returns void; mutates `out`
+ *  in place. Used by both the batch `parseClaudeJsonl` and the
+ *  incremental tail-parser in `getSessionResponseJson`. */
+function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
+  if (!line) return;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  if (typeof obj.cwd === "string" && !out.cwd) out.cwd = obj.cwd;
+  if (typeof obj.sessionId === "string" && !out.sessionId)
+    out.sessionId = obj.sessionId;
+
+  const type = obj.type;
+  if (type !== "user" && type !== "assistant") return;
+
+  const msg = obj.message as Record<string, unknown> | undefined;
+  if (!msg) return;
+  const role: NormalizedRole =
+    msg.role === "assistant" ? "assistant" : "user";
+  const content = msg.content;
+  const blocks: NormalizedBlock[] = [];
+
+  const pushText = (txt: string) => {
+    if (isMarker(txt)) blocks.push({ type: "marker", text: txt.trim() });
+    else blocks.push(...splitInjectedTags(txt));
+  };
+
+  if (typeof content === "string") {
+    pushText(content);
+  } else if (Array.isArray(content)) {
+    for (const raw of content) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const b = raw as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        pushText(b.text);
+      } else if (b.type === "thinking" && typeof b.thinking === "string") {
+        blocks.push({ type: "thinking", text: b.thinking });
+      } else if (b.type === "tool_use") {
+        blocks.push({
+          type: "tool_use",
+          toolName: typeof b.name === "string" ? b.name : undefined,
+          toolInput: b.input,
+          toolUseId: typeof b.id === "string" ? b.id : undefined,
+        });
+      } else if (b.type === "tool_result") {
+        const text =
+          typeof b.content === "string"
+            ? b.content
+            : Array.isArray(b.content)
+              ? (b.content as Array<{ text?: unknown }>)
+                  .map((x) => (typeof x.text === "string" ? x.text : ""))
+                  .join("\n")
+              : "";
+        blocks.push({
+          type: "tool_result",
+          text,
+          toolUseId:
+            typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
+        });
+      }
+    }
+  }
+
+  if (blocks.length === 0) return;
+
+  // Claude's tool-call protocol stores tool *results* as JSONL entries
+  // with type=user, msg.role=user — that's the Anthropic API convention
+  // (results are fed back to the model as user-role messages). They are
+  // not actual user turns. If every parsed block is a tool_result,
+  // relabel the role so the UI doesn't call agent output "user".
+  const effectiveRole: NormalizedRole =
+    role === "user" && blocks.every((b) => b.type === "tool_result")
+      ? "tool"
+      : role;
+
+  const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+  if (ts && !out.startedAt) out.startedAt = ts;
+  if (ts) out.endedAt = ts;
+
+  out.messages.push({
+    role: effectiveRole,
+    blocks,
+    timestamp: ts,
+    id: typeof obj.uuid === "string" ? obj.uuid : undefined,
+  });
+}
+
 /** Normalize Claude Code's JSONL — entries with type: "user" | "assistant"
  * and a `message` object containing role + content (string OR block list). */
 export function parseClaudeJsonl(text: string): NormalizedSession {
   const out = emptySession("claude");
   if (!text) return out;
   for (const line of text.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (typeof obj.cwd === "string" && !out.cwd) out.cwd = obj.cwd;
-    if (typeof obj.sessionId === "string" && !out.sessionId)
-      out.sessionId = obj.sessionId;
-
-    const type = obj.type;
-    if (type !== "user" && type !== "assistant") continue;
-
-    const msg = obj.message as Record<string, unknown> | undefined;
-    if (!msg) continue;
-    const role: NormalizedRole =
-      msg.role === "assistant" ? "assistant" : "user";
-    const content = msg.content;
-    const blocks: NormalizedBlock[] = [];
-
-    const pushText = (txt: string) => {
-      if (isMarker(txt)) blocks.push({ type: "marker", text: txt.trim() });
-      else blocks.push(...splitInjectedTags(txt));
-    };
-
-    if (typeof content === "string") {
-      pushText(content);
-    } else if (Array.isArray(content)) {
-      for (const raw of content) {
-        if (typeof raw !== "object" || raw === null) continue;
-        const b = raw as Record<string, unknown>;
-        if (b.type === "text" && typeof b.text === "string") {
-          pushText(b.text);
-        } else if (b.type === "thinking" && typeof b.thinking === "string") {
-          blocks.push({ type: "thinking", text: b.thinking });
-        } else if (b.type === "tool_use") {
-          blocks.push({
-            type: "tool_use",
-            toolName: typeof b.name === "string" ? b.name : undefined,
-            toolInput: b.input,
-            toolUseId: typeof b.id === "string" ? b.id : undefined,
-          });
-        } else if (b.type === "tool_result") {
-          const text =
-            typeof b.content === "string"
-              ? b.content
-              : Array.isArray(b.content)
-                ? (b.content as Array<{ text?: unknown }>)
-                    .map((x) => (typeof x.text === "string" ? x.text : ""))
-                    .join("\n")
-                : "";
-          blocks.push({
-            type: "tool_result",
-            text,
-            toolUseId:
-              typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
-          });
-        }
-      }
-    }
-
-    if (blocks.length === 0) continue;
-
-    // Claude's tool-call protocol stores tool *results* as JSONL entries
-    // with type=user, msg.role=user — that's the Anthropic API convention
-    // (results are fed back to the model as user-role messages). They are
-    // not actual user turns. If every parsed block is a tool_result,
-    // relabel the role so the UI doesn't call agent output "user".
-    const effectiveRole: NormalizedRole =
-      role === "user" && blocks.every((b) => b.type === "tool_result")
-        ? "tool"
-        : role;
-
-    const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
-    if (ts && !out.startedAt) out.startedAt = ts;
-    if (ts) out.endedAt = ts;
-
-    out.messages.push({
-      role: effectiveRole,
-      blocks,
-      timestamp: ts,
-      id: typeof obj.uuid === "string" ? obj.uuid : undefined,
-    });
+    parseClaudeJsonlLine(line, out);
   }
   return out;
+}
+
+/** Per-line Codex parser, used by the batch + tail variants. */
+function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
+  if (!line) return;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  // codex 0.130+ wraps metadata in a top-level `session_meta` event
+  // and actual chat turns in `response_item` events. Handle those
+  // first; non-matching shapes fall through to the older flat
+  // format below for backwards compat with the pre-0.130 layout
+  // and our own test fixtures.
+  if (obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+    const p = obj.payload as Record<string, unknown>;
+    if (typeof p.cwd === "string" && !out.cwd) out.cwd = p.cwd;
+    if (typeof p.id === "string" && !out.sessionId) out.sessionId = p.id;
+    const ts =
+      typeof p.timestamp === "string"
+        ? p.timestamp
+        : typeof obj.timestamp === "string"
+          ? obj.timestamp
+          : undefined;
+    if (ts && !out.startedAt) out.startedAt = ts;
+    if (ts) out.endedAt = ts;
+    return;
+  }
+  if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
+    const p = obj.payload as Record<string, unknown>;
+    if (p.type !== "message") return;
+    const role: NormalizedRole = (() => {
+      if (typeof p.role !== "string") return "user";
+      if (p.role === "assistant") return "assistant";
+      if (p.role === "system" || p.role === "developer") return "system";
+      return "user";
+    })();
+    const blocks: NormalizedBlock[] = [];
+    if (Array.isArray(p.content)) {
+      for (const raw of p.content) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const b = raw as Record<string, unknown>;
+        if (typeof b.text === "string") {
+          blocks.push({ type: "text", text: b.text });
+        }
+      }
+    } else if (typeof p.content === "string") {
+      blocks.push({ type: "text", text: p.content });
+    }
+    if (blocks.length === 0) return;
+    const ts =
+      typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+    if (ts && !out.startedAt) out.startedAt = ts;
+    if (ts) out.endedAt = ts;
+    out.messages.push({ role, blocks, timestamp: ts });
+    return;
+  }
+  if (obj.type === "event_msg" || obj.type === "turn_context") {
+    // Non-message metadata events — skip rendering.
+    return;
+  }
+
+  if (typeof obj.cwd === "string" && !out.cwd) out.cwd = obj.cwd;
+  if (typeof obj.sessionId === "string" && !out.sessionId)
+    out.sessionId = obj.sessionId;
+
+  const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+  if (ts && !out.startedAt) out.startedAt = ts;
+  if (ts) out.endedAt = ts;
+
+  const role =
+    typeof obj.role === "string"
+      ? obj.role === "assistant" || obj.role === "system"
+        ? (obj.role as NormalizedRole)
+        : "user"
+      : null;
+
+  const text =
+    typeof obj.content === "string"
+      ? obj.content
+      : typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.message === "string"
+          ? obj.message
+          : null;
+
+  if (role && text) {
+    out.messages.push({
+      role,
+      blocks: [{ type: "text", text }],
+      timestamp: ts,
+    });
+    return;
+  }
+
+  // Tool call shape, best effort
+  if (
+    typeof obj.type === "string" &&
+    (obj.type === "tool_call" || obj.type === "tool_use") &&
+    typeof obj.name === "string"
+  ) {
+    out.messages.push({
+      role: "assistant",
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: obj.name,
+          toolInput: obj.input ?? obj.arguments,
+        },
+      ],
+      timestamp: ts,
+    });
+  }
 }
 
 /** Best-effort Codex parser. Format varies across versions; we look for
@@ -210,118 +333,7 @@ export function parseCodexJsonl(text: string): NormalizedSession {
   const out = emptySession("codex");
   if (!text) return out;
   for (const line of text.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    // codex 0.130+ wraps metadata in a top-level `session_meta` event
-    // and actual chat turns in `response_item` events. Handle those
-    // first; non-matching shapes fall through to the older flat
-    // format below for backwards compat with the pre-0.130 layout
-    // and our own test fixtures.
-    if (obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
-      const p = obj.payload as Record<string, unknown>;
-      if (typeof p.cwd === "string" && !out.cwd) out.cwd = p.cwd;
-      if (typeof p.id === "string" && !out.sessionId) out.sessionId = p.id;
-      const ts =
-        typeof p.timestamp === "string"
-          ? p.timestamp
-          : typeof obj.timestamp === "string"
-            ? obj.timestamp
-            : undefined;
-      if (ts && !out.startedAt) out.startedAt = ts;
-      if (ts) out.endedAt = ts;
-      continue;
-    }
-    if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
-      const p = obj.payload as Record<string, unknown>;
-      if (p.type !== "message") continue;
-      const role: NormalizedRole = (() => {
-        if (typeof p.role !== "string") return "user";
-        if (p.role === "assistant") return "assistant";
-        if (p.role === "system" || p.role === "developer") return "system";
-        return "user";
-      })();
-      const blocks: NormalizedBlock[] = [];
-      if (Array.isArray(p.content)) {
-        for (const raw of p.content) {
-          if (typeof raw !== "object" || raw === null) continue;
-          const b = raw as Record<string, unknown>;
-          if (typeof b.text === "string") {
-            blocks.push({ type: "text", text: b.text });
-          }
-        }
-      } else if (typeof p.content === "string") {
-        blocks.push({ type: "text", text: p.content });
-      }
-      if (blocks.length === 0) continue;
-      const ts =
-        typeof obj.timestamp === "string" ? obj.timestamp : undefined;
-      if (ts && !out.startedAt) out.startedAt = ts;
-      if (ts) out.endedAt = ts;
-      out.messages.push({ role, blocks, timestamp: ts });
-      continue;
-    }
-    if (obj.type === "event_msg" || obj.type === "turn_context") {
-      // Non-message metadata events — skip rendering.
-      continue;
-    }
-
-    if (typeof obj.cwd === "string" && !out.cwd) out.cwd = obj.cwd;
-    if (typeof obj.sessionId === "string" && !out.sessionId)
-      out.sessionId = obj.sessionId;
-
-    const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
-    if (ts && !out.startedAt) out.startedAt = ts;
-    if (ts) out.endedAt = ts;
-
-    const role =
-      typeof obj.role === "string"
-        ? obj.role === "assistant" || obj.role === "system"
-          ? (obj.role as NormalizedRole)
-          : "user"
-        : null;
-
-    const text =
-      typeof obj.content === "string"
-        ? obj.content
-        : typeof obj.text === "string"
-          ? obj.text
-          : typeof obj.message === "string"
-            ? obj.message
-            : null;
-
-    if (role && text) {
-      out.messages.push({
-        role,
-        blocks: [{ type: "text", text }],
-        timestamp: ts,
-      });
-      continue;
-    }
-
-    // Tool call shape, best effort
-    if (
-      typeof obj.type === "string" &&
-      (obj.type === "tool_call" || obj.type === "tool_use") &&
-      typeof obj.name === "string"
-    ) {
-      out.messages.push({
-        role: "assistant",
-        blocks: [
-          {
-            type: "tool_use",
-            toolName: obj.name,
-            toolInput: obj.input ?? obj.arguments,
-          },
-        ],
-        timestamp: ts,
-      });
-    }
+    parseCodexJsonlLine(line, out);
   }
   return out;
 }
@@ -343,37 +355,52 @@ export async function parseSessionFile(
 }
 
 /**
- * Response-string cache for /api/session, keyed by absolute path. Holds the
- * already-stringified JSON of the session (without manualTitle) so a poll on
- * an unchanged file does zero IO, zero parse, *and* zero JSON.stringify work.
+ * Bounded-tail parsed-session cache for /api/session, keyed by absolute path.
  *
- * Why this exists: SessionView polls /api/session every 2s per open column.
- * For a 30k-message Claude JSONL (~50–100 MB on disk) the previous code did
- * readFile + parseClaudeJsonl + JSON.stringify on every poll — ~300 MB
- * allocated per poll, churning V8 hard enough that RSS climbed at 10–15 MB/s
- * even with GC running. Caching the response string short-circuits all three
- * steps on a hit.
+ * Two-step bound: the cache holds **at most MAX_CACHED sessions**, and each
+ * session retains **at most MAX_CACHED_MESSAGES messages** (the most
+ * recent). The trim is what keeps memory tractable for very long sessions
+ * (e.g. 30k-message Claude JSONLs are gigabytes parsed; we keep only the
+ * tail so cache size is ~MAX_CACHED × MAX_CACHED_MESSAGES × per-message
+ * bytes, not O(disk file size)).
  *
- * Invariant: the cached JSON does *not* include `manualTitle` — it's
- * injected per-request by `injectManualTitle()` so we never need to bust the
- * cache when only the title changes.
+ * Trade-off: callers (the SPA) lose scroll-back beyond the trimmed window.
+ * The UI doesn't yet ask for older messages on demand, so this is a
+ * deliberate cap rather than a perceived limitation — and well worth it
+ * vs. multi-GB daemon RSS.
  *
- * Memory cost: at most MAX_CACHED entries × (response-size). Each entry
- * holds one string of roughly the same order as the raw JSONL. We cap small
- * because the resident parsed-session heap is the main thing we're trying to
- * keep down — see the GC analysis in /api/debug/mem.
+ * Tail-append: when a file grows we read only the new bytes since
+ * `cached.size`, parse them with the per-line helpers, and push them onto
+ * `cached.parsed.messages`. Then we trim back to MAX_CACHED_MESSAGES.
+ * `startedAt` is set on first parse and never moved — it reflects the
+ * actual session start even after we drop early messages.
+ *
+ * Partial last-line handling: a write may land between stat and read,
+ * leaving the new chunk's tail incomplete. We keep that suffix in
+ * `partialLine` and prepend it on the next append.
+ *
+ * `manualTitle` is injected per-request via string surgery on the
+ * stringified body so the cache key doesn't depend on workspace title state.
  */
-const MAX_CACHED = 4;
-interface JsonCacheEntry {
+const MAX_CACHED = 8;
+const MAX_CACHED_MESSAGES = 300;
+interface SessionCacheEntry {
   mtimeMs: number;
+  /** Number of bytes from the file we have already parsed into `parsed`. */
   size: number;
-  /** Serialized NormalizedSession with no `manualTitle` field. */
+  parsed: NormalizedSession;
+  /** Suffix of the last read that didn't end with a newline. Prepended to
+   *  the next chunk so a JSONL line split across two reads still parses. */
+  partialLine: string;
+  /** Serialized form of `parsed` without `manualTitle`. Refreshed only when
+   *  `parsed` mutates (tail-append, full re-parse); reused as-is for every
+   *  cache-hit response so we don't pay `JSON.stringify` on every poll. */
   jsonNoTitle: string;
 }
-const jsonCache = new Map<string, JsonCacheEntry>();
+const sessionCache = new Map<string, SessionCacheEntry>();
 
 export function clearParseCache(): void {
-  jsonCache.clear();
+  sessionCache.clear();
 }
 
 function injectManualTitle(
@@ -393,10 +420,100 @@ function injectManualTitle(
   );
 }
 
+/** Touch LRU: move `path` to the most-recent position. */
+function touch(path: string, entry: SessionCacheEntry): void {
+  sessionCache.delete(path);
+  sessionCache.set(path, entry);
+}
+
+function evictLRU(): void {
+  while (sessionCache.size > MAX_CACHED) {
+    const oldestKey = sessionCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    sessionCache.delete(oldestKey);
+  }
+}
+
+/** Parse a chunk of JSONL into `out` in place. The chunk is split on '\n';
+ *  if the chunk does not end in '\n', the trailing partial line is returned
+ *  so the caller can prepend it to the next chunk. */
+function appendChunk(
+  agent: AgentKind,
+  chunk: string,
+  out: NormalizedSession,
+): string {
+  const endsWithNewline = chunk.endsWith("\n");
+  const lines = chunk.split("\n");
+  const trailing = endsWithNewline ? "" : (lines.pop() ?? "");
+  // If the chunk ended with '\n', split() yields a trailing "" we want to skip.
+  if (endsWithNewline) lines.pop();
+  for (const line of lines) {
+    if (agent === "claude") parseClaudeJsonlLine(line, out);
+    else if (agent === "codex") parseCodexJsonlLine(line, out);
+  }
+  return trailing;
+}
+
+/** Trim `messages` down to the last MAX_CACHED_MESSAGES entries. In place;
+ *  no-op when already short. */
+function trimMessages(session: NormalizedSession): void {
+  if (session.messages.length > MAX_CACHED_MESSAGES) {
+    session.messages = session.messages.slice(-MAX_CACHED_MESSAGES);
+  }
+}
+
 /**
- * Return the /api/session response body as a JSON string, using a
- * (path, mtime, size)-keyed cache. The optional manualTitle is injected per
- * call so the cache key doesn't depend on workspace title state.
+ * Read only the trailing TAIL_BYTES of a session file (enough to comfortably
+ * cover MAX_CACHED_MESSAGES of typical agent JSONL lines) and parse those
+ * lines. Avoids the gigabyte-of-transient-objects cost of full-parsing a
+ * very long session just to discard 99% of the result in `trimMessages`.
+ *
+ * Returns an empty session if the file can't be opened or stat'd.
+ *
+ * Claude JSONL repeats `cwd` and `sessionId` on every entry, so even with
+ * the first (partial) line discarded we still surface those fields from
+ * any retained line. The downside is that `startedAt` reflects the
+ * earliest *retained* timestamp, not the true session start — acceptable
+ * for the dashboard's purposes; the UI doesn't show it as authoritative.
+ *
+ * For Codex, the leading `session_meta` event holds cwd/sessionId in
+ * 0.130+ — if it lives outside the tail window we miss it. That's
+ * acceptable for now (the UI degrades gracefully) and the tail path is
+ * still the right trade vs. full-parse on every cache-miss.
+ */
+const TAIL_BYTES = 8 * 1024 * 1024; // 8 MB
+
+async function tailParseSessionFile(
+  agent: AgentKind,
+  path: string,
+): Promise<NormalizedSession> {
+  if (agent !== "claude" && agent !== "codex") return emptySession(agent);
+  const fh = await open(path, "r").catch(() => null);
+  if (!fh) return emptySession(agent);
+  try {
+    const st = await fh.stat();
+    if (st.size === 0) return emptySession(agent);
+    const readSize = Math.min(TAIL_BYTES, st.size);
+    const startPos = st.size - readSize;
+    const buf = Buffer.alloc(readSize);
+    await fh.read(buf, 0, readSize, startPos);
+    let text = buf.toString("utf-8");
+    // Drop the first (potentially partial) line if we didn't start at offset 0.
+    if (startPos > 0) {
+      const firstNewline = text.indexOf("\n");
+      if (firstNewline === -1) return emptySession(agent);
+      text = text.slice(firstNewline + 1);
+    }
+    if (agent === "claude") return parseClaudeJsonl(text);
+    return parseCodexJsonl(text);
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Return the /api/session response body as a JSON string, using a tail-based
+ * parsed-session cache.
  */
 export async function getSessionResponseJson(
   agent: AgentKind,
@@ -408,26 +525,60 @@ export async function getSessionResponseJson(
     return injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
   }
 
-  const cached = jsonCache.get(path);
+  const cached = sessionCache.get(path);
+
+  // Cache hit, file unchanged: return the pre-stringified body. No
+  // parse, no stringify, no Buffer alloc — the cheapest possible path.
   if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
-    // LRU touch — re-insert so it's the newest entry.
-    jsonCache.delete(path);
-    jsonCache.set(path, cached);
+    touch(path, cached);
     return injectManualTitle(cached.jsonNoTitle, manualTitle);
   }
 
-  const session = await parseSessionFile(agent, path);
-  const jsonNoTitle = JSON.stringify(session);
+  // Cache hit, file grew: incremental append. We don't gate on mtimeMs here
+  // — size growth alone is a strong signal an active agent has written
+  // more JSONL. (mtime updates as well in practice, but Bun on some FSes
+  // batches mtime updates while size advances byte-by-byte.)
+  if (cached && st.size > cached.size && agent !== "copilot") {
+    const fh = await open(path, "r").catch(() => null);
+    if (fh) {
+      try {
+        const length = st.size - cached.size;
+        const buf = Buffer.alloc(length);
+        await fh.read(buf, 0, length, cached.size);
+        const chunk = cached.partialLine + buf.toString("utf-8");
+        const newPartial = appendChunk(agent, chunk, cached.parsed);
+        cached.partialLine = newPartial;
+        cached.size = st.size;
+        cached.mtimeMs = st.mtimeMs;
+        trimMessages(cached.parsed);
+        // Re-stringify now while we're mutating, so future cache hits on
+        // this entry don't have to.
+        cached.jsonNoTitle = JSON.stringify(cached.parsed);
+        touch(path, cached);
+        return injectManualTitle(cached.jsonNoTitle, manualTitle);
+      } finally {
+        await fh.close();
+      }
+    }
+    // open() failed — fall through to full re-parse.
+  }
 
-  jsonCache.set(path, {
+  // Cache miss, or file shrank/got rewritten: tail-read only the last
+  // TAIL_BYTES and parse those lines. The cache stays consistent with
+  // disk for *subsequent* polls because tail-append reads from
+  // `cached.size` (= st.size after this set), and any future growth is
+  // appended onto the tail-parsed messages — we never need the
+  // discarded prefix again.
+  const parsed = await tailParseSessionFile(agent, path);
+  trimMessages(parsed);
+  const jsonNoTitle = JSON.stringify(parsed);
+  sessionCache.set(path, {
     mtimeMs: st.mtimeMs,
     size: st.size,
+    parsed,
+    partialLine: "",
     jsonNoTitle,
   });
-  while (jsonCache.size > MAX_CACHED) {
-    const oldestKey = jsonCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    jsonCache.delete(oldestKey);
-  }
+  evictLRU();
   return injectManualTitle(jsonNoTitle, manualTitle);
 }

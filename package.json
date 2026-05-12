@@ -12,7 +12,7 @@
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
     "build": "cd packages/ui && bun run build",
-    "start": "bun run build && SUPERGIT_PORT=${SUPERGIT_PORT:-27787} SUPERGIT_UI_DIR=packages/ui/dist bash -c 'exec -a \"supergit prod\" bun run packages/daemon/src/server.ts'",
+    "start": "bun run build && SUPERGIT_PORT=${SUPERGIT_PORT:-27787} SUPERGIT_UI_DIR=packages/ui/dist bash -c 'exec -a \"supergit prod\" bun --smol run packages/daemon/src/server.ts'",
     "dev:portless": "bun run dev-portless.ts"
   },
   "devDependencies": {

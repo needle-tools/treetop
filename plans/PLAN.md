@@ -641,6 +641,17 @@ their own plan; group them into one polish PR when convenient.
   UI revalidates the affected row only. Watch out for node_modules /
   build-output noise — use a gitignore-aware filter or a small
   allowlist of git's own touched paths.
+- **Smooth out `/api/session` cold-start burst.** Today the cache-miss
+  path in `packages/daemon/src/sessions.ts` does a fixed 8 MB tail-read
+  via `tailParseSessionFile`. For sessions with small messages that
+  parses way more than `MAX_CACHED_MESSAGES`, only to trim immediately.
+  The transient alloc burst is what triggers Bun/JSC to grab huge OS
+  arena pages it then refuses to give back — so RSS sticks at the peak
+  even though `heapUsed` is tiny. Fix: walk the file backward in
+  256 KB chunks, counting newlines, stop once we have
+  `MAX_CACHED_MESSAGES + slack` lines. Strictly bounded; should
+  noticeably lower the RSS high-water mark on a daemon serving multiple
+  big TUI sessions.
 
 ---
 
