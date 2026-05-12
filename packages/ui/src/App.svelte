@@ -2748,6 +2748,15 @@
   }
   .fold-toggle {
     margin-right: -0.2rem;
+    /* Tint the row-fold chevron with the same blue as the repo name so
+       it visually pairs with the repo chip and reads as "fold this row"
+       at a glance — versus the neutral history chevron next to the
+       topmost-commit line which keeps the default muted colour. */
+    color: var(--chip-blue-text);
+  }
+  .fold-toggle:hover {
+    color: var(--chip-blue-text);
+    background: color-mix(in srgb, var(--chip-blue-bg) 55%, transparent);
   }
   .row-content {
     min-width: 0;
