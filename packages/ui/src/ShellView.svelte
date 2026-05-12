@@ -182,12 +182,8 @@
         {manualTitle || "Name this terminal…"}
       </button>
     {/if}
-    <span class="muted small">past terminal</span>
     {#if transcript}
-      <span class="cwd-pill muted small" title={transcript.lastCwd}>
-        {transcript.lastCwd.split("/").slice(-2).join("/") || "/"}
-      </span>
-      <span class="muted small">· {relTime(transcript.header.createdAt)}</span>
+      <span class="muted small">{relTime(transcript.header.createdAt)}</span>
     {/if}
     <button
       class="resume-btn"
@@ -338,13 +334,6 @@
   .loading,
   .error {
     margin: 1rem 0.6rem;
-  }
-  .cwd-pill {
-    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
-    font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    background: var(--surface-2);
-    border-radius: var(--radius-sm);
   }
   .exit {
     padding: 0.4rem 0.6rem;
