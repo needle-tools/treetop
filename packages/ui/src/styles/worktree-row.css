@@ -38,6 +38,14 @@
 .row-content {
   min-width: 0;
 }
+/* Hide the row body (sessions strip + commits pane + everything below
+   the head) when folded — but keep it in the DOM. Unmounting would
+   close every SessionView/TerminalView WebSocket, stranding the PTYs
+   without a reader and blocking the agent process on its next stdout
+   write. */
+.row.row-folded .row-body {
+  display: none;
+}
 .session-panel {
   margin-top: 0.5rem;
 }

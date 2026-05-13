@@ -1153,6 +1153,24 @@
   );
   let rowFolded: Record<string, boolean> = {};
   let foldedHydrated = false;
+  /** Wall-clock tick (ms). Bumped every 3s in onMount. Used by the
+   *  folded-row activity indicator to re-evaluate "any agent in this
+   *  worktree had output in the last 10s?" without needing the daemon
+   *  to push a discrete "still active" signal. */
+  let nowMs = Date.now();
+  const ACTIVITY_WINDOW_MS = 10_000;
+  function wtHasRecentActivity(
+    w: { agents?: Array<{ lastActive?: string }> } | undefined | null,
+    now: number,
+  ): boolean {
+    if (!w?.agents?.length) return false;
+    for (const a of w.agents) {
+      if (!a.lastActive) continue;
+      const t = Date.parse(a.lastActive);
+      if (Number.isFinite(t) && now - t < ACTIVITY_WINDOW_MS) return true;
+    }
+    return false;
+  }
   // Don't persist until the initial restore has run, otherwise the first
   // reactive write wipes saved state with our empty starting value.
   let sessionsHydrated = false;
@@ -1967,6 +1985,7 @@
       window.addEventListener("beforeunload", handleBeforeUnload);
     }
     const unsubStream = subscribeToStream();
+    const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
     return () => {
       document.removeEventListener("click", handleDocClick);
       document.removeEventListener("keydown", handleKey);
@@ -1974,6 +1993,7 @@
       stopTuiPolling();
       unsubStream();
       unsubErrors();
+      clearInterval(nowTimer);
     };
   });
 </script>
@@ -2379,6 +2399,13 @@
                   {/if}
                 </span>
               {/if}
+              {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
+                <span
+                  class="popover-spinner row-activity-spinner"
+                  title="An agent in this row had output in the last 10s"
+                  aria-label="agent activity"
+                ></span>
+              {/if}
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
                 {@const pickerSessions = pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
@@ -2704,7 +2731,7 @@
             >
           </div>
 
-          {#if !rowFolded[row.key]}
+          <div class="row-body">
           {#if newWtOpen[repo.id]}
             <div class="new-wt-form">
               <input
@@ -3050,7 +3077,7 @@
               />
             {/if}
           {/if}
-          {/if}
+          </div>
           </div>
         </li>
       {/each}
