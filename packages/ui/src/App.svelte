@@ -1821,7 +1821,12 @@
                       on:click={() => toggleErrorExpanded(e.id)}
                     >
                       <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
-                      <span class="err-msg" title={e.message}>{e.message}</span>
+                      <span class="err-msg" title={e.message}>
+                        {e.message}
+                        {#if e.count && e.count > 1}
+                          <span class="err-count" title={`${e.count} occurrences in the coalesce window`}>× {e.count}</span>
+                        {/if}
+                      </span>
                       <span class="muted ev-time">{relTime(e.timestamp)}</span>
                     </button>
                     {#if errorExpanded[e.id]}

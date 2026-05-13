@@ -5,6 +5,9 @@ import {
   setErrors,
   clearErrorsLocal,
   recordBrowserError,
+  installFetchTracking,
+  getErrors,
+  __resetFetchTrackingForTests,
   type FrontendErrorEntry,
 } from "../src/errors";
 
@@ -118,5 +121,133 @@ describe("frontend errors store", () => {
     expect(last!.length).toBe(200);
     expect(last![0]?.message).toBe("m249");
     unsub();
+  });
+});
+
+describe("pushError coalescing", () => {
+  beforeEach(() => {
+    clearErrorsLocal();
+  });
+
+  test("merges identical-shape entries into one row with a count bump", () => {
+    // Daemon-restart burst: 30 fetch failures on the same route inside
+    // the coalesce window. Should collapse to a single row.
+    const baseTs = Date.parse("2026-05-13T12:00:00Z");
+    for (let i = 0; i < 30; i++) {
+      pushError(
+        makeEntry({
+          id: `burst-${i}`,
+          kind: "fetch",
+          method: "GET",
+          route: "/api/repos",
+          message: "GET /api/repos → Failed to fetch",
+          timestamp: new Date(baseTs + i * 100).toISOString(),
+        }),
+      );
+    }
+    const list = getErrors();
+    expect(list.length).toBe(1);
+    expect(list[0]?.count).toBe(30);
+    // Head id stays stable so subscribers keyed by id don't churn.
+    expect(list[0]?.id).toBe("burst-0");
+    // Timestamp tracks the latest occurrence.
+    expect(list[0]?.timestamp).toBe(
+      new Date(baseTs + 29 * 100).toISOString(),
+    );
+  });
+
+  test("does NOT merge entries with different routes", () => {
+    pushError(
+      makeEntry({
+        id: "a",
+        kind: "fetch",
+        method: "GET",
+        route: "/api/repos",
+      }),
+    );
+    pushError(
+      makeEntry({
+        id: "b",
+        kind: "fetch",
+        method: "GET",
+        route: "/api/diff",
+      }),
+    );
+    expect(getErrors().length).toBe(2);
+  });
+
+  test("does NOT merge across the coalesce window", () => {
+    const ts0 = Date.parse("2026-05-13T12:00:00Z");
+    pushError(
+      makeEntry({
+        id: "a",
+        kind: "fetch",
+        method: "GET",
+        route: "/api/repos",
+        timestamp: new Date(ts0).toISOString(),
+      }),
+    );
+    pushError(
+      makeEntry({
+        id: "b",
+        kind: "fetch",
+        method: "GET",
+        route: "/api/repos",
+        // Past the 60s window — should NOT coalesce.
+        timestamp: new Date(ts0 + 90_000).toISOString(),
+      }),
+    );
+    expect(getErrors().length).toBe(2);
+  });
+
+  test("does NOT merge uncaught errors that lack a route", () => {
+    pushError(makeEntry({ id: "u1", kind: "uncaught" }));
+    pushError(makeEntry({ id: "u2", kind: "uncaught" }));
+    expect(getErrors().length).toBe(2);
+  });
+});
+
+describe("installFetchTracking — expected-client-error filter", () => {
+  // Each test stubs `globalThis.fetch` to a Response factory BEFORE
+  // calling installFetchTracking, so the wrapper captures the stub as
+  // its underlying fetch. The `__resetFetchTrackingForTests` call
+  // forgets a prior install so the new stub takes effect.
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    clearErrorsLocal();
+    __resetFetchTrackingForTests();
+    savedFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+    __resetFetchTrackingForTests();
+  });
+
+  function stubResponse(status: number, statusText: string) {
+    globalThis.fetch = (async () => new Response("", { status, statusText })) as typeof fetch;
+    installFetchTracking();
+  }
+
+  test("skips recording 409 Conflict responses on non-GET requests", async () => {
+    stubResponse(409, "Conflict");
+    const res = await fetch("/api/repos/r1/checkout", { method: "POST" });
+    expect(res.status).toBe(409);
+    // The caller still sees the 409 and can handle it. We just don't
+    // shovel it into the error popover.
+    expect(getErrors().length).toBe(0);
+  });
+
+  test("STILL records 409 Conflict on a GET (genuine bug, not a contract)", async () => {
+    stubResponse(409, "Conflict");
+    await fetch("/api/repos/r1");
+    expect(getErrors().length).toBe(1);
+    expect(getErrors()[0]?.status).toBe(409);
+  });
+
+  test("STILL records other 4xx (400/404/etc.) on non-GET requests", async () => {
+    stubResponse(400, "Bad Request");
+    await fetch("/api/repos/r1/checkout", { method: "POST" });
+    expect(getErrors().length).toBe(1);
+    expect(getErrors()[0]?.status).toBe(400);
   });
 });

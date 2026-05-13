@@ -30,9 +30,22 @@ export interface FrontendErrorEntry {
   method?: string;
   status?: number;
   extra?: Record<string, unknown>;
+  /** How many identical entries have been folded into this row. Set by
+   *  the coalescing logic in `pushError` — a daemon restart that fires
+   *  the same `GET /api/repos → Failed to fetch` error 30 times in a
+   *  row collapses to one row with `count: 30` instead of flooding the
+   *  popover. Absent / 1 means a single occurrence. */
+  count?: number;
 }
 
 const MAX_ENTRIES = 200;
+/** Window for the coalescing logic in `pushError`. Identical entries
+ *  (same kind/route/method/status) arriving inside this window bump
+ *  the existing row's `count` + `timestamp` instead of pushing a new
+ *  row. 60s is generous enough to fold a full daemon-restart's
+ *  worth of fallout (typically a ~10s flurry) without merging
+ *  unrelated bursts that happen to share a route. */
+const COALESCE_WINDOW_MS = 60_000;
 
 const subscribers = new Set<(entries: FrontendErrorEntry[]) => void>();
 const seenIds = new Set<string>();
@@ -67,12 +80,51 @@ export function getErrors(): FrontendErrorEntry[] {
 /**
  * Push an entry. Dedups by id. Most-recent-first. Capped to MAX_ENTRIES
  * so a runaway loop can't blow out the popover or the heap.
+ *
+ * Coalescing: if the incoming entry's "shape" (kind + route + method +
+ * status) matches the most-recent entry AND we're still inside the
+ * coalesce window, we bump the head row's count + timestamp instead of
+ * pushing a new one. That folds daemon-restart bursts ("100× Failed
+ * to fetch /api/repos in 8 seconds") into a single row, which is the
+ * second half of the prod-error snapshot fix in plans/PLAN.md.
  */
 export function pushError(entry: FrontendErrorEntry): void {
   if (seenIds.has(entry.id)) return;
+  if (tryCoalesceWithHead(entry)) return;
   seenIds.add(entry.id);
   entries = [entry, ...entries].slice(0, MAX_ENTRIES);
   notify();
+}
+
+/** Shape key for coalescing — two entries collapse iff they share this. */
+function coalesceKey(e: FrontendErrorEntry): string {
+  return [e.kind, e.method ?? "", e.route ?? "", e.status ?? ""].join("|");
+}
+
+/** Try to merge `entry` into the most-recent entry. Returns `true` if
+ *  it did (caller should NOT push).
+ *
+ *  Only fires when both entries have a `route` — generic uncaught/
+ *  rejection errors with no `route` each get their own row so unrelated
+ *  events aren't folded together just because their shape happens to
+ *  match. */
+function tryCoalesceWithHead(entry: FrontendErrorEntry): boolean {
+  const head = entries[0];
+  if (!head) return false;
+  if (!entry.route || !head.route) return false;
+  if (coalesceKey(head) !== coalesceKey(entry)) return false;
+  const dtMs = Date.parse(entry.timestamp) - Date.parse(head.timestamp);
+  if (!Number.isFinite(dtMs) || dtMs > COALESCE_WINDOW_MS) return false;
+  // Merge: update timestamp + bump count. Keep the head's id so existing
+  // subscribers / DOM nodes (keyed by id) don't re-mount.
+  const merged: FrontendErrorEntry = {
+    ...head,
+    timestamp: entry.timestamp,
+    count: (head.count ?? 1) + 1,
+  };
+  entries = [merged, ...entries.slice(1)];
+  notify();
+  return true;
 }
 
 /** Replace the list (used on initial hydrate from GET /api/errors). */
@@ -129,8 +181,33 @@ export function recordBrowserError(
   return entry;
 }
 
+/** "User-recoverable" 4xx responses that should NOT show up in the
+ *  error popover. Today this is just 409 Conflict on non-GET — the
+ *  daemon returns it for actions like "create a worktree on an
+ *  existing branch" or "checkout a branch with a dirty working tree".
+ *  In every case the UI catches the 409, opens a confirmation dialog,
+ *  and the user resolves it intentionally. Recording these is pure
+ *  noise.
+ *
+ *  Conservative: GETs returning 409 are kept (rare, probably real).
+ *  4xx other than 409 (400/401/403/404 etc.) keep recording too — those
+ *  are usually genuine bugs in callers. Extend this list only when a
+ *  specific (status, method, route-pattern) is confirmed to be an
+ *  intentional contract. */
+function isExpectedClientError(status: number, method: string): boolean {
+  return status === 409 && method !== "GET";
+}
+
 let originalFetch: typeof fetch = globalThis.fetch?.bind(globalThis);
 let installed = false;
+
+/** Test-only: re-set the install flag so a fresh `installFetchTracking`
+ *  can capture a freshly-stubbed `globalThis.fetch` as its underlying
+ *  fetch. Not exported for production callers — they should only call
+ *  `installFetchTracking` once at startup. */
+export function __resetFetchTrackingForTests(): void {
+  installed = false;
+}
 
 /**
  * Wrap window.fetch so any non-ok response or network failure becomes a
@@ -151,19 +228,17 @@ export function installFetchTracking(): void {
         : input.url;
     try {
       const res = await orig(input as RequestInfo, init);
-      if (!res.ok) {
-        // Skip recording our own /api/errors POSTs — recording an error
-        // about the error endpoint would be circular noise.
-        if (!(route.includes("/api/errors") && method === "POST")) {
-          recordBrowserError({
-            kind: "fetch",
-            source: "browser",
-            message: `${method} ${route} → ${res.status} ${res.statusText}`,
-            route,
-            method,
-            status: res.status,
-          });
-        }
+      if (!res.ok && !isExpectedClientError(res.status, method) &&
+        !(route.includes("/api/errors") && method === "POST")
+      ) {
+        recordBrowserError({
+          kind: "fetch",
+          source: "browser",
+          message: `${method} ${route} → ${res.status} ${res.statusText}`,
+          route,
+          method,
+          status: res.status,
+        });
       }
       return res;
     } catch (err) {
