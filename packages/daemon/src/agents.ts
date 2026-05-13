@@ -276,7 +276,7 @@ function capForTooltip(s: string): string {
  *  Returns zeroed stats on read failure, so a missing or unreadable
  *  file just leaves the popover with the title and nothing else —
  *  no error propagates. */
-export async function scanClaudeUserMessages(path: string): Promise<{
+interface ClaudeUserScanResult {
   firstUserMessage?: string;
   lastUserMessages: string[];
   userMessageCount: number;
@@ -284,7 +284,40 @@ export async function scanClaudeUserMessages(path: string): Promise<{
    *  (Anthropic's API convention; the parser relabels these as role
    *  "tool" elsewhere) are excluded from this count. */
   totalMessageCount: number;
-}> {
+}
+
+/** (path, mtimeMs) → previous scan result. JSONL session files don't change
+ *  after a session closes, so most scans across a single /api/agents call
+ *  hit the cache and skip a full readFile. A 2,000-file home directory
+ *  without this cache reads gigabytes of JSONL every time /api/repos polls
+ *  — which is exactly the wedge we observed. Keyed on mtimeMs (not size)
+ *  because some agents rewrite files in place; mtime catches that. */
+const claudeUserScanCache = new Map<
+  string,
+  { mtimeMs: number; result: ClaudeUserScanResult }
+>();
+
+/** Bounded; reset on miss when above. Sessions count is ~2k for an active
+ *  user — generous headroom + LRU eviction. */
+const MAX_CLAUDE_USER_SCAN_CACHE = 5000;
+
+export function clearClaudeUserScanCache(): void {
+  claudeUserScanCache.clear();
+}
+
+export async function scanClaudeUserMessages(
+  path: string,
+  mtimeMs?: number,
+): Promise<ClaudeUserScanResult> {
+  if (mtimeMs !== undefined) {
+    const cached = claudeUserScanCache.get(path);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      // LRU touch.
+      claudeUserScanCache.delete(path);
+      claudeUserScanCache.set(path, cached);
+      return cached.result;
+    }
+  }
   let content: string;
   try {
     content = await readFile(path, "utf-8");
@@ -341,12 +374,20 @@ export async function scanClaudeUserMessages(path: string): Promise<{
       totalCount++;
     }
   }
-  return {
+  const result: ClaudeUserScanResult = {
     firstUserMessage,
     lastUserMessages: tail,
     userMessageCount: userCount,
     totalMessageCount: totalCount,
   };
+  if (mtimeMs !== undefined) {
+    claudeUserScanCache.set(path, { mtimeMs, result });
+    if (claudeUserScanCache.size > MAX_CLAUDE_USER_SCAN_CACHE) {
+      const oldest = claudeUserScanCache.keys().next().value;
+      if (oldest !== undefined) claudeUserScanCache.delete(oldest);
+    }
+  }
+  return result;
 }
 
 /** Total chat-turn count for a Codex JSONL. Counts `response_item`
@@ -414,7 +455,12 @@ export async function scanClaude(
         if (!meta.cwd) continue;
         // Full user-message scan: accurate count + last 3 even when the
         // head/tail snippets readClaudeSessionMeta uses don't overlap.
-        const userStats = await scanClaudeUserMessages(sessionPath);
+        // The scan caches by (path, mtimeMs) so unchanged files don't
+        // re-read multi-MB JSONLs on every /api/repos call.
+        const userStats = await scanClaudeUserMessages(
+          sessionPath,
+          stats.mtimeMs,
+        );
         sessions.push({
           agent: "claude",
           cwd: resolve(meta.cwd),
