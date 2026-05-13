@@ -81,10 +81,9 @@
     display: flex;
     gap: 0.4rem;
     align-items: flex-start;
-    /* Matches `.commit-row` in source-control.css and `.diff` /
-       `.file-btn` here — single body size across the History panel
-       and the diff viewer so nothing jumps when expanding a commit. */
-    font-size: 0.78rem;
+    /* Body tier — same token as `.diff` and `.file-btn` so the
+       history list, commit header, and diff lines all stay aligned. */
+    font-size: var(--fs-md);
     line-height: 1.35;
     padding: 0.25rem 0.5rem;
     background: var(--surface-2);
@@ -119,7 +118,7 @@
     gap: 0.4rem;
     flex-wrap: wrap;
     align-items: baseline;
-    font-size: 0.78rem;
+    font-size: var(--fs-md);
   }
   .untracked-list code {
     background: var(--chip-orange-bg);
@@ -163,7 +162,7 @@
     border-radius: var(--radius-sm);
     cursor: pointer;
     text-align: left;
-    font-size: 0.78rem;
+    font-size: var(--fs-md);
     font-family: ui-monospace, monospace;
     min-width: 0;
   }
@@ -178,7 +177,7 @@
     text-align: center;
     font-weight: 600;
     color: var(--text-faint);
-    font-size: 0.72rem;
+    font-size: var(--fs-sm);
   }
   .file-flag.flag-A {
     color: var(--status-clean);
@@ -203,7 +202,7 @@
   .file-stats {
     display: inline-flex;
     gap: 0.35rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-sm);
   }
   .file-stats .add {
     color: var(--status-clean);
@@ -218,6 +217,6 @@
     color: var(--text-muted);
   }
   .small {
-    font-size: 0.78rem;
+    font-size: var(--fs-md);
   }
 </style>

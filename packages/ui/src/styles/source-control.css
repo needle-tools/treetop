@@ -49,7 +49,7 @@
   border: 0;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: var(--fs-sm);
   font-family: ui-monospace, monospace;
 }
 .ctx-toggle:hover {
@@ -67,7 +67,10 @@
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.75rem;
+  /* Was 0.75rem — a third-tier outlier that read as "almost but not
+     quite body size" next to the staged/unstaged file rows. Snap to
+     the body tier so the tab strip aligns with the list beneath it. */
+  font-size: var(--fs-md);
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -83,14 +86,14 @@
   background: rgba(0, 0, 0, 0.25);
   border-radius: 999px;
   padding: 0 0.4rem;
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 
 /* "History" sub-heading inside the foldout. Sits above the commits
    list and labels just that sub-section. */
 .commits-heading {
   margin: 0.85rem 0 0.3rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
@@ -109,10 +112,10 @@
   gap: 0.5rem;
   align-items: baseline;
   padding: 0.3rem 0.5rem;
-  /* 0.78rem matches Diff.svelte's `.diff` and DiffViewer's `.file-btn` /
-     `.commit-header` so the history rows, the inline file list, and
-     the diff body all read at the same size. */
-  font-size: 0.78rem;
+  /* Body tier — same token as Diff.svelte and DiffViewer's file-list /
+     commit-header so the history rows, the inline file list, and the
+     diff body all stay aligned. */
+  font-size: var(--fs-md);
   color: var(--text-4);
   overflow: hidden;
   background: transparent;

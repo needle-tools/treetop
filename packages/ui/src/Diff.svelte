@@ -20,7 +20,7 @@
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-sm);
     font-family: ui-monospace, monospace;
-    font-size: 0.78rem;
+    font-size: var(--fs-md);
     line-height: 1.45;
     max-height: 80vh;
     overflow: auto;

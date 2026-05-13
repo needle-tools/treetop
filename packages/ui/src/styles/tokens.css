@@ -76,6 +76,16 @@
   --radius-md: 6px;
   --radius-lg: 8px;
 
+  /* font sizes — the canonical body/metadata tiers used across the
+     History panel, the diff viewer, and the row tooltips. Anything
+     that wants a size in that family should reference one of these
+     rather than hardcoding a rem value, so a future redesign is a
+     single-file edit. The names mirror the surface/radius scheme. */
+  --fs-xs: 0.7rem;
+  --fs-sm: 0.72rem;
+  --fs-md: 0.78rem;
+  --fs-lg: 0.85rem;
+
   /* scrollbar */
   --scrollbar-thumb: rgba(255, 255, 255, 0.12);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
