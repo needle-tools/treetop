@@ -1,0 +1,137 @@
+/*
+ * Source-control foldout below each worktree row — the chevron-toggled
+ * panel that holds the Unstaged/Staged tabs + inline DiffViewer +
+ * "History" commits list. Rendered inline in App.svelte's row template
+ * for now; will move into `SourceControlPane.svelte` (Phase 2 of the
+ * refactor plan).
+ *
+ * Lives in styles/ (global) so that future SourceControlPane.svelte
+ * consumes these rules without needing :global() in App.svelte. See
+ * plans/PLAN.md → "App.svelte refactor (componentization)".
+ */
+
+/* Expanded section: the {#if commitsExpanded[wt.path]} foldout block.
+   Indented with a thin left rule so it visually anchors to the row. */
+.expanded {
+  margin-top: 0.6rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--surface-2);
+  min-width: 0;
+}
+
+/* Inline diff block (tabs + workdir/staged diff) that renders above
+   the commits list when the worktree is dirty. Same indent + left rule
+   as `.expanded` so the column structure stays aligned. */
+.inline-diff {
+  margin-top: 0.6rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--surface-2);
+  min-width: 0;
+}
+
+.tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+/* "±2 lines" / "Full file" context toggle next to the tabs. */
+.ctx-toggle {
+  padding: 0.25rem 0.6rem;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+}
+.ctx-toggle:hover {
+  color: var(--text-2);
+}
+.ctx-toggle.active {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+
+.tab {
+  padding: 0.25rem 0.6rem;
+  background: var(--surface-2);
+  border: 0;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.tab:hover {
+  color: var(--text-2);
+}
+.tab.active {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+.tab-count {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+}
+
+/* "History" sub-heading inside the foldout. Sits above the commits
+   list and labels just that sub-section. */
+.commits-heading {
+  margin: 0.85rem 0 0.3rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.commits {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.commit-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-4);
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  flex-shrink: 0;
+}
+.commit-row:hover {
+  background: var(--surface-2);
+}
+.commit-row.open {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+/* Inline diff body shown beneath an opened commit row. */
+.inline-commit {
+  margin: 0.15rem 0.5rem 0.4rem 1.6rem;
+}
+.load-more {
+  margin-top: 0.4rem;
+  align-self: flex-start;
+}

@@ -1,0 +1,181 @@
+/*
+ * `.new-session-col` + `.new-session-head` family — the transient
+ * new-session column shown in the sessions strip when the user picks
+ * "+ new agent" or "+ Terminal". The TerminalView inside fills the
+ * column body; this stylesheet owns the column shell + the header
+ * strip (manual title editor, restart / fullscreen / dispose / close
+ * action buttons, awaiting-input affordance).
+ *
+ * Global stylesheet (imported from main.ts) so a future
+ * NewSessionCol.svelte extraction can consume these rules without
+ * needing :global() in App.svelte. See plans/PLAN.md →
+ * "App.svelte refactor (componentization)".
+ */
+
+/* Transient new-session column: simple bordered shell with a small
+   header strip. The TerminalView inside fills the column body. */
+.new-session-col {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.new-session-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--surface-3);
+}
+
+/* Match SessionView's .close so the transient-TUI column header
+   reads exactly like a Claude chat's header — same padding,
+   transparent bg, same red-on-hover destructive treatment for ×.
+   Restart (↻) sits beside it with a neutral hover. */
+.new-session-head .close,
+.new-session-head .restart-btn,
+.new-session-head .fullscreen-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  padding: 0.1rem 0.5rem;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Mirror SessionView's `.resume-btn.dispose-btn` so the Dispose
+   affordance reads identically between AI session columns and
+   regular-terminal columns: transparent surface, thin border, small
+   muted text, soft-red tint to signal "destructive but reversible". */
+.new-session-head .dispose-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  background: color-mix(in srgb, var(--error-bg) 50%, transparent);
+  color: #efaaaa;
+  border: 1px solid color-mix(in srgb, #efaaaa 30%, transparent);
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.new-session-head .dispose-btn:hover:not(:disabled) {
+  color: #ffcaca;
+  border-color: color-mix(in srgb, #efaaaa 55%, transparent);
+}
+
+.new-session-head .restart-btn {
+  margin-left: auto;
+}
+.new-session-head .close {
+  margin-left: auto;
+}
+/* The trailing-actions cluster sits flush on the right: restart
+   claims the auto-margin (or close does if restart isn't there),
+   and the rest just butt up against it. */
+.new-session-head .restart-btn + .fullscreen-btn,
+.new-session-head .fullscreen-btn + .dispose-btn,
+.new-session-head .fullscreen-btn + .close,
+.new-session-head .dispose-btn + .close {
+  margin-left: 0;
+}
+.new-session-head .restart-btn:hover,
+.new-session-head .fullscreen-btn:hover {
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+.new-session-head .dispose-btn:hover {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.new-session-head .close:hover {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+/* "Awaiting input" affordance — column gains a soft amber outline
+   that pulses gently, plus a small chip in the header. Both clear
+   the moment the user types or the agent prints non-prompt output. */
+.awaiting-pill {
+  background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
+  color: var(--status-dirty);
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.new-session-col.awaiting-input {
+  border-color: var(--status-dirty);
+  animation: awaiting-pulse 1.8s ease-in-out infinite;
+}
+@keyframes awaiting-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
+}
+
+/* Click-to-edit manual title inside the new-session TUI header.
+   Mirrors SessionView's affordance so naming behaves the same in both
+   the stored-chat view and the live TUI view. */
+.new-session-head .manual-title {
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.05rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: text;
+  text-align: left;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.new-session-head .manual-title:hover {
+  background: var(--surface-3);
+}
+.new-session-head .manual-title.placeholder {
+  color: var(--text-faint);
+  font-weight: 400;
+  font-style: italic;
+}
+.new-session-head .manual-title-input {
+  background: var(--surface-1);
+  color: var(--text-1);
+  border: 1px solid var(--text-faint);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.3rem;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  min-width: 8ch;
+  width: 20ch;
+  max-width: 100%;
+}
+.new-session-head .manual-title-input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+/* Fullscreen styling for an individual transient-TUI column. The
+   browser paints a black backdrop by default; we just make sure the
+   column fills it without its rounded corners + border looking
+   awkward on a black surround. xterm's FitAddon reacts to the size
+   change via TerminalView's ResizeObserver — no extra wiring. */
+.new-session-col:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+  border: 0;
+  background: var(--surface-1);
+}

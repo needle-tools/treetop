@@ -1,0 +1,146 @@
+/*
+ * The `.agent-row` family — used in every popover that lists sessions
+ * or pickable items (TUIs overview, branch picker, new-agent picker,
+ * agent picker, worktree picker, plus a couple of inline session
+ * badges). 19 call sites across at least 6 contexts.
+ *
+ * Shape: a CSS grid with six conceptual columns (icon · name · title
+ * · msgs · time · short-sha · close-X). The close column is always
+ * reserved so opening/closing sessions doesn't shift other columns.
+ *
+ * Lives in styles/ (global) rather than scoped to App.svelte for the
+ * same reason styles/popover.css does — the rows are rendered into a
+ * Popover's slot from various contexts, and a future AgentRow.svelte
+ * extraction (Phase 1 of the App.svelte refactor) wants to consume
+ * these rules without needing :global() wrappers everywhere.
+ *
+ * See plans/PLAN.md → "App.svelte refactor (componentization)".
+ */
+
+.agents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.agent-row {
+  display: grid;
+  /* icon · agent-name · title · msgs · time · short-sha · close-x
+     The close column is reserved on every row (open or not) so opening
+     and closing sessions doesn't shift other rows' columns. */
+  grid-template-columns: 16px auto 1fr auto auto auto 18px;
+  gap: 0.5rem;
+  align-items: center;
+  width: 100%;
+  padding: 0.3rem 0.45rem;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.78rem;
+}
+.agent-row:hover {
+  background: var(--surface-2);
+}
+/* "Already open" rows: faded so they read as background context, not
+   primary candidates. Click still toggles them closed. */
+.agent-row.dimmed {
+  opacity: 0.45;
+}
+.agent-row.dimmed:hover {
+  opacity: 0.7;
+}
+
+.agent-row-icon {
+  width: 14px;
+  height: 14px;
+  /* Inline SVGs pick up the row's currentColor (brand-* below). */
+  color: inherit;
+}
+
+/* Brand colours — the row's currentColor flows through to the icon
+   and the name via `color: inherit`. */
+.agent-row.brand-claude {
+  color: var(--chip-orange-text);
+}
+.agent-row.brand-codex {
+  color: var(--chip-codex-text);
+}
+.agent-row.brand-copilot {
+  color: var(--chip-blue-text);
+}
+
+.agent-row-name {
+  font-weight: 600;
+  /* Use the row's coloured currentColor for the agent name */
+  color: inherit;
+}
+
+.agent-row .agent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text-2);
+}
+.agent-row .agent-title.manual {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* Manual title shown inline in the worktree row's single-agent badge.
+   Stays on one line; the row already manages overflow. */
+.agent-manual-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18ch;
+}
+
+.agent-row .agent-msgs {
+  /* Tabular nums so the digit columns align across rows. Right-aligned
+     since it's a number, not a label. */
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.agent-row .agent-time {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.agent-row .agent-sid {
+  font-family: ui-monospace, monospace;
+}
+
+.agent-row .row-close {
+  /* Always rendered to reserve column space; hidden by default,
+     revealed on hover but only meaningful for open (dimmed) rows. */
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+/* Reveal + enable the X only on hover of a row that's already open
+   (we use the .dimmed class as the marker for "open elsewhere"). */
+.agent-row.dimmed:hover .row-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+.agent-row .row-close:hover {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
