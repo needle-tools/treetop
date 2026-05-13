@@ -112,6 +112,7 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;
+  white-space: nowrap;
 }
 .new-session-col.awaiting-input {
   border-color: var(--status-dirty);

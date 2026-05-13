@@ -158,13 +158,13 @@
       title="Fullscreen this terminal (Esc to exit)"
       aria-label="Fullscreen"
     >⛶</button>
-    {#if agent === "shell"}
-      <button
-        class="dispose-btn"
-        on:click={() => dispatch("dispose")}
-        title="Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
-      >Dispose</button>
-    {/if}
+    <button
+      class="dispose-btn"
+      on:click={() => dispatch("dispose")}
+      title={agent === "shell"
+        ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
+        : "SIGTERM the PTY — the column stays open showing the final output until you click × to close."}
+    >Dispose</button>
     <button
       class="close"
       on:click={() => dispatch("close")}

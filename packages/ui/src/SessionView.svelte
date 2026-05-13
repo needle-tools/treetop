@@ -137,23 +137,47 @@
    *  output or the user types. */
   let awaitingInput = false;
 
+  /** Hard ceiling on how long we wait for `DELETE /api/terminals/:id` to
+   *  return before flipping the column back to read mode anyway. The
+   *  daemon's grace timer will reap the PTY regardless, so a hung
+   *  request shouldn't strand the user with a "Disposing…" button. */
+  const DISPOSE_TIMEOUT_MS = 5_000;
   async function disposeTerminal() {
     if (disposing) return;
     disposing = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DISPOSE_TIMEOUT_MS);
+    let timedOut = false;
     try {
       if (terminalId) {
         await fetch(`/api/terminals/${encodeURIComponent(terminalId)}`, {
           method: "DELETE",
-        }).catch(() => {});
+          signal: controller.signal,
+        }).catch((e) => {
+          // AbortError = we timed out; anything else = network blip.
+          // Either way the daemon's grace timer will clean up the PTY,
+          // so we still flip back to read mode below.
+          if (e?.name === "AbortError") timedOut = true;
+        });
       }
     } finally {
+      clearTimeout(timeout);
+      if (timedOut) {
+        sendError =
+          "Dispose timed out after 5s — the daemon will reap the PTY on its own; flipping back to read view.";
+      }
       // Flip back to read mode and force a scroll-to-bottom on the next
       // render — the user expects to land at the newest messages, not
       // wherever they last scrolled to before opening the terminal.
+      // Persist the mode flip too, otherwise App.svelte's openSessionsByWt
+      // still carries `mode: "terminal"` and the next load() / page reload
+      // tries to respawn the PTY we just killed — which races the daemon's
+      // grace-timer cleanup and can look like the column disappeared.
       terminalId = null;
       disposing = false;
       hasRenderedOnce = false;
       mode = "read";
+      onModeChange(mode);
       void load();
     }
   }
@@ -176,6 +200,18 @@
   let manualTitleSaving = false;
   let manualTitleInputEl: HTMLInputElement | null = null;
   $: manualTitle = session?.manualTitle ?? "";
+
+  /** Copy a string to the clipboard. Best-effort: silent on failure
+   *  (browser refused permissions, document not focused, etc.). Used
+   *  by the tool-result Copy button — the pre is 2-line-clamped so
+   *  the full output only lives behind this click. */
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // ignore — most likely permissions or unfocused document.
+    }
+  }
 
   function startManualTitleEdit() {
     manualTitleDraft = manualTitle;
@@ -707,7 +743,16 @@
             {:else if b.type === "tool_result"}
               <div class="block tool-result">
                 <span class="muted small">result</span>
-                <pre>{b.text ?? ""}</pre>
+                <div class="tool-result-body">
+                  <pre>{b.text ?? ""}</pre>
+                  <button
+                    type="button"
+                    class="copy-btn"
+                    on:click={() => void copyToClipboard(b.text ?? "")}
+                    title="Copy full tool result"
+                    aria-label="Copy"
+                  >Copy</button>
+                </div>
               </div>
             {:else if b.type === "ide_context"}
               <div class="block ide-context" title={b.tagName}>
@@ -779,6 +824,7 @@
     letter-spacing: 0.05em;
     font-weight: 600;
     align-self: center;
+    white-space: nowrap;
   }
   header {
     /* Outer header: keeps the × pinned to the right at any width. The
@@ -1307,7 +1353,18 @@
   .block.tool-result {
     margin-top: 0.3rem;
   }
+  /* Body row: <pre> grows, copy button pins right. Tool results are
+     truncated to two lines at a glance — the user can copy the whole
+     thing if they need it, but the chat scroll doesn't drown in
+     200-line tool outputs. */
+  .tool-result-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+  }
   .block.tool-result pre {
+    flex: 1;
+    min-width: 0;
     margin: 0.2rem 0 0;
     padding: 0.4rem 0.6rem;
     background: var(--surface-2);
@@ -1315,9 +1372,30 @@
     font-family: ui-monospace, monospace;
     font-size: 0.75rem;
     color: var(--text-3);
-    max-height: 240px;
-    overflow: auto;
+    /* 2-line clamp with ellipsis; the pre is no longer scrollable. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: pre-wrap;
+  }
+  .block.tool-result .copy-btn {
+    flex: 0 0 auto;
+    margin-top: 0.2rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    padding: 0.15rem 0.5rem;
+    font-size: 0.7rem;
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .block.tool-result .copy-btn:hover {
+    background: var(--surface-3);
+    color: var(--text-1);
   }
   .block.ide-context,
   .block.sys-reminder,

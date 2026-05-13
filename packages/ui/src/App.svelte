@@ -331,33 +331,39 @@
   // any output that no longer matches the prompt pattern, or when
   // the user types something.
   let transientAwaiting: Record<string, boolean> = {};
-  /** `__new__:shell:<id>` source → daemon-assigned termId. Set by the
-   *  TerminalView's onSpawn callback in the new-session-col render
-   *  branch, used by the Dispose button to DELETE /api/terminals/:id
-   *  and then flip the column to a __transcript__: ShellView. */
-  let newShellTermIds: Record<string, string> = {};
+  /** `__new__:<agent>:<id>` source → daemon-assigned termId. Set by
+   *  NewSessionCol's `on:spawn` for every agent (shell, claude, codex,
+   *  copilot). Used by the Dispose button to DELETE /api/terminals/:id.
+   *  Shell columns additionally flip to `__transcript__:` so ShellView
+   *  takes over; claude/codex/copilot just kill the PTY and leave the
+   *  column showing final output until the user clicks ×. */
+  let newTermIds: Record<string, string> = {};
 
-  /** Dispose a live shell column: DELETE the PTY, then swap its
-   *  source in openSessionsByWt from `__new__:shell:<id>` or
-   *  `__attached__:shell:<termId>` to `__transcript__:shell:<termId>`
-   *  so the column re-renders as ShellView (command history + Resume).
-   *  Mirrors the Claude/Codex TUI dispose flow, which flips the column
-   *  to read-mode rather than closing it outright. */
-  async function disposeShellColumn(
+  /** Resolve the daemon termId for a `__new__:` or `__attached__:`
+   *  column. `__attached__:` sources carry it directly in the suffix;
+   *  `__new__:` sources are looked up in `newTermIds` (populated by
+   *  NewSessionCol's on:spawn after the daemon assigns one). */
+  function resolveTermId(s: { source: string }): string | undefined {
+    if (s.source.startsWith("__attached__:")) return s.source.split(":").pop();
+    if (s.source.startsWith("__new__:")) return newTermIds[s.source];
+    return undefined;
+  }
+
+  /** Unified Dispose handler for live new-session columns. Shell flips
+   *  to a `__transcript__:shell:` source so ShellView takes over (the
+   *  user can Resume later). Claude / Codex / Copilot just kill the
+   *  PTY and leave the column open showing final output — same as the
+   *  agent's own `exit` would do — so the user can read the last
+   *  message before × ing. */
+  async function disposeNewSessionColumn(
     wtPath: string,
     s: { agent: string; source: string },
   ): Promise<void> {
-    if (s.agent !== "shell") return;
-    let termId: string | undefined;
-    if (s.source.startsWith("__attached__:shell:")) {
-      termId = s.source.split(":").pop();
-    } else if (s.source.startsWith("__new__:shell:")) {
-      termId = newShellTermIds[s.source];
-    }
+    const termId = resolveTermId(s);
     if (!termId) {
-      // PTY hasn't been spawned yet (we'd need a daemon termId to
-      // DELETE). Fall back to a plain close — the grace timer disposes
-      // the half-spawned PTY soon enough.
+      // PTY hasn't been spawned yet (no daemon termId to DELETE). Fall
+      // back to plain close — the grace timer disposes the half-spawned
+      // PTY soon enough.
       closeSessionInWt(wtPath, s);
       return;
     }
@@ -366,20 +372,27 @@
         method: "DELETE",
       }).catch(() => {});
     } finally {
-      // Replace the source in place so the column survives but flips to
-      // ShellView. Drop the now-stale termId mapping.
-      const transcriptSource = `__transcript__:shell:${termId}`;
-      const next = { ...newShellTermIds };
+      // Drop the now-stale termId mapping.
+      const next = { ...newTermIds };
       delete next[s.source];
-      newShellTermIds = next;
-      openSessionsByWt = {
-        ...openSessionsByWt,
-        [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
-          x.source === s.source
-            ? { agent: "shell", source: transcriptSource }
-            : x,
-        ),
-      };
+      newTermIds = next;
+      if (s.agent === "shell") {
+        // Shell: replace the source in place so the column survives
+        // and flips to ShellView (command history + Resume).
+        const transcriptSource = `__transcript__:shell:${termId}`;
+        openSessionsByWt = {
+          ...openSessionsByWt,
+          [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
+            x.source === s.source
+              ? { agent: "shell", source: transcriptSource }
+              : x,
+          ),
+        };
+      }
+      // Claude / Codex / Copilot: no source-swap. The column keeps its
+      // existing `__new__:claude:…` / `__attached__:codex:…` source;
+      // TerminalView's onExit handler is a deliberate no-op so the
+      // dead xterm stays visible until the user ×s.
     }
   }
 
@@ -907,13 +920,13 @@
    *  re-add it on the next page load. Handles both the synthetic
    *  `__new__:` and the termId-based `__attached__:` forms: if the user
    *  × a fresh column, we also dismiss the attached-form (looked up via
-   *  newShellTermIds) so the live PTY's own listing entry stays away. */
+   *  newTermIds) so the live PTY's own listing entry stays away. */
   function dismissIfShell(s: OpenSession): void {
     if (s.agent !== "shell") return;
     if (s.source.startsWith("__attached__:shell:") || s.source.startsWith("__transcript__:shell:")) {
       dismissShellSource(s.source);
     } else if (s.source.startsWith("__new__:shell:")) {
-      const termId = newShellTermIds[s.source];
+      const termId = newTermIds[s.source];
       if (termId) dismissShellSource(`__attached__:shell:${termId}`);
     }
   }
@@ -2422,15 +2435,16 @@
                             manualTitle={newSessionTitles[s.source]}
                             awaiting={!!transientAwaiting[s.source]}
                             on:close={() => closeSessionInWt(wt.path, s)}
-                            on:dispose={() => disposeShellColumn(wt.path, s)}
+                            on:dispose={() => disposeNewSessionColumn(wt.path, s)}
                             on:restart={() => restartNewAgentSession(wt.path, s)}
                             on:spawn={(e) => {
                               // Capture the daemon-assigned termId for
-                              // __new__: shell sources so disposeShellColumn
-                              // can DELETE /api/terminals/:id later.
-                              if (s.source.startsWith("__new__:shell:")) {
-                                newShellTermIds = {
-                                  ...newShellTermIds,
+                              // every `__new__:` source (any agent) so
+                              // disposeNewSessionColumn can DELETE
+                              // /api/terminals/:id later.
+                              if (s.source.startsWith("__new__:")) {
+                                newTermIds = {
+                                  ...newTermIds,
                                   [s.source]: e.detail.id,
                                 };
                               }
