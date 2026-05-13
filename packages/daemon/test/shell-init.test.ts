@@ -144,4 +144,29 @@ describe("makeZshZdotdir / cleanupZdotdir", () => {
     // Second call must not throw.
     await expect(cleanupZdotdir(dir)).resolves.toBeUndefined();
   });
+
+  // Regression guard: setting ZDOTDIR makes zsh skip $HOME/.zshenv
+  // and $HOME/.zprofile entirely. On a typical macOS setup those
+  // files hold PATH/FPATH and p10k instant-prompt setup; without
+  // them the line editor renders a broken prompt and arrow keys /
+  // inline echo stop working ("last letter on a new line" bug).
+  // We MUST stub every startup file zsh looks at, each sourcing
+  // its $HOME equivalent.
+  test("writes .zshenv / .zprofile / .zlogin that source the $HOME equivalents", async () => {
+    const dir = await makeZshZdotdir();
+    try {
+      for (const name of [".zshenv", ".zprofile", ".zlogin"]) {
+        const path = join(dir, name);
+        expect(existsSync(path)).toBe(true);
+        const body = await readFile(path, "utf-8");
+        expect(body).toContain(`source "$HOME/${name}"`);
+        // Must be guarded — a fresh macOS user often has no
+        // .zlogin; sourcing a missing file unconditionally would
+        // raise.
+        expect(body).toContain(`[[ -f "$HOME/${name}" ]]`);
+      }
+    } finally {
+      await cleanupZdotdir(dir);
+    }
+  });
 });
