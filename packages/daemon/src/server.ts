@@ -54,6 +54,9 @@ const PORT = Number(
  *  serves static files from it for any GET that doesn't match an API
  *  route (with a SPA fallback to index.html for client-side routes).
  *  Resolution order:
+ *    0. SUPERGIT_NO_UI_DIR=1 — force null (dev posture). dev.ts sets
+ *       this so a stale `packages/ui/dist` doesn't accidentally flip
+ *       the dev daemon into prod-style static serving.
  *    1. SUPERGIT_UI_DIR env — explicit override.
  *    2. ../../ui/dist relative to this file — auto-detected when the
  *       SPA has been built (handy when portless / a sidecar invokes
@@ -61,6 +64,7 @@ const PORT = Number(
  *    3. null — dev mode, Vite handles UI hosting.
  */
 const UI_DIR = ((): string | null => {
+  if (process.env.SUPERGIT_NO_UI_DIR === "1") return null;
   if (process.env.SUPERGIT_UI_DIR) {
     return resolve(process.cwd(), process.env.SUPERGIT_UI_DIR);
   }

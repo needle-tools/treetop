@@ -17,7 +17,12 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: "http://localhost:7777",
+        // Daemon port follows SUPERGIT_PORT (the same env the daemon
+        // itself reads). dev.ts passes the resolved dev-daemon port
+        // (default 7777, overridable via SUPERGIT_DEV_PORT) through to
+        // the Vite child so the two stay in lockstep when the user runs
+        // a second worktree on a different port set.
+        target: `http://localhost:${process.env.SUPERGIT_PORT ?? 7777}`,
         // Forward WebSocket upgrades too — used by /api/terminals/:id/io
         // for xterm.js byte streaming.
         ws: true,

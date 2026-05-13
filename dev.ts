@@ -4,30 +4,48 @@
 // Pre-flight: any stale processes still holding ports 7777 (daemon) or
 // 7779 (Vite) from a previous run get killed first. Otherwise --watch
 // occasionally leaves an orphan and the next `bun dev` fails with
-// EADDRINUSE / "Port 7779 is in use".
+// EADDRINUSE / "Port 7779 is in use". Prod's :27787 is NEVER touched —
+// see `dev-ports.ts` and `stop-dev.ts`.
 
-import { $ } from "bun";
+import {
+  DEV_DAEMON_PORT,
+  DEV_UI_PORT,
+  killDevPorts,
+} from "./dev-ports";
 
-async function killOnPort(port: number): Promise<void> {
-  // lsof exists on macOS and most Linux distros; on Windows this just
-  // no-ops which is fine — there's nothing to clean up there anyway.
-  const result = await $`lsof -ti :${port}`.quiet().nothrow();
-  const pids = result.stdout
-    .toString()
-    .trim()
-    .split("\n")
-    .filter(Boolean);
-  if (pids.length === 0) return;
-  console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
-  for (const pid of pids) {
-    await $`kill -9 ${pid}`.quiet().nothrow();
-  }
-  // Give the kernel a moment to release the socket before we bind it again.
-  await new Promise((r) => setTimeout(r, 200));
-}
+await killDevPorts();
 
-await killOnPort(7777);
-await killOnPort(7779);
+// Build the daemon child's environment explicitly so dev mode can't be
+// poisoned by parent-shell env or repo artifacts:
+//   - SUPERGIT_PORT pinned to the resolved dev-daemon port (default
+//     7777, override via SUPERGIT_DEV_PORT). Without this, an exported
+//     SUPERGIT_PORT=27787 (the prod port the user runs detached) would
+//     leak into the spawned daemon and dev would silently collide with
+//     prod, EADDRINUSE on prod's port, dev never reaches Vite.
+//   - SUPERGIT_NO_UI_DIR=1 disables the daemon's auto-detection of a
+//     sibling `packages/ui/dist`. With dist around (left over from a
+//     previous `bun run start`), the daemon would otherwise flip into
+//     "serving UI from dist" mode and clash with Vite's HMR copy on
+//     :7779. Always force pure dev posture here.
+//   - SUPERGIT_PROCESS_TITLE so `ps` shows "supergit dev" regardless
+//     of the dist-detection flag.
+const daemonEnv = {
+  ...process.env,
+  SUPERGIT_PORT: String(DEV_DAEMON_PORT),
+  SUPERGIT_NO_UI_DIR: "1",
+  SUPERGIT_PROCESS_TITLE: "supergit dev",
+};
+
+// Vite child env: PORT controls the dev server (default 7779, override
+// via SUPERGIT_DEV_UI_PORT). SUPERGIT_PORT is forwarded so vite.config's
+// proxy can target the same daemon port we picked above — without it,
+// Vite would default the proxy to localhost:7777 even when the daemon
+// is actually on a different port.
+const uiEnv = {
+  ...process.env,
+  PORT: String(DEV_UI_PORT),
+  SUPERGIT_PORT: String(DEV_DAEMON_PORT),
+};
 
 // --watch (full process restart on file change), not --hot (in-place
 // module reload). --hot leaks timers, FS watchers, and the HTTP server
@@ -47,6 +65,7 @@ const daemon = Bun.spawn(
     cwd: "packages/daemon",
     stdout: "inherit",
     stderr: "inherit",
+    env: daemonEnv,
   },
 );
 
@@ -54,6 +73,7 @@ const ui = Bun.spawn(["bun", "run", "dev"], {
   cwd: "packages/ui",
   stdout: "inherit",
   stderr: "inherit",
+  env: uiEnv,
 });
 
 const cleanup = () => {

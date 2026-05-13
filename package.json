@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "bun run dev.ts",
+    "stop-dev": "bun run stop-dev.ts",
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
