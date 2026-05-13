@@ -2473,6 +2473,36 @@
                                   [s.source]: e.detail.id,
                                 };
                               }
+                              // SHELLS only: also swap the persisted
+                              // source from `__new__:shell:<random>` to
+                              // `__attached__:shell:<termId>`. This is
+                              // the canonical "reattach to existing PTY"
+                              // form. Without the swap, a reload spawns a
+                              // fresh PTY (via the lingering __new__:
+                              // entry) *and* restoreLiveShells adds the
+                              // still-alive old PTY as a separate
+                              // __attached__:shell:<oldTermId> — the
+                              // "regular terminal duplicates after
+                              // reload" bug. The each-block remounts
+                              // briefly (key change), but TerminalView's
+                              // attach path reconnects via WS to the
+                              // same termId without killing the PTY
+                              // (daemon supports multiple subscribers).
+                              // Claude/Codex don't get this swap: they
+                              // use the activity-tail's resumeSessionId
+                              // mechanism for reload continuity.
+                              if (s.source.startsWith("__new__:shell:")) {
+                                const attachedSource = `__attached__:shell:${e.detail.id}`;
+                                openSessionsByWt = {
+                                  ...openSessionsByWt,
+                                  [wt.path]: (openSessionsByWt[wt.path] ?? []).map(
+                                    (x) =>
+                                      x.source === s.source
+                                        ? { ...x, source: attachedSource }
+                                        : x,
+                                  ),
+                                };
+                              }
                             }}
                             on:awaitingChange={(e) => {
                               transientAwaiting = {
