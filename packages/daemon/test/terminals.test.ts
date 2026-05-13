@@ -117,6 +117,41 @@ describe("NodePtyBackend integration", () => {
     },
     10_000,
   );
+
+  // End-to-end check: when we spawn a zsh shell, the injected ZDOTDIR
+  // makes `setopt INC_APPEND_HISTORY SHARE_HISTORY` active. Skipped
+  // on machines without zsh (CI's Ubuntu image, primarily).
+  const zshBin = Bun.which("zsh");
+  test.skipIf(!zshBin)(
+    "zsh shell gets INC_APPEND_HISTORY + SHARE_HISTORY active via injected ZDOTDIR",
+    async () => {
+      const handle = await backend.spawn({
+        // -i forces an interactive shell so ZDOTDIR's .zshrc is sourced.
+        // `setopt` with no args prints only the *enabled* options;
+        // each is on its own line in lowercase with no underscores.
+        // We run setopt, then exit, then assert the output contains
+        // both flags. Using `setopt` (not `setopt | grep`) keeps the
+        // command portable and avoids pipe-completion races.
+        cmd: ["zsh", "-i", "-c", "setopt; exit"],
+        cwd: "/tmp",
+        size: { cols: 80, rows: 24 },
+      });
+      const out: string[] = [];
+      const exitWait = new Promise<void>((resolve) => {
+        handle.subscribe({
+          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+          onExit() { resolve(); },
+        });
+      });
+      await exitWait;
+      const combined = out.join("");
+      // zsh's `setopt` lists active options lowercase, no underscores:
+      // INC_APPEND_HISTORY → "incappendhistory"
+      expect(combined.toLowerCase()).toContain("incappendhistory");
+      expect(combined.toLowerCase()).toContain("sharehistory");
+    },
+    15_000,
+  );
 });
 
 describe("renameArgv", () => {

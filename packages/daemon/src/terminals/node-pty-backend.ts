@@ -18,6 +18,7 @@ import type {
   TerminalSize,
   TerminalSubscriber,
 } from "./types";
+import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 
@@ -38,6 +39,10 @@ interface InternalTerm {
   subs: Set<TerminalSubscriber>;
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
+  /** When this PTY is a zsh shell, the temp ZDOTDIR we built for it
+   *  (a `.zshrc` that sources the user's real one then adds history
+   *  hardening). Cleaned up on exit. Undefined for non-zsh PTYs. */
+  zdotdir?: string;
 }
 
 /** Patterns that mean "the agent is paused, waiting for me to press a
@@ -175,6 +180,10 @@ export class NodePtyBackend implements PtyBackend {
             t.exitCode = code ?? 1;
             for (const s of t.subs) s.onExit({ code: code ?? 1 });
           }
+          if (t.zdotdir) {
+            void cleanupZdotdir(t.zdotdir);
+            t.zdotdir = undefined;
+          }
         }
         this.helper = null;
         this.helperReady = null;
@@ -243,6 +252,10 @@ export class NodePtyBackend implements PtyBackend {
         t.exitCode = (evt.code as number) ?? 0;
         t.exitSignal = evt.signal as string | undefined;
         for (const s of t.subs) s.onExit({ code: t.exitCode!, signal: t.exitSignal });
+        if (t.zdotdir) {
+          void cleanupZdotdir(t.zdotdir);
+          t.zdotdir = undefined;
+        }
         return;
       }
       case "error": {
@@ -296,6 +309,18 @@ export class NodePtyBackend implements PtyBackend {
       subs: new Set(),
       awaitingInput: false,
     };
+    // For zsh shells, build a temp ZDOTDIR whose .zshrc sources the
+    // user's real ~/.zshrc and then forces INC_APPEND_HISTORY /
+    // SHARE_HISTORY. Without this, stock-macOS users get arrow-up
+    // history that shows nothing (HISTSIZE defaults to 10) and any
+    // command typed before the PTY is killed never reaches the
+    // histfile. Cleaned up on PTY exit.
+    let env: Record<string, string> | undefined = opts.env;
+    if (isZshCmd(opts.cmd)) {
+      const zdotdir = await makeZshZdotdir();
+      t.zdotdir = zdotdir;
+      env = { ...(opts.env ?? {}), ZDOTDIR: zdotdir };
+    }
     const pidPromise = new Promise<number>((resolve, reject) => {
       t.spawnedAck = { resolve, reject };
     });
@@ -305,11 +330,16 @@ export class NodePtyBackend implements PtyBackend {
       id,
       cwd: opts.cwd,
       cmd: opts.cmd,
-      env: opts.env,
+      env,
       cols: opts.size.cols,
       rows: opts.size.rows,
     });
-    t.pid = await pidPromise;
+    try {
+      t.pid = await pidPromise;
+    } catch (e) {
+      if (t.zdotdir) void cleanupZdotdir(t.zdotdir);
+      throw e;
+    }
     return this.handleFor(t);
   }
 
