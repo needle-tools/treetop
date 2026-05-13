@@ -493,6 +493,69 @@ export function parseCommitList(logOut: string): LastCommit[] {
     .filter((c): c is LastCommit => c !== null);
 }
 
+/** Per-bucket list of changed file paths in a worktree. Feeds the
+ *  "N unstaged" hover tooltip in the dashboard. Input is the output of
+ *  `git status --porcelain` (v1 format). The path field there starts at
+ *  column 3 and runs to end-of-line, so it tolerates spaces in paths
+ *  without us having to switch to NUL-separated parsing. */
+export function parseChangedFiles(porcelain: string): {
+  staged: string[];
+  unstaged: string[];
+  untracked: string[];
+} {
+  const staged: string[] = [];
+  const unstaged: string[] = [];
+  const untracked: string[] = [];
+  for (const line of porcelain.split("\n")) {
+    if (line.length < 3) continue;
+    const x = line.charAt(0);
+    const y = line.charAt(1);
+    let path = line.slice(3);
+    // Renames/copies on the staged side print as "R  new -> old" or
+    // "C  new -> old". Show the destination (new) path — that's what
+    // the user thinks of as "the file that changed".
+    if (x === "R" || x === "C") {
+      const arrow = path.indexOf(" -> ");
+      if (arrow !== -1) path = path.slice(0, arrow);
+    }
+    if (x === "?" && y === "?") {
+      untracked.push(path);
+      continue;
+    }
+    // Ignored entries show as "!! …" with --ignored; we don't ask for
+    // those, but guard anyway so a future flag flip doesn't leak them.
+    if (x === "!") continue;
+    if (x !== " " && x !== "?") staged.push(path);
+    if (y !== " " && y !== "?") unstaged.push(path);
+  }
+  return { staged, unstaged, untracked };
+}
+
+/** Subjects of the commits that are on HEAD but not on the upstream
+ *  yet. Drives the "↑N" hover tooltip. Input is the output of
+ *
+ *      git log <upstream>..HEAD --pretty=format:%H%x00%s -n <limit>
+ *
+ *  using a NUL byte between sha and subject so subjects with spaces or
+ *  tabs round-trip verbatim. The trailing NUL is what %x00 produces;
+ *  newlines separate commits. */
+export function parseUnpushedCommits(
+  logOut: string,
+): { sha: string; subject: string }[] {
+  return logOut
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((line) => {
+      // Match the hex sha at start-of-line, then whitespace, then the
+      // subject. Regex (rather than indexOf(" ")) because the literal
+      // space inside a string keeps getting mangled by the tooling
+      // chain; the regex form sidesteps that entirely.
+      const m = /^([0-9a-f]+)\s+(.*)$/i.exec(line);
+      if (!m) return { sha: line, subject: "" };
+      return { sha: m[1]!, subject: m[2]! };
+    });
+}
+
 export type DiffKind = "workdir" | "staged";
 
 /**

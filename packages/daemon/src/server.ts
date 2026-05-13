@@ -14,8 +14,11 @@ import {
   removeWorktree,
   listBranches,
   checkoutBranch,
+  parseChangedFiles,
+  parseUnpushedCommits,
   type DiffKind,
 } from "./git";
+import { $ } from "bun";
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats } from "./sessions";
@@ -1155,6 +1158,31 @@ const server = Bun.serve<TermWsData, never>({
           ...CORS,
         },
       });
+    }
+
+    if (url.pathname === "/api/wt-summary" && req.method === "GET") {
+      // Feeds the hover-tooltip on the worktree row's status + ahead
+      // badges. Two git calls, in parallel, both cheap: porcelain
+      // status for the file lists, log @{u}..HEAD for the commit
+      // subjects we haven't pushed yet. `nothrow()` on the log call
+      // because git errors on missing upstream — we just return [].
+      const path = url.searchParams.get("path");
+      if (!path) {
+        return json(
+          { error: "?path=<worktree-path> is required" },
+          { status: 400 },
+        );
+      }
+      const [statusOut, logOut] = await Promise.all([
+        $`git -C ${path} status --porcelain`.quiet().nothrow().text(),
+        $`git -C ${path} log @{u}..HEAD --pretty=format:%H %s -n 20`
+          .quiet()
+          .nothrow()
+          .text(),
+      ]);
+      const files = parseChangedFiles(statusOut);
+      const unpushedCommits = parseUnpushedCommits(logOut);
+      return json({ ...files, unpushedCommits });
     }
 
     if (url.pathname === "/api/diff" && req.method === "GET") {
