@@ -427,6 +427,60 @@ button.branch-button:hover {
   color: var(--chip-orange-text);
 }
 
+/* Hover-tooltip content for "N unstaged" / "↑N": multi-line block
+ * inside Tooltip.svelte's content slot. The Tooltip outer chrome
+ * (background, border, shadow) lives in Tooltip.svelte's scoped
+ * styles; here we just style the rows.
+ *
+ * `white-space: normal` overrides the wrap's default `nowrap` so
+ * long paths can soft-wrap inside the tooltip's max-width. */
+.wt-tt-content {
+  display: block;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.4;
+}
+.wt-tt-section + .wt-tt-section {
+  margin-top: 0.4rem;
+}
+.wt-tt-section-head {
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin-bottom: 0.15rem;
+}
+.wt-tt-path {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--text-2);
+  word-break: break-all;
+}
+.wt-tt-commit {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+.wt-tt-sha {
+  font-family: ui-monospace, monospace;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+.wt-tt-subject {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Hint that this status pill has a hover affordance. */
+.status-summary-trigger {
+  cursor: help;
+  text-decoration: underline dotted var(--text-3);
+  text-underline-offset: 2px;
+}
+
 .row-actions {
   margin-left: auto;
   display: flex;

@@ -6,6 +6,7 @@
   import ShellView from "./ShellView.svelte";
   import Popover from "./Popover.svelte";
   import SourceControlPane from "./SourceControlPane.svelte";
+  import Tooltip from "./Tooltip.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import {
     OpenSessionsStore,
@@ -1446,6 +1447,44 @@
     return `${base} · oldest ${relTime(b.aheadOldestTime)}`;
   }
 
+  /** Per-worktree fetched detail for the row-status / ↑N hover
+   *  tooltips. Populated lazily on first hover via /api/wt-summary.
+   *  Sentinel `"loading"` is set synchronously when the request goes
+   *  out so a second hover during the round-trip doesn't re-fire. */
+  interface WtSummary {
+    staged: string[];
+    unstaged: string[];
+    untracked: string[];
+    unpushedCommits: { sha: string; subject: string }[];
+  }
+  let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
+
+  async function loadWtSummary(path: string): Promise<void> {
+    // Skip if already in flight or fetched; the tooltip always shows
+    // the freshest cached value. The next fs_change SSE would normally
+    // invalidate this, but tooltips are ephemeral enough that we can
+    // wait for the user to re-hover.
+    if (wtSummaryByPath[path]) return;
+    wtSummaryByPath = { ...wtSummaryByPath, [path]: "loading" };
+    try {
+      const qs = new URLSearchParams({ path });
+      const res = await fetch(`/api/wt-summary?${qs.toString()}`);
+      if (!res.ok) {
+        // Drop the loading sentinel so a next hover retries.
+        const next = { ...wtSummaryByPath };
+        delete next[path];
+        wtSummaryByPath = next;
+        return;
+      }
+      const data = (await res.json()) as WtSummary;
+      wtSummaryByPath = { ...wtSummaryByPath, [path]: data };
+    } catch {
+      const next = { ...wtSummaryByPath };
+      delete next[path];
+      wtSummaryByPath = next;
+    }
+  }
+
   /** Build the multi-line tooltip for a session row in the agents
    *  popover: title → first user prompt → "[… N more messages …]" →
    *  last 3 (oldest-first). Falls back to the simple "last user
@@ -1856,7 +1895,7 @@
         {/if}
       </div>
     </h1>
-    <p class="muted">v0 — multi-repo, multi-agent, worktree-first dashboard</p>
+    <p class="muted">multi-repo, multi-agent, worktree-first dashboard</p>
   </header>
 
   {#if loading && repos.length === 0}
@@ -2364,15 +2403,66 @@
                 class:clean={summary.clean}
                 title={summary.text}
               ></span>
-              <span class="muted small">{summary.text}</span>
+              {#if summary.clean}
+                <span class="muted small">{summary.text}</span>
+              {:else}
+                <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                  <span slot="trigger" class="muted small status-summary-trigger">{summary.text}</span>
+                  <span slot="content" class="wt-tt-content">
+                    {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                      <span class="muted small">Loading…</span>
+                    {:else}
+                      {@const s = wtSummaryByPath[wt.path]}
+                      {#if s !== "loading" && s !== undefined}
+                        {#if s.staged.length > 0}
+                          <div class="wt-tt-section">
+                            <div class="wt-tt-section-head">staged ({s.staged.length})</div>
+                            {#each s.staged as p}<div class="wt-tt-path">{p}</div>{/each}
+                          </div>
+                        {/if}
+                        {#if s.unstaged.length > 0}
+                          <div class="wt-tt-section">
+                            <div class="wt-tt-section-head">unstaged ({s.unstaged.length})</div>
+                            {#each s.unstaged as p}<div class="wt-tt-path">{p}</div>{/each}
+                          </div>
+                        {/if}
+                        {#if s.untracked.length > 0}
+                          <div class="wt-tt-section">
+                            <div class="wt-tt-section-head">untracked ({s.untracked.length})</div>
+                            {#each s.untracked as p}<div class="wt-tt-path">{p}</div>{/each}
+                          </div>
+                        {/if}
+                      {/if}
+                    {/if}
+                  </span>
+                </Tooltip>
+              {/if}
               {#if wt.branchStatus && wt.branchStatus.upstream}
                 {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
                   {#if wt.branchStatus.ahead > 0}
-                    <span
-                      class="ab ab-ahead"
-                      class:ab-ahead-stale={aheadStale(wt.branchStatus)}
-                      title={aheadTooltip(wt.branchStatus)}
-                    >↑{wt.branchStatus.ahead}</span>
+                    <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                      <span
+                        slot="trigger"
+                        class="ab ab-ahead"
+                        class:ab-ahead-stale={aheadStale(wt.branchStatus)}
+                      >↑{wt.branchStatus.ahead}</span>
+                      <span slot="content" class="wt-tt-content">
+                        <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
+                            {#each s.unpushedCommits as c}
+                              <div class="wt-tt-commit">
+                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                                <span class="wt-tt-subject">{c.subject}</span>
+                              </div>
+                            {/each}
+                          {/if}
+                        {/if}
+                      </span>
+                    </Tooltip>
                   {/if}
                   {#if wt.branchStatus.behind > 0}
                     <span
