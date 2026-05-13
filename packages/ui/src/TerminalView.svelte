@@ -298,10 +298,15 @@
     if (!files || files.length === 0) return;
     e.preventDefault();
     // Upload sequentially so the inserted path order matches drop order.
+    // After the drop completes we focus the xterm so the user can
+    // immediately keep typing — without this, the click on the file
+    // (in Finder, the IDE etc.) left focus outside the PTY and the
+    // next keystroke landed on the page chrome.
     void (async () => {
       for (const f of Array.from(files)) {
         await uploadAndInsert(f, f.name);
       }
+      focusTerminal();
     })();
   }
 </script>
