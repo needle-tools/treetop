@@ -532,27 +532,40 @@ export function parseChangedFiles(porcelain: string): {
 }
 
 /** Subjects of the commits that are on HEAD but not on the upstream
- *  yet. Drives the "↑N" hover tooltip. Input is the output of
+ *  yet (or, in the inbound direction, commits we haven't fetched/pulled
+ *  yet). Drives the "↑N" / "↓N" hover tooltips. Input is the output of
  *
- *      git log <upstream>..HEAD --pretty=format:%H%x00%s -n <limit>
+ *      git log <range> --pretty=format:%H%x00%s%x00%an%x00%ar -n <limit>
  *
- *  using a NUL byte between sha and subject so subjects with spaces or
- *  tabs round-trip verbatim. The trailing NUL is what %x00 produces;
- *  newlines separate commits. */
-export function parseUnpushedCommits(
-  logOut: string,
-): { sha: string; subject: string }[] {
+ *  using NUL bytes between fields so subjects with arbitrary whitespace
+ *  / punctuation round-trip verbatim. Newlines separate commits. */
+export interface UnpushedCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+export function parseUnpushedCommits(logOut: string): UnpushedCommit[] {
   return logOut
     .split("\n")
     .filter((l) => l.length > 0)
     .map((line) => {
-      // Match the hex sha at start-of-line, then whitespace, then the
-      // subject. Regex (rather than indexOf(" ")) because the literal
-      // space inside a string keeps getting mangled by the tooling
-      // chain; the regex form sidesteps that entirely.
-      const m = /^([0-9a-f]+)\s+(.*)$/i.exec(line);
-      if (!m) return { sha: line, subject: "" };
-      return { sha: m[1]!, subject: m[2]! };
+      const parts = line.split("\0");
+      // Defensive: if git's format ever drifts back to space-separated or
+      // a field is missing, fall back to "everything after the sha is the
+      // subject" rather than throwing. Empty author/date are fine.
+      if (parts.length < 2) {
+        const m = /^([0-9a-f]+)\s+(.*)$/i.exec(line);
+        if (!m) return { sha: line, subject: "", author: "", date: "" };
+        return { sha: m[1]!, subject: m[2]!, author: "", date: "" };
+      }
+      return {
+        sha: parts[0] ?? "",
+        subject: parts[1] ?? "",
+        author: parts[2] ?? "",
+        date: parts[3] ?? "",
+      };
     });
 }
 

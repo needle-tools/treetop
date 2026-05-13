@@ -1173,16 +1173,27 @@ const server = Bun.serve<TermWsData, never>({
           { status: 400 },
         );
       }
-      const [statusOut, logOut] = await Promise.all([
+      // %H<NUL>%s<NUL>%an<NUL>%ar — NUL between fields so subjects can
+      // contain any whitespace and survive round-trip. We fetch BOTH
+      // directions of the divergence: ahead (commits we haven't pushed)
+      // and behind (commits we'd get on the next fetch/pull). Each is
+      // capped at 20; the UI tooltip further caps at the first 10.
+      const fmt = "%H%x00%s%x00%an%x00%ar";
+      const [statusOut, aheadOut, behindOut] = await Promise.all([
         $`git -C ${path} status --porcelain`.quiet().nothrow().text(),
-        $`git -C ${path} log @{u}..HEAD --pretty=format:%H %s -n 20`
+        $`git -C ${path} log @{u}..HEAD --pretty=format:${fmt} -n 20`
+          .quiet()
+          .nothrow()
+          .text(),
+        $`git -C ${path} log HEAD..@{u} --pretty=format:${fmt} -n 20`
           .quiet()
           .nothrow()
           .text(),
       ]);
       const files = parseChangedFiles(statusOut);
-      const unpushedCommits = parseUnpushedCommits(logOut);
-      return json({ ...files, unpushedCommits });
+      const unpushedCommits = parseUnpushedCommits(aheadOut);
+      const unfetchedCommits = parseUnpushedCommits(behindOut);
+      return json({ ...files, unpushedCommits, unfetchedCommits });
     }
 
     if (url.pathname === "/api/diff" && req.method === "GET") {

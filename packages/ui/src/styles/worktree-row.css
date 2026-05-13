@@ -457,22 +457,48 @@ button.branch-button:hover {
   color: var(--text-2);
   word-break: break-all;
 }
-.wt-tt-commit {
-  display: flex;
-  gap: 0.4rem;
+/* The ↑/↓ tooltip lists commits in a 4-column grid so sha / subject /
+   author / time line up vertically across rows: easier to scan than a
+   flow layout. All three "meta" columns (sha, author, date) render in
+   the muted text color so the eye lands on the subject by default. */
+.wt-tt-commits {
+  display: grid;
+  /* Columns: sha | author | date | subject. Subject is the last column
+     and takes the leftover space so the message stays readable even
+     when the tooltip is narrow — the other three columns are sized to
+     their intrinsic content. */
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  column-gap: 0.5rem;
+  row-gap: 0.18rem;
   font-size: 0.72rem;
-  color: var(--text-2);
+  align-items: baseline;
 }
 .wt-tt-sha {
   font-family: ui-monospace, monospace;
   color: var(--text-3);
-  flex: 0 0 auto;
 }
 .wt-tt-subject {
-  flex: 1 1 auto;
+  color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.wt-tt-author,
+.wt-tt-date {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.wt-tt-more {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  color: var(--text-3);
+  font-style: italic;
+}
+/* ↑N / ↓N pills are hoverable — they own a Tooltip with commit
+   previews. cursor: help matches the question-mark affordance used by
+   .status-summary-trigger. */
+.ab-trigger {
+  cursor: help;
 }
 /* Hint that this status pill has a hover affordance. */
 .status-summary-trigger {

@@ -350,15 +350,22 @@
     return undefined;
   }
 
-  /** Unified Dispose handler for live new-session columns. Shell flips
-   *  to a `__transcript__:shell:` source so ShellView takes over (the
-   *  user can Resume later). Claude / Codex / Copilot just kill the
-   *  PTY and leave the column open showing final output — same as the
-   *  agent's own `exit` would do — so the user can read the last
-   *  message before × ing. */
+  /** Unified Dispose handler for live new-session columns.
+   *
+   *  Shell flips to a `__transcript__:shell:` source so ShellView takes
+   *  over (command history + Resume).
+   *
+   *  Claude / Codex / Copilot flip to the canonical activity source
+   *  (the on-disk JSONL path) when the activity tail has already
+   *  surfaced this session's sid — so the column transitions to the
+   *  read-only chat view (SessionView initialMode="read"). When the
+   *  sid hasn't been surfaced yet (very early dispose, JSONL not on
+   *  disk), we leave the column as-is so the user can still read the
+   *  final TUI output until they × the column. */
   async function disposeNewSessionColumn(
     wtPath: string,
-    s: { agent: string; source: string },
+    s: OpenSession,
+    agents: AgentSession[],
   ): Promise<void> {
     const termId = resolveTermId(s);
     if (!termId) {
@@ -395,11 +402,32 @@
         // attachment alongside the transcript — the duplicate-column +
         // "always opens in TUI mode after reload" bug.
         dismissShellSource(`__attached__:shell:${termId}`);
+      } else {
+        // Claude / Codex / Copilot: flip to the read-only chat view by
+        // adopting the source the activity-tail entry uses (the JSONL
+        // path). The `:else` render branch then picks SessionView with
+        // initialMode="read". Requires that resumeSessionId has been
+        // stamped (the activity SSE has surfaced this sid) — without
+        // it we have no way to map `__new__:claude:<random>` to a real
+        // session on disk, so keep the dead xterm visible as before.
+        const sid = s.resumeSessionId;
+        const match = sid
+          ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
+          : undefined;
+        if (match) {
+          openSessionsByWt = {
+            ...openSessionsByWt,
+            [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
+              x.source === s.source
+                ? {
+                    agent: s.agent as OpenSession["agent"],
+                    source: match.source,
+                  }
+                : x,
+            ),
+          };
+        }
       }
-      // Claude / Codex / Copilot: no source-swap. The column keeps its
-      // existing `__new__:claude:…` / `__attached__:codex:…` source;
-      // TerminalView's onExit handler is a deliberate no-op so the
-      // dead xterm stays visible until the user ×s.
     }
   }
 
@@ -1451,12 +1479,30 @@
    *  tooltips. Populated lazily on first hover via /api/wt-summary.
    *  Sentinel `"loading"` is set synchronously when the request goes
    *  out so a second hover during the round-trip doesn't re-fire. */
+  interface WtCommit {
+    sha: string;
+    subject: string;
+    /** Author name (`%an`). Empty string when the daemon couldn't read it
+     *  (e.g. legacy-format response from a stale prod build). */
+    author?: string;
+    /** Relative date string (`%ar`, e.g. "2 hours ago"). Empty string in
+     *  the same legacy/error case as `author`. */
+    date?: string;
+  }
   interface WtSummary {
     staged: string[];
     unstaged: string[];
     untracked: string[];
-    unpushedCommits: { sha: string; subject: string }[];
+    /** Local commits ahead of upstream (↑N tooltip). */
+    unpushedCommits: WtCommit[];
+    /** Upstream commits ahead of local (↓N tooltip). Capped server-side
+     *  at 20; the tooltip further caps display at the first 10. Optional
+     *  for backwards-compat with older daemon builds. */
+    unfetchedCommits?: WtCommit[];
   }
+  /** Hard cap on commits rendered per tooltip. The daemon already caps at
+   *  20; this trims further to keep the hover overlay glanceable. */
+  const COMMIT_TOOLTIP_LIMIT = 10;
   let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
 
   async function loadWtSummary(path: string): Promise<void> {
@@ -2443,7 +2489,7 @@
                     <Tooltip onShow={() => loadWtSummary(wt.path)}>
                       <span
                         slot="trigger"
-                        class="ab ab-ahead"
+                        class="ab ab-ahead ab-trigger"
                         class:ab-ahead-stale={aheadStale(wt.branchStatus)}
                       >↑{wt.branchStatus.ahead}</span>
                       <span slot="content" class="wt-tt-content">
@@ -2453,22 +2499,56 @@
                         {:else}
                           {@const s = wtSummaryByPath[wt.path]}
                           {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
-                            {#each s.unpushedCommits as c}
-                              <div class="wt-tt-commit">
+                            <div class="wt-tt-commits">
+                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
                                 <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                                <span class="wt-tt-author">{c.author ?? ""}</span>
+                                <span class="wt-tt-date">{c.date ?? ""}</span>
                                 <span class="wt-tt-subject">{c.subject}</span>
+                              {/each}
+                            </div>
+                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
                               </div>
-                            {/each}
+                            {/if}
                           {/if}
                         {/if}
                       </span>
                     </Tooltip>
                   {/if}
                   {#if wt.branchStatus.behind > 0}
-                    <span
-                      class="ab ab-behind"
-                      title={`${wt.branchStatus.behind} commit${wt.branchStatus.behind === 1 ? "" : "s"} to pull from ${wt.branchStatus.upstream}`}
-                    >↓{wt.branchStatus.behind}</span>
+                    <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                      <span
+                        slot="trigger"
+                        class="ab ab-behind ab-trigger"
+                      >↓{wt.branchStatus.behind}</span>
+                      <span slot="content" class="wt-tt-content">
+                        <div class="wt-tt-section-head">
+                          {wt.branchStatus.behind} commit{wt.branchStatus.behind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
+                        </div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
+                            <div class="wt-tt-commits">
+                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                                <span class="wt-tt-author">{c.author ?? ""}</span>
+                                <span class="wt-tt-date">{c.date ?? ""}</span>
+                                <span class="wt-tt-subject">{c.subject}</span>
+                              {/each}
+                            </div>
+                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
+                              </div>
+                            {/if}
+                          {/if}
+                        {/if}
+                      </span>
+                    </Tooltip>
                   {/if}
                 {:else}
                   <span class="muted small">in sync</span>
@@ -2555,7 +2635,8 @@
                             manualTitle={newSessionTitles[s.source]}
                             awaiting={!!transientAwaiting[s.source]}
                             on:close={() => closeSessionInWt(wt.path, s)}
-                            on:dispose={() => disposeNewSessionColumn(wt.path, s)}
+                            on:dispose={() =>
+                              disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}
                             on:restart={() => restartNewAgentSession(wt.path, s)}
                             on:spawn={(e) => {
                               // Capture the daemon-assigned termId for
