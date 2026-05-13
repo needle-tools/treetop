@@ -527,13 +527,19 @@ button.branch-button:hover {
    the muted text color so the eye lands on the subject by default. */
 .wt-tt-commits {
   display: grid;
-  /* Columns: sha | author | date | subject. Subject is the last column;
-     give it a real lower bound (~16ch) so it never collapses to ellipsis
-     when author + date are long, and cap at 40ch so a very long subject
-     ellipses instead of dragging the tooltip wider than its variant=wide
-     max (44rem). The Tooltip needs variant="wide" for this to have room
-     to breathe. */
-  grid-template-columns: auto auto auto minmax(16ch, 40ch);
+  /* Columns: sha | author | date | subject. Subject is the LAST column
+     and the only flexible one — `1fr` so it expands to the right edge
+     of the tooltip's `tt-wide` max-width (≈ 64rem / 92vw). The 40ch
+     floor keeps short subjects from collapsing when author + date
+     happen to be long, while still letting a near-100ch subject use
+     the full remaining width. The JS-side `clampSubject(100)` in
+     App.svelte bounds how big the subject string can get, so this
+     column won't push the tooltip past its outer max-width. */
+  /* sha (auto) · author (8–30ch — most real names + a domain
+     fit in 30ch; longer ones ellipsize via the matching overflow
+     rule on .wt-tt-author) · date (auto) · subject (1fr, see comment
+     above). */
+  grid-template-columns: auto minmax(8ch, 30ch) auto minmax(40ch, 1fr);
   column-gap: 0.5rem;
   row-gap: 0.18rem;
   font-size: 0.72rem;
@@ -541,19 +547,41 @@ button.branch-button:hover {
 }
 .wt-tt-sha {
   font-family: ui-monospace, monospace;
-  color: var(--text-3);
+  /* Sha is reference metadata, not the headline — drop to --text-muted
+     so the subject column carries the visual weight. */
+  color: var(--text-muted);
 }
 .wt-tt-subject {
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 40ch;
+  /* No max-width here — the grid column's `1fr` handles the upper
+     bound now. A duplicate `max-width: 40ch` was the real reason
+     the tooltip looked stuck at the old width even after the outer
+     `.tt-wide` was bumped to 64rem. */
+}
+/* Em-dash separator before each commit subject — visually divides
+   the metadata trio (sha / author / date) from the headline so the
+   eye can land on the subject. Lives on a ::before so we don't
+   touch the markup. */
+.wt-tt-subject::before {
+  content: "—";
+  color: var(--text-muted);
+  margin-right: 0.6rem;
 }
 .wt-tt-author,
 .wt-tt-date {
   color: var(--text-3);
   white-space: nowrap;
+}
+.wt-tt-author {
+  /* Honour the 20ch cap from the grid template by clipping long
+     names with ellipsis. The full author string stays in the
+     `title=` attr (App.svelte) for the hover-reveal. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .wt-tt-more {
   margin-top: 0.3rem;

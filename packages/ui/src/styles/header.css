@@ -78,6 +78,18 @@ h1 {
 .actions-btn.has-errors {
   color: var(--error-text, #ffb4ad);
 }
+/* TUIs button when something is hot (high cpu/mem). Match the
+   .has-errors color cue plus a subtle reddish background so it
+   actually catches the eye even without numeric badges. */
+.actions-btn.hot {
+  background: var(--error-bg, #3f1f1f);
+  color: var(--error-text, #ffaaaa);
+}
+.actions-btn.hot:hover,
+.actions-btn.hot.open {
+  background: color-mix(in srgb, var(--error-bg, #3f1f1f) 70%, white 15%);
+  color: var(--error-text, #ffaaaa);
+}
 
 /* Add-folder button (header strip, far right). */
 .add-folder-btn {

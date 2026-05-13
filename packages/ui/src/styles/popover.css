@@ -102,20 +102,67 @@
 }
 .tui-row-static {
   cursor: default;
-  /* 4 grid columns: icon (fixed 16px) · name (auto) · stats (auto)
-     · × (fixed 18px). Fixed widths on the icon and × cells keep them
-     from collapsing into adjacent text when content is short. */
-  grid-template-columns: 16px auto auto 18px;
+  /* 6 grid columns:
+     - icon (fixed 16px) · name (auto) · repo-breadcrumb (auto)
+       · title (1fr — the flexible cell so a long title can absorb the
+       leftover width and ellipsize when it overflows)
+       · stats (auto) · × (fixed 18px).
+     Title and repo-breadcrumb spans are conditionally rendered. To keep
+     right-aligned stats and × anchored regardless of which optional cells
+     are present, every cell pins itself to its column via grid-column
+     below — without that, omitting .tui-repo shifts .tui-inline-title
+     into the auto column instead of the 1fr column. */
+  grid-template-columns: 16px auto auto 1fr auto 18px;
   justify-content: end;
 }
+.tui-row-static > .agent-row-icon,
+.tui-row-static > .agent-dot { grid-column: 1; }
+.tui-row-static > .agent-row-name { grid-column: 2; }
+.tui-row-static > .tui-repo { grid-column: 3; }
+.tui-row-static > .tui-inline-title { grid-column: 4; }
+.tui-row-static > .tui-stats { grid-column: 5; }
+.tui-row-static > .tui-kill-x { grid-column: 6; }
 .tui-row-static:hover {
   background: var(--surface-2);
+}
+/* Per-row repo/branch breadcrumb. Truncates if the popover is narrow
+   so it doesn't push stats off-screen. */
+.tui-repo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Inline session title on the same row as the agent name + repo. Takes
+   the flexible 1fr cell so it absorbs leftover width and ellipsizes
+   when too long for the popover. */
+.tui-inline-title {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 /* Stats are mono + tabular so columns of digits line up across rows. */
 .tui-stats {
   font-variant-numeric: tabular-nums;
   color: var(--text-4);
   white-space: nowrap;
+}
+/* Sub-line under the main agent-row: latest activity summary. Sits
+   OUTSIDE the grid (sibling of .agent-row inside the <li>), so we
+   indent it to line up under the agent name. */
+.tui-last-activity {
+  padding: 0 0.45rem 0.2rem calc(0.45rem + 16px + 0.5rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 /* X always reserves the 18px column (no layout shift between hover
    states), revealed on row hover like the agents popover's × is on

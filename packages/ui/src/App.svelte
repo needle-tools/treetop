@@ -232,6 +232,21 @@
   let tuisOpen = false;
   let tuiProcs: TuiProc[] = [];
   let tuiPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** A TUI is "hot" when it crosses one of these thresholds — surfaces
+   *  as a red TUIs button so the user notices a runaway Claude/Codex
+   *  before it eats the whole machine. `?tuihot=1` forces the state
+   *  for visual testing without needing a real hot process. */
+  const TUI_HOT_MEM_BYTES = 500 * 1024 * 1024;
+  const TUI_HOT_CPU_PERCENT = 50;
+  const tuiHotDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("tuihot") === "1";
+  $: tuisHot =
+    tuiHotDebug ||
+    tuiProcs.some(
+      (p) =>
+        p.memBytes > TUI_HOT_MEM_BYTES || p.cpuPercent > TUI_HOT_CPU_PERCENT,
+    );
   // `/api/processes` samples cpu/mem per pid and can take a beat on a
   // busy machine. Without this flag the popover flashes "Nothing running"
   // during the first fetch even when there are TUIs.
@@ -1553,6 +1568,17 @@
   /** Hard cap on commits rendered per tooltip. The daemon already caps at
    *  20; this trims further to keep the hover overlay glanceable. */
   const COMMIT_TOOLTIP_LIMIT = 10;
+  /** Per-subject character clamp inside the unpushed / unfetched
+   *  commit tooltip. Long subjects (the occasional 200-char
+   *  "fix(foo): bar baz quux …" line) blow out the popover width and
+   *  push the hash column off; trimming to 100 + ellipsis keeps the
+   *  row scannable while still leaving enough context to identify
+   *  the commit. */
+  const COMMIT_SUBJECT_MAX = 100;
+  function clampSubject(s: string): string {
+    if (s.length <= COMMIT_SUBJECT_MAX) return s;
+    return s.slice(0, COMMIT_SUBJECT_MAX - 1) + "…";
+  }
   let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
 
   async function loadWtSummary(path: string): Promise<void> {
@@ -1834,10 +1860,13 @@
 
       <div class="actions-anchor tuis-anchor">
         <button
-          class="actions-btn"
+          class="actions-btn tuis-btn"
           class:open={tuisOpen}
+          class:hot={tuisHot}
           on:click={toggleTuisOpen}
-          title="Active TUIs (terminals supergit is hosting)"
+          title={tuisHot
+            ? "A TUI is using significant CPU or memory — open to inspect"
+            : "Active TUIs (terminals supergit is hosting)"}
         >
           TUIs
           <!-- Always-rendered so the button width stays stable whether
@@ -2597,9 +2626,9 @@
                             <div class="wt-tt-commits">
                               {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
                                 <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author">{c.author ?? ""}</span>
+                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
                                 <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject">{c.subject}</span>
+                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
                               {/each}
                             </div>
                             {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
@@ -2630,9 +2659,9 @@
                             <div class="wt-tt-commits">
                               {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
                                 <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author">{c.author ?? ""}</span>
+                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
                                 <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject">{c.subject}</span>
+                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
                               {/each}
                             </div>
                             {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}

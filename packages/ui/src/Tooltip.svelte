@@ -33,6 +33,14 @@
       clearTimeout(timer);
       timer = null;
     }
+    // TEMP DEBUG: don't auto-close on mouseleave so the tooltip stays
+    // on screen for visual inspection. Toggle via ?ttkeep in the URL,
+    // or remove this guard once styling work is done. Default is
+    // STILL auto-close so production behaviour is unaffected.
+    const keep =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("ttkeep");
+    if (keep) return;
     open = false;
   }
 </script>
@@ -87,10 +95,13 @@
      * a single ellipsis. */
     white-space: normal;
   }
-  /* Wider footprint for commit-list tooltips so the 40ch subject column
-     has room to render in full alongside sha/author/date. */
+  /* Wider footprint for commit-list tooltips: sha (7ch) + author
+     (~15ch) + date (~10ch) + a 100-char subject + inter-column gaps
+     ≈ 58–65rem worth of mono text. 64rem leaves headroom for a
+     handful of unicode-wide glyphs; `min(64rem, 92vw)` guards
+     narrower viewports so the tooltip never extends past the page. */
   .tt-wide {
-    max-width: 44rem;
+    max-width: min(64rem, 92vw);
   }
   .tt-bottom {
     top: calc(100% + 0.35rem);
