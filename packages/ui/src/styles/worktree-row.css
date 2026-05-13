@@ -440,6 +440,11 @@ button.branch-button:hover {
   display: inline-flex;
   align-items: center;
   line-height: 1.3;
+  /* Question-mark cursor signals "there's more info on hover" — the
+     wrapping `<Tooltip>` in App.svelte shows the full ahead/behind/
+     dirty breakdown + file list. Matches the `cursor: help` already
+     used elsewhere in the row (e.g. the status-summary-trigger). */
+  cursor: help;
 }
 /* Ahead = local commits not pushed yet. Green = actionable. Uses the
    same `ab-ahead-blink` snap-pattern as the expanded `.ab-ahead-aged`

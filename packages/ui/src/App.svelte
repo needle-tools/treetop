@@ -2455,18 +2455,103 @@
                 </span>
               {/if}
               {#if rowFolded[row.key] && wt}
-                <!-- Folded rows only get one signal-pill. Priority:
-                     unpushed commits → behind upstream → dirty workdir.
-                     Expanded rows show the full row-status line below
-                     instead (dot + dirty count + ↑/↓ chips), so this
-                     badge is collapsed-mode-only. -->
-                <StatusBadge
-                  ahead={wt.branchStatus?.ahead ?? 0}
-                  behind={wt.branchStatus?.behind ?? 0}
-                  dirty={wt.fileStatus.staged +
-                    wt.fileStatus.unstaged +
-                    wt.fileStatus.untracked}
-                />
+                {@const fAhead = wt.branchStatus?.ahead ?? 0}
+                {@const fBehind = wt.branchStatus?.behind ?? 0}
+                {@const fDirty = wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked}
+                {#if fAhead > 0 || fBehind > 0 || fDirty > 0}
+                  <!-- Folded rows only get one signal-pill. Priority:
+                       unpushed commits → behind upstream → dirty workdir.
+                       Tooltip content matches the equivalent expanded-row
+                       tooltip exactly (unpushed-commits list, behind-
+                       commits list, or staged/unstaged/untracked file
+                       lists) depending on which signal is showing. -->
+                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
+                    <span slot="trigger" class="status-badge-trigger">
+                      <StatusBadge ahead={fAhead} behind={fBehind} dirty={fDirty} />
+                    </span>
+                    <span slot="content" class="wt-tt-content">
+                      {#if fAhead > 0 && wt.branchStatus}
+                        <!-- Mirror of the expanded `.ab-ahead` tooltip
+                             at line ~2949 below: aheadTooltip header +
+                             the unpushed-commits grid. -->
+                        <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
+                            <div class="wt-tt-commits">
+                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
+                                <span class="wt-tt-date">{c.date ?? ""}</span>
+                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
+                              {/each}
+                            </div>
+                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
+                              </div>
+                            {/if}
+                          {/if}
+                        {/if}
+                      {:else if fBehind > 0 && wt.branchStatus}
+                        <!-- Mirror of the expanded `.ab-behind` tooltip. -->
+                        <div class="wt-tt-section-head">
+                          {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
+                        </div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
+                            <div class="wt-tt-commits">
+                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
+                                <span class="wt-tt-date">{c.date ?? ""}</span>
+                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
+                              {/each}
+                            </div>
+                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
+                              </div>
+                            {/if}
+                          {/if}
+                        {/if}
+                      {:else}
+                        <!-- Mirror of the expanded summary.text tooltip:
+                             staged / unstaged / untracked file lists. -->
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined}
+                            {#if s.staged.length > 0}
+                              <div class="wt-tt-section">
+                                <div class="wt-tt-section-head">staged ({s.staged.length})</div>
+                                {#each s.staged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
+                              </div>
+                            {/if}
+                            {#if s.unstaged.length > 0}
+                              <div class="wt-tt-section">
+                                <div class="wt-tt-section-head">unstaged ({s.unstaged.length})</div>
+                                {#each s.unstaged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
+                              </div>
+                            {/if}
+                            {#if s.untracked.length > 0}
+                              <div class="wt-tt-section">
+                                <div class="wt-tt-section-head">untracked ({s.untracked.length})</div>
+                                {#each s.untracked as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
+                              </div>
+                            {/if}
+                          {/if}
+                        {/if}
+                      {/if}
+                    </span>
+                  </Tooltip>
+                {/if}
               {/if}
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
