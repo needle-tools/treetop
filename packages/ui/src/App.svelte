@@ -6,6 +6,7 @@
   import TerminalView from "./TerminalView.svelte";
   import ShellView from "./ShellView.svelte";
   import Popover from "./Popover.svelte";
+  import SourceControlPane from "./SourceControlPane.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -992,25 +993,14 @@
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
   }
 
-  // diff viewer per worktree
-  type DiffTab = "workdir" | "staged";
-  let diffTab: Record<string, DiffTab> = {};
-  let workdirDiff: Record<string, string> = {};
-  let stagedDiff: Record<string, string> = {};
-  let openCommitSha: Record<string, string | null> = {};
-  let commitDiff: Record<string, string> = {};
-  let diffLoading: Record<string, boolean> = {};
-  // Per-worktree: false = ±2 lines of context (default); true = whole file.
-  let fullFile: Record<string, boolean> = {};
-  const FULL_FILE_CONTEXT = 99999;
-  const DEFAULT_CONTEXT = 2;
-
-  // commit history per worktree-path
-  let commitsByPath: Record<string, LastCommit[]> = {};
+  // Source-control state per worktree moved into SourceControlPane.svelte
+  // (Phase 2 of the App.svelte refactor). The only piece that stays here
+  // is `commitsExpanded`, since it persists to localStorage.
   let commitsExpanded: Record<string, boolean> = {};
-  let commitsLoading: Record<string, boolean> = {};
-  let commitsExhausted: Record<string, boolean> = {};
-  const COMMITS_BATCH = 50;
+  /** Bumped per-worktree by the SSE handler when the daemon's FS watcher
+   *  broadcasts a `fs_change` event. SourceControlPane reads this as a
+   *  prop and refetches its cached diff when the value increments. */
+  let fsChangeKey: Record<string, number> = {};
 
   const expandedStore = new ExpandedStore(
     typeof window !== "undefined"
@@ -1301,185 +1291,13 @@
     return "Files";
   }
 
-  async function fetchCommits(
-    wtPath: string,
-    before?: string,
-  ): Promise<LastCommit[]> {
-    const qs = new URLSearchParams({ path: wtPath, limit: String(COMMITS_BATCH) });
-    if (before) qs.set("before", before);
-    const res = await fetch(`/api/commits?${qs.toString()}`);
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `HTTP ${res.status}`);
-    }
-    return res.json();
-  }
-
-  function contextFor(wtPath: string): number {
-    return fullFile[wtPath] ? FULL_FILE_CONTEXT : DEFAULT_CONTEXT;
-  }
-  async function fetchDiff(wtPath: string, kind: DiffTab): Promise<string> {
-    const qs = new URLSearchParams({
-      path: wtPath,
-      kind,
-      context: String(contextFor(wtPath)),
-    });
-    const res = await fetch(`/api/diff?${qs.toString()}`);
-    if (!res.ok) throw new Error(`/api/diff: ${res.status}`);
-    return res.text();
-  }
-
-  /** Flip ±2 lines ↔ Full file, drop the worktree's cached diffs, refetch. */
-  async function toggleFullFile(wtPath: string) {
-    fullFile = { ...fullFile, [wtPath]: !fullFile[wtPath] };
-
-    const wd = { ...workdirDiff };
-    delete wd[wtPath];
-    workdirDiff = wd;
-
-    const sd = { ...stagedDiff };
-    delete sd[wtPath];
-    stagedDiff = sd;
-
-    const cd: Record<string, string> = {};
-    for (const k in commitDiff) {
-      if (!k.startsWith(`${wtPath}:`)) cd[k] = commitDiff[k]!;
-    }
-    commitDiff = cd;
-
-    const tab = diffTab[wtPath] ?? "workdir";
-    if (tab === "workdir") await loadWorkdirDiff(wtPath);
-    else await loadStagedDiff(wtPath);
-
-    // If a commit was open, refetch its diff with the new context.
-    const sha = openCommitSha[wtPath];
-    if (sha) {
-      try {
-        const qs = new URLSearchParams({
-          path: wtPath,
-          sha,
-          context: String(contextFor(wtPath)),
-        });
-        const res = await fetch(`/api/commit?${qs.toString()}`);
-        if (res.ok) {
-          commitDiff = {
-            ...commitDiff,
-            [`${wtPath}:${sha}`]: await res.text(),
-          };
-        }
-      } catch (e) {
-        error = e instanceof Error ? e.message : String(e);
-      }
-    }
-  }
-
-  async function loadWorkdirDiff(wtPath: string) {
-    diffLoading = { ...diffLoading, [wtPath]: true };
-    try {
-      workdirDiff = {
-        ...workdirDiff,
-        [wtPath]: await fetchDiff(wtPath, "workdir"),
-      };
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      diffLoading = { ...diffLoading, [wtPath]: false };
-    }
-  }
-  async function loadStagedDiff(wtPath: string) {
-    diffLoading = { ...diffLoading, [wtPath]: true };
-    try {
-      stagedDiff = {
-        ...stagedDiff,
-        [wtPath]: await fetchDiff(wtPath, "staged"),
-      };
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      diffLoading = { ...diffLoading, [wtPath]: false };
-    }
-  }
-  function setDiffTab(wtPath: string, tab: DiffTab) {
-    diffTab = { ...diffTab, [wtPath]: tab };
-    if (tab === "workdir" && workdirDiff[wtPath] === undefined)
-      loadWorkdirDiff(wtPath);
-    if (tab === "staged" && stagedDiff[wtPath] === undefined)
-      loadStagedDiff(wtPath);
-  }
-  async function openCommit(wtPath: string, sha: string) {
-    if (openCommitSha[wtPath] === sha) {
-      openCommitSha = { ...openCommitSha, [wtPath]: null };
-      return;
-    }
-    openCommitSha = { ...openCommitSha, [wtPath]: sha };
-    if (commitDiff[`${wtPath}:${sha}`] !== undefined) return;
-    diffLoading = { ...diffLoading, [wtPath]: true };
-    try {
-      const qs = new URLSearchParams({
-        path: wtPath,
-        sha,
-        context: String(contextFor(wtPath)),
-      });
-      const res = await fetch(`/api/commit?${qs.toString()}`);
-      if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
-      const text = await res.text();
-      commitDiff = { ...commitDiff, [`${wtPath}:${sha}`]: text };
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      diffLoading = { ...diffLoading, [wtPath]: false };
-    }
-  }
-
-  async function loadCommitsInitial(wtPath: string) {
-    if (commitsByPath[wtPath]) return;
-    commitsLoading = { ...commitsLoading, [wtPath]: true };
-    try {
-      const list = await fetchCommits(wtPath);
-      commitsByPath = { ...commitsByPath, [wtPath]: list };
-      commitsExhausted = {
-        ...commitsExhausted,
-        [wtPath]: list.length < COMMITS_BATCH,
-      };
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      commitsLoading = { ...commitsLoading, [wtPath]: false };
-    }
-  }
-
-  async function loadMoreCommits(wtPath: string) {
+  /** Toggle the persisted "is the source-control foldout open" flag for
+   *  a worktree. Loading the actual diffs + commits is the
+   *  SourceControlPane's job — it reacts to the `expanded` prop. */
+  function toggleCommits(wtPath: string) {
     error = "";
-    const existing = commitsByPath[wtPath] ?? [];
-    const before = existing[existing.length - 1]?.sha;
-    if (!before) return;
-    commitsLoading = { ...commitsLoading, [wtPath]: true };
-    try {
-      const more = await fetchCommits(wtPath, before);
-      commitsByPath = {
-        ...commitsByPath,
-        [wtPath]: [...existing, ...more],
-      };
-      commitsExhausted = {
-        ...commitsExhausted,
-        [wtPath]: more.length < COMMITS_BATCH,
-      };
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      commitsLoading = { ...commitsLoading, [wtPath]: false };
-    }
-  }
-
-  async function toggleCommits(wtPath: string) {
-    error = "";
-    const willExpand = !commitsExpanded[wtPath];
-    commitsExpanded = { ...commitsExpanded, [wtPath]: willExpand };
+    commitsExpanded = { ...commitsExpanded, [wtPath]: !commitsExpanded[wtPath] };
     persistExpanded();
-    if (willExpand) {
-      await loadCommitsInitial(wtPath);
-      if (!diffTab[wtPath]) setDiffTab(wtPath, "workdir");
-    }
   }
 
   async function loadEditors() {
@@ -1500,10 +1318,8 @@
       void load();
 
       // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
-      // If the change happened inside a worktree whose diff panel is
-      // open, invalidate the cached diff so the visible content
-      // re-fetches instead of staying stale ("Nothing unstaged" while
-      // the row already shows "Unstaged 1").
+      // SourceControlPane owns the diff cache per row; we just bump the
+      // worktree's fsChangeKey counter so it reacts and refetches.
       const data = rawEvt?.data;
       if (typeof data !== "string") return;
       let payload: { kind?: string; path?: string };
@@ -1514,21 +1330,7 @@
       }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
-      // Drop cached entries for this worktree; the active-tab refetch
-      // below repopulates whichever one the user is looking at.
-      if (workdirDiff[wtPath] !== undefined) {
-        const wd = { ...workdirDiff };
-        delete wd[wtPath];
-        workdirDiff = wd;
-      }
-      if (stagedDiff[wtPath] !== undefined) {
-        const sd = { ...stagedDiff };
-        delete sd[wtPath];
-        stagedDiff = sd;
-      }
-      const tab = diffTab[wtPath];
-      if (tab === "workdir") void loadWorkdirDiff(wtPath);
-      else if (tab === "staged") void loadStagedDiff(wtPath);
+      fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
       try {
@@ -2749,125 +2551,14 @@
                    placed BELOW the sessions strip so the chat columns
                    are the row's primary content. The chevron toggles
                    the source-control panel (staging + history) below. -->
-              <div class="row-commit muted small">
-                <button
-                  class="chevron"
-                  class:open={commitsExpanded[wt.path]}
-                  title={commitsExpanded[wt.path] ? "Hide source control" : "Show source control"}
-                  aria-label={commitsExpanded[wt.path] ? "Hide source control" : "Show source control"}
-                  on:click={() => toggleCommits(wt.path)}
-                >
-                  <span class="arrow">▸</span>
-                </button>
-                <span class="sha">{wt.lastCommit.shortSha}</span>
-                <span class="commit-subject">{wt.lastCommit.subject}</span>
-                <span class="commit-author">{wt.lastCommit.author}</span>
-                <span class="commit-time">{relTime(wt.lastCommit.time)}</span>
-              </div>
-
-              {#if commitsExpanded[wt.path]}
-                <div class="expanded">
-                  {#if zenRowKey === row.key}
-                    <button
-                      class="hide-history-btn"
-                      title="Hide source control"
-                      on:click={() => toggleCommits(wt.path)}
-                    >Hide ✕</button>
-                  {/if}
-                  {#if summary.text !== "clean" || wt.fileStatus.staged > 0}
-                    <div class="inline-diff">
-                      <div class="tabs-row">
-                        <div class="tabs">
-                          <button
-                            class="tab"
-                            class:active={(diffTab[wt.path] ?? "workdir") === "workdir"}
-                            on:click={() => setDiffTab(wt.path, "workdir")}
-                          >
-                            Unstaged
-                            {#if summary.text !== "clean"}
-                              <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
-                            {/if}
-                          </button>
-                          <button
-                            class="tab"
-                            class:active={diffTab[wt.path] === "staged"}
-                            on:click={() => setDiffTab(wt.path, "staged")}
-                          >
-                            Staged
-                            {#if wt.fileStatus.staged > 0}
-                              <span class="tab-count">{wt.fileStatus.staged}</span>
-                            {/if}
-                          </button>
-                        </div>
-                        <button
-                          class="ctx-toggle"
-                          class:active={fullFile[wt.path]}
-                          title={fullFile[wt.path]
-                            ? "Showing whole file — click for ±2 lines"
-                            : "Showing ±2 lines context — click for whole file"}
-                          on:click={() => toggleFullFile(wt.path)}
-                        >{fullFile[wt.path] ? "Full file" : "±2 lines"}</button>
-                      </div>
-
-                      {#if (diffTab[wt.path] ?? "workdir") === "workdir"}
-                        {#if diffLoading[wt.path] && workdirDiff[wt.path] === undefined}
-                          <p class="muted small nopad">Loading diff…</p>
-                        {:else if workdirDiff[wt.path]}
-                          <DiffViewer text={workdirDiff[wt.path]} />
-                        {:else}
-                          <p class="muted small nopad">Nothing unstaged.</p>
-                        {/if}
-                      {:else}
-                        {#if diffLoading[wt.path] && stagedDiff[wt.path] === undefined}
-                          <p class="muted small nopad">Loading diff…</p>
-                        {:else if stagedDiff[wt.path]}
-                          <DiffViewer text={stagedDiff[wt.path]} />
-                        {:else}
-                          <p class="muted small nopad">Nothing staged.</p>
-                        {/if}
-                      {/if}
-                    </div>
-                  {/if}
-                  <h3 class="commits-heading">History</h3>
-                  <div class="commits">
-                    {#if commitsLoading[wt.path] && !commitsByPath[wt.path]}
-                      <p class="muted small nopad">Loading…</p>
-                    {:else if commitsByPath[wt.path]}
-                      {#each commitsByPath[wt.path] as c (c.sha)}
-                        <button
-                          class="commit-row"
-                          class:open={openCommitSha[wt.path] === c.sha}
-                          on:click={() => openCommit(wt.path, c.sha)}
-                        >
-                          <code class="sha">{c.shortSha}</code>
-                          <span class="commit-subject">{c.subject}</span>
-                          <span class="commit-author">{c.author}</span>
-                          <span class="commit-time">{relTime(c.time)}</span>
-                        </button>
-                        {#if openCommitSha[wt.path] === c.sha}
-                          {#if commitDiff[`${wt.path}:${c.sha}`] !== undefined}
-                            <div class="inline-commit">
-                              <DiffViewer text={commitDiff[`${wt.path}:${c.sha}`]} />
-                            </div>
-                          {:else}
-                            <p class="muted small nopad">Loading commit…</p>
-                          {/if}
-                        {/if}
-                      {/each}
-                      {#if !commitsExhausted[wt.path]}
-                        <button
-                          class="tiny load-more"
-                          on:click={() => loadMoreCommits(wt.path)}
-                          disabled={commitsLoading[wt.path]}
-                          >{commitsLoading[wt.path] ? "Loading…" : "Load more"}</button
-                        >
-                      {:else}
-                        <span class="muted small">— end of history</span>
-                      {/if}
-                    {/if}
-                  </div>
-                </div>
-              {/if}
+              <SourceControlPane
+                {wt}
+                expanded={!!commitsExpanded[wt.path]}
+                inZen={zenRowKey === row.key}
+                fsChangeKey={fsChangeKey[wt.path] ?? 0}
+                onError={(msg) => (error = msg)}
+                on:toggle={() => toggleCommits(wt.path)}
+              />
             {/if}
           {/if}
           {/if}
