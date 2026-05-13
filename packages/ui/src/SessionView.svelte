@@ -9,7 +9,21 @@
   // Make every link open in a new tab. We're a desktop-style dashboard —
   // following a link inside the chat panel would replace the whole UI.
   // Applies to both [text](url) and bare-URL autolinks (gfm enables those).
+  //
+  // Also: disable setext heading parsing (text + line-of-dashes →
+  // <h2>). Agents constantly emit raw diffs and bash outputs that
+  // contain `---` / `===` separator lines; setext turns the line above
+  // those into an oversized heading, which reads as random font-size
+  // jitter inside a chat message. ATX headings (`# Title`) still work
+  // and keep their size hierarchy. Side effect: a bare `---` becomes
+  // an <hr> instead of styling the prior line — that's fine for our
+  // chat use case, and arguably more correct.
   marked.use({
+    tokenizer: {
+      lheading() {
+        return undefined;
+      },
+    },
     renderer: {
       link(token: { href: string; title?: string | null; text: string }) {
         const href = token.href ?? "";
