@@ -42,8 +42,15 @@
   --error-text: #ffaaaa;
 
   /* chips */
-  --chip-blue-bg: #1a3a5a;
-  --chip-blue-text: #aacdef;
+  --chip-default-bg: #4a4d49;
+  --chip-default-text: #e6eee6;
+  /* "Selected" highlight for tabs / active file rows in the diff view.
+     Used to share --chip-default-* but the chip got repurposed as a
+     light-grey pill, which made selected rows unreadable. Keep this
+     darker palette anchored separately so the diff UI doesn't follow
+     the chip theme. */
+  --selected-bg: #43463e;
+  --selected-text: #d9e8c2;
   --chip-orange-bg: #3a2a1a;
   --chip-orange-text: #efcdaa;
   --chip-purple-bg: #3a1a3a;

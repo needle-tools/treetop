@@ -56,8 +56,8 @@
   letter-spacing: 0.04em;
 }
 .actor-user {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
 }
 .actor-agent {
   background: var(--chip-purple-bg);

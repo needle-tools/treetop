@@ -102,6 +102,44 @@ describe("Workspace", () => {
     await expect(ws.renameRepo("nope", "X")).rejects.toThrow(/not found/);
   });
 
+  test("setRepoColor persists hex color and returns old + new", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const result = await ws.setRepoColor(repo.id, "#FF8800");
+    expect(result).toEqual({ oldColor: undefined, newColor: "#ff8800" });
+    expect((await ws.listRepos())[0]?.color).toBe("#ff8800");
+  });
+
+  test("setRepoColor with null clears an existing color", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await ws.setRepoColor(repo.id, "#abcdef");
+    const cleared = await ws.setRepoColor(repo.id, null);
+    expect(cleared).toEqual({ oldColor: "#abcdef", newColor: undefined });
+    expect((await ws.listRepos())[0]?.color).toBeUndefined();
+  });
+
+  test("setRepoColor rejects bad hex formats", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(ws.setRepoColor(repo.id, "red")).rejects.toThrow(/hex/);
+    await expect(ws.setRepoColor(repo.id, "#abc")).rejects.toThrow(/hex/);
+    await expect(ws.setRepoColor(repo.id, "rgb(1,2,3)")).rejects.toThrow(/hex/);
+  });
+
+  test("setRepoColor is a no-op when value unchanged", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await ws.setRepoColor(repo.id, "#112233");
+    const again = await ws.setRepoColor(repo.id, "#112233");
+    expect(again).toEqual({ oldColor: "#112233", newColor: "#112233" });
+  });
+
+  test("setRepoColor throws when id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(ws.setRepoColor("nope", "#112233")).rejects.toThrow(/not found/);
+  });
+
   test("session titles start empty", async () => {
     const ws = await Workspace.open(await tempDir());
     expect(await ws.listSessionTitles()).toEqual({});

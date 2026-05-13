@@ -989,8 +989,8 @@
     color: var(--chip-codex-text);
   }
   .agent-pill.agent-copilot {
-    background: var(--chip-blue-bg);
-    color: var(--chip-blue-text);
+    background: var(--chip-default-bg);
+    color: var(--chip-default-text);
   }
   .sid {
     font-family: ui-monospace, monospace;
@@ -1251,7 +1251,7 @@
     color: var(--chip-codex-text);
   }
   .role.brand-copilot {
-    color: var(--chip-blue-text);
+    color: var(--chip-default-text);
   }
   .block.text {
     word-break: break-word;
@@ -1455,7 +1455,7 @@
     background: rgba(37, 99, 235, 0.08);
   }
   .block.ide-context .tag-label {
-    color: var(--chip-blue-text);
+    color: var(--chip-default-text);
   }
   .block.sys-reminder {
     background: rgba(217, 119, 6, 0.08);

@@ -45,11 +45,11 @@
 /* Fold-toggle chevron (blue-tinted, vs. the neutral history chevron). */
 .fold-toggle {
   margin-right: -0.2rem;
-  color: var(--chip-blue-text);
+  color: var(--chip-default-text);
 }
 .fold-toggle:hover {
-  color: var(--chip-blue-text);
-  background: color-mix(in srgb, var(--chip-blue-bg) 55%, transparent);
+  color: var(--chip-default-text);
+  background: color-mix(in srgb, var(--chip-default-bg) 55%, transparent);
 }
 
 /* ------------------------------------------------------------------
@@ -63,14 +63,14 @@
   min-width: 0;
 }
 .repo-chip {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
   padding: 0.18rem 0.55rem;
   border: 0;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 500;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -79,12 +79,155 @@
 .repo-chip:hover {
   filter: brightness(1.15);
 }
+/* When the user assigned an accent colour, the chip swaps its default
+   blue palette for the picked colour. Foreground is computed in JS
+   (repoChipFg) via YIQ luma so dark picks get white text and bright
+   picks get near-black. The CSS variables come in via inline style. */
+.repo-chip.repo-chip-colored {
+  background: var(--repo-bg);
+  color: var(--repo-fg);
+}
+/* Hover for colored chips derives a brighter shade from the picked
+   colour in OKLCH so the shift stays perceptually uniform across
+   hues — unlike the default `filter: brightness()` which over-pops
+   saturated reds/oranges and under-shifts dark blues. We bump L by
+   0.08 and keep chroma + hue. The plain `filter: none` here drops
+   the inherited brightness so we don't stack the two effects. */
+.repo-chip.repo-chip-colored:hover {
+  background: oklch(from var(--repo-bg) calc(l + 0.08) c h);
+  filter: none;
+}
+/* Soft "there's something to push" indicator: a small green dot that
+   sits in the pencil's slot when the row is folded and there are
+   unpushed commits. The dot pulsates its BACKGROUND lightness only
+   (no glow / box-shadow), so it reads as a calm peripheral hint
+   rather than a strobe. On hover the dot hides and the pencil takes
+   the slot for renaming. */
+.chip-tail {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.7rem;
+  height: 0.7rem;
+  /* Cancel out the parent chip's gap on the left of this last cell:
+     the dot is centered in its own box; the previous flex gap is
+     enough breathing room from the repo name. */
+}
+.chip-tail .pencil {
+  position: static;
+}
+.ahead-dot {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  /* currentColor inherits the chip's text colour, so the dot picks
+     up --chip-default-text on uncolored chips and --repo-fg on
+     user-colored ones automatically — no second source of truth. */
+  background: currentColor;
+  pointer-events: none;
+  /* Double-blink cadence: ON / off / ON / long rest. Linear timing
+     keeps the snap; the OFF state is fully transparent so the dot
+     completely disappears between hits. 2.6s cycle — keeps each
+     blink snappy (~130ms) while leaving ~1.9s of silence between
+     groups, so the row reads as calm except for the brief reminder. */
+  animation: ahead-dot-pulse 2.6s linear infinite;
+}
+@keyframes ahead-dot-pulse {
+  0%, 4%, 9%, 13%, 18%, 100% {
+    background: transparent;
+  }
+  5%, 8%, 14%, 17% {
+    background: currentColor;
+  }
+}
+.repo-chip:hover .ahead-dot {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ahead-dot {
+    animation: none;
+  }
+}
 .repo-chip .pencil {
   opacity: 0;
   font-size: 0.7rem;
 }
 .repo-chip:hover .pencil {
   opacity: 0.8;
+}
+/* Repo chip + swatch live inside this flex stack so the two read as a
+   single docked element — same idiom as .agent-add docked to .agent
+   chips below. No gap, swatch on the left, chip on the right. */
+.repo-chip-stack {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
+/* Native <input type=color> rendered as a docked colour bar on the
+   LEFT of the repo chip. The browser's default chrome is hidden via
+   the inner ::-webkit-color-swatch / ::-moz-color-swatch pseudos so
+   what's left is a clean rectangular fill. The fill colour comes from
+   --swatch-bg set inline. */
+.repo-color-swatch {
+  appearance: none;
+  -webkit-appearance: none;
+  /* Pin both dimensions hard. Safari + Firefox both ignore plain
+     width/height on <input type=color> in some configurations, so the
+     min/max pair is load-bearing. Height matches the chip's natural
+     height (font-size 0.8rem + 0.18rem*2 padding ≈ 24px), so use a
+     stretch-friendly approach: align-items: stretch on the parent
+     plus height: 100% here. */
+  box-sizing: border-box;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: auto;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  border-top-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-sm);
+  background: var(--swatch-bg, transparent);
+  cursor: pointer;
+  flex-shrink: 0;
+  flex-grow: 0;
+  overflow: hidden;
+  outline: 0;
+}
+.repo-color-swatch:hover {
+  filter: brightness(1.15);
+}
+.repo-color-swatch:focus,
+.repo-color-swatch:focus-visible {
+  outline: 0;
+}
+.repo-color-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+  border: 0;
+}
+.repo-color-swatch::-webkit-color-swatch {
+  border: 0;
+  border-radius: 0;
+  background: var(--swatch-bg, transparent);
+}
+.repo-color-swatch::-moz-color-swatch {
+  border: 0;
+  border-radius: 0;
+  background: var(--swatch-bg, transparent);
+}
+
+/* When the chip is paired with a swatch on its left, square off the
+   chip's left corners so the two halves visually fuse into one
+   element. The right corners keep the normal pill rounding. */
+.repo-chip.repo-chip-stacked {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 .name-edit {
   padding: 0.15rem 0.4rem;
@@ -110,8 +253,8 @@
 
 /* Branch chip — both the static label and the button variant. */
 .branch {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
   padding: 0.1rem 0.5rem;
   border-radius: var(--radius-sm);
   font-size: 0.78rem;
@@ -127,6 +270,18 @@ button.branch-button {
 }
 button.branch-button:hover {
   filter: brightness(1.15);
+}
+/* When the repo has an accent colour, the branch button picks it up
+   too so a repo's worktree rows read as a visually grouped block.
+   Hover uses OKLCH to derive a perceptually-uniform lighter shade
+   (matches the repo-chip hover above). */
+.branch.branch-colored {
+  background: var(--repo-bg);
+  color: var(--repo-fg);
+}
+.branch.branch-colored:hover {
+  background: oklch(from var(--repo-bg) calc(l + 0.08) c h);
+  filter: none;
 }
 .branch-caret {
   font-size: 0.65rem;
@@ -186,8 +341,8 @@ button.branch-button:hover {
   color: var(--chip-codex-text);
 }
 .agent-badge.agent-copilot {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
 }
 .agent-wrap {
   position: relative;
@@ -229,8 +384,8 @@ button.branch-button:hover {
   color: var(--chip-codex-text);
 }
 .agent-more.agent-copilot {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
 }
 .agent-more:hover {
   filter: brightness(1.2);
@@ -261,8 +416,8 @@ button.branch-button:hover {
   color: var(--chip-codex-text);
 }
 .agent-add.agent-copilot {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
 }
 /* When there's no agent badge next to it (no sessions yet), the "+"
    stands alone — neutral muted color, rounded on both sides. */
@@ -315,8 +470,8 @@ button.branch-button:hover {
   color: var(--chip-codex-text);
 }
 .agent-pill.agent-copilot {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
 }
 /* Plain `$SHELL` columns: neutral surface so the pill reads as
    "this is just a terminal, not an agent" — distinct from the
@@ -364,7 +519,7 @@ button.branch-button:hover {
   background: var(--chip-codex-text);
 }
 .row-activity .agent-dot.agent-copilot {
-  background: var(--chip-blue-text);
+  background: var(--chip-default-text);
 }
 .activity-text {
   flex: 1;
@@ -411,44 +566,47 @@ button.branch-button:hover {
 }
 /* Ahead = local commits not pushed yet. Green = actionable.
  *
- * The badge pulses (ripple-out box-shadow) AND blinks (background
- * oscillates between the resting chip-green-bg and a brighter mix)
- * so unpushed work is impossible to overlook from across the
- * dashboard. The ripple uses an expanding box-shadow that fades from
- * a saturated green halo to transparent — gives the badge a steady
- * "broadcasting" feel without moving the layout (no transform). */
-@keyframes ab-ahead-pulse {
-  0% {
-    box-shadow: 0 0 0 0
-      color-mix(in srgb, var(--chip-green-text) 75%, transparent);
-  }
-  70% {
-    box-shadow: 0 0 0 10px
-      color-mix(in srgb, var(--chip-green-text) 0%, transparent);
-  }
-  100% {
-    box-shadow: 0 0 0 0
-      color-mix(in srgb, var(--chip-green-text) 0%, transparent);
-  }
-}
+ * The badge blinks its background twice in rapid succession (heartbeat
+ * cadence) and then rests, so unpushed work catches the eye across the
+ * dashboard without a constant pulse. No box-shadow ripple: the user
+ * found the surrounding glow distracting and asked for "just the
+ * background" pulsating. Layout stays put (no transform). */
+/* Peak background for the double-blink. The previous version mixed
+   the resting bg with the text colour (chip-green-text), which at 75%
+   produced a near-text-coloured fill — the ↑N number washed out at
+   peak. The new peak is a punchy saturated green that stays well
+   below the text's lightness, so contrast survives the blink.
+   Keyframes use HOLD steps (0→ON→ON→OFF) rather than smooth ease, so
+   each blink reads as a snap rather than a fade. */
 @keyframes ab-ahead-blink {
-  0%, 100% {
+  0%, 4%, 14%, 18%, 28%, 100% {
     background: var(--chip-green-bg);
   }
-  50% {
-    background: color-mix(
-      in srgb,
-      var(--chip-green-bg) 35%,
-      var(--chip-green-text) 65%
-    );
+  5%, 13%, 19%, 27% {
+    background: #1f8a4a;
   }
+}
+.ab-arrow {
+  /* Larger glyph + a small right-margin so the arrow visually sits
+     apart from the digit rather than fused into a single ligature. */
+  font-size: 1.2em;
+  line-height: 1;
+  margin-right: 0.25em;
+  display: inline-block;
+  vertical-align: -0.05em;
 }
 .ab-ahead {
   background: var(--chip-green-bg);
   color: var(--chip-green-text);
-  animation:
-    ab-ahead-pulse 1.4s ease-out infinite,
-    ab-ahead-blink 1.4s ease-in-out infinite;
+}
+/* Animation only kicks in once the oldest unpushed commit has been
+   parked for BLINK_AHEAD_MINUTES (default 30m). Fresh commits stay
+   quiet so the user isn't nagged about work they just made.
+   1.4s cycle: two snap-on/snap-off blinks (5-13% and 19-27% of the
+   timeline, ≈110ms on / 85ms gap / 110ms on) then a 1s rest. Linear
+   timing keeps each blink crisp instead of fading in like ease. */
+.ab-ahead.ab-ahead-aged {
+  animation: ab-ahead-blink 1.4s linear infinite;
 }
 /* Stale variant: the oldest unpushed commit is older than
    STALE_AHEAD_HOURS. Keep green so behind=orange stays distinct, but
@@ -474,7 +632,8 @@ button.branch-button:hover {
  * but keep the brighter background-mix as a static cue so unpushed
  * work is still visually distinct. */
 @media (prefers-reduced-motion: reduce) {
-  .ab-ahead {
+  .ab-ahead,
+  .ab-ahead.ab-ahead-aged {
     animation: none;
     background: color-mix(
       in srgb,

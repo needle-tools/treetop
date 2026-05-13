@@ -7,6 +7,11 @@ export interface Repo {
   path: string;
   name: string;
   addedAt: string;
+  /** Optional accent colour for the repo name — applied wherever the
+   *  repo title renders (worktree header chip, TUI overview, etc.) so
+   *  the user can tell repos apart at a glance. `#rrggbb` lowercase
+   *  hex when set; absent means "use the default text colour". */
+  color?: string;
 }
 
 interface ReposFile {
@@ -126,6 +131,37 @@ export class Workspace {
     }
     repos.push(repo);
     await this.writeRepos(repos);
+  }
+
+  /**
+   * Set (or clear with `null`) a repo's accent colour. Returns the
+   * previous and new values so the caller can decide whether to emit
+   * an event or skip a no-op write. Colours are validated as `#rrggbb`
+   * hex; anything else is rejected.
+   */
+  async setRepoColor(
+    id: string,
+    color: string | null,
+  ): Promise<{ oldColor?: string; newColor?: string }> {
+    let nextColor: string | undefined;
+    if (color !== null) {
+      const trimmed = color.trim().toLowerCase();
+      if (!/^#[0-9a-f]{6}$/.test(trimmed)) {
+        throw new Error("color must be #rrggbb hex or null");
+      }
+      nextColor = trimmed;
+    }
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const oldColor = repos[idx]!.color;
+    if (oldColor === nextColor) return { oldColor, newColor: nextColor };
+    const next: Repo = { ...repos[idx]! };
+    if (nextColor === undefined) delete next.color;
+    else next.color = nextColor;
+    repos[idx] = next;
+    await this.writeRepos(repos);
+    return { oldColor, newColor: nextColor };
   }
 
   /**

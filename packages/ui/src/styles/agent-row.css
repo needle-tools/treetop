@@ -72,7 +72,7 @@
   color: var(--chip-codex-text);
 }
 .agent-row.brand-copilot {
-  color: var(--chip-blue-text);
+  color: var(--chip-default-text);
 }
 
 .agent-row-name {

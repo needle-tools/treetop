@@ -102,6 +102,9 @@
     path: string;
     name: string;
     addedAt: string;
+    /** Optional accent colour (#rrggbb) — applied wherever the repo
+     *  name renders so the user can tell repos apart at a glance. */
+    color?: string;
     worktrees: Worktree[];
   }
   interface Event {
@@ -318,11 +321,13 @@
    *  title, brand-new claude TUIs predate the JSONL appearing, etc. */
   function tuiContext(p: TuiProc): {
     repoName: string | null;
+    repoColor: string | null;
     wtBranch: string | null;
     title: string | null;
     lastActivity: string | null;
   } {
     let repoName: string | null = null;
+    let repoColor: string | null = null;
     let wtBranch: string | null = null;
     let title: string | null = null;
     outer: for (const repo of repos) {
@@ -332,6 +337,7 @@
           (repo as { name?: string }).name ??
           repo.path.split("/").filter(Boolean).pop() ??
           null;
+        repoColor = repo.color ?? null;
         wtBranch = wt.branch ?? null;
         if (p.ownerId) {
           for (const a of wt.agents ?? []) {
@@ -351,7 +357,7 @@
     }
     const acts = activityByCwd[p.cwd] ?? [];
     const lastActivity = acts.length > 0 ? (acts[0]?.summary ?? null) : null;
-    return { repoName, wtBranch, title, lastActivity };
+    return { repoName, repoColor, wtBranch, title, lastActivity };
   }
 
   function prettyTuiName(p: TuiProc): string {
@@ -1299,6 +1305,75 @@
     }
   }
 
+  /** Default colour shown in the swatch (and used to seed the picker)
+   *  when a repo has no accent set. Read live from --chip-default-bg
+   *  on :root so a theme change to that token automatically flows
+   *  here — no second source of truth to keep in sync. Falls back to
+   *  the historical blue while the DOM is still booting. */
+  let defaultChipHex = "#1a3a5a";
+  onMount(() => {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue("--chip-default-bg")
+      .trim();
+    if (/^#[0-9a-f]{6}$/i.test(v)) defaultChipHex = v.toLowerCase();
+  });
+
+  /** Pick a readable foreground for a `#rrggbb` chip background. Uses
+   *  OKLCH lightness (perceptually uniform) instead of sRGB YIQ luma,
+   *  so the flip-point between dark/light text matches what the eye
+   *  actually sees — saturated yellows + cyans correctly read as
+   *  "light" and get dark text, while mid blues correctly read as
+   *  "dark" and get white text. Pipeline: sRGB → linear-sRGB → LMS
+   *  (Björn Ottosson's matrix) → cbrt → OKLab L. Threshold 0.62 is
+   *  the standard accessibility hinge. */
+  function repoChipFg(hex: string): string {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return "#ffffff";
+    const v = parseInt(m[1]!, 16);
+    const r8 = ((v >> 16) & 0xff) / 255;
+    const g8 = ((v >> 8) & 0xff) / 255;
+    const b8 = (v & 0xff) / 255;
+    const lin = (c: number) =>
+      c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    const r = lin(r8);
+    const g = lin(g8);
+    const b = lin(b8);
+    const lL = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+    const mL = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+    const sL = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+    const L =
+      0.2104542553 * Math.cbrt(lL) +
+      0.793617785 * Math.cbrt(mL) -
+      0.0040720468 * Math.cbrt(sL);
+    return L >= 0.6 ? "#1a1a1a" : "#ffffff";
+  }
+
+  /** Push a new accent colour for the given repo to the daemon. The
+   *  optimistic local mutation here is just for snappy UI; the SSE
+   *  `change → repo_color` broadcast triggers a full /api/repos
+   *  refresh which re-syncs whatever the daemon now has on disk. */
+  async function setRepoColor(id: string, color: string | null) {
+    const repo = repos.find((r) => r.id === id);
+    if (repo) {
+      if (color === null) delete repo.color;
+      else repo.color = color;
+      repos = repos;
+    }
+    try {
+      const res = await fetch(`/api/repos/${id}/color`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function removeRepo(id: string) {
     error = "";
     try {
@@ -1525,11 +1600,22 @@
    *  "ahead" pill brightens + thickens to signal staleness. Matches
    *  the tentative threshold in PLAN.md's reminder-rules section. */
   const STALE_AHEAD_HOURS = 4;
+  /** The double-blink animation on the ↑N pill only kicks in once the
+   *  oldest unpushed commit has been sitting locally for this long.
+   *  Fresh commits stay calm (you just made them; you know they're
+   *  there); the nudge starts when the work has been parked. */
+  const BLINK_AHEAD_MINUTES = 30;
 
   function aheadStale(b: BranchStatus): boolean {
     if (!b.aheadOldestTime) return false;
     const ageH = (Date.now() - Date.parse(b.aheadOldestTime)) / 3_600_000;
     return ageH >= STALE_AHEAD_HOURS;
+  }
+
+  function aheadAged(b: BranchStatus): boolean {
+    if (!b.aheadOldestTime) return false;
+    const ageM = (Date.now() - Date.parse(b.aheadOldestTime)) / 60_000;
+    return ageM >= BLINK_AHEAD_MINUTES;
   }
 
   function aheadTooltip(b: BranchStatus): string {
@@ -1569,12 +1655,13 @@
    *  20; this trims further to keep the hover overlay glanceable. */
   const COMMIT_TOOLTIP_LIMIT = 10;
   /** Per-subject character clamp inside the unpushed / unfetched
-   *  commit tooltip. Long subjects (the occasional 200-char
-   *  "fix(foo): bar baz quux …" line) blow out the popover width and
-   *  push the hash column off; trimming to 100 + ellipsis keeps the
-   *  row scannable while still leaving enough context to identify
-   *  the commit. */
-  const COMMIT_SUBJECT_MAX = 100;
+   *  commit tooltip. Pairs with `.tt-wide`'s `max-width: 92vw` so a
+   *  long subject can use whatever horizontal room the viewport has
+   *  before the trailing ellipsis kicks in. 200 ≈ 2× the prior
+   *  100-char limit so verbose conventional-commit subjects
+   *  ("refactor(area)!: long human-readable explanation …") still
+   *  render in full on a normal-width screen. */
+  const COMMIT_SUBJECT_MAX = 200;
   function clampSubject(s: string): string {
     if (s.length <= COMMIT_SUBJECT_MAX) return s;
     return s.slice(0, COMMIT_SUBJECT_MAX - 1) + "…";
@@ -1765,6 +1852,58 @@
     }
   }
 
+  /** Svelte out-transition for `.session-col`. Two-phase:
+   *
+   *   1. Hold full width, fade opacity 1 → 0 over the first half.
+   *   2. Hold opacity 0, shrink width + horizontal margin to 0 over
+   *      the second half, then remove.
+   *
+   *  This only fires when a column actually leaves the each-block,
+   *  i.e. when the user clicks **close** (`closeSessionInWt` removes
+   *  the entry from `openSessionsByWt`). Clicking **dispose** flips
+   *  SessionView's mode back to read without unmounting the column,
+   *  so the transition is skipped — exactly what we want.
+   *
+   *  Width is captured in px from the live element so the column
+   *  doesn't snap to a flex-default at the start of phase 2.
+   *  `prefers-reduced-motion: reduce` short-circuits to a 0-duration
+   *  removal — instant, but still semantically a transition. */
+  function closeColumn(node: HTMLElement) {
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return { duration: 0 };
+    }
+    const rect = node.getBoundingClientRect();
+    const fullWidth = rect.width;
+    const cs = getComputedStyle(node);
+    const ml = parseFloat(cs.marginLeft) || 0;
+    const mr = parseFloat(cs.marginRight) || 0;
+    return {
+      duration: 360,
+      css: (t: number) => {
+        // Svelte out-transitions run `t` from 1 (start) -> 0 (gone).
+        // Convert to forward progress so the phase boundaries read
+        // naturally.
+        const p = 1 - t;
+        const opacity = p < 0.5 ? 1 - p * 2 : 0;
+        const sizeT = p < 0.5 ? 1 : 1 - (p - 0.5) * 2;
+        const w = sizeT * fullWidth;
+        return `
+          opacity: ${opacity};
+          width: ${w}px;
+          min-width: ${w}px;
+          max-width: ${w}px;
+          flex: 0 0 ${w}px;
+          margin-left: ${sizeT * ml}px;
+          margin-right: ${sizeT * mr}px;
+          overflow: hidden;
+        `;
+      },
+    };
+  }
+
   // Svelte action: focus + select the node when it's mounted. Used on the
   // rename input so clicking the repo chip drops you straight into typing.
   function focusAndSelect(node: HTMLInputElement) {
@@ -1900,7 +2039,11 @@
                       {/if}
                       <span class="agent-row-name">{prettyTuiName(p)}</span>
                       {#if ctx.repoName}
-                        <span class="tui-repo muted small" title={p.cwd}>
+                        <span
+                          class="tui-repo muted small"
+                          title={p.cwd}
+                          style={ctx.repoColor ? `color: ${ctx.repoColor}` : ""}
+                        >
                           · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
                         </span>
                       {/if}
@@ -2103,14 +2246,54 @@
                 on:blur={() => commitRenameRepo(repo.id)}
               />
             {:else}
-              <button
-                class="repo-chip"
-                title="Rename repo"
-                on:click={() => startRenameRepo(repo, row.key)}
-              >
-                {repo.name}
-                <span class="pencil">✎</span>
-              </button>
+              <!-- Swatch + chip live inside a flex stack so they read as
+                   a single docked element — same idiom as `.agent-add`
+                   docked to the agent badges below. The swatch is a
+                   native <input type=color> on the LEFT, rounded only
+                   on its left side; the chip's left corners are
+                   squared by `.repo-chip-stacked` so the two visually
+                   fuse. `input` fires continuously while dragging (live
+                   chip preview), `change` fires once on commit (when
+                   we persist to the daemon). Right-click clears. -->
+              <span class="repo-chip-stack">
+                <input
+                  class="repo-color-swatch"
+                  type="color"
+                  aria-label="Repo accent color"
+                  title={repo.color
+                    ? `Repo color (${repo.color}) — right-click to clear`
+                    : "Set a repo accent color (right-click to clear)"}
+                  value={repo.color ?? defaultChipHex}
+                  style={repo.color
+                    ? `--swatch-bg: ${repo.color}`
+                    : `--swatch-bg: ${defaultChipHex}`}
+                  on:input={(e) => {
+                    const v = (e.currentTarget as HTMLInputElement).value;
+                    repo.color = v;
+                    repos = repos;
+                  }}
+                  on:change={(e) =>
+                    setRepoColor(repo.id, (e.currentTarget as HTMLInputElement).value)}
+                  on:contextmenu|preventDefault={() => setRepoColor(repo.id, null)}
+                />
+                <button
+                  class="repo-chip repo-chip-stacked"
+                  class:repo-chip-colored={!!repo.color}
+                  title="Rename repo"
+                  style={repo.color
+                    ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
+                    : ""}
+                  on:click={() => startRenameRepo(repo, row.key)}
+                >
+                  {repo.name}
+                  <span class="chip-tail">
+                    {#if rowFolded[row.key] && (wt?.branchStatus?.ahead ?? 0) > 0}
+                      <span class="ahead-dot" aria-hidden="true"></span>
+                    {/if}
+                    <span class="pencil">✎</span>
+                  </span>
+                </button>
+              </span>
             {/if}
 
             {#if wt}
@@ -2122,6 +2305,10 @@
                 <span class="branch-anchor" data-branch-anchor={wt.path}>
                   <button
                     class="branch branch-button"
+                    class:branch-colored={!!repo.color}
+                    style={repo.color
+                      ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
+                      : ""}
                     title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
                     on:click|stopPropagation={() => {
                       const opening = !branchPickerOpen[wt.path];
@@ -2615,7 +2802,8 @@
                         slot="trigger"
                         class="ab ab-ahead ab-trigger"
                         class:ab-ahead-stale={aheadStale(wt.branchStatus)}
-                      >↑{wt.branchStatus.ahead}</span>
+                        class:ab-ahead-aged={aheadAged(wt.branchStatus)}
+                      ><span class="ab-arrow">↑</span>{wt.branchStatus.ahead}</span>
                       <span slot="content" class="wt-tt-content">
                         <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
                         {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
@@ -2725,6 +2913,7 @@
                         on:dragover={handleSessionDragOver}
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
+                        out:closeColumn
                       >
                         {#if s.source.startsWith("__transcript__:")}
                           <!-- Read-mode column for a past shell session.

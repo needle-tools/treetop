@@ -95,13 +95,13 @@
      * a single ellipsis. */
     white-space: normal;
   }
-  /* Wider footprint for commit-list tooltips: sha (7ch) + author
-     (~15ch) + date (~10ch) + a 100-char subject + inter-column gaps
-     ≈ 58–65rem worth of mono text. 64rem leaves headroom for a
-     handful of unicode-wide glyphs; `min(64rem, 92vw)` guards
-     narrower viewports so the tooltip never extends past the page. */
+  /* Wider footprint for commit-list tooltips. The previous 64rem
+     ceiling was the active bottleneck once `COMMIT_SUBJECT_MAX`
+     bumped to 200 chars — drop it and let viewport width be the
+     only cap. `92vw` keeps the tooltip from butting against the
+     right edge on small screens. */
   .tt-wide {
-    max-width: min(64rem, 92vw);
+    max-width: 92vw;
   }
   .tt-bottom {
     top: calc(100% + 0.35rem);

@@ -79,8 +79,8 @@
   color: var(--text-2);
 }
 .tab.active {
-  background: var(--chip-blue-bg);
-  color: var(--chip-blue-text);
+  background: var(--selected-bg);
+  color: var(--selected-text);
 }
 .tab-count {
   background: rgba(0, 0, 0, 0.25);

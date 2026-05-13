@@ -93,7 +93,7 @@
   }
   .commit-header .sha {
     font-family: ui-monospace, monospace;
-    color: var(--chip-blue-text);
+    color: var(--selected-text);
     flex: 0 0 auto;
   }
   .commit-header .subject {
@@ -170,8 +170,8 @@
     background: var(--surface-2);
   }
   .file-btn.active {
-    background: var(--chip-blue-bg);
-    color: var(--chip-blue-text);
+    background: var(--selected-bg);
+    color: var(--selected-text);
   }
   .file-flag {
     text-align: center;

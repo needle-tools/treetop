@@ -450,6 +450,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
+          { method: "POST", path: "/api/repos/:id/color", body: { color: "#rrggbb hex string or null" }, description: "set or clear a repo's accent color (used wherever the name renders)" },
           { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
           { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
           { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
@@ -1081,6 +1082,38 @@ const server = Bun.serve<TermWsData, never>({
           const isDirty = /uncommitted|untracked|stash/i.test(msg);
           return json({ error: msg, dirty: isDirty }, { status: 409 });
         }
+      }
+    }
+
+    const colorMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/color$/);
+    if (colorMatch && req.method === "POST") {
+      const id = colorMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { color?: unknown }
+        | null;
+      // `color: null` clears; a string sets. Missing => 400.
+      const raw = body?.color;
+      const color =
+        raw === null
+          ? null
+          : typeof raw === "string"
+            ? raw
+            : undefined;
+      if (color === undefined) {
+        return json(
+          { error: "body.color (#rrggbb hex string or null) is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { oldColor, newColor } = await workspace.setRepoColor(id, color);
+        if (oldColor !== newColor) {
+          broadcast("change", { kind: "repo_color", id, color: newColor });
+        }
+        return json({ id, oldColor, newColor });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
       }
     }
 
