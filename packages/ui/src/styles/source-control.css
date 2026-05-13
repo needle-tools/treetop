@@ -109,7 +109,10 @@
   gap: 0.5rem;
   align-items: baseline;
   padding: 0.3rem 0.5rem;
-  font-size: 0.8rem;
+  /* 0.78rem matches Diff.svelte's `.diff` and DiffViewer's `.file-btn` /
+     `.commit-header` so the history rows, the inline file list, and
+     the diff body all read at the same size. */
+  font-size: 0.78rem;
   color: var(--text-4);
   overflow: hidden;
   background: transparent;

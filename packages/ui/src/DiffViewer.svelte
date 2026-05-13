@@ -81,7 +81,10 @@
     display: flex;
     gap: 0.4rem;
     align-items: flex-start;
-    font-size: 10px;
+    /* Matches `.commit-row` in source-control.css and `.diff` /
+       `.file-btn` here — single body size across the History panel
+       and the diff viewer so nothing jumps when expanding a commit. */
+    font-size: 0.78rem;
     line-height: 1.35;
     padding: 0.25rem 0.5rem;
     background: var(--surface-2);
@@ -215,6 +218,6 @@
     color: var(--text-muted);
   }
   .small {
-    font-size: 0.8rem;
+    font-size: 0.78rem;
   }
 </style>
