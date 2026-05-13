@@ -6,6 +6,7 @@ import {
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  setSessionMode,
   stampDiscoveredSessionId,
   type KVStore,
   type PersistedSession,
@@ -582,6 +583,213 @@ describe("stampDiscoveredSessionId", () => {
       sessionId: "",
     });
     expect(after).toBe(before);
+  });
+});
+
+describe("setSessionMode", () => {
+  const SOURCE = "/Users/me/.claude/projects/-Users-me-wt/abc.jsonl";
+
+  test("adding terminal mode stamps the field on the matching entry only", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt-a": [
+        { agent: "claude", source: SOURCE },
+        { agent: "codex", source: "/other.jsonl" },
+      ],
+      "/wt-b": [{ agent: "claude", source: SOURCE }],
+    };
+    const after = setSessionMode(before, "/wt-a", SOURCE, "terminal");
+    expect(after["/wt-a"]).toEqual([
+      { agent: "claude", source: SOURCE, mode: "terminal" },
+      { agent: "codex", source: "/other.jsonl" },
+    ]);
+    // Untouched wt is the same array reference (no churn).
+    expect(after["/wt-b"]).toBe(before["/wt-b"]);
+  });
+
+  test("flipping back to read drops the field (no dead state left)", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE, mode: "terminal" }],
+    };
+    const after = setSessionMode(before, "/wt", SOURCE, "read");
+    expect(after["/wt"]).toEqual([{ agent: "claude", source: SOURCE }]);
+    // Specifically, the field is removed, not just falsy.
+    expect("mode" in after["/wt"]![0]!).toBe(false);
+  });
+
+  test("returns same reference when the mode is already what was asked", () => {
+    const terminal: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE, mode: "terminal" }],
+    };
+    expect(setSessionMode(terminal, "/wt", SOURCE, "terminal")).toBe(terminal);
+
+    const read: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    };
+    expect(setSessionMode(read, "/wt", SOURCE, "read")).toBe(read);
+  });
+
+  test("returns same reference when the wt is missing", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    };
+    expect(setSessionMode(before, "/other-wt", SOURCE, "terminal")).toBe(before);
+  });
+
+  test("returns same reference when the source isn't in the list", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "/different.jsonl" }],
+    };
+    expect(setSessionMode(before, "/wt", SOURCE, "terminal")).toBe(before);
+  });
+
+  test("preserves other fields on the entry (resumeSessionId, agent)", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_a",
+          resumeSessionId: "sid-1",
+        },
+      ],
+    };
+    const after = setSessionMode(before, "/wt", "__new__:claude:t_a", "terminal");
+    expect(after["/wt"]).toEqual([
+      {
+        agent: "claude",
+        source: "__new__:claude:t_a",
+        resumeSessionId: "sid-1",
+        mode: "terminal",
+      },
+    ]);
+  });
+
+  test("doesn't mutate the input map or its inner arrays", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    };
+    const beforeJson = JSON.stringify(before);
+    setSessionMode(before, "/wt", SOURCE, "terminal");
+    expect(JSON.stringify(before)).toBe(beforeJson);
+  });
+});
+
+describe("OpenSessionsStore + mode round-trip", () => {
+  const KEY = "supergit:openSessions-mode";
+
+  test("persists mode='terminal' alongside agent/source", () => {
+    // This is the user-visible fix: clicking "Resume in terminal" must
+    // survive a reload. Without persistence, the SessionView remounts
+    // with mode='read' (its default) and the user lands back in the
+    // history view despite a live PTY they were just typing into.
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/wt": [
+        { agent: "claude", source: "/agents/x.jsonl", mode: "terminal" },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/wt": [
+        { agent: "claude", source: "/agents/x.jsonl", mode: "terminal" },
+      ],
+    });
+  });
+
+  test("absence of mode round-trips as undefined (default = read)", () => {
+    const m = new MemStore();
+    new OpenSessionsStore(m, KEY).save({
+      "/wt": [{ agent: "claude", source: "/agents/x.jsonl" }],
+    });
+    const loaded = new OpenSessionsStore(m, KEY).load();
+    expect(loaded["/wt"]![0]!.mode).toBeUndefined();
+  });
+
+  test("ignores garbage mode values (only 'terminal' is accepted)", () => {
+    const m = new MemStore();
+    m.setItem(
+      KEY,
+      JSON.stringify({
+        "/wt": [
+          { agent: "claude", source: "/a.jsonl", mode: "terminal" },
+          { agent: "claude", source: "/b.jsonl", mode: "read" },
+          { agent: "claude", source: "/c.jsonl", mode: "weird" },
+          { agent: "claude", source: "/d.jsonl", mode: 42 },
+        ],
+      }),
+    );
+    expect(new OpenSessionsStore(m, KEY).load()).toEqual({
+      "/wt": [
+        { agent: "claude", source: "/a.jsonl", mode: "terminal" },
+        // "read" isn't a valid stored value — absence means read.
+        { agent: "claude", source: "/b.jsonl" },
+        { agent: "claude", source: "/c.jsonl" },
+        { agent: "claude", source: "/d.jsonl" },
+      ],
+    });
+  });
+});
+
+describe("reload-resume terminal-mode round-trip (the SessionView path)", () => {
+  // Locks in the exact scenario the user reported: a Claude session is
+  // open in TUI mode → reload → expectation is the TUI comes back, not
+  // the read-only history view. The mechanism is purely persistence of
+  // `mode = "terminal"` — SessionView reads `initialMode` and hydrates
+  // straight into the TerminalView branch.
+  test("Resume in terminal → reload → still in terminal mode", () => {
+    const m = new MemStore();
+    const KEY = "supergit:openSessions-resume-mode";
+    const store = new OpenSessionsStore(m, KEY);
+
+    // 1. User clicks an existing claude session from the agent strip;
+    //    the column mounts in read mode (the default).
+    let byWt: Record<string, PersistedSession[]> = {
+      "/Users/me/wt/feature": [
+        { agent: "claude", source: "/agents/claude-real.jsonl" },
+      ],
+    };
+    store.save(byWt);
+
+    // 2. User clicks "Resume in terminal"; SessionView fires
+    //    onModeChange("terminal") and the parent persists.
+    byWt = setSessionMode(
+      byWt,
+      "/Users/me/wt/feature",
+      "/agents/claude-real.jsonl",
+      "terminal",
+    );
+    store.save(byWt);
+
+    // 3. Hard reload: fresh OpenSessionsStore reading the same storage.
+    const reloaded = new OpenSessionsStore(m, KEY).load();
+    const restored = reloaded["/Users/me/wt/feature"]![0]!;
+    expect(restored.mode).toBe("terminal");
+
+    // 4. App.svelte's render branch hands SessionView `initialMode =
+    //    "terminal"` based on this field; SessionView mounts straight
+    //    into the live `claude --resume <sid>` PTY.
+    expect(
+      restored.mode === "terminal" ? "terminal" : "read",
+    ).toBe("terminal");
+  });
+
+  test("Dispose terminal → mode goes back to read → next reload starts in read", () => {
+    const m = new MemStore();
+    const KEY = "supergit:openSessions-dispose-mode";
+    const store = new OpenSessionsStore(m, KEY);
+    let byWt: Record<string, PersistedSession[]> = {
+      "/wt": [
+        { agent: "claude", source: "/x.jsonl", mode: "terminal" },
+      ],
+    };
+    store.save(byWt);
+
+    // Dispose flips mode → "read" (SessionView's disposeTerminal does
+    // this) and onModeChange propagates → setSessionMode drops the field.
+    byWt = setSessionMode(byWt, "/wt", "/x.jsonl", "read");
+    store.save(byWt);
+
+    const reloaded = new OpenSessionsStore(m, KEY).load();
+    expect(reloaded["/wt"]![0]!.mode).toBeUndefined();
   });
 });
 

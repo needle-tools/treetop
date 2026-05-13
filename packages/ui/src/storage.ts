@@ -65,6 +65,13 @@ export interface PersistedSession {
    *  spawn `claude --resume <sid>` instead of bare `claude`, so the
    *  conversation continues instead of starting over. */
   resumeSessionId?: string;
+  /** Optional. When `"terminal"`, the SessionView column for this source
+   *  was last seen with "Resume in terminal" mode active (i.e. the user
+   *  flipped from the markdown chat view to a live `claude --resume`
+   *  PTY). On remount, the column should re-enter terminal mode so a
+   *  page reload doesn't drop the user back to the read-only history.
+   *  Absence implies the default `"read"` mode. */
+  mode?: "terminal";
 }
 
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
@@ -85,6 +92,9 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   };
   if (typeof o.resumeSessionId === "string" && o.resumeSessionId.length > 0) {
     out.resumeSessionId = o.resumeSessionId;
+  }
+  if (o.mode === "terminal") {
+    out.mode = "terminal";
   }
   return out;
 }
@@ -240,6 +250,33 @@ export function cmdForOpenSession(
  *  appears. Each event lands on the next column that hasn't been
  *  stamped yet. Concurrent opens (rare) may attribute incorrectly;
  *  acceptable until we plumb the sessionId back from the spawning side. */
+/** Update the persisted `mode` for one (wtPath, source) entry without
+ *  disturbing anything else. `"terminal"` adds the field; `"read"` drops
+ *  it (absence is the default and we don't want to leave dead state
+ *  behind once the user disposes a TUI). Returns the same map reference
+ *  when nothing changed — same short-circuit contract as
+ *  `stampDiscoveredSessionId`. */
+export function setSessionMode(
+  byWt: Record<string, PersistedSession[]>,
+  wtPath: string,
+  source: string,
+  mode: "read" | "terminal",
+): Record<string, PersistedSession[]> {
+  const list = byWt[wtPath];
+  if (!list) return byWt;
+  const idx = list.findIndex((s) => s.source === source);
+  if (idx === -1) return byWt;
+  const current = list[idx]!;
+  const currentMode = current.mode === "terminal" ? "terminal" : "read";
+  if (currentMode === mode) return byWt;
+  const updated: PersistedSession = { ...current };
+  if (mode === "terminal") updated.mode = "terminal";
+  else delete updated.mode;
+  const next = list.slice();
+  next[idx] = updated;
+  return { ...byWt, [wtPath]: next };
+}
+
 export function stampDiscoveredSessionId(
   byWt: Record<string, PersistedSession[]>,
   ev: { agent: PersistedAgent; cwd: string; sessionId: string },

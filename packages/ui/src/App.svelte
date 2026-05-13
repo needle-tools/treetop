@@ -13,6 +13,7 @@
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
+    setSessionMode,
     stampDiscoveredSessionId,
   } from "./storage";
   import {
@@ -863,6 +864,10 @@
      *  `OpenSessionsStore`. On remount, `cmdForOpenSession` uses it to
      *  spawn `claude --resume <sid>` instead of bare `claude`. */
     resumeSessionId?: string;
+    /** Optional. `"terminal"` means SessionView should hydrate in
+     *  terminal mode on remount (i.e. immediately spawn the resume PTY
+     *  instead of showing the read-only chat view). Absent ⇒ read. */
+    mode?: "terminal";
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -2550,6 +2555,20 @@
                             agent={s.agent}
                             source={s.source}
                             totalMessageCount={agentMeta?.messageCount}
+                            initialMode={s.mode === "terminal" ? "terminal" : "read"}
+                            onModeChange={(m) => {
+                              // Persist so a reload restores the same view —
+                              // otherwise a user who clicked "Resume in
+                              // terminal" before refreshing lands back in
+                              // history view.
+                              const next = setSessionMode(
+                                openSessionsByWt,
+                                wt.path,
+                                s.source,
+                                m,
+                              );
+                              if (next !== openSessionsByWt) openSessionsByWt = next;
+                            }}
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}

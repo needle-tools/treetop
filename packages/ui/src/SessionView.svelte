@@ -52,6 +52,16 @@
    *  the "+N sessions" popover reflect the new title immediately,
    *  without waiting on SSE / a poll cycle. */
   export let onTitleChange: () => void = () => {};
+  /** Which view this column should mount in. `"read"` shows the markdown
+   *  chat history; `"terminal"` immediately spawns a `claude --resume
+   *  <sid>` PTY (the same thing the "Resume in terminal" button does at
+   *  runtime). The parent persists this across reload so a hard refresh
+   *  doesn't drop a user out of an active TUI back to history view. */
+  export let initialMode: "read" | "terminal" = "read";
+  /** Fired whenever the user flips between read and terminal mode (or
+   *  the PTY exits and we flip back). The parent persists this so a
+   *  page reload restores the same view. */
+  export let onModeChange: (mode: "read" | "terminal") => void = () => {};
   /** Whole-file message count for this session, supplied by the parent
    *  from `/api/repos`'s pre-scanned agent metadata. `/api/session`
    *  only ships the trimmed tail (last MAX_CACHED_MESSAGES = 100), so
@@ -104,8 +114,19 @@
   /** Render mode for this column. "read" is the markdown-rendered chat
    *  view (default). "terminal" flips the panel to an xterm.js TUI
    *  running `claude --resume <sid>` against the same session id. The
-   *  Resume button toggles this; closing the terminal flips back. */
-  let mode: "read" | "terminal" = "read";
+   *  Resume button toggles this; closing the terminal flips back.
+   *  Initial value comes from `initialMode` so the parent can hydrate
+   *  it from persisted state on remount. */
+  let mode: "read" | "terminal" = initialMode;
+  // Notify the parent on every user-initiated mode flip so it can
+  // persist the preference. We compare against `prevMode` so the initial
+  // assignment doesn't fire a callback before any interaction (the
+  // parent already knows the initial value — it set it).
+  let prevMode: "read" | "terminal" = initialMode;
+  $: if (mode !== prevMode) {
+    prevMode = mode;
+    onModeChange(mode);
+  }
   /** The daemon-assigned terminal id once TerminalView spawns the PTY.
    *  The Dispose button DELETEs against this. */
   let terminalId: string | null = null;
