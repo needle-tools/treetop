@@ -456,14 +456,14 @@ Spec lives in `packages/ui/test/storage.test.ts` (`cmdForOpenSession`,
 `stampDiscoveredSessionId`, `OpenSessionsStore + resumeSessionId
 round-trip`, and the end-to-end `reload-resume round-trip` suite).
 
-Still-open follow-ups, left intentionally:
+Still-open follow-up:
 - **Reattach before resume.** If the daemon's PTY-grace window hasn't
-  fired (e.g. lightning-fast reload), prefer reattaching to the live
-  PTY (the `attachTermId` path used by shells) over a fresh `--resume`.
-  Needs an `ownerId`-keyed lookup on the daemon side.
-- **Widen `GRACE_MS` for owned PTYs.** 3s covers same-page nav; a
-  modest bump (10–15s) for PTYs with a known `ownerId` would make
-  same-second reloads reattach instead of resume.
+  fired, prefer reattaching to the live PTY (the `attachTermId` path
+  used by shells) over a fresh `--resume`. Needs an `ownerId`-keyed
+  lookup the agent-column render branch can hit on remount. `GRACE_MS`
+  was already widened to 30s (see `server.ts`) so a hard reload almost
+  always lands inside the grace window — making this fix even more
+  impactful than the resume path it falls back to.
 
 ## Open questions
 

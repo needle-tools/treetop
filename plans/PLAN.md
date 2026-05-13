@@ -628,39 +628,15 @@ live in PLAN-3D.md.
 
 ---
 
-## TODO — errors currently recorded by `/api/errors` (prod, 2026-05-13)
+## TODO — errors recorded by `/api/errors` (prod snapshot, 2026-05-13)
 
-Captured from a snapshot of `GET /api/errors` against the running prod
-daemon at `:27787` (200 entries, deduped by message). Some are real
-bugs, others are noise we should stop recording. None are fully
-blocking but the top few are user-visible.
+Originally captured from a 200-entry `/api/errors` snapshot. The first
+three buckets shipped under commits `84a1ac8` (`shellCwds` TDZ hoist),
+`f4df4dc` (HMR-stale ReferenceError sweep — only `loadCommitsInitial`
+was a current bug; the others were transients), and `14bcd8c` (the
+xterm `'dimensions'` race, fixed alongside the TerminalView
+ResizeObserver gate). What's still open:
 
-- **`Cannot access 'shellCwds' before initialization` → 500 on
-  `/api/shells`** (7×, daemon-side). Temporal dead zone:
-  `packages/daemon/src/server.ts` declares
-  `const shellCwds = new Map<…>()` at line 1595, but route handlers at
-  lines 740, 781, 811, 1502 close over it. Requests landing between
-  `Bun.serve(...)` returning and the `const` evaluating throw. Fix:
-  hoist `shellCwds` (and similarly any other state captured by
-  handlers) above `Bun.serve(...)`. Cheap; one-line move + a daemon
-  test that calls `/api/shells` immediately after startup.
-- **Frontend ReferenceErrors leaking from the App.svelte refactor**
-  (~10× total across):
-  - `commitsByPath is not defined` — `loadCommitsInitial` at
-    `App.svelte:1762` still references the removed/renamed state.
-  - `diffTab is not defined` — `App.svelte:5616` (template branch).
-  - `zenMode is not defined` — top-level template.
-  - `loadCommitsInitial is not defined` (post-removal of the function).
-  - `loadDefaultShell is not defined`.
-  These are all fallout from the recent componentization (`5701bc6`,
-  `3420601`, `66c1cb0`). Either restore the missing decls in
-  `App.svelte` or remove the dead references. Add a smoke test that
-  mounts App and asserts no console errors fire during initial render.
-- **`Cannot read properties of undefined (reading 'dimensions')`**
-  (10×, uncaught). Likely the image-diff path
-  (`DiffViewer.svelte` / `Diff.svelte`) reading `.dimensions` on a
-  side that's `undefined` (missing on creation/deletion). Add a
-  guard + a test for the one-sided image diff case.
 - **409 Conflict responses recorded as errors** (3×, on
   `/api/repos/:id/worktrees` and `/api/repos/:id/checkout`). These are
   expected outcomes (dirty worktree, existing branch) — the daemon
@@ -668,7 +644,8 @@ blocking but the top few are user-visible.
   NOT show up in the error popover. Filter at the recorder: skip
   fetch errors whose `status` is 4xx and whose route is a known
   user-recoverable mutation, or have those routes opt in to "expected
-  client error" semantics.
+  client error" semantics. UI test: the popover filters out
+  4xx-on-known-mutations.
 - **Transient `Failed to fetch` / 502 bursts** (~100×, across
   `/api/repos`, `/api/diff`, `/api/active-sends`, `/api/events`,
   `/api/session`). All cluster around daemon restarts / port races
@@ -678,10 +655,6 @@ blocking but the top few are user-visible.
   network-unreachable fetch failures from "error" to a quieter
   "offline" badge — the SSE `streamConnected` flag already gives us
   the right signal.
-
-Add a single integration test that exercises `/api/shells` on a freshly
-started daemon (TDZ regression guard), plus a UI test that the popover
-filters out 4xx-on-known-mutations.
 
 ## TODO (small UX gaps, batch later)
 
