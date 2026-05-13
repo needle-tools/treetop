@@ -1729,10 +1729,27 @@
       }
     };
     document.addEventListener("keydown", handleKey);
+    // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
+    // when the user has open sessions (claude/codex chats, terminals).
+    // No prompt on an empty dashboard so a fresh reload stays silent.
+    // The dialog text is browser-controlled; setting `returnValue` is
+    // enough to trigger it. Live TUI PTYs survive the reload on the
+    // daemon (reattach via /api/shells + activity-tail), but the user
+    // still loses in-page scroll position and any unsaved UI state.
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const hasOpen = Object.values(openSessionsByWt).some(
+        (arr) => arr && arr.length > 0,
+      );
+      if (!hasOpen) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
     const unsubStream = subscribeToStream();
     return () => {
       document.removeEventListener("click", handleDocClick);
       document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       stopTuiPolling();
       unsubStream();
       unsubErrors();
