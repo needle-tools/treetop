@@ -3,10 +3,10 @@
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
-  import TerminalView from "./TerminalView.svelte";
   import ShellView from "./ShellView.svelte";
   import Popover from "./Popover.svelte";
   import SourceControlPane from "./SourceControlPane.svelte";
+  import NewSessionCol from "./NewSessionCol.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -193,24 +193,8 @@
   function toggleZenRow(key: string) {
     zenRowKey = zenRowKey === key ? null : key;
   }
-  /** Toggle browser fullscreen on the given element. If we're already
-   *  fullscreen *and* it's the same element, exit. If we're fullscreen
-   *  on a different element, swap (exit → request on new). xterm's
-   *  FitAddon already listens to ResizeObserver so it re-fits on the
-   *  size change without extra wiring. */
-  async function toggleFullscreen(el: HTMLElement | null) {
-    if (!el) return;
-    try {
-      if (document.fullscreenElement === el) {
-        await document.exitFullscreen();
-      } else {
-        if (document.fullscreenElement) await document.exitFullscreen();
-        await el.requestFullscreen();
-      }
-    } catch {
-      // Browser refused (permissions, already exiting, etc.) — silent.
-    }
-  }
+  // toggleFullscreen() lives in NewSessionCol.svelte now (it's only
+  // called from inside the new-session-column header).
   /** Recent diagnostics: daemon 5xx, frontend fetch failures, browser
    *  uncaught/unhandledrejection. Populated reactively via the
    *  errors store (which is the source of truth — this is just a
@@ -716,27 +700,18 @@
     };
   }
 
-  /** Per-synthetic-source manual title state. Lives here (not in the
-   *  SessionView) because the `__new__:` flow uses a bare TerminalView,
-   *  not SessionView. Title is keyed by the synthetic source so it
-   *  persists across daemon restarts during the brief window before the
-   *  real JSONL appears. */
+  /** Per-synthetic-source manual title (the saved value). Edit-buffer
+   *  state + the editing/draft flags moved into NewSessionCol.svelte;
+   *  this map is the persistence-facing side that survives column
+   *  remounts and the flip to the real SessionView once the JSONL
+   *  appears on disk. */
   let newSessionTitles: Record<string, string> = {};
-  let newSessionTitleEditing: Record<string, boolean> = {};
-  let newSessionTitleDraft: Record<string, string> = {};
 
-  function startNewSessionTitleEdit(source: string) {
-    newSessionTitleDraft = {
-      ...newSessionTitleDraft,
-      [source]: newSessionTitles[source] ?? "",
-    };
-    newSessionTitleEditing = { ...newSessionTitleEditing, [source]: true };
-  }
-
-  async function saveNewSessionTitle(source: string) {
-    const next = (newSessionTitleDraft[source] ?? "").trim();
+  /** Persist a manual title for a `__new__:` / `__attached__:` source.
+   *  Called from NewSessionCol via `on:titleSave` with the trimmed
+   *  string already in hand. */
+  async function saveNewSessionTitle(source: string, next: string) {
     const prev = newSessionTitles[source] ?? "";
-    newSessionTitleEditing = { ...newSessionTitleEditing, [source]: false };
     if (next === prev) return;
     try {
       const res = await fetch("/api/session/title", {
@@ -754,26 +729,6 @@
     } catch {
       // best-effort
     }
-  }
-
-  function onNewSessionTitleKey(e: KeyboardEvent, source: string) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      void saveNewSessionTitle(source);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      newSessionTitleEditing = { ...newSessionTitleEditing, [source]: false };
-    }
-  }
-
-  /** Svelte action: focus + select an input on mount. Used by the inline
-   *  manual-title input in the new-session header. */
-  function autoFocusSelect(node: HTMLInputElement) {
-    requestAnimationFrame(() => {
-      node.focus();
-      node.select();
-    });
-    return {};
   }
 
   /** Faster poll cadence while a transient new-agent TUI is open — the
@@ -2451,116 +2406,44 @@
                         {:else if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
                           <!-- Transient column: a brand-new agent we just
                                spawned, before its JSONL has been created on
-                               disk. Renders the TUI directly. Once the user
-                               closes it, we drop the entry from the open list. -->
-                          <div
-                            class="session new-session-col"
-                            class:awaiting-input={transientAwaiting[s.source]}
-                          >
-                            <header class="new-session-head">
-                              <span class="agent-pill agent-{s.agent}">{s.agent}</span>
-                              {#if newSessionTitleEditing[s.source]}
-                                <input
-                                  class="manual-title-input"
-                                  bind:value={newSessionTitleDraft[s.source]}
-                                  on:keydown={(e) =>
-                                    onNewSessionTitleKey(e, s.source)}
-                                  on:blur={() => saveNewSessionTitle(s.source)}
-                                  use:autoFocusSelect
-                                  placeholder="Name this session…"
-                                  maxlength="120"
-                                />
-                              {:else}
-                                <button
-                                  type="button"
-                                  class="manual-title"
-                                  class:placeholder={!newSessionTitles[s.source]}
-                                  title={newSessionTitles[s.source]
-                                    ? "Click to rename this session"
-                                    : "Click to name this session"}
-                                  on:click={() =>
-                                    startNewSessionTitleEdit(s.source)}
-                                >
-                                  {newSessionTitles[s.source] ||
-                                    "Name this session…"}
-                                </button>
-                              {/if}
-                              <span class="muted small">
-                                {s.agent === "shell" ? "new session — Terminal" : "new session — TUI"}
-                              </span>
-                              {#if transientAwaiting[s.source]}
-                                <span class="awaiting-pill" title="The agent is paused waiting for input — click the terminal and respond.">
-                                  needs input
-                                </span>
-                              {/if}
-                              <button
-                                class="restart-btn"
-                                on:click={() => restartNewAgentSession(wt.path, s)}
-                                title={`Re-run \`${s.agent}\` in this column (use after a self-update)`}
-                                aria-label="Restart"
-                              >↻</button>
-                              <button
-                                class="fullscreen-btn"
-                                on:click={(e) =>
-                                  toggleFullscreen(
-                                    (e.currentTarget as HTMLElement).closest(
-                                      ".new-session-col",
-                                    ) as HTMLElement | null,
-                                  )}
-                                title="Fullscreen this terminal (Esc to exit)"
-                                aria-label="Fullscreen"
-                              >⛶</button>
-                              {#if s.agent === "shell"}
-                                <button
-                                  class="dispose-btn"
-                                  on:click={() => disposeShellColumn(wt.path, s)}
-                                  title="Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
-                                >Dispose</button>
-                              {/if}
-                              <button
-                                class="close"
-                                on:click={() => closeSessionInWt(wt.path, s)}
-                                title="Close + dispose this terminal"
-                              >×</button>
-                            </header>
-                            <TerminalView
-                              cmd={cmdForOpenSession(s, defaultShell)}
-                              cwd={shellResumeCwd[s.source] ?? wt.path}
-                              procName={`supergit-tui-new-${s.agent}`}
-                              attachTermId={s.source.startsWith("__attached__:")
-                                ? s.source.split(":").pop()
-                                : undefined}
-                              onSpawn={(id) => {
-                                // Capture the daemon-assigned termId for
-                                // __new__: sources so disposeShellColumn
-                                // can DELETE /api/terminals/:id later.
-                                if (s.source.startsWith("__new__:shell:")) {
-                                  newShellTermIds = {
-                                    ...newShellTermIds,
-                                    [s.source]: id,
-                                  };
-                                }
-                              }}
-                              onAwaitingChange={(awaiting) => {
-                                transientAwaiting = {
-                                  ...transientAwaiting,
-                                  [s.source]: awaiting,
+                               disk. NewSessionCol.svelte handles the shell
+                               + claude/codex variants; we just feed it
+                               props and react to its events. -->
+                          <NewSessionCol
+                            agent={s.agent}
+                            source={s.source}
+                            wtPath={wt.path}
+                            cmd={cmdForOpenSession(s, defaultShell)}
+                            cwd={shellResumeCwd[s.source] ?? wt.path}
+                            procName={`supergit-tui-new-${s.agent}`}
+                            attachTermId={s.source.startsWith("__attached__:")
+                              ? s.source.split(":").pop()
+                              : undefined}
+                            manualTitle={newSessionTitles[s.source]}
+                            awaiting={!!transientAwaiting[s.source]}
+                            on:close={() => closeSessionInWt(wt.path, s)}
+                            on:dispose={() => disposeShellColumn(wt.path, s)}
+                            on:restart={() => restartNewAgentSession(wt.path, s)}
+                            on:spawn={(e) => {
+                              // Capture the daemon-assigned termId for
+                              // __new__: shell sources so disposeShellColumn
+                              // can DELETE /api/terminals/:id later.
+                              if (s.source.startsWith("__new__:shell:")) {
+                                newShellTermIds = {
+                                  ...newShellTermIds,
+                                  [s.source]: e.detail.id,
                                 };
-                              }}
-                              onExit={() => {
-                                // Deliberately NOT closing the column on
-                                // PTY exit. Some agents (notably `codex`)
-                                // restart themselves after an in-place
-                                // update — they exit, then a fresh
-                                // process spawns. If we auto-disposed
-                                // here, the user would lose the new
-                                // process and the update notice. Instead
-                                // we leave the column open showing the
-                                // final output; the user dismisses via
-                                // the × in the header.
-                              }}
-                            />
-                          </div>
+                              }
+                            }}
+                            on:awaitingChange={(e) => {
+                              transientAwaiting = {
+                                ...transientAwaiting,
+                                [s.source]: e.detail.awaiting,
+                              };
+                            }}
+                            on:titleSave={(e) =>
+                              void saveNewSessionTitle(s.source, e.detail.title)}
+                          />
                         {:else}
                           {@const agentMeta = (wt.agents ?? []).find(
                             (a) => a.source === s.source,
