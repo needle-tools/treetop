@@ -66,6 +66,15 @@ main {
   font-size: 0.8rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
+/* The initial app-wide "loading repos…" state sits on the empty page
+ * background; the pill chrome (surface-2 + shadow) reads as
+ * unnecessary visual weight against a blank canvas. Strip both so it's
+ * just the spinner + text. The TUI / SessionView usages keep the pill
+ * because they sit on top of busy content. */
+.loading-screen .loading-overlay {
+  background: transparent;
+  box-shadow: none;
+}
 .loading-overlay .spinner {
   width: 0.85rem;
   height: 0.85rem;

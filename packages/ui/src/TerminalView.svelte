@@ -42,8 +42,34 @@
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
   let exitInfo: { code: number; signal?: string } | null = null;
+  /** Hard ceiling on how long we sit in `phase === "starting"`. POST
+   *  /api/terminals + WS handshake should take well under a second in
+   *  the happy path; 10s covers a slow machine + cold module init.
+   *  Beyond that the user is staring at a spinner with no signal — we
+   *  flip to error so they can close + retry instead of waiting forever. */
+  const STARTUP_TIMEOUT_MS = 10_000;
+  let startupTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupAbort: AbortController | null = null;
+
+  function clearStartupGuard() {
+    if (startupTimer !== null) {
+      clearTimeout(startupTimer);
+      startupTimer = null;
+    }
+    startupAbort = null;
+  }
 
   async function spawnPtyAndConnect() {
+    startupAbort = new AbortController();
+    startupTimer = setTimeout(() => {
+      if (phase !== "starting") return;
+      // Force the in-flight POST (if any) to bail out so the loading
+      // overlay can clear and onError handlers see something concrete.
+      startupAbort?.abort();
+      try { ws?.close(4000, "startup-timeout"); } catch {}
+      error = `Terminal didn't start within ${STARTUP_TIMEOUT_MS / 1000}s. Close the column and try again — the daemon may be busy or the PTY backend stalled.`;
+      phase = "error";
+    }, STARTUP_TIMEOUT_MS);
     try {
       let id: string;
       if (attachTermId) {
@@ -57,6 +83,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ cmd, cwd, cols, rows, ownerId, procName }),
+          signal: startupAbort.signal,
         });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
@@ -74,6 +101,7 @@
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         phase = "live";
+        clearStartupGuard();
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
@@ -100,6 +128,7 @@
         if (phase !== "exited") {
           error = "WebSocket error";
           phase = "error";
+          clearStartupGuard();
         }
       };
       ws.onclose = () => {
@@ -109,11 +138,18 @@
           phase = "exited";
           if (!exitInfo) exitInfo = { code: 0 };
           onExit(exitInfo);
+          clearStartupGuard();
         }
       };
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-      phase = "error";
+      // If the startup timer already flipped us to error, keep its
+      // specific "didn't start within Xs" message rather than overwriting
+      // it with a generic AbortError.
+      if (phase !== "error") {
+        error = e instanceof Error ? e.message : String(e);
+        phase = "error";
+      }
+      clearStartupGuard();
     }
   }
 
@@ -192,6 +228,7 @@
   });
 
   onDestroy(() => {
+    clearStartupGuard();
     resizeObs?.disconnect();
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
