@@ -341,6 +341,15 @@ button.branch-button:hover {
   font-size: 0.74rem;
   color: var(--text-3);
   min-width: 0;
+  /* Pin to a single-line height so streaming activity-summary updates
+   * can't cause sub-pixel reflows that ripple into adjacent xterm
+   * columns (every reflow used to trigger fit.fit() → scroll-to-bottom
+   * in the TUI). The activity-text inside is already nowrap+ellipsis,
+   * so locking the row height here is sufficient. */
+  min-height: 1.5rem;
+  max-height: 1.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .row-activity .agent-dot {
   width: 8px;

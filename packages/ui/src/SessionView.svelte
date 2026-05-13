@@ -250,6 +250,14 @@
   // was already near the bottom (so polling can't snatch them away when
   // they've scrolled up to read history).
   let hasRenderedOnce = false;
+  /** Body of the previous /api/session response (raw text). The daemon's
+   *  `jsonNoTitle` cache returns byte-identical bodies while the session
+   *  file is idle, so we can skip JSON.parse, the messages-array
+   *  rebuild, and the downstream `{@html md(...)}` churn on every block.
+   *  This is the single biggest source of "the page is doing something
+   *  twitchy every 2s" feel — markdown re-renders, scroll-to-bottom
+   *  reactives, and (transitively) xterm refits in adjacent columns. */
+  let lastResponseBody: string | null = null;
 
   async function load() {
     if (loading) return;
@@ -262,7 +270,15 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      const next = (await res.json()) as NormalizedSession;
+      const bodyText = await res.text();
+      // Idle short-circuit: identical response → no work. The daemon
+      // already caches its stringified response (see sessions.ts
+      // `jsonNoTitle`) so this is the natural matching half on the
+      // client. pendingTimer still gets cleared below when relevant
+      // because we only short-circuit when *nothing* changed.
+      if (bodyText === lastResponseBody) return;
+      lastResponseBody = bodyText;
+      const next = JSON.parse(bodyText) as NormalizedSession;
       // Force a new identity for the messages array so Svelte's
       // reactivity definitely picks it up.
       session = { ...next, messages: [...next.messages] };

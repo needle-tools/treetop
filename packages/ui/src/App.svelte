@@ -267,10 +267,17 @@
     }
   }
 
-  function startTuiPolling() {
-    if (tuiPollTimer) return;
+  /** TUI poll cadence: slow (10s) when only the count is on display in
+   *  the header button, fast (2s) when the popover is open and live
+   *  cpu/mem values are visible. `/api/processes` runs `ps` to sample
+   *  per-pid usage so 2s-always isn't free; 10s for the background
+   *  case is barely measurable and keeps the badge accurate enough. */
+  const TUI_SLOW_MS = 10_000;
+  const TUI_FAST_MS = 2_000;
+  function startTuiPolling(intervalMs: number) {
+    if (tuiPollTimer) clearInterval(tuiPollTimer);
     void refreshTuis();
-    tuiPollTimer = setInterval(refreshTuis, 2_000);
+    tuiPollTimer = setInterval(refreshTuis, intervalMs);
   }
   function stopTuiPolling() {
     if (tuiPollTimer) {
@@ -280,8 +287,10 @@
   }
   function toggleTuisOpen() {
     tuisOpen = !tuisOpen;
-    if (tuisOpen) startTuiPolling();
-    else stopTuiPolling();
+    // Speed up while the popover is on screen so the cpu/mem rows feel
+    // live; otherwise drop back to the slow background cadence that
+    // keeps the header-button count fresh.
+    startTuiPolling(tuisOpen ? TUI_FAST_MS : TUI_SLOW_MS);
   }
   async function killTui(id: string) {
     await fetch(`/api/terminals/${encodeURIComponent(id)}`, {
@@ -1619,11 +1628,15 @@
     void loadEditors();
     void loadDefaultShell();
     void restoreLiveShells();
-    void load().then(() => {
-      for (const [path, expanded] of Object.entries(commitsExpanded)) {
-        if (expanded) void loadCommitsInitial(path);
-      }
-    });
+    // Background-poll the TUI count so the header button shows it
+    // before the popover is opened. Switches to a faster cadence in
+    // `toggleTuisOpen` when the popover is on screen.
+    startTuiPolling(TUI_SLOW_MS);
+    void load();
+    // Note: SourceControlPane handles its own initial commits-load via
+    // a `$: onExpandedChange(expanded, wt.path)` reactive when its
+    // `expanded` prop is true on mount, so the parent doesn't (and
+    // can't, post-refactor) drive that.
     const unsubErrors = subscribeErrors((list) => {
       errorEntries = list;
     });
@@ -1642,6 +1655,7 @@
     return () => {
       document.removeEventListener("click", handleDocClick);
       document.removeEventListener("keydown", handleKey);
+      stopTuiPolling();
       unsubStream();
       unsubErrors();
     };

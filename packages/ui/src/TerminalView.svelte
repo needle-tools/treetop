@@ -157,12 +157,32 @@
       }
     });
 
+    // Resize gate: only `fit.fit()` when dimensions *actually* changed.
+    // Activity events in adjacent worktree rows reflow our flex
+    // parent by a sub-pixel amount on every JSONL line, which used to
+    // fire `fit.fit()` → xterm refit → terminal scrolls to bottom on
+    // every keypress in another agent. Comparing the proposed cols/rows
+    // against what xterm already has cuts those reflows down to the
+    // ones that matter. Also skips fit when the container is hidden
+    // (clientWidth === 0) — that's the path that triggered xterm's
+    // "Cannot read properties of undefined (reading 'dimensions')"
+    // crash when the column was unmounting.
     resizeObs = new ResizeObserver(() => {
-      if (!fit) return;
+      if (!fit || !xterm || phase === "exited") return;
+      if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
+      const before = { cols: xterm.cols, rows: xterm.rows };
+      let proposed: { cols: number; rows: number } | undefined;
+      try {
+        proposed = fit.proposeDimensions();
+      } catch {
+        // pre-mount sizing race; ignored
+      }
+      if (!proposed) return;
+      if (proposed.cols === before.cols && proposed.rows === before.rows) return;
       try {
         fit.fit();
       } catch {
-        // pre-mount sizing race; ignored
+        return;
       }
       sendResize();
     });
