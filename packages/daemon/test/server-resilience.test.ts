@@ -33,6 +33,44 @@ const SERVER_TS = readFileSync(
   "utf-8",
 );
 
+describe("shellCwds / shellTermIds are hoisted above Bun.serve (TDZ guard)", () => {
+  // Regression: prod /api/errors snapshot included 7× "Cannot access
+  // 'shellCwds' before initialization" on /api/shells → 500. Route
+  // handlers inside `Bun.serve(...)` close over these maps, and
+  // `Bun.serve(...)` returns synchronously and starts accepting
+  // connections immediately — so any request that lands between
+  // `Bun.serve` returning and the late `const` evaluating throws a TDZ
+  // ReferenceError. The fix is to declare them above `Bun.serve(...)`;
+  // this test makes sure they don't drift back down.
+  function lineOf(needle: RegExp): number {
+    const lines = SERVER_TS.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (needle.test(lines[i]!)) return i + 1;
+    }
+    return -1;
+  }
+
+  test("shellCwds is declared before Bun.serve(...)", () => {
+    const decl = lineOf(/^const shellCwds\b/);
+    const serve = lineOf(/^const server = Bun\.serve\b/);
+    expect(decl, "shellCwds declaration not found").toBeGreaterThan(0);
+    expect(serve, "Bun.serve declaration not found").toBeGreaterThan(0);
+    expect(decl, "shellCwds must be hoisted above Bun.serve").toBeLessThan(
+      serve,
+    );
+  });
+
+  test("shellTermIds is declared before Bun.serve(...)", () => {
+    const decl = lineOf(/^const shellTermIds\b/);
+    const serve = lineOf(/^const server = Bun\.serve\b/);
+    expect(decl, "shellTermIds declaration not found").toBeGreaterThan(0);
+    expect(serve, "Bun.serve declaration not found").toBeGreaterThan(0);
+    expect(decl, "shellTermIds must be hoisted above Bun.serve").toBeLessThan(
+      serve,
+    );
+  });
+});
+
 describe("Bun.serve wedge workaround stays in place", () => {
   test("idleTimeout is set explicitly", () => {
     // The exact value can change, but it must be set and non-zero.

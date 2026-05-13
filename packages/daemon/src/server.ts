@@ -207,6 +207,24 @@ async function recordServerError(
 const GRACE_MS = 30_000;
 const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Per-shell live cwd cache. We sample `lsof -p <pid> -d cwd` every
+// SHELL_CWD_INTERVAL_MS and remember the latest path so GET /api/shells
+// can surface where the user has `cd`-ed to. In-memory only — a daemon
+// restart kills the helper which kills every PTY, so there's nothing
+// to persist across restarts. Map key is termId, not pid, so the
+// /api/shells lookup is a direct hit.
+//
+// Hoisted above `Bun.serve(...)` (rather than next to its sampler at
+// the bottom of the file) because route handlers close over it and
+// requests landing during module init would otherwise hit a TDZ
+// `ReferenceError: Cannot access 'shellCwds' before initialization`.
+const SHELL_CWD_INTERVAL_MS = 5_000;
+const shellCwds = new Map<string, string>();
+/** Termids of currently-live shell PTYs. Used as an O(1) gate in the
+ *  hot WS keystroke path before we do any line-buffer work. Same TDZ
+ *  hoist reason as shellCwds. */
+const shellTermIds = new Set<string>();
+
 function cancelGrace(termId: string) {
   const t = graceTimers.get(termId);
   if (!t) return;
@@ -1585,18 +1603,10 @@ if (FETCH_INTERVAL_MS > 0) {
   console.log("supergit daemon: auto-fetch disabled (SUPERGIT_FETCH_INTERVAL_MS=0)");
 }
 
-// Per-shell live cwd cache. We sample `lsof -p <pid> -d cwd` every
-// SHELL_CWD_INTERVAL_MS and remember the latest path so GET /api/shells
-// can surface where the user has `cd`-ed to. In-memory only — a daemon
-// restart kills the helper which kills every PTY, so there's nothing
-// to persist across restarts. Map key is termId, not pid, so the
-// /api/shells lookup is a direct hit.
-const SHELL_CWD_INTERVAL_MS = 5_000;
-const shellCwds = new Map<string, string>();
-/** Termids of currently-live shell PTYs. Used as an O(1) gate in the
- *  hot WS keystroke path before we do any line-buffer work. */
-const shellTermIds = new Set<string>();
-
+// shellCwds, shellTermIds, and SHELL_CWD_INTERVAL_MS are declared above
+// Bun.serve(...) — see the TDZ comment near `graceTimers`. The sampler
+// and its interval live here because they only run after module init,
+// so they don't share that hazard.
 async function sampleShellCwds(): Promise<void> {
   // Filter terminalBackend's full list to shell PTYs only — no point
   // running lsof on a Claude/Codex agent process.
