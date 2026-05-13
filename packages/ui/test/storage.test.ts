@@ -398,14 +398,19 @@ describe("VisibleWorktreesStore", () => {
 
 describe("cmdForOpenSession", () => {
   test("shell always uses the user's default login shell, ignoring resumeSessionId", () => {
+    // `-l` forces login-shell mode so .zprofile/.zlogin source and the
+    // user's HISTFILE/HISTSIZE/SAVEHIST configuration applies — otherwise
+    // zsh's defaults (HISTSIZE=10, SAVEHIST=0) silently break arrow-up
+    // history and dispose wipes the session's commands.
     expect(cmdForOpenSession({ agent: "shell" }, "/bin/zsh")).toEqual([
       "/bin/zsh",
+      "-l",
     ]);
     // Even with a sid stamped (shouldn't happen for shells, but the
     // helper must be defensive): still defaultShell, not anything else.
     expect(
       cmdForOpenSession({ agent: "shell", resumeSessionId: "sid" }, "/bin/fish"),
-    ).toEqual(["/bin/fish"]);
+    ).toEqual(["/bin/fish", "-l"]);
   });
 
   test("brand-new claude column (no sid) spawns bare `claude`", () => {

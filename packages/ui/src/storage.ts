@@ -222,7 +222,16 @@ export function cmdForOpenSession(
   s: { agent: PersistedAgent | "shell"; resumeSessionId?: string },
   defaultShell: string,
 ): string[] {
-  if (s.agent === "shell") return [defaultShell];
+  // Spawn the shell as a *login* shell (`-l`). Without `-l`, zsh is
+  // interactive (TTY detected) but doesn't source `.zprofile`/`.zlogin`,
+  // and on stock macOS that's where many users (or system defaults the
+  // user inherits from) set HISTFILE / HISTSIZE / SAVEHIST. The defaults
+  // when those are unset are brutal: HISTSIZE=10, SAVEHIST=0 → arrow-up
+  // shows nothing on a fresh column and the in-session commands are
+  // discarded on Dispose. Terminal.app and iTerm2 start the user's shell
+  // as a login shell for the same reason. The flag is recognized by zsh,
+  // bash, fish, and sh — the only shells supergit advertises support for.
+  if (s.agent === "shell") return [defaultShell, "-l"];
   const sid = s.resumeSessionId;
   if (s.agent === "claude") {
     if (sid) {
