@@ -635,26 +635,27 @@ three buckets shipped under commits `84a1ac8` (`shellCwds` TDZ hoist),
 `f4df4dc` (HMR-stale ReferenceError sweep — only `loadCommitsInitial`
 was a current bug; the others were transients), and `14bcd8c` (the
 xterm `'dimensions'` race, fixed alongside the TerminalView
-ResizeObserver gate). What's still open:
+ResizeObserver gate). Status of the rest:
 
-- **409 Conflict responses recorded as errors** (3×, on
-  `/api/repos/:id/worktrees` and `/api/repos/:id/checkout`). These are
-  expected outcomes (dirty worktree, existing branch) — the daemon
-  intentionally returns 409 and the UI surfaces a dialog. They should
-  NOT show up in the error popover. Filter at the recorder: skip
-  fetch errors whose `status` is 4xx and whose route is a known
-  user-recoverable mutation, or have those routes opt in to "expected
-  client error" semantics. UI test: the popover filters out
-  4xx-on-known-mutations.
-- **Transient `Failed to fetch` / 502 bursts** (~100×, across
-  `/api/repos`, `/api/diff`, `/api/active-sends`, `/api/events`,
-  `/api/session`). All cluster around daemon restarts / port races
-  (502 = Vite proxy or wrapper got a connection reset). Two-part
-  fix: (a) coalesce repeated identical messages in the recorder so
-  one restart doesn't generate dozens of rows; (b) downgrade
-  network-unreachable fetch failures from "error" to a quieter
-  "offline" badge — the SSE `streamConnected` flag already gives us
-  the right signal.
+- **409 Conflict responses recorded as errors.** **Shipped** in
+  `330dab8`. `isExpectedClientError(status, method)` in
+  `packages/ui/src/errors.ts` returns true for `status === 409 &&
+  method !== "GET"`, and the fetch wrapper short-circuits the record
+  in that case. GETs returning 409 (rare, probably a real bug) keep
+  recording. Other 4xx (400/401/403/404) on any method keep recording.
+  Covered by `errors.test.ts` (skip 409 non-GET, keep 409 on GET,
+  keep 400 non-GET).
+- **Transient `Failed to fetch` / 502 bursts.** Half (a) shipped in
+  `330dab8`: identical-shape entries (kind + method + route + status)
+  arriving inside a 60s window collapse to one row whose `count`
+  bumps and `timestamp` updates. A daemon-restart burst that used to
+  spray 30 rows is now one row tagged `× 30` via a new `.err-count`
+  chip. Uncaught/rejection errors with no `route` never coalesce.
+  Half (b) STILL OPEN: downgrade pure network-unreachable fetch
+  failures (TypeError thrown from `fetch`) from "error" to a quieter
+  "offline" badge using the SSE `streamConnected` flag — the
+  coalescing already kills the spam; the badge would replace the
+  remaining loud-red-pill UX for short outages.
 
 ## TODO (small UX gaps, batch later)
 
@@ -679,6 +680,15 @@ their own plan; group them into one polish PR when convenient.
 - **Split `packages/ui/src/App.svelte` into components.** Full plan
   in [App.svelte refactor (componentization)](#appsvelte-refactor-componentization)
   below.
+- **Zen mode should unfold a folded row.** Clicking the ▣ "Enter zen"
+  button on a row that's currently folded (the compact one-liner)
+  takes over the viewport but the body is still hidden — the user
+  sees a near-empty zen pane until they manually unfold. Zen should
+  treat the row as expanded *for the duration of zen* without
+  mutating the persisted `rowFolded[rowKey]` state, so exiting zen
+  returns the row to its prior folded state. Easiest path: in
+  `.row.row-zen` CSS / the row template, ignore `rowFolded` while
+  `zenRowKey === row.key`.
 - **Smooth out `/api/session` cold-start burst.** Today the cache-miss
   path in `packages/daemon/src/sessions.ts` does a fixed 8 MB tail-read
   via `tailParseSessionFile`. For sessions with small messages that
