@@ -53,7 +53,7 @@ export class ExpandedStore {
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.
  */
-export type PersistedAgent = "claude" | "codex" | "copilot";
+export type PersistedAgent = "claude" | "codex" | "copilot" | "shell";
 
 export interface PersistedSession {
   agent: PersistedAgent;
@@ -78,6 +78,11 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "claude",
   "codex",
   "copilot",
+  // Terminal columns (plain `$SHELL` PTYs) live in `openSessionsByWt`
+  // alongside agents. Without "shell" here, `sanitizeSession` strips
+  // every persisted shell entry on `OpenSessionsStore.load()` — the
+  // disposed-terminal-column-disappears-after-reload bug.
+  "shell",
 ]);
 
 function sanitizeSession(item: unknown): PersistedSession | null {
