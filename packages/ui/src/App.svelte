@@ -10,8 +10,10 @@
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
+    cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
+    stampDiscoveredSessionId,
   } from "./storage";
   import {
     installFetchTracking,
@@ -855,6 +857,12 @@
      *  the daemon spawns the user's $SHELL as a PTY). */
     agent: AgentSession["agent"] | "shell";
     source: string;
+    /** Optional. Stamped on `__new__:claude:` / `__new__:codex:` columns
+     *  by the activity-SSE handler once the daemon surfaces a real
+     *  agent-side session id for this (cwd, agent). Survives reload via
+     *  `OpenSessionsStore`. On remount, `cmdForOpenSession` uses it to
+     *  spawn `claude --resume <sid>` instead of bare `claude`. */
+    resumeSessionId?: string;
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -1338,6 +1346,13 @@
         const existing = activityByCwd[ev.cwd] ?? [];
         const next = [ev, ...existing].slice(0, MAX_ACTIVITY);
         activityByCwd = { ...activityByCwd, [ev.cwd]: next };
+        // Stamp the real agent-side session id onto any matching
+        // `__new__:` column so a subsequent reload spawns
+        // `claude --resume <sid>` (resp. `codex resume <sid>`) instead
+        // of bare `claude`. No-op when the column is already stamped or
+        // the cwd has no transient column for this agent.
+        const stamped = stampDiscoveredSessionId(openSessionsByWt, ev);
+        if (stamped !== openSessionsByWt) openSessionsByWt = stamped;
       } catch {
         // ignore malformed
       }
@@ -2490,7 +2505,7 @@
                               >×</button>
                             </header>
                             <TerminalView
-                              cmd={s.agent === "shell" ? [defaultShell] : [s.agent]}
+                              cmd={cmdForOpenSession(s, defaultShell)}
                               cwd={shellResumeCwd[s.source] ?? wt.path}
                               procName={`supergit-tui-new-${s.agent}`}
                               attachTermId={s.source.startsWith("__attached__:")

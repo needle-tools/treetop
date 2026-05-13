@@ -3,8 +3,10 @@ import {
   ExpandedStore,
   OpenSessionsStore,
   VisibleWorktreesStore,
+  cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  stampDiscoveredSessionId,
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
@@ -390,6 +392,338 @@ describe("VisibleWorktreesStore", () => {
   test("load swallows storage errors", () => {
     const s = new VisibleWorktreesStore(new ThrowingStore(), KEY);
     expect(s.load()).toEqual({});
+  });
+});
+
+describe("cmdForOpenSession", () => {
+  test("shell always uses the user's default login shell, ignoring resumeSessionId", () => {
+    expect(cmdForOpenSession({ agent: "shell" }, "/bin/zsh")).toEqual([
+      "/bin/zsh",
+    ]);
+    // Even with a sid stamped (shouldn't happen for shells, but the
+    // helper must be defensive): still defaultShell, not anything else.
+    expect(
+      cmdForOpenSession({ agent: "shell", resumeSessionId: "sid" }, "/bin/fish"),
+    ).toEqual(["/bin/fish"]);
+  });
+
+  test("brand-new claude column (no sid) spawns bare `claude`", () => {
+    // Mirrors the existing v0 behaviour for fresh TUIs — claude generates
+    // its own session id on first spawn.
+    expect(cmdForOpenSession({ agent: "claude" }, "/bin/zsh")).toEqual([
+      "claude",
+    ]);
+  });
+
+  test("claude with a stamped resumeSessionId uses `--resume` + dangerously-skip flag", () => {
+    // This is the regression guard for the reload bug: once the activity
+    // tail has surfaced the real claude session id, the next mount must
+    // resume rather than spawn fresh. The --allow-dangerously-skip-
+    // permissions flag matches the read-mode Resume path in SessionView.
+    expect(
+      cmdForOpenSession(
+        { agent: "claude", resumeSessionId: "abc-123" },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--resume",
+      "abc-123",
+      "--allow-dangerously-skip-permissions",
+    ]);
+  });
+
+  test("brand-new codex column (no sid) spawns bare `codex`", () => {
+    expect(cmdForOpenSession({ agent: "codex" }, "/bin/zsh")).toEqual(["codex"]);
+  });
+
+  test("codex with a stamped resumeSessionId uses `codex resume <sid>`", () => {
+    // codex takes the session id as a positional after `resume`, matching
+    // the read-mode Resume path in SessionView.svelte.
+    expect(
+      cmdForOpenSession(
+        { agent: "codex", resumeSessionId: "ses_42" },
+        "/bin/zsh",
+      ),
+    ).toEqual(["codex", "resume", "ses_42"]);
+  });
+
+  test("copilot ignores resumeSessionId in v0 (no resume semantics)", () => {
+    expect(
+      cmdForOpenSession(
+        { agent: "copilot", resumeSessionId: "ignored" },
+        "/bin/zsh",
+      ),
+    ).toEqual(["copilot"]);
+  });
+});
+
+describe("stampDiscoveredSessionId", () => {
+  const SID = "discovered-session-id";
+
+  test("stamps the first matching __new__: column without a sid", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after).toEqual({
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_abc",
+          resumeSessionId: SID,
+        },
+      ],
+    });
+    // Doesn't mutate the input map.
+    expect(before["/wt"]![0]!.resumeSessionId).toBeUndefined();
+  });
+
+  test("returns the same reference when nothing matched (no churn)", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "/agents/already-on-disk.jsonl" }],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    // Same reference — so reactive consumers can short-circuit.
+    expect(after).toBe(before);
+  });
+
+  test("returns same reference when the cwd has no open sessions at all", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/other-wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("does NOT overwrite an already-stamped sid (first match wins)", () => {
+    // Two columns: first already has a sid (stamped earlier), second is
+    // unstamped. A second activity event should attach to the second one.
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_1",
+          resumeSessionId: "first-sid",
+        },
+        { agent: "claude", source: "__new__:claude:t_2" },
+      ],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after["/wt"]).toEqual([
+      {
+        agent: "claude",
+        source: "__new__:claude:t_1",
+        resumeSessionId: "first-sid",
+      },
+      {
+        agent: "claude",
+        source: "__new__:claude:t_2",
+        resumeSessionId: SID,
+      },
+    ]);
+  });
+
+  test("only matches the same agent — codex events don't stamp claude columns", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "codex",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("skips non-`__new__:` sources (existing JSONL columns already have their sid in the source)", () => {
+    // A file-backed source's sessionId is the JSONL filename, so we
+    // shouldn't stamp anything onto it from a drive-by activity event.
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source:
+            "/Users/me/.claude/projects/-Users-me-wt/abc-123.jsonl",
+        },
+      ],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("ignores empty sessionId (defensive)", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: "",
+    });
+    expect(after).toBe(before);
+  });
+});
+
+describe("OpenSessionsStore + resumeSessionId round-trip", () => {
+  const KEY = "supergit:openSessions-resume";
+
+  test("persists resumeSessionId alongside agent/source", () => {
+    // The core of the reload fix: after we stamp a sid on a __new__:
+    // column, it must survive a page reload. Otherwise the next mount
+    // is back to bare `claude` and the live conversation is lost.
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_abc",
+          resumeSessionId: "real-claude-sid-123",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_abc",
+          resumeSessionId: "real-claude-sid-123",
+        },
+      ],
+    });
+  });
+
+  test("treats a missing resumeSessionId as plain optional (no field on output)", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    });
+    const loaded = s.load();
+    expect(loaded).toEqual({
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    });
+    expect(loaded["/wt"]![0]!.resumeSessionId).toBeUndefined();
+  });
+
+  test("ignores garbage resumeSessionId values (must be a non-empty string)", () => {
+    const m = new MemStore();
+    m.setItem(
+      KEY,
+      JSON.stringify({
+        "/wt": [
+          {
+            agent: "claude",
+            source: "__new__:claude:t_a",
+            resumeSessionId: "",
+          },
+          {
+            agent: "claude",
+            source: "__new__:claude:t_b",
+            resumeSessionId: 42,
+          },
+          {
+            agent: "claude",
+            source: "__new__:claude:t_c",
+            resumeSessionId: "valid",
+          },
+        ],
+      }),
+    );
+    expect(new OpenSessionsStore(m, KEY).load()).toEqual({
+      "/wt": [
+        { agent: "claude", source: "__new__:claude:t_a" },
+        { agent: "claude", source: "__new__:claude:t_b" },
+        {
+          agent: "claude",
+          source: "__new__:claude:t_c",
+          resumeSessionId: "valid",
+        },
+      ],
+    });
+  });
+});
+
+describe("reload-resume round-trip (stamp → persist → load → cmd)", () => {
+  // Integration-shaped: walks the full lifecycle the App.svelte handler
+  // will drive. Locks in the actual user-visible behaviour: after a
+  // fake hard-reload, the cmd for the column resumes the conversation
+  // instead of starting fresh.
+  test("activity → stamp → save → load → cmdForOpenSession resumes", () => {
+    const m = new MemStore();
+    const KEY = "supergit:openSessions-reload";
+    const store = new OpenSessionsStore(m, KEY);
+
+    // 1. User opens a brand-new claude TUI. Inline `agent: "claude"`
+    //    source is the synthetic `__new__:` (mirrors openNewAgentSession
+    //    in App.svelte).
+    let byWt: Record<string, PersistedSession[]> = {
+      "/Users/me/wt/feature": [
+        { agent: "claude", source: "__new__:claude:t_xyz" },
+      ],
+    };
+    store.save(byWt);
+
+    // 2. Activity tail emits the first JSONL line — that's our cue that
+    //    claude has minted a session id for this column.
+    byWt = stampDiscoveredSessionId(byWt, {
+      agent: "claude",
+      cwd: "/Users/me/wt/feature",
+      sessionId: "claude-sid-abcdef",
+    });
+    store.save(byWt);
+
+    // 3. Hard reload: new browser tab, fresh OpenSessionsStore instance
+    //    reads from the same localStorage.
+    const reloaded = new OpenSessionsStore(m, KEY).load();
+    const restoredCol = reloaded["/Users/me/wt/feature"]![0]!;
+    expect(restoredCol.resumeSessionId).toBe("claude-sid-abcdef");
+
+    // 4. The cmd handed to TerminalView on remount resumes the conversation.
+    expect(cmdForOpenSession(restoredCol, "/bin/zsh")).toEqual([
+      "claude",
+      "--resume",
+      "claude-sid-abcdef",
+      "--allow-dangerously-skip-permissions",
+    ]);
+  });
+
+  test("without the stamp step (reload before any activity), cmd falls back to bare `claude`", () => {
+    // Locks in the no-regression: if the activity tail never got a
+    // chance to fire (very fast reload), we still spawn bare claude
+    // and the user sees the same behaviour as today — not worse.
+    const m = new MemStore();
+    const KEY = "supergit:openSessions-reload-fast";
+    new OpenSessionsStore(m, KEY).save({
+      "/Users/me/wt/feature": [
+        { agent: "claude", source: "__new__:claude:t_xyz" },
+      ],
+    });
+    const reloaded = new OpenSessionsStore(m, KEY).load();
+    expect(
+      cmdForOpenSession(reloaded["/Users/me/wt/feature"]![0]!, "/bin/zsh"),
+    ).toEqual(["claude"]);
   });
 });
 

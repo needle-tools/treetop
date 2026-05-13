@@ -58,6 +58,13 @@ export type PersistedAgent = "claude" | "codex" | "copilot";
 export interface PersistedSession {
   agent: PersistedAgent;
   source: string;
+  /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
+   *  the first time the daemon's activity-tail surfaces a real agent-side
+   *  session id for that (cwd, agent). On a subsequent mount (notably
+   *  after a hard reload that outlives the daemon's PTY-grace window) we
+   *  spawn `claude --resume <sid>` instead of bare `claude`, so the
+   *  conversation continues instead of starting over. */
+  resumeSessionId?: string;
 }
 
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
@@ -72,7 +79,14 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   if (typeof o.source !== "string" || o.source.length === 0) return null;
   if (typeof o.agent !== "string") return null;
   if (!VALID_AGENTS.has(o.agent as PersistedAgent)) return null;
-  return { agent: o.agent as PersistedAgent, source: o.source };
+  const out: PersistedSession = {
+    agent: o.agent as PersistedAgent,
+    source: o.source,
+  };
+  if (typeof o.resumeSessionId === "string" && o.resumeSessionId.length > 0) {
+    out.resumeSessionId = o.resumeSessionId;
+  }
+  return out;
 }
 
 export class OpenSessionsStore {
@@ -172,6 +186,78 @@ export function filterToExistingSessions(
       SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
       existingSources.has(s.source),
   );
+}
+
+/** Build the cmd[] supergit should hand to a `TerminalView` mounted in
+ *  a transient (`__new__:` / `__attached__:`) column.
+ *
+ *  For shells, it's the user's default login shell — agent doesn't matter.
+ *
+ *  For agent TUIs the rule is:
+ *  - **no `resumeSessionId`** (the brand-new spawn, JSONL not yet on
+ *    disk): the bare agent CLI. Claude/Codex will mint their own
+ *    session id and start writing it.
+ *  - **`resumeSessionId` stamped** (the activity tail has surfaced the
+ *    real session id, either earlier in this tab or persisted from a
+ *    prior tab/before-reload): `claude --resume <sid>
+ *    --allow-dangerously-skip-permissions` / `codex resume <sid>`. This
+ *    is the path that makes hard reloads non-destructive — without it,
+ *    every reload of a live agent column starts a fresh conversation. */
+export function cmdForOpenSession(
+  s: { agent: PersistedAgent | "shell"; resumeSessionId?: string },
+  defaultShell: string,
+): string[] {
+  if (s.agent === "shell") return [defaultShell];
+  const sid = s.resumeSessionId;
+  if (s.agent === "claude") {
+    if (sid) {
+      return [
+        "claude",
+        "--resume",
+        sid,
+        "--allow-dangerously-skip-permissions",
+      ];
+    }
+    return ["claude"];
+  }
+  if (s.agent === "codex") {
+    if (sid) return ["codex", "resume", sid];
+    return ["codex"];
+  }
+  // copilot has no resume semantics in v0
+  return [s.agent];
+}
+
+/** Attach the real agent-side session id to the first matching
+ *  `__new__:<agent>:` column in the given worktree that doesn't have one
+ *  yet. The match key is `(cwd, agent)`. Returns a new map only when
+ *  something actually changed — same reference otherwise, so reactive
+ *  consumers can `if (next !== prev)` to skip work.
+ *
+ *  Why "first unstamped wins": if the user has two simultaneous
+ *  `__new__:claude:` columns in the same worktree (opened sequentially),
+ *  the activity tail will surface each new sessionId as its JSONL
+ *  appears. Each event lands on the next column that hasn't been
+ *  stamped yet. Concurrent opens (rare) may attribute incorrectly;
+ *  acceptable until we plumb the sessionId back from the spawning side. */
+export function stampDiscoveredSessionId(
+  byWt: Record<string, PersistedSession[]>,
+  ev: { agent: PersistedAgent; cwd: string; sessionId: string },
+): Record<string, PersistedSession[]> {
+  if (!ev.sessionId) return byWt;
+  const list = byWt[ev.cwd];
+  if (!list || list.length === 0) return byWt;
+  const prefix = `__new__:${ev.agent}:`;
+  const idx = list.findIndex(
+    (s) =>
+      s.agent === ev.agent &&
+      s.source.startsWith(prefix) &&
+      !s.resumeSessionId,
+  );
+  if (idx === -1) return byWt;
+  const next = list.slice();
+  next[idx] = { ...list[idx], resumeSessionId: ev.sessionId };
+  return { ...byWt, [ev.cwd]: next };
 }
 
 /**

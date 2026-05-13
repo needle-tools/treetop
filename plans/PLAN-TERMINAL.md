@@ -435,6 +435,36 @@ suite uses real git.
 
 ---
 
+## Reload survives the live agent session (implemented)
+
+A brand-new agent TUI (`__new__:claude:<id>` / `__new__:codex:<id>`)
+that's been alive long enough for its JSONL header to land on disk
+survives a hard page reload as a `--resume <real-sid>` spawn rather
+than a fresh PTY. Mechanism:
+
+- The activity-SSE handler in `App.svelte` stamps the real agent-side
+  session id onto the matching `__new__:` `OpenSession` via
+  `stampDiscoveredSessionId` (see `storage.ts`). Match key: `(cwd, agent)`.
+- `PersistedSession` carries an optional `resumeSessionId` through
+  `OpenSessionsStore`, so the stamp survives a reload.
+- The transient-column render branch builds the cmd via
+  `cmdForOpenSession(s, defaultShell)`: bare `claude` / `codex` when no
+  sid has been discovered yet, `claude --resume <sid>
+  --allow-dangerously-skip-permissions` / `codex resume <sid>` once it has.
+
+Spec lives in `packages/ui/test/storage.test.ts` (`cmdForOpenSession`,
+`stampDiscoveredSessionId`, `OpenSessionsStore + resumeSessionId
+round-trip`, and the end-to-end `reload-resume round-trip` suite).
+
+Still-open follow-ups, left intentionally:
+- **Reattach before resume.** If the daemon's PTY-grace window hasn't
+  fired (e.g. lightning-fast reload), prefer reattaching to the live
+  PTY (the `attachTermId` path used by shells) over a fresh `--resume`.
+  Needs an `ownerId`-keyed lookup on the daemon side.
+- **Widen `GRACE_MS` for owned PTYs.** 3s covers same-page nav; a
+  modest bump (10–15s) for PTYs with a known `ownerId` would make
+  same-second reloads reattach instead of resume.
+
 ## Open questions
 
 1. **node-pty under Bun:** does the prebuilt binary load cleanly on macOS
