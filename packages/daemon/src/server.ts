@@ -1,5 +1,5 @@
 import { join, resolve, normalize } from "node:path";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Workspace } from "./workspace";
@@ -329,7 +329,16 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/health") {
-      return json({ status: "ok", workspace: WORKSPACE_PATH });
+      // `totalMemBytes` lets the UI scale TUI-hot/warm thresholds to a
+      // fraction of the user's RAM instead of a hardcoded MB number —
+      // a 16 GB MacBook and a 96 GB Linux workstation shouldn't trip
+      // the same alert. Static for the lifetime of the daemon, so the
+      // UI caches it after the first /api/health response.
+      return json({
+        status: "ok",
+        workspace: WORKSPACE_PATH,
+        totalMemBytes: totalmem(),
+      });
     }
 
     // The user's default login shell — populated from $SHELL with a

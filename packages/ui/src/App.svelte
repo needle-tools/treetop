@@ -235,21 +235,58 @@
   let tuisOpen = false;
   let tuiProcs: TuiProc[] = [];
   let tuiPollTimer: ReturnType<typeof setInterval> | null = null;
-  /** A TUI is "hot" when it crosses one of these thresholds — surfaces
-   *  as a red TUIs button so the user notices a runaway Claude/Codex
-   *  before it eats the whole machine. `?tuihot=1` forces the state
-   *  for visual testing without needing a real hot process. */
-  const TUI_HOT_MEM_BYTES = 500 * 1024 * 1024;
+  /** A TUI's resource use surfaces on the TUIs button at two tiers:
+   *  - **warm** (orange, no animated border) — first hint that
+   *    something's working hard, before it's worth worrying about.
+   *  - **hot** (red + comet-trail border animation) — runaway
+   *    Claude/Codex; user should notice before it eats the machine.
+   *
+   *  Memory thresholds are *fractions of system RAM* (delivered by the
+   *  daemon via /api/health → totalMemBytes) so a 16 GB MacBook and a
+   *  96 GB workstation don't share the same hardcoded "500 MB is hot"
+   *  number. Until /api/health responds the UI falls back to absolute
+   *  byte ceilings so a runaway process on a slow-starting daemon
+   *  still trips the alert.
+   *
+   *  Forced state via URL: `?tuihot=1` or `?tuiwarm=1` for visual
+   *  testing without a real busy process. */
+  const TUI_HOT_MEM_FRACTION = 0.5;
+  const TUI_WARM_MEM_FRACTION = 0.3;
   const TUI_HOT_CPU_PERCENT = 50;
+  const TUI_WARM_CPU_PERCENT = 30;
+  /** Absolute fallbacks when systemMemBytes isn't known yet. */
+  const TUI_HOT_MEM_FALLBACK = 500 * 1024 * 1024;
+  const TUI_WARM_MEM_FALLBACK = 300 * 1024 * 1024;
+  let systemMemBytes: number | null = null;
+  $: tuiHotMemBytes = systemMemBytes
+    ? systemMemBytes * TUI_HOT_MEM_FRACTION
+    : TUI_HOT_MEM_FALLBACK;
+  $: tuiWarmMemBytes = systemMemBytes
+    ? systemMemBytes * TUI_WARM_MEM_FRACTION
+    : TUI_WARM_MEM_FALLBACK;
   const tuiHotDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("tuihot") === "1";
+  const tuiWarmDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("tuiwarm") === "1";
   $: tuisHot =
     tuiHotDebug ||
     tuiProcs.some(
       (p) =>
-        p.memBytes > TUI_HOT_MEM_BYTES || p.cpuPercent > TUI_HOT_CPU_PERCENT,
+        p.memBytes > tuiHotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT,
     );
+  // Warm is mutually exclusive with hot — if anything's already hot,
+  // the red comet ring is the user-facing signal; we don't tint the
+  // button orange underneath.
+  $: tuisWarm =
+    !tuisHot &&
+    (tuiWarmDebug ||
+      tuiProcs.some(
+        (p) =>
+          p.memBytes > tuiWarmMemBytes ||
+          p.cpuPercent > TUI_WARM_CPU_PERCENT,
+      ));
   // `/api/processes` samples cpu/mem per pid and can take a beat on a
   // busy machine. Without this flag the popover flashes "Nothing running"
   // during the first fetch even when there are TUIs.
@@ -1930,6 +1967,22 @@
     return {};
   }
 
+  /** Fetch system memory from the daemon (via /api/health) so the TUI
+   *  hot/warm thresholds scale to a fraction of total RAM. Static for
+   *  the lifetime of the daemon; one fetch on mount is enough. */
+  async function loadSystemInfo() {
+    try {
+      const res = await fetch("/api/health");
+      if (!res.ok) return;
+      const body = (await res.json()) as { totalMemBytes?: unknown };
+      if (typeof body.totalMemBytes === "number" && body.totalMemBytes > 0) {
+        systemMemBytes = body.totalMemBytes;
+      }
+    } catch {
+      // best-effort — we fall back to TUI_*_MEM_FALLBACK byte ceilings.
+    }
+  }
+
   onMount(() => {
     restoreExpanded();
     restoreOpenSessions();
@@ -1938,6 +1991,7 @@
     void loadInstalledAgents();
     void loadEditors();
     void loadDefaultShell();
+    void loadSystemInfo();
     void restoreLiveShells();
     // Background-poll the TUI count so the header button shows it
     // before the popover is opened. Switches to a faster cadence in
@@ -2021,11 +2075,14 @@
         <button
           class="actions-btn tuis-btn"
           class:open={tuisOpen}
+          class:warm={tuisWarm}
           class:hot={tuisHot}
           on:click={toggleTuisOpen}
           title={tuisHot
             ? "A TUI is using significant CPU or memory — open to inspect"
-            : "Active TUIs (terminals supergit is hosting)"}
+            : tuisWarm
+              ? "A TUI is working hard — open to inspect"
+              : "Active TUIs (terminals supergit is hosting)"}
         >
           TUIs
           <!-- Always-rendered so the button width stays stable whether
