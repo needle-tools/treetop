@@ -458,10 +458,48 @@ button.branch-button:hover {
   animation: ab-ahead-blink 1.4s linear infinite;
 }
 /* Behind = upstream has commits you don't. Same orange palette as
-   the dirty-status dot, since both mean "you're out of sync." */
+   the dirty-status dot, since both mean "you're out of sync."
+   `position: relative` anchors the rotating-border pseudo below. */
 .status-badge-behind {
   background: var(--chip-orange-bg);
   color: var(--chip-orange-text);
+  position: relative;
+}
+/* Softer cousin of the .actions-btn.hot comet ring — same conic-
+   gradient + mask trick, but with a yellow/amber palette, shorter
+   visible arc, and a slower spin so the cue reads as "pull pending,
+   no rush" rather than "runaway, do something now." Falls back to a
+   static (non-rotating) ring on Firefox, which doesn't yet animate
+   @property-registered custom angles. */
+@property --pull-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.status-badge-behind::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--pull-angle),
+    transparent 0deg,
+    transparent 280deg,
+    rgba(245, 200, 100, 0) 300deg,
+    rgba(245, 200, 100, 0.6) 350deg,
+    rgba(255, 220, 150, 0.85) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: pull-border-spin 3.6s linear infinite;
+  pointer-events: none;
+}
+@keyframes pull-border-spin {
+  to { --pull-angle: 360deg; }
 }
 /* Dirty = uncommitted/staged/untracked. Neutral grey: the lowest-
    urgency tier, less of a nudge than ahead/behind. */
