@@ -678,7 +678,14 @@ button.branch-button:hover {
   font-family: ui-monospace, monospace;
   font-size: 0.72rem;
   color: var(--text-2);
-  word-break: break-all;
+  /* One file per line, ellipsize on overflow — the prior
+     `word-break: break-all` wrapped mid-path into multiple ragged
+     lines which made the bucket list hard to scan. Pairs with the
+     parent Tooltip's `variant="wide"` so most real paths fit
+     without truncation. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* The ↑/↓ tooltip lists commits in a 4-column grid so sha / subject /
    author / time line up vertically across rows: easier to scan than a

@@ -2758,7 +2758,7 @@
               {#if summary.clean}
                 <span class="muted small">{summary.text}</span>
               {:else}
-                <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                   <span
                     slot="trigger"
                     class="small status-summary-trigger"
@@ -2774,19 +2774,19 @@
                         {#if s.staged.length > 0}
                           <div class="wt-tt-section">
                             <div class="wt-tt-section-head">staged ({s.staged.length})</div>
-                            {#each s.staged as p}<div class="wt-tt-path">{p}</div>{/each}
+                            {#each s.staged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
                           </div>
                         {/if}
                         {#if s.unstaged.length > 0}
                           <div class="wt-tt-section">
                             <div class="wt-tt-section-head">unstaged ({s.unstaged.length})</div>
-                            {#each s.unstaged as p}<div class="wt-tt-path">{p}</div>{/each}
+                            {#each s.unstaged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
                           </div>
                         {/if}
                         {#if s.untracked.length > 0}
                           <div class="wt-tt-section">
                             <div class="wt-tt-section-head">untracked ({s.untracked.length})</div>
-                            {#each s.untracked as p}<div class="wt-tt-path">{p}</div>{/each}
+                            {#each s.untracked as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
                           </div>
                         {/if}
                       {/if}
