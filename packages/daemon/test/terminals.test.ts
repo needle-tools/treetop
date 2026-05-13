@@ -13,7 +13,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
 import { NodePtyBackend } from "../src/terminals/node-pty-backend";
 import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
-import { mkdtemp, writeFile, chmod, utimes } from "node:fs/promises";
+import { mkdtemp, writeFile, chmod, utimes, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -151,6 +151,93 @@ describe("NodePtyBackend integration", () => {
       expect(combined.toLowerCase()).toContain("sharehistory");
     },
     15_000,
+  );
+
+  // Regression guard for the "last letter on a new line" prompt bug.
+  // When ZDOTDIR is set, zsh sources $ZDOTDIR/.zshenv|.zshrc instead
+  // of the $HOME/ versions. Our temp ZDOTDIR must contain stubs that
+  // delegate back to $HOME, otherwise the user loses PATH/FPATH/
+  // p10k-instant-prompt setup and the line editor renders nonsense.
+  //
+  // We can't assert on the user's real ~/.zshenv (machine-specific),
+  // so we point HOME at a temp dir with a known marker, then verify
+  // it reaches the PTY.
+  test.skipIf(!zshBin)(
+    "ZDOTDIR stub sources $HOME/.zshenv and $HOME/.zshrc",
+    async () => {
+      const fakeHome = await mkdtemp(join(tmpdir(), "supergit-fakehome-"));
+      try {
+        await writeFile(
+          join(fakeHome, ".zshenv"),
+          `export SUPERGIT_ZSHENV_MARKER="from-zshenv-ok"\n`,
+          "utf-8",
+        );
+        await writeFile(
+          join(fakeHome, ".zshrc"),
+          `export SUPERGIT_ZSHRC_MARKER="from-zshrc-ok"\n`,
+          "utf-8",
+        );
+        const handle = await backend.spawn({
+          // -i so .zshrc is sourced. The two markers come from
+          // different startup files; if EITHER is missing in output,
+          // the corresponding stub is broken.
+          cmd: [
+            "zsh",
+            "-i",
+            "-c",
+            'echo "::ENV::$SUPERGIT_ZSHENV_MARKER::"; echo "::RC::$SUPERGIT_ZSHRC_MARKER::"; exit',
+          ],
+          cwd: "/tmp",
+          size: { cols: 80, rows: 24 },
+          env: { HOME: fakeHome },
+        });
+        const out: string[] = [];
+        const exitWait = new Promise<void>((resolve) => {
+          handle.subscribe({
+            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+            onExit() { resolve(); },
+          });
+        });
+        await exitWait;
+        const combined = out.join("");
+        expect(combined).toContain("::ENV::from-zshenv-ok::");
+        expect(combined).toContain("::RC::from-zshrc-ok::");
+      } finally {
+        await rm(fakeHome, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  // Negative: spawning a non-zsh shell must NOT inject ZDOTDIR, or
+  // bash startup files behave unexpectedly (it would just ignore
+  // ZDOTDIR, but a future shell-init might key off it). Pin the
+  // contract: bash sees an empty ZDOTDIR in its env.
+  test(
+    "non-zsh shell (bash) is spawned without a ZDOTDIR injected",
+    async () => {
+      const handle = await backend.spawn({
+        // `printf` (not `echo -n`) to keep output free of trailing
+        // newline ambiguity. Markers bracket the value so a stray
+        // empty line in PTY output can't be confused with success.
+        cmd: ["bash", "-c", 'printf "::ZDOTDIR::%s::\\n" "$ZDOTDIR"'],
+        cwd: "/tmp",
+        size: { cols: 80, rows: 24 },
+      });
+      const out: string[] = [];
+      const exitWait = new Promise<void>((resolve) => {
+        handle.subscribe({
+          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+          onExit() { resolve(); },
+        });
+      });
+      await exitWait;
+      const combined = out.join("");
+      expect(combined).toContain("::ZDOTDIR::::");
+      // And specifically NOT a supergit-zsh-* temp dir leaking in.
+      expect(combined).not.toMatch(/supergit-zsh-/);
+    },
+    10_000,
   );
 });
 
