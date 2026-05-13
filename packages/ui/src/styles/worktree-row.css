@@ -125,41 +125,10 @@
 .chip-tail .pencil {
   position: static;
 }
-.ahead-dot {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  /* currentColor inherits the chip's text colour, so the dot picks
-     up --chip-default-text on uncolored chips and --repo-fg on
-     user-colored ones automatically — no second source of truth. */
-  background: currentColor;
-  pointer-events: none;
-  /* Double-blink cadence: ON / off / ON / long rest. Linear timing
-     keeps the snap; the OFF state is fully transparent so the dot
-     completely disappears between hits. 2.6s cycle — keeps each
-     blink snappy (~130ms) while leaving ~1.9s of silence between
-     groups, so the row reads as calm except for the brief reminder. */
-  animation: ahead-dot-pulse 2.6s linear infinite;
-}
-@keyframes ahead-dot-pulse {
-  0%, 4%, 9%, 13%, 18%, 100% {
-    background: transparent;
-  }
-  5%, 8%, 14%, 17% {
-    background: currentColor;
-  }
-}
-.repo-chip:hover .ahead-dot {
-  display: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .ahead-dot {
-    animation: none;
-  }
-}
+/* .ahead-dot and its blinking animation are gone — the folded row's
+   StatusBadge now shows ↑N with the same snap-blink cadence next to
+   the branch chip, which is a richer signal (it covers behind / dirty
+   too) and removes the second blinking element from the row head. */
 .repo-chip .pencil {
   opacity: 0;
   font-size: 0.7rem;
@@ -472,15 +441,16 @@ button.branch-button:hover {
   align-items: center;
   line-height: 1.3;
 }
-/* Ahead = local commits not pushed yet. Green = actionable, plus a
-   slow pulsing halo so the "push me" cue catches the eye even in a
-   busy folded-row strip. Matches the expanded `.ab-ahead` chip
-   below (which gains the same animation for visual consistency
-   between folded and expanded). */
+/* Ahead = local commits not pushed yet. Green = actionable. Uses the
+   same `ab-ahead-blink` snap-pattern as the expanded `.ab-ahead-aged`
+   chip below — two fast blinks then a ~1s rest — so folded and
+   expanded views read identically when there's work to push. The
+   earlier "smooth halo glow" version was visually ugly; this one
+   matches the established design. */
 .status-badge-ahead {
   background: var(--chip-green-bg);
   color: var(--chip-green-text);
-  animation: ahead-pulse 2.4s ease-in-out infinite;
+  animation: ab-ahead-blink 1.4s linear infinite;
 }
 /* Behind = upstream has commits you don't. Same orange palette as
    the dirty-status dot, since both mean "you're out of sync." */
@@ -493,16 +463,6 @@ button.branch-button:hover {
 .status-badge-dirty {
   background: var(--surface-3);
   color: var(--text-3);
-}
-
-@keyframes ahead-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-  50% {
-    box-shadow:
-      0 0 6px 1px color-mix(in srgb, var(--chip-green-text) 50%, transparent);
-  }
 }
 
 /* ------------------------------------------------------------------

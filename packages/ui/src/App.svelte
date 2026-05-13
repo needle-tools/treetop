@@ -2365,9 +2365,6 @@
                 >
                   {repo.name}
                   <span class="chip-tail">
-                    {#if rowFolded[row.key] && (wt?.branchStatus?.ahead ?? 0) > 0}
-                      <span class="ahead-dot" aria-hidden="true"></span>
-                    {/if}
                     <span class="pencil">✎</span>
                   </span>
                 </button>
@@ -2470,13 +2467,6 @@
                     wt.fileStatus.unstaged +
                     wt.fileStatus.untracked}
                 />
-              {/if}
-              {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
-                <span
-                  class="popover-spinner row-activity-spinner"
-                  title="An agent in this row had output in the last 10s"
-                  aria-label="agent activity"
-                ></span>
               {/if}
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
@@ -2668,6 +2658,18 @@
                     {/if}
                   {/if}
                 </span>
+              {/if}
+              {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
+                <!-- Lives right of the agent-wrap (sessions dropdown +
+                     "+ new" cluster) and just before the wt-path, so
+                     when an agent is mid-output the spinner sits with
+                     the other agent UI instead of squeezing between
+                     the branch chip and the dropdown. -->
+                <span
+                  class="popover-spinner row-activity-spinner"
+                  title="An agent in this row had output in the last 10s"
+                  aria-label="agent activity"
+                ></span>
               {/if}
               <code class="wt-path">{wt.path}</code>
             {:else}
