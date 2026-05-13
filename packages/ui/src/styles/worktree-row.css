@@ -527,11 +527,13 @@ button.branch-button:hover {
    the muted text color so the eye lands on the subject by default. */
 .wt-tt-commits {
   display: grid;
-  /* Columns: sha | author | date | subject. Subject is the last column
-     and takes the leftover space so the message stays readable even
-     when the tooltip is narrow — the other three columns are sized to
-     their intrinsic content. */
-  grid-template-columns: auto auto auto minmax(0, 1fr);
+  /* Columns: sha | author | date | subject. Subject is the last column;
+     give it a real lower bound (~16ch) so it never collapses to ellipsis
+     when author + date are long, and cap at 40ch so a very long subject
+     ellipses instead of dragging the tooltip wider than its variant=wide
+     max (44rem). The Tooltip needs variant="wide" for this to have room
+     to breathe. */
+  grid-template-columns: auto auto auto minmax(16ch, 40ch);
   column-gap: 0.5rem;
   row-gap: 0.18rem;
   font-size: 0.72rem;
@@ -546,6 +548,7 @@ button.branch-button:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 40ch;
 }
 .wt-tt-author,
 .wt-tt-date {

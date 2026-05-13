@@ -1875,6 +1875,11 @@
                           · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
                         </span>
                       {/if}
+                      {#if ctx.title}
+                        <span class="tui-inline-title" title={ctx.title}>
+                          · {ctx.title}
+                        </span>
+                      {/if}
                       <span
                         class="tui-stats"
                         title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
@@ -1888,9 +1893,6 @@
                         aria-label="Kill terminal"
                       >×</button>
                     </div>
-                    {#if ctx.title}
-                      <div class="tui-title" title={ctx.title}>{ctx.title}</div>
-                    {/if}
                     {#if ctx.lastActivity}
                       <div class="tui-last-activity muted small" title={ctx.lastActivity}>
                         last: {ctx.lastActivity}
@@ -2579,7 +2581,7 @@
               {#if wt.branchStatus && wt.branchStatus.upstream}
                 {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
                   {#if wt.branchStatus.ahead > 0}
-                    <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                    <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                       <span
                         slot="trigger"
                         class="ab ab-ahead ab-trigger"
@@ -2611,7 +2613,7 @@
                     </Tooltip>
                   {/if}
                   {#if wt.branchStatus.behind > 0}
-                    <Tooltip onShow={() => loadWtSummary(wt.path)}>
+                    <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                       <span
                         slot="trigger"
                         class="ab ab-behind ab-trigger"
