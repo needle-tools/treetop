@@ -203,14 +203,29 @@
 
   /** Copy a string to the clipboard. Best-effort: silent on failure
    *  (browser refused permissions, document not focused, etc.). Used
-   *  by the tool-result Copy button — the pre is 2-line-clamped so
-   *  the full output only lives behind this click. */
+   *  by the tool-result Copy button — the inline preview is
+   *  substring-clamped + whitespace-collapsed, so the full original
+   *  text only lives behind this click. */
   async function copyToClipboard(text: string) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       // ignore — most likely permissions or unfocused document.
     }
+  }
+
+  /** Squash a tool-result blob into a single one-line preview for the
+   *  chat. Newlines and consecutive whitespace collapse to a single
+   *  space; leading/trailing whitespace is trimmed; everything past
+   *  `max` chars becomes "…". The Copy button still exposes the raw
+   *  text — this is purely a render-time clamp. */
+  const TOOL_RESULT_PREVIEW_MAX = 200;
+  function toolResultPreview(text: string): string {
+    if (!text) return "";
+    const flat = text.replace(/\s+/g, " ").trim();
+    return flat.length > TOOL_RESULT_PREVIEW_MAX
+      ? flat.slice(0, TOOL_RESULT_PREVIEW_MAX) + "…"
+      : flat;
   }
 
   function startManualTitleEdit() {
@@ -744,7 +759,10 @@
               <div class="block tool-result">
                 <span class="muted small">result</span>
                 <div class="tool-result-body">
-                  <pre>{b.text ?? ""}</pre>
+                  <code
+                    class="tool-result-preview"
+                    title={b.text ?? ""}
+                  >{toolResultPreview(b.text ?? "")}</code>
                   <button
                     type="button"
                     class="copy-btn"
@@ -1353,32 +1371,29 @@
   .block.tool-result {
     margin-top: 0.3rem;
   }
-  /* Body row: <pre> grows, copy button pins right. Tool results are
-     truncated to two lines at a glance — the user can copy the whole
-     thing if they need it, but the chat scroll doesn't drown in
-     200-line tool outputs. */
+  /* Body row: one-line preview grows, copy button pins right. The
+     preview is whitespace-collapsed + substring-clamped server-side
+     (`toolResultPreview`) so the chat scroll doesn't drown in
+     200-line tool outputs. No height clamp — that was cutting glyphs
+     vertically. The Copy button exposes the raw multi-line text. */
   .tool-result-body {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.4rem;
   }
-  .block.tool-result pre {
+  .block.tool-result .tool-result-preview {
     flex: 1;
     min-width: 0;
     margin: 0.2rem 0 0;
-    padding: 0.4rem 0.6rem;
+    padding: 0.3rem 0.6rem;
     background: var(--surface-2);
     border-radius: var(--radius-sm);
     font-family: ui-monospace, monospace;
     font-size: 0.75rem;
     color: var(--text-3);
-    /* 2-line clamp with ellipsis; the pre is no longer scrollable. */
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: pre-wrap;
   }
   .block.tool-result .copy-btn {
     flex: 0 0 auto;
