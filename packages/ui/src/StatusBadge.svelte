@@ -22,22 +22,25 @@
   /** Build a single tooltip listing every non-zero state, not just the
    *  one we render as the badge. A folded row with ↑2 and 3 dirty
    *  files shouldn't hide the dirty count behind "expand to see" —
-   *  the user wants the full picture on hover. */
-  $: fullTitle = (() => {
+   *  the user wants the full picture on hover.
+   *
+   *  Plain `$:` reactive with explicit named deps (rather than the
+   *  earlier IIFE form) so Svelte's static-analysis dependency
+   *  tracker definitely re-runs this when the counts change. */
+  function buildTitle(a: number, b: number, d: number): string {
     const lines: string[] = [];
-    if (ahead > 0) {
-      lines.push(`${ahead} unpushed commit${ahead === 1 ? "" : "s"} (push pending)`);
-    }
-    if (behind > 0) {
-      lines.push(`${behind} commit${behind === 1 ? "" : "s"} behind upstream (pull / rebase)`);
-    }
-    if (dirty > 0) {
-      lines.push(`${dirty} uncommitted change${dirty === 1 ? "" : "s"} in working tree`);
-    }
+    if (a > 0)
+      lines.push(`${a} unpushed commit${a === 1 ? "" : "s"} (push pending)`);
+    if (b > 0)
+      lines.push(`${b} commit${b === 1 ? "" : "s"} behind upstream (pull / rebase)`);
+    if (d > 0)
+      lines.push(`${d} uncommitted change${d === 1 ? "" : "s"} in working tree`);
     if (lines.length === 0) return "";
-    lines.push("\nClick the row chevron to expand for full details.");
+    lines.push("");
+    lines.push("Click the row chevron to expand for full details.");
     return lines.join("\n");
-  })();
+  }
+  $: fullTitle = buildTitle(ahead, behind, dirty);
 </script>
 
 {#if ahead > 0}
