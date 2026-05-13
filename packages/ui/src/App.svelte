@@ -1736,6 +1736,10 @@
     // enough to trigger it. Live TUI PTYs survive the reload on the
     // daemon (reattach via /api/shells + activity-tail), but the user
     // still loses in-page scroll position and any unsaved UI state.
+    //
+    // Dev (`import.meta.env.DEV`): never install the listener. HMR-driven
+    // reloads happen constantly while editing CSS / Svelte and the
+    // prompt is pure friction there.
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       const hasOpen = Object.values(openSessionsByWt).some(
         (arr) => arr && arr.length > 0,
@@ -1744,7 +1748,9 @@
       e.preventDefault();
       e.returnValue = "";
     };
-    window.addEventListener("beforeunload", handleBeforeUnload);
+    if (!import.meta.env.DEV) {
+      window.addEventListener("beforeunload", handleBeforeUnload);
+    }
     const unsubStream = subscribeToStream();
     return () => {
       document.removeEventListener("click", handleDocClick);
@@ -2460,6 +2466,10 @@
           {/if}
 
           {#if wt && summary}
+            {@const urgent =
+              wt.fileStatus.unstaged > 0 ||
+              wt.fileStatus.untracked > 0 ||
+              (wt.branchStatus?.ahead ?? 0) > 0}
             <div class="row-status">
               <span
                 class="status-dot"
@@ -2470,7 +2480,12 @@
                 <span class="muted small">{summary.text}</span>
               {:else}
                 <Tooltip onShow={() => loadWtSummary(wt.path)}>
-                  <span slot="trigger" class="muted small status-summary-trigger">{summary.text}</span>
+                  <span
+                    slot="trigger"
+                    class="small status-summary-trigger"
+                    class:status-urgent={urgent}
+                    class:muted={!urgent}
+                  >{summary.text}</span>
                   <span slot="content" class="wt-tt-content">
                     {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
                       <span class="muted small">Loading…</span>
