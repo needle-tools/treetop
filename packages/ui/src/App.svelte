@@ -8,6 +8,7 @@
   import SourceControlPane from "./SourceControlPane.svelte";
   import Tooltip from "./Tooltip.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
+  import StatusBadge from "./StatusBadge.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -2455,6 +2456,20 @@
                     </Popover>
                   {/if}
                 </span>
+              {/if}
+              {#if rowFolded[row.key] && wt}
+                <!-- Folded rows only get one signal-pill. Priority:
+                     unpushed commits → behind upstream → dirty workdir.
+                     Expanded rows show the full row-status line below
+                     instead (dot + dirty count + ↑/↓ chips), so this
+                     badge is collapsed-mode-only. -->
+                <StatusBadge
+                  ahead={wt.branchStatus?.ahead ?? 0}
+                  behind={wt.branchStatus?.behind ?? 0}
+                  dirty={wt.fileStatus.staged +
+                    wt.fileStatus.unstaged +
+                    wt.fileStatus.untracked}
+                />
               {/if}
               {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
                 <span
