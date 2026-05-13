@@ -291,6 +291,42 @@ button.branch-button:hover {
 }
 
 /* ------------------------------------------------------------------
+ * Agent-pill — the small brand-coloured "claude" / "codex" / "shell"
+ * chip used in column headers (SessionView, ShellView, and the
+ * transient new-session-col in App.svelte). Lives globally so it
+ * renders consistently regardless of which component owns the
+ * surrounding markup. SessionView.svelte and ShellView.svelte still
+ * carry an identical scoped copy for the moment; both are safe to
+ * remove once those components are confirmed to read the global rule.
+ * ------------------------------------------------------------------ */
+.agent-pill {
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  text-transform: lowercase;
+  font-family: ui-monospace, monospace;
+}
+.agent-pill.agent-claude {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+.agent-pill.agent-codex {
+  background: var(--chip-codex-bg);
+  color: var(--chip-codex-text);
+}
+.agent-pill.agent-copilot {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+/* Plain `$SHELL` columns: neutral surface so the pill reads as
+   "this is just a terminal, not an agent" — distinct from the
+   branded agent pills above. */
+.agent-pill.agent-shell {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------
  * Row activity line (live agent activity tail).
  * ------------------------------------------------------------------ */
 .row-activity {
