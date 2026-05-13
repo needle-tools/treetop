@@ -1,5 +1,6 @@
 import { mount } from "svelte";
 import "./styles/tokens.css";
+import "./styles/popover.css";
 import App from "./App.svelte";
 
 // Distinguish the dev tab from the prod tab in the browser. Bookmark

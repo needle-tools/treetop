@@ -1,0 +1,138 @@
+/*
+ * Popover shell + per-variant overrides used across the dashboard.
+ *
+ * The shell is rendered by `Popover.svelte`, and per-variant classes
+ * (`tuis-popover`, `events-popover`, `branch-popover`, etc.) layer on
+ * top via the component's `extraClass` prop. We keep these styles in a
+ * global stylesheet (rather than scoped to App.svelte or Popover.svelte)
+ * for two reasons:
+ *
+ *   1. The variants and the shell need to apply to the same element —
+ *      the Popover component's root. Svelte's per-component scope
+ *      hashing would otherwise force every variant rule to be split
+ *      between Popover.svelte (for the shell) and `:global()` in
+ *      whichever component opens the popover.
+ *   2. Shared component CSS is a real category — chips, dots, icon
+ *      buttons, agent-rows are all on the same path as Phase 1 of the
+ *      App.svelte refactor lands more components. styles/ is the right
+ *      home for that.
+ *
+ * See plans/PLAN.md → "App.svelte refactor (componentization)".
+ */
+
+/* Shared shell. Two anchorings layer on top:
+   - `.actions-popover` for header-bar buttons (anchored top-right).
+   - `.agents-popover` for worktree-row buttons (anchored top-left).
+   Each variant carries only its own anchoring + sizing. */
+.actions-popover,
+.agents-popover {
+  position: absolute;
+  overflow: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.actions-popover {
+  top: calc(100% + 0.4rem);
+  right: 0;
+  width: 380px;
+  max-width: 90vw;
+  max-height: 520px;
+  padding: 0.6rem 0.7rem;
+  z-index: 100;
+}
+
+.agents-popover {
+  top: calc(100% + 0.3rem);
+  left: 0;
+  z-index: 50;
+  /* Wide enough to show real titles; capped at 250ch on huge displays
+     and 90vw on small ones so it never overflows the viewport. */
+  width: max-content;
+  min-width: 380px;
+  max-width: min(250ch, 90vw);
+  max-height: 60vh;
+  padding: 0.4rem 0.5rem;
+}
+
+.popover-head {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.popover-spinner {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-left: 0.4rem;
+  vertical-align: -1px;
+  border: 1.5px solid var(--text-muted);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: popover-spin 0.8s linear infinite;
+}
+
+@keyframes popover-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Events popover ("diagnostics"): wider than the actions default; the
+   head becomes a flex row so the "Clear" button sits at the far right. */
+.events-popover {
+  width: 540px;
+  max-width: 90vw;
+}
+.events-popover .popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* TUIs overview popover — wider than the actions default; the head
+   shows "Active TUIs" + a spinner. Inner-row styles (.tui-row-static,
+   .tui-stats, .tui-kill-x) live in App.svelte since they target slot
+   content rendered there. */
+.tuis-popover {
+  width: 540px;
+  max-width: 90vw;
+}
+
+/* Worktree picker popover. */
+.wt-picker-popover {
+  width: 520px;
+  max-width: 90vw;
+}
+/* Highlight the worktree whose row this popover was opened from.
+   `.agent-row` is rendered in App.svelte's slot, but the descendant
+   selector resolves through this global rule because both sides of the
+   selector live outside Svelte's per-component scope hashing. */
+.wt-picker-popover .agent-row.rm-wt-current {
+  background: var(--surface-2);
+  outline: 1px solid color-mix(in srgb, var(--text-faint) 50%, transparent);
+}
+
+/* Branch picker popover. */
+.branch-popover {
+  width: 360px;
+  max-width: 90vw;
+}
+/* Head with the title on the left and the sort toggle on the right.
+   Attached via Popover's `headClass="branch-popover-head"`. */
+.branch-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* New-agent picker popover. */
+.new-agent-popover {
+  width: 360px;
+  max-width: 90vw;
+}

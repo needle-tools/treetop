@@ -5,6 +5,7 @@
   import SessionView from "./SessionView.svelte";
   import TerminalView from "./TerminalView.svelte";
   import ShellView from "./ShellView.svelte";
+  import Popover from "./Popover.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -309,37 +310,9 @@
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
 
-  /** Svelte action: keep a popover inside the viewport horizontally by
-   *  translating it sideways when its left/right edge would clip. The
-   *  CSS `max-width` can't see where the trigger sits, so a wide-ish
-   *  popover anchored near the right edge of the page overflows
-   *  off-screen no matter what `max-width` you set in absolute terms.
-   *  This action measures on mount, on resize, and on scroll. */
-  function clampToViewport(node: HTMLElement) {
-    const MARGIN = 8;
-    function clamp() {
-      // Reset any prior offset before measuring, otherwise our own
-      // correction gets compounded on resize.
-      node.style.transform = "";
-      const rect = node.getBoundingClientRect();
-      const overRight = rect.right - window.innerWidth + MARGIN;
-      const overLeft = MARGIN - rect.left;
-      if (overRight > 0) {
-        node.style.transform = `translateX(-${overRight}px)`;
-      } else if (overLeft > 0) {
-        node.style.transform = `translateX(${overLeft}px)`;
-      }
-    }
-    clamp();
-    window.addEventListener("resize", clamp);
-    window.addEventListener("scroll", clamp, { passive: true });
-    return {
-      destroy() {
-        window.removeEventListener("resize", clamp);
-        window.removeEventListener("scroll", clamp);
-      },
-    };
-  }
+  // clampToViewport (the popover-viewport-edge Svelte action) lives in
+  // packages/ui/src/popover.ts now; Popover.svelte applies it
+  // automatically unless the caller passes `unclamped`.
 
   // Per repo id: is the "new worktree" inline form open? (legacy — kept
   // for the createWorktree() flow which still reads/writes
@@ -1885,13 +1858,13 @@
           <span class="count">{tuiProcs.length}</span>
         </button>
         {#if tuisOpen}
-          <div class="actions-popover tuis-popover" role="menu" use:clampToViewport>
-            <div class="popover-head">
+          <Popover variant="actions" extraClass="tuis-popover">
+            <svelte:fragment slot="head">
               Active TUIs
               {#if tuisLoading}
                 <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
               {/if}
-            </div>
+            </svelte:fragment>
             {#if !tuisEverLoaded}
               <p class="muted small nopad">Loading…</p>
             {:else if tuiProcs.length === 0}
@@ -1929,7 +1902,7 @@
                 {/each}
               </ul>
             {/if}
-          </div>
+          </Popover>
         {/if}
       </div>
 
@@ -1946,8 +1919,8 @@
           {/if}
         </button>
         {#if actionsOpen}
-          <div class="actions-popover" role="menu">
-            <div class="popover-head">Recent actions</div>
+          <Popover variant="actions" unclamped>
+            <span slot="head">Recent actions</span>
             {#if visibleEvents.length === 0}
               <p class="muted small nopad">No actions yet.</p>
             {:else}
@@ -1978,7 +1951,7 @@
                 {/each}
               </ul>
             {/if}
-          </div>
+          </Popover>
         {/if}
       </div>
 
@@ -1996,8 +1969,8 @@
           {/if}
         </button>
         {#if eventsOpen}
-          <div class="actions-popover events-popover" role="menu">
-            <div class="popover-head">
+          <Popover variant="actions" extraClass="events-popover" unclamped>
+            <svelte:fragment slot="head">
               Events
               {#if errorEntries.length > 0}
                 <button
@@ -2006,7 +1979,7 @@
                   title="Clear the recorded error log"
                 >Clear</button>
               {/if}
-            </div>
+            </svelte:fragment>
             {#if errorEntries.length === 0}
               <p class="muted small nopad">No errors. 🎉</p>
             {:else}
@@ -2045,7 +2018,7 @@
                 {/each}
               </ul>
             {/if}
-          </div>
+          </Popover>
         {/if}
       </div>
     </h1>
@@ -2123,8 +2096,8 @@
                     }}
                   >{wt.branch} <span class="branch-caret" aria-hidden="true">▾</span></button>
                   {#if branchPickerOpen[wt.path]}
-                    <div class="agents-popover branch-popover" role="menu" use:clampToViewport>
-                      <div class="popover-head branch-popover-head">
+                    <Popover variant="agents" extraClass="branch-popover" headClass="branch-popover-head">
+                      <svelte:fragment slot="head">
                         <span>Switch branch in {wt.branch}</span>
                         <button
                           class="branch-sort-toggle"
@@ -2135,7 +2108,7 @@
                         >
                           sort: {branchSortMode === "recency" ? "recency" : "A–Z"} ↻
                         </button>
-                      </div>
+                      </svelte:fragment>
                       {#if branchesLoading[wt.path]}
                         <p class="muted small nopad">Loading branches…</p>
                       {:else}
@@ -2181,7 +2154,7 @@
                           </ul>
                         {/if}
                       {/if}
-                    </div>
+                    </Popover>
                   {/if}
                 </span>
               {/if}
@@ -2200,8 +2173,8 @@
                     }}
                   >+</button>
                   {#if newAgentPopoverOpen[wt.path]}
-                    <div class="agents-popover new-agent-popover" role="menu" use:clampToViewport>
-                      <div class="popover-head">Start a new session</div>
+                    <Popover variant="agents" extraClass="new-agent-popover">
+                      <svelte:fragment slot="head">Start a new session</svelte:fragment>
                       <ul class="agents-list">
                         {#each installedAgents as ag (ag.name)}
                           <li>
@@ -2248,7 +2221,7 @@
                           </button>
                         </li>
                       </ul>
-                    </div>
+                    </Popover>
                   {/if}
                   {#if a}
                   <button
@@ -2282,10 +2255,10 @@
                       }}
                     >+{pickerSessions.length - 1}</button>
                     {#if agentsPopoverOpen[wt.path]}
-                      <div class="agents-popover" role="menu" use:clampToViewport>
-                        <div class="popover-head">
+                      <Popover variant="agents">
+                        <svelte:fragment slot="head">
                           {pickerSessions.length} sessions in this worktree
-                        </div>
+                        </svelte:fragment>
                         <ul class="agents-list">
                           {#each pickerSessions as sess (sess.source)}
                             <li>
@@ -2371,7 +2344,7 @@
                             </li>
                           {/each}
                         </ul>
-                      </div>
+                      </Popover>
                     {/if}
                   {/if}
                 </span>
@@ -2396,8 +2369,8 @@
                 {@const visibleSet = new Set(
                   effectiveVisibleWorktrees(repo.id, diskPaths, visibleWorktreesByRepo),
                 )}
-                <div class="agents-popover wt-picker-popover" role="menu" use:clampToViewport>
-                  <div class="popover-head">Worktrees of {repo.name ?? repoName(repo)}</div>
+                <Popover variant="agents" extraClass="wt-picker-popover">
+                  <svelte:fragment slot="head">Worktrees of {repo.name ?? repoName(repo)}</svelte:fragment>
                   <ul class="agents-list">
                     {#each repo.worktrees as wOption (wOption.path)}
                       <li>
@@ -2479,7 +2452,7 @@
                     }}
                     title="Untrack the repo from supergit (the repo dir + worktrees on disk are kept)"
                   >Remove repository and all worktree rows from supergit</button>
-                </div>
+                </Popover>
               {/if}
             </span>
             <button
@@ -3128,51 +3101,8 @@
     min-width: 1.2rem;
     text-align: center;
   }
-  /* Shared shell for every popover in the dashboard. Two concrete
-     anchorings layer on top: `.actions-popover` (header-bar buttons,
-     anchored top-right) and `.agents-popover` (worktree-row buttons,
-     anchored top-left). Each variant adds *only* its anchoring +
-     sizing; the surface, border, radius, shadow, and scroll behaviour
-     live here so we don't keep restating them. */
-  .actions-popover,
-  .agents-popover {
-    position: absolute;
-    overflow: auto;
-    background: var(--surface-1);
-    border: 1px solid var(--surface-2);
-    border-radius: var(--radius-md);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  }
-  .actions-popover {
-    top: calc(100% + 0.4rem);
-    right: 0;
-    width: 380px;
-    max-width: 90vw;
-    max-height: 520px;
-    padding: 0.6rem 0.7rem;
-    z-index: 100;
-  }
-  .popover-head {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    margin-bottom: 0.4rem;
-  }
-  .popover-spinner {
-    display: inline-block;
-    width: 0.7rem;
-    height: 0.7rem;
-    margin-left: 0.4rem;
-    vertical-align: -1px;
-    border: 1.5px solid var(--text-muted);
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: popover-spin 0.8s linear infinite;
-  }
-  @keyframes popover-spin {
-    to { transform: rotate(360deg); }
-  }
+  /* Popover shell + .popover-head + .popover-spinner + the events
+     variant moved to packages/ui/src/styles/popover.css. */
   /* Events popover ("diagnostics"): same width/look as the TUIs popover.
      The button gets a subtle error-tint when there are entries, so the
      header strip visually nudges the user toward it without being noisy. */
@@ -3182,16 +3112,8 @@
   .actions-btn.has-errors {
     color: var(--error-text, #ffb4ad);
   }
-  .events-popover {
-    width: 540px;
-    max-width: 90vw;
-  }
-  .events-popover .popover-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-  }
+  /* .events-popover variant moved to styles/popover.css alongside the
+     shell rules — see that file for the events-specific overrides. */
   .events-clear {
     font-size: 0.7rem;
     padding: 0.15rem 0.45rem;
@@ -3284,10 +3206,7 @@
      0.78rem font, same hover-reveal × — so both popovers feel like
      siblings. Only difference: a TUI row isn't a button (no click
      target on the row body); only its × button kills. */
-  .tuis-popover {
-    width: 540px;
-    max-width: 90vw;
-  }
+  /* .tuis-popover (width/max-width) moved to styles/popover.css. */
   .tui-row-static {
     cursor: default;
     /* 4 grid columns: icon (fixed 16px) · name (auto) · stats (auto)
@@ -3385,10 +3304,7 @@
     position: relative;
     display: inline-flex;
   }
-  .wt-picker-popover {
-    width: 520px;
-    max-width: 90vw;
-  }
+  /* .wt-picker-popover (width) moved to styles/popover.css. */
   .wt-pick-row {
     /* Each row is a div (not a button) since the X needs to be its own
        clickable target. Primary click on the row toggles visibility.
@@ -3430,11 +3346,8 @@
     background: var(--error-bg);
     color: var(--error-text);
   }
-  /* Highlight the worktree whose row this popover was opened from. */
-  .wt-picker-popover .agent-row.rm-wt-current {
-    background: var(--surface-2);
-    outline: 1px solid color-mix(in srgb, var(--text-faint) 50%, transparent);
-  }
+  /* .wt-picker-popover .agent-row.rm-wt-current moved to
+     styles/popover.css (descendant selector crosses Popover root). */
   /* Create-new input at the bottom of the picker. */
   .wt-pick-create-row {
     margin-top: 0.4rem;
@@ -3638,19 +3551,7 @@
     position: relative;
     display: inline-flex;
   }
-  .branch-popover {
-    width: 360px;
-    max-width: 90vw;
-  }
-  /* Popover head with the title on the left and the sort toggle on
-     the right. Sort toggle is a tiny pill so it doesn't compete with
-     the actual branch list. */
-  .branch-popover-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-  }
+  /* .branch-popover + .branch-popover-head moved to styles/popover.css. */
   .branch-sort-toggle {
     background: transparent;
     color: var(--text-muted);
@@ -3985,11 +3886,7 @@
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
   }
-  /* New-agent popover layout: 480px feels right for the agent rows. */
-  .new-agent-popover {
-    width: 360px;
-    max-width: 90vw;
-  }
+  /* .new-agent-popover moved to styles/popover.css. */
   /* Transient new-session column: simple bordered shell with a small
      header strip. The TerminalView inside fills the column body. */
   .new-session-col {
@@ -4153,20 +4050,7 @@
   .agent-more:hover {
     filter: brightness(1.2);
   }
-  /* See the grouped `.actions-popover, .agents-popover` rule above for
-     the shared shell (surface, border, radius, shadow, overflow). */
-  .agents-popover {
-    top: calc(100% + 0.3rem);
-    left: 0;
-    z-index: 50;
-    /* Wide enough to show real titles; capped at 250ch on huge displays
-       and 90vw on small ones so it never overflows the viewport. */
-    width: max-content;
-    min-width: 380px;
-    max-width: min(250ch, 90vw);
-    max-height: 60vh;
-    padding: 0.4rem 0.5rem;
-  }
+  /* .agents-popover (shell + anchoring) moved to styles/popover.css. */
   .agents-list {
     list-style: none;
     margin: 0;
