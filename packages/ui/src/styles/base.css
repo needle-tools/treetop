@@ -1,0 +1,143 @@
+/*
+ * App-wide base styles: top-level layout (`main`, the @media break),
+ * the global `:global(html) / :global(body)` resets (swipe-back-off
+ * + font-family), the initial loading screen, the error banner, the
+ * `button` / `input` defaults that everything else builds on, and the
+ * shared `.muted` / `.small` / `.nopad` utilities.
+ *
+ * Lives in styles/ (global) so future component extractions can rely
+ * on these baselines. See plans/PLAN.md → "App.svelte refactor
+ * (componentization)".
+ */
+
+/* Disable trackpad two-finger swipe-back/forward at the CSS level.
+   The popstate guard in main.ts isn't enough on Safari/Chrome: the
+   swipe gesture is intercepted by the browser before any popstate
+   handler runs. `overscroll-behavior-x: none` is the supported way
+   to opt out of the horizontal overscroll → history navigation. */
+html,
+body {
+  overscroll-behavior-x: none;
+}
+body {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    sans-serif;
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+}
+
+main {
+  /* Use almost the full window — supergit is a dashboard, not a
+   * reading column. Cap at 1200px only on phones where 100% - 100px
+   * collapses too far; otherwise let it breathe. */
+  max-width: calc(100% - 100px);
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 1.5rem;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  main {
+    max-width: 100%;
+    padding: 1rem 0.75rem;
+  }
+}
+
+/* Initial app-wide "loading repos…" state: centered pill, mirroring
+   the TUI / SessionView load indicators so all three read as one
+   design. */
+.loading-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+.loading-overlay {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface-2);
+  color: var(--text-1);
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.loading-overlay .spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: app-spin 0.6s linear infinite;
+}
+@keyframes app-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Form-element baselines. Everything else (e.g. `button.tiny`,
+   `.new-wt-input`) builds on these. */
+input {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  color: inherit;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+button {
+  padding: 0.55rem 1rem;
+  background: var(--surface-2);
+  border: 0;
+  color: inherit;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+button:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--brand);
+  color: white;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+button.tiny {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.error {
+  background: var(--error-bg);
+  color: var(--error-text);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+
+/* Inline utility classes used across the dashboard. */
+.muted {
+  color: var(--text-muted);
+}
+.small {
+  font-size: 0.8rem;
+}
+.nopad {
+  margin: 0.5rem 0 0 0;
+}

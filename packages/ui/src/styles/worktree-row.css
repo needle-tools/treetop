@@ -1,0 +1,521 @@
+/*
+ * Worktree row anatomy — the per-row layout + every chip/badge/dot
+ * that lives inside a `.row`. This file groups everything visually
+ * scoped to one row of the dashboard: row container, head bar (repo
+ * chip, branch chip, action cluster), activity line, status line,
+ * topmost-commit row, plus the agent-badge / agent-add / agent-more
+ * cluster and the dirty/clean status indicators.
+ *
+ * Direct prep for WorktreeRow.svelte (Phase 3 of the App.svelte
+ * refactor plan). Global so the future component consumes these rules
+ * unchanged. See plans/PLAN.md → "App.svelte refactor
+ * (componentization)".
+ */
+
+/* ------------------------------------------------------------------
+ * Row container + fold state
+ * ------------------------------------------------------------------ */
+.rows {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.row {
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: 0.65rem 0.75rem;
+  margin: 0 0 0.6rem;
+  min-width: 0;
+}
+/* When folded, only the row-head is rendered. Tighten the row's
+   vertical padding and stack-gap so a folded repo reads as a compact
+   one-liner instead of leaving a blank area where the body was. */
+.row.row-folded {
+  padding: 0.35rem 0.75rem;
+  margin-bottom: 0.3rem;
+}
+.row-content {
+  min-width: 0;
+}
+.session-panel {
+  margin-top: 0.5rem;
+}
+
+/* Fold-toggle chevron (blue-tinted, vs. the neutral history chevron). */
+.fold-toggle {
+  margin-right: -0.2rem;
+  color: var(--chip-blue-text);
+}
+.fold-toggle:hover {
+  color: var(--chip-blue-text);
+  background: color-mix(in srgb, var(--chip-blue-bg) 55%, transparent);
+}
+
+/* ------------------------------------------------------------------
+ * Row head — top bar with repo name, branch, actions
+ * ------------------------------------------------------------------ */
+.row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.repo-chip {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+  padding: 0.18rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.repo-chip:hover {
+  filter: brightness(1.15);
+}
+.repo-chip .pencil {
+  opacity: 0;
+  font-size: 0.7rem;
+}
+.repo-chip:hover .pencil {
+  opacity: 0.8;
+}
+.name-edit {
+  padding: 0.15rem 0.4rem;
+  font-size: 0.85rem;
+  background: var(--surface-1);
+  border: 1px solid var(--brand);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  width: auto;
+  max-width: 240px;
+  flex: 0 0 auto;
+}
+.wt-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* Branch chip — both the static label and the button variant. */
+.branch {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+button.branch-button {
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+button.branch-button:hover {
+  filter: brightness(1.15);
+}
+.branch-caret {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  line-height: 1;
+}
+.branch-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.branch.detached {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+.branch.bare {
+  background: var(--chip-indigo-bg);
+  color: var(--chip-grey-text);
+}
+.branch.warn {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+
+/* ------------------------------------------------------------------
+ * Agent badge / add-new / more cluster — the right-aligned pill
+ * group on each row that shows the current session + "+" to start
+ * a new one + "+N" overflow for additional sessions.
+ * ------------------------------------------------------------------ */
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  text-transform: lowercase;
+  border: 0;
+  cursor: pointer;
+}
+.agent-badge:hover {
+  filter: brightness(1.15);
+}
+.agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.agent-badge.agent-claude {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+.agent-badge.agent-codex {
+  background: var(--chip-codex-bg);
+  color: var(--chip-codex-text);
+}
+.agent-badge.agent-copilot {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+.agent-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+/* When the badge sits in an .agent-wrap with a sibling (+ or +N),
+   the badge merges into the cluster by un-rounding its joining edge.
+   The :only-child rule re-rounds the badge when it stands alone. */
+.agent-wrap > .agent-badge {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 1px solid rgba(0, 0, 0, 0.25);
+}
+.agent-wrap > .agent-badge:only-child {
+  border-radius: var(--radius-sm);
+  border-right: 0;
+}
+.agent-more {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+  border: 0;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+}
+.agent-more.agent-claude {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+.agent-more.agent-codex {
+  background: var(--chip-codex-bg);
+  color: var(--chip-codex-text);
+}
+.agent-more.agent-copilot {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+.agent-more:hover {
+  filter: brightness(1.2);
+}
+/* "+" chip glued to the LEFT of the agent badge — mirror of
+   .agent-more but anchored to the start. */
+.agent-add {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+  border: 0;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  line-height: 1;
+  cursor: pointer;
+  border-top-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-sm);
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 1px solid rgba(0, 0, 0, 0.25);
+}
+.agent-add.agent-claude {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+.agent-add.agent-codex {
+  background: var(--chip-codex-bg);
+  color: var(--chip-codex-text);
+}
+.agent-add.agent-copilot {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+/* When there's no agent badge next to it (no sessions yet), the "+"
+   stands alone — neutral muted color, rounded on both sides. */
+.agent-add.agent-empty {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-right: 0;
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+}
+.agent-add.agent-empty:hover:not(:disabled) {
+  color: var(--text-1);
+  background: var(--surface-3);
+  filter: none;
+}
+.agent-add:hover:not(:disabled) {
+  filter: brightness(1.2);
+}
+.agent-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.agent-wrap > .agent-add + .agent-badge {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* ------------------------------------------------------------------
+ * Row activity line (live agent activity tail).
+ * ------------------------------------------------------------------ */
+.row-activity {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, monospace;
+  font-size: 0.74rem;
+  color: var(--text-3);
+  min-width: 0;
+}
+.row-activity .agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.row-activity .agent-dot.agent-claude {
+  background: var(--chip-orange-text);
+}
+.row-activity .agent-dot.agent-codex {
+  background: var(--chip-codex-text);
+}
+.row-activity .agent-dot.agent-copilot {
+  background: var(--chip-blue-text);
+}
+.activity-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-time {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+}
+
+/* ------------------------------------------------------------------
+ * Row status line — dot + dirty-count + ↑/↓ chips.
+ * ------------------------------------------------------------------ */
+.row-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  /* Left padding mirrors `.row-activity`'s 0.5rem so the status dot
+     lines up vertically with the agent dot in the activity row above. */
+  padding: 0 0.5rem;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-dirty);
+  display: inline-block;
+}
+.status-dot.clean {
+  background: var(--status-clean);
+}
+
+/* Ahead/Behind chip family. */
+.ab {
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.02em;
+}
+/* Ahead = local commits not pushed yet. Green = actionable. */
+.ab-ahead {
+  background: var(--chip-green-bg);
+  color: var(--chip-green-text);
+}
+/* Stale variant: the oldest unpushed commit is older than
+   STALE_AHEAD_HOURS. Keep green so behind=orange stays distinct, but
+   brighten + thicken the outline so the pill reads as a nudge. */
+.ab-ahead-stale {
+  color: color-mix(in srgb, var(--chip-green-text) 100%, white 15%);
+  box-shadow: 0 0 0 1px currentColor;
+}
+/* Behind = upstream has commits you don't. Orange = needs attention. */
+.ab-behind {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+
+.row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.3rem;
+}
+
+/* ------------------------------------------------------------------
+ * Topmost-commit line + history chevron.
+ * ------------------------------------------------------------------ */
+.row-commit {
+  margin-top: 0.45rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  overflow: hidden;
+}
+.row-commit > .chevron {
+  flex: 0 0 auto;
+}
+.commit-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.commit-author,
+.commit-time {
+  white-space: nowrap;
+}
+
+/* Chevron — used in .row-commit and elsewhere as a fold/expand toggle. */
+.chevron {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.chevron:hover {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.chevron .arrow {
+  display: inline-block;
+  line-height: 1;
+  transition: transform 0.15s ease-out;
+}
+.chevron.open .arrow {
+  transform: rotate(90deg);
+}
+
+/* ------------------------------------------------------------------
+ * Inline-new-worktree affordance + remove button on the row head.
+ * ------------------------------------------------------------------ */
+.remove {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.15rem 0.5rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.remove:hover {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+.new-wt {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.15rem 0.5rem;
+  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+  line-height: 1;
+  flex: 0 0 auto;
+  border: 1px dashed var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.new-wt:hover {
+  background: var(--surface-2);
+  color: var(--text-2);
+  border-style: solid;
+}
+.new-wt-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.new-wt-input {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  color: inherit;
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------
+ * Sessions strip — horizontal scrolling container that hosts
+ * SessionView / TerminalView / ShellView / new-session columns.
+ * ------------------------------------------------------------------ */
+.sessions-strip {
+  /* Was 0.5rem; bumped to 1rem because the column's .session lost its
+     own 0.5rem margin-top (which combined with height:100% was clipping
+     the bottom border under the strip's overflow-y:hidden). */
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.6rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem;
+}
+.session-col {
+  /* Chat columns sized for comfortable reading — wide enough that code
+     blocks don't wrap aggressively, narrow enough that two fit side
+     by side on a 1440px screen. Hard cap in ch (not %) so widening
+     the window doesn't stretch each column to billboard widths. */
+  flex: 1 1 70ch;
+  min-width: 60ch;
+  max-width: 90ch;
+  box-sizing: border-box;
+}

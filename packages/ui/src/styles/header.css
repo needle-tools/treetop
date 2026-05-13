@@ -1,0 +1,88 @@
+/*
+ * Top header strip — h1 + brand mark + the cluster of action buttons
+ * (Recent Actions, Events, TUIs, Add Folder). Anchored containers
+ * (`.actions-anchor`, `.events-anchor`, `.tuis-anchor`) position the
+ * popovers below their triggers. Lives in styles/ so a future
+ * DashboardHeader.svelte extraction can own this without rewiring CSS
+ * scoping. See plans/PLAN.md → "App.svelte refactor (componentization)".
+ */
+
+header {
+  margin-bottom: 1.5rem;
+}
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.brand-mark {
+  height: 1.6rem;
+  width: auto;
+  display: inline-block;
+}
+.live {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+}
+.live.on {
+  color: var(--status-clean);
+}
+
+/* Action-button cluster on the right side of the header strip. */
+.actions-anchor {
+  position: relative;
+  margin-left: auto;
+}
+/* When TUIs sits left of Actions in the same header strip, the TUIs
+   anchor claims the auto-margin (pushed to the right edge) and the
+   Actions anchor sits flush next to it with just a small gap.
+   Without this, both `margin-left: auto` siblings produce a big
+   equal gap between them. */
+.tuis-anchor + .actions-anchor {
+  margin-left: 0.4rem;
+}
+.events-anchor {
+  margin-left: 0.4rem;
+}
+.actions-btn {
+  padding: 0.4rem 0.75rem;
+  background: var(--surface-2);
+  color: var(--text-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.actions-btn:hover,
+.actions-btn.open {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.actions-btn .count {
+  background: transparent;
+  color: white;
+  padding: .4em 0.4em;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 50%, transparent);
+  font-size: 0.7rem;
+  min-width: 1.2rem;
+  text-align: center;
+}
+.actions-btn.has-errors {
+  color: var(--error-text, #ffb4ad);
+}
+
+/* Add-folder button (header strip, far right). */
+.add-folder-btn {
+  margin-left: auto;
+}
+.add-folder-btn + .actions-anchor {
+  margin-left: 0.4rem;
+}

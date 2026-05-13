@@ -1,0 +1,173 @@
+/*
+ * Worktree picker — the popover anchored to the `worktrees (N)`
+ * button on each row that lets you toggle which worktrees are visible,
+ * remove a worktree from disk, create a new one, or untrack the whole
+ * repo. The popover shell + variant width live in styles/popover.css;
+ * this file owns the inner-row layout + the create-new affordance at
+ * the bottom + the destructive "Remove repository" link + the
+ * scroll-target highlight pulse.
+ *
+ * Plus the branch picker rows (.branch-row, .branch-tick,
+ * .branch-sort-toggle, .branch-row-current) since they share the
+ * same .agent-row base in the markup.
+ *
+ * Lives in styles/ (global). See plans/PLAN.md → "App.svelte refactor
+ * (componentization)".
+ */
+
+.wt-picker-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.wt-pick-row {
+  /* Each row is a div (not a button) since the X needs to be its own
+     clickable target. Primary click on the row toggles visibility.
+     4 children: tick · branch · path · × — override .agent-row's
+     6-column session-popover grid so the cells line up. */
+  cursor: pointer;
+  grid-template-columns: 12px auto 1fr 18px;
+}
+.wt-pick-tick {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  color: var(--brand);
+  font-size: 0.8rem;
+  line-height: 1;
+}
+/* Visible worktrees: brand-colored branch name so the eye picks them
+   out from the hidden ones. */
+.wt-pick-row.wt-pick-visible .agent-row-name {
+  color: var(--text-1);
+}
+.wt-pick-row:not(.wt-pick-visible) .agent-row-name,
+.wt-pick-row:not(.wt-pick-visible) .agent-title {
+  opacity: 0.55;
+}
+.wt-pick-row:hover {
+  background: var(--surface-2);
+}
+/* Hover-reveal the X exactly like the sessions popover's row-close. */
+.wt-pick-row .wt-pick-kill {
+  opacity: 0;
+  pointer-events: none;
+}
+.wt-pick-row:hover .wt-pick-kill {
+  opacity: 1;
+  pointer-events: auto;
+}
+.wt-pick-kill:hover {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+/* Create-new input at the bottom of the picker. */
+.wt-pick-create-row {
+  margin-top: 0.4rem;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--surface-2);
+}
+.wt-pick-create-input {
+  flex: 1;
+  background: transparent;
+  color: var(--text-1);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-size: 0.78rem;
+}
+.wt-pick-create-input:focus {
+  outline: none;
+  border-color: var(--text-faint);
+}
+.wt-pick-create-go {
+  background: var(--surface-2);
+  color: var(--text-1);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.65rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.wt-pick-create-go:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wt-pick-create-go:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+/* Tiny destructive link at the bottom of the worktree picker: untracks
+   the repo from supergit entirely. Distinct from hiding individual
+   worktree rows. */
+.wt-pick-remove-repo {
+  display: block;
+  margin-top: 0.4rem;
+  width: 100%;
+  background: transparent;
+  color: #efaaaa;
+  border: 0;
+  padding: 0.35rem 0;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-align: center;
+  border-top: 1px dashed color-mix(in srgb, var(--surface-3) 70%, transparent);
+}
+.wt-pick-remove-repo:hover {
+  color: #ffcaca;
+}
+
+/* Brief highlight pulse when the picker scrolls to a worktree row. */
+@keyframes wt-row-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 50%, transparent); }
+  40%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand) 30%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.wt-row-pulse {
+  animation: wt-row-pulse 1.2s ease-out;
+  border-radius: var(--radius-md);
+}
+
+/* ------------------------------------------------------------------
+ * Branch picker rows + sort toggle (shares the agent-row base).
+ * ------------------------------------------------------------------ */
+.branch-sort-toggle {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-sm);
+  padding: 0.1rem 0.45rem;
+  font-size: 0.68rem;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.branch-sort-toggle:hover {
+  color: var(--text-1);
+  border-color: var(--text-faint);
+}
+/* Branch picker row: 3 cells (dot · name · local|remote). Override
+   .agent-row's session-popover grid. */
+.branch-row {
+  grid-template-columns: 12px auto 1fr;
+}
+.branch-row[disabled] {
+  cursor: default;
+}
+.branch-tick {
+  width: 12px;
+  text-align: center;
+  color: var(--brand);
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.branch-row-current .agent-row-name {
+  color: var(--text-1);
+  font-weight: 600;
+}

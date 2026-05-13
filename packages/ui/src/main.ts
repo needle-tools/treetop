@@ -1,11 +1,16 @@
 import { mount } from "svelte";
 import "./styles/tokens.css";
+import "./styles/base.css";
 import "./styles/popover.css";
 import "./styles/agent-row.css";
 import "./styles/new-session.css";
 import "./styles/source-control.css";
 import "./styles/zen-row.css";
 import "./styles/overlays.css";
+import "./styles/header.css";
+import "./styles/diagnostics.css";
+import "./styles/worktree-row.css";
+import "./styles/wt-picker.css";
 import App from "./App.svelte";
 
 // Distinguish the dev tab from the prod tab in the browser. Bookmark

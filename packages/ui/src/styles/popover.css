@@ -95,12 +95,38 @@
 }
 
 /* TUIs overview popover — wider than the actions default; the head
-   shows "Active TUIs" + a spinner. Inner-row styles (.tui-row-static,
-   .tui-stats, .tui-kill-x) live in App.svelte since they target slot
-   content rendered there. */
+   shows "Active TUIs" + a spinner. */
 .tuis-popover {
   width: 540px;
   max-width: 90vw;
+}
+.tui-row-static {
+  cursor: default;
+  /* 4 grid columns: icon (fixed 16px) · name (auto) · stats (auto)
+     · × (fixed 18px). Fixed widths on the icon and × cells keep them
+     from collapsing into adjacent text when content is short. */
+  grid-template-columns: 16px auto auto 18px;
+  justify-content: end;
+}
+.tui-row-static:hover {
+  background: var(--surface-2);
+}
+/* Stats are mono + tabular so columns of digits line up across rows. */
+.tui-stats {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+/* X always reserves the 18px column (no layout shift between hover
+   states), revealed on row hover like the agents popover's × is on
+   hover of a dimmed row. */
+.tui-row-static:hover .tui-kill-x {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tui-kill-x:hover {
+  color: var(--error-text);
+  background: var(--error-bg);
 }
 
 /* Worktree picker popover. */

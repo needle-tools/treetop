@@ -1,0 +1,172 @@
+/*
+ * Diagnostics rows — the Recent-Actions list and the Events / Errors
+ * list rendered inside their popovers. Each row family has its own
+ * grid layout; the popover shells live in styles/popover.css.
+ *
+ * Lives in styles/ (global) so a future EventsList.svelte / ErrorList.svelte
+ * extraction can own this without rewiring CSS scoping. See plans/PLAN.md
+ * → "App.svelte refactor (componentization)".
+ */
+
+/* ------------------------------------------------------------------
+ * Recent actions list (inside the .actions-popover).
+ * ------------------------------------------------------------------ */
+.events {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.events > li {
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+}
+.events > li.undone {
+  opacity: 0.55;
+}
+.ev-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+.ev-type {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.ev-time {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.ev-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+}
+
+/* Actor chips (user / agent / supergit). */
+.actor {
+  font-size: 0.68rem;
+  padding: 0.08rem 0.45rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.actor-user {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue-text);
+}
+.actor-agent {
+  background: var(--chip-purple-bg);
+  color: var(--chip-purple-text);
+}
+.actor-supergit {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+/* Undo / redo button on a reversible event. */
+.undo {
+  margin-left: auto;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.72rem;
+  background: var(--surface-2);
+}
+.undo:hover {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange-text);
+}
+
+/* ------------------------------------------------------------------
+ * Errors / diagnostics list (inside the .events-popover).
+ * ------------------------------------------------------------------ */
+.events-clear {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+}
+.err-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.err-list > li {
+  border-top: 1px solid var(--surface-2);
+}
+.err-list > li:first-child {
+  border-top: 0;
+}
+.err-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 5.5rem 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.2rem;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.err-row:hover {
+  background: var(--surface-2);
+}
+.err-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-3);
+  text-align: center;
+}
+.err-kind-server { background: color-mix(in srgb, var(--error-bg, #5a1d1d) 70%, transparent); color: var(--error-text, #ffb4ad); }
+.err-kind-fetch { background: color-mix(in srgb, #5a4500 70%, transparent); color: #ffd58a; }
+.err-kind-rejection,
+.err-kind-uncaught { background: color-mix(in srgb, #1d3a5a 70%, transparent); color: #a8d0ff; }
+.err-msg {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.err-detail {
+  padding: 0.2rem 0.4rem 0.6rem 0.4rem;
+  font-size: 0.75rem;
+}
+.err-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-3);
+  margin-bottom: 0.3rem;
+}
+.err-route {
+  background: var(--surface-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm, 4px);
+}
+.err-status {
+  background: color-mix(in srgb, var(--error-bg, #5a1d1d) 60%, transparent);
+  color: var(--error-text, #ffb4ad);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm, 4px);
+}
+.err-stack {
+  background: var(--surface-2);
+  color: var(--text-2);
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm, 4px);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  margin: 0.2rem 0 0 0;
+}
