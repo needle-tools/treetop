@@ -24,6 +24,7 @@
    */
   import { createEventDispatcher } from "svelte";
   import DiffViewer from "./DiffViewer.svelte";
+  import { pendingDiffLoad, type DiffTab } from "./source-control";
 
   interface FileStatus {
     staged: number;
@@ -59,7 +60,6 @@
 
   const dispatch = createEventDispatcher<{ toggle: void }>();
 
-  type DiffTab = "workdir" | "staged";
   const COMMITS_BATCH = 50;
   const FULL_FILE_CONTEXT = 99999;
   const DEFAULT_CONTEXT = 2;
@@ -93,28 +93,43 @@
   $: void onExpandedChange(expanded, wt.path);
   $: void onFsChange(fsChangeKey, wt.path);
 
+  /** Single source of truth for "do we need to (re)fetch the diff right
+   *  now?" Called from every lifecycle transition that could leave the
+   *  cache out of sync — pane expanded, fs_change cleared it, user
+   *  switched tabs. The rule itself lives in `source-control.ts` so a
+   *  future UI refactor can't accidentally desync the three call sites.
+   *  See `packages/ui/test/source-control.test.ts` for the spec. */
+  function ensureActiveDiffLoaded(): void {
+    const next = pendingDiffLoad({ expanded, diffTab, workdirDiff, stagedDiff });
+    if (next === "workdir") void loadWorkdirDiff();
+    else if (next === "staged") void loadStagedDiff();
+  }
+
   async function onExpandedChange(open: boolean, path: string) {
     const key = `${path}|${open}`;
     if (lastExpandedPath === key) return;
     lastExpandedPath = key;
     if (!open) return;
     // First time opening for this worktree-path: pull the initial
-    // commits list and default the tab to "workdir" (which auto-fetches
-    // the diff).
+    // commits list. The diff fetch is handled by ensureActiveDiffLoaded
+    // below so the re-open path (where hasTabBeenSet is already true
+    // and the cache may have been cleared by a fs_change-while-collapsed)
+    // converges correctly.
     if (commits === undefined) await loadCommitsInitial();
-    if (!hasTabBeenSet) setDiffTab("workdir");
+    hasTabBeenSet = true;
+    ensureActiveDiffLoaded();
   }
 
   async function onFsChange(_key: number, _path: string) {
     if (_key === lastFsChangeKey) return;
     lastFsChangeKey = _key;
-    // Drop cached diffs; the active-tab refetch below repopulates
-    // whichever one the user is looking at.
+    // Drop cached diffs; the converge step refetches whichever tab the
+    // user is currently looking at. When the pane is collapsed,
+    // ensureActiveDiffLoaded is a no-op — the next expand will trigger
+    // the load through onExpandedChange.
     workdirDiff = undefined;
     stagedDiff = undefined;
-    if (!expanded) return;
-    if (diffTab === "workdir") void loadWorkdirDiff();
-    else void loadStagedDiff();
+    ensureActiveDiffLoaded();
   }
 
   let hasTabBeenSet = false;
@@ -165,8 +180,7 @@
   function setDiffTab(tab: DiffTab) {
     diffTab = tab;
     hasTabBeenSet = true;
-    if (tab === "workdir" && workdirDiff === undefined) void loadWorkdirDiff();
-    if (tab === "staged" && stagedDiff === undefined) void loadStagedDiff();
+    ensureActiveDiffLoaded();
   }
 
   /** ±2 lines ↔ Full file: drop cached diffs and refetch with the
