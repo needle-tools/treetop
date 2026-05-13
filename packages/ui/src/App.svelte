@@ -388,6 +388,12 @@
               : x,
           ),
         };
+        // Mark the now-defunct `__attached__:shell:<id>` form as
+        // dismissed so a UI reload while the daemon's 30s grace timer
+        // is still alive doesn't have restoreLiveShells add the live
+        // attachment alongside the transcript — the duplicate-column +
+        // "always opens in TUI mode after reload" bug.
+        dismissShellSource(`__attached__:shell:${termId}`);
       }
       // Claude / Codex / Copilot: no source-swap. The column keeps its
       // existing `__new__:claude:…` / `__attached__:codex:…` source;
@@ -649,10 +655,29 @@
         currentCwd?: string;
         alive: boolean;
       }>;
+      const liveTermIds = new Set(
+        list.filter((sh) => sh.alive).map((sh) => sh.termId),
+      );
       const next = { ...openSessionsByWt };
+      // Step 1: drop `__attached__:shell:<termId>` entries whose termId
+      // is no longer live. After a daemon restart the PTY ids change,
+      // so the persisted attachment from before the restart points at a
+      // dead id — keeping it AND adding the new live one shows the user
+      // two duplicate columns ("i had one, reloaded now i have two"
+      // bug). Stale attachments without a live counterpart get dropped
+      // entirely; the worktree session picker can still reopen the
+      // past-shell transcript if the user wants it.
+      for (const wt of Object.keys(next)) {
+        const before = next[wt] ?? [];
+        const after = before.filter((s) => {
+          if (!s.source.startsWith("__attached__:shell:")) return true;
+          const termId = s.source.split(":").pop();
+          return !!termId && liveTermIds.has(termId);
+        });
+        if (after.length !== before.length) next[wt] = after;
+      }
+      // Step 2: add live shells that aren't already in the list.
       for (const sh of list) {
-        // Past shells aren't "live" — they should only appear via the
-        // worktree session picker, not auto-open on every reload.
         if (!sh.alive) continue;
         const source = `__attached__:shell:${sh.termId}`;
         // Skip terminals the user explicitly closed before reload.
