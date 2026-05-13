@@ -409,17 +409,81 @@ button.branch-button:hover {
   font-family: ui-monospace, monospace;
   letter-spacing: 0.02em;
 }
-/* Ahead = local commits not pushed yet. Green = actionable. */
+/* Ahead = local commits not pushed yet. Green = actionable.
+ *
+ * The badge pulses (ripple-out box-shadow) AND blinks (background
+ * oscillates between the resting chip-green-bg and a brighter mix)
+ * so unpushed work is impossible to overlook from across the
+ * dashboard. The ripple uses an expanding box-shadow that fades from
+ * a saturated green halo to transparent — gives the badge a steady
+ * "broadcasting" feel without moving the layout (no transform). */
+@keyframes ab-ahead-pulse {
+  0% {
+    box-shadow: 0 0 0 0
+      color-mix(in srgb, var(--chip-green-text) 75%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 10px
+      color-mix(in srgb, var(--chip-green-text) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0
+      color-mix(in srgb, var(--chip-green-text) 0%, transparent);
+  }
+}
+@keyframes ab-ahead-blink {
+  0%, 100% {
+    background: var(--chip-green-bg);
+  }
+  50% {
+    background: color-mix(
+      in srgb,
+      var(--chip-green-bg) 35%,
+      var(--chip-green-text) 65%
+    );
+  }
+}
 .ab-ahead {
   background: var(--chip-green-bg);
   color: var(--chip-green-text);
+  animation:
+    ab-ahead-pulse 1.4s ease-out infinite,
+    ab-ahead-blink 1.4s ease-in-out infinite;
 }
 /* Stale variant: the oldest unpushed commit is older than
    STALE_AHEAD_HOURS. Keep green so behind=orange stays distinct, but
    brighten + thicken the outline so the pill reads as a nudge. */
 .ab-ahead-stale {
   color: color-mix(in srgb, var(--chip-green-text) 100%, white 15%);
-  box-shadow: 0 0 0 1px currentColor;
+}
+.ab-ahead-stale::before {
+  /* Static outline on stale (the pulse already lives on box-shadow,
+   * so we layer the stale ring via a pseudo-element border instead
+   * of fighting the animation). */
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+.ab-ahead {
+  position: relative;
+}
+/* Respect users who've asked for less motion: drop the animations
+ * but keep the brighter background-mix as a static cue so unpushed
+ * work is still visually distinct. */
+@media (prefers-reduced-motion: reduce) {
+  .ab-ahead {
+    animation: none;
+    background: color-mix(
+      in srgb,
+      var(--chip-green-bg) 55%,
+      var(--chip-green-text) 45%
+    );
+    box-shadow: 0 0 0 1px
+      color-mix(in srgb, var(--chip-green-text) 50%, transparent);
+  }
 }
 /* Behind = upstream has commits you don't. Orange = needs attention. */
 .ab-behind {
@@ -506,6 +570,20 @@ button.branch-button:hover {
   text-decoration: underline dotted var(--text-3);
   text-underline-offset: 2px;
 }
+/* Orange text for "dirty + actionable" worktrees — set by App.svelte
+ * when there are unstaged / untracked files or unpushed commits. The
+ * goal is the same as the ↑N pulse: spot worktrees that need a push
+ * or a commit at a glance, across many rows. The "staged-only" case
+ * (everything committed, nothing left) stays muted — the work is
+ * already prepared, no nudge needed. */
+.status-urgent {
+  color: var(--chip-orange-text);
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--chip-orange-text) 55%,
+    transparent
+  );
+}
 
 .row-actions {
   margin-left: auto;
@@ -570,8 +648,15 @@ button.branch-button:hover {
 
 /* ------------------------------------------------------------------
  * Inline-new-worktree affordance + remove button on the row head.
+ *
+ * Class name is `.row-remove` (not `.remove`) on purpose: a bare
+ * `.remove` selector is unscoped and was matching every `.line.remove`
+ * inside Diff.svelte too, inflating every removed diff line to
+ * 1.05rem. Svelte's scoping appends a hash to the rule its component
+ * owns but it can't shield those elements from non-scoped global
+ * selectors elsewhere in the bundle. Keep this class diff-distinct.
  * ------------------------------------------------------------------ */
-.remove {
+.row-remove {
   background: transparent;
   color: var(--text-muted);
   padding: 0.15rem 0.5rem;
@@ -579,7 +664,7 @@ button.branch-button:hover {
   line-height: 1;
   flex: 0 0 auto;
 }
-.remove:hover {
+.row-remove:hover {
   background: var(--error-bg);
   color: var(--error-text);
 }

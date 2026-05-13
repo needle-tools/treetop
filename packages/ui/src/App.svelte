@@ -289,6 +289,56 @@
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
+  /** Cross-reference a TUI's `cwd` and `ownerId` against the loaded
+   *  `repos` + `activityByCwd` so the popover can show, per row:
+   *
+   *  - which **repo** the PTY belongs to (and the worktree branch)
+   *  - the **session title** (manualTitle > derived title > last user
+   *    message), looked up via ownerId against the worktree's agent
+   *    sessions
+   *  - the **last activity summary** the daemon's tail observed in
+   *    that cwd (most-recent JSONL line summary)
+   *
+   *  All four fields are best-effort — shells have no ownerId or
+   *  title, brand-new claude TUIs predate the JSONL appearing, etc. */
+  function tuiContext(p: TuiProc): {
+    repoName: string | null;
+    wtBranch: string | null;
+    title: string | null;
+    lastActivity: string | null;
+  } {
+    let repoName: string | null = null;
+    let wtBranch: string | null = null;
+    let title: string | null = null;
+    outer: for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        if (wt.path !== p.cwd) continue;
+        repoName =
+          (repo as { name?: string }).name ??
+          repo.path.split("/").filter(Boolean).pop() ??
+          null;
+        wtBranch = wt.branch ?? null;
+        if (p.ownerId) {
+          for (const a of wt.agents ?? []) {
+            if (a.sessionId === p.ownerId) {
+              title =
+                a.manualTitle ??
+                a.title ??
+                a.firstUserMessage ??
+                a.lastUserMessage ??
+                null;
+              break;
+            }
+          }
+        }
+        break outer;
+      }
+    }
+    const acts = activityByCwd[p.cwd] ?? [];
+    const lastActivity = acts.length > 0 ? (acts[0]?.summary ?? null) : null;
+    return { repoName, wtBranch, title, lastActivity };
+  }
+
   function prettyTuiName(p: TuiProc): string {
     if (p.agent === "claude") return "Claude";
     if (p.agent === "codex") return "Codex";
@@ -1809,6 +1859,7 @@
             {:else}
               <ul class="agents-list">
                 {#each tuiProcs as p (p.id)}
+                  {@const ctx = tuiContext(p)}
                   <li>
                     <div class="agent-row brand-{p.agent ?? 'shell'} tui-row-static">
                       {#if p.agent === "claude"}
@@ -1819,14 +1870,16 @@
                         <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
                       {/if}
                       <span class="agent-row-name">{prettyTuiName(p)}</span>
+                      {#if ctx.repoName}
+                        <span class="tui-repo muted small" title={p.cwd}>
+                          · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
+                        </span>
+                      {/if}
                       <span
                         class="tui-stats"
                         title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
                       >
                         {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}
-                      </span>
-                      <span>
-                        <!-- empty -->
                       </span>
                       <button
                         class="row-close tui-kill-x"
@@ -1835,6 +1888,14 @@
                         aria-label="Kill terminal"
                       >×</button>
                     </div>
+                    {#if ctx.title}
+                      <div class="tui-title" title={ctx.title}>{ctx.title}</div>
+                    {/if}
+                    {#if ctx.lastActivity}
+                      <div class="tui-last-activity muted small" title={ctx.lastActivity}>
+                        last: {ctx.lastActivity}
+                      </div>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -2407,7 +2468,7 @@
               on:click|stopPropagation={() => toggleZenRow(row.key)}
             >{zenRowKey === row.key ? "◱" : "▣"}</button>
             <button
-              class="remove"
+              class="row-remove"
               title={wt
                 ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
                 : "Remove this repo from supergit's workspace."}
