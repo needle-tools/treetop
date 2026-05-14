@@ -1,0 +1,52 @@
+// Shared "kill whatever's holding the dev ports" helper. Used by
+// `dev.ts` (pre-flight before starting) and `stop-dev.ts` (standalone
+// shutdown without restart). Crucially, this NEVER touches prod's port
+// (27787) — only the daemon's dev port (7777) and Vite (7779).
+//
+// If you ever bind something *intentionally* on 7777 / 7779 outside of
+// supergit dev, expect this to kill it.
+
+import { $ } from "bun";
+
+/** Dev daemon port. The daemon's runtime default is 7777, and dev.ts
+ *  passes SUPERGIT_PORT=<this value> explicitly to the spawned daemon
+ *  so it can't accidentally bind prod's 27787 if the parent shell
+ *  exports SUPERGIT_PORT (which is what kicked off the "dev never
+ *  starts" flake).
+ *
+ *  Override with `SUPERGIT_DEV_PORT=8777 bun dev` (and the matching
+ *  `SUPERGIT_DEV_UI_PORT` below for Vite) when you want to run two
+ *  dev sessions side-by-side from different worktrees. `stop-dev.ts`
+ *  picks up the same env, so killing the right ports only requires
+ *  exporting the same vars in whatever shell you run `bun stop-dev`
+ *  from. */
+export const DEV_DAEMON_PORT = Number(process.env.SUPERGIT_DEV_PORT ?? 7777);
+/** Vite dev-server port. Override with `SUPERGIT_DEV_UI_PORT=8779`. */
+export const DEV_UI_PORT = Number(process.env.SUPERGIT_DEV_UI_PORT ?? 7779);
+
+export async function killOnPort(port: number): Promise<void> {
+  // lsof exists on macOS and most Linux distros; on Windows this just
+  // no-ops which is fine — there's nothing to clean up there anyway.
+  const result = await $`lsof -ti :${port}`.quiet().nothrow();
+  const pids = result.stdout
+    .toString()
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  if (pids.length === 0) return;
+  console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
+  for (const pid of pids) {
+    await $`kill -9 ${pid}`.quiet().nothrow();
+  }
+  // Give the kernel a moment to release the socket before we bind it again.
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+/** Kill anything holding the dev ports. Idempotent. Prod (27787) is
+ *  deliberately not included — if it were, switching from `bun start`
+ *  to `bun dev` (or running `bun stop-dev` while inspecting prod)
+ *  would silently interrupt the running prod dashboard. */
+export async function killDevPorts(): Promise<void> {
+  await killOnPort(DEV_DAEMON_PORT);
+  await killOnPort(DEV_UI_PORT);
+}
