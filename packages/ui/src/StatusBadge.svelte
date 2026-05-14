@@ -7,16 +7,13 @@
    * everywhere so the edge-flow streak + heartbeat pulsate stay in
    * sync across surfaces.
    *
-   * Priority when more than one count is non-zero:
-   *     1. unpushed commits  ↑N  green (can pulsate — "ready to push")
-   *     2. behind upstream   ↓N  orange ("pull or merge")
-   *     3. dirty workdir     ~N  grey  ("uncommitted changes")
+   * Priority when more than one count is non-zero is implemented in
+   * the pure helper `./status-badge.ts` (testable without DOM).
    *
-   * Callers that want both ahead AND behind visible (expanded view)
-   * render two StatusBadge instances, each with only one count set.
-   *
-   * When all three are zero, renders nothing.
+   * When all three counts are zero, renders nothing.
    */
+
+  import { pickBadgeKind } from "./status-badge";
 
   export let ahead = 0;
   export let behind = 0;
@@ -27,13 +24,15 @@
    *  older than BLINK_AHEAD_MINUTES; previewable with the `?pulsate=1`
    *  debug param in App.svelte. No-op for behind / dirty. */
   export let pulsate = false;
+
+  $: kind = pickBadgeKind(ahead, behind, dirty);
 </script>
 
-{#if ahead > 0}
+{#if kind === "ahead"}
   <span class="status-badge status-badge-ahead" class:pulsate>↑{ahead}</span>
-{:else if behind > 0}
+{:else if kind === "behind"}
   <span class="status-badge status-badge-behind">↓{behind}</span>
-{:else if dirty > 0}
+{:else if kind === "dirty"}
   <span class="status-badge status-badge-dirty">~{dirty}</span>
 {/if}
 

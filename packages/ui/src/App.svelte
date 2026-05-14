@@ -9,6 +9,8 @@
   import Tooltip from "./Tooltip.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import StatusBadge from "./StatusBadge.svelte";
+  import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
+  import { planReveal, type RevealMode } from "./reveal-session";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -1284,30 +1286,39 @@
       rowFolded = { ...rowFolded, [rowKey]: false };
     }
   }
-  /** Click handler for the latest-session badge + picker entries.
-   *  Folded rows treat the click as an unambiguous "reveal": unfold +
-   *  ensure the session is open (never close on first click — the user
-   *  can't see whether it's open or not from a folded row, so toggle
-   *  semantics surprise them) + scroll the strip to the session +
-   *  flash a 2s outline so the eye lands on it. Expanded rows keep
-   *  the normal toggle. */
+  /** Apply a plan from `planReveal()`: drives the imperative helpers
+   *  off the boolean fields. The decision matrix itself lives in
+   *  `./reveal-session` so it's unit-testable. `toggleOpenSessionInWt`
+   *  handles both directions, so when the plan asks for either `open`
+   *  or `close` we call it; pre-state guards in `planReveal` ensure we
+   *  never ask for a no-op direction. */
+  function applyRevealPlan(
+    rowKey: string,
+    wtPath: string,
+    s: OpenSession,
+    mode: RevealMode,
+  ): void {
+    const plan = planReveal({
+      rowFolded: !!rowFolded[rowKey],
+      isOpen: isOpenInWt(wtPath, s.source),
+      mode,
+    });
+    if (plan.unfold) unfoldRowIfFolded(rowKey);
+    if (plan.open || plan.close) toggleOpenSessionInWt(wtPath, s);
+    if (plan.scrollAndFlash) void scrollToAndFlashSession(wtPath, s.source);
+  }
+  /** Click handler for picker entries. Folded rows: never close on
+   *  first click (the user can't see what's open); expanded rows:
+   *  classic toggle. */
   function revealOrToggleSession(
     rowKey: string,
     wtPath: string,
     s: OpenSession,
   ): void {
-    if (!rowFolded[rowKey]) {
-      toggleOpenSessionInWt(wtPath, s);
-      return;
-    }
-    const wasOpen = isOpenInWt(wtPath, s.source);
-    unfoldRowIfFolded(rowKey);
-    if (!wasOpen) toggleOpenSessionInWt(wtPath, s);
-    void scrollToAndFlashSession(wtPath, s.source);
+    applyRevealPlan(rowKey, wtPath, s, "reveal-or-toggle");
   }
   /** Click handler for the row-head "most recent session" badge. Never
-   *  closes the session — always brings it into view: unfold if folded,
-   *  open it if it wasn't open, then scroll + flash. The `×` on the
+   *  closes the session — always brings it into view. The `×` on the
    *  session column is the only path to close it; the badge is a
    *  one-way "show me this" affordance. */
   function revealSession(
@@ -1315,9 +1326,7 @@
     wtPath: string,
     s: OpenSession,
   ): void {
-    unfoldRowIfFolded(rowKey);
-    if (!isOpenInWt(wtPath, s.source)) toggleOpenSessionInWt(wtPath, s);
-    void scrollToAndFlashSession(wtPath, s.source);
+    applyRevealPlan(rowKey, wtPath, s, "reveal");
   }
   /** After unfold (and any state mutation), wait for Svelte to flush
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
@@ -1776,17 +1785,9 @@
     return `${Math.floor(d / 86400)}d ago`;
   }
 
-  /** The double-blink animation on the ↑N pill only kicks in once the
-   *  oldest unpushed commit has been sitting locally for this long.
-   *  Fresh commits stay calm (you just made them; you know they're
-   *  there); the nudge starts when the work has been parked. */
-  const BLINK_AHEAD_MINUTES = 20;
-
-  function aheadAged(b: BranchStatus): boolean {
-    if (!b.aheadOldestTime) return false;
-    const ageM = (Date.now() - Date.parse(b.aheadOldestTime)) / 60_000;
-    return ageM >= BLINK_AHEAD_MINUTES;
-  }
+  // BLINK_AHEAD_MINUTES + aheadAged() live in ./ahead-age (imported
+  // above) so the threshold math is unit-testable without standing up
+  // the component.
 
   function aheadTooltip(b: BranchStatus): string {
     const count = b.ahead;
