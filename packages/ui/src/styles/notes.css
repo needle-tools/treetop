@@ -4,9 +4,18 @@
    slight per-note rotation is derived from the id so it doesn't jitter
    on refetch. */
 
+/* Layer is absolutely positioned at the document's top-left (NOT
+   `position: fixed`) so notes inside scroll natively with the page.
+   `fixed` + JS-driven position updates produced a one-frame lag
+   between the browser's scroll paint and our recomputed style — the
+   notes appeared to "drift" behind the scroll. With absolute
+   positioning the browser handles scroll movement on the compositor;
+   our JS only updates positions on real layout changes (row
+   add/remove, fold/unfold, edit-resize). */
 .sticky-layer {
-  position: fixed;
-  inset: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
   pointer-events: none;
   z-index: 900;
 }
@@ -17,7 +26,8 @@
    removing it from layout + hit-testing. */
 .sticky-host {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   pointer-events: none;
 }
 .sticky-host.hidden {
@@ -25,7 +35,11 @@
 }
 
 .sticky {
-  position: fixed;
+  /* Absolute (not fixed) so the note scrolls natively with the
+     document. Position values (left/top) are document coordinates
+     because the parent `.sticky-layer` is `position: absolute` at
+     the document's top-left. */
+  position: absolute;
   width: 240px;
   min-height: 120px;
   background: linear-gradient(180deg, #fff4a8 0%, #ffec80 100%);

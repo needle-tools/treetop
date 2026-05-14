@@ -93,8 +93,14 @@
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button")) return;
     dragging = true;
-    dragDx = e.clientX - x;
-    dragDy = e.clientY - y;
+    // x/y are document coordinates (layer is position: absolute at
+    // doc top-left). Translate the mouse event's viewport-relative
+    // client coords to doc coords by adding the page scroll. That
+    // way a user who scrolls *while dragging* still has the note
+    // track the cursor correctly — both dragDx and the live mouse
+    // position read scroll, so the diff stays consistent.
+    dragDx = e.clientX + window.scrollX - x;
+    dragDy = e.clientY + window.scrollY - y;
     dispatch("focus", { id: note.id });
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
@@ -103,8 +109,8 @@
 
   function onMouseMove(e: MouseEvent): void {
     if (!dragging) return;
-    const nx = Math.max(0, e.clientX - dragDx);
-    const ny = Math.max(0, e.clientY - dragDy);
+    const nx = Math.max(0, e.clientX + window.scrollX - dragDx);
+    const ny = Math.max(0, e.clientY + window.scrollY - dragDy);
     dispatch("move", { id: note.id, x: nx, y: ny });
   }
 

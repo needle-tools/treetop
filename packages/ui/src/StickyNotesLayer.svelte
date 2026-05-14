@@ -90,20 +90,19 @@
    *  note "hangs" from the row's bottom, like a Post-it taped to the
    *  underside of the repo card. */
   const NOTE_OVERLAP = 10;
-  /** Gap between the note's bottom edge and the next row's top edge —
-   *  the breathing room below the note before the dashboard resumes. */
-  const ROW_SAFETY = 6;
+  /** Gap between the note's bottom edge and the next row's top edge.
+   *  Generous so the strip of notes reads as visually detached from
+   *  the next repo, rather than crammed against it. */
+  const ROW_SAFETY = 24;
   /** Vertical wiggle bounds for the note's drag, relative to the
-   *  default `rowBottom - NOTE_OVERLAP` baseline. Asymmetric on purpose:
-   *  the user often wants to pull a note *up* so it tucks deeper into
-   *  the row (useful for short notes that should sit visually inside
-   *  the row band rather than hanging far below it), but rarely needs
-   *  to push one further down. The upward clamp is the lesser of
-   *  NOTE_WIGGLE_UP_PX and 20 % of the anchor row's height — short
-   *  rows can't be invaded by a giant upward drag. */
+   *  default `rowBottom - NOTE_OVERLAP` baseline. Both directions
+   *  scale with row height — short rows can't be invaded by a giant
+   *  drag, tall rows have room to play. The pixel ceilings keep
+   *  things sane on very tall rows. */
   const NOTE_WIGGLE_UP_PX = 100;
   const NOTE_WIGGLE_UP_PCT = 0.2;
-  const NOTE_WIGGLE_DOWN = 10;
+  const NOTE_WIGGLE_DOWN_PX = 100;
+  const NOTE_WIGGLE_DOWN_PCT = 0.2;
   // Pleasant micro-tilt range; deterministic per id so rerenders don't
   // jitter. Using charCode parity gives a stable -2°..+2° spread.
   function tiltFor(id: string): number {
@@ -224,12 +223,19 @@
       offsetX = DEFAULT_OFFSET_X_FRAC * r.width;
     }
     const offsetY = off?.offsetY ?? 0;
-    const maxX = Math.max(0, window.innerWidth - NOTE_W - 4);
-    const x = Math.min(Math.max(0, r.left + offsetX), maxX);
+    // Document coordinates — the layer is `position: absolute` at the
+    // document's top-left, so children that use these values scroll
+    // natively with the page. Translating viewport-relative rects to
+    // doc-relative is just `+ window.scrollX/Y` since getBoundingClientRect
+    // is viewport-relative.
+    const docLeft = r.left + window.scrollX;
+    const docBottom = r.bottom + window.scrollY;
+    const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
+    const x = Math.min(Math.max(0, docLeft + offsetX), maxX);
     // Default Y tucks the note's top under the row's bottom edge by
     // NOTE_OVERLAP px — that's where the "tape" pseudo-element sits.
     // offsetY adds the small per-note wiggle the user can drag.
-    const y = r.bottom - NOTE_OVERLAP + offsetY;
+    const y = docBottom - NOTE_OVERLAP + offsetY;
     return { x, y };
   }
 
@@ -310,7 +316,9 @@
       const created = (await res.json()) as NoteShape;
       // Derive an initial offsetXFrac so the note lands beneath the
       // clicked button. Storing the fraction means the spawned note
-      // tracks window resizes from the very first frame.
+      // tracks window resizes from the very first frame. originRect
+      // and rowRect are both viewport-relative (same coord system), so
+      // the diff is independent of scroll.
       const li = findAnchorLi(created);
       if (li) {
         const rowRect = li.getBoundingClientRect();
@@ -420,27 +428,27 @@
   }
 
   function handleMove(e: CustomEvent<{ id: string; x: number; y: number }>): void {
-    // Translate the proposed screen position back to offsets stored
-    // relative to the anchor row, so the note tracks the row on
-    // scroll / resize. X is freely user-controlled; Y is clamped to a
-    // small wiggle range around the row's bottom edge.
+    // e.detail.{x,y} arrive in document coordinates (StickyNote's
+    // drag handler adds window.scrollX/Y). Translate them back to
+    // row-relative offsets that survive scroll/resize: offsetXFrac
+    // is X relative to the row's width; offsetY is Y relative to the
+    // row's bottom edge, clamped to a small wiggle range.
     const note = notes.find((n) => n.id === e.detail.id);
     if (!note) return;
     const li = findAnchorLi(note);
     if (!li) return;
     const rowRect = li.getBoundingClientRect();
-    // Store horizontal position as a fraction of the row's width so
-    // it scales with window resizes. Allow a tiny slack range (just
-    // past the row's edges) so the user can drag right up to the
-    // viewport's edge without the value snapping back.
+    const rowDocLeft = rowRect.left + window.scrollX;
+    const rowDocBottom = rowRect.bottom + window.scrollY;
     const rawFrac = rowRect.width > 0
-      ? (e.detail.x - rowRect.left) / rowRect.width
+      ? (e.detail.x - rowDocLeft) / rowRect.width
       : DEFAULT_OFFSET_X_FRAC;
     const offsetXFrac = Math.min(1, Math.max(0, rawFrac));
-    const baseY = rowRect.bottom - NOTE_OVERLAP;
+    const baseY = rowDocBottom - NOTE_OVERLAP;
     const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
+    const wiggleDown = Math.min(NOTE_WIGGLE_DOWN_PX, rowRect.height * NOTE_WIGGLE_DOWN_PCT);
     const offsetY = Math.min(
-      NOTE_WIGGLE_DOWN,
+      wiggleDown,
       Math.max(-wiggleUp, e.detail.y - baseY),
     );
     offsets = { ...offsets, [e.detail.id]: { offsetXFrac, offsetY } };
@@ -574,12 +582,18 @@
       const stickyRect = stickyEl.getBoundingClientRect();
       const liRect = li.getBoundingClientRect();
       // Margin so the next row's top sits at `note.bottom + safety`.
-      // `liRect.bottom` is unaffected by our own margin write
-      // (margin lives outside the border box), so this formula has
-      // no feedback loop. Includes per-note vertical wiggle
-      // automatically since `stickyRect.bottom` already shifts with
-      // offsetY.
-      const want = Math.max(0, stickyRect.bottom + ROW_SAFETY - liRect.bottom);
+      // Extra-safety = max(0, offsetY): the further the user has
+      // dragged a note *down* from its baseline, the bigger the gap
+      // to the next repo (so a note pulled far away from its repo
+      // doesn't crowd the next one). Notes wiggled upward leave the
+      // safety at the baseline ROW_SAFETY since their bottom edge
+      // is already higher up than the default position.
+      const offsetYPx = offsets[note.id]?.offsetY ?? 0;
+      const extraSafety = Math.max(0, offsetYPx);
+      const want = Math.max(
+        0,
+        stickyRect.bottom + ROW_SAFETY + extraSafety - liRect.bottom,
+      );
       const prev = need.get(li) ?? 0;
       if (want > prev) need.set(li, want);
     }
@@ -651,10 +665,11 @@
     _registerLayer(handleSpawn);
     void refresh();
 
-    // Capture-phase scroll catches every scrollable container in the
-    // dashboard tree, not just `window`. Same trick for resize so
-    // anything that re-flows the row affects us.
-    window.addEventListener("scroll", scheduleTick, { capture: true, passive: true });
+    // No scroll listener — the layer is `position: absolute` at the
+    // document's top-left, so notes inside it are part of the document
+    // flow and scroll natively on the compositor without any JS
+    // bookkeeping. Resize still needs a tick because the row positions
+    // relative to the document change when the viewport resizes.
     window.addEventListener("resize", scheduleTick);
 
     // MutationObserver picks up row add/remove, fold/unfold, picker
@@ -688,7 +703,6 @@
 
   onDestroy(() => {
     _unregisterLayer();
-    window.removeEventListener("scroll", scheduleTick, { capture: true } as any);
     window.removeEventListener("resize", scheduleTick);
     mutationObs?.disconnect();
     resizeObs?.disconnect();
