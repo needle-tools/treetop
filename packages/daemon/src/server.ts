@@ -36,6 +36,7 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
+import { NotesStore } from "./notes";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -86,6 +87,7 @@ const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
 const shells = await ShellsLog.open(WORKSPACE_PATH);
+const notes = await NotesStore.open(WORKSPACE_PATH);
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 console.log(`supergit daemon: listening on http://localhost:${PORT}`);
@@ -481,6 +483,10 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/errors", description: "list recent errors (server 5xx, browser fetch failures, uncaught exceptions). Optional ?limit=<n>." },
           { method: "POST", path: "/api/errors", body: { kind: "string?", source: "string?", message: "string", stack: "string?", route: "string?", method: "string?", status: "number?", extra: "object?" }, description: "report a browser-side error so it lands in the workspace errors.jsonl and the Events popover." },
           { method: "DELETE", path: "/api/errors", description: "clear the recorded error log" },
+          { method: "GET", path: "/api/notes", description: "list workspace notes (newest first). Optional ?anchorPrefix=<prefix> filters to notes whose anchors startsWith() the prefix (e.g. anchorPrefix=worktree:/abs/path to get every note pinned to a worktree)." },
+          { method: "POST", path: "/api/notes", body: { id: "string?", body: "string", anchors: "string[]?", tags: "string[]?" }, description: "create a new note as <workspace>/notes/<id>.md. id is auto-generated as <yyyy-mm-dd>-<hex8> if omitted." },
+          { method: "PUT", path: "/api/notes/:id", body: { body: "string?", anchors: "string[]?", tags: "string[]?" }, description: "update a note's body/anchors/tags; bumps updatedAt." },
+          { method: "DELETE", path: "/api/notes/:id", description: "delete a note file." },
           { method: "GET", path: "/mcp", description: "MCP server info" },
           { method: "POST", path: "/mcp", description: "MCP JSON-RPC: initialize, tools/list, tools/call" },
         ],
@@ -1430,6 +1436,19 @@ const server = Bun.serve<TermWsData, never>({
           } else if (original.type === "rename_repo") {
             const inv = original.inverse as { id: string; oldName: string };
             await workspace.renameRepo(inv.id, inv.oldName);
+          } else if (original.type === "create_note") {
+            const inv = original.inverse as { note: { id: string } };
+            await notes.remove(inv.note.id);
+          } else if (original.type === "remove_note") {
+            const inv = original.inverse as {
+              note: { id: string; body: string; anchors: string[]; tags: string[] };
+            };
+            await notes.create({
+              id: inv.note.id,
+              body: inv.note.body,
+              anchors: inv.note.anchors,
+              tags: inv.note.tags,
+            });
           } else {
             return json(
               { error: `no inverse handler for type: ${original.type}` },
@@ -1455,6 +1474,19 @@ const server = Bun.serve<TermWsData, never>({
           } else if (original.type === "rename_repo") {
             const p = original.payload as { id: string; newName: string };
             await workspace.renameRepo(p.id, p.newName);
+          } else if (original.type === "create_note") {
+            const inv = original.inverse as {
+              note: { id: string; body: string; anchors: string[]; tags: string[] };
+            };
+            await notes.create({
+              id: inv.note.id,
+              body: inv.note.body,
+              anchors: inv.note.anchors,
+              tags: inv.note.tags,
+            });
+          } else if (original.type === "remove_note") {
+            const inv = original.inverse as { note: { id: string } };
+            await notes.remove(inv.note.id);
           } else {
             return json(
               { error: `no redo handler for type: ${original.type}` },
@@ -1475,6 +1507,114 @@ const server = Bun.serve<TermWsData, never>({
           { error: String(e instanceof Error ? e.message : e) },
           { status: 500 },
         );
+      }
+    }
+
+    if (url.pathname === "/api/notes" && req.method === "GET") {
+      const anchorPrefix = url.searchParams.get("anchorPrefix") ?? undefined;
+      const list = await notes.list(
+        anchorPrefix !== null && anchorPrefix !== undefined && anchorPrefix.length > 0
+          ? { anchorPrefix }
+          : {},
+      );
+      return json(list);
+    }
+
+    if (url.pathname === "/api/notes" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | {
+            id?: unknown;
+            body?: unknown;
+            anchors?: unknown;
+            tags?: unknown;
+          }
+        | null;
+      if (!body || typeof body.body !== "string") {
+        return json(
+          { error: "body.body (string) is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        const note = await notes.create({
+          id: typeof body.id === "string" ? body.id : undefined,
+          body: body.body,
+          anchors: Array.isArray(body.anchors)
+            ? (body.anchors as unknown[]).filter(
+                (x): x is string => typeof x === "string",
+              )
+            : undefined,
+          tags: Array.isArray(body.tags)
+            ? (body.tags as unknown[]).filter(
+                (x): x is string => typeof x === "string",
+              )
+            : undefined,
+        });
+        const ev = await events.append({
+          type: "create_note",
+          actor: "user",
+          payload: { note },
+          inverse: { note },
+        });
+        broadcast("change", { kind: "note_create", id: note.id, eventId: ev.id });
+        return json({ ...note, eventId: ev.id }, { status: 201 });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 409 },
+        );
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/notes\/([^/]+)$/);
+      if (m && req.method === "PUT") {
+        const id = m[1]!;
+        const body = (await req.json().catch(() => null)) as
+          | { body?: unknown; anchors?: unknown; tags?: unknown }
+          | null;
+        if (!body) {
+          return json({ error: "JSON body required" }, { status: 400 });
+        }
+        try {
+          const note = await notes.update(id, {
+            body: typeof body.body === "string" ? body.body : undefined,
+            anchors: Array.isArray(body.anchors)
+              ? (body.anchors as unknown[]).filter(
+                  (x): x is string => typeof x === "string",
+                )
+              : undefined,
+            tags: Array.isArray(body.tags)
+              ? (body.tags as unknown[]).filter(
+                  (x): x is string => typeof x === "string",
+                )
+              : undefined,
+          });
+          broadcast("change", { kind: "note_update", id: note.id });
+          return json(note);
+        } catch (e) {
+          const msg = String(e instanceof Error ? e.message : e);
+          const status = /not found/.test(msg) ? 404 : 400;
+          return json({ error: msg }, { status });
+        }
+      }
+      if (m && req.method === "DELETE") {
+        const id = m[1]!;
+        // Read the full note before deletion so we have the inverse
+        // payload needed for undo. If it's missing, treat as 404
+        // identically to NotesStore.remove() returning false.
+        const existing = await notes.get(id);
+        if (!existing) return json({ error: "note not found" }, { status: 404 });
+        const removed = await notes.remove(id);
+        if (!removed) return json({ error: "note not found" }, { status: 404 });
+        const ev = await events.append({
+          type: "remove_note",
+          actor: "user",
+          payload: { id },
+          inverse: { note: existing },
+        });
+        broadcast("change", { kind: "note_delete", id, eventId: ev.id });
+        return json({ ok: true, eventId: ev.id });
       }
     }
 

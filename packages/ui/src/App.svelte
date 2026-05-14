@@ -11,6 +11,10 @@
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { planReveal, type RevealMode } from "./reveal-session";
+  import StickyNotesLayer from "./StickyNotesLayer.svelte";
+  import { spawnNote } from "./StickyNotesLayer.svelte";
+  import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
+  import AnchorPicker from "./AnchorPicker.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -192,6 +196,36 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  /** Orphan-notes tray: header button + popover listing notes whose
+   *  anchor doesn't match any currently-registered repo or worktree.
+   *  Only renders the button when there's at least one orphan. */
+  let notesTrayOpen = false;
+  let orphanReanchorFor: string | null = null;
+  /** Per-row "notes hidden" toggle state. When true, all notes
+   *  anchored to that row vanish via `.row-notes-hidden` (CSS
+   *  display: none) — the StickyNote components stay mounted so
+   *  their local edit state survives a hide/show round-trip. Keyed
+   *  by the row's stable key (worktree path or "<repoId>|none"). */
+  let notesHiddenByRow: Record<string, boolean> = {};
+  if (typeof window !== "undefined") {
+    try {
+      const raw = window.localStorage.getItem("supergit:notesHidden");
+      if (raw) notesHiddenByRow = JSON.parse(raw) ?? {};
+    } catch {
+      notesHiddenByRow = {};
+    }
+  }
+  $: if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        "supergit:notesHidden",
+        JSON.stringify(notesHiddenByRow),
+      );
+    } catch {}
+  }
+  function toggleNotesHidden(key: string): void {
+    notesHiddenByRow = { ...notesHiddenByRow, [key]: !notesHiddenByRow[key] };
+  }
   /** Per-row "zen" focus — one worktree row takes over the viewport,
    *  hiding the top bar and all other rows. `null` = no row focused.
    *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
@@ -1173,6 +1207,12 @@
    *  prop and refetches its cached diff when the value increments. */
   let fsChangeKey: Record<string, number> = {};
 
+  /** Bumped every time the daemon broadcasts a note_create / note_update
+   *  / note_delete SSE event. Passed to <StickyNotesLayer> so it
+   *  refetches /api/notes — picks up notes created in another tab or
+   *  edited by hand on disk. */
+  let notesChangeKey = 0;
+
   const expandedStore = new ExpandedStore(
     typeof window !== "undefined"
       ? window.localStorage
@@ -1689,6 +1729,26 @@
     }
   }
 
+  /** Cmd+Z / Cmd+Shift+Z target lookup. Pulls a fresh `/api/events`
+   *  snapshot before picking, so a Ctrl+Z pressed in the gap between
+   *  a POST/DELETE response and the SSE-triggered refresh still hits
+   *  the latest event instead of an older sibling. */
+  async function runWorkspaceUndoRedo(direction: "undo" | "redo"): Promise<void> {
+    let liveEvents: Event[];
+    try {
+      const res = await fetch("/api/events");
+      if (!res.ok) return;
+      liveEvents = (await res.json()) as Event[];
+    } catch {
+      liveEvents = events;
+    }
+    const target = direction === "redo"
+      ? liveEvents.find((ev) => ev.reversible && ev.undone)
+      : liveEvents.find((ev) => ev.reversible && !ev.undone);
+    if (!target) return;
+    await toggleEvent(target.id, direction);
+  }
+
   async function toggleEvent(id: string, toggle: "undo" | "redo") {
     error = "";
     try {
@@ -1767,6 +1827,25 @@
       } catch {
         return;
       }
+      if (
+        payload.kind === "note_create" ||
+        payload.kind === "note_update" ||
+        payload.kind === "note_delete"
+      ) {
+        notesChangeKey++;
+        return;
+      }
+      // Undo / redo toggles re-broadcast as `{ kind: "undo"|"redo",
+      // eventId }`. We don't know from the payload whether the
+      // underlying event was a note operation, so just bump the
+      // change key on every toggle — re-fetching /api/notes is cheap
+      // and avoids the "undo works after reload but UI doesn't
+      // update" bug where a restored note stayed invisible until
+      // the next page load.
+      if (payload.kind === "undo" || payload.kind === "redo") {
+        notesChangeKey++;
+        return;
+      }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
       fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
@@ -1840,7 +1919,109 @@
       const inv = ev.inverse as { oldName?: string };
       return `Renamed ${inv?.oldName ?? "?"} → ${p?.newName ?? "?"}`;
     }
+    if (ev.type === "create_note" || ev.type === "remove_note") {
+      const inv = ev.inverse as
+        | { note?: { body?: string; anchors?: string[] } }
+        | undefined;
+      const excerpt = noteExcerpt(inv?.note?.body);
+      const where = anchorLabel(inv?.note?.anchors?.[0]);
+      const verb = ev.type === "create_note" ? "Created note" : "Deleted note";
+      const head = excerpt ? `${verb} “${excerpt}”` : verb;
+      return where ? `${head} · ${where}` : head;
+    }
     return ev.type;
+  }
+
+  /** First non-empty line of a note's body, trimmed to a length that
+   *  fits comfortably inside the events popover's row. Falls back to
+   *  empty string so the caller can decide between "Removed note" and
+   *  "Removed note "blah"". */
+  function noteExcerpt(body: string | undefined): string {
+    if (!body) return "";
+    const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
+    const trimmed = firstLine.trim();
+    if (trimmed.length <= 40) return trimmed;
+    return trimmed.slice(0, 39) + "…";
+  }
+
+  /** Pretty-print an anchor string for the events list. Maps a
+   *  `worktree:<path>` anchor back to `<repo>/<branch>` by looking up
+   *  the current `repos` snapshot. Falls back to the basename of the
+   *  raw path when the repo's been removed since the event was logged
+   *  (events are historical; repos may have changed). */
+  function anchorLabel(anchor: string | undefined): string {
+    if (!anchor) return "";
+    if (anchor.startsWith("worktree:")) {
+      const path = anchor.slice("worktree:".length);
+      for (const r of repos) {
+        const wt = r.worktrees?.find((w) => w.path === path);
+        if (wt) return `${r.name ?? "?"} · ${wt.branch}`;
+      }
+      return path.split("/").filter(Boolean).pop() ?? path;
+    }
+    if (anchor.startsWith("repo:")) {
+      const path = anchor.slice("repo:".length);
+      const r = repos.find((r) => r.path === path);
+      if (r) return r.name ?? path;
+      return path.split("/").filter(Boolean).pop() ?? path;
+    }
+    if (anchor.startsWith("commit:")) {
+      return `commit ${anchor.slice("commit:".length).slice(0, 8)}`;
+    }
+    return anchor;
+  }
+
+  /** Notes whose first usable anchor doesn't resolve to any
+   *  currently-registered repo / worktree. These are the rows that
+   *  show up in the orphan-notes tray so the user can re-anchor or
+   *  delete them. */
+  $: orphanNotes = $notesAll.filter((n) => {
+    const a = n.anchors[0];
+    if (!a) return true;
+    if (a.startsWith("worktree:")) {
+      const path = a.slice("worktree:".length);
+      return !repos.some((r) =>
+        r.worktrees?.some((w) => w.path === path),
+      );
+    }
+    if (a.startsWith("repo:")) {
+      const path = a.slice("repo:".length);
+      return !repos.some((r) => r.path === path);
+    }
+    return false;
+  });
+
+  async function reassignOrphan(noteId: string, anchor: string): Promise<void> {
+    const note = $notesAll.find((n) => n.id === noteId);
+    if (!note) return;
+    // Keep auxiliary anchors (commit:..., session:...) when rewriting
+    // the primary placement.
+    const others = note.anchors.filter(
+      (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+    );
+    const nextAnchors = [anchor, ...others];
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anchors: nextAnchors }),
+      });
+      if (!res.ok) return;
+      orphanReanchorFor = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function deleteOrphan(noteId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
   }
 
   function relTime(iso: string): string {
@@ -2196,8 +2377,35 @@
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
         zenRowKey = null;
       }
+      // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
+      // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input
+      // / textarea / contentEditable is focused so the user's local
+      // text-undo still works while editing a sticky note or a form.
+      // `e.code === "KeyZ"` instead of `e.key` so non-QWERTY layouts
+      // and Caps-Lock states still trigger reliably.
+      const mod = e.metaKey || e.ctrlKey;
+      const isUndo = mod && !e.altKey && !e.shiftKey && e.code === "KeyZ";
+      const isRedo =
+        (mod && !e.altKey && e.shiftKey && e.code === "KeyZ") ||
+        (mod && !e.altKey && !e.shiftKey && e.code === "KeyY");
+      if (!isUndo && !isRedo) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        t?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      void runWorkspaceUndoRedo(isRedo ? "redo" : "undo");
     };
-    document.addEventListener("keydown", handleKey);
+    // Window-level capture so this fires before any descendant handlers
+    // can stopPropagation the keydown — which used to happen when a
+    // popover swallowed Cmd+Z on its way to the document listener.
+    window.addEventListener("keydown", handleKey, { capture: true });
     // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
     // when the user has open sessions (claude/codex chats, terminals).
     // No prompt on an empty dashboard so a fresh reload stays silent.
@@ -2224,7 +2432,7 @@
     const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
     return () => {
       document.removeEventListener("click", handleDocClick);
-      document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
       stopTuiPolling();
       unsubStream();
@@ -2336,6 +2544,61 @@
           </Popover>
         {/if}
       </div>
+
+      {#if orphanNotes.length > 0}
+        <div class="actions-anchor notes-tray-anchor">
+          <button
+            class="actions-btn"
+            class:open={notesTrayOpen}
+            on:click={() => (notesTrayOpen = !notesTrayOpen)}
+            title={`${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`}
+          >
+            Notes
+            <span class="count">{orphanNotes.length}</span>
+          </button>
+          {#if notesTrayOpen}
+            <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
+              <span slot="head">Orphaned notes</span>
+              <ul class="orphan-list">
+                {#each orphanNotes as n (n.id)}
+                  <li class="orphan-row">
+                    <div class="orphan-summary">
+                      <span class="orphan-body" title={n.body}>
+                        {noteExcerpt(n.body) || "(empty)"}
+                      </span>
+                      <span class="orphan-anchor" title={n.anchors.join("\n")}>
+                        ⚓ {n.anchors[0] ?? "no anchor"}
+                      </span>
+                    </div>
+                    <div class="orphan-actions">
+                      <button
+                        class="undo"
+                        on:click={() =>
+                          (orphanReanchorFor =
+                            orphanReanchorFor === n.id ? null : n.id)}
+                      >Re-anchor…</button>
+                      <button
+                        class="undo"
+                        on:click={() => void deleteOrphan(n.id)}
+                        title="Delete (an Undo toast lets you bring it back)"
+                      >Delete</button>
+                    </div>
+                    {#if orphanReanchorFor === n.id}
+                      <AnchorPicker
+                        {repos}
+                        currentAnchor={n.anchors[0] ?? null}
+                        on:pick={(e) =>
+                          void reassignOrphan(n.id, e.detail.anchor)}
+                        on:cancel={() => (orphanReanchorFor = null)}
+                      />
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </Popover>
+          {/if}
+        </div>
+      {/if}
 
       <div class="actions-anchor">
         <button
@@ -2474,10 +2737,13 @@
       {#each rows as row (row.key)}
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
+        {@const noteAnchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`}
+        {@const noteCount = $notesCountByAnchor[noteAnchor] ?? 0}
         <li
           class="row"
           class:row-folded={rowFolded[row.key]}
           class:row-zen={zenRowKey === row.key}
+          class:row-notes-hidden={notesHiddenByRow[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
         >
           <div class="row-content">
@@ -2960,6 +3226,45 @@
               <span class="branch warn">no worktrees</span>
             {/if}
 
+            <!-- Three-piece notes tag, fused via flex like the
+                 repo-chip + color-swatch pair: count attachment on
+                 the LEFT (only when there's at least one note),
+                 `notes` toggle in the MIDDLE (CSS-only hide of this
+                 row's notes — components stay mounted), `+` add on
+                 the RIGHT. Same .new-wt dashed-tag styling as the
+                 worktrees button so the row's action group reads as
+                 a single family. -->
+            <span class="note-add-stack">
+              {#if noteCount > 0}
+                <span
+                  class="row-note-count"
+                  title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"}`}
+                >{noteCount}</span>
+              {/if}
+              <button
+                class="new-wt notes-toggle"
+                class:active={!notesHiddenByRow[row.key]}
+                title={notesHiddenByRow[row.key]
+                  ? "Show this row's sticky notes"
+                  : "Hide this row's sticky notes"}
+                on:click|stopPropagation={() => toggleNotesHidden(row.key)}
+              >notes</button>
+              <button
+                class="new-wt notes-add"
+                title={wt
+                  ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
+                  : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
+                on:click|stopPropagation={(e) => {
+                  // Un-hide first so the freshly-spawned note is visible.
+                  if (notesHiddenByRow[row.key]) {
+                    notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+                  }
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
+                  void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
+                }}
+              >+</button>
+            </span>
             <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
               <button
                 class="new-wt"
@@ -3447,6 +3752,8 @@
     </ul>
   {/if}
 </main>
+
+<StickyNotesLayer changeKey={notesChangeKey} {repos} />
 
 {#if dirtyCheckout}
   <div

@@ -1,0 +1,328 @@
+import { join } from "node:path";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  readdir,
+  unlink,
+  access,
+} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+
+export interface Note {
+  /** Filename-safe id (lowercase letters, digits, dashes). Also the
+   *  basename on disk: `<id>.md`. */
+  id: string;
+  /** Anchors are opaque strings with a type prefix:
+   *    repo:<reponame>/<relpath>[:<line>]   file or folder
+   *    commit:<sha>
+   *    worktree:<absolute-path>
+   *    session:<source>
+   *  Match by `startsWith(prefix)`. */
+  anchors: string[];
+  tags: string[];
+  /** ISO-8601 UTC. */
+  createdAt: string;
+  /** ISO-8601 UTC. Equal to createdAt on a freshly-created note. */
+  updatedAt: string;
+  /** Everything after the frontmatter block, with the leading newline
+   *  stripped and trailing whitespace trimmed. Standard markdown. */
+  body: string;
+}
+
+const NOTES_DIR = "notes";
+// Mirrors a valid filename slug. Lowercase keeps file lookups predictable
+// on case-sensitive filesystems and avoids two notes only differing by case.
+const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+function isValidId(id: string): boolean {
+  return typeof id === "string" && id.length > 0 && ID_RE.test(id);
+}
+
+/** Parse a note file's full text into a Note. Throws if frontmatter or
+ *  `id` is missing. Unknown frontmatter keys are ignored — forward-compat
+ *  with notes written by a newer version of supergit (or by hand). */
+export function parseNoteFile(raw: string): Note {
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  if (lines[0] !== "---") {
+    throw new Error("note file is missing YAML frontmatter");
+  }
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) {
+    throw new Error("note file frontmatter is unterminated");
+  }
+  const fmLines = lines.slice(1, end);
+  const fm = parseFrontmatter(fmLines);
+  const id = fm.scalars.get("id");
+  if (!id) throw new Error("note file frontmatter is missing `id`");
+  const createdAt = fm.scalars.get("createdAt") ?? "";
+  const updatedAt = fm.scalars.get("updatedAt") ?? createdAt;
+  const anchors = fm.lists.get("anchors") ?? [];
+  const tags = fm.lists.get("tags") ?? [];
+  const body = lines.slice(end + 1).join("\n").replace(/\s+$/g, "");
+  return { id, anchors, tags, createdAt, updatedAt, body };
+}
+
+interface ParsedFrontmatter {
+  scalars: Map<string, string>;
+  lists: Map<string, string[]>;
+}
+
+function parseFrontmatter(lines: string[]): ParsedFrontmatter {
+  const scalars = new Map<string, string>();
+  const lists = new Map<string, string[]>();
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (line.trim().length === 0) {
+      i++;
+      continue;
+    }
+    const colon = line.indexOf(":");
+    if (colon === -1 || /^\s/.test(line)) {
+      // Stray indented line at top level — skip.
+      i++;
+      continue;
+    }
+    const key = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim();
+    if (value === "") {
+      // Block list follows on subsequent `  - ` lines.
+      const items: string[] = [];
+      i++;
+      while (i < lines.length && /^\s+-\s/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\s+-\s+/, "").trim());
+        i++;
+      }
+      lists.set(key, items);
+      continue;
+    }
+    if (value.startsWith("[") && value.endsWith("]")) {
+      // Inline list: `tags: [a, b]`. Empty `[]` yields an empty array.
+      const inner = value.slice(1, -1).trim();
+      const items = inner.length === 0
+        ? []
+        : inner.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+      lists.set(key, items);
+      i++;
+      continue;
+    }
+    scalars.set(key, value);
+    i++;
+  }
+  return { scalars, lists };
+}
+
+/** Serialize a Note to the on-disk representation. Frontmatter keys are
+ *  emitted in a fixed order so diffs stay readable. */
+export function serializeNoteFile(note: Note): string {
+  const out: string[] = ["---"];
+  out.push(`id: ${note.id}`);
+  out.push(`createdAt: ${note.createdAt}`);
+  out.push(`updatedAt: ${note.updatedAt}`);
+  if (note.anchors.length === 0) {
+    out.push("anchors: []");
+  } else {
+    out.push("anchors:");
+    for (const a of note.anchors) out.push(`  - ${a}`);
+  }
+  if (note.tags.length === 0) {
+    out.push("tags: []");
+  } else {
+    out.push("tags:");
+    for (const t of note.tags) out.push(`  - ${t}`);
+  }
+  out.push("---");
+  out.push(note.body);
+  return out.join("\n");
+}
+
+export interface CreateInput {
+  id?: string;
+  body: string;
+  anchors?: string[];
+  tags?: string[];
+}
+
+export interface UpdateInput {
+  body?: string;
+  anchors?: string[];
+  tags?: string[];
+}
+
+export interface ListFilter {
+  /** Keep only notes that have at least one anchor whose string starts
+   *  with `anchorPrefix`. Mostly used to "find every note anchored
+   *  inside this worktree/repo" with prefixes like `repo:foo/` or
+   *  `worktree:/abs/path`. */
+  anchorPrefix?: string;
+}
+
+export class NotesStore {
+  private constructor(public readonly workspacePath: string) {}
+
+  static async open(workspacePath: string): Promise<NotesStore> {
+    return new NotesStore(workspacePath);
+  }
+
+  private dir(): string {
+    return join(this.workspacePath, NOTES_DIR);
+  }
+
+  private filePath(id: string): string {
+    return join(this.dir(), `${id}.md`);
+  }
+
+  private async ensureDir(): Promise<void> {
+    await mkdir(this.dir(), { recursive: true });
+  }
+
+  private async exists(id: string): Promise<boolean> {
+    try {
+      await access(this.filePath(id));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async list(filter: ListFilter = {}): Promise<Note[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.dir());
+    } catch {
+      return [];
+    }
+    const notes: Note[] = [];
+    for (const name of entries) {
+      if (!name.endsWith(".md")) continue;
+      const raw = await readFile(join(this.dir(), name), "utf-8").catch(
+        () => null,
+      );
+      if (raw === null) continue;
+      let note: Note;
+      try {
+        note = parseNoteFile(raw);
+      } catch {
+        continue;
+      }
+      if (filter.anchorPrefix !== undefined) {
+        const p = filter.anchorPrefix;
+        if (!note.anchors.some((a) => a.startsWith(p))) continue;
+      }
+      notes.push(note);
+    }
+    notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return notes;
+  }
+
+  async get(id: string): Promise<Note | null> {
+    if (!isValidId(id)) return null;
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath(id), "utf-8");
+    } catch {
+      return null;
+    }
+    try {
+      return parseNoteFile(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  async create(input: CreateInput): Promise<Note> {
+    if (typeof input.body !== "string") {
+      throw new Error("body must be a string");
+    }
+    let id: string;
+    if (input.id !== undefined) {
+      if (!isValidId(input.id)) {
+        throw new Error(
+          "id must match [a-z0-9][a-z0-9-]* (lowercase, dashes only)",
+        );
+      }
+      id = input.id;
+    } else {
+      id = generateId();
+    }
+    await this.ensureDir();
+    if (await this.exists(id)) {
+      throw new Error(`note already exists with id: ${id}`);
+    }
+    const now = new Date().toISOString();
+    const note: Note = {
+      id,
+      anchors: normalizeStringArray(input.anchors),
+      tags: normalizeStringArray(input.tags),
+      createdAt: now,
+      updatedAt: now,
+      body: input.body,
+    };
+    await writeFile(this.filePath(id), serializeNoteFile(note));
+    return note;
+  }
+
+  async update(id: string, input: UpdateInput): Promise<Note> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`note not found: ${id}`);
+    const hasAny =
+      input.body !== undefined ||
+      input.anchors !== undefined ||
+      input.tags !== undefined;
+    if (!hasAny) return existing;
+    const next: Note = {
+      ...existing,
+      body: input.body ?? existing.body,
+      anchors:
+        input.anchors !== undefined
+          ? normalizeStringArray(input.anchors)
+          : existing.anchors,
+      tags:
+        input.tags !== undefined
+          ? normalizeStringArray(input.tags)
+          : existing.tags,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(this.filePath(id), serializeNoteFile(next));
+    return next;
+  }
+
+  async remove(id: string): Promise<boolean> {
+    if (!isValidId(id)) return false;
+    try {
+      await unlink(this.filePath(id));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function normalizeStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const item of input) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (trimmed.length === 0) continue;
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function generateId(): string {
+  const now = new Date();
+  const yyyy = String(now.getUTCFullYear());
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  // 8 hex chars is plenty of entropy for a per-workspace notes dir.
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 8);
+  return `${yyyy}-${mm}-${dd}-${suffix}`;
+}

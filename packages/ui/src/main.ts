@@ -11,6 +11,7 @@ import "./styles/header.css";
 import "./styles/diagnostics.css";
 import "./styles/worktree-row.css";
 import "./styles/wt-picker.css";
+import "./styles/notes.css";
 import App from "./App.svelte";
 
 // Distinguish the dev tab from the prod tab in the browser. Bookmark

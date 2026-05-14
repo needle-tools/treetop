@@ -15,16 +15,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workspace, type Repo } from "../src/workspace";
 import { EventLog } from "../src/events";
+import { NotesStore } from "../src/notes";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-integration-"));
 }
 
-// Mirror of the server's undo handler for add_repo / remove_repo / rename_repo.
+// Mirror of the server's undo handler for add_repo / remove_repo / rename_repo
+// and create_note / remove_note. The notes-store dep is optional so existing
+// repo-only tests don't have to thread an empty notes object through.
 async function undoAction(
   ws: Workspace,
   events: EventLog,
   eventId: string,
+  notes?: NotesStore,
 ): Promise<void> {
   const ev = await events.findById(eventId);
   if (!ev) throw new Error("event not found");
@@ -41,6 +45,21 @@ async function undoAction(
   } else if (ev.type === "rename_repo") {
     const inv = ev.inverse as { id: string; oldName: string };
     await ws.renameRepo(inv.id, inv.oldName);
+  } else if (ev.type === "create_note") {
+    if (!notes) throw new Error("notes store required for create_note undo");
+    const inv = ev.inverse as { note: { id: string } };
+    await notes.remove(inv.note.id);
+  } else if (ev.type === "remove_note") {
+    if (!notes) throw new Error("notes store required for remove_note undo");
+    const inv = ev.inverse as {
+      note: { id: string; body: string; anchors: string[]; tags: string[] };
+    };
+    await notes.create({
+      id: inv.note.id,
+      body: inv.note.body,
+      anchors: inv.note.anchors,
+      tags: inv.note.tags,
+    });
   } else {
     throw new Error(`no inverse handler for ${ev.type}`);
   }
@@ -55,6 +74,7 @@ async function redoAction(
   ws: Workspace,
   events: EventLog,
   eventId: string,
+  notes?: NotesStore,
 ): Promise<void> {
   const ev = await events.findById(eventId);
   if (!ev) throw new Error("event not found");
@@ -71,6 +91,21 @@ async function redoAction(
   } else if (ev.type === "rename_repo") {
     const p = ev.payload as { id: string; newName: string };
     await ws.renameRepo(p.id, p.newName);
+  } else if (ev.type === "create_note") {
+    if (!notes) throw new Error("notes store required for create_note redo");
+    const inv = ev.inverse as {
+      note: { id: string; body: string; anchors: string[]; tags: string[] };
+    };
+    await notes.create({
+      id: inv.note.id,
+      body: inv.note.body,
+      anchors: inv.note.anchors,
+      tags: inv.note.tags,
+    });
+  } else if (ev.type === "remove_note") {
+    if (!notes) throw new Error("notes store required for remove_note redo");
+    const inv = ev.inverse as { note: { id: string } };
+    await notes.remove(inv.note.id);
   } else {
     throw new Error(`no redo handler for ${ev.type}`);
   }
@@ -197,5 +232,125 @@ describe("rename → undo → redo round-trip", () => {
 
     await redoAction(ws, events, ev.id);
     expect((await ws.listRepos())[0]?.name).toBe("FancyName");
+  });
+});
+
+// Note-create / note-remove flow exactly as the server's POST/DELETE
+// routes write it: every mutation appends an event with the full note
+// in `inverse` so the toggle handler can recreate or re-delete by id.
+// Anchored with this contract because Ctrl+Z in the UI calls into
+// /api/events/:id/undo on the latest reversible event — drift between
+// route writes and toggle reads would silently break "undo my delete".
+describe("create_note / remove_note → undo → redo round-trips", () => {
+  test("undoing a create_note removes the note; redo restores same content", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const events = await EventLog.open(dir);
+    const notes = await NotesStore.open(dir);
+
+    const note = await notes.create({
+      id: "n-1",
+      body: "hello",
+      anchors: ["worktree:/tmp/wt-a"],
+      tags: ["bug"],
+    });
+    const ev = await events.append({
+      type: "create_note",
+      actor: "user",
+      payload: { note },
+      inverse: { note },
+    });
+
+    expect(await notes.list()).toHaveLength(1);
+
+    await undoAction(ws, events, ev.id, notes);
+    expect(await notes.list()).toHaveLength(0);
+    expect((await events.findById(ev.id))?.undone).toBe(true);
+    expect((await events.findById(ev.id))?.redoable).toBe(true);
+
+    await redoAction(ws, events, ev.id, notes);
+    const after = await notes.list();
+    expect(after).toHaveLength(1);
+    expect(after[0]?.id).toBe("n-1");
+    expect(after[0]?.body).toBe("hello");
+    expect(after[0]?.anchors).toEqual(["worktree:/tmp/wt-a"]);
+    expect(after[0]?.tags).toEqual(["bug"]);
+    expect((await events.findById(ev.id))?.undone).toBe(false);
+  });
+
+  test("undoing a remove_note restores the same note (id + content + anchors + tags)", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const events = await EventLog.open(dir);
+    const notes = await NotesStore.open(dir);
+
+    const note = await notes.create({
+      id: "n-keep",
+      body: "**important**",
+      anchors: ["worktree:/tmp/wt-a", "commit:abc123"],
+      tags: ["followup", "xr"],
+    });
+
+    // Server route writes the full note into inverse so the undo
+    // handler can recreate it exactly.
+    const removed = await notes.remove(note.id);
+    expect(removed).toBe(true);
+    const ev = await events.append({
+      type: "remove_note",
+      actor: "user",
+      payload: { id: note.id },
+      inverse: { note },
+    });
+
+    expect(await notes.list()).toHaveLength(0);
+
+    await undoAction(ws, events, ev.id, notes);
+    const restored = await notes.get(note.id);
+    expect(restored).not.toBeNull();
+    expect(restored?.body).toBe("**important**");
+    expect(restored?.anchors).toEqual(["worktree:/tmp/wt-a", "commit:abc123"]);
+    expect(restored?.tags).toEqual(["followup", "xr"]);
+
+    await redoAction(ws, events, ev.id, notes);
+    expect(await notes.get(note.id)).toBeNull();
+  });
+
+  test("create → delete → undo-delete brings the note back; second undo (the create) removes it again", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const events = await EventLog.open(dir);
+    const notes = await NotesStore.open(dir);
+
+    // Mimic POST /api/notes: create + emit event.
+    const note = await notes.create({ id: "n-2", body: "first" });
+    const createEv = await events.append({
+      type: "create_note",
+      actor: "user",
+      payload: { note },
+      inverse: { note },
+    });
+
+    // Mimic DELETE /api/notes/:id: capture existing, remove, emit event.
+    const existing = await notes.get(note.id);
+    expect(existing).not.toBeNull();
+    await notes.remove(note.id);
+    const removeEv = await events.append({
+      type: "remove_note",
+      actor: "user",
+      payload: { id: note.id },
+      inverse: { note: existing! },
+    });
+
+    expect(await notes.list()).toHaveLength(0);
+
+    // Ctrl+Z target #1: the most recent reversible event is the
+    // remove_note — undo it, note comes back.
+    await undoAction(ws, events, removeEv.id, notes);
+    expect(await notes.list()).toHaveLength(1);
+
+    // Ctrl+Z target #2: now the latest not-undone reversible is the
+    // create_note — undo that too and the note is gone for real.
+    await undoAction(ws, events, createEv.id, notes);
+    expect(await notes.list()).toHaveLength(0);
   });
 });
