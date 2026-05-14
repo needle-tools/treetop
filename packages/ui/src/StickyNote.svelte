@@ -71,60 +71,87 @@
   let dragDy = 0;
   let textareaEl: HTMLTextAreaElement | null = null;
   let stickyEl: HTMLDivElement;
-  /** Drag-tilt physics: rotation added to the base `--tilt` while the
-   *  user is dragging horizontally, so the note feels like a piece of
-   *  paper trailing behind the cursor. We *accumulate* — each pixel
-   *  of horizontal travel adds `DRAG_SCALE` degrees in that direction.
-   *  No smoothing, no velocity decay: holding the note still keeps it
-   *  exactly where it is; moving steadily right or left builds up
-   *  rotation in that direction (clamped to ±30°). */
   let lastMouseX = 0;
-  let dragRotation = 0;
-  const DRAG_SCALE = 0.1;        // degrees per pixel of horizontal drag
-  const DRAG_ROTATION_MAX = 10;
 
-  /** Spring-physics swing on drag-release.
-   *  - `swingAngle` is an extra rotation delta added on top of the
-   *    persisted `rotation` after the user lifts the mouse.
-   *  - `swingVelocity` is its angular velocity in deg / frame.
-   *  - At mouseup we kick the spring with the trailing pointer
-   *    velocity (`velocityEma`); each frame Hooke pulls swingAngle
-   *    back to 0 and damping bleeds energy until both are tiny.
-   *  - Constants: stiffness 0.06 gives a ~12-frame natural period
-   *    (~200ms at 60fps), damping 0.85 lets it oscillate twice
-   *    before settling — feels paper-y, not bouncy. */
-  let velocityEma = 0;
-  let swingAngle = 0;
-  let swingVelocity = 0;
-  let swingRaf: number | null = null;
-  const VELOCITY_ALPHA = 0.4;
-  const SPRING_K = 0.06;
-  const SPRING_DAMPING = 0.85;
-  const SPRING_SETTLE = 0.05;
+  /** Pendulum physics. The note's drag-tilt is modelled as a bob
+   *  hanging from the grab point: when the pivot (cursor) accelerates
+   *  horizontally, the bob lags due to inertia; gravity pulls it
+   *  back toward vertical when the pivot moves at constant velocity
+   *  or stops. So:
+   *    - steady drag → no acceleration → bob hangs straight (no tilt);
+   *    - cursor speeds up / slows down / stops → acceleration spikes
+   *      → bob swings, then gravity restores it, oscillating with
+   *      damping until settled.
+   *  Each frame samples the pivot's doc-X (note.x + grab fraction ×
+   *  width), derives velocity and acceleration, and feeds the
+   *  acceleration into the pendulum equation
+   *    α = -GRAVITY · angle  −  INERTIA · pivotAccel
+   *  followed by a per-frame damping multiplier on ω. */
+  const GRAVITY = 0.01;            // restoring force per degree
+  const INERTIA = -0.2;            // angular accel per px/frame² of pivot
+  const PEND_DAMP = 0.8;          // per-frame velocity multiplier
+  const PEND_SETTLE = .5;        // angle AND velocity both below → stop rAF
+  /** Hard cap on the pendulum displacement so an absurd flick doesn't
+   *  send the note past the +90° / −90° point where small-angle
+   *  approximations stop making sense. */
+  const PEND_CAP = 25;
+  let pendulumAngle = 0;
+  let pendulumVelocity = 0;
+  let pivotXPrev = 0;
+  let pivotVelPrev = 0;
+  let pendulumActive = false;
+  let pendulumRaf: number | null = null;
 
-  function tickSwing(): void {
-    swingVelocity += -SPRING_K * swingAngle;
-    swingVelocity *= SPRING_DAMPING;
-    swingAngle += swingVelocity;
+  function tickPendulum(): void {
+    const w = stickyEl?.offsetWidth ?? 240;
+    const pivotX = x + grabXFrac * w;
+    const pivotV = pivotX - pivotXPrev;
+    const pivotA = pivotV - pivotVelPrev;
+    pivotXPrev = pivotX;
+    pivotVelPrev = pivotV;
+    const accel = -GRAVITY * pendulumAngle - INERTIA * pivotA;
+    pendulumVelocity += accel;
+    pendulumVelocity *= PEND_DAMP;
+    pendulumAngle = Math.max(
+      -PEND_CAP,
+      Math.min(PEND_CAP, pendulumAngle + pendulumVelocity),
+    );
     if (
-      Math.abs(swingAngle) < SPRING_SETTLE &&
-      Math.abs(swingVelocity) < SPRING_SETTLE
+      !dragging &&
+      Math.abs(pendulumAngle) < PEND_SETTLE &&
+      Math.abs(pendulumVelocity) < PEND_SETTLE
     ) {
-      swingAngle = 0;
-      swingVelocity = 0;
-      swingRaf = null;
+      pendulumAngle = 0;
+      pendulumVelocity = 0;
+      pendulumActive = false;
+      pendulumRaf = null;
       return;
     }
-    swingRaf = requestAnimationFrame(tickSwing);
+    pendulumRaf = requestAnimationFrame(tickPendulum);
   }
 
-  function stopSwing(): void {
-    if (swingRaf !== null) {
-      cancelAnimationFrame(swingRaf);
-      swingRaf = null;
+  function startPendulum(): void {
+    if (!pendulumActive) {
+      pendulumActive = true;
+      // Seed pivot tracking from the current state so the first frame
+      // doesn't fire a spurious acceleration spike from x ↔ 0.
+      const w = stickyEl?.offsetWidth ?? 240;
+      pivotXPrev = x + grabXFrac * w;
+      pivotVelPrev = 0;
     }
-    swingAngle = 0;
-    swingVelocity = 0;
+    if (pendulumRaf === null) {
+      pendulumRaf = requestAnimationFrame(tickPendulum);
+    }
+  }
+
+  function stopPendulum(): void {
+    if (pendulumRaf !== null) {
+      cancelAnimationFrame(pendulumRaf);
+      pendulumRaf = null;
+    }
+    pendulumActive = false;
+    pendulumAngle = 0;
+    pendulumVelocity = 0;
   }
   /** Grab point inside the note as a fraction of the box (0..1). Set
    *  on mousedown and used as the `transform-origin` so the rotation
@@ -158,7 +185,7 @@
     window.addEventListener("mousedown", onWindowDown);
     return () => {
       window.removeEventListener("mousedown", onWindowDown);
-      stopSwing();
+      stopPendulum();
     };
   });
 
@@ -203,12 +230,10 @@
     dragDx = newGx;
     dragDy = newGy;
     lastMouseX = e.clientX;
-    dragRotation = 0;
-    // User grabbed the note mid-swing → kill the spring so the new
-    // drag starts from a stable angle. Otherwise the in-flight swing
-    // would fight the cumulative rotation math.
-    stopSwing();
-    velocityEma = 0;
+    // Kick off the pendulum tick. If a previous gesture's pendulum is
+    // still settling, leave its current angle/velocity intact — the
+    // new motion just composes on top.
+    startPendulum();
 
     // Persist the new pivot. Also dispatch a move so the note shifts
     // its left/top to compensate for the transform-origin change —
@@ -228,20 +253,11 @@
 
   function onMouseMove(e: MouseEvent): void {
     if (!dragging) return;
-    // Cumulative tilt: each pixel of horizontal travel adds DRAG_SCALE
-    // degrees in the direction of motion. Holding the cursor still
-    // keeps the rotation exactly where it is; sweeping right or left
-    // builds it up further. Clamped so the combined persisted +
-    // in-drag rotation never exceeds ±DRAG_ROTATION_MAX.
-    const dx = e.clientX - lastMouseX;
+    // Note tilt is now driven by the pendulum sampling `x` per rAF
+    // tick — there's no per-mousemove cumulative input. The bob
+    // hangs straight during steady drag and only swings when the
+    // cursor accelerates or decelerates.
     lastMouseX = e.clientX;
-    // Track the trailing pointer velocity (smoothed) so we have it
-    // ready as the swing's initial kick on mouseup.
-    velocityEma = velocityEma * (1 - VELOCITY_ALPHA) + dx * VELOCITY_ALPHA;
-    const proposed = dragRotation + dx * DRAG_SCALE;
-    const minDelta = -DRAG_ROTATION_MAX - rotation;
-    const maxDelta = DRAG_ROTATION_MAX - rotation;
-    dragRotation = Math.max(minDelta, Math.min(maxDelta, proposed));
     const nx = Math.max(0, e.clientX + window.scrollX - dragDx);
     const ny = Math.max(0, e.clientY + window.scrollY - dragDy);
     dispatch("move", { id: note.id, x: nx, y: ny });
@@ -256,36 +272,17 @@
     // it was at when the user released. The clamp on every move
     // means `rotation + dragRotation` is already inside ±30, so the
     // outer clamp here is just defensive.
-    if (dragRotation !== 0) {
-      const next = Math.max(
-        -DRAG_ROTATION_MAX,
-        Math.min(DRAG_ROTATION_MAX, rotation + dragRotation),
-      );
-      dispatch("rotate", { id: note.id, rotation: next });
-    }
-    // Hand the trailing pointer velocity over to the swing physics.
-    // Threshold so a careful slow release doesn't trigger a tiny
-    // visible jitter; only a real flick wakes the spring.
-    const initialKick = velocityEma * DRAG_SCALE;
-    if (Math.abs(initialKick) > 0.3) {
-      stopSwing(); // in case a previous swing was still in flight
-      swingVelocity = initialKick;
-      swingAngle = 0;
-      swingRaf = requestAnimationFrame(tickSwing);
-    }
-    dragRotation = 0;
-    velocityEma = 0;
+    // Nothing to persist — pendulum is purely transient and decays
+    // to 0 on its own. The rAF loop self-terminates once angle and
+    // velocity are both under PEND_SETTLE.
   }
 
-  /** Composite tilt rendered in CSS = static jitter + persisted user
-   *  rotation + in-flight drag rotation + spring-swing overshoot.
-   *  Clamped to a slightly wider band than the drag cap so the
-   *  swing can momentarily overshoot the persisted rest angle
-   *  without snapping. */
-  $: displayedTilt = tilt + Math.max(
-    -DRAG_ROTATION_MAX - 8,
-    Math.min(DRAG_ROTATION_MAX + 8, rotation + dragRotation + swingAngle),
-  );
+  /** Composite tilt rendered in CSS = persisted user rotation (from
+   *  the rotation prop, set externally — undo restore, etc.) + the
+   *  static per-note jitter (`tilt`) + the live pendulum
+   *  displacement. Pendulum is transient and decays to 0; the
+   *  rotation prop is the long-term rest angle. */
+  $: displayedTilt = tilt + rotation + pendulumAngle;
 
   function startEdit(): void {
     draft = note.body;
