@@ -1209,6 +1209,15 @@
   );
   let rowFolded: Record<string, boolean> = {};
   let foldedHydrated = false;
+  /** Per-row latch: true once a row's session columns have been
+   *  shown with real layout at least once this page load. Drives the
+   *  first-unfold scroll-to-bottom in toggleRowFolded — rows that
+   *  started expanded already had their SessionView mount-time scroll
+   *  work, rows that started folded got `clientHeight = 0` and need
+   *  a re-scroll on first unfold. Subsequent fold/unfold cycles
+   *  preserve whatever scroll position the user left. */
+  let rowHasBeenShown: Record<string, boolean> = {};
+  let initialShownDone = false;
   /** Wall-clock tick (ms). Bumped every 3s in onMount. Used by the
    *  folded-row activity indicator to re-evaluate "any agent in this
    *  worktree had output in the last 10s?" without needing the daemon
@@ -1273,8 +1282,34 @@
         .map(([k]) => k),
     );
   }
-  function toggleRowFolded(rowKey: string) {
-    rowFolded = { ...rowFolded, [rowKey]: !rowFolded[rowKey] };
+  /** Once hydration + the first `rows` snapshot are both in hand,
+   *  seed rowHasBeenShown for rows that are already unfolded:
+   *  SessionView's mount-time scroll-to-bottom worked for those, so
+   *  later fold→unfold toggles should preserve whatever scroll
+   *  position the user left. Rows that were folded at load time
+   *  stay un-marked, so their first unfold triggers a scroll-to-
+   *  bottom. One-shot via `initialShownDone`. */
+  $: if (foldedHydrated && rows.length > 0 && !initialShownDone) {
+    const next = { ...rowHasBeenShown };
+    for (const row of rows) {
+      if (!rowFolded[row.key]) next[row.key] = true;
+    }
+    rowHasBeenShown = next;
+    initialShownDone = true;
+  }
+  function toggleRowFolded(rowKey: string, wtPath?: string | null) {
+    const wasFolded = !!rowFolded[rowKey];
+    rowFolded = { ...rowFolded, [rowKey]: !wasFolded };
+    // First-time unfold of a row that started folded at page load:
+    // any session columns inside it mounted with `display: none`, so
+    // their initial scroll-to-bottom ran against `clientHeight = 0`
+    // and parked at the top. Force-stick each .messages to its
+    // scrollHeight now that the row has real layout. Subsequent
+    // toggles see rowHasBeenShown = true and leave scroll alone.
+    if (wasFolded && wtPath && !rowHasBeenShown[rowKey]) {
+      rowHasBeenShown = { ...rowHasBeenShown, [rowKey]: true };
+      void stickAllSessionsInWtToBottom(wtPath);
+    }
   }
   /** Auto-expand a folded row. Called from any session-opening
    *  affordance (new agent, new terminal, latest-session button,
@@ -1303,7 +1338,18 @@
       isOpen: isOpenInWt(wtPath, s.source),
       mode,
     });
-    if (plan.unfold) unfoldRowIfFolded(rowKey);
+    if (plan.unfold) {
+      unfoldRowIfFolded(rowKey);
+      // Reveal-from-folded counts as the row's first showing — mark it
+      // so later chevron-toggle fold/unfold cycles preserve the user's
+      // scroll position instead of re-snapping every session to the
+      // bottom. scrollToAndFlashSession below handles the *clicked*
+      // column's scroll; this latch covers any sibling columns the
+      // user later reveals via toggle.
+      if (!rowHasBeenShown[rowKey]) {
+        rowHasBeenShown = { ...rowHasBeenShown, [rowKey]: true };
+      }
+    }
     if (plan.open || plan.close) toggleOpenSessionInWt(wtPath, s);
     if (plan.scrollAndFlash) void scrollToAndFlashSession(wtPath, s.source);
   }
@@ -1363,31 +1409,51 @@
       strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
-      // SessionView's first-render scroll-to-bottom ran with
-      // `clientHeight = 0` (the row was display:none when the column
-      // mounted), so the list stayed parked at scrollTop=0. Now that
-      // the row has real layout, force the messages list to the
-      // bottom so the user lands on the latest message.
-      //
-      // Markdown / code-block rendering runs ASYNC after the first
-      // paint, so `scrollHeight` keeps growing for a few hundred ms.
-      // A one-shot `scrollTop = scrollHeight` lands somewhere in the
-      // middle and leaves the latest message half-visible. ResizeObserver
-      // on `.messages` itself wouldn't fire (the container is capped at
-      // max-height: 50vh), so observe each .msg child — when their
-      // heights change as markdown renders, re-stick. Disconnect after
-      // 1.5s so we don't fight the user once they start scrolling.
       const messages = col.querySelector<HTMLElement>(".messages");
-      if (messages) {
-        const stick = () => {
-          messages.scrollTop = messages.scrollHeight;
-        };
-        stick();
-        const ro = new ResizeObserver(stick);
-        for (const child of Array.from(messages.children)) {
-          ro.observe(child as Element);
-        }
-        setTimeout(() => ro.disconnect(), 1500);
+      if (messages) stickMessagesToBottom(messages);
+    });
+  }
+  /** Park a SessionView's messages list at the bottom, then re-stick
+   *  as markdown / code-block renders flow in.
+   *
+   *  SessionView's first-render scroll-to-bottom runs with
+   *  `clientHeight = 0` when the row is `display:none` at the time
+   *  the column mounts, so the list stays parked at scrollTop=0. Once
+   *  the row has real layout we force scrollTop = scrollHeight, but
+   *  async markdown rendering keeps growing scrollHeight for a few
+   *  hundred ms — so we also observe each .msg child and re-stick on
+   *  every resize, then disconnect after 1.5s so we don't fight the
+   *  user once they start scrolling manually. ResizeObserver on
+   *  `.messages` itself wouldn't fire (the container is capped at
+   *  max-height: 50vh); the children are where the height changes
+   *  actually land. */
+  function stickMessagesToBottom(messages: HTMLElement): void {
+    const stick = () => {
+      messages.scrollTop = messages.scrollHeight;
+    };
+    stick();
+    const ro = new ResizeObserver(stick);
+    for (const child of Array.from(messages.children)) {
+      ro.observe(child as Element);
+    }
+    setTimeout(() => ro.disconnect(), 1500);
+  }
+  /** First-unfold-after-load path: scroll every session column in
+   *  this worktree's strip to the bottom. Used by `toggleRowFolded`
+   *  when the row transitions from folded → unfolded for the first
+   *  time this page load. Same `stickMessagesToBottom` trick as
+   *  the single-session reveal path; covers every column at once. */
+  async function stickAllSessionsInWtToBottom(wtPath: string): Promise<void> {
+    await tick();
+    requestAnimationFrame(() => {
+      const strip = document.querySelector(
+        `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+      ) as HTMLElement | null;
+      if (!strip) return;
+      const cols = strip.querySelectorAll<HTMLElement>(".session-col");
+      for (const col of cols) {
+        const messages = col.querySelector<HTMLElement>(".messages");
+        if (messages) stickMessagesToBottom(messages);
       }
     });
   }
@@ -2423,7 +2489,7 @@
                 ? `Expand \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\``
                 : `Fold \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` to a minimal row`}
               aria-label={rowFolded[row.key] ? "Expand row" : "Fold row"}
-              on:click|stopPropagation={() => toggleRowFolded(row.key)}
+              on:click|stopPropagation={() => toggleRowFolded(row.key, wt?.path)}
             >
               <span class="arrow">▸</span>
             </button>
