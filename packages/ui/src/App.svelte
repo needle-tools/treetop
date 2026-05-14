@@ -1309,7 +1309,14 @@
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
    *  laid-out, then scroll the strip to the target session column and
    *  add a `.session-col-flash` class for ~2s so the user's eye lands
-   *  on the column they just asked for. */
+   *  on the column they just asked for.
+   *
+   *  Uses bounding-rect math (not `col.offsetLeft`) because the column's
+   *  offsetParent isn't reliably the strip — the row's positioned
+   *  ancestors threw offsets off by ~50–100px and parked the leftmost
+   *  column under the viewport edge. We also subtract one
+   *  `.sessions-strip-pad` width so the flash outline sits inside the
+   *  spacer rather than flush with the strip's left edge. */
   async function scrollToAndFlashSession(
     wtPath: string,
     source: string,
@@ -1324,9 +1331,24 @@
         `.session-col[data-session-source="${CSS.escape(source)}"]`,
       );
       if (!col) return;
-      strip.scrollTo({ left: col.offsetLeft, behavior: "smooth" });
+      const padEl = strip.querySelector<HTMLElement>(".sessions-strip-pad");
+      const padW = padEl ? padEl.getBoundingClientRect().width : 0;
+      const stripRect = strip.getBoundingClientRect();
+      const colRect = col.getBoundingClientRect();
+      const target =
+        strip.scrollLeft + (colRect.left - stripRect.left) - padW;
+      strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
+      // SessionView's first-render scroll-to-bottom ran with
+      // `clientHeight = 0` (the row was display:none when the column
+      // mounted), so the list stayed parked at scrollTop=0. Now that
+      // the row has real layout, force the messages list to the
+      // bottom so the user lands on the latest message. Once we set
+      // scrollTop to scrollHeight, SessionView's `wasNearBottom`
+      // check sticks future updates to the bottom too.
+      const messages = col.querySelector<HTMLElement>(".messages");
+      if (messages) messages.scrollTop = messages.scrollHeight;
     });
   }
 
@@ -3169,6 +3191,12 @@
                 )}
                 {#if visibleSessions.length > 0}
                   <div class="sessions-strip" data-wt-strip={wt.path}>
+                    <!-- Leading + trailing spacers: invisible flex items
+                         that give the first/last column a constant gap
+                         from the strip edge and let the user over-scroll
+                         a touch past either end. Sized via CSS so we can
+                         tune the gap in one place. -->
+                    <span class="sessions-strip-pad" aria-hidden="true"></span>
                     {#each visibleSessions as s, i (s.source)}
                       <div
                         class="session-col"
@@ -3295,6 +3323,7 @@
                         {/if}
                       </div>
                     {/each}
+                    <span class="sessions-strip-pad" aria-hidden="true"></span>
                   </div>
                 {/if}
               {/if}

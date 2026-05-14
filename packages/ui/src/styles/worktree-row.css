@@ -1011,7 +1011,20 @@ button.branch-button:hover {
   gap: 0.6rem;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 0.25rem;
+  /* Vertical padding leaves room for the `.session-col-flash` outline
+     (2px width + 2px offset = 4px outward). Without it, overflow-y:
+     hidden clips the outline at the strip's top/bottom edges. */
+  padding-block: 0.25rem;
+}
+/* Invisible flex items at both ends of `.sessions-strip`. Cleaner than
+   `padding-inline` on a horizontally-scrolling flex container (browsers
+   historically dropped padding-right from the scroll area; spacer items
+   are bullet-proof). Width also acts as the scroll-margin our
+   rect-based scroll math subtracts so a flashed column lands with the
+   same breathing room on its left. */
+.sessions-strip-pad {
+  flex: 0 0 1rem;
+  align-self: stretch;
 }
 .session-col {
   /* Chat columns sized for comfortable reading — wide enough that code
@@ -1022,16 +1035,15 @@ button.branch-button:hover {
   min-width: 60ch;
   max-width: 90ch;
   box-sizing: border-box;
-  /* Smooth in / out of the flash outline so the cue doesn't snap. */
-  transition: box-shadow 0.25s ease-out;
+  /* Smooth fade of the flash outline so the cue doesn't snap off. */
+  transition: outline-color 0.25s ease-out;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 /* Transient highlight applied for ~2s when the user reveals a session
    from a folded row, so the eye can find the column they just asked
-   for. Brand-coloured ring + soft outer glow on the same hue. Falls
-   off via the .session-col transition above. */
+   for. Brand-coloured outline (no box-shadow glow — user preferred a
+   crisp ring). Fades out via the outline-color transition above. */
 .session-col-flash {
-  box-shadow:
-    0 0 0 2px var(--brand),
-    0 0 12px 2px color-mix(in srgb, var(--brand) 55%, transparent);
-  border-radius: var(--radius-sm);
+  outline-color: var(--brand);
 }
