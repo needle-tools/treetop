@@ -705,7 +705,108 @@ their own plan; group them into one polish PR when convenient.
 
 ## App.svelte refactor (componentization)
 
-`packages/ui/src/App.svelte` is **4782 lines** as of this writing:
+### Status (2026-05-14)
+
+`packages/ui/src/App.svelte` is now **3542 lines** (down from 4782
+when this plan was written), thanks to extractions that have already
+landed plus the CSS migration to `styles/`. Concretely:
+
+**Already done**
+- `Popover.svelte` exists; 7 popover variants funnel through its
+  shell via `extraClass` (Phase 1 #3).
+- `Tooltip.svelte` exists with a `variant="wide"` (commit-list)
+  variant.
+- `SourceControlPane.svelte` extracted (Phase 2 #3 component
+  exists). Its CSS still lives in `styles/source-control.css`
+  rather than scoped — see "Orphaned components" below.
+- `StatusBadge.svelte` extracted (priority-picked single pill,
+  used in both folded + expanded rows). CSS still in
+  `styles/worktree-row.css`.
+- `Diff.svelte` / `DiffViewer.svelte` / `ShellView.svelte` /
+  `TerminalView.svelte` / `NewSessionCol.svelte` / `ToolIcon.svelte`
+  all scope their own styles already.
+- Pure helpers extracted with tests:
+  `status-badge.ts` (pickBadgeKind), `ahead-age.ts` (BLINK
+  threshold + aheadAged), `reveal-session.ts` (planReveal matrix),
+  plus the pre-existing `diff.ts`, `errors.ts`, `popover.ts`,
+  `source-control.ts`, `storage.ts`.
+- `.ab` / `.ab-ahead` / `.ab-behind` chip family deleted (the
+  Phase 0 list item "rename .ab to .chip" is partly moot — that
+  surface is now `.status-badge`).
+
+**Still pending in Phase 0**
+- `.chip` base + `.chip-green` / `.chip-orange` / etc. modifiers
+  (the `.repo-chip`, `.tab-count`, `.agent-pill` family is still
+  re-stating the same pill shape).
+- `.dot` base.
+- `.icon-btn` base (the `.tiny` / `.actions-btn` / `.dispose-btn` /
+  `.restart-btn` / `.fullscreen-btn` / `.row-zen-btn` / `.close` /
+  `.remove` family still duplicates transparent/muted/surface-3-
+  hover).
+- `.popover` base + per-variant modifiers (the shell exists in
+  `Popover.svelte`, but per-variant CSS sprays across
+  `styles/popover.css` with hand-rolled selectors instead of
+  `.popover.actions` / `.popover.agents`).
+
+**Pending in Phase 1**
+- `Chip.svelte`, `Dot.svelte`, `IconButton.svelte`, `AgentRow.svelte`
+  — none extracted yet.
+
+**Pending in Phase 2/3**
+- `RowHead.svelte`, `RowStatus.svelte`, `SessionsStrip.svelte`,
+  `WorktreeRow.svelte`, `DashboardHeader.svelte`,
+  `DirtyCheckoutModal.svelte`.
+
+### Additional findings (post-original-plan)
+
+These weren't in the original review but are worth folding into
+Phase 0 so they don't bleed into Phase 1+.
+
+- **`styles/worktree-row.css` is now 1051 lines** — a kitchen sink.
+  Covers `.status-badge`, sessions strip, row chrome, fold toggle,
+  branch buttons, sticky-note overlays, agent picker rows, status
+  dots. Splitting it (e.g. `status-badge.css`, `sessions-strip.css`,
+  `row-chrome.css`) is a precondition for Phase 2 — each future
+  component should drag its slice into a scoped `<style>` block.
+- **Orphaned components: `StatusBadge.svelte` (40 lines, no
+  `<style>`) and `SourceControlPane.svelte` (header comment self-
+  documents `No scoped <style> here`).** They're stable enough to
+  own their CSS — moving the rules into the component would also
+  let global-find-and-replace shrink.
+- **Un-tokenized "danger red" family** repeats across 3 global
+  files: `#efaaaa`, `#efcccc`, `#ffcaca` in `new-session.css`,
+  `overlays.css`, `wt-picker.css`. Add `--chip-danger-text`,
+  `--chip-danger-text-hover`, `--chip-danger-border` to
+  `tokens.css` and route them through.
+- **Wrong fallback values in `var(--token, #fallback)`** — e.g.
+  `var(--error-bg, #5a1d1d)` in `diagnostics.css` while
+  `tokens.css` defines `--error-bg: #3f1f1f`. The fallback never
+  fires (tokens.css loads first via `main.ts`) but the divergent
+  hex is a trap for anyone reading the file. Strip the fallbacks
+  in a sweep — tokens always exist.
+- **Bare-element selectors in `styles/*.css`** — `header.css` had
+  `header { margin-bottom: 1.5rem }` that leaked into SessionView's
+  `<header>`. Currently scoped to `main > header`, but the same
+  trap likely exists for other bare-element rules (`h1`, `button`,
+  `input`, `ul`, `p`). One-pass audit: any rule on a bare element
+  in a global stylesheet should either be a body-reset (`base.css`,
+  fine) or get a class.
+- **Lingering inline helpers in App.svelte** worth extracting on
+  the same `*.ts` pattern as `ahead-age.ts` / `reveal-session.ts`:
+  `clampSubject`, `statusSummary`, `wtHasRecentActivity`,
+  `relTime`, `relTimeFromNow`, `relTimeFromIso`, `dateLabel`.
+  Each is pure and trivially unit-testable.
+- **`Record<wtPath, X>` map proliferation** — the original plan
+  listed ~14; spot-check confirms most still live in App.svelte.
+  Phase 2's row-scoped composites are the lever here, not a Phase 0
+  cleanup.
+
+---
+
+### Original write-up (kept for reference)
+
+`packages/ui/src/App.svelte` was **4782 lines** when this plan was
+drafted:
 1854 of script, ~1120 of template, 1808 of style. It holds 73
 top-level state declarations and 87 functions. The pain isn't aesthetic
 — it's that every UI feature lands here, two agents can't easily work
