@@ -7,10 +7,15 @@
  * scoping. See plans/PLAN.md → "App.svelte refactor (componentization)".
  */
 
-header {
+/* Scoped to the page-level header (`<main><header>…</header>` in
+   App.svelte). A bare `header { ... }` rule leaked into every nested
+   `<header>` on the page — most notably SessionView's chat header,
+   where 1.5rem margin-bottom showed up as a "gap between header and
+   chat content." main > header keeps the rule where it belongs. */
+main > header {
   margin-bottom: 1.5rem;
 }
-h1 {
+main > header > h1 {
   margin: 0;
   font-size: 1.5rem;
   letter-spacing: -0.01em;

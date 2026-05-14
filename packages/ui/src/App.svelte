@@ -1344,11 +1344,28 @@
       // `clientHeight = 0` (the row was display:none when the column
       // mounted), so the list stayed parked at scrollTop=0. Now that
       // the row has real layout, force the messages list to the
-      // bottom so the user lands on the latest message. Once we set
-      // scrollTop to scrollHeight, SessionView's `wasNearBottom`
-      // check sticks future updates to the bottom too.
+      // bottom so the user lands on the latest message.
+      //
+      // Markdown / code-block rendering runs ASYNC after the first
+      // paint, so `scrollHeight` keeps growing for a few hundred ms.
+      // A one-shot `scrollTop = scrollHeight` lands somewhere in the
+      // middle and leaves the latest message half-visible. ResizeObserver
+      // on `.messages` itself wouldn't fire (the container is capped at
+      // max-height: 50vh), so observe each .msg child — when their
+      // heights change as markdown renders, re-stick. Disconnect after
+      // 1.5s so we don't fight the user once they start scrolling.
       const messages = col.querySelector<HTMLElement>(".messages");
-      if (messages) messages.scrollTop = messages.scrollHeight;
+      if (messages) {
+        const stick = () => {
+          messages.scrollTop = messages.scrollHeight;
+        };
+        stick();
+        const ro = new ResizeObserver(stick);
+        for (const child of Array.from(messages.children)) {
+          ro.observe(child as Element);
+        }
+        setTimeout(() => ro.disconnect(), 1500);
+      }
     });
   }
 
