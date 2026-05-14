@@ -271,6 +271,14 @@
   const tuiWarmDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("tuiwarm") === "1";
+  /** Force the folded-row StatusBadge area to render BOTH the push
+   *  (↑) and pull (↓) variants at every folded row, so you can
+   *  preview both border-ring animations side-by-side without
+   *  needing the worktree to actually be ahead or behind. Set
+   *  `?badgeanim=1` in the URL. */
+  const badgeAnimDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("badgeanim") === "1";
   $: tuisHot =
     tuiHotDebug ||
     tuiProcs.some(
@@ -2454,7 +2462,16 @@
                   {/if}
                 </span>
               {/if}
-              {#if rowFolded[row.key] && wt}
+              {#if rowFolded[row.key] && wt && badgeAnimDebug}
+                <!-- `?badgeanim=1`: bypass the priority-pick + the
+                     real wt state and render both push and pull badges
+                     so the user can eyeball both border animations
+                     at once. Skips the Tooltip wrapper (preview only). -->
+                <span class="status-badge-debug-row">
+                  <StatusBadge ahead={1} behind={0} dirty={0} />
+                  <StatusBadge ahead={0} behind={1} dirty={0} />
+                </span>
+              {:else if rowFolded[row.key] && wt}
                 {@const fAhead = wt.branchStatus?.ahead ?? 0}
                 {@const fBehind = wt.branchStatus?.behind ?? 0}
                 {@const fDirty = wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked}

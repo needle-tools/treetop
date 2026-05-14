@@ -446,35 +446,75 @@ button.branch-button:hover {
      used elsewhere in the row (e.g. the status-summary-trigger). */
   cursor: help;
 }
-/* Ahead = local commits not pushed yet. Green = actionable. Uses the
-   same `ab-ahead-blink` snap-pattern as the expanded `.ab-ahead-aged`
-   chip below — two fast blinks then a ~1s rest — so folded and
-   expanded views read identically when there's work to push. The
-   earlier "smooth halo glow" version was visually ugly; this one
-   matches the established design. */
-.status-badge-ahead {
-  background: var(--chip-green-bg);
-  color: var(--chip-green-text);
-  animation: ab-ahead-blink 1.4s linear infinite;
-}
-/* Behind = upstream has commits you don't. Same orange palette as
-   the dirty-status dot, since both mean "you're out of sync."
-   `position: relative` anchors the rotating-border pseudo below. */
-.status-badge-behind {
-  background: var(--chip-orange-bg);
-  color: var(--chip-orange-text);
-  position: relative;
-}
-/* Softer cousin of the .actions-btn.hot comet ring — same conic-
-   gradient + mask trick, but with a yellow/amber palette, shorter
-   visible arc, and a slower spin so the cue reads as "pull pending,
-   no rush" rather than "runaway, do something now." Falls back to a
-   static (non-rotating) ring on Firefox, which doesn't yet animate
-   @property-registered custom angles. */
-@property --pull-angle {
+/* Push (ahead) and pull (behind) badges: solid coloured body, with a
+   thin rotating comet-trail ring on the border only — same conic-
+   gradient + mask trick used by `.actions-btn.hot`. The middle of
+   the badge stays the plain chip colour; the animation lives entirely
+   on the border. Direction (CW vs CCW) is a wash at this size — the
+   speeds differ so push reads as more energetic.
+   `position: relative` anchors the `::before` ring. `isolation:
+   isolate` is intentionally omitted: the pseudo lives in front of
+   the text (z-stack-wise) but uses an XOR mask to carve out the
+   inner area, so the text stays readable. */
+
+@property --ahead-angle {
   syntax: "<angle>";
   initial-value: 0deg;
   inherits: false;
+}
+@property --behind-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.status-badge-ahead {
+  color: var(--chip-green-text);
+  background: var(--chip-green-bg);
+  position: relative;
+}
+.status-badge-ahead::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--ahead-angle),
+    transparent 0deg,
+    transparent 240deg,
+    color-mix(in srgb, var(--chip-green-text) 40%, transparent) 290deg,
+    color-mix(in srgb, var(--chip-green-text) 90%, transparent) 350deg,
+    color-mix(in srgb, var(--chip-green-text) 100%, white 10%) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: ahead-ring-spin 2.4s linear infinite;
+  pointer-events: none;
+}
+@keyframes ahead-ring-spin {
+  to { --ahead-angle: 360deg; }
+}
+/* Opt-in pulsate-while-still-ringing: opacity oscillates on top of
+   the rotating ring. Apply with `.status-badge-ahead.pulsate` to
+   nudge the user toward pushing without changing the base look. */
+.status-badge-ahead.pulsate::before {
+  animation:
+    ahead-ring-spin 2.4s linear infinite,
+    badge-ring-pulse 1.6s ease-in-out infinite;
+}
+@keyframes badge-ring-pulse {
+  0%, 100% { opacity: 0.75; }
+  50%      { opacity: 1; }
+}
+
+.status-badge-behind {
+  color: var(--chip-orange-text);
+  background: var(--chip-orange-bg);
+  position: relative;
 }
 .status-badge-behind::before {
   content: "";
@@ -483,23 +523,32 @@ button.branch-button:hover {
   border-radius: inherit;
   padding: 1.5px;
   background: conic-gradient(
-    from var(--pull-angle),
+    from var(--behind-angle),
     transparent 0deg,
-    transparent 280deg,
-    rgba(245, 200, 100, 0) 300deg,
-    rgba(245, 200, 100, 0.6) 350deg,
-    rgba(255, 220, 150, 0.85) 360deg
+    transparent 240deg,
+    rgba(245, 200, 100, 0.45) 290deg,
+    rgba(245, 200, 100, 0.85) 350deg,
+    rgba(255, 220, 150, 1) 360deg
   );
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
-  animation: pull-border-spin 3.6s linear infinite;
+  animation: behind-ring-spin 3.2s linear infinite;
   pointer-events: none;
 }
-@keyframes pull-border-spin {
-  to { --pull-angle: 360deg; }
+@keyframes behind-ring-spin {
+  to { --behind-angle: -360deg; }
+}
+
+/* `?badgeanim=1` preview wrapper — small gap between the two debug
+   badges so they don't visually fuse. No structural role outside
+   debug mode. */
+.status-badge-debug-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 /* Dirty = uncommitted/staged/untracked. Neutral grey: the lowest-
    urgency tier, less of a nudge than ahead/behind. */
