@@ -73,6 +73,16 @@
   interface NoteOffset {
     offsetXFrac?: number;    // 0..1 of row width
     offsetY?: number;
+    /** Persisted user-chosen rotation in degrees (±30 max). Set by
+     *  the drag's `rotate` event when the user releases the note —
+     *  composes with the deterministic per-note `tilt` jitter. */
+    rotation?: number;
+    /** Where inside the note the user grabbed on the last drag (0..1
+     *  fractions of width / height). Used as `transform-origin` so
+     *  the rotation pivots around that point — keeps the cursor
+     *  anchored to the same spot on the paper while it spins. */
+    grabXFrac?: number;
+    grabYFrac?: number;
   }
   let offsets: Record<string, NoteOffset & { offsetX?: number }> = {};
   let zOrder: string[] = [];
@@ -451,13 +461,52 @@
       wiggleDown,
       Math.max(-wiggleUp, e.detail.y - baseY),
     );
-    offsets = { ...offsets, [e.detail.id]: { offsetXFrac, offsetY } };
+    // Spread the previous entry so we don't wipe sibling fields like
+    // `grabXFrac` / `grabYFrac` / `rotation` that other handlers set.
+    // Without this, the `grab` dispatch from mousedown was being
+    // overwritten by the very next move dispatch, falling back to a
+    // 0,0 transform-origin (top-left of unrotated paper).
+    const prev = offsets[e.detail.id] ?? {};
+    offsets = {
+      ...offsets,
+      [e.detail.id]: { ...prev, offsetXFrac, offsetY },
+    };
     saveOffsets();
     tick++;
   }
 
   function handleFocus(e: CustomEvent<{ id: string }>): void {
     bringToFront(e.detail.id);
+  }
+
+  /** Drag-end rotation snapshot from StickyNote. Persist verbatim;
+   *  the child already clamped to ±30° before dispatching. */
+  function handleRotate(e: CustomEvent<{ id: string; rotation: number }>): void {
+    const prev = offsets[e.detail.id] ?? {};
+    offsets = {
+      ...offsets,
+      [e.detail.id]: { ...prev, rotation: e.detail.rotation },
+    };
+    saveOffsets();
+  }
+
+  /** Grab-point capture from StickyNote's mousedown. The fraction is
+   *  applied as `transform-origin` so rotation pivots around the
+   *  cursor; persisting it across drags keeps the visual appearance
+   *  stable after release. */
+  function handleGrab(
+    e: CustomEvent<{ id: string; grabXFrac: number; grabYFrac: number }>,
+  ): void {
+    const prev = offsets[e.detail.id] ?? {};
+    offsets = {
+      ...offsets,
+      [e.detail.id]: {
+        ...prev,
+        grabXFrac: e.detail.grabXFrac,
+        grabYFrac: e.detail.grabYFrac,
+      },
+    };
+    saveOffsets();
   }
 
   /** "Move…" or "Copy…" inside a sticky's edit mode. Move rewrites
@@ -742,6 +791,9 @@
         x={pos?.x ?? 0}
         y={pos?.y ?? 0}
         tilt={tiltFor(note.id)}
+        rotation={offsets[note.id]?.rotation ?? 0}
+        grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
+        grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
         startEditing={editingId === note.id}
         {repos}
         on:move={handleMove}
@@ -749,6 +801,8 @@
         on:remove={handleRemove}
         on:focus={handleFocus}
         on:reassign={handleReassign}
+        on:rotate={handleRotate}
+        on:grab={handleGrab}
       />
     </div>
   {/each}

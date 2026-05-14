@@ -51,7 +51,11 @@
     0 18px 30px -12px rgba(0, 0, 0, 0.22);
   padding: 0.45rem 0.7rem 0.7rem;
   transform: rotate(var(--tilt, 0deg));
-  transform-origin: top left;
+  /* Rotation pivots around the user's grab point inside the box,
+     captured on mousedown and persisted alongside the rotation. Means
+     the cursor stays anchored to the same fiber of paper as the note
+     spins. Falls back to top-left for never-dragged notes. */
+  transform-origin: var(--grab-x, 0%) var(--grab-y, 0%);
   /* No transition on `top` / `left`. The note's position is recomputed
      every frame the anchor row is moving (either because the user is
      scrolling, or because the row above just changed its padding and

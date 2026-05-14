@@ -38,6 +38,11 @@
   export let y: number;
   /** Deterministic per-note tilt so rerenders don't make the note jitter. */
   export let tilt = 0;
+  /** Persisted user rotation accumulated from past drags (degrees,
+   *  clamped to ±30 by the parent). Composes on top of the static
+   *  `tilt`, so the user can fling a note to a chosen angle and it
+   *  stays there across reloads, undo/redo, etc. */
+  export let rotation = 0;
   /** Spawn this note in edit mode (first time the user clicks "+ note"). */
   export let startEditing = false;
   /** Used by the in-note "Move to…" / "Copy to…" picker to enumerate
@@ -51,6 +56,8 @@
     remove: { id: string };
     focus: { id: string };
     reassign: { id: string; anchor: string; mode: "move" | "duplicate" };
+    rotate: { id: string; rotation: number };
+    grab: { id: string; grabXFrac: number; grabYFrac: number };
   }>();
 
   /** While the user is choosing a new anchor, the editor flips into
@@ -64,6 +71,26 @@
   let dragDy = 0;
   let textareaEl: HTMLTextAreaElement | null = null;
   let stickyEl: HTMLDivElement;
+  /** Drag-tilt physics: rotation added to the base `--tilt` while the
+   *  user is dragging horizontally, so the note feels like a piece of
+   *  paper trailing behind the cursor. We *accumulate* — each pixel
+   *  of horizontal travel adds `DRAG_SCALE` degrees in that direction.
+   *  No smoothing, no velocity decay: holding the note still keeps it
+   *  exactly where it is; moving steadily right or left builds up
+   *  rotation in that direction (clamped to ±30°). */
+  let lastMouseX = 0;
+  let dragRotation = 0;
+  const DRAG_SCALE = 0.1;        // degrees per pixel of horizontal drag
+  const DRAG_ROTATION_MAX = 10;
+  /** Grab point inside the note as a fraction of the box (0..1). Set
+   *  on mousedown and used as the `transform-origin` so the rotation
+   *  pivots under the cursor. The note's `left/top` already track
+   *  the cursor via `dragDx/Dy`, so the grab point's *screen*
+   *  position stays anchored to the cursor — rotation just spins
+   *  the rest of the box around it. Persisted across drags so the
+   *  final rotation reads the same after release as it did mid-drag. */
+  export let grabXFrac = 0;
+  export let grabYFrac = 0;
 
   onMount(() => {
     if (editing && textareaEl) {
@@ -93,15 +120,55 @@
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button")) return;
     dragging = true;
-    // x/y are document coordinates (layer is position: absolute at
-    // doc top-left). Translate the mouse event's viewport-relative
-    // client coords to doc coords by adding the page scroll. That
-    // way a user who scrolls *while dragging* still has the note
-    // track the cursor correctly — both dragDx and the live mouse
-    // position read scroll, so the diff stays consistent.
-    dragDx = e.clientX + window.scrollX - x;
-    dragDy = e.clientY + window.scrollY - y;
+
+    const w = stickyEl?.offsetWidth || 240;
+    const h = stickyEl?.offsetHeight || 1;
+    const cxDoc = e.clientX + window.scrollX;
+    const cyDoc = e.clientY + window.scrollY;
+
+    // Re-anchoring math: the note may already have a persisted
+    // rotation `R` from a prior drag, pivoting around the previous
+    // grab point. The cursor's screen-coord offset from that previous
+    // pivot is NOT the same as the box-coord offset (the paper has
+    // been rotated). To find which fiber of paper the cursor is
+    // actually touching, inverse-rotate the screen offset by `-R`.
+    const oldGx = grabXFrac * w;
+    const oldGy = grabYFrac * h;
+    const oldPivotDocX = x + oldGx;
+    const oldPivotDocY = y + oldGy;
+    const cdx = cxDoc - oldPivotDocX;
+    const cdy = cyDoc - oldPivotDocY;
+    const R = (rotation * Math.PI) / 180;
+    const cosR = Math.cos(R);
+    const sinR = Math.sin(R);
+    // Rotate by -R: (cos -sin; sin cos) with negated sin
+    const bdx = cosR * cdx + sinR * cdy;
+    const bdy = -sinR * cdx + cosR * cdy;
+    const newGx = oldGx + bdx;
+    const newGy = oldGy + bdy;
+    const newGxFrac = Math.max(0, Math.min(1, newGx / w));
+    const newGyFrac = Math.max(0, Math.min(1, newGy / h));
+
+    // `dragDx/Dy` are now the box-coord position of the cursor (=
+    // the new transform-origin). mousemove uses these to compute the
+    // new doc top-left as `cursor_doc - dragD`, which keeps the
+    // cursor anchored on top of the pivot.
+    dragDx = newGx;
+    dragDy = newGy;
+    lastMouseX = e.clientX;
+    dragRotation = 0;
+
+    // Persist the new pivot. Also dispatch a move so the note shifts
+    // its left/top to compensate for the transform-origin change —
+    // changing the pivot under a rotated box would otherwise visibly
+    // jump the note. The math (algebra in the comment above on
+    // re-pivoting math) guarantees that with newLeft = cxDoc - newGx
+    // and newTop = cyDoc - newGy, the visual position is unchanged
+    // across the re-anchor.
+    dispatch("grab", { id: note.id, grabXFrac: newGxFrac, grabYFrac: newGyFrac });
+    dispatch("move", { id: note.id, x: cxDoc - newGx, y: cyDoc - newGy });
     dispatch("focus", { id: note.id });
+
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
     e.preventDefault();
@@ -109,6 +176,17 @@
 
   function onMouseMove(e: MouseEvent): void {
     if (!dragging) return;
+    // Cumulative tilt: each pixel of horizontal travel adds DRAG_SCALE
+    // degrees in the direction of motion. Holding the cursor still
+    // keeps the rotation exactly where it is; sweeping right or left
+    // builds it up further. Clamped so the combined persisted +
+    // in-drag rotation never exceeds ±30°.
+    const dx = e.clientX - lastMouseX;
+    lastMouseX = e.clientX;
+    const proposed = dragRotation + dx * DRAG_SCALE;
+    const minDelta = -DRAG_ROTATION_MAX - rotation;
+    const maxDelta = DRAG_ROTATION_MAX - rotation;
+    dragRotation = Math.max(minDelta, Math.min(maxDelta, proposed));
     const nx = Math.max(0, e.clientX + window.scrollX - dragDx);
     const ny = Math.max(0, e.clientY + window.scrollY - dragDy);
     dispatch("move", { id: note.id, x: nx, y: ny });
@@ -118,7 +196,29 @@
     dragging = false;
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
+    // Freeze the final rotation: roll the in-flight `dragRotation`
+    // into the persisted `rotation` so the note holds whatever angle
+    // it was at when the user released. The clamp on every move
+    // means `rotation + dragRotation` is already inside ±30, so the
+    // outer clamp here is just defensive.
+    if (dragRotation !== 0) {
+      const next = Math.max(
+        -DRAG_ROTATION_MAX,
+        Math.min(DRAG_ROTATION_MAX, rotation + dragRotation),
+      );
+      dispatch("rotate", { id: note.id, rotation: next });
+    }
+    dragRotation = 0;
   }
+
+  /** Composite tilt rendered in CSS = static jitter + persisted user
+   *  rotation + in-flight drag rotation, with the rotation portion
+   *  clamped to the ±30° ceiling. Recomputed reactively from the
+   *  three inputs. */
+  $: displayedTilt = tilt + Math.max(
+    -DRAG_ROTATION_MAX,
+    Math.min(DRAG_ROTATION_MAX, rotation + dragRotation),
+  );
 
   function startEdit(): void {
     draft = note.body;
@@ -193,7 +293,7 @@
   class:dragging
   class:editing
   data-note-id={note.id}
-  style="left: {x}px; top: {y}px; --tilt: {tilt}deg;"
+  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {grabXFrac * 100}%; --grab-y: {grabYFrac * 100}%;"
   role="dialog"
   aria-label="Sticky note"
   on:mousedown={() => dispatch("focus", { id: note.id })}
