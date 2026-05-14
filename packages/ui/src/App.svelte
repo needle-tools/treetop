@@ -198,6 +198,31 @@
    *  Only renders the button when there's at least one orphan. */
   let notesTrayOpen = false;
   let orphanReanchorFor: string | null = null;
+  /** Per-row "notes hidden" toggle state. When true, all notes
+   *  anchored to that row vanish via `.row-notes-hidden` (CSS
+   *  display: none) — the StickyNote components stay mounted so
+   *  their local edit state survives a hide/show round-trip. Keyed
+   *  by the row's stable key (worktree path or "<repoId>|none"). */
+  let notesHiddenByRow: Record<string, boolean> = {};
+  if (typeof window !== "undefined") {
+    try {
+      const raw = window.localStorage.getItem("supergit:notesHidden");
+      if (raw) notesHiddenByRow = JSON.parse(raw) ?? {};
+    } catch {
+      notesHiddenByRow = {};
+    }
+  }
+  $: if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        "supergit:notesHidden",
+        JSON.stringify(notesHiddenByRow),
+      );
+    } catch {}
+  }
+  function toggleNotesHidden(key: string): void {
+    notesHiddenByRow = { ...notesHiddenByRow, [key]: !notesHiddenByRow[key] };
+  }
   /** Per-row "zen" focus — one worktree row takes over the viewport,
    *  hiding the top bar and all other rows. `null` = no row focused.
    *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
@@ -2536,6 +2561,7 @@
           class="row"
           class:row-folded={rowFolded[row.key]}
           class:row-zen={zenRowKey === row.key}
+          class:row-notes-hidden={notesHiddenByRow[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
         >
           <div class="row-content">
@@ -2900,12 +2926,14 @@
               <span class="branch warn">no worktrees</span>
             {/if}
 
-            <!-- Count badge fused to the LEFT of the "+ note" button via
-                 a flex stack, same idiom as `.repo-chip-stack` for the
-                 color swatch + repo chip. When the row has zero notes
-                 the badge is hidden and the button looks like any other
-                 `.new-wt` action; the moment a note lands, the count
-                 chip sprouts on the left without breaking layout flow. -->
+            <!-- Three-piece notes tag, fused via flex like the
+                 repo-chip + color-swatch pair: count attachment on
+                 the LEFT (only when there's at least one note),
+                 `notes` toggle in the MIDDLE (CSS-only hide of this
+                 row's notes — components stay mounted), `+` add on
+                 the RIGHT. Same .new-wt dashed-tag styling as the
+                 worktrees button so the row's action group reads as
+                 a single family. -->
             <span class="note-add-stack">
               {#if noteCount > 0}
                 <span
@@ -2913,17 +2941,29 @@
                   title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"}`}
                 >{noteCount}</span>
               {/if}
-            <button
-              class="new-wt new-wt-note"
-              title={wt
-                ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
-                : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
-              on:click|stopPropagation={(e) => {
-                const btn = e.currentTarget as HTMLButtonElement;
-                const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
-                void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
-              }}
-            >+ note</button>
+              <button
+                class="new-wt notes-toggle"
+                class:active={!notesHiddenByRow[row.key]}
+                title={notesHiddenByRow[row.key]
+                  ? "Show this row's sticky notes"
+                  : "Hide this row's sticky notes"}
+                on:click|stopPropagation={() => toggleNotesHidden(row.key)}
+              >notes</button>
+              <button
+                class="new-wt notes-add"
+                title={wt
+                  ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
+                  : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
+                on:click|stopPropagation={(e) => {
+                  // Un-hide first so the freshly-spawned note is visible.
+                  if (notesHiddenByRow[row.key]) {
+                    notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+                  }
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
+                  void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
+                }}
+              >+</button>
             </span>
             <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
               <button

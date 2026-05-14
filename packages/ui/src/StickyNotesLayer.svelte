@@ -176,19 +176,22 @@
 
   /** Resolve a note's first usable anchor to the row's outer `<li>`.
    *  The "+ note" button writes `worktree:<wt.path>` and the row template
-   *  carries `data-wt-row="<wt.path>"`. Returns null when the row is
-   *  missing (collapsed via the picker, repo removed, or not yet
-   *  mounted) OR currently folded (`.row-folded`) — in the folded
-   *  state the row is a single-line summary and a hanging note would
-   *  overlap the next repo. The note re-appears the moment the row
-   *  is expanded again (MutationObserver kicks a tick on the class
-   *  change). */
+   *  carries `data-wt-row="<wt.path>"`. Returns null when:
+   *  - the row is missing (collapsed via the picker, repo removed,
+   *    or not yet mounted);
+   *  - the row is folded (`.row-folded`) — a hanging note would
+   *    overlap the next repo in the single-line summary state;
+   *  - the user has hidden this row's notes via the "notes" toggle
+   *    (`.row-notes-hidden`) — CSS-only hide, components stay
+   *    mounted in the layer.
+   *  The note re-appears the moment the row is expanded / toggled
+   *  back on (MutationObserver kicks a tick on the class change). */
   function findAnchorLi(note: NoteShape): HTMLElement | null {
     for (const a of note.anchors) {
       if (a.startsWith("worktree:")) {
         const path = a.slice("worktree:".length);
         const el = document.querySelector<HTMLElement>(
-          `[data-wt-row="${cssEscape(path)}"]:not(.row-folded)`,
+          `[data-wt-row="${cssEscape(path)}"]:not(.row-folded):not(.row-notes-hidden)`,
         );
         if (el) return el;
       }

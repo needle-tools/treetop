@@ -264,14 +264,20 @@
   white-space: nowrap;
 }
 
-/* "+ note" button shares the .new-wt dashed-tag style as the
-   "worktrees (N)" trigger next to it so the per-row action group
-   reads as a single family. `.new-wt-note` is a no-op marker for
-   future targeted tweaks. The count badge is docked to its LEFT,
-   visually fused via the .note-add-stack wrapper — same idiom as
-   the repo-chip + color-swatch pair (.repo-chip-stack). */
-.new-wt.new-wt-note { /* inherits .new-wt */ }
-
+/* Per-row notes action tag: a three-piece fused element styled to
+   match the `.new-wt` dashed-tag family.
+       ┌─count─┬──notes──┬─+─┐
+       │   3   │  notes  │ + │
+       └───────┴─────────┴───┘
+   - LEFT (.row-note-count): non-clickable badge with the number of
+     notes pinned to this row. Only rendered when count > 0 (the
+     :has selector cleans up the toggle's left border in that case).
+   - MIDDLE (.notes-toggle): clicking flips the row's
+     `.row-notes-hidden` class → all sticky notes for this row
+     hide via CSS display:none. Components stay mounted in the
+     layer so an in-flight edit / selection survives a toggle.
+   - RIGHT (.notes-add): "+", spawns a fresh note (and un-hides the
+     row's notes first so the user sees what they just created). */
 .note-add-stack {
   display: inline-flex;
   align-items: stretch;
@@ -286,20 +292,48 @@
   font-size: 0.72rem;
   line-height: 1;
   padding: 0 0.45rem;
-  /* Dashed border to match .new-wt; the right side is removed so the
-     count chip and the button share that edge as a divider. */
   border: 1px dashed var(--surface-2);
   border-right: 0;
   border-top-left-radius: var(--radius-sm);
   border-bottom-left-radius: var(--radius-sm);
   flex: 0 0 auto;
 }
-/* When the badge is present, square off the button's left side so the
-   two pieces visually fuse into a single element. `:has()` keeps the
-   button's full radius when there's no badge (count == 0). */
-.note-add-stack:has(.row-note-count) > .new-wt-note {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+.note-add-stack > .notes-toggle,
+.note-add-stack > .notes-add {
+  /* Override .new-wt's left-rounded edges so the segments share their
+     borders cleanly. Specific radii applied below per piece. */
+  border-radius: 0;
+}
+/* Middle segment: no rounded sides — fuses with whatever sits next
+   to it on either side. Drop the right border so it shares the
+   `+`'s left edge. */
+.note-add-stack > .notes-toggle {
+  border-right: 0;
+}
+.note-add-stack:has(.row-note-count) > .notes-toggle {
+  border-left: 0;
+}
+/* Without a count chip, the toggle owns the left rounded edge. */
+.note-add-stack:not(:has(.row-note-count)) > .notes-toggle {
+  border-top-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-sm);
+}
+/* The + always owns the right rounded edge. */
+.note-add-stack > .notes-add {
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+/* The `.active` class is bound to "notes visible" (the default
+   state) — filled background so the toggle matches the count
+   attachment to its left and reads as engaged. When the user
+   collapses the row's notes the class drops off and the toggle
+   reverts to the dashed empty .new-wt look. */
+.note-add-stack > .notes-toggle.active {
+  background: var(--surface-2);
+  color: var(--text-1);
+  border-style: solid;
 }
 
 /* Undo toast stack. Lives in the bottom-right of the viewport above
