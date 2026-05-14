@@ -456,7 +456,7 @@ button.branch-button:hover {
      the LEFT and RIGHT borders.
    - Push streaks travel UP (commits going up to remote); pull
      streaks travel DOWN (commits coming down). Push runs faster
-     (2.4s vs 3.2s) to read more urgently.
+     (1.8s vs 2.4s) to read more urgently.
    - The mask is fixed in the pseudo's local coordinates, so the
      edge stripes stay anchored to the badge's left/right while the
      gradient slides through behind them.
@@ -519,7 +519,7 @@ button.branch-button:hover {
       black calc(100% - 1.5px),
       black 100%
     );
-  animation: badge-edge-flow-up 2.4s linear infinite;
+  animation: badge-edge-flow-up 1.8s linear infinite;
   pointer-events: none;
 }
 /* translateY 100% = pseudo's TOP is at the parent's BOTTOM edge — the
@@ -618,7 +618,7 @@ button.branch-button:hover {
       black calc(100% - 1.5px),
       black 100%
     );
-  animation: badge-edge-flow-down 3.2s linear infinite;
+  animation: badge-edge-flow-down 2.4s linear infinite;
   pointer-events: none;
 }
 /* -100% → 100% moves the pseudo DOWN through the visible region.
