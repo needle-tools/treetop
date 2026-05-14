@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
@@ -1273,6 +1273,61 @@
   }
   function toggleRowFolded(rowKey: string) {
     rowFolded = { ...rowFolded, [rowKey]: !rowFolded[rowKey] };
+  }
+  /** Auto-expand a folded row. Called from any session-opening
+   *  affordance (new agent, new terminal, latest-session button,
+   *  picker entries) so the resulting session column has room to
+   *  render instead of being hidden behind the folded chrome.
+   *  No-op if the row is already expanded. */
+  function unfoldRowIfFolded(rowKey: string) {
+    if (rowFolded[rowKey]) {
+      rowFolded = { ...rowFolded, [rowKey]: false };
+    }
+  }
+  /** Click handler for the latest-session badge + picker entries.
+   *  Folded rows treat the click as an unambiguous "reveal": unfold +
+   *  ensure the session is open (never close on first click — the user
+   *  can't see whether it's open or not from a folded row, so toggle
+   *  semantics surprise them) + scroll the strip to the session +
+   *  flash a 2s outline so the eye lands on it. Expanded rows keep
+   *  the normal toggle. */
+  function revealOrToggleSession(
+    rowKey: string,
+    wtPath: string,
+    s: OpenSession,
+  ): void {
+    if (!rowFolded[rowKey]) {
+      toggleOpenSessionInWt(wtPath, s);
+      return;
+    }
+    const wasOpen = isOpenInWt(wtPath, s.source);
+    unfoldRowIfFolded(rowKey);
+    if (!wasOpen) toggleOpenSessionInWt(wtPath, s);
+    void scrollToAndFlashSession(wtPath, s.source);
+  }
+  /** After unfold (and any state mutation), wait for Svelte to flush
+   *  DOM + one rAF for `.row-body` to flip from `display:none` to
+   *  laid-out, then scroll the strip to the target session column and
+   *  add a `.session-col-flash` class for ~2s so the user's eye lands
+   *  on the column they just asked for. */
+  async function scrollToAndFlashSession(
+    wtPath: string,
+    source: string,
+  ): Promise<void> {
+    await tick();
+    requestAnimationFrame(() => {
+      const strip = document.querySelector(
+        `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+      ) as HTMLElement | null;
+      if (!strip) return;
+      const col = strip.querySelector<HTMLElement>(
+        `.session-col[data-session-source="${CSS.escape(source)}"]`,
+      );
+      if (!col) return;
+      strip.scrollTo({ left: col.offsetLeft, behavior: "smooth" });
+      col.classList.add("session-col-flash");
+      setTimeout(() => col.classList.remove("session-col-flash"), 2000);
+    });
   }
 
   /** Hide a worktree row from the dashboard. Disk is untouched; the
@@ -2598,6 +2653,7 @@
                               class="agent-row new-agent-row"
                               on:click={() => {
                                 newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                                unfoldRowIfFolded(row.key);
                                 openNewAgentSession(wt.path, ag.name as "claude" | "codex");
                               }}
                               title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
@@ -2627,6 +2683,7 @@
                             class="agent-row new-agent-row"
                             on:click={() => {
                               newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                              unfoldRowIfFolded(row.key);
                               openNewTerminalInWt(wt.path);
                             }}
                             title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
@@ -2645,7 +2702,7 @@
                     class:active={isOpenInWt(wt.path, a.source)}
                     title={`${a.manualTitle ?? `Open the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
                     on:click={() =>
-                      toggleOpenSessionInWt(wt.path, {
+                      revealOrToggleSession(row.key, wt.path, {
                         agent: a.agent,
                         source: a.source,
                       })}
@@ -2685,7 +2742,7 @@
                                   ? "Already open — click to close"
                                   : sess.title}
                                 on:click={() => {
-                                  toggleOpenSessionInWt(wt.path, {
+                                  revealOrToggleSession(row.key, wt.path, {
                                     agent: sess.agent,
                                     source: sess.source,
                                   });

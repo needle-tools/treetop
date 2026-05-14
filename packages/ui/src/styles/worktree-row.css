@@ -1022,4 +1022,16 @@ button.branch-button:hover {
   min-width: 60ch;
   max-width: 90ch;
   box-sizing: border-box;
+  /* Smooth in / out of the flash outline so the cue doesn't snap. */
+  transition: box-shadow 0.25s ease-out;
+}
+/* Transient highlight applied for ~2s when the user reveals a session
+   from a folded row, so the eye can find the column they just asked
+   for. Brand-coloured ring + soft outer glow on the same hue. Falls
+   off via the .session-col transition above. */
+.session-col-flash {
+  box-shadow:
+    0 0 0 2px var(--brand),
+    0 0 12px 2px color-mix(in srgb, var(--brand) 55%, transparent);
+  border-radius: var(--radius-sm);
 }
