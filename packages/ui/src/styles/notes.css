@@ -11,11 +11,17 @@
   z-index: 900;
 }
 /* z-index host wrapper so StickyNotesLayer can stack notes without
-   touching the inner .sticky transform. */
+   touching the inner .sticky transform. Marked .hidden when the
+   note's anchor row is folded — `display: none` keeps the inner
+   StickyNote mounted (preserves in-flight edit state) while
+   removing it from layout + hit-testing. */
 .sticky-host {
   position: absolute;
   inset: 0;
   pointer-events: none;
+}
+.sticky-host.hidden {
+  display: none;
 }
 
 .sticky {
@@ -149,6 +155,24 @@
   background: rgba(180, 30, 30, 0.18);
   color: #6a0e0e;
 }
+/* Secondary buttons inside the sticky header (move-to / copy-to) —
+   smaller than primary actions so the toolbar still reads "Cancel /
+   Save" as the main choices, with the destination operations as
+   ancillary helpers. */
+.sticky .sticky-btn.tiny {
+  font-size: 11px;
+  padding: 2px 5px;
+  opacity: 0.75;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.sticky .sticky-btn.tiny:hover:not(:disabled),
+.sticky .sticky-btn.tiny.active {
+  opacity: 1;
+}
+.sticky .sticky-btn.tiny.active {
+  background: rgba(0, 0, 0, 0.08);
+}
 
 .sticky-body {
   word-break: break-word;
@@ -191,16 +215,23 @@
 
 .sticky-textarea {
   width: 100%;
-  min-height: 110px;
+  min-height: 60px;
   border: none;
   background: transparent;
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
   color: inherit;
-  resize: vertical;
+  /* No manual resize grip — the `autosize` Svelte action in
+     StickyNote.svelte rewrites `height` on every input event so the
+     textarea matches its content. Browsers that ship `field-sizing:
+     content` get the same behaviour natively without the JS round
+     trip (Chrome 123+, Safari 18+); older ones rely on the action. */
+  resize: none;
+  field-sizing: content;
   outline: none;
   padding: 0;
+  overflow: hidden;
 }
 
 .sticky-meta {
@@ -319,3 +350,113 @@
   padding: 0 4px;
 }
 .undo-toast-dismiss:hover { color: #fff4a8; }
+
+/* Anchor-picker row tweaks: reuse the shared `.agent-row` grid for
+   visual consistency with the worktrees / sessions popovers, but
+   override the 6-column session layout to fit our 3-column shape
+   (repo · branch · "here" marker). */
+.anchor-row {
+  grid-template-columns: auto auto 1fr;
+}
+.anchor-here {
+  text-align: right;
+  font-size: 0.75em;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.anchor-picker-empty {
+  padding: 0.5rem 0.6rem;
+  list-style: none;
+}
+
+/* Row of ancillary edit actions that lives below the textarea when
+   the note is in edit mode. Holds the Move-to / Copy-to buttons so
+   the header toolbar stays focused on Cancel / Save. */
+.sticky-edit-footer {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed rgba(0, 0, 0, 0.15);
+}
+
+/* Wrapper around an in-sticky toolbar button that opens an agents-
+   variant Popover. Provides the `position: relative` containing
+   block the popover anchors against (same role as
+   `.wt-picker-anchor` in the worktree-row header). */
+.sticky-action-anchor {
+  position: relative;
+  display: inline-flex;
+}
+/* When a sticky's anchor picker is open, slightly de-rotate the
+   surrounding sticky so the popover sits flat with the rest of the
+   dashboard chrome — the .editing rule already does this, this is
+   defensive in case a future state opens the picker outside editing. */
+.sticky:has(.sticky-anchor-popover) {
+  transform: rotate(0deg);
+}
+/* The agents-popover lives inside .sticky-host (z-index 1000+) so it
+   already stacks above other notes; just nudge its width so it
+   doesn't dwarf the 240px sticky body too dramatically. Reset
+   `color` + `font-family` explicitly — without these the popover
+   inherits the sticky's dark-brown text + Caveat handwriting font,
+   which is unreadable on the dark popover surface. */
+.sticky-anchor-popover.agents-popover {
+  min-width: 280px;
+  max-width: 360px;
+  font-size: var(--fs-sm);
+  color: var(--text-1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.sticky-anchor-popover .agent-row-name {
+  /* Belt-and-braces: the per-cell `color: inherit` should already
+     pick up the popover's reset color above, but Safari has a
+     legacy bug where pseudo-class hover states on grid-cell spans
+     occasionally drop back to the originating element's color. */
+  color: var(--text-1);
+}
+
+/* Orphan-notes tray popover content (header button + popover live
+   in `App.svelte`; this is just the list inside). */
+.orphan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 360px;
+}
+.orphan-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--surface-2);
+}
+.orphan-row:last-child { border-bottom: 0; }
+.orphan-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.orphan-body {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orphan-anchor {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orphan-actions {
+  display: flex;
+  gap: 0.3rem;
+}

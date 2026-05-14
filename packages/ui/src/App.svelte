@@ -10,7 +10,8 @@
   import NewSessionCol from "./NewSessionCol.svelte";
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
   import { spawnNote } from "./StickyNotesLayer.svelte";
-  import { notesCountByAnchor } from "./notes-counts";
+  import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
+  import AnchorPicker from "./AnchorPicker.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -192,6 +193,11 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  /** Orphan-notes tray: header button + popover listing notes whose
+   *  anchor doesn't match any currently-registered repo or worktree.
+   *  Only renders the button when there's at least one orphan. */
+  let notesTrayOpen = false;
+  let orphanReanchorFor: string | null = null;
   /** Per-row "zen" focus — one worktree row takes over the viewport,
    *  hiding the top bar and all other rows. `null` = no row focused.
    *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
@@ -1740,6 +1746,59 @@
     return anchor;
   }
 
+  /** Notes whose first usable anchor doesn't resolve to any
+   *  currently-registered repo / worktree. These are the rows that
+   *  show up in the orphan-notes tray so the user can re-anchor or
+   *  delete them. */
+  $: orphanNotes = $notesAll.filter((n) => {
+    const a = n.anchors[0];
+    if (!a) return true;
+    if (a.startsWith("worktree:")) {
+      const path = a.slice("worktree:".length);
+      return !repos.some((r) =>
+        r.worktrees?.some((w) => w.path === path),
+      );
+    }
+    if (a.startsWith("repo:")) {
+      const path = a.slice("repo:".length);
+      return !repos.some((r) => r.path === path);
+    }
+    return false;
+  });
+
+  async function reassignOrphan(noteId: string, anchor: string): Promise<void> {
+    const note = $notesAll.find((n) => n.id === noteId);
+    if (!note) return;
+    // Keep auxiliary anchors (commit:..., session:...) when rewriting
+    // the primary placement.
+    const others = note.anchors.filter(
+      (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+    );
+    const nextAnchors = [anchor, ...others];
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anchors: nextAnchors }),
+      });
+      if (!res.ok) return;
+      orphanReanchorFor = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function deleteOrphan(noteId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   function relTime(iso: string): string {
     const d = (Date.now() - Date.parse(iso)) / 1000;
     if (d < 60) return `${Math.floor(d)}s ago`;
@@ -2278,6 +2337,61 @@
           </Popover>
         {/if}
       </div>
+
+      {#if orphanNotes.length > 0}
+        <div class="actions-anchor notes-tray-anchor">
+          <button
+            class="actions-btn"
+            class:open={notesTrayOpen}
+            on:click={() => (notesTrayOpen = !notesTrayOpen)}
+            title={`${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`}
+          >
+            Notes
+            <span class="count">{orphanNotes.length}</span>
+          </button>
+          {#if notesTrayOpen}
+            <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
+              <span slot="head">Orphaned notes</span>
+              <ul class="orphan-list">
+                {#each orphanNotes as n (n.id)}
+                  <li class="orphan-row">
+                    <div class="orphan-summary">
+                      <span class="orphan-body" title={n.body}>
+                        {noteExcerpt(n.body) || "(empty)"}
+                      </span>
+                      <span class="orphan-anchor" title={n.anchors.join("\n")}>
+                        ⚓ {n.anchors[0] ?? "no anchor"}
+                      </span>
+                    </div>
+                    <div class="orphan-actions">
+                      <button
+                        class="undo"
+                        on:click={() =>
+                          (orphanReanchorFor =
+                            orphanReanchorFor === n.id ? null : n.id)}
+                      >Re-anchor…</button>
+                      <button
+                        class="undo"
+                        on:click={() => void deleteOrphan(n.id)}
+                        title="Delete (an Undo toast lets you bring it back)"
+                      >Delete</button>
+                    </div>
+                    {#if orphanReanchorFor === n.id}
+                      <AnchorPicker
+                        {repos}
+                        currentAnchor={n.anchors[0] ?? null}
+                        on:pick={(e) =>
+                          void reassignOrphan(n.id, e.detail.anchor)}
+                        on:cancel={() => (orphanReanchorFor = null)}
+                      />
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </Popover>
+          {/if}
+        </div>
+      {/if}
 
       <div class="actions-anchor">
         <button
@@ -3293,7 +3407,7 @@
   {/if}
 </main>
 
-<StickyNotesLayer changeKey={notesChangeKey} />
+<StickyNotesLayer changeKey={notesChangeKey} {repos} />
 
 {#if dirtyCheckout}
   <div

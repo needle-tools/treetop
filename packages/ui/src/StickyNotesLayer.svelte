@@ -39,14 +39,25 @@
 </script>
 
 <script lang="ts">
-  import { onMount, onDestroy, afterUpdate } from "svelte";
+  import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
   import StickyNote, { type NoteShape } from "./StickyNote.svelte";
-  import { notesCountByAnchor } from "./notes-counts";
+  import { notesCountByAnchor, notesAll } from "./notes-counts";
 
   /** Bumped by App.svelte on any SSE `change` event so the layer
    *  refetches if a note was created/updated/deleted via another tab
    *  or by hand on disk. */
   export let changeKey = 0;
+  /** Live repos snapshot — passed down to each StickyNote so the
+   *  in-edit Move-to / Copy-to picker can list all anchorable
+   *  destinations without each note re-fetching /api/repos. */
+  interface AnchorableWorktree { path: string; branch: string; }
+  interface AnchorableRepo {
+    id: string;
+    name?: string;
+    path: string;
+    worktrees?: AnchorableWorktree[];
+  }
+  export let repos: AnchorableRepo[] = [];
 
   let notes: NoteShape[] = [];
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
@@ -274,6 +285,7 @@
         }
       }
       notesCountByAnchor.set(counts);
+      notesAll.set(notes);
       // Kick a re-derive so freshly-fetched notes pick up positions.
       tick++;
     } catch {
@@ -312,6 +324,13 @@
       editingId = created.id;
       bringToFront(created.id);
       tick++;
+      // editingId is one-shot: the new note's `startEditing` prop is
+      // read by StickyNote on its initial `onMount`, so we clear the
+      // signal after Svelte commits the next render. Without this,
+      // any later remount (e.g. a row collapse+expand) would pull
+      // the note back into edit mode unprompted.
+      await svelteTick();
+      editingId = null;
     } catch {}
   }
 
@@ -431,6 +450,57 @@
 
   function handleFocus(e: CustomEvent<{ id: string }>): void {
     bringToFront(e.detail.id);
+  }
+
+  /** "Move…" or "Copy…" inside a sticky's edit mode. Move rewrites
+   *  the note's anchors via PUT; Copy POSTs a fresh note with the
+   *  same body/tags but the new anchor. Both go through the daemon's
+   *  reversible event log so Ctrl+Z still works. */
+  async function handleReassign(
+    e: CustomEvent<{ id: string; anchor: string; mode: "move" | "duplicate" }>,
+  ): Promise<void> {
+    const note = notes.find((n) => n.id === e.detail.id);
+    if (!note) return;
+    if (e.detail.mode === "move") {
+      // Replace the first worktree/repo anchor with the new one; keep
+      // any auxiliary anchors (commit:..., session:...) intact.
+      const others = note.anchors.filter(
+        (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+      );
+      const nextAnchors = [e.detail.anchor, ...others];
+      try {
+        const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: nextAnchors }),
+        });
+        if (!res.ok) return;
+        const updated = (await res.json()) as NoteShape;
+        notes = notes.map((n) => (n.id === updated.id ? updated : n));
+        tick++;
+      } catch {}
+    } else {
+      const others = note.anchors.filter(
+        (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+      );
+      const dupAnchors = [e.detail.anchor, ...others];
+      try {
+        const res = await fetch("/api/notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: note.body,
+            anchors: dupAnchors,
+            tags: note.tags,
+          }),
+        });
+        if (!res.ok) return;
+        const created = (await res.json()) as NoteShape;
+        notes = [created, ...notes];
+        bringToFront(created.id);
+        tick++;
+      } catch {}
+    }
   }
 
   // Watch the change-key without firing on the initial value so we
@@ -640,21 +710,33 @@
 <div class="sticky-layer" aria-hidden={notes.length === 0} bind:this={layerEl}>
   {#each notes as note (note.id)}
     {@const pos = positionsByNoteId[note.id]}
-    {#if pos}
-      <div class="sticky-host" style="z-index: {zIndexById[note.id] ?? 1000};">
-        <StickyNote
-          {note}
-          x={pos.x}
-          y={pos.y}
-          tilt={tiltFor(note.id)}
-          startEditing={editingId === note.id}
-          on:move={handleMove}
-          on:save={handleSave}
-          on:remove={handleRemove}
-          on:focus={handleFocus}
-        />
-      </div>
-    {/if}
+    <!-- Render the host even when the row is folded (`pos === null`)
+         and just hide it with display: none. Conditionally rendering
+         would unmount StickyNote, which loses the user's in-flight
+         edit state — collapsing then expanding a row would yank the
+         newest sticky back into edit mode because StickyNote's
+         `onMount` re-reads `startEditing` against a stale
+         editingId. Hiding instead of unmounting preserves the
+         local edit state. -->
+    <div
+      class="sticky-host"
+      class:hidden={!pos}
+      style="z-index: {zIndexById[note.id] ?? 1000};"
+    >
+      <StickyNote
+        {note}
+        x={pos?.x ?? 0}
+        y={pos?.y ?? 0}
+        tilt={tiltFor(note.id)}
+        startEditing={editingId === note.id}
+        {repos}
+        on:move={handleMove}
+        on:save={handleSave}
+        on:remove={handleRemove}
+        on:focus={handleFocus}
+        on:reassign={handleReassign}
+      />
+    </div>
   {/each}
 </div>
 
