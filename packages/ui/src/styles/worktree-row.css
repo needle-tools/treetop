@@ -27,6 +27,13 @@
   padding: 0.65rem 0.75rem;
   margin: 0 0 0.6rem;
   min-width: 0;
+  /* Sticky-notes pinned to this row push the rows below down via an
+     inline `margin-bottom` set imperatively by StickyNotesLayer.
+     Margin (not padding) keeps the row's tinted background compact —
+     the spacer for the note hangs *outside* the box so the note's
+     tape can tuck under the visible bottom edge. The transition
+     makes that push read as a single smooth motion. */
+  transition: margin-bottom 180ms ease;
 }
 /* When folded, only the row-head is rendered. Tighten the row's
    vertical padding and stack-gap so a folded repo reads as a compact

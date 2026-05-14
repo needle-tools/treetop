@@ -1,0 +1,321 @@
+/* Floating sticky-notes overlay.
+   v1.y of the notes feature — paper-y cards that hover above the
+   dashboard. Position is held by StickyNotesLayer in localStorage; the
+   slight per-note rotation is derived from the id so it doesn't jitter
+   on refetch. */
+
+.sticky-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 900;
+}
+/* z-index host wrapper so StickyNotesLayer can stack notes without
+   touching the inner .sticky transform. */
+.sticky-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.sticky {
+  position: fixed;
+  width: 240px;
+  min-height: 120px;
+  background: linear-gradient(180deg, #fff4a8 0%, #ffec80 100%);
+  color: #2a2516;
+  border-radius: 4px 4px 12px 4px;
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.18),
+    0 6px 18px -4px rgba(0, 0, 0, 0.28),
+    0 18px 30px -12px rgba(0, 0, 0, 0.22);
+  padding: 0.45rem 0.7rem 0.7rem;
+  transform: rotate(var(--tilt, 0deg));
+  transform-origin: top left;
+  /* No transition on `top` / `left`. The note's position is recomputed
+     every frame the anchor row is moving (either because the user is
+     scrolling, or because the row above just changed its padding and
+     the rows below are mid-CSS-transition). A CSS transition here
+     would lag the row by 180ms during scrolls and cause the
+     padding-recompute to see a wobbling offset between note and row,
+     which made the row heights ripple. The "row makes space for new
+     note" smoothness comes from the row's own padding-bottom
+     transition (see worktree-row.css). */
+  transition:
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+  font-family: -apple-system, "Caveat", "Comic Neue", "Patrick Hand",
+    "Marker Felt", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.35;
+  pointer-events: auto;
+  user-select: text;
+  /* Subtle paper grain via repeating gradient — cheap, no images. */
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0) 22px,
+      rgba(0, 0, 0, 0.03) 22px,
+      rgba(0, 0, 0, 0.03) 23px
+    ),
+    linear-gradient(180deg, #fff4a8 0%, #ffec80 100%);
+}
+.sticky.dragging {
+  box-shadow:
+    0 2px 2px rgba(0, 0, 0, 0.22),
+    0 14px 36px -6px rgba(0, 0, 0, 0.4);
+  transform: rotate(var(--tilt, 0deg)) scale(1.02);
+  transition: none;
+  cursor: grabbing;
+}
+.sticky.editing {
+  transform: rotate(0deg);
+  background: #fffadf;
+}
+
+.sticky-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  cursor: grab;
+  user-select: none;
+  margin-bottom: 0.2rem;
+  /* Tiny strip mimics tape across the top. */
+  position: relative;
+}
+.sticky-header::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  width: 60px;
+  height: 14px;
+  transform: translateX(-50%) rotate(-2deg);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 1px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  /* Tape is part of the drag handle — mousedown on it bubbles to
+     .sticky-header which owns the drag logic. Default `none` would
+     let the click fall straight through to the dashboard row behind
+     the sticky, which is the wrong target. */
+  pointer-events: auto;
+  cursor: grab;
+}
+.sticky.editing .sticky-header::before {
+  display: none;
+}
+.sticky-grip {
+  color: rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  letter-spacing: -2px;
+}
+.sticky-actions {
+  display: flex;
+  gap: 0.2rem;
+}
+.sticky-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #5a4a1f;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+/* Scoped under .sticky so we out-specify the global
+   `button:hover:not(:disabled) { background: var(--surface-3); }`
+   in base.css — that dark surface clashes hard with the note's
+   warm-paper palette and rendered the dark-brown button text
+   unreadable on hover. */
+.sticky .sticky-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.1);
+  color: #2a2516;
+}
+.sticky-btn.primary {
+  background: #2a2516;
+  color: #fff4a8;
+  border-color: #2a2516;
+}
+.sticky .sticky-btn.primary:hover:not(:disabled) {
+  background: #1a1610;
+  color: #fff4a8;
+}
+.sticky .sticky-btn.danger:hover:not(:disabled) {
+  background: rgba(180, 30, 30, 0.18);
+  color: #6a0e0e;
+}
+
+.sticky-body {
+  word-break: break-word;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.sticky-body p { margin: 0 0 0.4em; }
+.sticky-body p:last-child { margin-bottom: 0; }
+.sticky-body h1, .sticky-body h2, .sticky-body h3 {
+  margin: 0.2em 0;
+  font-weight: 700;
+}
+.sticky-body code {
+  background: rgba(0, 0, 0, 0.08);
+  padding: 0 0.2em;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+}
+.sticky-body pre {
+  background: rgba(0, 0, 0, 0.08);
+  padding: 0.4em 0.6em;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 13px;
+}
+.sticky-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.sticky-body a {
+  color: #4b3c0e;
+  text-decoration: underline;
+}
+.sticky-empty {
+  color: rgba(0, 0, 0, 0.4);
+  font-style: italic;
+  margin: 0;
+}
+
+.sticky-textarea {
+  width: 100%;
+  min-height: 110px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  resize: vertical;
+  outline: none;
+  padding: 0;
+}
+
+.sticky-meta {
+  margin-top: 0.4rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed rgba(0, 0, 0, 0.15);
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.55);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "+ note" button shares the .new-wt dashed-tag style as the
+   "worktrees (N)" trigger next to it so the per-row action group
+   reads as a single family. `.new-wt-note` is a no-op marker for
+   future targeted tweaks. The count badge is docked to its LEFT,
+   visually fused via the .note-add-stack wrapper — same idiom as
+   the repo-chip + color-swatch pair (.repo-chip-stack). */
+.new-wt.new-wt-note { /* inherits .new-wt */ }
+
+.note-add-stack {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+.note-add-stack > .row-note-count {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0 0.45rem;
+  /* Dashed border to match .new-wt; the right side is removed so the
+     count chip and the button share that edge as a divider. */
+  border: 1px dashed var(--surface-2);
+  border-right: 0;
+  border-top-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-sm);
+  flex: 0 0 auto;
+}
+/* When the badge is present, square off the button's left side so the
+   two pieces visually fuse into a single element. `:has()` keeps the
+   button's full radius when there's no badge (count == 0). */
+.note-add-stack:has(.row-note-count) > .new-wt-note {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Undo toast stack. Lives in the bottom-right of the viewport above
+   every dashboard surface so a deleted note is one click away from
+   being restored. Auto-dismisses after ~8s (see UNDO_GRACE_MS in
+   StickyNotesLayer.svelte). */
+.undo-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1500;
+  pointer-events: none;
+}
+.undo-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #2a2516;
+  color: #fff4a8;
+  border: 1px solid rgba(255, 244, 168, 0.18);
+  border-radius: 6px;
+  padding: 7px 8px 7px 12px;
+  font-size: 13px;
+  box-shadow:
+    0 4px 14px -2px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 244, 168, 0.05) inset;
+  animation: undo-toast-in 180ms ease;
+  max-width: 360px;
+}
+@keyframes undo-toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.undo-toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.undo-toast-btn {
+  background: #fff4a8;
+  color: #2a2516;
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.undo-toast-btn:hover { background: #ffec80; }
+.undo-toast-dismiss {
+  background: transparent;
+  color: rgba(255, 244, 168, 0.55);
+  border: 0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.undo-toast-dismiss:hover { color: #fff4a8; }

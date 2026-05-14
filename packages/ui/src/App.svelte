@@ -8,6 +8,9 @@
   import SourceControlPane from "./SourceControlPane.svelte";
   import Tooltip from "./Tooltip.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
+  import StickyNotesLayer from "./StickyNotesLayer.svelte";
+  import { spawnNote } from "./StickyNotesLayer.svelte";
+  import { notesCountByAnchor } from "./notes-counts";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -1154,6 +1157,12 @@
    *  prop and refetches its cached diff when the value increments. */
   let fsChangeKey: Record<string, number> = {};
 
+  /** Bumped every time the daemon broadcasts a note_create / note_update
+   *  / note_delete SSE event. Passed to <StickyNotesLayer> so it
+   *  refetches /api/notes — picks up notes created in another tab or
+   *  edited by hand on disk. */
+  let notesChangeKey = 0;
+
   const expandedStore = new ExpandedStore(
     typeof window !== "undefined"
       ? window.localStorage
@@ -1489,6 +1498,26 @@
     }
   }
 
+  /** Cmd+Z / Cmd+Shift+Z target lookup. Pulls a fresh `/api/events`
+   *  snapshot before picking, so a Ctrl+Z pressed in the gap between
+   *  a POST/DELETE response and the SSE-triggered refresh still hits
+   *  the latest event instead of an older sibling. */
+  async function runWorkspaceUndoRedo(direction: "undo" | "redo"): Promise<void> {
+    let liveEvents: Event[];
+    try {
+      const res = await fetch("/api/events");
+      if (!res.ok) return;
+      liveEvents = (await res.json()) as Event[];
+    } catch {
+      liveEvents = events;
+    }
+    const target = direction === "redo"
+      ? liveEvents.find((ev) => ev.reversible && ev.undone)
+      : liveEvents.find((ev) => ev.reversible && !ev.undone);
+    if (!target) return;
+    await toggleEvent(target.id, direction);
+  }
+
   async function toggleEvent(id: string, toggle: "undo" | "redo") {
     error = "";
     try {
@@ -1567,6 +1596,25 @@
       } catch {
         return;
       }
+      if (
+        payload.kind === "note_create" ||
+        payload.kind === "note_update" ||
+        payload.kind === "note_delete"
+      ) {
+        notesChangeKey++;
+        return;
+      }
+      // Undo / redo toggles re-broadcast as `{ kind: "undo"|"redo",
+      // eventId }`. We don't know from the payload whether the
+      // underlying event was a note operation, so just bump the
+      // change key on every toggle — re-fetching /api/notes is cheap
+      // and avoids the "undo works after reload but UI doesn't
+      // update" bug where a restored note stayed invisible until
+      // the next page load.
+      if (payload.kind === "undo" || payload.kind === "redo") {
+        notesChangeKey++;
+        return;
+      }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
       fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
@@ -1640,7 +1688,56 @@
       const inv = ev.inverse as { oldName?: string };
       return `Renamed ${inv?.oldName ?? "?"} → ${p?.newName ?? "?"}`;
     }
+    if (ev.type === "create_note" || ev.type === "remove_note") {
+      const inv = ev.inverse as
+        | { note?: { body?: string; anchors?: string[] } }
+        | undefined;
+      const excerpt = noteExcerpt(inv?.note?.body);
+      const where = anchorLabel(inv?.note?.anchors?.[0]);
+      const verb = ev.type === "create_note" ? "Created note" : "Deleted note";
+      const head = excerpt ? `${verb} “${excerpt}”` : verb;
+      return where ? `${head} · ${where}` : head;
+    }
     return ev.type;
+  }
+
+  /** First non-empty line of a note's body, trimmed to a length that
+   *  fits comfortably inside the events popover's row. Falls back to
+   *  empty string so the caller can decide between "Removed note" and
+   *  "Removed note "blah"". */
+  function noteExcerpt(body: string | undefined): string {
+    if (!body) return "";
+    const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
+    const trimmed = firstLine.trim();
+    if (trimmed.length <= 40) return trimmed;
+    return trimmed.slice(0, 39) + "…";
+  }
+
+  /** Pretty-print an anchor string for the events list. Maps a
+   *  `worktree:<path>` anchor back to `<repo>/<branch>` by looking up
+   *  the current `repos` snapshot. Falls back to the basename of the
+   *  raw path when the repo's been removed since the event was logged
+   *  (events are historical; repos may have changed). */
+  function anchorLabel(anchor: string | undefined): string {
+    if (!anchor) return "";
+    if (anchor.startsWith("worktree:")) {
+      const path = anchor.slice("worktree:".length);
+      for (const r of repos) {
+        const wt = r.worktrees?.find((w) => w.path === path);
+        if (wt) return `${r.name ?? "?"} · ${wt.branch}`;
+      }
+      return path.split("/").filter(Boolean).pop() ?? path;
+    }
+    if (anchor.startsWith("repo:")) {
+      const path = anchor.slice("repo:".length);
+      const r = repos.find((r) => r.path === path);
+      if (r) return r.name ?? path;
+      return path.split("/").filter(Boolean).pop() ?? path;
+    }
+    if (anchor.startsWith("commit:")) {
+      return `commit ${anchor.slice("commit:".length).slice(0, 8)}`;
+    }
+    return anchor;
   }
 
   function relTime(iso: string): string {
@@ -2014,8 +2111,35 @@
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
         zenRowKey = null;
       }
+      // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
+      // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input
+      // / textarea / contentEditable is focused so the user's local
+      // text-undo still works while editing a sticky note or a form.
+      // `e.code === "KeyZ"` instead of `e.key` so non-QWERTY layouts
+      // and Caps-Lock states still trigger reliably.
+      const mod = e.metaKey || e.ctrlKey;
+      const isUndo = mod && !e.altKey && !e.shiftKey && e.code === "KeyZ";
+      const isRedo =
+        (mod && !e.altKey && e.shiftKey && e.code === "KeyZ") ||
+        (mod && !e.altKey && !e.shiftKey && e.code === "KeyY");
+      if (!isUndo && !isRedo) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        t?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      void runWorkspaceUndoRedo(isRedo ? "redo" : "undo");
     };
-    document.addEventListener("keydown", handleKey);
+    // Window-level capture so this fires before any descendant handlers
+    // can stopPropagation the keydown — which used to happen when a
+    // popover swallowed Cmd+Z on its way to the document listener.
+    window.addEventListener("keydown", handleKey, { capture: true });
     // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
     // when the user has open sessions (claude/codex chats, terminals).
     // No prompt on an empty dashboard so a fresh reload stays silent.
@@ -2042,7 +2166,7 @@
     const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
     return () => {
       document.removeEventListener("click", handleDocClick);
-      document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
       stopTuiPolling();
       unsubStream();
@@ -2292,6 +2416,8 @@
       {#each rows as row (row.key)}
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
+        {@const noteAnchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`}
+        {@const noteCount = $notesCountByAnchor[noteAnchor] ?? 0}
         <li
           class="row"
           class:row-folded={rowFolded[row.key]}
@@ -2660,6 +2786,31 @@
               <span class="branch warn">no worktrees</span>
             {/if}
 
+            <!-- Count badge fused to the LEFT of the "+ note" button via
+                 a flex stack, same idiom as `.repo-chip-stack` for the
+                 color swatch + repo chip. When the row has zero notes
+                 the badge is hidden and the button looks like any other
+                 `.new-wt` action; the moment a note lands, the count
+                 chip sprouts on the left without breaking layout flow. -->
+            <span class="note-add-stack">
+              {#if noteCount > 0}
+                <span
+                  class="row-note-count"
+                  title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"}`}
+                >{noteCount}</span>
+              {/if}
+            <button
+              class="new-wt new-wt-note"
+              title={wt
+                ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
+                : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
+              on:click|stopPropagation={(e) => {
+                const btn = e.currentTarget as HTMLButtonElement;
+                const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
+                void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
+              }}
+            >+ note</button>
+            </span>
             <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
               <button
                 class="new-wt"
@@ -3141,6 +3292,8 @@
     </ul>
   {/if}
 </main>
+
+<StickyNotesLayer changeKey={notesChangeKey} />
 
 {#if dirtyCheckout}
   <div

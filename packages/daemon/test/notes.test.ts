@@ -1,0 +1,264 @@
+import { test, expect, describe } from "bun:test";
+import { mkdtemp, readFile, writeFile, readdir, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NotesStore, parseNoteFile, serializeNoteFile } from "../src/notes";
+
+async function tempDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "supergit-notes-test-"));
+}
+
+describe("parseNoteFile", () => {
+  test("parses frontmatter with id, anchors, tags and body", () => {
+    const raw = [
+      "---",
+      "id: 2026-05-13-audio-merge",
+      "anchors:",
+      "  - repo:needle-engine/src/audio/AudioSource.ts:42",
+      "  - repo:needle-engine/src/audio/",
+      "  - commit:abc123",
+      "tags: [followup, xr]",
+      "createdAt: 2026-05-13T10:00:00.000Z",
+      "updatedAt: 2026-05-13T12:00:00.000Z",
+      "---",
+      "Body. Standard **markdown** — supergit renders it.",
+      "",
+      "Second paragraph.",
+    ].join("\n");
+    const parsed = parseNoteFile(raw);
+    expect(parsed.id).toBe("2026-05-13-audio-merge");
+    expect(parsed.anchors).toEqual([
+      "repo:needle-engine/src/audio/AudioSource.ts:42",
+      "repo:needle-engine/src/audio/",
+      "commit:abc123",
+    ]);
+    expect(parsed.tags).toEqual(["followup", "xr"]);
+    expect(parsed.createdAt).toBe("2026-05-13T10:00:00.000Z");
+    expect(parsed.updatedAt).toBe("2026-05-13T12:00:00.000Z");
+    expect(parsed.body).toBe(
+      "Body. Standard **markdown** — supergit renders it.\n\nSecond paragraph.",
+    );
+  });
+
+  test("accepts empty anchors/tags blocks", () => {
+    const raw = [
+      "---",
+      "id: empty",
+      "anchors: []",
+      "tags: []",
+      "---",
+      "Body",
+    ].join("\n");
+    const parsed = parseNoteFile(raw);
+    expect(parsed.anchors).toEqual([]);
+    expect(parsed.tags).toEqual([]);
+    expect(parsed.body).toBe("Body");
+  });
+
+  test("treats missing frontmatter as a parse error", () => {
+    expect(() => parseNoteFile("no frontmatter here")).toThrow(/frontmatter/);
+  });
+
+  test("treats missing id as a parse error", () => {
+    expect(() =>
+      parseNoteFile("---\nanchors: []\n---\nbody"),
+    ).toThrow(/id/);
+  });
+
+  test("round-trips through serializeNoteFile", () => {
+    const raw = serializeNoteFile({
+      id: "n1",
+      anchors: ["repo:foo/src/a.ts:1", "commit:abc"],
+      tags: ["bug"],
+      createdAt: "2026-05-14T00:00:00.000Z",
+      updatedAt: "2026-05-14T00:00:00.000Z",
+      body: "Hello\n\nWorld",
+    });
+    const parsed = parseNoteFile(raw);
+    expect(parsed.id).toBe("n1");
+    expect(parsed.anchors).toEqual(["repo:foo/src/a.ts:1", "commit:abc"]);
+    expect(parsed.tags).toEqual(["bug"]);
+    expect(parsed.body).toBe("Hello\n\nWorld");
+  });
+});
+
+describe("NotesStore", () => {
+  test("opens an empty notes dir", async () => {
+    const store = await NotesStore.open(await tempDir());
+    expect(await store.list()).toEqual([]);
+  });
+
+  test("create persists a note as <id>.md under notes/", async () => {
+    const path = await tempDir();
+    const store = await NotesStore.open(path);
+    const note = await store.create({
+      body: "Hello world",
+      anchors: ["repo:foo/src/a.ts:1"],
+      tags: ["x"],
+    });
+    expect(note.id).toMatch(/^[0-9a-z-]+$/);
+    expect(note.body).toBe("Hello world");
+    expect(note.anchors).toEqual(["repo:foo/src/a.ts:1"]);
+    expect(note.tags).toEqual(["x"]);
+    expect(Date.parse(note.createdAt)).not.toBeNaN();
+    expect(note.createdAt).toBe(note.updatedAt);
+
+    const onDisk = await readdir(join(path, "notes"));
+    expect(onDisk).toEqual([`${note.id}.md`]);
+    const raw = await readFile(join(path, "notes", `${note.id}.md`), "utf-8");
+    expect(raw.startsWith("---\n")).toBe(true);
+    expect(raw).toContain(`id: ${note.id}`);
+    expect(raw.endsWith("Hello world")).toBe(true);
+  });
+
+  test("create honors an explicit id when valid + unique", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const note = await store.create({
+      id: "2026-05-14-my-note",
+      body: "x",
+    });
+    expect(note.id).toBe("2026-05-14-my-note");
+  });
+
+  test("create rejects an id with disallowed characters", async () => {
+    const store = await NotesStore.open(await tempDir());
+    await expect(
+      store.create({ id: "bad/id", body: "x" }),
+    ).rejects.toThrow(/id/);
+    await expect(
+      store.create({ id: "bad id", body: "x" }),
+    ).rejects.toThrow(/id/);
+    await expect(
+      store.create({ id: "", body: "x" }),
+    ).rejects.toThrow(/id/);
+  });
+
+  test("create rejects a duplicate id", async () => {
+    const store = await NotesStore.open(await tempDir());
+    await store.create({ id: "dup", body: "a" });
+    await expect(store.create({ id: "dup", body: "b" })).rejects.toThrow(
+      /exists/,
+    );
+  });
+
+  test("list returns every note sorted by createdAt desc", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const a = await store.create({ body: "a" });
+    // small wait so createdAt timestamps differ
+    await new Promise((r) => setTimeout(r, 5));
+    const b = await store.create({ body: "b" });
+    const all = await store.list();
+    expect(all.map((n) => n.id)).toEqual([b.id, a.id]);
+  });
+
+  test("list with anchorPrefix filters notes by anchor", async () => {
+    const store = await NotesStore.open(await tempDir());
+    await store.create({ body: "x", anchors: ["repo:foo/a.ts:1"] });
+    await store.create({ body: "y", anchors: ["repo:bar/b.ts:1"] });
+    await store.create({ body: "z", anchors: ["commit:abc123"] });
+    const foo = await store.list({ anchorPrefix: "repo:foo/" });
+    expect(foo.map((n) => n.body)).toEqual(["x"]);
+    const cms = await store.list({ anchorPrefix: "commit:" });
+    expect(cms.map((n) => n.body)).toEqual(["z"]);
+  });
+
+  test("get returns null for unknown id", async () => {
+    const store = await NotesStore.open(await tempDir());
+    expect(await store.get("nope")).toBeNull();
+  });
+
+  test("update changes body, anchors, tags; bumps updatedAt", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const note = await store.create({ body: "old", tags: ["a"] });
+    await new Promise((r) => setTimeout(r, 5));
+    const updated = await store.update(note.id, {
+      body: "new",
+      anchors: ["repo:foo/x.ts:1"],
+      tags: ["b"],
+    });
+    expect(updated.body).toBe("new");
+    expect(updated.anchors).toEqual(["repo:foo/x.ts:1"]);
+    expect(updated.tags).toEqual(["b"]);
+    expect(updated.createdAt).toBe(note.createdAt);
+    expect(Date.parse(updated.updatedAt)).toBeGreaterThan(
+      Date.parse(note.updatedAt),
+    );
+  });
+
+  test("update with no fields is a no-op (preserves updatedAt)", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const note = await store.create({ body: "x" });
+    const same = await store.update(note.id, {});
+    expect(same.updatedAt).toBe(note.updatedAt);
+  });
+
+  test("update throws on unknown id", async () => {
+    const store = await NotesStore.open(await tempDir());
+    await expect(store.update("nope", { body: "x" })).rejects.toThrow(/not found/);
+  });
+
+  test("remove deletes the file and returns true", async () => {
+    const path = await tempDir();
+    const store = await NotesStore.open(path);
+    const note = await store.create({ body: "x" });
+    expect(await store.remove(note.id)).toBe(true);
+    expect(await readdir(join(path, "notes"))).toEqual([]);
+    expect(await store.get(note.id)).toBeNull();
+  });
+
+  test("remove returns false for an unknown id", async () => {
+    const store = await NotesStore.open(await tempDir());
+    expect(await store.remove("nope")).toBe(false);
+  });
+
+  test("ignores non-.md files and unparseable .md files when listing", async () => {
+    const path = await tempDir();
+    const store = await NotesStore.open(path);
+    await store.create({ id: "ok", body: "ok" });
+    await writeFile(join(path, "notes", "stray.txt"), "not a note");
+    await writeFile(join(path, "notes", "broken.md"), "no frontmatter");
+    const all = await store.list();
+    expect(all.map((n) => n.id)).toEqual(["ok"]);
+  });
+
+  test("notes persist across re-opens of the same workspace", async () => {
+    const path = await tempDir();
+    const a = await NotesStore.open(path);
+    const note = await a.create({ body: "persist me", tags: ["t"] });
+    const b = await NotesStore.open(path);
+    const all = await b.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe(note.id);
+    expect(all[0]?.body).toBe("persist me");
+  });
+
+  test("create lazily creates the notes/ directory if missing", async () => {
+    const path = await tempDir();
+    // open does not require the dir to exist; create makes it
+    const store = await NotesStore.open(path);
+    await store.create({ body: "hi" });
+    const stat = await readdir(join(path, "notes"));
+    expect(stat.length).toBe(1);
+  });
+
+  test("rehydrates an externally-edited note file from disk", async () => {
+    const path = await tempDir();
+    await mkdir(join(path, "notes"), { recursive: true });
+    const raw = [
+      "---",
+      "id: external",
+      "anchors:",
+      "  - repo:foo/a.ts:7",
+      "tags: [manual]",
+      "---",
+      "Wrote this by hand.",
+    ].join("\n");
+    await writeFile(join(path, "notes", "external.md"), raw);
+    const store = await NotesStore.open(path);
+    const note = await store.get("external");
+    expect(note).not.toBeNull();
+    expect(note?.anchors).toEqual(["repo:foo/a.ts:7"]);
+    expect(note?.tags).toEqual(["manual"]);
+    expect(note?.body).toBe("Wrote this by hand.");
+  });
+});
