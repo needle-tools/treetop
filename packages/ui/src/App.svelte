@@ -1305,6 +1305,20 @@
     if (!wasOpen) toggleOpenSessionInWt(wtPath, s);
     void scrollToAndFlashSession(wtPath, s.source);
   }
+  /** Click handler for the row-head "most recent session" badge. Never
+   *  closes the session — always brings it into view: unfold if folded,
+   *  open it if it wasn't open, then scroll + flash. The `×` on the
+   *  session column is the only path to close it; the badge is a
+   *  one-way "show me this" affordance. */
+  function revealSession(
+    rowKey: string,
+    wtPath: string,
+    s: OpenSession,
+  ): void {
+    unfoldRowIfFolded(rowKey);
+    if (!isOpenInWt(wtPath, s.source)) toggleOpenSessionInWt(wtPath, s);
+    void scrollToAndFlashSession(wtPath, s.source);
+  }
   /** After unfold (and any state mutation), wait for Svelte to flush
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
    *  laid-out, then scroll the strip to the target session column and
@@ -2739,9 +2753,9 @@
                   <button
                     class="agent-badge agent-{a.agent}"
                     class:active={isOpenInWt(wt.path, a.source)}
-                    title={`${a.manualTitle ?? `Open the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
+                    title={`${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
                     on:click={() =>
-                      revealOrToggleSession(row.key, wt.path, {
+                      revealSession(row.key, wt.path, {
                         agent: a.agent,
                         source: a.source,
                       })}
@@ -2765,7 +2779,7 @@
                           [wt.path]: !agentsPopoverOpen[wt.path],
                         };
                       }}
-                    >+{pickerSessions.length - 1}</button>
+                    >{pickerSessions.length}</button>
                     {#if agentsPopoverOpen[wt.path]}
                       <Popover variant="agents">
                         <svelte:fragment slot="head">

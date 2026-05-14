@@ -822,13 +822,15 @@ button.branch-button:hover {
 }
 .wt-tt-subject {
   color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* No max-width here — the grid column's `1fr` handles the upper
-     bound now. A duplicate `max-width: 40ch` was the real reason
-     the tooltip looked stuck at the old width even after the outer
-     `.tt-wide` was bumped to 64rem. */
+  /* Allow long commit subjects to wrap onto multiple lines instead
+     of getting ellipsized at the single-line column width. The grid
+     row grows to fit; sha / author / date stay anchored to the
+     first-line baseline via the parent's `align-items: baseline`. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  /* Snug line-height for the wrapped continuation so a wrapped
+     subject doesn't feel like a separate paragraph. */
+  line-height: 1.3;
 }
 /* Em-dash separator before each commit subject — visually divides
    the metadata trio (sha / author / date) from the headline so the
