@@ -279,6 +279,14 @@
   const badgeAnimDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("badgeanim") === "1";
+  /** Apply the `.pulsate` modifier to every push StatusBadge so the
+   *  stale-unpushed opacity oscillation can be eyeballed without
+   *  wiring it up to the real staleness threshold yet. Pairs with
+   *  `?badgeanim=1` (so both ↑ and ↓ render); the pulsate effect
+   *  only shows on the ↑ badge by design. */
+  const pulsateDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("pulsate") === "1";
   $: tuisHot =
     tuiHotDebug ||
     tuiProcs.some(
@@ -1660,21 +1668,11 @@
     return `${Math.floor(d / 86400)}d ago`;
   }
 
-  /** Once the oldest unpushed commit is older than this, the green
-   *  "ahead" pill brightens + thickens to signal staleness. Matches
-   *  the tentative threshold in PLAN.md's reminder-rules section. */
-  const STALE_AHEAD_HOURS = 4;
   /** The double-blink animation on the ↑N pill only kicks in once the
    *  oldest unpushed commit has been sitting locally for this long.
    *  Fresh commits stay calm (you just made them; you know they're
    *  there); the nudge starts when the work has been parked. */
-  const BLINK_AHEAD_MINUTES = 30;
-
-  function aheadStale(b: BranchStatus): boolean {
-    if (!b.aheadOldestTime) return false;
-    const ageH = (Date.now() - Date.parse(b.aheadOldestTime)) / 3_600_000;
-    return ageH >= STALE_AHEAD_HOURS;
-  }
+  const BLINK_AHEAD_MINUTES = 20;
 
   function aheadAged(b: BranchStatus): boolean {
     if (!b.aheadOldestTime) return false;
@@ -2466,9 +2464,11 @@
                 <!-- `?badgeanim=1`: bypass the priority-pick + the
                      real wt state and render both push and pull badges
                      so the user can eyeball both border animations
-                     at once. Skips the Tooltip wrapper (preview only). -->
+                     at once. Skips the Tooltip wrapper (preview only).
+                     `?pulsate=1` additionally toggles the opacity
+                     pulse on the push variant (no-op for ↓). -->
                 <span class="status-badge-debug-row">
-                  <StatusBadge ahead={1} behind={0} dirty={0} />
+                  <StatusBadge ahead={1} behind={0} dirty={0} pulsate={pulsateDebug} />
                   <StatusBadge ahead={0} behind={1} dirty={0} />
                 </span>
               {:else if rowFolded[row.key] && wt}
@@ -2484,13 +2484,17 @@
                        lists) depending on which signal is showing. -->
                   <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                     <span slot="trigger" class="status-badge-trigger">
-                      <StatusBadge ahead={fAhead} behind={fBehind} dirty={fDirty} />
+                      <StatusBadge
+                        ahead={fAhead}
+                        behind={fBehind}
+                        dirty={fDirty}
+                        pulsate={fAhead > 0 && wt.branchStatus ? aheadAged(wt.branchStatus) : false}
+                      />
                     </span>
                     <span slot="content" class="wt-tt-content">
                       {#if fAhead > 0 && wt.branchStatus}
-                        <!-- Mirror of the expanded `.ab-ahead` tooltip
-                             at line ~2949 below: aheadTooltip header +
-                             the unpushed-commits grid. -->
+                        <!-- Mirror of the expanded ahead tooltip:
+                             aheadTooltip header + unpushed-commits grid. -->
                         <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
                         {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
                           <span class="muted small">Loading commits…</span>
@@ -2513,7 +2517,7 @@
                           {/if}
                         {/if}
                       {:else if fBehind > 0 && wt.branchStatus}
-                        <!-- Mirror of the expanded `.ab-behind` tooltip. -->
+                        <!-- Mirror of the expanded behind tooltip. -->
                         <div class="wt-tt-section-head">
                           {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
                         </div>
@@ -3001,12 +3005,12 @@
                 {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
                   {#if wt.branchStatus.ahead > 0}
                     <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                      <span
-                        slot="trigger"
-                        class="ab ab-ahead ab-trigger"
-                        class:ab-ahead-stale={aheadStale(wt.branchStatus)}
-                        class:ab-ahead-aged={aheadAged(wt.branchStatus)}
-                      ><span class="ab-arrow">↑</span>{wt.branchStatus.ahead}</span>
+                      <span slot="trigger" class="status-badge-trigger">
+                        <StatusBadge
+                          ahead={wt.branchStatus.ahead}
+                          pulsate={aheadAged(wt.branchStatus)}
+                        />
+                      </span>
                       <span slot="content" class="wt-tt-content">
                         <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
                         {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
@@ -3034,10 +3038,9 @@
                   {/if}
                   {#if wt.branchStatus.behind > 0}
                     <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                      <span
-                        slot="trigger"
-                        class="ab ab-behind ab-trigger"
-                      >↓{wt.branchStatus.behind}</span>
+                      <span slot="trigger" class="status-badge-trigger">
+                        <StatusBadge behind={wt.branchStatus.behind} />
+                      </span>
                       <span slot="content" class="wt-tt-content">
                         <div class="wt-tt-section-head">
                           {wt.branchStatus.behind} commit{wt.branchStatus.behind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}

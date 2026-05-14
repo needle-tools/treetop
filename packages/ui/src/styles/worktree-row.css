@@ -446,100 +446,186 @@ button.branch-button:hover {
      used elsewhere in the row (e.g. the status-summary-trigger). */
   cursor: help;
 }
-/* Push (ahead) and pull (behind) badges: solid coloured body, with a
-   thin rotating comet-trail ring on the border only — same conic-
-   gradient + mask trick used by `.actions-btn.hot`. The middle of
-   the badge stays the plain chip colour; the animation lives entirely
-   on the border. Direction (CW vs CCW) is a wash at this size — the
-   speeds differ so push reads as more energetic.
-   `position: relative` anchors the `::before` ring. `isolation:
-   isolate` is intentionally omitted: the pseudo lives in front of
-   the text (z-stack-wise) but uses an XOR mask to carve out the
-   inner area, so the text stays readable. */
-
-@property --ahead-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-@property --behind-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
+/* Push (ahead) and pull (behind) badges:
+   - Solid coloured body (chip-green / chip-orange).
+   - A pseudo-element fills the badge, holds a single vertical
+     gradient highlight, and translates up or down through it.
+   - A horizontal mask reveals the pseudo ONLY at the badge's left
+     and right ~1.5px edges. So instead of seeing a band sweep through
+     the middle, you see two thin vertical light streaks racing along
+     the LEFT and RIGHT borders.
+   - Push streaks travel UP (commits going up to remote); pull
+     streaks travel DOWN (commits coming down). Push runs faster
+     (2.4s vs 3.2s) to read more urgently.
+   - The mask is fixed in the pseudo's local coordinates, so the
+     edge stripes stay anchored to the badge's left/right while the
+     gradient slides through behind them.
+   - Loop is seamless: the pseudo is fully off-screen at both
+     animation endpoints (translateY ±100%), so the reset is invisible. */
 
 .status-badge-ahead {
   color: var(--chip-green-text);
   background: var(--chip-green-bg);
   position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 .status-badge-ahead::before {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(
-    from var(--ahead-angle),
-    transparent 0deg,
-    transparent 240deg,
-    color-mix(in srgb, var(--chip-green-text) 40%, transparent) 290deg,
-    color-mix(in srgb, var(--chip-green-text) 90%, transparent) 350deg,
-    color-mix(in srgb, var(--chip-green-text) 100%, white 10%) 360deg
+  /* Pseudo is 2× badge height so the comet streak is 2× as long. The
+     gradient stops still span 0%→100% of the pseudo, which is now
+     2× badge height in pixels. The horizontal mask + translateY
+     animation are unchanged: badge's `overflow: hidden` clips the
+     pseudo to the badge's visible area, and the pseudo is fully
+     off-screen at both translateY endpoints so the loop stays
+     seamless. */
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 200%;
+  z-index: -1;
+  /* Comet shape: the badge flows UP, so the leading edge (head) of
+     the highlight sits at the TOP of the gradient and fades down
+     into a long tail. Tight transparent→peak ramp (0% → 12%), then
+     a gradual peak→transparent fall (12% → 100%). */
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--chip-green-text) 100%, transparent) 12%,
+    color-mix(in srgb, var(--chip-green-text) 60%, transparent) 30%,
+    color-mix(in srgb, var(--chip-green-text) 30%, transparent) 55%,
+    color-mix(in srgb, var(--chip-green-text) 12%, transparent) 80%,
+    transparent 100%
   );
+  /* Reveal only ~1.5px-wide strips at the left and right edges. */
   -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-  animation: ahead-ring-spin 2.4s linear infinite;
+    linear-gradient(
+      90deg,
+      black 0,
+      black 1.5px,
+      transparent 1.5px,
+      transparent calc(100% - 1.5px),
+      black calc(100% - 1.5px),
+      black 100%
+    );
+  mask:
+    linear-gradient(
+      90deg,
+      black 0,
+      black 1.5px,
+      transparent 1.5px,
+      transparent calc(100% - 1.5px),
+      black calc(100% - 1.5px),
+      black 100%
+    );
+  animation: badge-edge-flow-up 2.4s linear infinite;
   pointer-events: none;
 }
-@keyframes ahead-ring-spin {
-  to { --ahead-angle: 360deg; }
+/* translateY 100% = pseudo's TOP is at the parent's BOTTOM edge — the
+   pseudo (and its mask) is entirely below the visible badge. -100% =
+   pseudo's BOTTOM is at the parent's TOP edge — entirely above. So
+   100% → -100% moves the pseudo (and the gradient highlight inside
+   it) UP through the visible region; the user sees the edge streaks
+   travel UP. */
+@keyframes badge-edge-flow-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(-100%); }
 }
-/* Opt-in pulsate-while-still-ringing: opacity oscillates on top of
-   the rotating ring. Apply with `.status-badge-ahead.pulsate` to
-   nudge the user toward pushing without changing the base look. */
-.status-badge-ahead.pulsate::before {
-  animation:
-    ahead-ring-spin 2.4s linear infinite,
-    badge-ring-pulse 1.6s ease-in-out infinite;
+
+/* Opt-in pulsate cue for stale unpushed work — applied alongside the
+   flowing edge streaks. Double-blink heartbeat: two snap-on / snap-off
+   pulses (110ms on / 85ms gap / 110ms on) then ~1s rest, so unpushed
+   work catches the eye without a constant pulse. Background only — no
+   outer glow, no shadow (user found the halo distracting). */
+.status-badge-ahead.pulsate {
+  animation: status-badge-ahead-blink 1.4s linear infinite;
 }
-@keyframes badge-ring-pulse {
-  0%, 100% { opacity: 0.75; }
-  50%      { opacity: 1; }
+@keyframes status-badge-ahead-blink {
+  0%, 4%, 14%, 18%, 28%, 100% {
+    background: var(--chip-green-bg);
+  }
+  5%, 13%, 19%, 27% {
+    background: #1f8a4a;
+  }
+}
+/* Respect prefers-reduced-motion: drop both the heartbeat and the
+   edge-flow streak, but keep a brighter background-mix as a static
+   cue so the pill still reads as "unpushed work present." */
+@media (prefers-reduced-motion: reduce) {
+  .status-badge-ahead,
+  .status-badge-ahead.pulsate {
+    animation: none;
+    background: color-mix(
+      in srgb,
+      var(--chip-green-bg) 55%,
+      var(--chip-green-text) 45%
+    );
+  }
+  .status-badge-ahead::before,
+  .status-badge-behind::before {
+    animation: none;
+  }
 }
 
 .status-badge-behind {
   color: var(--chip-orange-text);
   background: var(--chip-orange-bg);
   position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 .status-badge-behind::before {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(
-    from var(--behind-angle),
-    transparent 0deg,
-    transparent 240deg,
-    rgba(245, 200, 100, 0.45) 290deg,
-    rgba(245, 200, 100, 0.85) 350deg,
-    rgba(255, 220, 150, 1) 360deg
+  /* Same 2× pseudo-height as the ahead variant — see the note there
+     for the seamless-loop reasoning. */
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 200%;
+  z-index: -1;
+  /* Comet shape: badge flows DOWN, so the leading edge (head) sits
+     at the BOTTOM of the gradient. Long tail above (gradual fade-in
+     from 0% to 88%), tight peak→transparent ramp at the bottom
+     (88% → 100%). */
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(245, 200, 100, 0.12) 20%,
+    rgba(245, 200, 100, 0.3) 45%,
+    rgba(245, 200, 100, 0.6) 70%,
+    rgba(255, 220, 150, 1) 88%,
+    transparent 100%
   );
   -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-  animation: behind-ring-spin 3.2s linear infinite;
+    linear-gradient(
+      90deg,
+      black 0,
+      black 1.5px,
+      transparent 1.5px,
+      transparent calc(100% - 1.5px),
+      black calc(100% - 1.5px),
+      black 100%
+    );
+  mask:
+    linear-gradient(
+      90deg,
+      black 0,
+      black 1.5px,
+      transparent 1.5px,
+      transparent calc(100% - 1.5px),
+      black calc(100% - 1.5px),
+      black 100%
+    );
+  animation: badge-edge-flow-down 3.2s linear infinite;
   pointer-events: none;
 }
-@keyframes behind-ring-spin {
-  to { --behind-angle: -360deg; }
+/* -100% → 100% moves the pseudo DOWN through the visible region.
+   Edge streaks travel DOWN — "commits coming down from upstream." */
+@keyframes badge-edge-flow-down {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(100%); }
 }
 
 /* `?badgeanim=1` preview wrapper — small gap between the two debug
@@ -667,101 +753,6 @@ button.branch-button:hover {
   background: var(--status-clean);
 }
 
-/* Ahead/Behind chip family. */
-.ab {
-  padding: 0.1rem 0.45rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.8rem;
-  font-weight: 600;
-  font-family: ui-monospace, monospace;
-  letter-spacing: 0.02em;
-}
-/* Ahead = local commits not pushed yet. Green = actionable.
- *
- * The badge blinks its background twice in rapid succession (heartbeat
- * cadence) and then rests, so unpushed work catches the eye across the
- * dashboard without a constant pulse. No box-shadow ripple: the user
- * found the surrounding glow distracting and asked for "just the
- * background" pulsating. Layout stays put (no transform). */
-/* Peak background for the double-blink. The previous version mixed
-   the resting bg with the text colour (chip-green-text), which at 75%
-   produced a near-text-coloured fill — the ↑N number washed out at
-   peak. The new peak is a punchy saturated green that stays well
-   below the text's lightness, so contrast survives the blink.
-   Keyframes use HOLD steps (0→ON→ON→OFF) rather than smooth ease, so
-   each blink reads as a snap rather than a fade. */
-@keyframes ab-ahead-blink {
-  0%, 4%, 14%, 18%, 28%, 100% {
-    background: var(--chip-green-bg);
-  }
-  5%, 13%, 19%, 27% {
-    background: #1f8a4a;
-  }
-}
-.ab-arrow {
-  /* Larger glyph + a small right-margin so the arrow visually sits
-     apart from the digit rather than fused into a single ligature. */
-  font-size: 1.2em;
-  line-height: 1;
-  margin-right: 0.25em;
-  display: inline-block;
-  vertical-align: -0.05em;
-}
-.ab-ahead {
-  background: var(--chip-green-bg);
-  color: var(--chip-green-text);
-}
-/* Animation only kicks in once the oldest unpushed commit has been
-   parked for BLINK_AHEAD_MINUTES (default 30m). Fresh commits stay
-   quiet so the user isn't nagged about work they just made.
-   1.4s cycle: two snap-on/snap-off blinks (5-13% and 19-27% of the
-   timeline, ≈110ms on / 85ms gap / 110ms on) then a 1s rest. Linear
-   timing keeps each blink crisp instead of fading in like ease. */
-.ab-ahead.ab-ahead-aged {
-  animation: ab-ahead-blink 1.4s linear infinite;
-}
-/* Stale variant: the oldest unpushed commit is older than
-   STALE_AHEAD_HOURS. Keep green so behind=orange stays distinct, but
-   brighten + thicken the outline so the pill reads as a nudge. */
-.ab-ahead-stale {
-  color: color-mix(in srgb, var(--chip-green-text) 100%, white 15%);
-}
-.ab-ahead-stale::before {
-  /* Static outline on stale (the pulse already lives on box-shadow,
-   * so we layer the stale ring via a pseudo-element border instead
-   * of fighting the animation). */
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border: 1px solid currentColor;
-  border-radius: var(--radius-sm);
-  pointer-events: none;
-}
-.ab-ahead {
-  position: relative;
-}
-/* Respect users who've asked for less motion: drop the animations
- * but keep the brighter background-mix as a static cue so unpushed
- * work is still visually distinct. */
-@media (prefers-reduced-motion: reduce) {
-  .ab-ahead,
-  .ab-ahead.ab-ahead-aged {
-    animation: none;
-    background: color-mix(
-      in srgb,
-      var(--chip-green-bg) 55%,
-      var(--chip-green-text) 45%
-    );
-    box-shadow: 0 0 0 1px
-      color-mix(in srgb, var(--chip-green-text) 50%, transparent);
-  }
-}
-/* Behind = upstream has commits you don't. Orange = needs attention. */
-.ab-behind {
-  background: var(--chip-orange-bg);
-  color: var(--chip-orange-text);
-}
-
 /* Hover-tooltip content for "N unstaged" / "↑N": multi-line block
  * inside Tooltip.svelte's content slot. The Tooltip outer chrome
  * (background, border, shadow) lives in Tooltip.svelte's scoped
@@ -866,12 +857,6 @@ button.branch-button:hover {
   font-size: 0.7rem;
   color: var(--text-3);
   font-style: italic;
-}
-/* ↑N / ↓N pills are hoverable — they own a Tooltip with commit
-   previews. cursor: help matches the question-mark affordance used by
-   .status-summary-trigger. */
-.ab-trigger {
-  cursor: help;
 }
 /* Hint that this status pill has a hover affordance. */
 .status-summary-trigger {
