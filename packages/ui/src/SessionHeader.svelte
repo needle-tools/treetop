@@ -72,6 +72,13 @@
   export let endSessionTitle: string =
     "SIGTERM the PTY and flip back to the chat view";
   export let resumeTitle: string = "Spawn a live resume PTY in this session's cwd";
+  /** Tooltip for the × close button. Default reflects SessionView's
+   *  semantics: the column unmounts but the JSONL stays on disk, so
+   *  reopening the session from the worktree's picker resumes the
+   *  full chat history. Consumers with different semantics (a fresh
+   *  TUI whose PTY dies when its column unmounts) should override. */
+  export let closeTitle: string =
+    "Close this column.\nThe session stays saved on disk — reopen it anytime from the worktree's session picker.";
 
   $: ctxChip = contextChip({
     tokens: contextTokens,
@@ -124,11 +131,28 @@
       <Tooltip variant="wide" placement="bottom">
         <span
           slot="trigger"
-          class="ctx-chip muted small"
+          class="ctx-bar"
           class:warn={ctxChip.ratio !== undefined && ctxChip.ratio > 0.6 && ctxChip.ratio <= 0.85}
           class:hot={ctxChip.ratio !== undefined && ctxChip.ratio > 0.85}
+          class:unknown={ctxChip.ratio === undefined}
+          aria-label={ctxChip.text}
         >
-          {ctxChip.text}
+          <span
+            class="ctx-bar-fill"
+            style:width={ctxChip.ratio !== undefined
+              ? `${Math.min(100, Math.round(ctxChip.ratio * 100))}%`
+              : "100%"}
+          ></span>
+          <span class="ctx-bar-text muted small">
+            <span class="ctx-bar-now">{ctxChip.absolute}</span><!--
+            --><span class="ctx-bar-rest">
+              {#if ctxChip.capText}
+                {` / ${ctxChip.capText} ctx (${Math.round((ctxChip.ratio ?? 0) * 100)}%)`}
+              {:else}
+                {` / ??? ctx`}
+              {/if}
+            </span>
+          </span>
         </span>
         <div slot="content" class="ctx-tt">
           <div class="ctx-tt-head">Estimated context size at the start of the next turn</div>
@@ -388,16 +412,95 @@
     background: var(--surface-3);
     color: var(--text-2);
   }
-  .ctx-chip {
-    font-variant-numeric: tabular-nums;
-    background: transparent;
-    color: inherit;
-    white-space: nowrap;
+  /* Compact horizontal "loading bar" representation of context usage.
+     The track is a thin dark strip; the fill grows with `ratio`. The
+     numeric label is hidden by default and slides in as a small
+     adjacent caption on hover, so the resting state stays quiet in
+     a busy header row. The full breakdown lives in the Tooltip popup
+     that wraps this trigger. */
+  /* Grid with two areas: the bar (track + fill stacked in the same
+     cell via grid-area: bar) and the hover-revealed label. */
+  .ctx-bar {
+    display: inline-grid;
+    grid-template-columns: 64px auto;
+    grid-template-areas: "bar text";
+    column-gap: 0.4rem;
+    align-items: center;
+    line-height: 1;
+    /* `help` paints the OS "?" cursor — signals there's more info on
+       hover (the Tooltip popup + the fade-in cap/% text). */
+    cursor: help;
   }
-  .ctx-chip.warn {
+  .ctx-bar > .ctx-bar-fill,
+  .ctx-bar::before {
+    height: 8px;
+    border-radius: 999px;
+    box-sizing: border-box;
+  }
+  /* `::before` is the empty track behind the fill. A 1px outline keeps
+     the bar legible even when the fill is the same hue as the
+     surrounding header background. */
+  .ctx-bar::before {
+    content: "";
+    display: block;
+    width: 64px;
+    background: var(--surface-3);
+    border: 1px solid var(--text-faint);
+    grid-area: bar;
+  }
+  /* In warn/hot states the outline echoes the fill so the chip reads
+     as one tinted unit instead of a neutral frame around a colored
+     stripe. */
+  .ctx-bar.warn::before {
+    border-color: var(--ctx-warn);
+  }
+  .ctx-bar.hot::before {
+    border-color: var(--ctx-hot);
+  }
+  .ctx-bar-fill {
+    grid-area: bar;
+    display: block;
+    background: var(--text-faint);
+    /* No own width — set inline via `style:width`. Transitions so a
+       poll-cycle bump doesn't jitter the bar. */
+    transition: width 200ms ease, background 200ms ease;
+  }
+  .ctx-bar.warn .ctx-bar-fill {
+    background: var(--ctx-warn);
+  }
+  .ctx-bar.hot .ctx-bar-fill {
+    background: var(--ctx-hot);
+  }
+  .ctx-bar.unknown .ctx-bar-fill {
+    /* Striped indeterminate look when we don't know the cap, so the
+       bar doesn't lie by showing a fixed fill level. */
+    background: repeating-linear-gradient(
+      45deg,
+      var(--text-faint) 0 4px,
+      transparent 4px 8px
+    );
+  }
+  .ctx-bar-text {
+    grid-area: text;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+    font-size: 0.68rem;
+    /* The "now" span sits at full opacity; the "rest" span (cap + %)
+       fades in on hover so the resting state is just the current size. */
+  }
+  .ctx-bar-rest {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .ctx-bar:hover .ctx-bar-rest,
+  .ctx-bar:focus-within .ctx-bar-rest {
+    opacity: 1;
+  }
+  .ctx-bar.warn .ctx-bar-text {
     color: var(--ctx-warn);
   }
-  .ctx-chip.hot {
+  .ctx-bar.hot .ctx-bar-text {
     color: var(--ctx-hot);
   }
   /* Tooltip body for the ctx-chip. `:global` because the slot content

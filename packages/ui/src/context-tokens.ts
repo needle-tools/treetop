@@ -24,6 +24,15 @@ export interface ContextChipInput {
 
 export interface ContextChip {
   text: string;
+  /** The "current size" part of `text`, on its own. Lets the header
+   *  render it as an always-visible label while keeping the cap +
+   *  percent in a hover-revealed suffix. Empty when there's no count
+   *  yet (e.g., a brand-new TUI column). */
+  absolute: string;
+  /** The cap, formatted like `1M` / `200k`, or undefined when the model
+   *  is unrecognised. Consumers render `???` themselves in that case so
+   *  they can style the placeholder distinctly. */
+  capText: string | undefined;
   /** 0..1, undefined when no cap is known. The header colors the chip
    *  amber past 0.75 and red past 0.9. */
   ratio: number | undefined;
@@ -111,12 +120,21 @@ export function contextChip(input: ContextChipInput): ContextChip | null {
     // Unknown model AND unknown provider — don't fabricate a cap.
     // The chip shows `42.1k / ??? ctx`; ratio stays undefined so the
     // warn/hot color escalation is skipped.
-    return { text: `${absolute} / ??? ctx`, ratio: undefined, exact: isExact };
+    return {
+      text: `${absolute} / ??? ctx`,
+      absolute,
+      capText: undefined,
+      ratio: undefined,
+      exact: isExact,
+    };
   }
   const ratio = empty ? 0 : tokens! / cap;
   const pct = Math.round(ratio * 100);
+  const capText = formatTokens(cap);
   return {
-    text: `${absolute} / ${formatTokens(cap)} ctx (${pct}%)`,
+    text: `${absolute} / ${capText} ctx (${pct}%)`,
+    absolute,
+    capText,
     ratio,
     exact: isExact,
   };

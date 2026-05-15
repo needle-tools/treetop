@@ -157,4 +157,24 @@ describe("contextChip", () => {
     });
     expect(chip!.text).toBe("250k / 1M ctx (25%)");
   });
+
+  test("exposes `absolute` and `capText` so the header can render them separately", () => {
+    const known = contextChip({
+      tokens: 220_561,
+      exact: true,
+      model: "claude-opus-4-7",
+    });
+    expect(known!.absolute).toBe("221k");
+    expect(known!.capText).toBe("1M");
+
+    const codex = contextChip({
+      tokens: 12_345,
+      exact: false,
+      model: "gpt-5-codex",
+      agent: "codex",
+    });
+    // Estimate prefix carries through into the absolute part.
+    expect(codex!.absolute).toBe("~12.3k");
+    expect(codex!.capText).toBeUndefined();
+  });
 });
