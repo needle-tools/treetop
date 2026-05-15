@@ -56,9 +56,34 @@ describe("listWorktrees against real git", () => {
     expect(branches).toEqual(["feat/audio", "main"]);
   });
 
-  test("returns empty array for a non-git directory", async () => {
-    const notARepo = await mkdtemp(join(tmpdir(), "supergit-notrepo-"));
-    expect(await listWorktrees(notARepo)).toEqual([]);
+  test("returns a synthetic nonGit entry for a plain directory", async () => {
+    // Lets the UI render terminals/agents in plain folders. The user can
+    // `git init` later and the next refresh picks up the real worktrees.
+    const notARepo = await realpath(await mkdtemp(join(tmpdir(), "supergit-notrepo-")));
+    expect(await listWorktrees(notARepo)).toEqual([
+      { path: notARepo, branch: "", head: "", bare: false, detached: false, nonGit: true },
+    ]);
+  });
+
+  test("returns empty array for a path that does not exist", async () => {
+    const missing = join(tmpdir(), "supergit-missing-" + Date.now() + "-" + Math.random());
+    expect(await listWorktrees(missing)).toEqual([]);
+  });
+
+  test("recognizes a folder as git after git init", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "supergit-init-")));
+    const before = await listWorktrees(dir);
+    expect(before[0]?.nonGit).toBe(true);
+
+    await $`git -C ${dir} init -q -b main`.quiet();
+    await $`git -C ${dir} config user.email test@example.com`.quiet();
+    await $`git -C ${dir} config user.name TestUser`.quiet();
+    await $`git -C ${dir} commit --allow-empty -m initial -q`.quiet();
+
+    const after = await listWorktrees(dir);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.nonGit).toBeUndefined();
+    expect(after[0]?.branch).toBe("main");
   });
 });
 

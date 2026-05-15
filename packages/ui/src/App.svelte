@@ -103,6 +103,7 @@
     branchStatus: BranchStatus | null;
     lastCommit: LastCommit | null;
     agents?: AgentSession[];
+    nonGit?: boolean;
   }
   interface Repo {
     id: string;
@@ -2819,7 +2820,9 @@
             {/if}
 
             {#if wt}
-              {#if wt.detached}
+              {#if wt.nonGit}
+                <span class="branch muted">folder</span>
+              {:else if wt.detached}
                 <span class="branch detached">detached @ {wt.head.slice(0, 7)}</span>
               {:else if wt.bare}
                 <span class="branch bare">bare</span>
@@ -3305,49 +3308,53 @@
                           <span class="wt-pick-tick" aria-hidden="true">
                             {visibleSet.has(wOption.path) ? "✓" : ""}
                           </span>
-                          <span class="agent-row-name">{wOption.branch}</span>
+                          <span class="agent-row-name">{wOption.nonGit ? "—" : wOption.branch}</span>
                           <span class="agent-title">{wOption.path}</span>
-                          <button
-                            class="row-close wt-pick-kill"
-                            on:click|stopPropagation={() => {
-                              wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
-                              void removeWorktreeInRow(repo.id, {
-                                path: wOption.path,
-                                branch: wOption.branch,
-                              });
-                            }}
-                            title="Remove this worktree's directory from disk (branch ref is kept)"
-                            aria-label="Remove worktree from disk"
-                          >×</button>
+                          {#if !wOption.nonGit}
+                            <button
+                              class="row-close wt-pick-kill"
+                              on:click|stopPropagation={() => {
+                                wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
+                                void removeWorktreeInRow(repo.id, {
+                                  path: wOption.path,
+                                  branch: wOption.branch,
+                                });
+                              }}
+                              title="Remove this worktree's directory from disk (branch ref is kept)"
+                              aria-label="Remove worktree from disk"
+                            >×</button>
+                          {/if}
                         </div>
                       </li>
                     {/each}
                   </ul>
-                  <form
-                    class="wt-pick-create-row"
-                    on:submit|preventDefault={() => {
-                      const branch = (newWtBranch[repo.id] ?? "").trim();
-                      if (!branch) return;
-                      const key = wt ? wt.path : repo.id;
-                      wtPickerOpen = { ...wtPickerOpen, [key]: false };
-                      void createWorktree(repo.id);
-                    }}
-                  >
-                    <input
-                      type="text"
-                      placeholder="new branch — creates worktree on it"
-                      bind:value={newWtBranch[repo.id]}
-                      on:click|stopPropagation
-                      class="wt-pick-create-input"
-                      title={`Runs \`git worktree add ~/wt/${repoName(repo)}/<branch> -b <branch>\` — creates BOTH the new branch and a worktree directory for it.`}
-                    />
-                    <button
-                      type="submit"
-                      class="wt-pick-create-go"
-                      disabled={!((newWtBranch[repo.id] ?? "").trim())}
-                      title="git worktree add ~/wt/<repo>/<branch> -b <branch>"
-                    >+ create</button>
-                  </form>
+                  {#if !repo.worktrees.some((w) => w.nonGit)}
+                    <form
+                      class="wt-pick-create-row"
+                      on:submit|preventDefault={() => {
+                        const branch = (newWtBranch[repo.id] ?? "").trim();
+                        if (!branch) return;
+                        const key = wt ? wt.path : repo.id;
+                        wtPickerOpen = { ...wtPickerOpen, [key]: false };
+                        void createWorktree(repo.id);
+                      }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="new branch — creates worktree on it"
+                        bind:value={newWtBranch[repo.id]}
+                        on:click|stopPropagation
+                        class="wt-pick-create-input"
+                        title={`Runs \`git worktree add ~/wt/${repoName(repo)}/<branch> -b <branch>\` — creates BOTH the new branch and a worktree directory for it.`}
+                      />
+                      <button
+                        type="submit"
+                        class="wt-pick-create-go"
+                        disabled={!((newWtBranch[repo.id] ?? "").trim())}
+                        title="git worktree add ~/wt/<repo>/<branch> -b <branch>"
+                      >+ create</button>
+                    </form>
+                  {/if}
                   <button
                     class="wt-pick-remove-repo"
                     on:click|stopPropagation={() => {
@@ -3439,6 +3446,7 @@
               wt.fileStatus.untracked > 0 ||
               (wt.branchStatus?.ahead ?? 0) > 0}
             <div class="row-status">
+              {#if !wt.nonGit}
               <span
                 class="status-dot"
                 class:clean={summary.clean}
@@ -3556,6 +3564,7 @@
               {:else if !wt.detached && !wt.bare && wt.branchStatus}
                 <span class="muted small">no upstream</span>
               {/if}
+              {/if}
 
               <div class="row-actions">
                 {#each editors as ed}
@@ -3583,8 +3592,8 @@
               </div>
             </div>
 
-            {#if wt.lastCommit}
-              {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) > 0}
+            {#if wt}
+              {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0}
                 {@const existingSources = new Set(
                   (wt.agents ?? []).map((a) => a.source),
                 )}
@@ -3701,7 +3710,7 @@
                             (a) => a.source === s.source,
                           )}
                           <SessionView
-                            agent={s.agent}
+                            agent={s.agent as "claude" | "codex" | "copilot"}
                             source={s.source}
                             totalMessageCount={agentMeta?.messageCount}
                             initialMode={s.mode === "terminal" ? "terminal" : "read"}
@@ -3734,15 +3743,19 @@
               <!-- "Topmost commit" row: chevron + last-commit summary,
                    placed BELOW the sessions strip so the chat columns
                    are the row's primary content. The chevron toggles
-                   the source-control panel (staging + history) below. -->
-              <SourceControlPane
-                {wt}
-                expanded={!!commitsExpanded[wt.path]}
-                inZen={zenRowKey === row.key}
-                fsChangeKey={fsChangeKey[wt.path] ?? 0}
-                onError={(msg) => (error = msg)}
-                on:toggle={() => toggleCommits(wt.path)}
-              />
+                   the source-control panel (staging + history) below.
+                   Hidden for plain folders and empty git repos —
+                   no commits means no history to display. -->
+              {#if wt.lastCommit}
+                <SourceControlPane
+                  {wt}
+                  expanded={!!commitsExpanded[wt.path]}
+                  inZen={zenRowKey === row.key}
+                  fsChangeKey={fsChangeKey[wt.path] ?? 0}
+                  onError={(msg) => (error = msg)}
+                  on:toggle={() => toggleCommits(wt.path)}
+                />
+              {/if}
             {/if}
           {/if}
           </div>

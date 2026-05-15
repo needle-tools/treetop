@@ -19,6 +19,9 @@ export interface Worktree {
   head: string;
   bare: boolean;
   detached: boolean;
+  /** True when the path is a plain directory with no git repo. The branch,
+   *  head, and status fields are empty/null; git operations are not valid. */
+  nonGit?: boolean;
 }
 
 export interface FileStatus {
@@ -61,6 +64,11 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
     const worktrees = parseWorktreeList(result);
     return resolveSubmoduleWorktreePaths(repoPath, worktrees);
   } catch {
+    // Path exists on disk but isn't a git repo — return a synthetic entry so
+    // the UI can still open terminals/agents there.
+    if (await fileExists(repoPath)) {
+      return [{ path: repoPath, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+    }
     return [];
   }
 }
