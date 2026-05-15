@@ -218,7 +218,7 @@
   let showLabels = false;
   /** Grace timer so the dock doesn't vanish the instant the cursor
    *  leaves — gives the user a beat to read it. */
-  const DISMISS_DELAY_MS = 1000;
+  const DISMISS_DELAY_MS = 100;
   /** Wait this long before opening the chat history preview after a
    *  row enters hover — so brushing past rows doesn't pop preview
    *  panels (and doesn't fire `/api/session` fetches) the user
