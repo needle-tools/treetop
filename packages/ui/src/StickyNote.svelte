@@ -1,4 +1,15 @@
 <script lang="ts" context="module">
+  /** The two attachment kinds the layer carries: a free-form paper
+   *  sticky ("note") and a compact chip pointing at a URL / commit /
+   *  session / file ("link"). Both share the storage path, anchors,
+   *  undo log, and SSE broadcast — only the rendering differs, so
+   *  this component branches on `kind` rather than the layer routing
+   *  to a sibling component. */
+  export type AttachmentKind = "note" | "link";
+  export interface LinkTarget {
+    type: "url" | "commit" | "session" | "file";
+    value: string;
+  }
   export interface NoteShape {
     id: string;
     anchors: string[];
@@ -6,6 +17,9 @@
     body: string;
     createdAt: string;
     updatedAt: string;
+    /** Absent on every pre-existing note file; treat undefined as "note". */
+    kind?: AttachmentKind;
+    target?: LinkTarget;
   }
 </script>
 
@@ -63,7 +77,16 @@
 
   const dispatch = createEventDispatcher<{
     move: { id: string; x: number; y: number };
-    save: { id: string; body: string };
+    /** `target` is included when kind="link" so the layer's handleSave
+     *  can route both fields through a single PUT. `null` clears an
+     *  existing target (kind flip from link → note). Omitting both
+     *  `target` and `kind` keeps the current PUT behaviour for notes. */
+    save: {
+      id: string;
+      body: string;
+      target?: LinkTarget | null;
+      kind?: AttachmentKind;
+    };
     remove: { id: string };
     focus: { id: string };
     reassign: { id: string; anchor: string; mode: "move" | "duplicate" };
@@ -71,12 +94,109 @@
     grab: { id: string; grabXFrac: number; grabYFrac: number };
   }>();
 
+  /** Classify a raw input string into a LinkTarget. Conservative
+   *  heuristics — we'd rather render a "url" chip the user can fix
+   *  than mistakenly stash their pasted URL as a "commit". The order
+   *  matters: protocol URLs first (most specific), then explicit
+   *  session: prefix, then hex SHA shape, then path-like shapes, and
+   *  a bare-domain fallback wraps with https:// so click-to-open
+   *  works without the user typing the scheme. */
+  function detectTarget(raw: string): LinkTarget {
+    const v = raw.trim();
+    if (/^https?:\/\//i.test(v)) return { type: "url", value: v };
+    if (/^session:/.test(v)) {
+      return { type: "session", value: v.slice("session:".length) };
+    }
+    if (/^[0-9a-f]{7,40}$/i.test(v)) return { type: "commit", value: v };
+    if (
+      v.startsWith("/") ||
+      v.startsWith("~/") ||
+      v.startsWith("./") ||
+      v.startsWith("../")
+    ) {
+      return { type: "file", value: v };
+    }
+    return { type: "url", value: `https://${v}` };
+  }
+
+  /** Open the target in whatever app makes sense for its type. URL is
+   *  the only fully-wired case in v1; the other branches stash the
+   *  payload faithfully so future PRs can hook them up to Fork / the
+   *  session router / the editor opener without a schema change. */
+  function openTarget(t: LinkTarget): void {
+    if (t.type === "url") {
+      window.open(t.value, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (t.type === "commit") {
+      // No remote-resolution yet — open the literal value if it
+      // already looks like a URL (e.g. a GitHub commit link the user
+      // pasted), otherwise this is a no-op until the resolver lands.
+      if (/^https?:\/\//i.test(t.value)) {
+        window.open(t.value, "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
+    // session / file: chip stores the payload but the opener belongs
+    // to a follow-up PR (session router + /api/open for files).
+  }
+
+  /** Short display label for the chip body. URLs get their host, file
+   *  paths get the basename, commits get the short SHA. Falls back to
+   *  the raw value when no nicer reduction applies. */
+  function displayLabel(t: LinkTarget): string {
+    if (t.type === "url") {
+      try {
+        const u = new URL(t.value);
+        const host = u.hostname.replace(/^www\./, "");
+        return u.pathname && u.pathname !== "/" ? `${host}${u.pathname}` : host;
+      } catch {
+        return t.value;
+      }
+    }
+    if (t.type === "commit") return t.value.slice(0, 7);
+    if (t.type === "file") {
+      const parts = t.value.split("/");
+      return parts[parts.length - 1] || t.value;
+    }
+    return t.value;
+  }
+
+  /** Type → glyph mapping. Kept as a function (not a const map) so
+   *  the call site in the template stays tidy; the glyphs are deliberate
+   *  monochrome unicode so they inherit the chip's color and don't
+   *  pull in an emoji font's coloured rendering. */
+  function targetIcon(t: LinkTarget | undefined): string {
+    if (!t) return "🔗";
+    switch (t.type) {
+      case "url":
+        return "↗";
+      case "commit":
+        return "◆";
+      case "session":
+        return "▶";
+      case "file":
+        return "▤";
+    }
+  }
+
   /** While the user is choosing a new anchor, the editor flips into
    *  this mode and shows the AnchorPicker. `null` = picker closed. */
   let pickerMode: "move" | "duplicate" | null = null;
 
   let editing = startEditing;
   let draft = note.body;
+  /** Working buffer for link-kind edits — the URL / SHA / session id
+   *  the user is typing or has pasted. Kept separate from `draft` so
+   *  switching a single attachment between note and link kinds (a
+   *  feature the schema supports for forgiveness on misclicks)
+   *  doesn't smear the two payloads. Seeded from the existing target
+   *  on mount; on save we re-detect the type from the trimmed value. */
+  let linkDraft = note.target?.value ?? "";
+  /** Convenience flag — once derived it gets used a few places (CSS
+   *  class, dispatch branching, removeIfEmpty math). Re-derived
+   *  whenever the note prop changes so kind flips propagate. */
+  $: isLink = note.kind === "link";
   /** Two-step delete: clicking × arms a 3-second countdown (rather
    *  than firing immediately) so the user has a generous window to
    *  back out. The button glyph swaps to ■ while armed; a second
@@ -91,6 +211,7 @@
   let dragDx = 0;
   let dragDy = 0;
   let textareaEl: HTMLTextAreaElement | null = null;
+  let linkInputEl: HTMLInputElement | null = null;
   let stickyEl: HTMLDivElement;
   let lastMouseX = 0;
 
@@ -185,11 +306,19 @@
   export let grabYFrac = 0;
 
   onMount(() => {
-    if (editing && textareaEl) {
-      textareaEl.focus();
-      // Place caret at end so existing body isn't selected.
-      const end = textareaEl.value.length;
-      textareaEl.setSelectionRange(end, end);
+    if (editing) {
+      // Link-kind edits go into a single-line input; notes use the
+      // textarea. Same caret-at-end policy either way — pre-selecting
+      // existing content would make a re-edit feel like "overwrite"
+      // rather than "append".
+      const el: HTMLInputElement | HTMLTextAreaElement | null = isLink
+        ? linkInputEl
+        : textareaEl;
+      if (el) {
+        el.focus();
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+      }
     }
     // Click-outside-to-save: when the note is in edit mode and the
     // user mousedowns anywhere outside this sticky's box (including
@@ -355,12 +484,16 @@
     // freshly-typed text vanish 3 seconds later.
     cancelPendingDelete();
     draft = note.body;
+    linkDraft = note.target?.value ?? "";
     editing = true;
     queueMicrotask(() => {
-      textareaEl?.focus();
-      if (textareaEl) {
-        const end = textareaEl.value.length;
-        textareaEl.setSelectionRange(end, end);
+      const el: HTMLInputElement | HTMLTextAreaElement | null = isLink
+        ? linkInputEl
+        : textareaEl;
+      if (el) {
+        el.focus();
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
       }
     });
   }
@@ -368,14 +501,39 @@
   function cancelEdit(): void {
     editing = false;
     draft = note.body;
-    if (removeIfEmpty && !note.body.trim()) {
+    linkDraft = note.target?.value ?? "";
+    // "Discard if empty" applies to both kinds, but the emptiness
+    // test differs: for notes it's the markdown body, for links it's
+    // the target value (the user spawned a chip and never typed a URL).
+    const stillEmpty = isLink ? !note.target?.value : !note.body.trim();
+    if (removeIfEmpty && stillEmpty) {
       dispatch("remove", { id: note.id });
     }
   }
 
   function saveEdit(): void {
-    const trimmed = draft;
     editing = false;
+    if (isLink) {
+      const raw = linkDraft.trim();
+      if (removeIfEmpty && raw.length === 0) {
+        dispatch("remove", { id: note.id });
+        return;
+      }
+      if (raw.length === 0) return; // existing link, user cleared and bailed
+      const target = detectTarget(raw);
+      // Same skip-redundant-save check as the note path — keeps the
+      // events log free of no-op updates when the user just looked at
+      // a chip and pressed Enter.
+      if (
+        target.type === note.target?.type &&
+        target.value === note.target?.value
+      ) {
+        return;
+      }
+      dispatch("save", { id: note.id, body: "", target, kind: "link" });
+      return;
+    }
+    const trimmed = draft;
     if (removeIfEmpty && !trimmed.trim()) {
       dispatch("remove", { id: note.id });
       return;
@@ -432,10 +590,12 @@
   class="sticky"
   class:dragging
   class:editing
+  class:sticky-link={isLink}
   data-note-id={note.id}
+  data-kind={isLink ? "link" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;"
   role="dialog"
-  aria-label="Sticky note"
+  aria-label={isLink ? "Sticky link" : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
   on:dblclick={() => {
     // Whole-note dblclick enters edit mode. The buttons / textarea
@@ -484,14 +644,33 @@
   </header>
 
   {#if editing}
-    <textarea
-      bind:this={textareaEl}
-      class="sticky-textarea"
-      bind:value={draft}
-      placeholder="Write something… markdown OK. Enter saves, Shift+Enter newline, Esc reverts."
-      on:keydown={onKey}
-      use:autosize
-    ></textarea>
+    {#if isLink}
+      <!-- Link editor: single-line input. We deliberately re-detect
+           the target on every save (not on keystroke) so the visible
+           "what kind is this?" hint settled at commit time, not while
+           the user is still typing a partial URL. The placeholder
+           lists all four supported payload shapes — discoverability
+           without a tooltip. -->
+      <input
+        bind:this={linkInputEl}
+        class="sticky-link-input"
+        type="text"
+        bind:value={linkDraft}
+        placeholder="URL · commit SHA · session: · /path"
+        on:keydown={onKey}
+        spellcheck="false"
+        autocomplete="off"
+      />
+    {:else}
+      <textarea
+        bind:this={textareaEl}
+        class="sticky-textarea"
+        bind:value={draft}
+        placeholder="Write something… markdown OK. Enter saves, Shift+Enter newline, Esc reverts."
+        on:keydown={onKey}
+        use:autosize
+      ></textarea>
+    {/if}
     <!-- Footer-row of ancillary edit actions. Move-to / Copy-to live
          here (rather than the header toolbar) so the textarea — the
          primary affordance during edit — stays anchored next to
@@ -552,6 +731,39 @@
         {/if}
       </span>
     </footer>
+  {:else if isLink}
+    {#if note.target}
+      <!-- Click-to-open chip body. We mousedown.stopPropagation so the
+           click doesn't accidentally fire the surrounding focus/drag
+           handlers; the actual open happens on click (mouseup) so a
+           drag-out from the chip still works the way the user expects. -->
+      <button
+        class="sticky-link-body"
+        type="button"
+        title={`Open ${note.target.value}`}
+        on:mousedown|stopPropagation
+        on:click={() => note.target && openTarget(note.target)}
+        on:dblclick|stopPropagation
+      >
+        <span class="sticky-link-icon" aria-hidden="true">{targetIcon(note.target)}</span>
+        <span class="sticky-link-label">{displayLabel(note.target)}</span>
+      </button>
+    {:else}
+      <!-- Pinned but never typed — the staging path always assigns a
+           target on save, so this is only reachable for a note that
+           was kind-flipped to "link" without picking one yet. Show a
+           neutral placeholder until the user edits. -->
+      <div
+        class="sticky-link-body sticky-link-empty"
+        role="textbox"
+        tabindex="0"
+        aria-readonly="true"
+        title="Double-click to edit"
+      >
+        <span class="sticky-link-icon" aria-hidden="true">🔗</span>
+        <span class="sticky-link-label muted">(empty link)</span>
+      </div>
+    {/if}
   {:else}
     <!-- eslint-disable-next-line svelte/no-at-html-tags -->
     <div

@@ -14,6 +14,9 @@
      *  derive the new note's horizontal offset (so it appears beneath
      *  the click origin). */
     originRect: DOMRect;
+    /** Which attachment to seed. Defaults to "note" so existing callers
+     *  (the original + button) keep working unchanged. */
+    kind?: "note" | "link";
   };
 
   let registered: ((args: SpawnArgs) => Promise<void>) | null = null;
@@ -366,7 +369,9 @@
   async function handleSpawn(args: {
     anchor: string;
     originRect: DOMRect;
+    kind?: "note" | "link";
   }): Promise<void> {
+    const kind = args.kind ?? "note";
     try {
       const res = await fetch("/api/notes", {
         method: "POST",
@@ -374,6 +379,7 @@
         body: JSON.stringify({
           body: "",
           anchors: [args.anchor],
+          ...(kind === "link" ? { kind: "link" } : {}),
         }),
       });
       if (!res.ok) return;
@@ -451,7 +457,16 @@
     return Math.max(0, Math.min(max, bestCentre));
   }
 
-  async function handleSave(e: CustomEvent<{ id: string; body: string }>): Promise<void> {
+  async function handleSave(
+    e: CustomEvent<{
+      id: string;
+      body: string;
+      target?:
+        | { type: "url" | "commit" | "session" | "file"; value: string }
+        | null;
+      kind?: "note" | "link";
+    }>,
+  ): Promise<void> {
     const st = staging[e.detail.id];
     if (st) {
       // First commit of a staged note: pick the best free slot on the
@@ -494,10 +509,17 @@
       staging = next;
     }
     try {
+      // PUT body shape mirrors the daemon's accepted fields. We only
+      // forward `kind`/`target` when the child component actually sent
+      // them (link saves), so paper-note PUTs stay identical to the
+      // pre-link payload — no churn on the events log.
+      const putBody: Record<string, unknown> = { body: e.detail.body };
+      if (e.detail.kind !== undefined) putBody.kind = e.detail.kind;
+      if (e.detail.target !== undefined) putBody.target = e.detail.target;
       const res = await fetch(`/api/notes/${encodeURIComponent(e.detail.id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: e.detail.body }),
+        body: JSON.stringify(putBody),
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;

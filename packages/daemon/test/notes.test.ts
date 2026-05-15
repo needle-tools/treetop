@@ -241,6 +241,69 @@ describe("NotesStore", () => {
     expect(stat.length).toBe(1);
   });
 
+  test("create + roundtrip preserves kind=link and target", async () => {
+    const path = await tempDir();
+    const a = await NotesStore.open(path);
+    const created = await a.create({
+      body: "",
+      anchors: ["worktree:/tmp/wt"],
+      kind: "link",
+      target: { type: "url", value: "https://example.com/x" },
+    });
+    expect(created.kind).toBe("link");
+    expect(created.target).toEqual({ type: "url", value: "https://example.com/x" });
+    // Reopen the store to force a re-read from disk — exercises the
+    // parser path that picks kind/targetType/targetValue out of
+    // frontmatter, not just the in-memory pass-through.
+    const b = await NotesStore.open(path);
+    const round = await b.get(created.id);
+    expect(round?.kind).toBe("link");
+    expect(round?.target).toEqual({
+      type: "url",
+      value: "https://example.com/x",
+    });
+  });
+
+  test("update can flip a note to a link and back", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const note = await store.create({ body: "draft" });
+    expect(note.kind).toBeUndefined();
+    const linked = await store.update(note.id, {
+      kind: "link",
+      target: { type: "commit", value: "abc1234" },
+      body: "",
+    });
+    expect(linked.kind).toBe("link");
+    expect(linked.target).toEqual({ type: "commit", value: "abc1234" });
+    // null target clears it (and the kind flip back to "note" makes
+    // the chip-vs-sticky decision in the UI fall through to default).
+    const back = await store.update(note.id, {
+      kind: "note",
+      target: null,
+      body: "second thought",
+    });
+    expect(back.kind).toBe("note");
+    expect(back.target).toBeUndefined();
+    expect(back.body).toBe("second thought");
+  });
+
+  test("legacy note files without kind/target round-trip unchanged", async () => {
+    // The serialiser should NOT emit kind/target keys on a plain note,
+    // so workspaces that already have hundreds of notes don't see a
+    // diff churn the next time someone touches one.
+    const raw = serializeNoteFile({
+      id: "n",
+      anchors: [],
+      tags: [],
+      createdAt: "2026-05-16T00:00:00.000Z",
+      updatedAt: "2026-05-16T00:00:00.000Z",
+      body: "hi",
+    });
+    expect(raw).not.toContain("kind:");
+    expect(raw).not.toContain("targetType:");
+    expect(parseNoteFile(raw).kind).toBeUndefined();
+  });
+
   test("rehydrates an externally-edited note file from disk", async () => {
     const path = await tempDir();
     await mkdir(join(path, "notes"), { recursive: true });

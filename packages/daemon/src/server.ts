@@ -37,7 +37,7 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
-import { NotesStore } from "./notes";
+import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -113,6 +113,32 @@ const ALLOWED_ORIGINS = new Set([
     .map((o) => o.trim())
     .filter(Boolean) ?? []),
 ]);
+
+/** Coerce an untyped /api/notes payload field into the AttachmentKind
+ *  the store expects. Anything other than the two known values
+ *  returns undefined — the store then treats it as "leave the existing
+ *  kind alone" on PUT, and "default to note" on POST. */
+function parseKind(v: unknown): AttachmentKind | undefined {
+  return v === "note" || v === "link" ? v : undefined;
+}
+
+/** Same posture for `target`. The whole object is dropped if any field
+ *  is malformed; we don't half-accept (a note with a recognised type
+ *  but an empty value would render as a broken chip in the UI). */
+function parseTarget(v: unknown): LinkTarget | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const obj = v as { type?: unknown; value?: unknown };
+  if (typeof obj.value !== "string" || obj.value.length === 0) return undefined;
+  if (
+    obj.type === "url" ||
+    obj.type === "commit" ||
+    obj.type === "session" ||
+    obj.type === "file"
+  ) {
+    return { type: obj.type, value: obj.value };
+  }
+  return undefined;
+}
 
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin");
@@ -1621,6 +1647,8 @@ const server = Bun.serve<TermWsData, never>({
             body?: unknown;
             anchors?: unknown;
             tags?: unknown;
+            kind?: unknown;
+            target?: unknown;
           }
         | null;
       if (!body || typeof body.body !== "string") {
@@ -1643,6 +1671,8 @@ const server = Bun.serve<TermWsData, never>({
                 (x): x is string => typeof x === "string",
               )
             : undefined,
+          kind: parseKind(body.kind),
+          target: parseTarget(body.target),
         });
         const ev = await events.append({
           type: "create_note",
@@ -1665,12 +1695,25 @@ const server = Bun.serve<TermWsData, never>({
       if (m && req.method === "PUT") {
         const id = m[1]!;
         const body = (await req.json().catch(() => null)) as
-          | { body?: unknown; anchors?: unknown; tags?: unknown }
+          | {
+              body?: unknown;
+              anchors?: unknown;
+              tags?: unknown;
+              kind?: unknown;
+              target?: unknown;
+            }
           | null;
         if (!body) {
           return json({ error: "JSON body required" }, { status: 400 });
         }
         try {
+          // Distinguish "client did not send target" (leave intact)
+          // from "client sent target: null" (clear the existing target).
+          // `in` keeps the tri-state intent crisp at this boundary.
+          const targetField: LinkTarget | null | undefined =
+            "target" in body && body.target === null
+              ? null
+              : parseTarget(body.target);
           const note = await notes.update(id, {
             body: typeof body.body === "string" ? body.body : undefined,
             anchors: Array.isArray(body.anchors)
@@ -1683,6 +1726,8 @@ const server = Bun.serve<TermWsData, never>({
                   (x): x is string => typeof x === "string",
                 )
               : undefined,
+            kind: parseKind(body.kind),
+            target: targetField,
           });
           broadcast("change", { kind: "note_update", id: note.id });
           return json(note);

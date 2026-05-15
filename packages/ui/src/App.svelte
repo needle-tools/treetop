@@ -3675,6 +3675,56 @@
                   void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
                 }}
               >+</button>
+              <!-- Link companion — same spawn machinery, kind: "link"
+                   instead. Docked to + so the action group reads as
+                   one family (count · notes · + · ⛓); the chip vs
+                   paper-sticky render decision happens inside
+                   StickyNote based on the note.kind discriminator.
+
+                   Icon is inline SVG (not 🔗 emoji) so it inherits
+                   the surrounding `color: var(--text-muted)` via
+                   `stroke: currentColor` — same rendering hook every
+                   other muted text glyph in this toolbar uses. The
+                   emoji renders as a colour bitmap on every modern OS
+                   and ignores `color`, which is why the previous
+                   text-shadow workaround looked off-weight next to
+                   the "+". -->
+              <button
+                class="new-wt notes-add notes-add-link"
+                title={wt
+                  ? `Pin a link to this worktree (\`${wt.branch}\`) — URL, commit SHA, session, or file path`
+                  : `Pin a link to \`${repo.name ?? repo.path}\` — URL, commit SHA, session, or file path`}
+                on:click|stopPropagation={(e) => {
+                  if (zenRowKey === row.key) {
+                    notesShownInZen = true;
+                  } else if (notesHiddenByRow[row.key]) {
+                    notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+                  }
+                  const btn = e.currentTarget as HTMLButtonElement;
+                  const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
+                  void spawnNote({
+                    anchor,
+                    originRect: btn.getBoundingClientRect(),
+                    kind: "link",
+                  });
+                }}
+                aria-label="Add link"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="11"
+                  height="11"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+              </button>
             </span>
             {/if}
             {#if !rowFolded[row.key]}

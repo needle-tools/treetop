@@ -9,6 +9,24 @@ import {
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
+/** Discriminator for the two attachment kinds the same on-disk format
+ *  carries today. "note" is a free-form markdown sticky; "link" is a
+ *  compact chip whose payload is the `target` field below. They share
+ *  the lifecycle (anchors, undo, SSE) and the storage path —
+ *  `<workspace>/notes/<id>.md` — so the layer code in the UI can route
+ *  on `kind` rather than having two parallel stores. */
+export type AttachmentKind = "note" | "link";
+
+/** Target a link points at. Five well-known shapes today; the schema
+ *  stays open so future kinds (PR, issue, slack thread) can drop in
+ *  without a migration. `value` is the raw payload — the UI is
+ *  responsible for resolving it (window.open for url, fork/gh URL
+ *  build for commit, etc.). */
+export interface LinkTarget {
+  type: "url" | "commit" | "session" | "file";
+  value: string;
+}
+
 export interface Note {
   /** Filename-safe id (lowercase letters, digits, dashes). Also the
    *  basename on disk: `<id>.md`. */
@@ -26,8 +44,18 @@ export interface Note {
   /** ISO-8601 UTC. Equal to createdAt on a freshly-created note. */
   updatedAt: string;
   /** Everything after the frontmatter block, with the leading newline
-   *  stripped and trailing whitespace trimmed. Standard markdown. */
+   *  stripped and trailing whitespace trimmed. Standard markdown for
+   *  kind="note"; for kind="link" this holds the optional display
+   *  label and is usually empty. */
   body: string;
+  /** Attachment discriminator. Absent on every pre-existing note file;
+   *  callers should treat `undefined` as `"note"` so legacy files
+   *  continue to render as paper stickies without a migration step. */
+  kind?: AttachmentKind;
+  /** Only meaningful when `kind === "link"`. The frontmatter stores
+   *  this as two flat keys (`targetType` + `targetValue`) so the
+   *  hand-rolled YAML parser doesn't need nested-object support. */
+  target?: LinkTarget;
 }
 
 const NOTES_DIR = "notes";
@@ -66,7 +94,24 @@ export function parseNoteFile(raw: string): Note {
   const anchors = fm.lists.get("anchors") ?? [];
   const tags = fm.lists.get("tags") ?? [];
   const body = lines.slice(end + 1).join("\n").replace(/\s+$/g, "");
-  return { id, anchors, tags, createdAt, updatedAt, body };
+  const note: Note = { id, anchors, tags, createdAt, updatedAt, body };
+  // Optional kind discriminator. Anything other than the known values
+  // is dropped silently — forward-compat with future kinds, and
+  // defensive against hand-edits that fat-finger the field.
+  const rawKind = fm.scalars.get("kind");
+  if (rawKind === "note" || rawKind === "link") note.kind = rawKind;
+  // Flat target fields. Both must be present and the type recognized;
+  // otherwise we treat the file as if no target was set so the UI
+  // falls back to plain-note rendering rather than a half-broken chip.
+  const tType = fm.scalars.get("targetType");
+  const tValue = fm.scalars.get("targetValue");
+  if (
+    tValue !== undefined &&
+    (tType === "url" || tType === "commit" || tType === "session" || tType === "file")
+  ) {
+    note.target = { type: tType, value: tValue };
+  }
+  return note;
 }
 
 interface ParsedFrontmatter {
@@ -138,6 +183,16 @@ export function serializeNoteFile(note: Note): string {
     out.push("tags:");
     for (const t of note.tags) out.push(`  - ${t}`);
   }
+  // Emit kind/target only when they differ from the implicit defaults
+  // ("note", no target). Plain notes keep their original frontmatter
+  // shape — no churn on existing files when this version touches them.
+  if (note.kind !== undefined && note.kind !== "note") {
+    out.push(`kind: ${note.kind}`);
+  }
+  if (note.target !== undefined) {
+    out.push(`targetType: ${note.target.type}`);
+    out.push(`targetValue: ${note.target.value}`);
+  }
   out.push("---");
   out.push(note.body);
   return out.join("\n");
@@ -148,12 +203,21 @@ export interface CreateInput {
   body: string;
   anchors?: string[];
   tags?: string[];
+  kind?: AttachmentKind;
+  target?: LinkTarget;
 }
 
 export interface UpdateInput {
   body?: string;
   anchors?: string[];
   tags?: string[];
+  /** Kind transitions (note ↔ link) are allowed deliberately — a user
+   *  who staged a link but then decides to write prose can keep the
+   *  same note id rather than create-and-discard. */
+  kind?: AttachmentKind;
+  /** Pass `null` to clear an existing target (e.g. demoting a link
+   *  back to a note). `undefined` leaves the existing target intact. */
+  target?: LinkTarget | null;
 }
 
 export interface ListFilter {
@@ -264,6 +328,8 @@ export class NotesStore {
       createdAt: now,
       updatedAt: now,
       body: input.body,
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.target !== undefined ? { target: input.target } : {}),
     };
     await writeFile(this.filePath(id), serializeNoteFile(note));
     return note;
@@ -275,7 +341,9 @@ export class NotesStore {
     const hasAny =
       input.body !== undefined ||
       input.anchors !== undefined ||
-      input.tags !== undefined;
+      input.tags !== undefined ||
+      input.kind !== undefined ||
+      input.target !== undefined;
     if (!hasAny) return existing;
     const next: Note = {
       ...existing,
@@ -290,6 +358,15 @@ export class NotesStore {
           : existing.tags,
       updatedAt: new Date().toISOString(),
     };
+    if (input.kind !== undefined) next.kind = input.kind;
+    // Tri-state: undefined = leave alone, null = clear, value = set.
+    // Translating null → "remove the property" keeps serializeNoteFile
+    // simple (it only emits the keys when target is defined).
+    if (input.target === null) {
+      delete next.target;
+    } else if (input.target !== undefined) {
+      next.target = input.target;
+    }
     await writeFile(this.filePath(id), serializeNoteFile(next));
     return next;
   }

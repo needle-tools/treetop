@@ -98,6 +98,131 @@
   }
 }
 
+/* Link kind: same wrapper element, drastically reduced footprint
+   (chip, not paper). Most of the paper styling is overridden here in
+   one block rather than spread into the base `.sticky` rules — keeps
+   the "note variant" the canonical default and the "link variant"
+   the obvious override. The variant is selected via .sticky-link
+   AND the data-kind attribute so future kinds can drop in without
+   selector churn. */
+.sticky.sticky-link {
+  width: auto;
+  min-width: 160px;
+  max-width: 320px;
+  min-height: 0;
+  background: var(--surface-1);
+  background-image: none;
+  color: var(--text-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: 4px 8px 4px 6px;
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.25),
+    0 4px 10px -4px rgba(0, 0, 0, 0.35);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.2;
+}
+/* The paper tape / grain pseudo-elements don't fit the chip shape;
+   the chip's own border + shadow does the lifting visually. */
+.sticky.sticky-link .sticky-header::before {
+  display: none;
+}
+.sticky.sticky-link .sticky-header {
+  margin-bottom: 0;
+  gap: 0.2rem;
+}
+.sticky.sticky-link .sticky-grip {
+  font-size: 9px;
+  opacity: 0.45;
+}
+.sticky.sticky-link.editing {
+  background: var(--surface-2);
+}
+/* The base `.sticky-btn` palette is tuned for the paper-yellow
+   sticky background (warm browns + cream); on the dark chip it
+   looks like a misprint. Re-base every button slot here against the
+   project's text-1/2/muted + surface-3 tokens so the chip reads in
+   the same vocabulary as the rest of the app's buttons. */
+.sticky.sticky-link .sticky-btn {
+  color: var(--text-2);
+}
+.sticky.sticky-link .sticky-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.sticky.sticky-link .sticky-btn.primary {
+  background: var(--text-1);
+  color: var(--surface-0);
+  border-color: var(--text-1);
+}
+.sticky.sticky-link .sticky-btn.primary:hover:not(:disabled) {
+  background: var(--brand);
+  color: var(--surface-0);
+  border-color: var(--brand);
+}
+.sticky.sticky-link .sticky-btn.tiny {
+  color: var(--text-muted);
+}
+.sticky.sticky-link .sticky-btn.tiny:hover:not(:disabled),
+.sticky.sticky-link .sticky-btn.tiny.active {
+  color: var(--text-2);
+}
+.sticky.sticky-link .sticky-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ctx-hot) 18%, transparent);
+  color: var(--ctx-hot);
+}
+.sticky-link-body {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.sticky-link-body:hover {
+  background: var(--surface-3);
+}
+.sticky-link-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  /* Inherit the chip's text colour — the brand-green tint was
+     decorative noise here; the icon belongs to the same "text" tier
+     as the label next to it so a uniform colour reads as one
+     glyph-pair rather than a chip-plus-accent. */
+  color: inherit;
+  font-size: 13px;
+}
+.sticky-link-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sticky-link-label.muted {
+  color: var(--text-muted);
+}
+.sticky-link-input {
+  width: 100%;
+  background: var(--surface-0);
+  color: var(--text-1);
+  border: 1px solid var(--surface-2);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  outline: none;
+}
+.sticky-link-input:focus {
+  border-color: var(--brand);
+}
+
 /* Stop-icon (armed-delete) state — same square button outline, soft
    tinted background so it reads as "armed", not "press me." Tint is
    derived from --ctx-hot via color-mix so the ring + button stay
@@ -393,12 +518,32 @@
   border-top-left-radius: var(--radius-sm);
   border-bottom-left-radius: var(--radius-sm);
 }
-/* The + always owns the right rounded edge. */
-.note-add-stack > .notes-add {
-  border-top-right-radius: var(--radius-sm);
-  border-bottom-right-radius: var(--radius-sm);
+/* Rightmost segment is the link companion when present (.notes-add-link)
+   and the bare "+" otherwise (.notes-add:not(.notes-add-link)). We don't
+   gate this with :has(), because the spawn buttons in App.svelte always
+   render together — so the simpler `:not()` selector is enough and
+   avoids depending on :has() entirely. */
+.note-add-stack > .notes-add:not(.notes-add-link) {
+  border-right: 0;
   padding-left: 0.5rem;
   padding-right: 0.5rem;
+}
+.note-add-stack > .notes-add-link {
+  /* Right-end of the segmented control — flat left to fuse with the
+     +'s right edge, rounded right. Flex centers the inline SVG icon
+     vertically without relying on line-height / vertical-align dance. */
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* SVG icon picks up .new-wt's `color` via `stroke: currentColor`,
+     so muted / hover state colours just work — no extra rules. */
+}
+.note-add-stack > .notes-add-link svg {
+  display: block;
 }
 /* The `.active` class is bound to "notes visible" (the default
    state) — filled background so the toggle matches the count
