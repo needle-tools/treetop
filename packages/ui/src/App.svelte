@@ -2548,6 +2548,11 @@
     manualTitle?: string;
     lastUserMessage?: string;
     lastActive?: string;
+    /** JSONL path the dock can fetch via `/api/session?source=…` to
+     *  show the last few user/assistant messages on hover. Undefined
+     *  for shells and for `__new__:` columns that haven't been
+     *  stamped with a `resumeSessionId` yet. */
+    transcriptSource?: string;
     working: boolean;
     awaiting: boolean;
   }> => {
@@ -2602,6 +2607,8 @@
               newSessionTitles[s.source],
             lastUserMessage: meta?.lastUserMessage,
             lastActive: meta?.lastActive,
+            transcriptSource:
+              meta?.source && !meta.source.startsWith("__") ? meta.source : undefined,
             working: !!transientWorking[s.source],
             awaiting: !!transientAwaiting[s.source],
           });
