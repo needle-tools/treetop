@@ -15,6 +15,10 @@
    *  - Hover  -> tooltip with repo/branch + title + last user prompt.
    */
   import { createEventDispatcher, onDestroy } from "svelte";
+  import {
+    extractLatestAction,
+    type PreviewAction,
+  } from "./preview-action";
 
   /** Minimal shape this component needs per session. The host computes
    *  these from its open-sessions / agents / repos state and hands them
@@ -113,7 +117,7 @@
     kind: "gap";
     count: number;
   }
-  type PreviewItem = PreviewMsg | PreviewGap;
+  type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
   let previews: Record<string, PreviewItem[]> = {};
   let previewLoading: Record<string, boolean> = {};
 
@@ -172,17 +176,23 @@
           timestamp: m.timestamp,
         });
       }
-      // Selection: the latest user turn + the last 5 assistant
+      // Selection: the latest user turn + the last 3 assistant
       // turns. Display order is always [user, optional gap, ai...]
       // — the latest user message reads as "what you asked", the
       // AI replies sit underneath in chronological order.
-      const lastAssistants = items.filter((x) => x.role === "assistant").slice(-5);
+      const lastAssistants = items.filter((x) => x.role === "assistant").slice(-3);
       const lastUser = items.filter((x) => x.role === "user").slice(-1);
       const includedIdxs = new Set<number>([
         ...lastAssistants.map((x) => x.idx),
         ...lastUser.map((x) => x.idx),
       ]);
       const out: PreviewItem[] = [];
+      // "Now:" chip at the top — the most recent tool_use across
+      // all assistant turns. Gives a one-glance "what's the agent
+      // doing right this second" before the bubbles below provide
+      // the conversation context.
+      const action = extractLatestAction(all);
+      if (action) out.push(action);
       const user = lastUser[0];
       if (user) {
         out.push({
@@ -223,9 +233,11 @@
     }
   }
 
-  /** While a row is hovered, refresh its preview every few seconds
-   *  so the side panel mirrors the live conversation in the TUI. */
-  const PREVIEW_POLL_MS = 3000;
+  /** While a row is hovered, refresh its preview at a snappy
+   *  cadence so the side panel mirrors the live conversation in
+   *  the TUI as it streams. Daemon is on localhost so the per-tick
+   *  fetch is cheap. */
+  const PREVIEW_POLL_MS = 750;
   let previewPoller: ReturnType<typeof setInterval> | null = null;
   function startPreviewPoll(source: string | undefined) {
     stopPreviewPoll();
@@ -392,10 +404,10 @@
         <span class="dock-label">
           <span class="dock-label-repo">{e.repoName}</span>
           {#if sessionNameFor(e)}
-            <span class="dock-label-title">· {sessionNameFor(e)}</span>
+            <span class="dock-label-title">{sessionNameFor(e)}</span>
           {/if}
           {#if e.lastActive}
-            <span class="dock-label-time">· {relTime(e.lastActive)}</span>
+            <span class="dock-label-time">{relTime(e.lastActive)}</span>
           {/if}
         </span>
       </button>
@@ -405,13 +417,23 @@
         class="dock-preview"
         style:top="{hoveredTop}px"
         aria-hidden="true"
+        on:mouseenter={onDockEnter}
+        on:mouseleave={onDockLeave}
       >
         {#if previews[hoveredEntry.transcriptSource]}
           {#if previews[hoveredEntry.transcriptSource].length === 0}
             <div class="dock-preview-empty muted">No messages yet.</div>
           {:else}
             {#each previews[hoveredEntry.transcriptSource] as item}
-              {#if item.kind === "msg"}
+              {#if item.kind === "action"}
+                <div class="dock-preview-action">
+                  <span class="dock-preview-action-label">now</span>
+                  <span class="dock-preview-action-name">{item.toolName}</span>
+                  {#if item.detail}
+                    <span class="dock-preview-action-detail">{item.detail}</span>
+                  {/if}
+                </div>
+              {:else if item.kind === "msg"}
                 <div class="dock-preview-msg dock-preview-role-{item.role}">
                   <span class="dock-preview-head">
                     <span class="dock-preview-role">
@@ -577,25 +599,25 @@
     pointer-events: auto;
     cursor: pointer;
   }
-  /* Only the session-title segment gets the dotted underline on
-     row hover. The repo name + relative time read as metadata, not
-     as a link target — the title is the thing you "click to open". */
-  .dock-dot:hover .dock-label-title,
-  .dock-dot:focus-visible .dock-label-title {
-    text-decoration: underline dotted;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 3px;
-  }
+  /* Hover state: keep the same dotted underline but no extra
+     visual change — the title is already bright at rest, the
+     underline already communicates "clickable". */
+  /* All three label segments share `vertical-align: baseline` so
+     they line up on the text baseline regardless of inline-block
+     padding / borders. Default vertical-align varies between
+     inline-block (baseline of last line) and inline (baseline of
+     own content); explicit baseline keeps them in sync. */
   .dock-label-repo {
     display: inline-block;
     max-width: 30ch;
     overflow: hidden;
     text-overflow: ellipsis;
-    vertical-align: bottom;
+    vertical-align: baseline;
     color: var(--text-muted, #9a9aa0);
     font-weight: 400;
   }
   .dock-label-time {
+    vertical-align: baseline;
     color: var(--text-muted, #9a9aa0);
     margin-left: 0.3em;
   }
@@ -604,19 +626,20 @@
     max-width: 35ch;
     overflow: hidden;
     text-overflow: ellipsis;
-    vertical-align: bottom;
+    vertical-align: baseline;
     margin-left: 0.3em;
-    /* Extra bottom padding so the persistent dotted underline below
-       isn't clipped by overflow: hidden — without this padding the
-       inline-block's box is exactly font-size tall and the
-       offset-3 underline falls outside it. */
-    padding-bottom: 3px;
-    /* Persistent dotted underline so the title reads as the
-       interactive target even at rest (the whole row is clickable
-       but the underline scopes the link affordance to the title). */
+    /* Bright text so the session name stands out from the muted
+       repo/time segments — it's the thing you're scanning for. */
+    color: var(--text-1, #e8e8e8);
+    font-weight: 400;
+    /* Dotted underline via text-decoration (not border) so the
+       box dimensions don't change between rest and hover — a
+       border-bottom adds 1px of height which shifts the row's
+       vertical centre. text-decoration paints inside the line box
+       and doesn't affect layout. */
     text-decoration: underline dotted;
     text-decoration-thickness: 1px;
-    text-underline-offset: 2px;
+    text-underline-offset: 1px;
   }
 
   /* Side preview panel — last 2-3 user/assistant messages of the
@@ -647,7 +670,15 @@
     line-height: 1.4;
     color: var(--text-1, #e8e8e8);
     text-align: left;
-    pointer-events: none;
+    /* Flex column so children (msg bubbles + the gap pill) can
+       choose their own horizontal alignment via `align-self`. */
+    display: flex;
+    flex-direction: column;
+    /* Capture hover events so moving onto the preview keeps the
+       overlay alive (the dock's mouseleave fires when the cursor
+       crosses out of its bbox into the preview area — the panel's
+       own mouseenter cancels the dismiss timer). */
+    pointer-events: auto;
     /* Smooth vertical follow as the user moves between rows.
        Opacity transitions with the panel's mount via Svelte's
        reactive {#if}, so no opacity rule here. */
@@ -719,10 +750,44 @@
   /* "+ N messages" gap bubble between selected previews. Tiny pill,
      centered, neutral — reads as "there's stuff here we're hiding"
      without competing with the actual chat bubbles. */
+  /* "Now:" action chip — single status line at the top of the
+     preview. Reads as live progress, not as a chat message, so
+     it gets its own neutral styling distinct from the bubbles. */
+  .dock-preview-action {
+    align-self: stretch;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-bottom: 0.45rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm, 4px);
+    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 60%, var(--surface-0, #23261d));
+    font-family: ui-monospace, monospace;
+    font-size: 0.66rem;
+    color: var(--text-1, #e8e8e8);
+  }
+  .dock-preview-action-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.58rem;
+    color: var(--text-muted, #9a9aa0);
+  }
+  .dock-preview-action-name {
+    color: var(--chip-orange-text, #ffb86b);
+    font-weight: 600;
+  }
+  .dock-preview-action-detail {
+    color: var(--text-2, #d0d0d0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
   .dock-preview-gap {
-    display: block;
-    width: fit-content;
-    margin: 0.1rem auto 0.4rem auto;
+    /* Parent .dock-preview is a flex column, so align-self centers
+       this pill horizontally regardless of the bubbles' widths. */
+    align-self: center;
+    margin: 0.1rem 0 0.4rem 0;
     font-size: 0.6rem;
     color: var(--text-muted, #9a9aa0);
     padding: 0.15rem 0.55rem;
