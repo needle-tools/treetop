@@ -3137,7 +3137,12 @@
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
                 {@const pickerSessions = pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
-                <span class="agent-wrap" data-agents-anchor={wt.path} data-new-agent-anchor={wt.path}>
+                <span
+                  class="agent-wrap"
+                  style={repo.color ? `--repo-bg: ${repo.color}` : ""}
+                  data-agents-anchor={wt.path}
+                  data-new-agent-anchor={wt.path}
+                >
                   <button
                     class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
                     title="Start a new session in this worktree"
