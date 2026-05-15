@@ -16,8 +16,10 @@
    */
   import { createEventDispatcher, onDestroy } from "svelte";
   import {
-    extractLatestAction,
+    buildPreviewItems,
     type PreviewAction,
+    type PreviewGap,
+    type PreviewMsg,
   } from "./preview-action";
 
   /** Minimal shape this component needs per session. The host computes
@@ -94,40 +96,32 @@
     stopPreviewPoll();
   });
 
-  /** Preview cache: per-transcriptSource, the last few user/assistant
-   *  messages. Populated lazily on hover so we don't hit the daemon
-   *  for every active TUI on dashboard load. The daemon is localhost
-   *  so the round-trip is cheap, but caching keeps the panel
-   *  flicker-free as the user moves between rows. */
-  interface PreviewMsg {
-    kind: "msg";
-    role: "user" | "assistant";
-    text: string;
-    /** ISO timestamp from the session JSONL, used to show "5
-     *  minutes ago" next to the role label. May be missing on
-     *  agents (or message slices) that don't ship per-message
-     *  timestamps. */
-    timestamp?: string;
-  }
-  /** Placeholder rendered between visible messages when the preview
-   *  selection skips some user/assistant messages in the middle of
-   *  the conversation (e.g. older user turns between the latest
-   *  user message and the last few assistant replies). */
-  interface PreviewGap {
-    kind: "gap";
-    count: number;
-  }
+  /** Preview cache: per-transcriptSource, the items to render in
+   *  the side panel. The actual list-building logic — selecting
+   *  the latest user + last 3 assistant turns, walking blocks for
+   *  inline tool chips, deciding when to surface a "Now:" action
+   *  chip at the top, inserting "+N messages" gap pills, the
+   *  typing placeholder for an in-flight latest assistant — lives
+   *  in `preview-action.ts` so it can be unit-tested and ported
+   *  to other agent JSONL shapes (codex, copilot, …) without
+   *  touching the Svelte component. */
   type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
   let previews: Record<string, PreviewItem[]> = {};
   let previewLoading: Record<string, boolean> = {};
+  /** Per-source latest user/assistant message timestamp, harvested
+   *  on every preview fetch. Drives the "x time ago" in the dock
+   *  label so the time reflects the actual most recent CHAT
+   *  activity, not the session file's mtime (which can advance
+   *  on tool runs or daemon side-writes that aren't real
+   *  messages). Falls back to `entry.lastActive` when nothing is
+   *  cached yet (e.g. before the first hover). */
+  let latestMessageTs: Record<string, string> = {};
 
-  function blocksToText(blocks: Array<{ type?: string; text?: string }>): string {
-    if (!Array.isArray(blocks)) return "";
-    const out: string[] = [];
-    for (const b of blocks) {
-      if (typeof b?.text === "string" && b.text.length > 0) out.push(b.text);
-    }
-    return out.join(" ").replace(/\s+/g, " ").trim();
+  function freshestTimestamp(entry: DockEntry): string | undefined {
+    const cached = entry.transcriptSource
+      ? latestMessageTs[entry.transcriptSource]
+      : undefined;
+    return cached ?? entry.lastActive;
   }
 
   async function loadPreview(
@@ -149,83 +143,31 @@
         messages?: Array<{
           role: string;
           timestamp?: string;
-          blocks: Array<{ type?: string; text?: string }>;
+          blocks: Array<{
+            type?: string;
+            text?: string;
+            toolName?: string;
+            toolInput?: unknown;
+          }>;
         }>;
       };
       const all = data.messages ?? [];
-      // Build a flat (idx-tagged) list of user/assistant messages
-      // with text content. We need the original index so we can
-      // count messages skipped between visible ones for the "+N
-      // messages" placeholder.
-      type Indexed = {
-        idx: number;
-        role: "user" | "assistant";
-        text: string;
-        timestamp?: string;
-      };
-      const items: Indexed[] = [];
-      for (let i = 0; i < all.length; i++) {
+      previews = { ...previews, [source]: buildPreviewItems(all) };
+      // Newest user/assistant message timestamp, used by the dock
+      // label's "x time ago" so it reflects actual chat activity
+      // rather than the session file's mtime.
+      let latest: string | undefined;
+      for (let i = all.length - 1; i >= 0; i--) {
         const m = all[i]!;
         if (m.role !== "user" && m.role !== "assistant") continue;
-        const text = blocksToText(m.blocks);
-        if (!text) continue;
-        items.push({
-          idx: i,
-          role: m.role,
-          text,
-          timestamp: m.timestamp,
-        });
-      }
-      // Selection: the latest user turn + the last 3 assistant
-      // turns. Display order is always [user, optional gap, ai...]
-      // — the latest user message reads as "what you asked", the
-      // AI replies sit underneath in chronological order.
-      const lastAssistants = items.filter((x) => x.role === "assistant").slice(-3);
-      const lastUser = items.filter((x) => x.role === "user").slice(-1);
-      const includedIdxs = new Set<number>([
-        ...lastAssistants.map((x) => x.idx),
-        ...lastUser.map((x) => x.idx),
-      ]);
-      const out: PreviewItem[] = [];
-      // "Now:" chip at the top — the most recent tool_use across
-      // all assistant turns. Gives a one-glance "what's the agent
-      // doing right this second" before the bubbles below provide
-      // the conversation context.
-      const action = extractLatestAction(all);
-      if (action) out.push(action);
-      const user = lastUser[0];
-      if (user) {
-        out.push({
-          kind: "msg",
-          role: "user",
-          text: user.text,
-          timestamp: user.timestamp,
-        });
-      }
-      // Count user/assistant messages skipped between the latest
-      // user turn and the displayed AI window (in either timeline
-      // direction — AIs could be older or newer than the user
-      // turn). One summarised gap pill represents the lot.
-      const firstAi = lastAssistants[0];
-      if (user && firstAi) {
-        const lo = Math.min(user.idx, firstAi.idx);
-        const hi = Math.max(user.idx, firstAi.idx);
-        let skipped = 0;
-        for (const it of items) {
-          if (includedIdxs.has(it.idx)) continue;
-          if (it.idx > lo && it.idx < hi) skipped++;
+        if (typeof m.timestamp === "string" && m.timestamp.length > 0) {
+          latest = m.timestamp;
+          break;
         }
-        if (skipped > 0) out.push({ kind: "gap", count: skipped });
       }
-      for (const ai of lastAssistants) {
-        out.push({
-          kind: "msg",
-          role: "assistant",
-          text: ai.text,
-          timestamp: ai.timestamp,
-        });
+      if (latest) {
+        latestMessageTs = { ...latestMessageTs, [source]: latest };
       }
-      previews = { ...previews, [source]: out };
     } catch {
       // ignore network blips; the poll timer will catch up
     } finally {
@@ -406,8 +348,8 @@
           {#if sessionNameFor(e)}
             <span class="dock-label-title">{sessionNameFor(e)}</span>
           {/if}
-          {#if e.lastActive}
-            <span class="dock-label-time">{relTime(e.lastActive)}</span>
+          {#if freshestTimestamp(e)}
+            <span class="dock-label-time">{relTime(freshestTimestamp(e))}</span>
           {/if}
         </span>
       </button>
@@ -750,9 +692,10 @@
   /* "+ N messages" gap bubble between selected previews. Tiny pill,
      centered, neutral — reads as "there's stuff here we're hiding"
      without competing with the actual chat bubbles. */
-  /* "Now:" action chip — single status line at the top of the
-     preview. Reads as live progress, not as a chat message, so
-     it gets its own neutral styling distinct from the bubbles. */
+  /* "Now:" action chip — single status line. Borrows the AI
+     bubble's neutral surface tint + bright border so tool chips
+     read as part of the same visual family as the assistant
+     messages they sit between (or follow). */
   .dock-preview-action {
     align-self: stretch;
     display: flex;
@@ -761,7 +704,8 @@
     margin-bottom: 0.45rem;
     padding: 0.25rem 0.5rem;
     border-radius: var(--radius-sm, 4px);
-    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 60%, var(--surface-0, #23261d));
+    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 70%, var(--surface-0, #23261d));
+    border: 1px solid color-mix(in srgb, var(--text-muted, #888) 40%, var(--surface-0, #23261d));
     font-family: ui-monospace, monospace;
     font-size: 0.66rem;
     color: var(--text-1, #e8e8e8);
@@ -793,7 +737,9 @@
     padding: 0.15rem 0.55rem;
     border-radius: 999px;
     background: color-mix(in srgb, var(--surface-2, #2b2b2c) 50%, var(--surface-0, #23261d));
-    border: 1px solid color-mix(in srgb, var(--surface-3, #333) 60%, var(--surface-0, #23261d));
+    /* Brighter outline than the AI bubbles so the gap reads as a
+       distinct in-band marker rather than another message. */
+    border: 1px solid color-mix(in srgb, var(--text-muted, #888) 65%, var(--surface-0, #23261d));
   }
   /* Belt-and-braces: kill any user-agent / inherited hover background
      on the button itself. The dot is its own visual; the wrapper is

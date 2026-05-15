@@ -1,9 +1,50 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildPreviewItems,
   extractLatestAction,
   summarizeToolInput,
   type PreviewActionMessage,
 } from "../src/preview-action";
+
+/**
+ * Test fixtures below mimic the shape of real Claude session JSONL
+ * the daemon normalises into `NormalizedMessage` (role + blocks
+ * with type/text/toolName/toolInput) — but every string is
+ * synthetic / anonymised. Never paste real chat content into these
+ * tests, both for privacy and so the assertions don't drift if the
+ * real-world data changes.
+ */
+function userMsg(text: string, opts: { timestamp?: string } = {}): PreviewActionMessage {
+  return {
+    role: "user",
+    timestamp: opts.timestamp,
+    blocks: [{ type: "text", text }],
+  };
+}
+function aiText(text: string, opts: { timestamp?: string } = {}): PreviewActionMessage {
+  return {
+    role: "assistant",
+    timestamp: opts.timestamp,
+    blocks: [{ type: "text", text }],
+  };
+}
+function aiToolUse(
+  name: string,
+  input: Record<string, unknown>,
+  opts: { timestamp?: string } = {},
+): PreviewActionMessage {
+  return {
+    role: "assistant",
+    timestamp: opts.timestamp,
+    blocks: [{ type: "tool_use", toolName: name, toolInput: input }],
+  };
+}
+function aiMixed(
+  blocks: PreviewActionMessage["blocks"],
+  opts: { timestamp?: string } = {},
+): PreviewActionMessage {
+  return { role: "assistant", timestamp: opts.timestamp, blocks };
+}
 
 describe("summarizeToolInput", () => {
   test("returns undefined for non-objects", () => {
@@ -156,5 +197,245 @@ describe("extractLatestAction", () => {
       toolName: "Edit",
       detail: "x.ts",
     });
+  });
+});
+
+describe("buildPreviewItems", () => {
+  test("empty / non-array input → empty list (no preview)", () => {
+    expect(buildPreviewItems([])).toEqual([]);
+    expect(buildPreviewItems(undefined as unknown as PreviewActionMessage[])).toEqual([]);
+  });
+
+  test("typical conversation: user → AI text → user → AI text", () => {
+    // Most common shape: a few alternating turns, all with plain
+    // text. Order is strictly chronological (oldest at top, newest
+    // at bottom), latest user is at the bottom because it's the
+    // newest message.
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiText("r1"),
+      userMsg("q2"),
+      aiText("r2"),
+    ]);
+    expect(items).toEqual([
+      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined },
+      { kind: "msg", role: "user", text: "q2", timestamp: undefined },
+      { kind: "msg", role: "assistant", text: "r2", timestamp: undefined },
+    ]);
+  });
+
+  test("user message just sent, AI hasn't replied → user at the bottom", () => {
+    // Mid-stream: user typed, AI hasn't produced any blocks yet.
+    // The latest user message must land AFTER the older AI replies
+    // in chronological order (it's the newest), not pinned on top.
+    const items = buildPreviewItems([
+      aiText("r1"),
+      aiText("r2"),
+      userMsg("q1"),
+    ]);
+    expect(items[items.length - 1]).toEqual({
+      kind: "msg",
+      role: "user",
+      text: "q1",
+      timestamp: undefined,
+    });
+  });
+
+  test("only assistant messages → no user bubble, no gap", () => {
+    const items = buildPreviewItems([aiText("r1"), aiText("r2")]);
+    expect(items).toEqual([
+      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined },
+      { kind: "msg", role: "assistant", text: "r2", timestamp: undefined },
+    ]);
+  });
+
+  test("more than 3 assistants → only the last 3 appear, older skipped via gap pill", () => {
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiText("r1"),
+      aiText("r2"),
+      aiText("r3"),
+      aiText("r4"),
+      aiText("r5"),
+    ]);
+    // user (q1) + last 3 AIs (r3, r4, r5); skipped: r1, r2 → gap of 2
+    // between user and r3.
+    const kinds = items.map((it) => it.kind);
+    expect(kinds).toEqual(["msg", "gap", "msg", "msg", "msg"]);
+    expect(items[0]).toMatchObject({ kind: "msg", role: "user", text: "q1" });
+    expect(items[1]).toEqual({ kind: "gap", count: 2 });
+    expect((items[2] as { text: string }).text).toBe("r3");
+    expect((items[4] as { text: string }).text).toBe("r5");
+  });
+
+  test("only the LATEST user turn is shown; earlier user turns drop silently", () => {
+    // Older user turns that fall outside the displayed window are
+    // hidden without a gap pill (gap pills only mark messages
+    // skipped BETWEEN two visible items, not before/after them).
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      userMsg("q2"),
+      userMsg("q3"),
+      aiText("r1"),
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("q3");
+    // No gap: q3 (idx 2) and r1 (idx 3) are adjacent, and q1/q2
+    // sit before the visible window — outside the algorithm's
+    // inter-item span.
+    expect(items.filter((it) => it.kind === "gap")).toEqual([]);
+  });
+
+  test("assistant with mixed text + tool_use → bubbles and chips render inline in source order", () => {
+    const items = buildPreviewItems([
+      aiMixed([
+        { type: "text", text: "starting" },
+        { type: "tool_use", toolName: "Read", toolInput: { file_path: "a.ts" } },
+        { type: "text", text: "ok found it" },
+        { type: "tool_use", toolName: "Edit", toolInput: { file_path: "a.ts" } },
+        { type: "text", text: "done" },
+      ]),
+    ]);
+    expect(items.map((it) => it.kind)).toEqual([
+      "msg",
+      "action",
+      "msg",
+      "action",
+      "msg",
+    ]);
+    expect((items[0] as { text: string }).text).toBe("starting");
+    expect((items[1] as { toolName: string }).toolName).toBe("Read");
+    expect((items[3] as { toolName: string }).toolName).toBe("Edit");
+  });
+
+  test("adjacent text blocks coalesce into a single bubble", () => {
+    const items = buildPreviewItems([
+      aiMixed([
+        { type: "text", text: "first" },
+        { type: "text", text: "second" },
+        { type: "text", text: "third" },
+      ]),
+    ]);
+    expect(items).toEqual([
+      { kind: "msg", role: "assistant", text: "first second third", timestamp: undefined },
+    ]);
+  });
+
+  test("latest AI message with NO text and NO tool_use → typing-placeholder bubble appears", () => {
+    // Mid-stream guarantee: the panel must show at least one row
+    // for the latest assistant turn even when its block stream
+    // hasn't produced anything yet. Older AI messages have content
+    // so they render normally.
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiText("r1"),
+      aiText("r2"),
+      { role: "assistant", blocks: [] },
+    ]);
+    const last = items[items.length - 1]!;
+    expect(last.kind).toBe("msg");
+    expect((last as { role: string }).role).toBe("assistant");
+    expect((last as { text: string }).text.length).toBeGreaterThan(0);
+  });
+
+  test("the placeholder is NOT added when an earlier (non-latest) AI is empty", () => {
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      { role: "assistant", blocks: [] }, // earlier empty, should NOT trigger placeholder
+      aiText("r2"),
+    ]);
+    // Only the populated r2 should render as an assistant bubble.
+    const aiBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "assistant",
+    );
+    expect(aiBubbles).toHaveLength(1);
+    expect((aiBubbles[0] as { text: string }).text).toBe("r2");
+  });
+
+  test("Now: chip at top is suppressed when the latest action is inside the visible window", () => {
+    // The latest assistant message contains the latest tool_use,
+    // and it's within the displayed last-3 window — so the inline
+    // tool chip is enough; the redundant top chip must not appear.
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiToolUse("Edit", { file_path: "a.ts" }),
+    ]);
+    const topIsAction = items[0]?.kind === "action";
+    expect(topIsAction).toBe(false);
+    // The chip *is* there inline, just not at the top.
+    const actions = items.filter((it) => it.kind === "action");
+    expect(actions).toHaveLength(1);
+  });
+
+  test("Now: chip at top appears when the latest action is outside the visible window", () => {
+    // Push the only tool_use far back in history; the displayed
+    // last-3 AIs are all plain text. The top chip should surface
+    // so the user still sees what the agent did most recently in
+    // its overall toolset history.
+    const items = buildPreviewItems([
+      aiToolUse("Edit", { file_path: "old.ts" }),
+      aiText("r1"),
+      aiText("r2"),
+      aiText("r3"),
+      aiText("r4"),
+      userMsg("q1"),
+    ]);
+    expect(items[0]?.kind).toBe("action");
+    expect((items[0] as { toolName: string }).toolName).toBe("Edit");
+    expect((items[0] as { detail?: string }).detail).toBe("old.ts");
+  });
+
+  test("realistic mid-edit shape: user → AI(read,text,edit,text) → no follow-up yet", () => {
+    // Mirrors the shape Claude emits during a typical file edit:
+    // user types a request, AI reads a file, narrates, edits the
+    // file, narrates again. We expect the panel to walk all 4
+    // blocks in source order with two chips and two bubbles.
+    const items = buildPreviewItems([
+      userMsg("apply the change"),
+      aiMixed([
+        { type: "tool_use", toolName: "Read", toolInput: { file_path: "x.ts" } },
+        { type: "text", text: "found the spot" },
+        {
+          type: "tool_use",
+          toolName: "Edit",
+          toolInput: { file_path: "x.ts", command: "ignored" },
+        },
+        { type: "text", text: "applied" },
+      ]),
+    ]);
+    const kinds = items.map((it) => it.kind);
+    expect(kinds).toEqual(["msg", "action", "msg", "action", "msg"]);
+    expect((items[0] as { role: string }).role).toBe("user");
+    expect((items[1] as { toolName: string }).toolName).toBe("Read");
+    expect((items[1] as { detail?: string }).detail).toBe("x.ts");
+    expect((items[3] as { toolName: string }).toolName).toBe("Edit");
+    // file_path is earlier in the allowlist than command, so the
+    // detail prefers it.
+    expect((items[3] as { detail?: string }).detail).toBe("x.ts");
+  });
+
+  test("system / tool roles are ignored entirely", () => {
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      { role: "system", blocks: [{ type: "text", text: "sys" }] },
+      { role: "tool", blocks: [{ type: "text", text: "tres" }] },
+      aiText("r1"),
+    ]);
+    expect(items).toEqual([
+      { kind: "msg", role: "user", text: "q1", timestamp: undefined },
+      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined },
+    ]);
+  });
+
+  test("timestamps are preserved on each rendered bubble", () => {
+    const items = buildPreviewItems([
+      userMsg("q1", { timestamp: "2026-05-16T10:00:00Z" }),
+      aiText("r1", { timestamp: "2026-05-16T10:00:05Z" }),
+    ]);
+    expect(items[0]).toMatchObject({ timestamp: "2026-05-16T10:00:00Z" });
+    expect(items[1]).toMatchObject({ timestamp: "2026-05-16T10:00:05Z" });
   });
 });

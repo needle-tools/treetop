@@ -14,12 +14,14 @@
 
 export interface PreviewActionBlock {
   type?: string;
+  text?: string;
   toolName?: string;
   toolInput?: unknown;
 }
 
 export interface PreviewActionMessage {
   role: string;
+  timestamp?: string;
   blocks?: PreviewActionBlock[];
 }
 
@@ -30,6 +32,29 @@ export interface PreviewAction {
    *  when no recognised field exists on the input object. */
   detail?: string;
 }
+
+export interface PreviewMsg {
+  kind: "msg";
+  role: "user" | "assistant";
+  text: string;
+  timestamp?: string;
+}
+
+export interface PreviewGap {
+  kind: "gap";
+  count: number;
+}
+
+export type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
+
+/** How many assistant turns the dock preview keeps in view. Older
+ *  ones collapse into the "+N messages" gap pill. */
+export const PREVIEW_MAX_ASSISTANTS = 3;
+
+/** Placeholder used when the latest assistant message has neither
+ *  text nor a tool_use block yet (mid-stream). Guarantees the user
+ *  always sees a row for the latest AI turn. */
+const ASSISTANT_TYPING_PLACEHOLDER = "…";
 
 const DETAIL_FIELDS = [
   "file_path",
@@ -89,4 +114,185 @@ export function extractLatestAction(
     }
   }
   return null;
+}
+
+/** Walk an assistant message's blocks in source order and emit
+ *  text bubbles + tool chips as encountered. Adjacent text blocks
+ *  are coalesced into a single bubble so a flurry of small text
+ *  blocks doesn't render as a wall of micro-bubbles. */
+function expandAssistant(
+  m: PreviewActionMessage,
+  out: PreviewItem[],
+): { emittedTextBubble: boolean; emittedAction: boolean } {
+  const blocks = Array.isArray(m.blocks) ? m.blocks : [];
+  let textBuf: string[] = [];
+  let emittedTextBubble = false;
+  let emittedAction = false;
+  const flushText = () => {
+    const joined = textBuf.join(" ").replace(/\s+/g, " ").trim();
+    textBuf = [];
+    if (joined.length === 0) return;
+    out.push({
+      kind: "msg",
+      role: "assistant",
+      text: joined,
+      timestamp: m.timestamp,
+    });
+    emittedTextBubble = true;
+  };
+  for (const b of blocks) {
+    if (b?.type === "text" && typeof b.text === "string") {
+      textBuf.push(b.text);
+    } else if (b?.type === "tool_use" && typeof b.toolName === "string") {
+      flushText();
+      out.push({
+        kind: "action",
+        toolName: b.toolName,
+        detail: summarizeToolInput(b.toolInput),
+      });
+      emittedAction = true;
+    }
+  }
+  flushText();
+  return { emittedTextBubble, emittedAction };
+}
+
+function plainText(blocks: PreviewActionBlock[] | undefined): string {
+  if (!Array.isArray(blocks)) return "";
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (typeof b?.text === "string" && b.text.length > 0) parts.push(b.text);
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/** Find the index in `all` of the assistant message that owns the
+ *  most recent tool_use block. Used to decide whether the top "Now:"
+ *  chip is redundant with an inline tool chip that's about to land
+ *  in the displayed message stream. */
+function latestActionHostIdx(all: PreviewActionMessage[]): number {
+  for (let i = all.length - 1; i >= 0; i--) {
+    const m = all[i];
+    if (!m || m.role !== "assistant") continue;
+    if (!Array.isArray(m.blocks)) continue;
+    if (
+      m.blocks.some(
+        (b) => b?.type === "tool_use" && typeof b.toolName === "string",
+      )
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Compose the chat-preview render list from a full /api/session
+ *  message stream. The output is what `SessionDock.svelte` walks
+ *  to paint the side panel:
+ *    - an optional top "Now:" action chip when the latest tool
+ *      call belongs to a message outside the displayed window
+ *    - the latest user turn + the last N assistant turns in strict
+ *      chronological order (so a brand-new user message lands at
+ *      the bottom, not pinned on top)
+ *    - "+N messages" gap pills between visible items when one or
+ *      more user/assistant turns were skipped between them
+ *    - assistant turns expanded into text bubbles + inline tool
+ *      chips in block order
+ *    - a "…" placeholder for the latest assistant turn when it has
+ *      neither text nor a tool call yet — guarantees the user
+ *      always sees at least one row for the latest AI message,
+ *      even mid-stream. */
+export function buildPreviewItems(
+  all: PreviewActionMessage[],
+): PreviewItem[] {
+  const out: PreviewItem[] = [];
+  if (!Array.isArray(all) || all.length === 0) return out;
+
+  type Indexed = {
+    idx: number;
+    role: "user" | "assistant";
+    text: string;
+    timestamp?: string;
+  };
+  const items: Indexed[] = [];
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i];
+    if (!m) continue;
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    items.push({
+      idx: i,
+      role: m.role,
+      text: plainText(m.blocks),
+      timestamp: m.timestamp,
+    });
+  }
+
+  const lastAssistants = items
+    .filter((x) => x.role === "assistant")
+    .slice(-PREVIEW_MAX_ASSISTANTS);
+  const lastUser = items.filter((x) => x.role === "user").slice(-1);
+  const includedIdxs = new Set<number>([
+    ...lastAssistants.map((x) => x.idx),
+    ...lastUser.map((x) => x.idx),
+  ]);
+  const included = items.filter((x) => includedIdxs.has(x.idx));
+
+  const action = extractLatestAction(all);
+  if (action) {
+    const hostIdx = latestActionHostIdx(all);
+    if (hostIdx === -1 || !includedIdxs.has(hostIdx)) {
+      out.push(action);
+    }
+  }
+
+  const latestAssistantIdx = lastAssistants.length
+    ? lastAssistants[lastAssistants.length - 1]!.idx
+    : -1;
+
+  for (let i = 0; i < included.length; i++) {
+    if (i > 0) {
+      const prev = included[i - 1]!;
+      const cur = included[i]!;
+      let skipped = 0;
+      for (const it of items) {
+        if (includedIdxs.has(it.idx)) continue;
+        if (it.idx > prev.idx && it.idx < cur.idx) skipped++;
+      }
+      if (skipped > 0) out.push({ kind: "gap", count: skipped });
+    }
+    const it = included[i]!;
+    const fullMessage = all[it.idx]!;
+    if (it.role === "user") {
+      out.push({
+        kind: "msg",
+        role: "user",
+        text: it.text,
+        timestamp: it.timestamp,
+      });
+      continue;
+    }
+    const { emittedTextBubble, emittedAction } = expandAssistant(
+      fullMessage,
+      out,
+    );
+    // Guarantee the latest assistant turn is always represented in
+    // the visible stream, even when it hasn't produced any text or
+    // tool calls yet (mid-stream first frame). Without this an
+    // in-flight reply could render as nothing and the panel would
+    // look like it's missing the freshest message.
+    if (
+      it.idx === latestAssistantIdx &&
+      !emittedTextBubble &&
+      !emittedAction
+    ) {
+      out.push({
+        kind: "msg",
+        role: "assistant",
+        text: ASSISTANT_TYPING_PLACEHOLDER,
+        timestamp: it.timestamp,
+      });
+    }
+  }
+
+  return out;
 }
