@@ -23,6 +23,11 @@
     source: string;
     wtPath: string;
     rowKey: string;
+    /** Stable repo identifier — used to detect "first dot in this
+     *  repo's group" so the dock can paint a visual gap between
+     *  groups. Repo names aren't safe (two repos can share a name);
+     *  the id is. */
+    repoId: string;
     agent: "claude" | "codex" | "copilot" | "shell";
     /** Hex (e.g. "#ff8800"). Undefined → default neutral fill. */
     repoColor?: string;
@@ -31,6 +36,9 @@
     title?: string;
     manualTitle?: string;
     lastUserMessage?: string;
+    /** ISO timestamp of the session's most recent activity. Drives
+     *  the "5 minutes ago" segment in the hover label. */
+    lastActive?: string;
     working: boolean;
     awaiting: boolean;
   }
@@ -55,30 +63,52 @@
     return lines.join("\n");
   }
 
-  /** Short, single-line label shown next to the dot when the user
-   *  hovers the dock. Picks the most identifying name we have:
-   *  user-set title beats the parsed title beats `repo · branch`. */
-  function labelFor(e: DockEntry): string {
+  /** Hover label is rendered as three spans:
+   *    <b>repo</b> · 5 minutes ago: session title
+   *  Each piece is optional — if lastActive is missing the time
+   *  segment hides; if no title is known, the branch (or nothing) is
+   *  shown after the colon. */
+  function sessionNameFor(e: DockEntry): string {
     const t = e.manualTitle ?? e.title;
     if (t) return t;
-    return `${e.repoName}${e.branch ? ` · ${e.branch}` : ""}`;
+    return e.branch ?? "";
+  }
+  function relTime(iso?: string): string {
+    if (!iso) return "";
+    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
+    if (s < 60) return "just now";
+    if (s < 120) return "1 minute ago";
+    if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
+    if (s < 7200) return "1 hour ago";
+    if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
+    if (s < 172800) return "yesterday";
+    return `${Math.floor(s / 86400)} days ago`;
   }
 </script>
 
 {#if entries.length > 0}
   <div class="session-dock" role="toolbar" aria-label="Open sessions">
-    {#each entries as e (e.source)}
+    {#each entries as e, i (e.source)}
       <button
         type="button"
         class="dock-dot agent-{e.agent}"
         class:dot-working={e.working}
         class:dot-awaiting={e.awaiting}
+        class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
         style:--dot-fill={e.repoColor ?? "var(--surface-3)"}
-        title={tooltipFor(e)}
+        aria-label={tooltipFor(e)}
         on:click={() => dispatch("pick", e)}
       >
         <span class="dock-dot-inner"></span>
-        <span class="dock-label">{labelFor(e)}</span>
+        <span class="dock-label">
+          <span class="dock-label-repo">{e.repoName}</span>
+          {#if sessionNameFor(e)}
+            <span class="dock-label-title">· {sessionNameFor(e)}</span>
+          {/if}
+          {#if e.lastActive}
+            <span class="dock-label-time">· {relTime(e.lastActive)}</span>
+          {/if}
+        </span>
       </button>
     {/each}
   </div>
@@ -107,14 +137,15 @@
     display: inline-flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0;
+    gap: 0.35rem;
     padding: 0.2rem 0;
-    max-height: 90vh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    scrollbar-width: none;
+    /* No overflow clipping — labels are absolutely positioned with
+       `left: 100%`, i.e. they stick out to the right of the dock.
+       Hiding overflow-x would clip them and they'd never appear on
+       hover. We assume few enough active TUIs that the column
+       doesn't need scrolling; if that becomes wrong, render labels
+       in a portal sibling instead of inside the dock. */
   }
-  .session-dock::-webkit-scrollbar { display: none; }
 
   .dock-dot {
     --agent-color: var(--text-2);
@@ -133,6 +164,12 @@
     justify-content: flex-start;
     gap: 0.5rem;
     flex: 0 0 auto;
+  }
+  /* Top margin on the first dot of each new repo group so the dock
+     visually separates per-repo stacks. Applied via a class set in
+     the markup using a prev-entry-vs-current-entry repoId compare. */
+  .dock-dot.dock-dot-repo-first {
+    margin-top: 0.5rem;
   }
   /* The inner span IS the visible dot. Keeping the click target as the
      wrapper button means the hit area can stay larger (14px) than the
@@ -182,18 +219,34 @@
     transition:
       max-width 180ms ease,
       opacity 140ms ease,
-      backdrop-filter 140ms ease,
-      -webkit-backdrop-filter 140ms ease;
+      background-color 140ms ease;
   }
   .session-dock:hover .dock-label,
   .session-dock:focus-within .dock-label {
     max-width: 22rem;
     opacity: 1;
-    /* Soft blurred frosting behind the text on hover — keeps labels
-       legible against any busy dashboard content (terminal output,
-       sticky notes) without painting a hard background colour. */
-    backdrop-filter: blur(8px) saturate(140%);
-    -webkit-backdrop-filter: blur(8px) saturate(140%);
+    /* Semi-transparent page-background tint behind the label text on
+       hover so labels stay legible over busy dashboard content
+       (terminals, notes). Uses `--surface-1` so the chip blends
+       naturally into the rest of the UI's surface palette. */
+    background: color-mix(in srgb, var(--surface-1, #1a1a1b) 78%, transparent);
+    /* Clicks on the visible label should also fire the dot's
+       on:click — the label is a child of the same <button>, so once
+       pointer-events go through the click bubbles up and triggers
+       the same `dispatch("pick", ...)` the dot would. */
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  .dock-label-repo {
+    color: var(--text-muted, #9a9aa0);
+    font-weight: 400;
+  }
+  .dock-label-time {
+    color: var(--text-muted, #9a9aa0);
+    margin-left: 0.3em;
+  }
+  .dock-label-title {
+    margin-left: 0.3em;
   }
   /* Belt-and-braces: kill any user-agent / inherited hover background
      on the button itself. The dot is its own visual; the wrapper is
@@ -216,15 +269,20 @@
   .dock-dot.dot-working .dock-dot-inner::before {
     content: "";
     position: absolute;
-    inset: -3px;
+    /* inset -2 + padding 2 = ring sits flush against the dot's edge,
+       0px gap between the solid dot and the comet sweep. */
+    inset: -2px;
     border-radius: 999px;
     padding: 2px;
+    /* Brightened repo tint so the comet sweep is visible against the
+       same-coloured dot. The ring stays in the repo's palette but
+       reads as a distinct, lit halo. */
     background: conic-gradient(
       from var(--dock-sweep-angle),
       transparent 0deg,
       transparent 240deg,
       color-mix(in srgb, var(--dot-fill) 0%, transparent) 270deg,
-      var(--dot-fill) 360deg
+      color-mix(in srgb, var(--dot-fill) 30%, #fff 70%) 360deg
     );
     -webkit-mask:
       linear-gradient(#fff 0 0) content-box,
@@ -241,6 +299,11 @@
     to { --dock-sweep-angle: 360deg; }
   }
 
+  /* Idle (PTY alive, nothing streaming, no prompt): no outline at
+     all. The bare repo-coloured dot is the "alive" signal; the
+     comet ring + awaiting pulse are reserved for "something's
+     happening". */
+
   /* Awaiting: stronger, attention-grabbing pulse — the dot scales up
      and its outline blinks the repo color at a faster cadence. This
      is the "come deal with me" state. */
@@ -250,7 +313,7 @@
   @keyframes dock-awaiting {
     0%, 100% {
       transform: scale(1);
-      box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-fill) 60%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-fill) 30%, #fff 70%);
     }
     50% {
       transform: scale(1.25);
@@ -258,7 +321,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .dock-dot.dot-working .dock-dot-inner::before { animation: none; }
+    .dock-dot.dot-working .dock-dot-inner::before,
     .dock-dot.dot-awaiting .dock-dot-inner { animation: none; }
   }
 </style>

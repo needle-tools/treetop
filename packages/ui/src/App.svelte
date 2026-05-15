@@ -2539,6 +2539,7 @@
     source: string;
     wtPath: string;
     rowKey: string;
+    repoId: string;
     agent: OpenSession["agent"];
     repoColor?: string;
     repoName: string;
@@ -2546,6 +2547,7 @@
     title?: string;
     manualTitle?: string;
     lastUserMessage?: string;
+    lastActive?: string;
     working: boolean;
     awaiting: boolean;
   }> => {
@@ -2588,6 +2590,7 @@
             source: s.source,
             wtPath: wt.path,
             rowKey,
+            repoId: repo.id,
             agent: s.agent,
             repoColor: repo.color,
             repoName: repo.name ?? repoName(repo),
@@ -2598,6 +2601,7 @@
               newSessionTitles[titleSource] ??
               newSessionTitles[s.source],
             lastUserMessage: meta?.lastUserMessage,
+            lastActive: meta?.lastActive,
             working: !!transientWorking[s.source],
             awaiting: !!transientAwaiting[s.source],
           });
