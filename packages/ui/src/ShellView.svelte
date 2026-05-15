@@ -9,6 +9,7 @@
    * component is only mounted for `__transcript__:shell:<id>` sources.
    */
   import { onMount } from "svelte";
+  import ManualTitle from "./ManualTitle.svelte";
 
   /** termId from the synthetic source. Stable identifier of the shell on
    *  disk (`<workspace>/shells/<termId>.jsonl`). */
@@ -56,61 +57,11 @@
   /** Editable title for this past shell. Persisted via the workspace's
    *  session-titles store under the key `shell:<termId>` so it survives
    *  daemon restarts and shows up in the worktree session picker. */
-  let manualTitleEditing = false;
-  let manualTitleDraft = "";
-  let manualTitleSaving = false;
-  let manualTitleInputEl: HTMLInputElement | null = null;
   $: manualTitle = transcript?.manualTitle ?? "";
 
-  function startManualTitleEdit() {
-    manualTitleDraft = manualTitle;
-    manualTitleEditing = true;
-    requestAnimationFrame(() => {
-      manualTitleInputEl?.focus();
-      manualTitleInputEl?.select();
-    });
-  }
-
-  async function saveManualTitle() {
-    const next = manualTitleDraft;
-    if (next === manualTitle) {
-      manualTitleEditing = false;
-      return;
-    }
-    manualTitleSaving = true;
-    try {
-      const res = await fetch("/api/session/title", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: `shell:${termId}`, title: next }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      if (transcript) {
-        transcript = { ...transcript, manualTitle: next.trim() || undefined };
-      }
-    } catch {
-      // best-effort — drop back to view-only so the user can retry
-    } finally {
-      manualTitleSaving = false;
-      manualTitleEditing = false;
-    }
-  }
-
-  function cancelManualTitleEdit() {
-    manualTitleEditing = false;
-    manualTitleDraft = "";
-  }
-
-  function onManualTitleKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      void saveManualTitle();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      cancelManualTitleEdit();
+  function onManualTitleSaved(next: string) {
+    if (transcript) {
+      transcript = { ...transcript, manualTitle: next || undefined };
     }
   }
 
@@ -158,30 +109,13 @@
 <div class="session shell-session">
   <header>
     <span class="agent-pill agent-shell">shell</span>
-    {#if manualTitleEditing}
-      <input
-        class="manual-title-input"
-        bind:this={manualTitleInputEl}
-        bind:value={manualTitleDraft}
-        on:keydown={onManualTitleKey}
-        on:blur={() => void saveManualTitle()}
-        placeholder="Name this terminal…"
-        maxlength="120"
-        disabled={manualTitleSaving}
-      />
-    {:else}
-      <button
-        type="button"
-        class="manual-title"
-        class:placeholder={!manualTitle}
-        title={manualTitle
-          ? "Click to rename this past terminal"
-          : "Click to name this past terminal"}
-        on:click={startManualTitleEdit}
-      >
-        {manualTitle || "Name this terminal…"}
-      </button>
-    {/if}
+    <ManualTitle
+      source={`shell:${termId}`}
+      value={manualTitle}
+      placeholder="Name this terminal…"
+      compact
+      on:saved={(e) => onManualTitleSaved(e.detail.title)}
+    />
     {#if transcript}
       <span class="muted small">{relTime(transcript.header.createdAt)}</span>
     {/if}
@@ -345,40 +279,5 @@
     border-radius: 999px;
     background: var(--surface-2);
     color: var(--text-2);
-  }
-  /* Editable past-terminal title. Same visual language as SessionView's
-     manualTitle widget: muted placeholder when unset, plain inline button
-     when set, becomes a slim input on click. */
-  .manual-title {
-    background: transparent;
-    border: 0;
-    padding: 0.1rem 0.3rem;
-    color: var(--text-1);
-    font-size: 0.7rem;
-    font-family: inherit;
-    cursor: text;
-    border-radius: var(--radius-sm);
-    text-align: left;
-  }
-  .manual-title:hover {
-    background: var(--surface-2);
-  }
-  .manual-title.placeholder {
-    color: var(--text-faint);
-    font-style: italic;
-  }
-  .manual-title-input {
-    background: var(--surface-2);
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    padding: 0.1rem 0.35rem;
-    font-size: 0.7rem;
-    font-family: inherit;
-    min-width: 12rem;
-  }
-  .manual-title-input:focus {
-    outline: none;
-    border-color: var(--brand);
   }
 </style>

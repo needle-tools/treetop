@@ -22,6 +22,7 @@
   import { createEventDispatcher } from "svelte";
   import TerminalView from "./TerminalView.svelte";
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
+  import ManualTitle from "./ManualTitle.svelte";
 
   type AgentKind = "claude" | "codex" | "copilot" | "shell";
 
@@ -55,40 +56,6 @@
     awaitingChange: { awaiting: boolean };
     titleSave: { title: string };
   }>();
-
-  let editing = false;
-  let draft = "";
-
-  function startTitleEdit() {
-    draft = manualTitle ?? "";
-    editing = true;
-  }
-
-  function saveTitle() {
-    const next = draft.trim();
-    editing = false;
-    if (next === (manualTitle ?? "")) return;
-    dispatch("titleSave", { title: next });
-  }
-
-  function onTitleKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      saveTitle();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      editing = false;
-    }
-  }
-
-  /** Svelte action: focus + select the input on mount. */
-  function autoFocusSelect(node: HTMLInputElement) {
-    requestAnimationFrame(() => {
-      node.focus();
-      node.select();
-    });
-    return {};
-  }
 
   /** Burger-menu items. Hosts the Restart action (was the inline ↻
    *  button) plus a Copy command-line option that's handy when
@@ -134,29 +101,11 @@
 >
   <header class="new-session-head">
     <span class="agent-pill agent-{agent}">{agent}</span>
-    {#if editing}
-      <input
-        class="manual-title-input"
-        bind:value={draft}
-        on:keydown={onTitleKey}
-        on:blur={saveTitle}
-        use:autoFocusSelect
-        placeholder="Name this session…"
-        maxlength="120"
-      />
-    {:else}
-      <button
-        type="button"
-        class="manual-title"
-        class:placeholder={!manualTitle}
-        title={manualTitle
-          ? "Click to rename this session"
-          : "Click to name this session"}
-        on:click={startTitleEdit}
-      >
-        {manualTitle || "Name this session…"}
-      </button>
-    {/if}
+    <ManualTitle
+      {source}
+      value={manualTitle}
+      on:saved={(e) => dispatch("titleSave", { title: e.detail.title })}
+    />
     <span class="muted small">
       {agent === "shell" ? "new session — Terminal" : "new session — TUI"}
     </span>

@@ -49,6 +49,21 @@ export interface AgentSession {
    *  Codex. Surfaced as a cell in the agents popover so the user can
    *  tell at a glance how much conversation each session contains. */
   messageCount?: number;
+  /** Estimated tokens currently in the agent's context window before
+   *  the next prompt. For Claude this is exact: the last assistant
+   *  turn's `usage.input_tokens + cache_read + cache_creation`. For
+   *  Codex this is approximate: sum of message char lengths ÷ 4. The
+   *  UI surfaces this in the session header so the user can eyeball
+   *  how close they are to the model's context cap. */
+  contextTokens?: number;
+  /** True when `contextTokens` came from an authoritative usage block
+   *  (Claude), false when it's a chars/4 estimate (Codex). The UI
+   *  prefixes estimates with `~`. */
+  contextTokensExact?: boolean;
+  /** Model id (e.g. `claude-sonnet-4-6`, `claude-opus-4-7-20250101`)
+   *  parsed from the session metadata. The UI uses this to pick a
+   *  context-window cap (200k vs 1M). */
+  model?: string;
 }
 
 const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -284,6 +299,16 @@ interface ClaudeUserScanResult {
    *  (Anthropic's API convention; the parser relabels these as role
    *  "tool" elsewhere) are excluded from this count. */
   totalMessageCount: number;
+  /** Sum of `input_tokens + cache_read_input_tokens +
+   *  cache_creation_input_tokens` on the most recent assistant turn
+   *  that carried a `message.usage` block. Treated as "context size
+   *  the model saw on its last turn" — a close proxy for what the
+   *  next prompt will be carrying in. Undefined if no assistant turn
+   *  carried usage (fresh sessions / old logs). */
+  lastContextTokens?: number;
+  /** `message.model` from the same most-recent-usage assistant turn.
+   *  The UI uses this to pick a context-window cap (200k vs 1M). */
+  model?: string;
 }
 
 /** (path, mtimeMs) → previous scan result. JSONL session files don't change
@@ -328,6 +353,8 @@ export async function scanClaudeUserMessages(
   const tail: string[] = [];
   let userCount = 0;
   let totalCount = 0;
+  let lastContextTokens: number | undefined;
+  let lastModel: string | undefined;
   for (const line of content.split("\n")) {
     if (!line) continue;
     // Cheap pre-filter so we don't JSON.parse every line on huge files.
@@ -372,6 +399,32 @@ export async function scanClaudeUserMessages(
       userCount++;
     } else if (obj.type === "assistant") {
       totalCount++;
+      const msg = obj.message as
+        | { model?: unknown; usage?: unknown }
+        | undefined;
+      const usage = msg?.usage as
+        | {
+            input_tokens?: unknown;
+            cache_read_input_tokens?: unknown;
+            cache_creation_input_tokens?: unknown;
+          }
+        | undefined;
+      if (usage && typeof usage === "object") {
+        const inp = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+        const cr =
+          typeof usage.cache_read_input_tokens === "number"
+            ? usage.cache_read_input_tokens
+            : 0;
+        const cc =
+          typeof usage.cache_creation_input_tokens === "number"
+            ? usage.cache_creation_input_tokens
+            : 0;
+        // A later assistant turn with no usage block must not clobber
+        // an earlier good reading — that's why this update is gated on
+        // `usage && typeof usage === "object"` above.
+        lastContextTokens = inp + cr + cc;
+        lastModel = typeof msg?.model === "string" ? msg.model : undefined;
+      }
     }
   }
   const result: ClaudeUserScanResult = {
@@ -379,6 +432,8 @@ export async function scanClaudeUserMessages(
     lastUserMessages: tail,
     userMessageCount: userCount,
     totalMessageCount: totalCount,
+    lastContextTokens,
+    model: lastModel,
   };
   if (mtimeMs !== undefined) {
     claudeUserScanCache.set(path, { mtimeMs, result });
@@ -426,6 +481,57 @@ export async function scanCodexMessageCount(path: string): Promise<number> {
     }
   }
   return count;
+}
+
+/** Rough char-based estimate (chars/4) of the total tokens currently in
+ *  a Codex session's context. Codex's JSONL doesn't carry an `input_tokens`
+ *  field per turn the way Claude does, so we approximate by summing the
+ *  character length of every user/assistant message and dividing by 4
+ *  — the same heuristic OpenAI's own tokenizer docs use as a rule of
+ *  thumb. Developer / system / event lines don't count. */
+export async function scanCodexContextTokens(path: string): Promise<number> {
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return 0;
+  }
+  let chars = 0;
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    // 0.130+: response_item → payload.{type:"message", role, content[]}
+    if (
+      obj.type === "response_item" &&
+      typeof obj.payload === "object" &&
+      obj.payload
+    ) {
+      const p = obj.payload as Record<string, unknown>;
+      if (p.type !== "message") continue;
+      if (p.role !== "user" && p.role !== "assistant") continue;
+      if (Array.isArray(p.content)) {
+        for (const block of p.content) {
+          if (typeof block === "object" && block !== null) {
+            const t = (block as { text?: unknown }).text;
+            if (typeof t === "string") chars += t.length;
+          }
+        }
+      } else if (typeof p.content === "string") {
+        chars += p.content.length;
+      }
+      continue;
+    }
+    // Pre-0.130 flat form: top-level role + content.
+    if (obj.role === "user" || obj.role === "assistant") {
+      if (typeof obj.content === "string") chars += obj.content.length;
+    }
+  }
+  return Math.floor(chars / 4);
 }
 
 export async function scanClaude(
@@ -479,6 +585,10 @@ export async function scanClaude(
           messageCount: userStats.totalMessageCount > 0
             ? userStats.totalMessageCount
             : undefined,
+          contextTokens: userStats.lastContextTokens,
+          contextTokensExact:
+            userStats.lastContextTokens !== undefined ? true : undefined,
+          model: userStats.model,
         });
       } catch {
         // unreadable session, skip
@@ -582,6 +692,7 @@ export async function scanCodex(
         const meta = await readCodexSessionMeta(sessionPath);
         if (!meta.cwd) continue;
         const messageCount = await scanCodexMessageCount(sessionPath);
+        const contextTokens = await scanCodexContextTokens(sessionPath);
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
@@ -592,6 +703,8 @@ export async function scanCodex(
           sessionId: meta.id ?? sessionPath.split("/").pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
           messageCount: messageCount > 0 ? messageCount : undefined,
+          contextTokens: contextTokens > 0 ? contextTokens : undefined,
+          contextTokensExact: contextTokens > 0 ? false : undefined,
         });
       } catch {
         // skip

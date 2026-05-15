@@ -4,6 +4,8 @@
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
+  import ManualTitle from "./ManualTitle.svelte";
+  import { contextChip } from "./context-tokens";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -84,6 +86,24 @@
    *  exceeds the loaded slice. undefined → fall back to just the
    *  loaded count. */
   export let totalMessageCount: number | undefined = undefined;
+  /** Estimated context size, sourced from /api/repos' agent metadata.
+   *  For Claude this is exact (last assistant turn's `usage.input +
+   *  cache_read + cache_creation`); for Codex it's a chars/4 estimate.
+   *  Rendered as a small chip in the header next to the message count. */
+  export let contextTokens: number | undefined = undefined;
+  /** True when `contextTokens` came from an authoritative usage block
+   *  (Claude), false when it's a Codex chars/4 estimate. Drives the
+   *  leading `~` in the chip. */
+  export let contextTokensExact: boolean | undefined = undefined;
+  /** Model id so the chip can pick a context-window cap (200k vs 1M). */
+  export let model: string | undefined = undefined;
+
+  $: ctxChip = contextChip({
+    tokens: contextTokens,
+    exact: contextTokensExact,
+    model,
+    agent,
+  });
 
   interface NormalizedBlock {
     type:
@@ -208,13 +228,22 @@
     startedAt: string;
   }
   let inflight: InflightRec[] = [];
-  /** Manual title editing state. Lives separately from `session.manualTitle`
-   *  so a poll mid-edit can't overwrite what the user is typing. */
-  let manualTitleEditing = false;
-  let manualTitleDraft = "";
-  let manualTitleSaving = false;
-  let manualTitleInputEl: HTMLInputElement | null = null;
   $: manualTitle = session?.manualTitle ?? "";
+
+  function onManualTitleSaved(next: string) {
+    // Optimistic local mirror so the header reads the new title
+    // immediately, without waiting on the 2s /api/session poll. The
+    // next load() reconfirms it (the daemon injects manualTitle into
+    // the /api/session response from its own title store).
+    if (session) {
+      session = { ...session, manualTitle: next || undefined };
+    }
+    // Nudge the parent to re-fetch /api/repos so the worktree row's
+    // agent badge and the "+N sessions" popover pick the new title
+    // up right away (defense in depth — the daemon also broadcasts a
+    // change event over SSE).
+    onTitleChange();
+  }
 
   /** Copy a string to the clipboard. Best-effort: silent on failure
    *  (browser refused permissions, document not focused, etc.). Used
@@ -259,65 +288,6 @@
       : flat;
   }
 
-  function startManualTitleEdit() {
-    manualTitleDraft = manualTitle;
-    manualTitleEditing = true;
-    // focus on next tick once the input renders
-    requestAnimationFrame(() => {
-      manualTitleInputEl?.focus();
-      manualTitleInputEl?.select();
-    });
-  }
-
-  async function saveManualTitle() {
-    const next = manualTitleDraft;
-    // No-op if unchanged
-    if (next === manualTitle) {
-      manualTitleEditing = false;
-      return;
-    }
-    manualTitleSaving = true;
-    try {
-      const res = await fetch("/api/session/title", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, title: next }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      // Reflect locally; the 2s poll will reconfirm.
-      if (session) {
-        session = { ...session, manualTitle: next.trim() || undefined };
-      }
-      // Nudge the parent to re-fetch /api/repos so the worktree row's
-      // agent badge and the "+N sessions" popover pick the new title
-      // up right away (defense in depth — the daemon also broadcasts a
-      // change event over SSE).
-      onTitleChange();
-    } catch {
-      // best-effort — leave the edit open so the user can retry / cancel
-    } finally {
-      manualTitleSaving = false;
-      manualTitleEditing = false;
-    }
-  }
-
-  function cancelManualTitleEdit() {
-    manualTitleEditing = false;
-    manualTitleDraft = "";
-  }
-
-  function onManualTitleKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      void saveManualTitle();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      cancelManualTitleEdit();
-    }
-  }
   /** When non-null we have a prompt in flight. The numeric value is the
    *  session.messages.length at the moment we hit Send; once load() sees
    *  a higher count we know claude wrote something back and can clear
@@ -566,122 +536,112 @@
 
 <div class="session" class:awaiting-input={mode === "terminal" && awaitingInput}>
   <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
-    <div class="header-main">
+    <div class="hdr-col col-agent">
       <span class="agent-pill agent-{agent}">{agent}</span>
-      <div class="header-content">
-        {#if manualTitleEditing}
-          <input
-            class="manual-title-input"
-            bind:this={manualTitleInputEl}
-            bind:value={manualTitleDraft}
-            on:keydown={onManualTitleKey}
-            on:blur={() => void saveManualTitle()}
-            disabled={manualTitleSaving}
-            placeholder="Name this session…"
-            maxlength="120"
-          />
-        {:else}
-          <button
-            type="button"
-            class="manual-title"
-            class:placeholder={!manualTitle}
-            title={manualTitle
-              ? "Click to rename this session"
-              : "Click to name this session"}
-            on:click={startManualTitleEdit}
-          >
-            {manualTitle || "Name this session…"}
-          </button>
-        {/if}
-        {#if session}
-          <span
-            class="muted small"
-            title={totalMessageCount !== undefined &&
-            totalMessageCount > session.messages.length
-              ? `Showing the last ${session.messages.length} of ${totalMessageCount.toLocaleString()} messages. /api/session ships at most 100; the full count comes from /api/repos' pre-scanned agent metadata.`
-              : `${session.messages.length} message${session.messages.length === 1 ? "" : "s"} in this session`}
-          >
-            {#if totalMessageCount !== undefined && totalMessageCount > session.messages.length}
-              {session.messages.length} of {totalMessageCount.toLocaleString()} messages
-            {:else}
-              {session.messages.length} messages
-            {/if}
-          </span>
-          {#if session.sessionId}
-            <code class="muted small sid" title={session.sessionId}>
-              {session.sessionId.slice(0, 8)}
-            </code>
-          {/if}
-          {#if session.endedAt}
-            <span
-              class="muted small last-activity"
-              title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-            >last activity {relTimeFromIso(session.endedAt)}</span>
-          {/if}
-          {#if inflight.length > 0}
-            <button
-              class="inflight-pill"
-              type="button"
-              title={inflight
-                .map(
-                  (r) =>
-                    `pid ${r.pid}: ${r.textPreview}${r.textPreview.length === 200 ? "…" : ""}`,
-                )
-                .join("\n")}
-              on:click={cancelAllInflight}
-            >
-              <span class="spinner" aria-hidden="true"></span>
-              <span>
-                {inflight.length} sending — click to cancel
-              </span>
-            </button>
-          {/if}
-        {/if}
-      </div>
     </div>
-    {#if session?.sessionId && (agent === "claude" || agent === "codex")}
-      {#if mode === "read"}
-        <button
-          class="resume-btn"
-          on:click={() => (mode = "terminal")}
-          title={agent === "codex"
-            ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
-            : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
+    <div class="hdr-col col-name">
+      <ManualTitle
+        {source}
+        value={manualTitle}
+        on:saved={(e) => onManualTitleSaved(e.detail.title)}
+      />
+      {#if ctxChip}
+        <span
+          class="ctx-chip muted small"
+          class:warn={ctxChip.ratio !== undefined && ctxChip.ratio > 0.5 && ctxChip.ratio <= 0.8}
+          class:hot={ctxChip.ratio !== undefined && ctxChip.ratio > 0.8}
+          title={`${contextTokensExact ? "Exact" : "Estimated (chars÷4)"} context size before the next prompt.\n${model ?? "(model unknown)"}${contextTokens !== undefined ? `\n${contextTokens.toLocaleString()} tokens` : ""}`}
         >
-          Resume in terminal
-        </button>
-      {:else}
-        {#if awaitingInput}
-          <span class="awaiting-pill" title="The agent is paused on a prompt — focus the terminal and respond.">needs input</span>
-        {/if}
+          {ctxChip.text}
+        </span>
+      {/if}
+      {#if inflight.length > 0}
         <button
-          class="fullscreen-btn"
-          on:click={(e) => {
-            const el = (e.currentTarget as HTMLElement).closest(
-              ".session",
-            ) as HTMLElement | null;
-            if (!el) return;
-            if (document.fullscreenElement === el) {
-              void document.exitFullscreen().catch(() => {});
-            } else {
-              void el.requestFullscreen().catch(() => {});
-            }
-          }}
-          title="Fullscreen this terminal (Esc to exit)"
-          aria-label="Fullscreen"
-        >⛶</button>
-        <button
-          class="resume-btn dispose-btn"
-          on:click={disposeTerminal}
-          disabled={disposing}
-          title="SIGTERM the PTY and flip back to the chat view"
+          class="inflight-pill"
+          type="button"
+          title={inflight
+            .map(
+              (r) =>
+                `pid ${r.pid}: ${r.textPreview}${r.textPreview.length === 200 ? "…" : ""}`,
+            )
+            .join("\n")}
+          on:click={cancelAllInflight}
         >
-          {disposing ? "Disposing…" : "Dispose terminal"}
+          <span class="spinner" aria-hidden="true"></span>
+          <span>
+            {inflight.length} sending — click to cancel
+          </span>
         </button>
       {/if}
-    {/if}
-    <SessionMenu items={menuItems} />
-    <button class="close" on:click={onClose} title="Close">×</button>
+    </div>
+    <div class="hdr-col col-meta">
+      {#if session?.endedAt}
+        <span
+          class="muted small last-activity"
+          title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
+        >last activity {relTimeFromIso(session.endedAt)}</span>
+      {/if}
+      {#if session}
+        <span
+          class="muted small msg-count"
+          title={totalMessageCount !== undefined &&
+          totalMessageCount > session.messages.length
+            ? `Showing the last ${session.messages.length} of ${totalMessageCount.toLocaleString()} messages. /api/session ships at most 100; the full count comes from /api/repos' pre-scanned agent metadata.`
+            : `${session.messages.length} message${session.messages.length === 1 ? "" : "s"} in this session`}
+        >
+          {#if totalMessageCount !== undefined && totalMessageCount > session.messages.length}
+            {session.messages.length} of {totalMessageCount.toLocaleString()} messages
+          {:else}
+            {session.messages.length} messages
+          {/if}
+        </span>
+      {/if}
+    </div>
+    <div class="hdr-col col-actions">
+      {#if session?.sessionId && (agent === "claude" || agent === "codex")}
+        {#if mode === "read"}
+          <button
+            class="resume-btn"
+            on:click={() => (mode = "terminal")}
+            title={agent === "codex"
+              ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
+              : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
+          >
+            Resume
+          </button>
+        {:else}
+          {#if awaitingInput}
+            <span class="awaiting-pill" title="The agent is paused on a prompt — focus the terminal and respond.">needs input</span>
+          {/if}
+          <button
+            class="fullscreen-btn"
+            on:click={(e) => {
+              const el = (e.currentTarget as HTMLElement).closest(
+                ".session",
+              ) as HTMLElement | null;
+              if (!el) return;
+              if (document.fullscreenElement === el) {
+                void document.exitFullscreen().catch(() => {});
+              } else {
+                void el.requestFullscreen().catch(() => {});
+              }
+            }}
+            title="Fullscreen this terminal (Esc to exit)"
+            aria-label="Fullscreen"
+          >⛶</button>
+          <button
+            class="resume-btn dispose-btn"
+            on:click={disposeTerminal}
+            disabled={disposing}
+            title="SIGTERM the PTY and flip back to the chat view"
+          >
+            {disposing ? "Ending…" : "End Session"}
+          </button>
+        {/if}
+      {/if}
+      <SessionMenu items={menuItems} />
+      <button class="close" on:click={onClose} title="Close">×</button>
+    </div>
   </header>
 
   {#if mode === "terminal" && session?.sessionId && session.cwd}
@@ -877,13 +837,13 @@
     white-space: nowrap;
   }
   header {
-    /* Outer header: keeps the × pinned to the right at any width. The
-       wrappable items live in .header-main inside, so when the column
-       gets narrow, last-activity flows onto a new row under the count
-       — but × stays put. */
+    /* 4-column row: [agent] [name+usage] [last activity+messages] [actions].
+       col-name takes the remaining width; col-meta is allowed to shrink
+       with ellipsis when the column gets narrow; col-agent + col-actions
+       are intrinsic width and never shrink. */
     display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 0.6rem;
     padding: 0.4rem 0.6rem;
     background: var(--surface-2);
     border-bottom: 1px solid var(--surface-3);
@@ -893,42 +853,47 @@
   header:active {
     cursor: grabbing;
   }
-  .header-main {
-    /* 2-column grid: agent pill stays in column 1; everything else
-       (messages count, sid, last-activity) wraps inside column 2. So when
-       last-activity bumps to a new row it aligns under "122 messages" —
-       not under the agent pill. */
-    flex: 1 1 0;
-    min-width: 0;
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: start;
-    gap: 0 0.5rem;
-    line-height: 1.1;
-  }
-  .header-main > .agent-pill {
-    align-self: start;
-  }
-  .header-content {
-    min-width: 0;
+  .hdr-col {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.15rem 0.5rem;
     line-height: 1.1;
   }
-  .header-content > * {
-    /* Each item's own text doesn't wrap; the item itself can wrap to a
-       new flex row inside .header-content when the column is tight. */
-    white-space: nowrap;
+  .col-agent {
     flex: 0 0 auto;
-    line-height: 1.1;
+    align-items: center;
   }
-  .header-content .last-activity {
-    /* last-activity is the longest item, so it's the one that wraps
-       first when space runs out. flex: 1 1 auto lets it stretch on
-       its row before wrapping. */
+  .col-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+  .col-name > * {
+    max-width: 100%;
+  }
+  .col-meta {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    overflow: hidden;
+  }
+  .col-meta > * {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+  }
+  .col-actions {
+    /* Only col-actions grows; that's what pushes its children to the
+       right edge of the header. justify-content: flex-end right-aligns
+       the inner buttons within the grown column. */
     flex: 1 1 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.35rem;
   }
   header .close {
     flex: 0 0 auto;
@@ -1013,52 +978,25 @@
   .sid {
     font-family: ui-monospace, monospace;
   }
-  /* Manual title: click-to-edit affordance. When set, bold + bright; when
-     empty, a quiet placeholder users can click to start naming. Same flex
-     row as the message count etc so it wraps with them. */
-  .manual-title {
+  /* Context-size chip. Sits in the same wrap row as the message count
+     and the session id. Color escalates as the ratio approaches the
+     model's context-window cap: amber at 75%, red at 90%. Tooltip
+     carries the full integer count + exact-vs-estimate caveat. */
+  .ctx-chip {
+    font-variant-numeric: tabular-nums;
     background: transparent;
-    border: 0;
-    color: var(--text-1);
-    font: inherit;
-    font-weight: 600;
-    font-size: 0.85rem;
-    padding: 0.05rem 0.25rem;
-    border-radius: var(--radius-sm);
-    cursor: text;
-    text-align: left;
-    max-width: 28ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: inherit;
     white-space: nowrap;
   }
-  .manual-title:hover {
-    background: var(--surface-3);
+  .ctx-chip.warn {
+    /* >50% — orange */
+    color: #ff8a3d;
   }
-  .manual-title.placeholder {
-    color: var(--text-faint);
-    font-weight: 400;
-    font-style: italic;
-  }
-  .manual-title-input {
-    background: var(--surface-1);
-    color: var(--text-1);
-    border: 1px solid var(--text-faint);
-    border-radius: var(--radius-sm);
-    padding: 0.05rem 0.3rem;
-    font: inherit;
-    font-weight: 600;
-    font-size: 0.85rem;
-    min-width: 8ch;
-    width: 24ch;
-    max-width: 100%;
-  }
-  .manual-title-input:focus {
-    outline: none;
-    border-color: var(--brand);
+  .ctx-chip.hot {
+    /* >80% — light red */
+    color: #ff6b5e;
   }
   .close {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     justify-content: center;

@@ -79,6 +79,9 @@
     lastUserMessages?: string[];
     userMessageCount?: number;
     messageCount?: number;
+    contextTokens?: number;
+    contextTokensExact?: boolean;
+    model?: string;
   }
   interface ShellRecord {
     termId: string;
@@ -964,28 +967,18 @@
    *  appears on disk. */
   let newSessionTitles: Record<string, string> = {};
 
-  /** Persist a manual title for a `__new__:` / `__attached__:` source.
-   *  Called from NewSessionCol via `on:titleSave` with the trimmed
-   *  string already in hand. */
-  async function saveNewSessionTitle(source: string, next: string) {
-    const prev = newSessionTitles[source] ?? "";
-    if (next === prev) return;
-    try {
-      const res = await fetch("/api/session/title", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, title: next }),
-      });
-      if (!res.ok) return;
-      newSessionTitles = next
-        ? { ...newSessionTitles, [source]: next }
-        : (({ [source]: _, ...rest }) => rest)(newSessionTitles);
-      // Refresh /api/repos so a worktree row reflects the new title the
-      // moment its real JSONL takes over from the synthetic source.
-      void load();
-    } catch {
-      // best-effort
-    }
+  /** Update the local `newSessionTitles` map after NewSessionCol's
+   *  ManualTitle component POSTed successfully. The POST itself lives
+   *  inside ManualTitle.svelte; this callback just mirrors the
+   *  server-confirmed value into the in-memory map so the prop
+   *  binding re-renders the header, and triggers a /api/repos refresh
+   *  so the worktree row reflects the title once its real JSONL takes
+   *  over from the synthetic source. */
+  function saveNewSessionTitle(source: string, next: string) {
+    newSessionTitles = next
+      ? { ...newSessionTitles, [source]: next }
+      : (({ [source]: _, ...rest }) => rest)(newSessionTitles);
+    void load();
   }
 
   /** Ask the daemon to rename a saved title's key from `oldSource` to
@@ -3849,6 +3842,9 @@
                             agent={s.agent as "claude" | "codex" | "copilot"}
                             source={s.source}
                             totalMessageCount={agentMeta?.messageCount}
+                            contextTokens={agentMeta?.contextTokens}
+                            contextTokensExact={agentMeta?.contextTokensExact}
+                            model={agentMeta?.model}
                             initialMode={s.mode === "terminal" ? "terminal" : "read"}
                             onModeChange={(m) => {
                               // Persist so a reload restores the same view —

@@ -101,12 +101,16 @@
     stroke: none;
   }
   /* Icon-only variant — used in the folded row-head action strip.
-     Transparent chip so just the (coloured) brand mark shows, with a
-     subtle hover wash for affordance. */
+     Round, transparent chip so just the (coloured) brand mark shows,
+     with a subtle hover wash for affordance. */
   .open-in-btn.icon-only {
-    padding: 0.2rem 0.25rem;
+    padding: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
     background: transparent;
     border-color: transparent;
+    justify-content: center;
   }
   .open-in-btn.icon-only:hover {
     background: color-mix(in srgb, var(--chip-default-bg) 55%, transparent);

@@ -14,6 +14,7 @@ import {
   readClaudeSessionMeta,
   scanClaudeUserMessages,
   scanCodexMessageCount,
+  scanCodexContextTokens,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -356,6 +357,109 @@ describe("scanClaudeUserMessages", () => {
     expect(stats.firstUserMessage?.length ?? 0).toBeLessThanOrEqual(400);
     expect(stats.firstUserMessage?.endsWith("…")).toBe(true);
   });
+
+  test("captures lastContextTokens + model from the most recent assistant usage", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "hi" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-sonnet-4-6",
+            content: "hello",
+            usage: {
+              input_tokens: 3,
+              cache_creation_input_tokens: 100,
+              cache_read_input_tokens: 0,
+              output_tokens: 5,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "again" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-7",
+            content: "ok",
+            usage: {
+              input_tokens: 4,
+              cache_creation_input_tokens: 1000,
+              cache_read_input_tokens: 50000,
+              output_tokens: 7,
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.lastContextTokens).toBe(4 + 1000 + 50000);
+    expect(stats.model).toBe("claude-opus-4-7");
+  });
+
+  test("ignores assistant turns without a usage block when picking the latest", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-sonnet-4-6",
+            content: "first",
+            usage: {
+              input_tokens: 10,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+              output_tokens: 1,
+            },
+          },
+        }),
+        // Subsequent assistant turn with no usage — must not clobber the
+        // previous good reading.
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: "later, no usage" },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.lastContextTokens).toBe(10);
+    expect(stats.model).toBe("claude-sonnet-4-6");
+  });
+
+  test("returns undefined context tokens when no assistant turn carries usage", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "hi" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: "no usage block here" },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.lastContextTokens).toBeUndefined();
+    expect(stats.model).toBeUndefined();
+  });
 });
 
 describe("scanClaude", () => {
@@ -449,6 +553,67 @@ describe("scanCodexMessageCount", () => {
       ].join("\n"),
     );
     expect(await scanCodexMessageCount(file)).toBe(3);
+  });
+});
+
+describe("scanCodexContextTokens", () => {
+  test("returns 0 when the file is missing", async () => {
+    expect(await scanCodexContextTokens("/no/such/file")).toBe(0);
+  });
+
+  test("estimates from 0.130 response_item content as chars/4", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    // 8-char user text + 12-char assistant text = 20 chars → 5 tokens.
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "x", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "abcdefgh" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "ABCDEFGHIJKL" }],
+          },
+        }),
+        // developer/system messages must not contribute
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "MASSIVE POLICY TEXT" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexContextTokens(file)).toBe(5);
+  });
+
+  test("estimates from pre-0.130 flat role+content lines", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    // 4 + 8 = 12 chars → 3 tokens
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ role: "user", content: "abcd", cwd: "/p" }),
+        JSON.stringify({ role: "assistant", content: "ABCDEFGH" }),
+      ].join("\n"),
+    );
+    expect(await scanCodexContextTokens(file)).toBe(3);
   });
 });
 
