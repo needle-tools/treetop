@@ -9,8 +9,26 @@
   $: parsed = parseDiffStructured(text);
   $: commit = showCommitHeader ? extractCommitHeader(text) : null;
 
-  let selected = 0;
-  $: if (selected >= parsed.files.length) selected = 0;
+  // Why: track selection by file path, not by index. When the diff
+  // refreshes (fs_change refetch, full-file toggle, etc.) the file
+  // list may shift order or grow/shrink; we want the user's currently
+  // open file to stay open if it still exists in the new diff,
+  // instead of snapping back to the first file.
+  let selectedPath: string | null = null;
+  $: if (parsed.files.length === 0) {
+    selectedPath = null;
+  } else if (
+    !selectedPath ||
+    !parsed.files.some((f) => f.path === selectedPath)
+  ) {
+    selectedPath = parsed.files[0].path;
+  }
+  $: selected = selectedPath
+    ? Math.max(
+        0,
+        parsed.files.findIndex((f) => f.path === selectedPath),
+      )
+    : 0;
 
   function flagFor(f: (typeof parsed.files)[number]): string {
     if (f.isNew) return "A";
@@ -53,7 +71,7 @@
         <button
           class="file-btn"
           class:active={selected === i}
-          on:click={() => (selected = i)}
+          on:click={() => (selectedPath = f.path)}
           title={f.oldPath && f.oldPath !== f.path
             ? `${f.oldPath} → ${f.path}`
             : f.path}

@@ -123,13 +123,20 @@
   async function onFsChange(_key: number, _path: string) {
     if (_key === lastFsChangeKey) return;
     lastFsChangeKey = _key;
-    // Drop cached diffs; the converge step refetches whichever tab the
-    // user is currently looking at. When the pane is collapsed,
-    // ensureActiveDiffLoaded is a no-op — the next expand will trigger
-    // the load through onExpandedChange.
-    workdirDiff = undefined;
-    stagedDiff = undefined;
-    ensureActiveDiffLoaded();
+    if (!expanded) {
+      // Pane is hidden — drop the cache so the next expand triggers a
+      // fresh load. No DiffViewer is mounted so there's nothing to jump.
+      workdirDiff = undefined;
+      stagedDiff = undefined;
+      return;
+    }
+    // Why: keep the stale diff visible while the refetch is in flight.
+    // Clearing the cache to undefined would unmount <DiffViewer>, which
+    // wipes its scroll position and resets the selected file to the
+    // first one. Refetching in place lets Svelte diff the lines while
+    // the container stays mounted.
+    if (diffTab === "workdir") void loadWorkdirDiff();
+    else void loadStagedDiff();
   }
 
   let hasTabBeenSet = false;

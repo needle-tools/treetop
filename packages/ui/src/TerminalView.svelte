@@ -42,6 +42,7 @@
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
   let exitInfo: { code: number; signal?: string } | null = null;
+  let focused = false;
   /** Hard ceiling on how long we sit in `phase === "starting"`. POST
    *  /api/terminals + WS handshake should take well under a second in
    *  the happy path; 10s covers a slow machine + cold module init.
@@ -311,7 +312,7 @@
   }
 </script>
 
-<div class="terminal-wrap">
+<div class="terminal-wrap" class:focused>
   {#if phase === "starting"}
     <div class="overlay">
       <span class="spinner" aria-hidden="true"></span> starting terminal…
@@ -328,6 +329,8 @@
     on:paste={onPaste}
     on:dragover={onDragOver}
     on:drop={onDrop}
+    on:focusin={() => (focused = true)}
+    on:focusout={() => (focused = false)}
     role="presentation"
   ></div>
 
@@ -349,6 +352,11 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     border: 1px solid var(--surface-2);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .terminal-wrap.focused {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 1px var(--brand);
   }
   .xterm-host {
     flex: 1;
