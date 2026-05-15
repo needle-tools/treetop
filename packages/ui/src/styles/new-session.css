@@ -1,19 +1,11 @@
 /*
- * `.new-session-col` + `.new-session-head` family — the transient
- * new-session column shown in the sessions strip when the user picks
- * "+ new agent" or "+ Terminal". The TerminalView inside fills the
- * column body; this stylesheet owns the column shell + the header
- * strip (manual title editor, restart / fullscreen / dispose / close
- * action buttons, awaiting-input affordance).
- *
- * Global stylesheet (imported from main.ts) so a future
- * NewSessionCol.svelte extraction can consume these rules without
- * needing :global() in App.svelte. See plans/PLAN.md →
- * "App.svelte refactor (componentization)".
+ * `.new-session-col` shell — the transient new-session column shown
+ * in the sessions strip when the user picks "+ new agent" or
+ * "+ Terminal". The shared <SessionHeader> owns the header strip;
+ * this stylesheet just paints the column body + the awaiting-pulse
+ * border. See SessionHeader.svelte for the header chrome.
  */
 
-/* Transient new-session column: simple bordered shell with a small
-   header strip. The TerminalView inside fills the column body. */
 .new-session-col {
   height: 100%;
   box-sizing: border-box;
@@ -25,99 +17,6 @@
   overflow: hidden;
 }
 
-.new-session-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.6rem;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--surface-3);
-}
-
-/* Match SessionView's .close so the transient-TUI column header
-   reads exactly like a Claude chat's header — same padding,
-   transparent bg, same red-on-hover destructive treatment for ×.
-   Fullscreen (⛶) shares the same glyph treatment. The burger menu
-   (☰) is owned by SessionMenu.svelte. */
-.new-session-head .close,
-.new-session-head .fullscreen-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--text-muted);
-  border: 0;
-  padding: 0.1rem 0.5rem;
-  font-size: 1rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-/* Mirror SessionView's `.resume-btn.dispose-btn` so the Dispose
-   affordance reads identically between AI session columns and
-   regular-terminal columns: transparent surface, thin border, small
-   muted text, soft-red tint to signal "destructive but reversible". */
-.new-session-head .dispose-btn {
-  flex: 0 0 auto;
-  align-self: center;
-  background: color-mix(in srgb, var(--error-bg) 50%, transparent);
-  color: #efaaaa;
-  border: 1px solid color-mix(in srgb, #efaaaa 30%, transparent);
-  padding: 0.25rem 0.6rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.7rem;
-  line-height: 1;
-  cursor: pointer;
-}
-.new-session-head .dispose-btn:hover:not(:disabled) {
-  color: #ffcaca;
-  border-color: color-mix(in srgb, #efaaaa 55%, transparent);
-}
-
-.new-session-head .fullscreen-btn {
-  margin-left: auto;
-}
-.new-session-head .close {
-  margin-left: auto;
-}
-/* The trailing-actions cluster sits flush on the right: fullscreen
-   claims the auto-margin (leftmost of the cluster now that restart
-   has moved into the SessionMenu burger), and the rest just butt up
-   against it. */
-.new-session-head .fullscreen-btn + .dispose-btn,
-.new-session-head .dispose-btn + .session-menu-anchor,
-.new-session-head .session-menu-anchor + .close,
-.new-session-head .fullscreen-btn + .close,
-.new-session-head .dispose-btn + .close {
-  margin-left: 0;
-}
-.new-session-head .fullscreen-btn:hover {
-  color: var(--text-1);
-  background: var(--surface-3);
-}
-.new-session-head .dispose-btn:hover {
-  background: var(--surface-3);
-  color: var(--text-1);
-}
-.new-session-head .close:hover {
-  background: var(--error-bg);
-  color: var(--error-text);
-}
-
-/* "Awaiting input" affordance — column gains a soft amber outline
-   that pulses gently, plus a small chip in the header. Both clear
-   the moment the user types or the agent prints non-prompt output. */
-.awaiting-pill {
-  background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
-  color: var(--status-dirty);
-  padding: 0.05rem 0.4rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-  white-space: nowrap;
-}
 .new-session-col.awaiting-input {
   border-color: var(--status-dirty);
   animation: awaiting-pulse 1.8s ease-in-out infinite;
@@ -127,11 +26,10 @@
   50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
 }
 
-/* Fullscreen styling for an individual transient-TUI column. The
-   browser paints a black backdrop by default; we just make sure the
-   column fills it without its rounded corners + border looking
-   awkward on a black surround. xterm's FitAddon reacts to the size
-   change via TerminalView's ResizeObserver — no extra wiring. */
+/* Fullscreen: the browser paints a black backdrop by default; we
+   drop the rounded corners + border so the column fills it cleanly.
+   xterm's FitAddon reacts to the size change via TerminalView's
+   ResizeObserver. */
 .new-session-col:fullscreen {
   width: 100vw;
   height: 100vh;

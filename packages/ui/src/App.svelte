@@ -3757,6 +3757,13 @@
                                disk. NewSessionCol.svelte handles the shell
                                + claude/codex variants; we just feed it
                                props and react to its events. -->
+                          {@const newAgentMeta = s.resumeSessionId
+                            ? (wt.agents ?? []).find(
+                                (a) =>
+                                  a.agent === s.agent &&
+                                  a.sessionId === s.resumeSessionId,
+                              )
+                            : undefined}
                           <NewSessionCol
                             agent={s.agent}
                             source={s.source}
@@ -3769,6 +3776,11 @@
                               : undefined}
                             manualTitle={newSessionTitles[s.source]}
                             awaiting={!!transientAwaiting[s.source]}
+                            totalMessageCount={newAgentMeta?.messageCount}
+                            contextTokens={newAgentMeta?.contextTokens}
+                            contextTokensExact={newAgentMeta?.contextTokensExact}
+                            model={newAgentMeta?.model}
+                            lastActivityIso={newAgentMeta?.lastActive}
                             on:close={() => closeSessionInWt(wt.path, s)}
                             on:dispose={() =>
                               disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}

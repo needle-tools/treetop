@@ -88,6 +88,34 @@
   let zOrder: string[] = [];
   let editingId: string | null = null;
   let lastChangeKey = -1;
+  /** Notes that were just spawned via the "+" button and haven't been
+   *  committed yet. While staged, the note floats below the originating
+   *  button (not pinned to a row) and `removeIfEmpty` is on so leaving
+   *  edit mode with empty body discards it. Cleared once the user
+   *  saves non-empty text — at which point the note flies into its
+   *  permanent pin slot on the row. */
+  interface Staging {
+    docX: number;
+    docY: number;
+    anchor: string;
+  }
+  let staging: Record<string, Staging> = {};
+  /** Notes mid-fly (staging → pinned). Position is driven by a rAF
+   *  loop in this layer (not a CSS transition) — so the per-frame
+   *  `x` updates that StickyNote receives feed its pendulum physics,
+   *  which produces the same drag-style swing the user gets when
+   *  moving the note by hand. */
+  interface FlyingState {
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    startMs: number;
+    durationMs: number;
+  }
+  let flyingNotes: Record<string, FlyingState> = {};
+  /** Notes mid-fade-out animation before delete. */
+  let removingIds = new Set<string>();
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
@@ -214,6 +242,27 @@
    *  is what makes the note's tape tuck under the *visible* bottom
    *  edge instead of floating somewhere inside the row. */
   function screenPosFor(note: NoteShape): { x: number; y: number } | null {
+    // Staged notes float beneath the "+" button until the user commits
+    // text (or discards via Esc / click-outside). docX/docY were
+    // captured at spawn so the note scrolls naturally with the page.
+    const st = staging[note.id];
+    if (st) {
+      const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
+      return { x: Math.min(Math.max(0, st.docX), maxX), y: st.docY };
+    }
+    // Mid-fly: ease-out cubic between captured from/to. The pendulum
+    // in StickyNote reads the changing `x` prop and swings accordingly,
+    // so the note tilts during the flight exactly the way it would if
+    // the user were dragging it across by hand.
+    const fly = flyingNotes[note.id];
+    if (fly) {
+      const t = Math.min(1, (performance.now() - fly.startMs) / fly.durationMs);
+      const e = 1 - Math.pow(1 - t, 3);
+      return {
+        x: fly.fromX + (fly.toX - fly.fromX) * e,
+        y: fly.fromY + (fly.toY - fly.fromY) * e,
+      };
+    }
     const li = findAnchorLi(note);
     if (!li) return null;
     const r = li.getBoundingClientRect();
@@ -270,6 +319,8 @@
     // statement to all three.
     void tick;
     void offsets;
+    void staging;
+    void flyingNotes;
     const next: Record<string, { x: number; y: number } | null> = {};
     for (const n of notes) next[n.id] = screenPosFor(n);
     positionsByNoteId = next;
@@ -327,20 +378,16 @@
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
-      // Derive an initial offsetXFrac so the note lands beneath the
-      // clicked button. Storing the fraction means the spawned note
-      // tracks window resizes from the very first frame. originRect
-      // and rowRect are both viewport-relative (same coord system), so
-      // the diff is independent of scroll.
-      const li = findAnchorLi(created);
-      if (li) {
-        const rowRect = li.getBoundingClientRect();
-        const offsetXFrac = rowRect.width > 0
-          ? Math.max(0, Math.min(1, (args.originRect.left - rowRect.left) / rowRect.width))
-          : DEFAULT_OFFSET_X_FRAC;
-        offsets = { ...offsets, [created.id]: { offsetXFrac } };
-        saveOffsets();
-      }
+      // Park the new note as "staged": it floats beneath the "+"
+      // button (centered horizontally, just below) instead of in its
+      // permanent pin slot. The user types content and Enter/clicks
+      // out → the note flies to the row's best free slot. If the user
+      // leaves edit mode without typing anything, StickyNote dispatches
+      // `remove` (via `removeIfEmpty`) and we delete + fade.
+      const docX =
+        args.originRect.left + args.originRect.width / 2 - NOTE_W / 2 + window.scrollX;
+      const docY = args.originRect.bottom + 8 + window.scrollY;
+      staging = { ...staging, [created.id]: { docX, docY, anchor: args.anchor } };
       notes = [created, ...notes];
       editingId = created.id;
       bringToFront(created.id);
@@ -355,7 +402,97 @@
     } catch {}
   }
 
+  /** Pick a horizontal slot (offsetXFrac) on the anchor row that has
+   *  the most free space between existing notes. Each pinned note is
+   *  treated as covering [frac, frac + noteFrac] of the row's width;
+   *  the longest gap among those covered intervals (plus the row
+   *  edges) wins, and the new note lands at its centre. Falls back to
+   *  the default frac when the row width is unknown or has no siblings. */
+  function findBestOffsetXFrac(anchor: string, excludeId: string): number {
+    if (!anchor.startsWith("worktree:")) return DEFAULT_OFFSET_X_FRAC;
+    const path = anchor.slice("worktree:".length);
+    const li = document.querySelector<HTMLElement>(
+      `[data-wt-row="${cssEscape(path)}"]`,
+    );
+    if (!li) return DEFAULT_OFFSET_X_FRAC;
+    const rowWidth = li.getBoundingClientRect().width;
+    if (rowWidth <= 0) return DEFAULT_OFFSET_X_FRAC;
+    const noteFrac = Math.min(0.5, NOTE_W / rowWidth);
+    const max = Math.max(0, 1 - noteFrac);
+    const occupied = notes
+      .filter(
+        (n) => n.id !== excludeId && n.anchors.includes(anchor) && !staging[n.id],
+      )
+      .map((n) => offsets[n.id]?.offsetXFrac)
+      .filter((f): f is number => typeof f === "number")
+      .map((f) => ({ start: f, end: Math.min(1, f + noteFrac) }))
+      .sort((a, b) => a.start - b.start);
+    let bestCentre = DEFAULT_OFFSET_X_FRAC;
+    let bestSize = -1;
+    let cursor = 0;
+    for (const iv of occupied) {
+      const gapEnd = Math.min(max, iv.start - noteFrac);
+      if (gapEnd > cursor) {
+        const size = gapEnd - cursor;
+        if (size > bestSize) {
+          bestSize = size;
+          bestCentre = (cursor + gapEnd) / 2;
+        }
+      }
+      cursor = Math.max(cursor, iv.end);
+    }
+    if (cursor < max) {
+      const size = max - cursor;
+      if (size > bestSize) {
+        bestSize = size;
+        bestCentre = (cursor + max) / 2;
+      }
+    }
+    return Math.max(0, Math.min(max, bestCentre));
+  }
+
   async function handleSave(e: CustomEvent<{ id: string; body: string }>): Promise<void> {
+    const st = staging[e.detail.id];
+    if (st) {
+      // First commit of a staged note: pick the best free slot on the
+      // row, lock in offsetXFrac, then animate the note from its
+      // floating-below-the-button spot down into the pin slot. The
+      // motion is rAF-driven (not a CSS transition) so each `x` update
+      // propagates into StickyNote's pendulum and tilts the note
+      // during travel — same physics as a real drag.
+      const offsetXFrac = findBestOffsetXFrac(st.anchor, e.detail.id);
+      const prev = offsets[e.detail.id] ?? {};
+      offsets = { ...offsets, [e.detail.id]: { ...prev, offsetXFrac } };
+      saveOffsets();
+      // Compute the pin-slot doc coords from the same row geometry
+      // screenPosFor uses, so the rAF interpolation lands exactly on
+      // the resting position the anchored path will subsequently report.
+      const note = notes.find((n) => n.id === e.detail.id);
+      const li = note ? findAnchorLi(note) : null;
+      if (li) {
+        const r = li.getBoundingClientRect();
+        const docLeft = r.left + window.scrollX;
+        const docBottom = r.bottom + window.scrollY;
+        const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
+        const toX = Math.min(Math.max(0, docLeft + offsetXFrac * r.width), maxX);
+        const toY = docBottom - NOTE_OVERLAP;
+        flyingNotes = {
+          ...flyingNotes,
+          [e.detail.id]: {
+            fromX: st.docX,
+            fromY: st.docY,
+            toX,
+            toY,
+            startMs: performance.now(),
+            durationMs: 550,
+          },
+        };
+        startFlyLoop();
+      }
+      const next = { ...staging };
+      delete next[e.detail.id];
+      staging = next;
+    }
     try {
       const res = await fetch(`/api/notes/${encodeURIComponent(e.detail.id)}`, {
         method: "PUT",
@@ -393,6 +530,25 @@
     const id = e.detail.id;
     const note = notes.find((n) => n.id === id);
     if (!note) return;
+    // Staged-and-empty: the user opened the "+" affordance and walked
+    // away without typing. Fade and discard silently — no undo toast,
+    // no entry in the events feed worth surfacing. We still DELETE
+    // server-side because the POST in handleSpawn already created the
+    // record.
+    if (staging[id]) {
+      removingIds = new Set([...removingIds, id]);
+      await new Promise((r) => setTimeout(r, 200));
+      try {
+        await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
+      } catch {}
+      notes = notes.filter((n) => n.id !== id);
+      const next = { ...staging };
+      delete next[id];
+      staging = next;
+      removingIds.delete(id);
+      removingIds = new Set(removingIds);
+      return;
+    }
     try {
       const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, {
         method: "DELETE",
@@ -619,6 +775,10 @@
     const need = new Map<HTMLElement, number>();
     const nowObserved = new Set<Element>();
     for (const note of notes) {
+      // Don't reserve row space for staged notes — they're floating
+      // over the button area, not yet pinned. The row only expands
+      // once the user commits text and the note flies into a slot.
+      if (staging[note.id]) continue;
       const li = findAnchorLi(note);
       if (!li) continue;
       const stickyEl = layerEl.querySelector<HTMLElement>(
@@ -691,6 +851,36 @@
    *  while a loop is in flight (consecutive padding changes keep the
    *  loop alive). Idle cost is zero — the loop self-terminates the
    *  frame after the transition window ends. */
+  /** rAF loop that pumps `tick++` (and prunes finished entries from
+   *  `flyingNotes`) for as long as at least one note is mid-fly.
+   *  Idempotent — calling it while already active is a no-op. */
+  let flyRafActive = false;
+  function startFlyLoop(): void {
+    if (flyRafActive) return;
+    flyRafActive = true;
+    const step = () => {
+      const now = performance.now();
+      let anyActive = false;
+      let mutated = false;
+      const next: Record<string, FlyingState> = {};
+      for (const [id, fly] of Object.entries(flyingNotes)) {
+        if (now < fly.startMs + fly.durationMs) {
+          next[id] = fly;
+          anyActive = true;
+        } else {
+          mutated = true;
+        }
+      }
+      if (mutated) flyingNotes = next;
+      // tick++ kicks positionsByNoteId to recompute via screenPosFor,
+      // which reads performance.now() for the eased fraction.
+      tick++;
+      if (anyActive) requestAnimationFrame(step);
+      else flyRafActive = false;
+    };
+    requestAnimationFrame(step);
+  }
+
   let transitionEndMs = 0;
   let transitionRafActive = false;
   function startTransitionLoop(durationMs = 220): void {
@@ -787,6 +977,8 @@
     <div
       class="sticky-host"
       class:hidden={!pos}
+      class:flying={!!flyingNotes[note.id]}
+      class:removing={removingIds.has(note.id)}
       style="z-index: {zIndexById[note.id] ?? 1000};"
     >
       <StickyNote
@@ -798,6 +990,8 @@
         grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
         grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
         startEditing={editingId === note.id}
+        removeIfEmpty={!!staging[note.id]}
+        flying={!!flyingNotes[note.id]}
         {repos}
         on:move={handleMove}
         on:save={handleSave}

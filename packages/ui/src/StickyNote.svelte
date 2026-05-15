@@ -45,6 +45,17 @@
   export let rotation = 0;
   /** Spawn this note in edit mode (first time the user clicks "+ note"). */
   export let startEditing = false;
+  /** When true, leaving edit mode (Esc, click-outside, Save) with an empty
+   *  body dispatches `remove` instead of `save`. Used by the layer to
+   *  discard freshly-spawned notes that never received any text — the
+   *  user clicked "+", thought twice, and clicked away. */
+  export let removeIfEmpty = false;
+  /** When true, the layer is currently driving this note's `x`/`y`
+   *  with a per-frame rAF loop (staging → pin slot fly). We kick the
+   *  pendulum on so it samples the changing `x` and tilts the note
+   *  during travel — the exact same swing-by-physics motion the user
+   *  gets from a manual drag. */
+  export let flying = false;
   /** Used by the in-note "Move to…" / "Copy to…" picker to enumerate
    *  all anchorable rows. Threaded down from the StickyNotesLayer's
    *  `repos` prop. */
@@ -284,6 +295,15 @@
    *  rotation prop is the long-term rest angle. */
   $: displayedTilt = tilt + rotation + pendulumAngle;
 
+  /** Layer-driven fly hook: while `flying` is true the parent is
+   *  pumping fresh `x` values into us each frame, so kick the
+   *  pendulum on. The pendulum's settle check (angle + velocity both
+   *  near zero AND not dragging) keeps it ticking as long as the
+   *  pivot's acceleration stays non-zero — which is the case for the
+   *  whole eased fly — and then it decays naturally once the layer
+   *  stops moving the note. */
+  $: if (flying) startPendulum();
+
   function startEdit(): void {
     draft = note.body;
     editing = true;
@@ -299,11 +319,18 @@
   function cancelEdit(): void {
     editing = false;
     draft = note.body;
+    if (removeIfEmpty && !note.body.trim()) {
+      dispatch("remove", { id: note.id });
+    }
   }
 
   function saveEdit(): void {
     const trimmed = draft;
     editing = false;
+    if (removeIfEmpty && !trimmed.trim()) {
+      dispatch("remove", { id: note.id });
+      return;
+    }
     if (trimmed === note.body) return;
     dispatch("save", { id: note.id, body: trimmed });
   }
@@ -357,7 +384,7 @@
   class:dragging
   class:editing
   data-note-id={note.id}
-  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {grabXFrac * 100}%; --grab-y: {grabYFrac * 100}%;"
+  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;"
   role="dialog"
   aria-label="Sticky note"
   on:mousedown={() => dispatch("focus", { id: note.id })}

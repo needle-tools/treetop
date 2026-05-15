@@ -3,9 +3,8 @@
   import { marked } from "marked";
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
-  import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
-  import ManualTitle from "./ManualTitle.svelte";
-  import { contextChip } from "./context-tokens";
+  import { type SessionMenuItem } from "./SessionMenu.svelte";
+  import SessionHeader from "./SessionHeader.svelte";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -97,13 +96,6 @@
   export let contextTokensExact: boolean | undefined = undefined;
   /** Model id so the chip can pick a context-window cap (200k vs 1M). */
   export let model: string | undefined = undefined;
-
-  $: ctxChip = contextChip({
-    tokens: contextTokens,
-    exact: contextTokensExact,
-    model,
-    agent,
-  });
 
   interface NormalizedBlock {
     type:
@@ -535,114 +527,35 @@
 </script>
 
 <div class="session" class:awaiting-input={mode === "terminal" && awaitingInput}>
-  <header draggable="true" on:dragstart={(e) => onDragStart(e)}>
-    <div class="hdr-col col-agent">
-      <span class="agent-pill agent-{agent}">{agent}</span>
-    </div>
-    <div class="hdr-col col-name">
-      <ManualTitle
-        {source}
-        value={manualTitle}
-        on:saved={(e) => onManualTitleSaved(e.detail.title)}
-      />
-      {#if ctxChip}
-        <span
-          class="ctx-chip muted small"
-          class:warn={ctxChip.ratio !== undefined && ctxChip.ratio > 0.5 && ctxChip.ratio <= 0.8}
-          class:hot={ctxChip.ratio !== undefined && ctxChip.ratio > 0.8}
-          title={`${contextTokensExact ? "Exact" : "Estimated (chars÷4)"} context size before the next prompt.\n${model ?? "(model unknown)"}${contextTokens !== undefined ? `\n${contextTokens.toLocaleString()} tokens` : ""}`}
-        >
-          {ctxChip.text}
-        </span>
-      {/if}
-      {#if inflight.length > 0}
-        <button
-          class="inflight-pill"
-          type="button"
-          title={inflight
-            .map(
-              (r) =>
-                `pid ${r.pid}: ${r.textPreview}${r.textPreview.length === 200 ? "…" : ""}`,
-            )
-            .join("\n")}
-          on:click={cancelAllInflight}
-        >
-          <span class="spinner" aria-hidden="true"></span>
-          <span>
-            {inflight.length} sending — click to cancel
-          </span>
-        </button>
-      {/if}
-    </div>
-    <div class="hdr-col col-meta">
-      {#if session?.endedAt}
-        <span
-          class="muted small last-activity"
-          title={`Last message ${new Date(session.endedAt).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-        >last activity {relTimeFromIso(session.endedAt)}</span>
-      {/if}
-      {#if session}
-        <span
-          class="muted small msg-count"
-          title={totalMessageCount !== undefined &&
-          totalMessageCount > session.messages.length
-            ? `Showing the last ${session.messages.length} of ${totalMessageCount.toLocaleString()} messages. /api/session ships at most 100; the full count comes from /api/repos' pre-scanned agent metadata.`
-            : `${session.messages.length} message${session.messages.length === 1 ? "" : "s"} in this session`}
-        >
-          {#if totalMessageCount !== undefined && totalMessageCount > session.messages.length}
-            {session.messages.length} of {totalMessageCount.toLocaleString()} messages
-          {:else}
-            {session.messages.length} messages
-          {/if}
-        </span>
-      {/if}
-    </div>
-    <div class="hdr-col col-actions">
-      {#if session?.sessionId && (agent === "claude" || agent === "codex")}
-        {#if mode === "read"}
-          <button
-            class="resume-btn"
-            on:click={() => (mode = "terminal")}
-            title={agent === "codex"
-              ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
-              : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
-          >
-            Resume
-          </button>
-        {:else}
-          {#if awaitingInput}
-            <span class="awaiting-pill" title="The agent is paused on a prompt — focus the terminal and respond.">needs input</span>
-          {/if}
-          <button
-            class="fullscreen-btn"
-            on:click={(e) => {
-              const el = (e.currentTarget as HTMLElement).closest(
-                ".session",
-              ) as HTMLElement | null;
-              if (!el) return;
-              if (document.fullscreenElement === el) {
-                void document.exitFullscreen().catch(() => {});
-              } else {
-                void el.requestFullscreen().catch(() => {});
-              }
-            }}
-            title="Fullscreen this terminal (Esc to exit)"
-            aria-label="Fullscreen"
-          >⛶</button>
-          <button
-            class="resume-btn dispose-btn"
-            on:click={disposeTerminal}
-            disabled={disposing}
-            title="SIGTERM the PTY and flip back to the chat view"
-          >
-            {disposing ? "Ending…" : "End Session"}
-          </button>
-        {/if}
-      {/if}
-      <SessionMenu items={menuItems} />
-      <button class="close" on:click={onClose} title="Close">×</button>
-    </div>
-  </header>
+  <SessionHeader
+    {agent}
+    {source}
+    {manualTitle}
+    {mode}
+    canResume={!!session?.sessionId && (agent === "claude" || agent === "codex")}
+    canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
+    {disposing}
+    {awaitingInput}
+    loadedMessageCount={session?.messages.length}
+    {totalMessageCount}
+    {contextTokens}
+    {contextTokensExact}
+    {model}
+    lastActivityIso={session?.endedAt}
+    {pollCount}
+    {lastLoadedAt}
+    {inflight}
+    {menuItems}
+    onTitleSaved={(next) => onManualTitleSaved(next)}
+    onResume={() => (mode = "terminal")}
+    onEndSession={disposeTerminal}
+    onCancelInflight={cancelAllInflight}
+    {onClose}
+    {onDragStart}
+    resumeTitle={agent === "codex"
+      ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
+      : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
+  />
 
   {#if mode === "terminal" && session?.sessionId && session.cwd}
     <TerminalView
@@ -824,129 +737,6 @@
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
     50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
   }
-  .awaiting-pill {
-    background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
-    color: var(--status-dirty);
-    padding: 0.05rem 0.4rem;
-    border-radius: var(--radius-sm);
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-    align-self: center;
-    white-space: nowrap;
-  }
-  header {
-    /* 4-column row: [agent] [name+usage] [last activity+messages] [actions].
-       col-name takes the remaining width; col-meta is allowed to shrink
-       with ellipsis when the column gets narrow; col-agent + col-actions
-       are intrinsic width and never shrink. */
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.4rem 0.6rem;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--surface-3);
-    cursor: grab;
-    user-select: none;
-  }
-  header:active {
-    cursor: grabbing;
-  }
-  .hdr-col {
-    display: flex;
-    line-height: 1.1;
-  }
-  .col-agent {
-    flex: 0 0 auto;
-    align-items: center;
-  }
-  .col-name {
-    flex: 0 1 auto;
-    min-width: 0;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.15rem;
-  }
-  .col-name > * {
-    max-width: 100%;
-  }
-  .col-meta {
-    flex: 0 1 auto;
-    min-width: 0;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.15rem;
-    overflow: hidden;
-  }
-  .col-meta > * {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: block;
-  }
-  .col-actions {
-    /* Only col-actions grows; that's what pushes its children to the
-       right edge of the header. justify-content: flex-end right-aligns
-       the inner buttons within the grown column. */
-    flex: 1 1 auto;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.35rem;
-  }
-  header .close {
-    flex: 0 0 auto;
-    align-self: center;
-  }
-  .resume-btn {
-    flex: 0 0 auto;
-    align-self: center;
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--surface-3);
-    padding: 0.25rem 0.6rem;
-    border-radius: var(--radius-sm);
-    font-size: 0.7rem;
-    cursor: pointer;
-  }
-  .resume-btn:hover {
-    color: var(--text-1);
-    border-color: var(--text-faint);
-  }
-  /* Dispose variant: soft red tint, never alarm-bright. */
-  .resume-btn.dispose-btn {
-    color: #efaaaa;
-    border-color: color-mix(in srgb, #efaaaa 30%, transparent);
-    background: color-mix(in srgb, var(--error-bg) 50%, transparent);
-  }
-  .resume-btn.dispose-btn:hover:not(:disabled) {
-    color: #ffcaca;
-    border-color: color-mix(in srgb, #efaaaa 55%, transparent);
-  }
-  .resume-btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-  /* Inline fullscreen toggle next to Dispose. Matches the
-     transparent-icon look of header .close so the header doesn't gain
-     a third button-weight; just a glyph that lights up on hover. */
-  .fullscreen-btn {
-    flex: 0 0 auto;
-    align-self: center;
-    background: transparent;
-    color: var(--text-muted);
-    border: 0;
-    padding: 0.1rem 0.5rem;
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .fullscreen-btn:hover {
-    color: var(--text-1);
-    background: var(--surface-3);
-    border-radius: var(--radius-sm);
-  }
   /* When this column goes fullscreen, drop the rounded border + fill
      the viewport. TerminalView's ResizeObserver re-fits xterm for us. */
   .session:fullscreen {
@@ -956,61 +746,9 @@
     border: 0;
     background: var(--surface-1);
   }
-  .agent-pill {
-    padding: 0.1rem 0.5rem;
-    border-radius: var(--radius-sm);
-    font-size: 0.72rem;
-    text-transform: lowercase;
-    font-family: ui-monospace, monospace;
-  }
-  .agent-pill.agent-claude {
-    background: var(--chip-orange-bg);
-    color: var(--chip-orange-text);
-  }
-  .agent-pill.agent-codex {
-    background: var(--chip-codex-bg);
-    color: var(--chip-codex-text);
-  }
-  .agent-pill.agent-copilot {
-    background: var(--chip-default-bg);
-    color: var(--chip-default-text);
-  }
-  .sid {
-    font-family: ui-monospace, monospace;
-  }
-  /* Context-size chip. Sits in the same wrap row as the message count
-     and the session id. Color escalates as the ratio approaches the
-     model's context-window cap: amber at 75%, red at 90%. Tooltip
-     carries the full integer count + exact-vs-estimate caveat. */
-  .ctx-chip {
-    font-variant-numeric: tabular-nums;
-    background: transparent;
-    color: inherit;
-    white-space: nowrap;
-  }
-  .ctx-chip.warn {
-    /* >50% — orange */
-    color: #ff8a3d;
-  }
-  .ctx-chip.hot {
-    /* >80% — light red */
-    color: #ff6b5e;
-  }
-  .close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 0;
-    color: var(--text-muted);
-    padding: 0.1rem 0.5rem;
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .close:hover {
-    background: var(--error-bg);
-    color: var(--error-text);
+  @keyframes session-awaiting-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
+    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
   }
   /* Burger menu UI + .session-menu-popover sizing now live in
      SessionMenu.svelte / styles/popover.css respectively. */
@@ -1122,31 +860,6 @@
     border-top-color: currentColor;
     border-radius: 50%;
     animation: spinner-spin 0.6s linear infinite;
-  }
-  /* In-header "N sending" pill. Click to SIGTERM every in-flight claude
-     subprocess associated with this session. Hover gets a tooltip with
-     prompt previews + PIDs so you can tell which one's stuck. */
-  .inflight-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: color-mix(in srgb, var(--brand) 18%, transparent);
-    color: var(--text-2);
-    border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
-    border-radius: 999px;
-    padding: 0.15rem 0.55rem;
-    font-size: 0.7rem;
-    cursor: pointer;
-    line-height: 1.2;
-  }
-  .inflight-pill:hover {
-    background: color-mix(in srgb, var(--brand) 28%, transparent);
-    color: var(--text-1);
-  }
-  .inflight-pill .spinner {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-width: 1.5px;
   }
   @keyframes spinner-spin {
     to { transform: rotate(360deg); }

@@ -21,8 +21,8 @@
    */
   import { createEventDispatcher } from "svelte";
   import TerminalView from "./TerminalView.svelte";
-  import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
-  import ManualTitle from "./ManualTitle.svelte";
+  import { type SessionMenuItem } from "./SessionMenu.svelte";
+  import SessionHeader from "./SessionHeader.svelte";
 
   type AgentKind = "claude" | "codex" | "copilot" | "shell";
 
@@ -47,6 +47,16 @@
    *  Lives in App.svelte (it's also read for poll-cadence tuning), so
    *  we read it as a prop and bubble changes via on:awaitingChange. */
   export let awaiting = false;
+  /** Once the agent's JSONL is detected (App.svelte matches by
+   *  resumeSessionId), these mirror the equivalent SessionView props
+   *  so the header's ctx chip / activity / message count light up
+   *  while the user is still in the TUI. Undefined ⇒ the header shows
+   *  the "new session" placeholders instead. */
+  export let totalMessageCount: number | undefined = undefined;
+  export let contextTokens: number | undefined = undefined;
+  export let contextTokensExact: boolean | undefined = undefined;
+  export let model: string | undefined = undefined;
+  export let lastActivityIso: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -75,66 +85,35 @@
       onSelect: () => dispatch("restart"),
     },
   ] satisfies SessionMenuItem[];
-
-  /** Fullscreen the column itself (xterm's FitAddon picks up the
-   *  resulting resize via its ResizeObserver, no extra wiring). */
-  let rootEl: HTMLDivElement | undefined;
-  async function toggleFullscreen() {
-    if (!rootEl) return;
-    try {
-      if (document.fullscreenElement === rootEl) {
-        await document.exitFullscreen();
-      } else {
-        if (document.fullscreenElement) await document.exitFullscreen();
-        await rootEl.requestFullscreen();
-      }
-    } catch {
-      // Browser refused (permissions, already exiting, etc.) — silent.
-    }
-  }
 </script>
 
 <div
   class="session new-session-col"
   class:awaiting-input={awaiting}
-  bind:this={rootEl}
 >
-  <header class="new-session-head">
-    <span class="agent-pill agent-{agent}">{agent}</span>
-    <ManualTitle
-      {source}
-      value={manualTitle}
-      on:saved={(e) => dispatch("titleSave", { title: e.detail.title })}
-    />
-    <span class="muted small">
-      {agent === "shell" ? "new session — Terminal" : "new session — TUI"}
-    </span>
-    {#if awaiting}
-      <span
-        class="awaiting-pill"
-        title="The agent is paused waiting for input — click the terminal and respond."
-      >needs input</span>
-    {/if}
-    <button
-      class="fullscreen-btn"
-      on:click={() => void toggleFullscreen()}
-      title="Fullscreen this terminal (Esc to exit)"
-      aria-label="Fullscreen"
-    >⛶</button>
-    <button
-      class="dispose-btn"
-      on:click={() => dispatch("dispose")}
-      title={agent === "shell"
-        ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
-        : "SIGTERM the PTY — the column stays open showing the final output until you click × to close."}
-    >Dispose</button>
-    <SessionMenu items={menuItems} />
-    <button
-      class="close"
-      on:click={() => dispatch("close")}
-      title="Close + dispose this terminal"
-    >×</button>
-  </header>
+  <SessionHeader
+    {agent}
+    {source}
+    manualTitle={manualTitle ?? ""}
+    mode="terminal"
+    canResume={false}
+    canEnd
+    awaitingInput={awaiting}
+    {totalMessageCount}
+    {contextTokens}
+    {contextTokensExact}
+    {model}
+    {lastActivityIso}
+    lastActivityFallback="new session"
+    messageCountFallback={agent === "shell" ? "starting…" : "no messages yet"}
+    {menuItems}
+    onTitleSaved={(next) => dispatch("titleSave", { title: next })}
+    onEndSession={() => dispatch("dispose")}
+    onClose={() => dispatch("close")}
+    endSessionTitle={agent === "shell"
+      ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
+      : "SIGTERM the PTY — the column stays open showing the final output until you click × to close."}
+  />
 
   <TerminalView
     {cmd}

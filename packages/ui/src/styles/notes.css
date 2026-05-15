@@ -33,6 +33,24 @@
 .sticky-host.hidden {
   display: none;
 }
+/* Fly-in: staged note moving from "below + button" to its pin slot.
+   Position is driven by a per-frame rAF loop in StickyNotesLayer, not
+   a CSS transition — that's the whole point: each frame StickyNote
+   sees a fresh `x`, feeds it into the pendulum sampler, and tilts
+   from the implied acceleration. Killing transform/left/top
+   transitions here means those per-frame updates render immediately
+   instead of being smoothed back into 0.15s lag (which would damp the
+   physics into invisibility). Same rationale as `.sticky.dragging`. */
+.sticky-host.flying .sticky {
+  transition: none;
+}
+/* Fade-out for staged-and-empty discard. Opacity on the host (not
+   the .sticky) so the inner transform/box-shadow rules stay clean
+   and undisturbed during the fade. */
+.sticky-host.removing {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
 
 .sticky {
   /* Absolute (not fixed) so the note scrolls natively with the

@@ -33,9 +33,15 @@ export interface ContextChip {
 /** Pick a context-window cap (in tokens) for the given model id. Returns
  *  undefined for unknown models so the chip can fall back to absolute-only.
  *
- *  Claude:
- *    - any id with `1m` / `[1m]` → 1,000,000
- *    - everything else (Sonnet, Opus, Haiku) → 200,000
+ *  Source: https://platform.claude.com/docs/en/about-claude/models/overview
+ *  (verified May 2026). Caps are tied to the Claude generation, not to a
+ *  beta flag:
+ *    - Opus / Sonnet 4.6 and 4.7 (current) → 1,000,000
+ *    - Haiku 4.5 (current) → 200,000
+ *    - Opus / Sonnet ≤ 4.5 (legacy) → 200,000
+ *    - Older Opus 4.6 also got 1M per Anthropic's "legacy models" table
+ *  An explicit `1m` / `[1m]` substring still overrides up to 1M for any
+ *  hypothetical future beta variant.
  *  Codex / OpenAI: default to 200,000 — gpt-5-codex and gpt-4.1 are both
  *  in that ballpark; we don't try to be exact here since the absolute
  *  number is already a chars/4 estimate. */
@@ -45,11 +51,26 @@ export function modelContextCap(
 ): number | undefined {
   const id = (model ?? "").toLowerCase();
   if (id.includes("1m") || id.includes("[1m]")) return 1_000_000;
-  if (id.startsWith("claude")) return 200_000;
-  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3"))
+  // Strip a trailing `-YYYYMMDD` date suffix so we don't confuse it
+  // with a minor version. `claude-sonnet-4-20250514` is legacy Sonnet
+  // 4 (no minor), not Sonnet 4.20250514.
+  const stripped = id.replace(/-\d{8}$/, "");
+  // claude-(opus|sonnet|haiku)-<major>(-<minor>)?
+  const m = stripped.match(/^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/);
+  if (m) {
+    const family = m[1];
+    const major = Number(m[2]);
+    const minor = m[3] !== undefined ? Number(m[3]) : 0;
+    if (family === "haiku") return 200_000;
+    // Opus / Sonnet: 1M starting at the 4.6 generation, 200k below.
+    if (major > 4 || (major === 4 && minor >= 6)) return 1_000_000;
     return 200_000;
-  if (agent === "claude") return 200_000;
-  if (agent === "codex") return 200_000;
+  }
+  // Unknown model id (and unknown provider): refuse to guess. The
+  // chip renders `… / ??? ctx` in this case rather than fabricating a
+  // denominator and a misleading percentage. Specifically we don't
+  // default unknown Claude / Codex agents either — the rule is "we
+  // know the cap or we don't."
   return undefined;
 }
 
@@ -70,23 +91,33 @@ export function formatTokens(n: number): string {
   return `${s.replace(/\.?0+$/, "")}M`;
 }
 
-/** Build the chip. Returns null when there's nothing useful to show
- *  (no token count). The caller renders `.text` as-is and uses `.ratio`
- *  for color thresholding. */
+/** Build the chip. The caller renders `.text` as-is and uses `.ratio`
+ *  for color thresholding.
+ *
+ *  When `tokens` is undefined or 0 we still emit a zero-state chip
+ *  (`0 / 200k ctx (0%)`) as long as a cap can be inferred — that's
+ *  how brand-new TUI columns show a placeholder before the agent
+ *  writes its first JSONL line. With neither a count nor a cap we
+ *  truly have nothing to draw, so return null. */
 export function contextChip(input: ContextChipInput): ContextChip | null {
   const { tokens, exact, model, agent } = input;
-  if (tokens === undefined || tokens <= 0) return null;
   const cap = modelContextCap(model, agent);
-  const prefix = exact === false ? "~" : "";
-  const absolute = `${prefix}${formatTokens(tokens)}`;
+  const empty = tokens === undefined || tokens <= 0;
+  if (empty && cap === undefined) return null;
+  const isExact = exact !== false;
+  const prefix = !empty && exact === false ? "~" : "";
+  const absolute = `${prefix}${formatTokens(empty ? 0 : tokens!)}`;
   if (cap === undefined) {
-    return { text: `${absolute} ctx`, ratio: undefined, exact: exact !== false };
+    // Unknown model AND unknown provider — don't fabricate a cap.
+    // The chip shows `42.1k / ??? ctx`; ratio stays undefined so the
+    // warn/hot color escalation is skipped.
+    return { text: `${absolute} / ??? ctx`, ratio: undefined, exact: isExact };
   }
-  const ratio = tokens / cap;
+  const ratio = empty ? 0 : tokens! / cap;
   const pct = Math.round(ratio * 100);
   return {
     text: `${absolute} / ${formatTokens(cap)} ctx (${pct}%)`,
     ratio,
-    exact: exact !== false,
+    exact: isExact,
   };
 }

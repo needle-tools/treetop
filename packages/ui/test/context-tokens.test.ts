@@ -28,76 +28,128 @@ describe("formatTokens", () => {
 });
 
 describe("modelContextCap", () => {
-  test("Claude sonnet/opus default to 200k", () => {
-    expect(modelContextCap("claude-sonnet-4-6", "claude")).toBe(200_000);
-    expect(modelContextCap("claude-opus-4-7-20250101", "claude")).toBe(200_000);
+  test("current Opus / Sonnet (4.6+) → 1M per Anthropic's published caps", () => {
+    expect(modelContextCap("claude-opus-4-7", "claude")).toBe(1_000_000);
+    expect(modelContextCap("claude-opus-4-7-20251201", "claude")).toBe(1_000_000);
+    expect(modelContextCap("claude-sonnet-4-6", "claude")).toBe(1_000_000);
+    expect(modelContextCap("claude-opus-4-6", "claude")).toBe(1_000_000);
   });
 
-  test("the [1m] / 1m Claude variant gets 1M", () => {
+  test("Haiku 4.5 stays at 200k even on the current generation", () => {
+    expect(modelContextCap("claude-haiku-4-5", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-haiku-4-5-20251001", "claude")).toBe(200_000);
+  });
+
+  test("legacy Opus / Sonnet (≤4.5) → 200k", () => {
+    expect(modelContextCap("claude-opus-4-5-20251101", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-opus-4-1-20250805", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-sonnet-4-5-20250929", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-sonnet-4-20250514", "claude")).toBe(200_000);
+  });
+
+  test("`1m` / `[1m]` substring forces 1M regardless of family", () => {
     expect(modelContextCap("claude-sonnet-4-6-1m", "claude")).toBe(1_000_000);
     expect(modelContextCap("claude-sonnet-4-6[1m]", "claude")).toBe(1_000_000);
   });
 
-  test("known OpenAI ids fall back to 200k", () => {
-    expect(modelContextCap("gpt-5-codex", "codex")).toBe(200_000);
-    expect(modelContextCap("gpt-4.1", "codex")).toBe(200_000);
-  });
-
-  test("unknown model + claude agent still gives 200k", () => {
-    expect(modelContextCap(undefined, "claude")).toBe(200_000);
-  });
-
-  test("unknown model + unknown agent → undefined", () => {
-    expect(modelContextCap(undefined, undefined)).toBeUndefined();
+  test("unknown model id → undefined (no fake denominator)", () => {
+    expect(modelContextCap("gpt-5-codex", "codex")).toBeUndefined();
+    expect(modelContextCap("gpt-4.1", "codex")).toBeUndefined();
     expect(modelContextCap("frobnitz-v9", undefined)).toBeUndefined();
+  });
+
+  test("unknown model + only an agent hint → still undefined", () => {
+    // We used to default Claude / Codex to 200k here. That's a guess
+    // and produces wrong-low percentages for 1M-window models, so the
+    // chip now shows `??? / ???` instead.
+    expect(modelContextCap(undefined, "claude")).toBeUndefined();
+    expect(modelContextCap(undefined, "codex")).toBeUndefined();
+    expect(modelContextCap(undefined, undefined)).toBeUndefined();
   });
 });
 
 describe("contextChip", () => {
-  test("returns null when there's no token count", () => {
-    expect(
-      contextChip({ tokens: undefined, exact: true, model: "claude-sonnet-4-6" }),
-    ).toBeNull();
-    expect(
-      contextChip({ tokens: 0, exact: true, model: "claude-sonnet-4-6" }),
-    ).toBeNull();
-  });
-
-  test("Claude exact render: absolute + cap + percent", () => {
-    const chip = contextChip({
-      tokens: 42_100,
+  test("zero-state chip when tokens absent but cap is inferable (new TUI column)", () => {
+    const a = contextChip({
+      tokens: undefined,
       exact: true,
       model: "claude-sonnet-4-6",
     });
-    expect(chip).not.toBeNull();
-    expect(chip!.text).toBe("42.1k / 200k ctx (21%)");
-    expect(chip!.exact).toBe(true);
-    expect(chip!.ratio).toBeCloseTo(42_100 / 200_000, 5);
+    expect(a).not.toBeNull();
+    expect(a!.text).toBe("0 / 1M ctx (0%)");
+    expect(a!.ratio).toBe(0);
+
+    const b = contextChip({
+      tokens: 0,
+      exact: true,
+      model: "claude-sonnet-4-6",
+    });
+    expect(b!.text).toBe("0 / 1M ctx (0%)");
   });
 
-  test("Codex estimate render: ~ prefix on the absolute", () => {
+  test("returns null only when neither tokens nor cap are known", () => {
+    expect(
+      contextChip({
+        tokens: undefined,
+        exact: true,
+        model: undefined,
+        agent: undefined,
+      }),
+    ).toBeNull();
+  });
+
+  test("Opus 4.7 exact render: absolute + 1M cap + percent (regression: 220k must stay under 100%)", () => {
+    // Real data from a supergit Opus 4.7 session that previously
+    // rendered "218k / 200k ctx (109%)". The fix is the 1M cap for
+    // current-generation Opus.
+    const chip = contextChip({
+      tokens: 220_561,
+      exact: true,
+      model: "claude-opus-4-7",
+    });
+    expect(chip).not.toBeNull();
+    expect(chip!.text).toBe("221k / 1M ctx (22%)");
+    expect(chip!.exact).toBe(true);
+    expect(chip!.ratio).toBeCloseTo(220_561 / 1_000_000, 5);
+    // Color escalation must be off for 22%.
+    expect(chip!.ratio).toBeLessThan(0.6);
+  });
+
+  test("Haiku 4.5 still renders against the 200k cap", () => {
+    const chip = contextChip({
+      tokens: 42_100,
+      exact: true,
+      model: "claude-haiku-4-5",
+    });
+    expect(chip!.text).toBe("42.1k / 200k ctx (21%)");
+  });
+
+  test("Codex unknown cap → renders `???` instead of a fake denominator", () => {
+    // We deliberately don't fabricate a Codex cap anymore: the user
+    // sees `~42.1k / ??? ctx` so they know we couldn't infer the cap.
     const chip = contextChip({
       tokens: 42_100,
       exact: false,
       model: "gpt-5-codex",
       agent: "codex",
     });
-    expect(chip!.text).toBe("~42.1k / 200k ctx (21%)");
+    expect(chip!.text).toBe("~42.1k / ??? ctx");
     expect(chip!.exact).toBe(false);
+    expect(chip!.ratio).toBeUndefined();
   });
 
-  test("unknown cap → absolute only, no slash, no percent", () => {
+  test("unknown model AND unknown agent → `??? ctx` placeholder, no percent", () => {
     const chip = contextChip({
       tokens: 1234,
       exact: true,
       model: "frobnitz-v9",
       agent: undefined,
     });
-    expect(chip!.text).toBe("1.2k ctx");
+    expect(chip!.text).toBe("1.2k / ??? ctx");
     expect(chip!.ratio).toBeUndefined();
   });
 
-  test("Claude 1M variant scales the cap accordingly", () => {
+  test("explicit `1m` suffix still forces the 1M cap", () => {
     const chip = contextChip({
       tokens: 250_000,
       exact: true,

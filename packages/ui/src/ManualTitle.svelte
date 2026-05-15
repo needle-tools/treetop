@@ -118,7 +118,13 @@
     border-radius: var(--radius-sm);
     cursor: text;
     text-align: left;
-    max-width: 28ch;
+    /* Fill whatever width col-name allots us; ellipsize when the
+       title would otherwise push into the metadata column. The
+       parent's min-width: 0 is what unlocks this shrinking — without
+       it the flexbox would honor the button's intrinsic content
+       width and squeeze col-meta off-screen instead. */
+    max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

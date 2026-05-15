@@ -41,6 +41,11 @@
   --error-bg: #3f1f1f;
   --error-text: #ffaaaa;
 
+  /* context-size chip in the session header. Two escalation steps:
+     orange around mid-fill, red as it approaches the model's cap. */
+  --ctx-warn: #ff8a3d;
+  --ctx-hot: #ff6b5e;
+
   /* chips */
   --chip-default-bg: #4a4d49;
   --chip-default-text: #e6eee6;
