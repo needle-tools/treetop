@@ -5,3 +5,4 @@ dist/
 .vite/
 .env.local
 .env.*.local
+.claude/*.lock
