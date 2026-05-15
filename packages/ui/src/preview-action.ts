@@ -161,7 +161,14 @@ function plainText(blocks: PreviewActionBlock[] | undefined): string {
   if (!Array.isArray(blocks)) return "";
   const parts: string[] = [];
   for (const b of blocks) {
-    if (typeof b?.text === "string" && b.text.length > 0) parts.push(b.text);
+    // Strictly text blocks. The daemon also fills `text` on
+    // tool_result, marker, thinking — including those here would
+    // mean a user-role tool_result message shadows the actual
+    // typed user input (Claude routes tool_result under
+    // role: "user" and they happen to carry the result string in
+    // the same `text` field).
+    if (b?.type !== "text") continue;
+    if (typeof b.text === "string" && b.text.length > 0) parts.push(b.text);
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
@@ -170,6 +177,25 @@ function plainText(blocks: PreviewActionBlock[] | undefined): string {
  *  most recent tool_use block. Used to decide whether the top "Now:"
  *  chip is redundant with an inline tool chip that's about to land
  *  in the displayed message stream. */
+/** Walk back to find the most recent assistant message that
+ *  contains at least one non-empty text block. Used to enforce the
+ *  "always show a real AI reply, not just tool chips" guarantee. */
+function findLatestAiTextIdx(all: PreviewActionMessage[]): number {
+  for (let i = all.length - 1; i >= 0; i--) {
+    const m = all[i];
+    if (!m || m.role !== "assistant") continue;
+    if (!Array.isArray(m.blocks)) continue;
+    const hasText = m.blocks.some(
+      (b) =>
+        b?.type === "text" &&
+        typeof b.text === "string" &&
+        b.text.trim().length > 0,
+    );
+    if (hasText) return i;
+  }
+  return -1;
+}
+
 function latestActionHostIdx(all: PreviewActionMessage[]): number {
   for (let i = all.length - 1; i >= 0; i--) {
     const m = all[i];
@@ -219,10 +245,17 @@ export function buildPreviewItems(
     const m = all[i];
     if (!m) continue;
     if (m.role !== "user" && m.role !== "assistant") continue;
+    const text = plainText(m.blocks);
+    // Claude's JSONL routes tool_result payloads under role: "user",
+    // since the model "sees" them as if the user delivered them.
+    // Those are not user-typed input — filter them out so
+    // `lastUser` picks the actual most recent typed message, not a
+    // synthetic tool-result entry that would shadow it.
+    if (m.role === "user" && text.length === 0) continue;
     items.push({
       idx: i,
       role: m.role,
-      text: plainText(m.blocks),
+      text,
       timestamp: m.timestamp,
     });
   }
@@ -235,6 +268,13 @@ export function buildPreviewItems(
     ...lastAssistants.map((x) => x.idx),
     ...lastUser.map((x) => x.idx),
   ]);
+  // Guarantee: always include the most recent assistant message
+  // that actually contains text (not just tool_use blocks). Tool
+  // chips alone aren't a "reply" — the user wants at least one
+  // honest AI text response visible, even when the last 3
+  // assistants happen to be tool-only mid-edit.
+  const latestAiTextIdx = findLatestAiTextIdx(all);
+  if (latestAiTextIdx >= 0) includedIdxs.add(latestAiTextIdx);
   const included = items.filter((x) => includedIdxs.has(x.idx));
 
   const action = extractLatestAction(all);

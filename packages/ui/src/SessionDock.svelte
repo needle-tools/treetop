@@ -393,7 +393,9 @@
             {/each}
           {/if}
         {:else if previewLoading[hoveredEntry.transcriptSource]}
-          <div class="dock-preview-loading muted">loading…</div>
+          <div class="dock-preview-loading">
+            <span class="dock-preview-spinner" aria-hidden="true"></span>
+          </div>
         {/if}
       </aside>
     {/if}
@@ -689,6 +691,25 @@
     font-style: italic;
     padding: 0.2rem 0;
   }
+  .dock-preview-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .dock-preview-spinner {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--text-muted, #888) 35%, transparent);
+    border-top-color: var(--text-1, #e8e8e8);
+    animation: dock-preview-spin 0.8s linear infinite;
+  }
+  @keyframes dock-preview-spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dock-preview-spinner { animation: none; }
+  }
   /* "+ N messages" gap bubble between selected previews. Tiny pill,
      centered, neutral — reads as "there's stuff here we're hiding"
      without competing with the actual chat bubbles. */
@@ -728,14 +749,17 @@
     min-width: 0;
   }
   .dock-preview-gap {
-    /* Parent .dock-preview is a flex column, so align-self centers
-       this pill horizontally regardless of the bubbles' widths. */
-    align-self: center;
+    /* Half-width strip pinned to the left edge so the gap reads
+       as a quiet in-band separator rather than a centered pill or
+       a full-width banner. */
+    align-self: flex-start;
+    width: 50%;
+    text-align: center;
     margin: 0.1rem 0 0.4rem 0;
     font-size: 0.6rem;
     color: var(--text-muted, #9a9aa0);
-    padding: 0.15rem 0.55rem;
-    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-sm, 4px);
     background: color-mix(in srgb, var(--surface-2, #2b2b2c) 50%, var(--surface-0, #23261d));
     /* Brighter outline than the AI bubbles so the gap reads as a
        distinct in-band marker rather than another message. */

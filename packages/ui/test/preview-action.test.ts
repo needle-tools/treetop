@@ -430,6 +430,87 @@ describe("buildPreviewItems", () => {
     ]);
   });
 
+  test("guarantee: latest AI text message is always shown, even if older than the visible window", () => {
+    // The last three assistant turns are all tool-only (mid-edit
+    // burst). The most recent AI *text* response is older — and
+    // must still appear so the panel always answers "what did the
+    // agent actually say" rather than just "what is it doing".
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiText("here's the plan"), // <-- the only AI text reply
+      aiToolUse("Edit", { file_path: "a.ts" }),
+      aiToolUse("Edit", { file_path: "b.ts" }),
+      aiToolUse("Edit", { file_path: "c.ts" }),
+      userMsg("q2"),
+    ]);
+    const aiTextBubbles = items.filter(
+      (it) =>
+        it.kind === "msg" &&
+        it.role === "assistant" &&
+        (it as { text: string }).text === "here's the plan",
+    );
+    expect(aiTextBubbles).toHaveLength(1);
+  });
+
+  test("guarantee no-op: when the latest AI message already contains text", () => {
+    // If the last assistant turn already has text, no extra
+    // force-include is needed and no duplicate bubble appears.
+    const items = buildPreviewItems([
+      userMsg("q1"),
+      aiText("first reply"),
+      aiText("second reply"),
+    ]);
+    const aiTextBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "assistant",
+    );
+    expect(aiTextBubbles).toHaveLength(2);
+  });
+
+  test("Claude routes tool_result under role:'user' — those must NOT shadow the real typed user input", () => {
+    // In Claude's JSONL, when an agent's tool produces output it
+    // comes back as `{ role: "user", content: [{ type: "tool_result",
+    // ... }] }` — same role discriminator as a typed user turn.
+    // The dock must select the latest *typed* user message (the
+    // one with a real text block), not the most recent
+    // user-role-with-tool_result.
+    const items = buildPreviewItems([
+      { role: "user", blocks: [{ type: "text", text: "please refactor X" }] },
+      {
+        role: "assistant",
+        blocks: [{ type: "tool_use", toolName: "Read", toolInput: { file_path: "x.ts" } }],
+      },
+      {
+        role: "user",
+        blocks: [{ type: "tool_result", text: "<contents of x.ts>" }],
+      },
+      { role: "assistant", blocks: [{ type: "text", text: "ok refactored" }] },
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("please refactor X");
+    // And the tool_result's "text" content must not appear as a
+    // bubble or leak into any other rendered slot.
+    const stringified = JSON.stringify(items);
+    expect(stringified).not.toContain("<contents of x.ts>");
+  });
+
+  test("user message with ONLY a typed text block renders as a bubble", () => {
+    // Smoke test: the most common typed-user-input shape coming
+    // out of /api/session is a single text block.
+    const items = buildPreviewItems([
+      { role: "user", blocks: [{ type: "text", text: "hello" }] },
+      { role: "assistant", blocks: [{ type: "text", text: "hi" }] },
+    ]);
+    expect(items[0]).toEqual({
+      kind: "msg",
+      role: "user",
+      text: "hello",
+      timestamp: undefined,
+    });
+  });
+
   test("timestamps are preserved on each rendered bubble", () => {
     const items = buildPreviewItems([
       userMsg("q1", { timestamp: "2026-05-16T10:00:00Z" }),
