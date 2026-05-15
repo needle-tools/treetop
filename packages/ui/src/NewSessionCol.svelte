@@ -70,6 +70,7 @@
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
+    exit: void;
     titleSave: { title: string };
   }>();
 
@@ -139,7 +140,10 @@
          they exit, then a fresh process spawns. If we auto-disposed
          here, the user would lose the new process and the update
          notice. Instead we leave the column open showing the final
-         output; the user dismisses via the × in the header. */
+         output; the user dismisses via the × in the header. We do
+         bubble an exit event up so the side dock can shrink the
+         row's dot to mark the session as ended. */
+      dispatch("exit");
     }}
   />
 </div>

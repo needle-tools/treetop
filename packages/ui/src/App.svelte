@@ -641,6 +641,11 @@
    *  by NewSessionCol's on:workingChange (which TerminalView raises on
    *  PTY frames). Drives the rotating-gradient border on the agent pill. */
   let transientWorking: Record<string, boolean> = {};
+  /** Sources whose PTY has exited (TerminalView.onExit fired). The
+   *  column stays in the page in read mode; the side dock uses this
+   *  to render the row's dot smaller so the user can see at a
+   *  glance which TUIs are still live vs which have wound down. */
+  let transientExited: Record<string, boolean> = {};
   /** `__new__:<agent>:<id>` source → daemon-assigned termId. Set by
    *  NewSessionCol's `on:spawn` for every agent (shell, claude, codex,
    *  copilot). Used by the Dispose button to DELETE /api/terminals/:id.
@@ -2555,6 +2560,9 @@
     transcriptSource?: string;
     working: boolean;
     awaiting: boolean;
+    /** True once this column's PTY has exited. Drives the smaller
+     *  "ended" dot in the side dock. */
+    exited: boolean;
   }> => {
     const out: ReturnType<typeof Array> = [] as any;
     for (const repo of repos) {
@@ -2566,18 +2574,21 @@
         for (const a of known) bySource.set(a.source, a);
         const rowKey = `${repo.id}|${wt.path}`;
         for (const s of opens) {
-          // Active TUI ⇔ this column currently hosts a live PTY:
+          // Live TUI ⇔ the column currently hosts a running PTY:
           //   - any `__new__:` source (NewSessionCol always spawns one),
           //   - any `__attached__:shell:<termId>` source (reattach to
           //     a still-alive shell PTY),
           //   - a resumed SessionView in terminal mode (`s.mode ===
-          //     "terminal"` is persisted on the open-session record by
-          //     SessionView's onModeChange).
-          const isActiveTui =
+          //     "terminal"` is persisted by SessionView's onModeChange).
+          // …but if the PTY has exited (transientExited), the column
+          // is no longer live even though its source still looks
+          // like a TUI source. Every other open session (read-mode
+          // chat columns) is non-live and gets the small dot.
+          const isTuiSource =
             s.source.startsWith("__new__:") ||
             s.source.startsWith("__attached__:") ||
             s.mode === "terminal";
-          if (!isActiveTui) continue;
+          const isLiveTui = isTuiSource && !transientExited[s.source];
           // Same lookup precedence as the NewSessionCol render: once a
           // sid is stamped onto a `__new__:` column, prefer the matched
           // real-source agent's metadata so the dock shows the title
@@ -2611,6 +2622,10 @@
               meta?.source && !meta.source.startsWith("__") ? meta.source : undefined,
             working: !!transientWorking[s.source],
             awaiting: !!transientAwaiting[s.source],
+            // "Small dot" mode covers everything that isn't a live
+            // TUI right now: PTYs that exited, plus read-mode chat
+            // columns (SessionView in mode !== "terminal").
+            exited: !isLiveTui,
           });
         }
       }
@@ -4195,6 +4210,27 @@
                                 ...transientWorking,
                                 [s.source]: e.detail.working,
                               };
+                            }}
+                            on:exit={() => {
+                              transientExited = {
+                                ...transientExited,
+                                [s.source]: true,
+                              };
+                              // PTY exited: clear live state flags
+                              // so the dot doesn't keep "working"
+                              // or "awaiting" animations going.
+                              if (transientWorking[s.source]) {
+                                transientWorking = {
+                                  ...transientWorking,
+                                  [s.source]: false,
+                                };
+                              }
+                              if (transientAwaiting[s.source]) {
+                                transientAwaiting = {
+                                  ...transientAwaiting,
+                                  [s.source]: false,
+                                };
+                              }
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}

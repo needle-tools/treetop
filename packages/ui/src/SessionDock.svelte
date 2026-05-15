@@ -51,6 +51,10 @@
     transcriptSource?: string;
     working: boolean;
     awaiting: boolean;
+    /** True once the column's PTY has exited. The row stays in
+     *  the dock (hover + click still work) but the dot shrinks to
+     *  signal the session is ended. */
+    exited: boolean;
   }
 
   export let entries: DockEntry[];
@@ -305,6 +309,39 @@
     if (t) return t;
     return e.branch ?? "";
   }
+  /** Repo colours can land arbitrarily close to the dashboard's
+   *  background (`--surface-0` ≈ #23261d) — when that happens the
+   *  dot effectively disappears. This brightens any colour whose
+   *  perceived luminance is below ~80/255 by mixing it with white,
+   *  scaling the boost so really-dark colours lift more than
+   *  almost-bright ones. Bright colours pass through untouched. */
+  function brightenIfDark(hex: string | undefined): string {
+    if (!hex) return "var(--surface-3)";
+    const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex);
+    if (!m) return hex;
+    const raw = m[1];
+    const hex6 =
+      raw.length === 3
+        ? raw
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : raw;
+    const n = parseInt(hex6, 16);
+    const r = (n >> 16) & 0xff;
+    const g = (n >> 8) & 0xff;
+    const b = n & 0xff;
+    // Perceived luminance — Rec.601 weights. Close enough for a
+    // "is this dot going to vanish on the dashboard bg" check.
+    const lum = (r * 299 + g * 587 + b * 114) / 1000;
+    if (lum >= 80) return hex;
+    const t = Math.min(1, (80 - lum) / 80);
+    const lift = (c: number) => Math.round(c + (255 - c) * t * 0.5);
+    return `#${[lift(r), lift(g), lift(b)]
+      .map((c) => c.toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+
   function relTime(iso?: string): string {
     if (!iso) return "";
     const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
@@ -335,8 +372,9 @@
         class="dock-dot agent-{e.agent}"
         class:dot-working={e.working}
         class:dot-awaiting={e.awaiting}
+        class:dot-exited={e.exited}
         class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
-        style:--dot-fill={e.repoColor ?? "var(--surface-3)"}
+        style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
         on:click={() => handlePick(e)}
         on:mouseenter={(ev) => onRowEnter(ev, e)}
@@ -418,7 +456,10 @@
        note), so this dock takes 1600 to stay readable on top. No
        background, border, or shadow — the dock is just the row of
        dots, with labels fading in beside them on hover. */
-    left: 0.45rem;
+    /* Pinned flush against the viewport's left edge. The hover
+       outline keeps the right side rounded; the left side bleeds
+       off-screen so the dock reads as docked. */
+    left: 0;
     top: 50%;
     transform: translateY(-50%);
     z-index: 1600;
@@ -428,11 +469,22 @@
        labels expand the dock auto-sizes to the widest one, and
        every button (and label inside) spans that same width. */
     align-items: stretch;
-    gap: 0.35rem;
+    gap: 0.15rem;
     padding: 0.35rem 0.5rem;
     border-radius: var(--radius-md, 8px);
     background: transparent;
-    transition: background-color 160ms ease;
+    /* Always-on transparent border so the dock's bounds don't
+       jitter by 1px when the hover state paints a real one. */
+    border: 1px solid transparent;
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease;
+  }
+  /* Faint 20%-text outline on hover so the dock's frame is
+     perceptible alongside the page-bg card and revealed labels.
+     Resting state stays chrome-free. */
+  .session-dock.show-labels {
+    border-color: color-mix(in srgb, var(--text-1, #e8e8e8) 20%, transparent);
   }
   /* `.show-labels` is set by JS (mouseenter on the dock, plus a
      1s grace timer on mouseleave) so labels + chat preview share
@@ -496,6 +548,25 @@
        same hue, so the dot always reads as "which repo" first. */
     background: var(--dot-fill);
     box-sizing: border-box;
+    transition:
+      transform 160ms ease,
+      opacity 160ms ease;
+  }
+  /* Ended / inactive session: shrink the visible dot via a transform
+     so the box dimensions stay at 10×10. Keeping the box size means
+     the small dot is horizontally centered on the same x as the
+     big-dot rows, and the wrapping button keeps its full hit zone
+     for hover + click. transform-origin: center scales around the
+     dot's middle so it stays put while shrinking. */
+  .dock-dot.dot-exited .dock-dot-inner {
+    transform: scale(0.6);
+    transform-origin: center;
+    opacity: 0.55;
+  }
+  /* Inactive sessions also dim the session-name label to match
+     the dot — bright text-1 was reserved for *live* rows. */
+  .dock-dot.dot-exited .dock-label-title {
+    color: var(--text-muted, #9a9aa0);
   }
   /* Inline session-name label. Hidden in resting state (no width, no
      opacity) so the dock is a thin vertical strip of dots. On
