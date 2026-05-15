@@ -78,6 +78,11 @@
    *  the PTY exits and we flip back). The parent persists this so a
    *  page reload restores the same view. */
   export let onModeChange: (mode: "read" | "terminal") => void = () => {};
+  /** Bubble PTY state up to App so the session-dock dot can render
+     the same working/awaiting animations as the agent pill. Same
+     shape as NewSessionCol's on:workingChange / on:awaitingChange. */
+  export let onWorkingChange: (working: boolean) => void = () => {};
+  export let onAwaitingChange: (awaiting: boolean) => void = () => {};
   /** Whole-file message count for this session, supplied by the parent
    *  from `/api/repos`'s pre-scanned agent metadata. `/api/session`
    *  only ships the trimmed tail (last MAX_CACHED_MESSAGES = 100), so
@@ -592,8 +597,14 @@
       ownerId={session.sessionId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       onSpawn={(id) => (terminalId = id)}
-      onAwaitingChange={(a) => (awaitingInput = a)}
-      onWorkingChange={(w) => (working = w)}
+      onAwaitingChange={(a) => {
+        awaitingInput = a;
+        onAwaitingChange(a);
+      }}
+      onWorkingChange={(w) => {
+        working = w;
+        onWorkingChange(w);
+      }}
       onExit={() => {
         // PTY finished by itself (user typed `exit`, agent crashed, ...).
         // Same effect as Dispose: flip to read, scroll to the newest

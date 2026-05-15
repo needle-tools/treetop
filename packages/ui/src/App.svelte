@@ -4167,6 +4167,18 @@
                               );
                               if (next !== openSessionsByWt) openSessionsByWt = next;
                             }}
+                            onWorkingChange={(w) => {
+                              transientWorking = {
+                                ...transientWorking,
+                                [s.source]: w,
+                              };
+                            }}
+                            onAwaitingChange={(a) => {
+                              transientAwaiting = {
+                                ...transientAwaiting,
+                                [s.source]: a,
+                              };
+                            }}
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}

@@ -14,7 +14,7 @@
    *              scroll the strip, flash the column briefly).
    *  - Hover  -> tooltip with repo/branch + title + last user prompt.
    */
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
 
   /** Minimal shape this component needs per session. The host computes
    *  these from its open-sessions / agents / repos state and hands them
@@ -46,6 +46,34 @@
   export let entries: DockEntry[];
 
   const dispatch = createEventDispatcher<{ pick: DockEntry }>();
+
+  /** Suppress the hover/focus label-reveal for a short window right
+   *  after a click. Without this, the focused button keeps
+   *  :focus-within active (and the cursor is still over the dock),
+   *  so labels stay expanded while the page scroll-and-flashes to
+   *  the picked column — distracting. Long enough to outlast the
+   *  smooth scroll animation, short enough that re-entering the
+   *  dock immediately shows labels again. */
+  let collapseAfterClick = false;
+  let collapseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handlePick(e: DockEntry) {
+    dispatch("pick", e);
+    if (typeof document !== "undefined") {
+      const active = document.activeElement as HTMLElement | null;
+      active?.blur?.();
+    }
+    collapseAfterClick = true;
+    if (collapseTimer) clearTimeout(collapseTimer);
+    collapseTimer = setTimeout(() => {
+      collapseAfterClick = false;
+      collapseTimer = null;
+    }, 600);
+  }
+
+  onDestroy(() => {
+    if (collapseTimer) clearTimeout(collapseTimer);
+  });
 
   function tooltipFor(e: DockEntry): string {
     const lines: string[] = [];
@@ -87,7 +115,12 @@
 </script>
 
 {#if entries.length > 0}
-  <div class="session-dock" role="toolbar" aria-label="Open sessions">
+  <div
+    class="session-dock"
+    class:collapsed={collapseAfterClick}
+    role="toolbar"
+    aria-label="Open sessions"
+  >
     {#each entries as e, i (e.source)}
       <button
         type="button"
@@ -97,7 +130,7 @@
         class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
         style:--dot-fill={e.repoColor ?? "var(--surface-3)"}
         aria-label={tooltipFor(e)}
-        on:click={() => dispatch("pick", e)}
+        on:click={() => handlePick(e)}
       >
         <span class="dock-dot-inner"></span>
         <span class="dock-label">
@@ -138,13 +171,34 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.35rem;
-    padding: 0.2rem 0;
-    /* No overflow clipping — labels are absolutely positioned with
-       `left: 100%`, i.e. they stick out to the right of the dock.
-       Hiding overflow-x would clip them and they'd never appear on
-       hover. We assume few enough active TUIs that the column
-       doesn't need scrolling; if that becomes wrong, render labels
-       in a portal sibling instead of inside the dock. */
+    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-md, 8px);
+    background: transparent;
+    transition: background-color 160ms ease;
+  }
+  /* On hover, paint a single page-tinted card behind the whole dock
+     so the dot column + the freshly-revealed labels read as one
+     cohesive panel. Uses `--surface-1` (the dashboard's main
+     background) so the card blends with the rest of the UI palette. */
+  .session-dock:hover,
+  .session-dock:focus-within {
+    background: var(--surface-0, #23261d);
+  }
+  /* While a click is being acted on (smooth-scroll to the picked
+     session), suppress both the wrapping background and the label
+     reveal even if hover/focus is still active. The flag clears on
+     a short timer, so the labels come back the next time the user
+     intentionally hovers the dock. */
+  .session-dock.collapsed,
+  .session-dock.collapsed:hover,
+  .session-dock.collapsed:focus-within {
+    background: transparent;
+  }
+  .session-dock.collapsed:hover .dock-label,
+  .session-dock.collapsed:focus-within .dock-label {
+    max-width: 0;
+    opacity: 0;
+    pointer-events: none;
   }
 
   .dock-dot {
@@ -196,21 +250,18 @@
      the dock itself stays chrome-free per request, and labels still
      read against busy content behind the page. */
   .dock-label {
-    /* Absolutely positioned so the label can host padding +
-       backdrop-filter without changing the dot's vertical slot. The
-       button stays as the dot's hit-zone; the label floats out to
-       the right of it on hover. */
-    position: absolute;
-    left: 100%;
-    top: 50%;
-    transform: translateY(-50%);
+    /* Inline flex child of the dot button so the dock's bounding
+       box grows to enclose dots + labels when revealed on hover —
+       the dock paints one rounded background behind everything,
+       no per-label tile needed. Padding stays constant whether the
+       label is hidden or visible so the button's height never
+       shifts (preventing the column from jittering on hover). */
     overflow: hidden;
     white-space: nowrap;
     max-width: 0;
     opacity: 0;
-    padding: 3px 8px;
+    padding: 3px 0;
     box-sizing: border-box;
-    border-radius: var(--radius-sm, 4px);
     font-size: 0.72rem;
     line-height: 1;
     color: var(--text-1, #e8e8e8);
@@ -218,24 +269,28 @@
     pointer-events: none;
     transition:
       max-width 180ms ease,
-      opacity 140ms ease,
-      background-color 140ms ease;
+      opacity 140ms ease;
   }
   .session-dock:hover .dock-label,
   .session-dock:focus-within .dock-label {
     max-width: 22rem;
     opacity: 1;
-    /* Semi-transparent page-background tint behind the label text on
-       hover so labels stay legible over busy dashboard content
-       (terminals, notes). Uses `--surface-1` so the chip blends
-       naturally into the rest of the UI's surface palette. */
-    background: color-mix(in srgb, var(--surface-1, #1a1a1b) 78%, transparent);
     /* Clicks on the visible label should also fire the dot's
        on:click — the label is a child of the same <button>, so once
        pointer-events go through the click bubbles up and triggers
        the same `dispatch("pick", ...)` the dot would. */
     pointer-events: auto;
     cursor: pointer;
+  }
+  /* When the cursor is over a specific row's label, give the text a
+     dotted underline so it reads as an interactive target — the
+     whole row is clickable but the link affordance only shows on
+     direct hover of the label text. */
+  .dock-dot:hover .dock-label,
+  .dock-dot:focus-visible .dock-label {
+    text-decoration: underline dotted;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
   }
   .dock-label-repo {
     color: var(--text-muted, #9a9aa0);
