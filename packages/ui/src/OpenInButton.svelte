@@ -21,6 +21,9 @@
    *  defined. Set to false to render the glyph in the surrounding text
    *  colour. */
   export let color: boolean = true;
+  /** Render the icon only — used by the folded-row action strip where
+   *  we cluster open-in buttons right-aligned with no labels. */
+  export let iconOnly: boolean = false;
 
   let def: IconDef | null;
   $: def = iconFor(icon);
@@ -29,6 +32,7 @@
 
 <button
   class="tiny open-in-btn"
+  class:icon-only={iconOnly}
   on:click={onClick}
   title={title || label}
   type="button"
@@ -65,7 +69,9 @@
       </svg>
     {/if}
   {/if}
-  <span>{label}</span>
+  {#if !iconOnly}
+    <span>{label}</span>
+  {/if}
 </button>
 
 <style>
@@ -93,5 +99,20 @@
   .open-in-icon.brand {
     fill: initial;
     stroke: none;
+  }
+  /* Icon-only variant — used in the folded row-head action strip. Tighter
+     horizontal padding so the cluster reads as a tidy icon row, and a
+     grayscale tint at rest that lifts to full brand colour on hover. */
+  .open-in-btn.icon-only {
+    padding: 0.2rem 0.25rem;
+  }
+  .open-in-btn.icon-only .open-in-icon {
+    filter: grayscale(1);
+    opacity: 0.65;
+    transition: filter 120ms ease, opacity 120ms ease;
+  }
+  .open-in-btn.icon-only:hover .open-in-icon {
+    filter: none;
+    opacity: 1;
   }
 </style>

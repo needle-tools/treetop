@@ -16,6 +16,7 @@
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
+  import OpenInActions from "./OpenInActions.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -3358,6 +3359,7 @@
                  the RIGHT. Same .new-wt dashed-tag styling as the
                  worktrees button so the row's action group reads as
                  a single family. -->
+            {#if !rowFolded[row.key]}
             <span class="note-add-stack">
               {#if noteCount > 0}
                 <span
@@ -3396,6 +3398,8 @@
                 }}
               >+</button>
             </span>
+            {/if}
+            {#if !rowFolded[row.key]}
             <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
               <button
                 class="new-wt"
@@ -3500,6 +3504,17 @@
                 </Popover>
               {/if}
             </span>
+            {/if}
+            {#if rowFolded[row.key] && wt}
+              <OpenInActions
+                path={wt.path}
+                {editors}
+                remotes={repo.remotes ?? []}
+                {openIn}
+                {openRemote}
+                iconOnly
+              />
+            {/if}
             <button
               class="row-zen-btn"
               class:open={zenRowKey === row.key}
@@ -3694,42 +3709,13 @@
               {/if}
               {/if}
 
-              <div class="row-actions">
-                {#each editors as ed}
-                  <OpenInButton
-                    icon={ed.cmd}
-                    label={ed.name}
-                    title={`Open in ${ed.name}`}
-                    onClick={() => openIn(wt.path, ed.cmd)}
-                  />
-                {/each}
-                <OpenInButton
-                  icon="fork"
-                  label="Fork"
-                  title="Open in Fork"
-                  onClick={() => openIn(wt.path, "fork")}
-                />
-                <OpenInButton
-                  icon="terminal"
-                  label="Terminal"
-                  title="Open in terminal"
-                  onClick={() => openIn(wt.path, "terminal")}
-                />
-                <OpenInButton
-                  icon={fileManagerIcon()}
-                  label={fileManagerLabel()}
-                  title="Reveal in file manager"
-                  onClick={() => openIn(wt.path, "files")}
-                />
-                {#each (repo.remotes ?? []).filter((r) => r.webUrl) as remote}
-                  <OpenInButton
-                    icon={remote.provider ?? "git"}
-                    label={remoteButtonLabel(remote)}
-                    title={`Open ${remote.name} (${remote.url}) in browser`}
-                    onClick={() => openRemote(remote)}
-                  />
-                {/each}
-              </div>
+              <OpenInActions
+                path={wt.path}
+                {editors}
+                remotes={repo.remotes ?? []}
+                {openIn}
+                {openRemote}
+              />
             </div>
 
             {#if wt}
