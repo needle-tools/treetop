@@ -100,19 +100,15 @@
     fill: initial;
     stroke: none;
   }
-  /* Icon-only variant — used in the folded row-head action strip. Tighter
-     horizontal padding so the cluster reads as a tidy icon row, and a
-     grayscale tint at rest that lifts to full brand colour on hover. */
+  /* Icon-only variant — used in the folded row-head action strip.
+     Transparent chip so just the (coloured) brand mark shows, with a
+     subtle hover wash for affordance. */
   .open-in-btn.icon-only {
     padding: 0.2rem 0.25rem;
+    background: transparent;
+    border-color: transparent;
   }
-  .open-in-btn.icon-only .open-in-icon {
-    filter: grayscale(1);
-    opacity: 0.65;
-    transition: filter 120ms ease, opacity 120ms ease;
-  }
-  .open-in-btn.icon-only:hover .open-in-icon {
-    filter: none;
-    opacity: 1;
+  .open-in-btn.icon-only:hover {
+    background: color-mix(in srgb, var(--chip-default-bg) 55%, transparent);
   }
 </style>
