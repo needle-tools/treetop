@@ -113,6 +113,9 @@
     endSessionTitle={agent === "shell"
       ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
       : "SIGTERM the PTY — the column stays open showing the final output until you click × to close."}
+    closeTitle={agent === "shell"
+      ? "Close this column and dispose the terminal.\nThe transcript is kept on disk and can be reopened from the worktree's session picker."
+      : "Close this column and stop the agent.\nOnce the agent has written its first message you can also reopen the session later from the worktree's picker."}
   />
 
   <TerminalView

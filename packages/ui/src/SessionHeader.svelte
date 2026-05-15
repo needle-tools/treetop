@@ -279,7 +279,7 @@
     {#if menuItems.length > 0}
       <SessionMenu items={menuItems} />
     {/if}
-    <button class="close" on:click={onClose} title="Close">×</button>
+    <button class="close" on:click={onClose} title={closeTitle} aria-label="Close column">×</button>
   </div>
 </header>
 
@@ -604,7 +604,10 @@
     align-items: center;
     justify-content: center;
     background: transparent;
-    border: 0;
+    /* Transparent border at rest so the layout doesn't shift when the
+       hover state's outline appears. */
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     color: var(--text-muted);
     padding: 0.1rem 0.5rem;
     font-size: 1rem;
@@ -614,6 +617,10 @@
   .close:hover {
     color: var(--text-1);
     background: var(--surface-3);
-    border-radius: var(--radius-sm);
+    border-color: var(--text-faint);
+  }
+  .close:focus-visible {
+    outline: none;
+    border-color: var(--brand);
   }
 </style>
