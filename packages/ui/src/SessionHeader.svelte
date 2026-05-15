@@ -38,6 +38,13 @@
   export let canEnd: boolean = true;
   export let disposing: boolean = false;
   export let awaitingInput: boolean = false;
+  /** Whether the PTY is currently emitting output. True ⇒ a rotating
+   *  conic-gradient ring sweeps the agent pill in the agent's colour.
+   *  False ⇒ a solid border in the agent's colour smoothly pulses
+   *  between dim and bright. Only meaningful in terminal mode (the
+   *  consumer gates on `mode === "terminal" && working` before
+   *  passing it through). */
+  export let working: boolean = false;
 
   // Metadata (all optional — empty values just don't render their chip)
   export let loadedMessageCount: number | undefined = undefined;
@@ -119,7 +126,11 @@
 
 <header draggable="true" on:dragstart={onDragStart}>
   <div class="hdr-col col-agent">
-    <span class="agent-pill agent-{agent}">{agent}</span>
+    <span
+      class="agent-pill agent-{agent}"
+      class:working={mode === "terminal" && working}
+      class:idle={mode === "terminal" && !working}
+    >{agent}</span>
   </div>
   <div class="hdr-col col-name">
     <ManualTitle
@@ -390,27 +401,106 @@
     border-radius: var(--radius-sm);
   }
   .agent-pill {
+    /* Position-relative so the .working state's ::before ring can
+       anchor to the pill bounds. Inline-block keeps inline flow while
+       still letting the ring extend a few px outside the padding box. */
+    position: relative;
+    display: inline-block;
     padding: 0.1rem 0.5rem;
     border-radius: var(--radius-sm);
     font-size: 0.72rem;
     text-transform: lowercase;
     font-family: ui-monospace, monospace;
+    /* Always-on transparent border so toggling .idle (which paints a
+       real border) doesn't reflow the pill by 1px in either axis. */
+    border: 1px solid transparent;
   }
   .agent-pill.agent-claude {
     background: var(--chip-orange-bg);
     color: var(--chip-orange-text);
+    --agent-color: var(--chip-orange-text);
   }
   .agent-pill.agent-codex {
     background: var(--chip-codex-bg);
     color: var(--chip-codex-text);
+    --agent-color: var(--chip-codex-text);
   }
   .agent-pill.agent-copilot {
     background: var(--chip-default-bg);
     color: var(--chip-default-text);
+    --agent-color: var(--chip-default-text);
   }
   .agent-pill.agent-shell {
     background: var(--surface-3);
     color: var(--text-2);
+    --agent-color: var(--text-2);
+  }
+  /* Working: comet-trail conic-gradient ring (same idiom as the
+     header's TUIs hot button). `from` angle is animated via a
+     @property-registered custom prop so the arc actually sweeps —
+     transform-rotate on a mask-composited pseudo-element doesn't
+     paint reliably in all engines. */
+  @property --pill-sweep-angle {
+    syntax: "<angle>";
+    initial-value: 0deg;
+    inherits: false;
+  }
+  .agent-pill.working::before {
+    content: "";
+    position: absolute;
+    /* Extend 3px outside so the comet sweep hugs the pill's outer
+       edge instead of sitting on top of the text. Corners scale by
+       the same 3px so they stay concentric with the pill. */
+    inset: -3px;
+    border-radius: calc(var(--radius-sm) + 3px);
+    padding: 2px;
+    background: conic-gradient(
+      from var(--pill-sweep-angle),
+      transparent 0deg,
+      transparent 250deg,
+      color-mix(in srgb, var(--agent-color) 0%, transparent) 270deg,
+      color-mix(in srgb, var(--agent-color) 95%, transparent) 340deg,
+      var(--agent-color) 360deg
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+    animation: pill-sweep 3.2s linear infinite;
+  }
+  @keyframes pill-sweep {
+    to {
+      --pill-sweep-angle: 360deg;
+    }
+  }
+  /* Idle / waiting: solid border in the agent's colour, smoothly
+     pulsing between dim and bright. No glow / box-shadow — just the
+     border colour change. */
+  .agent-pill.idle {
+    border-color: color-mix(in srgb, var(--agent-color) 30%, transparent);
+    animation: pill-idle-blink 1.6s ease-in-out infinite alternate;
+  }
+  @keyframes pill-idle-blink {
+    from {
+      border-color: color-mix(in srgb, var(--agent-color) 25%, transparent);
+    }
+    to {
+      border-color: var(--agent-color);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .agent-pill.working::before,
+    .agent-pill.idle {
+      animation: none;
+    }
+    .agent-pill.idle {
+      border-color: color-mix(in srgb, var(--agent-color) 70%, transparent);
+    }
   }
   /* Compact horizontal "loading bar" representation of context usage.
      The track is a thin dark strip; the fill grows with `ratio`. The

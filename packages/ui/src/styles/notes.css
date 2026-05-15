@@ -44,12 +44,69 @@
 .sticky-host.flying .sticky {
   transition: none;
 }
-/* Fade-out for staged-and-empty discard. Opacity on the host (not
-   the .sticky) so the inner transform/box-shadow rules stay clean
-   and undisturbed during the fade. */
+/* Final exit: shrink-toward-center + opacity fade, ~300ms. Used for
+   both the staged-and-empty discard and the 3s-grace timeout
+   delete. The transform-origin override is the important bit:
+   .sticky's default origin is the user's last grab point (top-left
+   for never-dragged notes), which would otherwise make the note
+   shrink into its tape corner rather than collapse cleanly in place. */
 .sticky-host.removing {
   opacity: 0;
-  transition: opacity 0.18s ease;
+  transition: opacity 0.3s ease;
+}
+.sticky-host.removing .sticky {
+  transform-origin: 50% 50%;
+  transform: rotate(var(--tilt, 0deg)) scale(0);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.7, 0.2);
+  pointer-events: none;
+}
+
+/* 3-second pre-delete countdown: a red outline traces clockwise
+   around the note's perimeter while the timer runs. Clicking the
+   stop button cancels it; if it completes, the layer's handleRemove
+   kicks the shrink+fade above. */
+.sticky-delete-progress {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.sticky-delete-progress rect {
+  fill: none;
+  stroke: var(--ctx-hot);
+  stroke-width: 5;
+  vector-effect: non-scaling-stroke;
+  /* Trick to start the fill at the top-right corner (where × lives)
+     instead of the SVG <rect>'s default path start (top-left). The
+     pathLength=100 normalization means perimeter quarters are at
+     0/25/50/75; offsetting the dash pattern by 75 puts the fill's
+     "head" exactly at the top-right corner, and the animated
+     dasharray grows the visible dash from 0 → 100 units clockwise
+     from there. */
+  stroke-dasharray: 0 100;
+  stroke-dashoffset: 75;
+  animation: sticky-delete-fill 3s linear forwards;
+}
+@keyframes sticky-delete-fill {
+  from {
+    stroke-dasharray: 0 100;
+  }
+  to {
+    stroke-dasharray: 100 0;
+  }
+}
+
+/* Stop-icon (armed-delete) state — same square button outline, soft
+   tinted background so it reads as "armed", not "press me." Tint is
+   derived from --ctx-hot via color-mix so the ring + button stay
+   visually unified, and so a future redesign that re-tones --ctx-hot
+   doesn't require a second edit here. */
+.sticky .sticky-btn.danger.confirming {
+  background: color-mix(in srgb, var(--ctx-hot) 18%, transparent);
+  color: var(--ctx-hot);
+  border-color: color-mix(in srgb, var(--ctx-hot) 55%, transparent);
 }
 
 .sticky {

@@ -530,14 +530,19 @@
     const id = e.detail.id;
     const note = notes.find((n) => n.id === id);
     if (!note) return;
+    const isStaging = !!staging[id];
+    // Play the shrink+fade first (the .removing class on the host
+    // triggers a ~300ms transform/opacity transition) — only then do
+    // we hit the server and splice the note out of the array. Doing
+    // it the other way would unmount the StickyNote before the
+    // animation could even begin.
+    removingIds = new Set([...removingIds, id]);
+    await new Promise((r) => setTimeout(r, 320));
     // Staged-and-empty: the user opened the "+" affordance and walked
-    // away without typing. Fade and discard silently — no undo toast,
-    // no entry in the events feed worth surfacing. We still DELETE
-    // server-side because the POST in handleSpawn already created the
-    // record.
-    if (staging[id]) {
-      removingIds = new Set([...removingIds, id]);
-      await new Promise((r) => setTimeout(r, 200));
+    // away without typing. Same fade-out, but no undo toast — the 3s
+    // grace already gave them a chance to back out, and the empty
+    // note isn't worth a recovery affordance.
+    if (isStaging) {
       try {
         await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
       } catch {}
@@ -545,19 +550,30 @@
       const next = { ...staging };
       delete next[id];
       staging = next;
-      removingIds.delete(id);
-      removingIds = new Set(removingIds);
+      const nextRemoving = new Set(removingIds);
+      nextRemoving.delete(id);
+      removingIds = nextRemoving;
       return;
     }
     try {
       const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Server refused — roll back the animation so the note
+        // re-materializes rather than getting stuck invisible.
+        const nextRemoving = new Set(removingIds);
+        nextRemoving.delete(id);
+        removingIds = nextRemoving;
+        return;
+      }
       const { eventId } = (await res.json().catch(() => ({}))) as {
         eventId?: string;
       };
       notes = notes.filter((n) => n.id !== id);
+      const nextRemoving = new Set(removingIds);
+      nextRemoving.delete(id);
+      removingIds = nextRemoving;
       // NB: deliberately not deleting offsets[id] / zOrder entries —
       // they're preserved across deletion so an undo (via any path)
       // brings the note back to its previous slot, not the default

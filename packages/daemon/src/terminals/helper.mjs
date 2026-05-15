@@ -73,6 +73,22 @@ rl.on("line", (line) => {
         delete cleaned.PORT;
         delete cleaned.PORTLESS_URL;
         delete cleaned.NODE_EXTRA_CA_CERTS;
+        // Disable macOS's per-session shell-state restore. On macOS,
+        // /etc/zshrc_Apple_Terminal hooks `zshexit` to write a
+        // SHELL_SESSION_FILE (an `echo Restored session: <date>` line,
+        // plus any registered user-state functions), keyed by
+        // TERM_SESSION_ID. Every PTY supergit spawns inherits the
+        // SAME TERM_SESSION_ID from the launching Terminal.app, so:
+        //   1. close a Terminal column → first zsh writes the file
+        //   2. resume → second zsh sources the file at startup,
+        //      prints "Restored session: …" BEFORE the prompt, and
+        //      `rm`s the file
+        // The extra echo line scrolls the prompt down by one row and
+        // confuses zle's cursor-position math — symptom: cursor on an
+        // empty line below the $, only the last keypress renders.
+        // supergit has its own history + transcript machinery; we
+        // never want Apple's parallel session-restore on top.
+        cleaned.SHELL_SESSIONS_DISABLE = "1";
         const term = ptySpawn(cmd[0], cmd.slice(1), {
           name: "xterm-256color",
           cols: cols ?? 80,
@@ -82,6 +98,30 @@ rl.on("line", (line) => {
         });
         terms.set(id, term);
         emit({ ev: "spawned", id, pid: term.pid });
+        // Debug-only snapshot of the env we actually handed to the
+        // PTY. Surfaces what gets through after the scrub + injection
+        // dance, so the daemon's /api/debug/pty-env endpoint can show
+        // it without a second IPC round-trip. Cheap; ~50 strings per
+        // spawn; never exposed externally without the explicit debug
+        // route.
+        const mergedEnv = { ...cleaned, ...(env || {}) };
+        const envKeys = [
+          "TERM_PROGRAM",
+          "TERM_SESSION_ID",
+          "SHELL_SESSIONS_DISABLE",
+          "ZDOTDIR",
+          "HISTFILE",
+          "HISTSIZE",
+          "SAVEHIST",
+          "TERM",
+          "HOME",
+          "SHELL",
+          "PATH",
+        ];
+        const envSnapshot = Object.fromEntries(
+          envKeys.map((k) => [k, mergedEnv[k] ?? null]),
+        );
+        emit({ ev: "env-snapshot", id, env: envSnapshot });
         term.onData((d) => {
           emit({
             ev: "data",

@@ -77,6 +77,16 @@
 
   let editing = startEditing;
   let draft = note.body;
+  /** Two-step delete: clicking × arms a 3-second countdown (rather
+   *  than firing immediately) so the user has a generous window to
+   *  back out. The button glyph swaps to ■ while armed; a second
+   *  click on it cancels. The countdown is also bailed out by
+   *  entering edit mode (the user clearly didn't mean to discard) and
+   *  by unmounting the component (component teardown shouldn't
+   *  silently delete the underlying note). */
+  const DELETE_GRACE_MS = 3000;
+  let confirmingDelete = false;
+  let deleteTimerId: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
   let dragDx = 0;
   let dragDy = 0;
@@ -194,9 +204,23 @@
       saveEdit();
     };
     window.addEventListener("mousedown", onWindowDown);
+    // Esc cancels a pending delete from anywhere — the user may not
+    // have focus on the stop button when they think "wait, no". The
+    // existing textarea handler also treats Esc as cancel-edit, but
+    // entering edit mode already cleared confirmingDelete, so the two
+    // paths can't both fire on the same press.
+    const onWindowKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && confirmingDelete) {
+        e.preventDefault();
+        cancelPendingDelete();
+      }
+    };
+    window.addEventListener("keydown", onWindowKey);
     return () => {
       window.removeEventListener("mousedown", onWindowDown);
+      window.removeEventListener("keydown", onWindowKey);
       stopPendulum();
+      cancelPendingDelete();
     };
   });
 
@@ -304,7 +328,32 @@
    *  stops moving the note. */
   $: if (flying) startPendulum();
 
+  function cancelPendingDelete(): void {
+    if (deleteTimerId !== null) {
+      clearTimeout(deleteTimerId);
+      deleteTimerId = null;
+    }
+    confirmingDelete = false;
+  }
+
+  function onDeleteClick(): void {
+    if (confirmingDelete) {
+      cancelPendingDelete();
+      return;
+    }
+    confirmingDelete = true;
+    deleteTimerId = setTimeout(() => {
+      deleteTimerId = null;
+      confirmingDelete = false;
+      dispatch("remove", { id: note.id });
+    }, DELETE_GRACE_MS);
+  }
+
   function startEdit(): void {
+    // Editing implies "I want to keep this note, just change it" —
+    // cancel any in-flight delete so the user doesn't see their
+    // freshly-typed text vanish 3 seconds later.
+    cancelPendingDelete();
     draft = note.body;
     editing = true;
     queueMicrotask(() => {
@@ -407,8 +456,13 @@
     <span class="sticky-grip" aria-hidden="true">⋮⋮</span>
     <div class="sticky-actions">
       {#if editing}
-        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
+        <!-- Save sits on the left, Cancel on the right: when the user
+             clicks ✎ to enter edit mode, their cursor lands on the
+             left slot of the toolbar — and the natural next action
+             after typing is Save, not Cancel. Keeping the affirmative
+             action under the cursor avoids a wasted aim. -->
         <button class="sticky-btn primary" on:click={saveEdit} title="Save (Enter)">Save</button>
+        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
       {:else}
         <button
           class="sticky-btn"
@@ -418,10 +472,13 @@
         >✎</button>
         <button
           class="sticky-btn danger"
-          on:click={() => dispatch("remove", { id: note.id })}
-          title="Delete (an Undo toast lets you bring it back)"
-          aria-label="Delete"
-        >×</button>
+          class:confirming={confirmingDelete}
+          on:click={onDeleteClick}
+          title={confirmingDelete
+            ? "Click to cancel — note will delete in 3 seconds"
+            : "Delete (3-second grace; click again to cancel)"}
+          aria-label={confirmingDelete ? "Cancel pending delete" : "Delete"}
+        >{confirmingDelete ? "■" : "×"}</button>
       {/if}
     </div>
   </header>
@@ -504,5 +561,17 @@
       aria-readonly="true"
       title="Double-click to edit"
     >{@html rendered(note.body)}</div>
+  {/if}
+
+  {#if confirmingDelete}
+    <!-- 3s countdown ring traced around the note's perimeter via a
+         single <rect> with pathLength normalized to 100 and an animated
+         stroke-dashoffset. `vector-effect: non-scaling-stroke` is set
+         in CSS so the line stays a consistent thickness even though
+         the SVG itself is sized via percentages and the rect is
+         stretched non-uniformly. -->
+    <svg class="sticky-delete-progress" aria-hidden="true">
+      <rect width="100%" height="100%" rx="4" ry="4" pathLength="100" />
+    </svg>
   {/if}
 </div>

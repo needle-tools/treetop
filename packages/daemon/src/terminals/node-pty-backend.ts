@@ -31,6 +31,7 @@ interface InternalTerm {
   agent?: string;
   size: TerminalSize;
   createdAt: string;
+  lastOutputAt: string;
   exitedAt?: string;
   exitCode?: number;
   exitSignal?: string;
@@ -43,6 +44,12 @@ interface InternalTerm {
    *  (a `.zshrc` that sources the user's real one then adds history
    *  hardening). Cleaned up on exit. Undefined for non-zsh PTYs. */
   zdotdir?: string;
+  /** Subset of the env the helper actually handed to the spawned PTY,
+   *  recorded for /api/debug/pty-env. Includes the TERM_PROGRAM /
+   *  TERM_SESSION_ID / SHELL_SESSIONS_DISABLE / ZDOTDIR / HISTFILE
+   *  values we most often need to diagnose "why does my shell behave
+   *  differently than my host terminal" issues. */
+  envSnapshot?: Record<string, string | null>;
 }
 
 /** Patterns that mean "the agent is paused, waiting for me to press a
@@ -230,10 +237,17 @@ export class NodePtyBackend implements PtyBackend {
         t.spawnedAck?.resolve(t.pid);
         return;
       }
+      case "env-snapshot": {
+        const t = this.terms.get(evt.id as string);
+        if (!t) return;
+        t.envSnapshot = evt.env as Record<string, string | null>;
+        return;
+      }
       case "data": {
         const t = this.terms.get(evt.id as string);
         if (!t) return;
         const buf = Uint8Array.from(Buffer.from(evt.dataB64 as string ?? "", "base64"));
+        t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
         // Recompute awaiting-input state after each output chunk. If
@@ -304,6 +318,7 @@ export class NodePtyBackend implements PtyBackend {
       agent: opts.agent ?? detectAgent(opts.cmd),
       size: opts.size,
       createdAt: new Date().toISOString(),
+      lastOutputAt: new Date().toISOString(),
       buffer: [],
       bufferBytes: 0,
       subs: new Set(),
@@ -409,6 +424,16 @@ export class NodePtyBackend implements PtyBackend {
     return t ? this.handleFor(t) : undefined;
   }
 
+  /** Returns the env snapshot the helper recorded for this PTY (the
+   *  set of well-known env keys after the scrub + injection dance).
+   *  Used by /api/debug/pty-env to verify what really got through to
+   *  the shell. Returns undefined for unknown ids or terminals
+   *  spawned before the helper started emitting env-snapshot
+   *  (legacy helper running across an upgrade). */
+  getEnvSnapshot(id: string): Record<string, string | null> | undefined {
+    return this.terms.get(id)?.envSnapshot;
+  }
+
   list(): TerminalRecord[] {
     return [...this.terms.values()].map((t) => ({
       id: t.id,
@@ -419,6 +444,7 @@ export class NodePtyBackend implements PtyBackend {
       pid: t.pid,
       size: t.size,
       createdAt: t.createdAt,
+      lastOutputAt: t.lastOutputAt,
       exitedAt: t.exitedAt,
       exitCode: t.exitCode,
       exitSignal: t.exitSignal,

@@ -13,7 +13,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
 import { NodePtyBackend } from "../src/terminals/node-pty-backend";
 import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
-import { mkdtemp, writeFile, chmod, utimes, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, mkdir, chmod, utimes, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -96,6 +96,49 @@ describe("NodePtyBackend integration", () => {
       let stillAlive = false;
       try { process.kill(pid, 0); stillAlive = true; } catch {}
       expect(stillAlive).toBe(false);
+    },
+    10_000,
+  );
+
+  test(
+    "lastOutputAt advances when the PTY emits output, and equals createdAt before any output",
+    async () => {
+      const handle = await backend.spawn({
+        // Wait a beat so `lastOutputAt` after the first byte is
+        // measurably later than `createdAt`. 80ms is comfortably above
+        // the helper/IPC round-trip jitter on macOS+Linux CI.
+        cmd: ["bash", "-c", "sleep 0.08; echo first; sleep 0.08; echo second"],
+        cwd: "/tmp",
+        size: { cols: 80, rows: 24 },
+      });
+
+      // Record taken immediately after spawn (before any data event has
+      // arrived) should still show lastOutputAt == createdAt.
+      const beforeAny = backend.list().find((r) => r.id === handle.id);
+      expect(beforeAny).toBeDefined();
+      expect(beforeAny!.lastOutputAt).toBe(beforeAny!.createdAt);
+
+      let firstChunkAt = 0;
+      const exitWait = new Promise<void>((resolve) => {
+        handle.subscribe({
+          onData() {
+            if (!firstChunkAt) firstChunkAt = Date.now();
+          },
+          onExit() { resolve(); },
+        });
+      });
+      await exitWait;
+
+      const after = backend.list().find((r) => r.id === handle.id);
+      expect(after).toBeDefined();
+      // Output happened, so lastOutputAt must have advanced past createdAt.
+      expect(Date.parse(after!.lastOutputAt)).toBeGreaterThan(
+        Date.parse(after!.createdAt),
+      );
+      // And the final lastOutputAt must be at or after the first chunk
+      // we observed in the subscriber — both timestamps come from the
+      // same data path.
+      expect(Date.parse(after!.lastOutputAt)).toBeGreaterThanOrEqual(firstChunkAt - 50);
     },
     10_000,
   );
@@ -202,6 +245,211 @@ describe("NodePtyBackend integration", () => {
         const combined = out.join("");
         expect(combined).toContain("::ENV::from-zshenv-ok::");
         expect(combined).toContain("::RC::from-zshrc-ok::");
+      } finally {
+        await rm(fakeHome, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  // Resume invariant: when the user closes a Terminal column and then
+  // re-opens one in the same worktree, the new zsh PTY must see every
+  // command the previous PTYs typed via arrow-up history. This is the
+  // "history is always additive, never lost" contract — a regression
+  // in the snippet (e.g. accidentally enabling HIST_NO_STORE or
+  // disabling INC_APPEND_HISTORY) would silently drop commands and
+  // the user would only notice when they reach for arrow-up.
+  //
+  // We can't easily drive keystrokes through the PTY with reliable
+  // timing in a test, so we use zsh's `print -s "<line>"` (adds to
+  // the in-memory history list) + `fc -A` (appends new entries to
+  // HISTFILE) — same effect on the histfile as an interactive Enter,
+  // without depending on the line editor.
+  test.skipIf(!zshBin)(
+    "zsh history persists additively across multiple PTY spawns (resume invariant)",
+    async () => {
+      const fakeHome = await mkdtemp(join(tmpdir(), "supergit-fakehome-hist-"));
+      try {
+        // Empty .zshrc so the snippet's defaults apply (no user
+        // override of HISTFILE / HISTSIZE / SAVEHIST). With an empty
+        // file the snippet's `[[ -z "${HISTFILE-}" ]]` guard kicks
+        // in and points HISTFILE at $HOME/.zsh_history.
+        await writeFile(join(fakeHome, ".zshrc"), "", "utf-8");
+
+        // CRITICAL: we deliberately do NOT pass HISTFILE in env. The
+        // bug this test guards against is /etc/zshrc on macOS doing
+        // `HISTFILE=\${ZDOTDIR:-$HOME}/.zsh_history` — i.e. pointing
+        // HISTFILE inside the temp ZDOTDIR that supergit deletes on
+        // PTY exit. The snippet must detect that and redirect HISTFILE
+        // back to $HOME/.zsh_history, which is what we want to assert.
+        const histPath = join(fakeHome, ".zsh_history");
+        const runHistCmd = async (line: string) => {
+          const handle = await backend.spawn({
+            // -i so .zshrc + the supergit snippet are sourced. We
+            // use `print -s` to push a line into the in-memory
+            // history list and `fc -W` to write the full history
+            // to HISTFILE; in production, INC_APPEND_HISTORY does
+            // the equivalent on every Enter at the prompt.
+            // `fc -A` appends only the new entries in this shell's
+            // in-memory history to HISTFILE — it does NOT overwrite
+            // the file with the current in-memory list, so prior
+            // PTYs' entries stay put. In production this happens
+            // automatically on every Enter via INC_APPEND_HISTORY.
+            cmd: ["zsh", "-i", "-c", `print -s '${line}'; fc -A; exit`],
+            cwd: "/tmp",
+            size: { cols: 80, rows: 24 },
+            env: { HOME: fakeHome },
+          });
+          await new Promise<void>((resolve) => {
+            handle.subscribe({ onData() {}, onExit() { resolve(); } });
+          });
+        };
+
+        // Three "open → type → close" cycles. The 2nd/3rd are the
+        // user's "second resume" — the case that prompted this test.
+        await runHistCmd("echo first");
+        await runHistCmd("echo second");
+        await runHistCmd("echo third");
+
+        const hist = await readFile(histPath, "utf-8");
+        // Each command must still be present after subsequent resumes.
+        // Tolerate EXTENDED_HISTORY's ": <ts>:0;<cmd>" prefix by using
+        // substring matches rather than line equality.
+        expect(hist).toContain("echo first");
+        expect(hist).toContain("echo second");
+        expect(hist).toContain("echo third");
+      } finally {
+        await rm(fakeHome, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  // Regression for the worst bug in this saga: every shell PTY
+  // supergit spawned was running in **sh emulation** because the
+  // argv[0] rename ("supergit-tui-new-shell") doesn't contain "zsh",
+  // and zsh's name-based mode detection falls back to sh when it
+  // can't recognise itself. The symptom: prompt is "$ " (sh default)
+  // instead of "%n@%m %1~ %#" (zsh's from /etc/zshrc), no ~/.zshrc
+  // sourced, no zle line editor, history broken — and the cursor
+  // ends up on an empty row below the $ because sh's primitive line
+  // editor can't track the prompt width that xterm assumes.
+  //
+  // The fix is in server.ts: when wrapping a zsh cmd through
+  // renameArgv, prepend "zsh-" to procName so the resulting argv[0]
+  // ("zsh-supergit-tui-new-shell") still contains "zsh" → zsh's
+  // name check accepts it as zsh → zsh emulation → /etc/zshrc gets
+  // sourced. This test reproduces the failure mode end-to-end via
+  // the real PTY backend.
+  test.skipIf(!zshBin)(
+    "zsh inside renameArgv wrapper starts in zsh mode (not sh emulation)",
+    async () => {
+      // Pose as a freshly-installed user with empty rc files so the
+      // distinction is clean: in zsh mode, /etc/zshrc still runs
+      // and sets PS1 to "%n@%m %1~ %# "; in sh mode, nothing runs
+      // and PS1 stays at the "$ " default.
+      const fakeHome = await mkdtemp(join(tmpdir(), "supergit-emul-"));
+      try {
+        await writeFile(join(fakeHome, ".zshrc"), "", "utf-8");
+        await writeFile(join(fakeHome, ".zprofile"), "", "utf-8");
+
+        // Mimic exactly what server.ts builds for a shell column,
+        // including the "zsh-" prefix the fix adds.
+        const procName = "zsh-supergit-tui-new-shell";
+        const wrapped = [
+          "bash",
+          "-c",
+          `exec -a '${procName}' '/bin/zsh' '-l' '-i' '-c' 'echo \"EMU=$(emulate)\"; echo \"ARGV0=$ZSH_NAME\"'`,
+        ];
+
+        const handle = await backend.spawn({
+          cmd: wrapped,
+          cwd: "/tmp",
+          size: { cols: 80, rows: 24 },
+          env: { HOME: fakeHome },
+        });
+        const out: string[] = [];
+        await new Promise<void>((resolve) => {
+          handle.subscribe({
+            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+            onExit() { resolve(); },
+          });
+        });
+        const combined = out.join("");
+        // The smoking-gun assertion: emulation is "zsh", not "sh".
+        // Anything else means the rename clobbered mode detection.
+        expect(combined).toContain("EMU=zsh");
+        expect(combined).not.toContain("EMU=sh\n");
+        // And zsh sees the renamed argv[0] (cosmetic — confirms the
+        // wrapper is what we think it is, not a bash leak).
+        expect(combined).toContain(`ARGV0=${procName}`);
+      } finally {
+        await rm(fakeHome, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  // Regression for the "second resume prints 'Restored session: …'
+  // and breaks zle line-editor positioning" bug. macOS sources
+  // /etc/zshrc_Apple_Terminal when TERM_PROGRAM=Apple_Terminal. That
+  // file installs a `zshexit` hook that writes a SHELL_SESSION_FILE
+  // (`echo Restored session: <date>`) keyed by TERM_SESSION_ID, and
+  // a startup block that sources + removes that file. Every supergit
+  // PTY inherits the same TERM_SESSION_ID from the launching
+  // Terminal.app, so subsequent spawns find the prior PTY's file,
+  // print "Restored session: …" before the prompt, and the extra
+  // line confuses zle's cursor math.
+  //
+  // helper.mjs sets SHELL_SESSIONS_DISABLE=1 in every spawned PTY's
+  // env to skip Apple's session-restore block. Verify here that even
+  // when we pose as Apple_Terminal with a fixed TERM_SESSION_ID and
+  // a stale session file on disk, the second spawn does NOT print
+  // the "Restored session:" line.
+  test.skipIf(!zshBin || process.platform !== "darwin")(
+    "macOS shell-session restore is disabled (no 'Restored session:' on resume)",
+    async () => {
+      const fakeHome = await mkdtemp(join(tmpdir(), "supergit-sess-"));
+      try {
+        await writeFile(join(fakeHome, ".zshrc"), "", "utf-8");
+        // Plant a session file as if a previous PTY had just exited.
+        // The save logic writes a one-line `echo Restored session: ...`
+        // script; we plant a marker we can grep for so we know whether
+        // the second spawn sourced it.
+        const sessDir = join(fakeHome, ".zsh_sessions");
+        await mkdir(sessDir, { recursive: true });
+        const sid = "supergit-test-sid";
+        await writeFile(
+          join(sessDir, `${sid}.session`),
+          `echo "::RESTORE_MARKER_SHOULD_NOT_APPEAR::"\n`,
+          "utf-8",
+        );
+
+        const handle = await backend.spawn({
+          cmd: ["zsh", "-l", "-i", "-c", "true"],
+          cwd: "/tmp",
+          size: { cols: 80, rows: 24 },
+          env: {
+            HOME: fakeHome,
+            TERM_PROGRAM: "Apple_Terminal",
+            TERM_SESSION_ID: sid,
+          },
+        });
+        const out: string[] = [];
+        await new Promise<void>((resolve) => {
+          handle.subscribe({
+            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+            onExit() { resolve(); },
+          });
+        });
+        const combined = out.join("");
+        // Apple's session-restore is disabled → our planted session
+        // file is NOT sourced → marker never appears in PTY output.
+        expect(combined).not.toContain("::RESTORE_MARKER_SHOULD_NOT_APPEAR::");
+        // Belt-and-braces: the literal "Restored session:" string
+        // from Apple's restore block also must not appear (in case
+        // someone changes the marker format in the future).
+        expect(combined).not.toContain("Restored session:");
       } finally {
         await rm(fakeHome, { recursive: true, force: true });
       }

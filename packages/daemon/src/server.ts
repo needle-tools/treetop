@@ -386,6 +386,30 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
+    // Diagnostics: env snapshot of a spawned PTY. ?id=<termId> picks a
+    // specific terminal; omitted = a list of every alive PTY with its
+    // snapshot. Used to verify what env the helper actually handed to
+    // the shell — primary use case is confirming whether the
+    // SHELL_SESSIONS_DISABLE / TERM_PROGRAM / TERM_SESSION_ID combo
+    // matches what we expect after a helper restart.
+    if (url.pathname === "/api/debug/pty-env") {
+      const id = url.searchParams.get("id");
+      if (id) {
+        const env = terminalBackend.getEnvSnapshot(id);
+        if (!env) return json({ error: `unknown or pre-helper-restart termId: ${id}` }, { status: 404 });
+        const rec = terminalBackend.list().find((t) => t.id === id);
+        return json({ id, cmd: rec?.cmd, env });
+      }
+      const all = terminalBackend.list().map((t) => ({
+        id: t.id,
+        cmd: t.cmd,
+        pid: t.pid,
+        agent: t.agent,
+        env: terminalBackend.getEnvSnapshot(t.id) ?? null,
+      }));
+      return json({ count: all.length, terminals: all });
+    }
+
     if (url.pathname === "/api/attach" && req.method === "POST") {
       // Browser-side TerminalView posts a multipart form here when the
       // user pastes an image or drops a file onto an xterm column. We
@@ -786,9 +810,30 @@ const server = Bun.serve<TermWsData, never>({
       // shows up in `ps`/`top`/`htop` (and macOS Activity Monitor's
       // command column) as e.g. "supergit-tui-abc12345-claude" instead
       // of just "claude". Unix only; Windows ignores the hint.
+      //
+      // Critical exception for zsh shells: zsh reads its argv[0] to
+      // decide its emulation mode. If the basename doesn't contain
+      // "zsh" / "ksh" / "csh", zsh starts in **sh emulation** — no
+      // /etc/zshrc, no ~/.zshrc, no zle line editor, prompt becomes
+      // a bare "$ " (sh default). That's the "cursor on empty line
+      // below the $, only last keypress visible" symptom on resume.
+      // Prepend "zsh-" to the procName when the underlying command
+      // is a zsh shell so zsh's name-based mode detection picks
+      // "zsh" out of the renamed argv[0]. The ps-readable suffix
+      // (and the rename-for-Activity-Monitor benefit) is preserved.
+      let effectiveProcName = body.procName;
+      const innerCmd0Base = (resolvedCmd[0] ?? "").split("/").pop() ?? "";
+      if (
+        effectiveProcName &&
+        process.platform !== "win32" &&
+        (innerCmd0Base === "zsh" || /^zsh-\d/.test(innerCmd0Base)) &&
+        !/(^|[-_/])zsh([-_]|$)/.test(effectiveProcName)
+      ) {
+        effectiveProcName = `zsh-${effectiveProcName}`;
+      }
       const cmd =
-        body.procName && process.platform !== "win32"
-          ? renameArgv(body.procName, resolvedCmd)
+        effectiveProcName && process.platform !== "win32"
+          ? renameArgv(effectiveProcName, resolvedCmd)
           : resolvedCmd;
       try {
         const handle = await terminalBackend.spawn({
@@ -925,6 +970,7 @@ const server = Bun.serve<TermWsData, never>({
             cwd: r.cwd,
             ownerId: r.ownerId,
             createdAt: r.createdAt,
+            lastOutputAt: r.lastOutputAt,
             cpuPercent: s?.cpuPercent ?? 0,
             memBytes: s?.memBytes ?? 0,
           };

@@ -780,3 +780,4 @@ describe("agentsForWorktree", () => {
     expect(result.map((r) => r.agent)).toEqual(["codex", "claude", "copilot"]);
   });
 });
+

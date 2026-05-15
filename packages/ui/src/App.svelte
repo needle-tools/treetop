@@ -17,6 +17,10 @@
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
+  import SessionSearchList from "./SessionSearchList.svelte";
+  import SessionDock from "./SessionDock.svelte";
+  import { filterSessions } from "./sessionSearch";
+  import { updateAwaitingBadge } from "./awaitingBadge";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -25,7 +29,8 @@
     effectiveVisibleWorktrees,
     filterToExistingSessions,
     setSessionMode,
-    stampDiscoveredSessionId,
+    stampDiscoveredSessionIdWithDetail,
+    resolveTitleSource,
   } from "./storage";
   import {
     installFetchTracking,
@@ -174,6 +179,12 @@
   let toasts: Toast[] = [];
   let toastSeq = 0;
   const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Svelte action: focus the element as soon as it mounts. Used so an
+   *  expanding search input grabs the caret without a follow-up click. */
+  function focusOnMount(node: HTMLInputElement) {
+    queueMicrotask(() => node.focus());
+  }
+
   function addToast(opts: { kind: Toast["kind"]; message: string; title?: string; ttlMs?: number }): number {
     if (!opts.message) return -1;
     const id = ++toastSeq;
@@ -290,8 +301,19 @@
     cwd: string;
     ownerId?: string;
     createdAt: string;
+    lastOutputAt: string;
     cpuPercent: number;
     memBytes: number;
+  }
+  /** A TUI that hasn't written to its PTY in this many ms is treated
+   *  as idle — almost certainly waiting for input or done with the
+   *  current turn. Conservative: short enough that "done" feels
+   *  responsive, long enough that a normal Claude/Codex stream
+   *  pausing for a tool call doesn't flicker the indicator. */
+  const TUI_IDLE_MS = 2_000;
+  function isIdle(p: TuiProc): boolean {
+    if (!p.lastOutputAt) return false;
+    return Date.now() - Date.parse(p.lastOutputAt) > TUI_IDLE_MS;
   }
   let tuisOpen = false;
   let tuiProcs: TuiProc[] = [];
@@ -492,6 +514,104 @@
 
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
+  // Per worktree: inline session-strip search. `open` controls whether
+  // the search input is expanded next to the count badge; `query` is
+  // the current text. Closed + empty query = strip renders unfiltered.
+  let stripSearchOpen: Record<string, boolean> = {};
+  let stripSearchQuery: Record<string, string> = {};
+  // Per row.key: did opening the strip search auto-unfold this row?
+  // We re-fold on close *only* if no session was picked while open;
+  // picking clears the flag so the row stays expanded around the now-
+  // visible session column.
+  let stripSearchAutoUnfolded: Record<string, boolean> = {};
+  // Per wt.path: the last query the user *committed* (by clicking a
+  // matched column in the strip). Re-opening the search restores this
+  // text so the user can re-find what they were looking at; an
+  // explicit cancel (× / ESC) drops it.
+  let lastStripSearchQuery: Record<string, string> = {};
+
+  /** Open the inline strip search for a worktree. If the row is
+   *  currently folded we unfold it and remember (so close-without-pick
+   *  re-folds it). The search input itself is rendered in the row
+   *  head, which is visible regardless of fold state — only the strip
+   *  below is hidden when folded, so unfolding is what reveals the
+   *  matches the search is filtering for. */
+  function openStripSearch(rowKey: string, wtPath: string): void {
+    if (rowFolded[rowKey]) {
+      stripSearchAutoUnfolded = {
+        ...stripSearchAutoUnfolded,
+        [rowKey]: true,
+      };
+      rowFolded = { ...rowFolded, [rowKey]: false };
+    }
+    stripSearchOpen = { ...stripSearchOpen, [wtPath]: true };
+    // Restore the last committed query so re-opening picks up where
+    // the user left off; absent / empty entry = blank input.
+    const restore = lastStripSearchQuery[wtPath];
+    if (restore) {
+      stripSearchQuery = { ...stripSearchQuery, [wtPath]: restore };
+    }
+  }
+  /** Close the inline strip search. Clears the query, hides the input,
+   *  and re-folds the row iff opening the search was what unfolded it
+   *  AND no session pick has cleared the flag in the meantime. */
+  function closeStripSearch(rowKey: string, wtPath: string): void {
+    stripSearchOpen = { ...stripSearchOpen, [wtPath]: false };
+    stripSearchQuery = { ...stripSearchQuery, [wtPath]: "" };
+    // Explicit cancel (× / ESC) → drop the saved query so the next
+    // open starts blank. A commit (`commitStripSearch`) takes the
+    // opposite path: it saves the query first, then closes.
+    if (lastStripSearchQuery[wtPath]) {
+      lastStripSearchQuery = {
+        ...lastStripSearchQuery,
+        [wtPath]: "",
+      };
+    }
+    if (stripSearchAutoUnfolded[rowKey]) {
+      rowFolded = { ...rowFolded, [rowKey]: true };
+      stripSearchAutoUnfolded = {
+        ...stripSearchAutoUnfolded,
+        [rowKey]: false,
+      };
+    }
+  }
+  /** Commit the active strip search by clicking a matched session
+   *  column. Saves the typed query (so re-opening restores it), pins
+   *  the row open, hides the search input, and flashes/scrolls to the
+   *  picked column — same "look here" cue the synthetic-column pick
+   *  produces. No-op when search isn't open or the source isn't in
+   *  the matched set (defensive — filtered-out columns are display:
+   *  none and shouldn't receive clicks anyway). */
+  function commitStripSearch(
+    rowKey: string,
+    wtPath: string,
+    source: string,
+  ): void {
+    if (!stripSearchOpen[wtPath]) return;
+    const filter = stripFilterByWt[wtPath];
+    if (!filter || !filter.matched.has(source)) return;
+    const q = stripSearchQuery[wtPath] ?? "";
+    if (q.trim()) {
+      lastStripSearchQuery = { ...lastStripSearchQuery, [wtPath]: q };
+    }
+    pinRowOpenAfterPick(rowKey);
+    stripSearchOpen = { ...stripSearchOpen, [wtPath]: false };
+    stripSearchQuery = { ...stripSearchQuery, [wtPath]: "" };
+    void scrollToAndFlashSession(wtPath, source);
+  }
+  /** Cancel the auto-re-fold for this row. Called as soon as the user
+   *  picks a session from the synthetic "matches not in strip" column
+   *  (or presses Enter on the top match): from that point on, closing
+   *  the search must leave the row expanded so the just-opened column
+   *  stays in view. */
+  function pinRowOpenAfterPick(rowKey: string): void {
+    if (stripSearchAutoUnfolded[rowKey]) {
+      stripSearchAutoUnfolded = {
+        ...stripSearchAutoUnfolded,
+        [rowKey]: false,
+      };
+    }
+  }
 
   // clampToViewport (the popover-viewport-edge Svelte action) lives in
   // packages/ui/src/popover.ts now; Popover.svelte applies it
@@ -517,6 +637,10 @@
   // any output that no longer matches the prompt pattern, or when
   // the user types something.
   let transientAwaiting: Record<string, boolean> = {};
+  /** Mirror of `transientAwaiting` for the live "working" flag. Driven
+   *  by NewSessionCol's on:workingChange (which TerminalView raises on
+   *  PTY frames). Drives the rotating-gradient border on the agent pill. */
+  let transientWorking: Record<string, boolean> = {};
   /** `__new__:<agent>:<id>` source → daemon-assigned termId. Set by
    *  NewSessionCol's `on:spawn` for every agent (shell, claude, codex,
    *  copilot). Used by the Dispose button to DELETE /api/terminals/:id.
@@ -1469,16 +1593,17 @@
   }
   /** After unfold (and any state mutation), wait for Svelte to flush
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
-   *  laid-out, then scroll the strip to the target session column and
-   *  add a `.session-col-flash` class for ~2s so the user's eye lands
-   *  on the column they just asked for.
+   *  laid-out, then scroll the strip so the target column is horizontally
+   *  *centered* in the visible strip (the user reads its messages in the
+   *  middle, not pushed against the left edge). When the column is wider
+   *  than the strip we fall back to aligning its left edge inside the
+   *  leading pad so the start of the column is still on screen.
+   *  Also adds `.session-col-flash` for ~2s so the eye lands on it.
    *
    *  Uses bounding-rect math (not `col.offsetLeft`) because the column's
    *  offsetParent isn't reliably the strip — the row's positioned
    *  ancestors threw offsets off by ~50–100px and parked the leftmost
-   *  column under the viewport edge. We also subtract one
-   *  `.sessions-strip-pad` width so the flash outline sits inside the
-   *  spacer rather than flush with the strip's left edge. */
+   *  column under the viewport edge. */
   async function scrollToAndFlashSession(
     wtPath: string,
     source: string,
@@ -1493,13 +1618,39 @@
         `.session-col[data-session-source="${CSS.escape(source)}"]`,
       );
       if (!col) return;
-      const padEl = strip.querySelector<HTMLElement>(".sessions-strip-pad");
-      const padW = padEl ? padEl.getBoundingClientRect().width : 0;
       const stripRect = strip.getBoundingClientRect();
       const colRect = col.getBoundingClientRect();
-      const target =
-        strip.scrollLeft + (colRect.left - stripRect.left) - padW;
-      strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+      const colOffsetInStrip =
+        strip.scrollLeft + (colRect.left - stripRect.left);
+      let target: number;
+      if (colRect.width >= stripRect.width) {
+        // Column is wider than the visible strip: keep its left edge
+        // just inside the leading pad so the user sees the beginning.
+        const padEl = strip.querySelector<HTMLElement>(".sessions-strip-pad");
+        const padW = padEl ? padEl.getBoundingClientRect().width : 0;
+        target = colOffsetInStrip - padW;
+      } else {
+        // Center horizontally in the visible strip.
+        target = colOffsetInStrip - (stripRect.width - colRect.width) / 2;
+      }
+      strip.scrollTo({
+        left: Math.max(0, Math.min(target, strip.scrollWidth - strip.clientWidth)),
+        behavior: "smooth",
+      });
+      // Also vertically center the column in the viewport so a click
+      // on a side-dock dot brings the row into view, not just the
+      // (already laid out but possibly off-screen) column. `inline:
+      // "nearest"` keeps the browser from re-doing the horizontal
+      // scroll we already handled above. Use the column's row-body
+      // ancestor as the scroll anchor when present so a short column
+      // doesn't park the row's chrome (header, etc.) above the fold.
+      const anchor =
+        (col.closest(".row-body") as HTMLElement | null) ?? col;
+      anchor.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+        behavior: "smooth",
+      });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
       const messages = col.querySelector<HTMLElement>(".messages");
@@ -1969,8 +2120,21 @@
         // `claude --resume <sid>` (resp. `codex resume <sid>`) instead
         // of bare `claude`. No-op when the column is already stamped or
         // the cwd has no transient column for this agent.
-        const stamped = stampDiscoveredSessionId(openSessionsByWt, ev);
+        const { byWt: stamped, stampedSource } =
+          stampDiscoveredSessionIdWithDetail(openSessionsByWt, ev);
         if (stamped !== openSessionsByWt) openSessionsByWt = stamped;
+        // Re-key any title the user typed against the synthetic source
+        // onto the agent's real JSONL path. Without this, a reload
+        // shows the column resuming the right conversation (via
+        // resumeSessionId) but the title we render lives on the
+        // disposable `__new__:claude:<rnd>` key — and if the user has
+        // multiple concurrent `__new__:` columns and the SSE order
+        // raced the open order, the title visible alongside the
+        // resumed chat can look like it belongs to a sibling column.
+        // Migrating to ev.source pins the title to the conversation.
+        if (stampedSource && ev.source) {
+          void migrateSessionTitleOnServer(stampedSource, ev.source);
+        }
       } catch {
         // ignore malformed
       }
@@ -2313,6 +2477,31 @@
     };
   }
 
+  /** Per worktree: which session sources are currently matched by the
+   *  inline strip search, and which matches are *not* yet open as a
+   *  column (those become the synthetic "more matches" pseudo-column).
+   *  Absent entry / empty query → strip renders without filtering. */
+  interface StripFilter {
+    matched: Set<string>;
+    notOpen: AgentSession[];
+  }
+  $: stripFilterByWt = ((): Record<string, StripFilter> => {
+    const m: Record<string, StripFilter> = {};
+    for (const wtPath of Object.keys(stripSearchQuery)) {
+      const q = stripSearchQuery[wtPath] ?? "";
+      if (!q.trim()) continue;
+      const all = pickerSessionsByWt[wtPath] ?? [];
+      const ranked = filterSessions(all, q);
+      const matched = new Set(ranked.map((s) => s.source));
+      const openSet = new Set(
+        (openSessionsByWt[wtPath] ?? []).map((o) => o.source),
+      );
+      const notOpen = ranked.filter((s) => !openSet.has(s.source));
+      m[wtPath] = { matched, notOpen };
+    }
+    return m;
+  })();
+
   /** wt.path → agents + shells merged, sorted by lastActive desc.
    *  Drives the "+N sessions in this worktree" picker. */
   $: pickerSessionsByWt = ((): Record<string, AgentSession[]> => {
@@ -2331,6 +2520,99 @@
     }
     return m;
   })();
+
+  /** Side-dock entries: one per currently-open session column that
+   *  hosts a live PTY (an "active TUI"), with the colors / metadata
+   *  SessionDock needs to render the dot + its hover tooltip. Pulls
+   *  `working`/`awaiting` from the per-source transient maps so dots
+   *  track the live PTY state.
+   *
+   *  An "active TUI" is a column whose mounted tree contains a live
+   *  TerminalView. In practice that's:
+   *    - any `__new__:` source (NewSessionCol always renders a fresh
+   *      TerminalView while the column exists),
+   *    - any `__attached__:shell:<termId>` source (NewSessionCol
+   *      reattaches to a still-alive PTY).
+   *  Resumed SessionView columns in read-only chat mode are excluded
+   *  — those have no PTY. */
+  $: dockEntries = ((): Array<{
+    source: string;
+    wtPath: string;
+    rowKey: string;
+    agent: OpenSession["agent"];
+    repoColor?: string;
+    repoName: string;
+    branch?: string;
+    title?: string;
+    manualTitle?: string;
+    lastUserMessage?: string;
+    working: boolean;
+    awaiting: boolean;
+  }> => {
+    const out: ReturnType<typeof Array> = [] as any;
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        const opens = openSessionsByWt[wt.path];
+        if (!opens || opens.length === 0) continue;
+        const known = pickerSessionsByWt[wt.path] ?? [];
+        const bySource = new Map<string, (typeof known)[number]>();
+        for (const a of known) bySource.set(a.source, a);
+        const rowKey = `${repo.id}|${wt.path}`;
+        for (const s of opens) {
+          // Active TUI ⇔ this column currently hosts a live PTY:
+          //   - any `__new__:` source (NewSessionCol always spawns one),
+          //   - any `__attached__:shell:<termId>` source (reattach to
+          //     a still-alive shell PTY),
+          //   - a resumed SessionView in terminal mode (`s.mode ===
+          //     "terminal"` is persisted on the open-session record by
+          //     SessionView's onModeChange).
+          const isActiveTui =
+            s.source.startsWith("__new__:") ||
+            s.source.startsWith("__attached__:") ||
+            s.mode === "terminal";
+          if (!isActiveTui) continue;
+          // Same lookup precedence as the NewSessionCol render: once a
+          // sid is stamped onto a `__new__:` column, prefer the matched
+          // real-source agent's metadata so the dock shows the title
+          // bound to the live conversation rather than whatever landed
+          // on the disposable synthetic key.
+          const realMeta = s.resumeSessionId
+            ? known.find(
+                (a) =>
+                  a.agent === s.agent && a.sessionId === s.resumeSessionId,
+              )
+            : undefined;
+          const meta = realMeta ?? bySource.get(s.source);
+          const titleSource = resolveTitleSource(s, known);
+          out.push({
+            source: s.source,
+            wtPath: wt.path,
+            rowKey,
+            agent: s.agent,
+            repoColor: repo.color,
+            repoName: repo.name ?? repoName(repo),
+            branch: wt.branch,
+            title: meta?.title,
+            manualTitle:
+              meta?.manualTitle ??
+              newSessionTitles[titleSource] ??
+              newSessionTitles[s.source],
+            lastUserMessage: meta?.lastUserMessage,
+            working: !!transientWorking[s.source],
+            awaiting: !!transientAwaiting[s.source],
+          });
+        }
+      }
+    }
+    return out as any;
+  })();
+
+  /** Browser-tab badge: a dot on the favicon + a `(N) ` title prefix
+   *  whenever at least one open session is waiting for the user. Picks
+   *  up changes via the reactive dependency on `dockEntries`. */
+  $: updateAwaitingBadge(
+    dockEntries.reduce((n, e) => (e.awaiting ? n + 1 : n), 0),
+  );
 
   function handleDocClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
@@ -2632,7 +2914,7 @@
                         class="tui-stats"
                         title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
                       >
-                        {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}
+                        {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}{#if isIdle(p)} · idle {formatUptime(p.lastOutputAt)}{/if}
                       </span>
                       <button
                         class="row-close tui-kill-x"
@@ -3223,6 +3505,7 @@
                   {#if a && pickerSessions.length > 1}
                     <button
                       class="agent-more agent-{a.agent}"
+                      class:has-search={stripSearchOpen[wt.path]}
                       title={`Pick from ${pickerSessions.length} sessions in this worktree`}
                       on:click|stopPropagation={() => {
                         agentsPopoverOpen = {
@@ -3231,97 +3514,88 @@
                         };
                       }}
                     >{pickerSessions.length}</button>
+                    <button
+                      class="agent-search agent-{a.agent}"
+                      class:active={stripSearchOpen[wt.path]}
+                      title="Filter this row's sessions by title or message"
+                      aria-label="Filter sessions"
+                      on:click|stopPropagation={() => {
+                        if (stripSearchOpen[wt.path]) {
+                          closeStripSearch(row.key, wt.path);
+                        } else {
+                          openStripSearch(row.key, wt.path);
+                        }
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true" width="11" height="11">
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          stroke-linecap="round"
+                          d="M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zM13.5 13.5l-3-3"
+                        />
+                      </svg>
+                    </button>
+                    {#if stripSearchOpen[wt.path]}
+                      <input
+                        class="agent-search-input"
+                        type="search"
+                        placeholder="filter…"
+                        bind:value={stripSearchQuery[wt.path]}
+                        on:click|stopPropagation
+                        on:keydown|stopPropagation={(e) => {
+                          if (e.key === "Escape") {
+                            closeStripSearch(row.key, wt.path);
+                          } else if (e.key === "Enter") {
+                            // Enter picks the top "not in strip" match —
+                            // matches users typing to find a chat, then
+                            // hitting return to open it without grabbing
+                            // the mouse. No-op when there's no such match.
+                            const top =
+                              stripFilterByWt[wt.path]?.notOpen[0];
+                            if (top) {
+                              pinRowOpenAfterPick(row.key);
+                              revealSession(row.key, wt.path, {
+                                agent: top.agent,
+                                source: top.source,
+                              });
+                            }
+                          }
+                        }}
+                        use:focusOnMount
+                      />
+                    {/if}
                     {#if agentsPopoverOpen[wt.path]}
-                      <Popover variant="agents">
-                        <svelte:fragment slot="head">
-                          {pickerSessions.length} sessions in this worktree
-                        </svelte:fragment>
-                        <ul class="agents-list">
-                          {#each pickerSessions as sess (sess.source)}
-                            <li>
-                              <button
-                                class="agent-row brand-{sess.agent}"
-                                class:dimmed={isOpenInWt(wt.path, sess.source)}
-                                title={isOpenInWt(wt.path, sess.source)
-                                  ? "Already open — click to close"
-                                  : sess.title}
-                                on:click={() => {
-                                  revealOrToggleSession(row.key, wt.path, {
-                                    agent: sess.agent,
-                                    source: sess.source,
-                                  });
-                                  agentsPopoverOpen = {
-                                    ...agentsPopoverOpen,
-                                    [wt.path]: false,
-                                  };
-                                }}
-                              >
-                                {#if sess.agent === "claude"}
-                                  <img
-                                    class="agent-row-icon"
-                                    src="/agents/claude.svg"
-                                    alt=""
-                                  />
-                                {:else if sess.agent === "codex"}
-                                  <svg
-                                    class="agent-row-icon"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                    aria-hidden="true"
-                                  >
-                                    <path d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" />
-                                  </svg>
-                                {:else}
-                                  <span class="agent-dot agent-{sess.agent}"></span>
-                                {/if}
-                                <span class="agent-row-name">
-                                  {sess.agent === "claude"
-                                    ? "Claude"
-                                    : sess.agent === "codex"
-                                      ? "Codex"
-                                      : sess.agent}
-                                </span>
-                                <span
-                                  class="agent-title"
-                                  class:manual={!!sess.manualTitle}
-                                  title={sessionTooltip(sess)}
-                                >
-                                  {sess.manualTitle ?? sess.title ?? "(no title)"}
-                                </span>
-                                <span
-                                  class="muted small agent-msgs"
-                                  title={sess.messageCount
-                                    ? `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
-                                    : "no messages counted"}
-                                >
-                                  {#if sess.messageCount}{sess.messageCount.toLocaleString()} msg{:else}—{/if}
-                                </span>
-                                <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
-                                {#if sess.sessionId}
-                                  <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
-                                {/if}
-                                <!-- Close affordance: space reserved for every
-                                     row to avoid layout shift; only visible
-                                     (and clickable) on hover of an already-
-                                     open row. -->
-                                <span
-                                  class="row-close"
-                                  aria-hidden={!isOpenInWt(wt.path, sess.source)}
-                                  on:click|stopPropagation={() => {
-                                    if (isOpenInWt(wt.path, sess.source)) {
-                                      toggleOpenSessionInWt(wt.path, {
-                                        agent: sess.agent,
-                                        source: sess.source,
-                                      });
-                                    }
-                                  }}
-                                  title="Close this session"
-                                >×</span>
-                              </button>
-                            </li>
-                          {/each}
-                        </ul>
-                      </Popover>
+                      <SessionSearchList
+                        sessions={pickerSessions}
+                        headText={`${pickerSessions.length} sessions in this worktree`}
+                        isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                        tooltipFor={(s) => sessionTooltip(s)}
+                        on:pick={(e) => {
+                          agentsPopoverOpen = {
+                            ...agentsPopoverOpen,
+                            [wt.path]: false,
+                          };
+                          // `revealSession` (mode "reveal") forces the
+                          // scroll-to-center + flash cue even when the
+                          // column is already open. The user's just
+                          // pointed at a row in the picker — they need
+                          // a clear visual confirmation of which one
+                          // they chose, same affordance the synthetic
+                          // not-in-strip list uses.
+                          revealSession(row.key, wt.path, {
+                            agent: e.detail.agent,
+                            source: e.detail.source,
+                          });
+                        }}
+                        on:close={(e) => {
+                          toggleOpenSessionInWt(wt.path, {
+                            agent: e.detail.agent,
+                            source: e.detail.source,
+                          });
+                        }}
+                      />
                     {/if}
                   {/if}
                 </span>
@@ -3712,7 +3986,8 @@
             </div>
 
             {#if wt}
-              {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0}
+              {@const stripFilter = stripFilterByWt[wt.path]}
+              {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
                 {@const existingSources = new Set(
                   (wt.agents ?? []).map((a) => a.source),
                 )}
@@ -3720,7 +3995,7 @@
                   openSessionsByWt[wt.path] ?? [],
                   existingSources,
                 )}
-                {#if visibleSessions.length > 0}
+                {#if visibleSessions.length > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
                   <div class="sessions-strip" data-wt-strip={wt.path}>
                     <!-- Leading + trailing spacers: invisible flex items
                          that give the first/last column a constant gap
@@ -3731,10 +4006,14 @@
                     {#each visibleSessions as s, i (s.source)}
                       <div
                         class="session-col"
+                        class:session-col-filtered={stripFilter && !stripFilter.matched.has(s.source)}
+                        class:session-col-pickable={!!stripFilter && stripFilter.matched.has(s.source)}
                         data-session-source={s.source}
                         on:dragover={handleSessionDragOver}
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
+                        on:click={() =>
+                          commitStripSearch(row.key, wt.path, s.source)}
                         out:closeColumn
                       >
                         {#if s.source.startsWith("__transcript__:")}
@@ -3764,9 +4043,13 @@
                                   a.sessionId === s.resumeSessionId,
                               )
                             : undefined}
+                          {@const titleSource = resolveTitleSource(
+                            s,
+                            wt.agents ?? [],
+                          )}
                           <NewSessionCol
                             agent={s.agent}
-                            source={s.source}
+                            source={titleSource}
                             wtPath={wt.path}
                             cmd={cmdForOpenSession(s, defaultShell)}
                             cwd={shellResumeCwd[s.source] ?? wt.path}
@@ -3774,8 +4057,11 @@
                             attachTermId={s.source.startsWith("__attached__:")
                               ? s.source.split(":").pop()
                               : undefined}
-                            manualTitle={newSessionTitles[s.source]}
+                            manualTitle={newAgentMeta?.manualTitle ??
+                              newSessionTitles[titleSource] ??
+                              newSessionTitles[s.source]}
                             awaiting={!!transientAwaiting[s.source]}
+                            working={!!transientWorking[s.source]}
                             totalMessageCount={newAgentMeta?.messageCount}
                             contextTokens={newAgentMeta?.contextTokens}
                             contextTokensExact={newAgentMeta?.contextTokensExact}
@@ -3843,8 +4129,14 @@
                                 [s.source]: e.detail.awaiting,
                               };
                             }}
+                            on:workingChange={(e) => {
+                              transientWorking = {
+                                ...transientWorking,
+                                [s.source]: e.detail.working,
+                              };
+                            }}
                             on:titleSave={(e) =>
-                              void saveNewSessionTitle(s.source, e.detail.title)}
+                              void saveNewSessionTitle(titleSource, e.detail.title)}
                           />
                         {:else}
                           {@const agentMeta = (wt.agents ?? []).find(
@@ -3879,6 +4171,71 @@
                         {/if}
                       </div>
                     {/each}
+                    {#if stripFilter && stripFilter.notOpen.length > 0}
+                      <!-- Synthetic column: matches that exist for this
+                           worktree but aren't currently mounted in the
+                           strip. Click a row → reveal it as a real
+                           column (the row vanishes from this list
+                           because the matched-but-open partition flips).
+                           Lives inside the same flex strip so it scrolls
+                           with everything else. -->
+                      <div class="session-col session-col-extra">
+                        <div class="session-col-extra-head">
+                          {stripFilter.notOpen.length} match{stripFilter.notOpen.length === 1 ? "" : "es"} not in strip
+                        </div>
+                        <ul class="session-col-extra-list">
+                          {#each stripFilter.notOpen as extra (extra.source)}
+                            <li>
+                              <button
+                                class="session-col-extra-row brand-{extra.agent}"
+                                title={sessionTooltip(extra)}
+                                on:click={() => {
+                                  pinRowOpenAfterPick(row.key);
+                                  // Picking from the synthetic list is a
+                                  // definitive selection — exit filter
+                                  // mode in the same gesture so the strip
+                                  // returns to its full view with the
+                                  // just-revealed column centered. Without
+                                  // this the user has to click the search
+                                  // ×/Esc to leave the filtered state.
+                                  stripSearchOpen = {
+                                    ...stripSearchOpen,
+                                    [wt.path]: false,
+                                  };
+                                  stripSearchQuery = {
+                                    ...stripSearchQuery,
+                                    [wt.path]: "",
+                                  };
+                                  // Use `revealSession` (mode "reveal") so
+                                  // the just-mounted column gets the
+                                  // outline-flash cue — same affordance the
+                                  // header-bar "most recent session" badge
+                                  // uses. `revealOrToggleSession` would
+                                  // skip the flash on an already-expanded
+                                  // row, which is wrong here: the column
+                                  // is new on screen and the user needs to
+                                  // find it.
+                                  revealSession(row.key, wt.path, {
+                                    agent: extra.agent,
+                                    source: extra.source,
+                                  });
+                                }}
+                              >
+                                {#if extra.agent === "claude"}
+                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                                {:else}
+                                  <span class="agent-dot agent-{extra.agent}"></span>
+                                {/if}
+                                <span class="session-col-extra-title">
+                                  {extra.manualTitle ?? extra.title ?? "(no title)"}
+                                </span>
+                                <span class="session-col-extra-meta">{relTime(extra.lastActive)}</span>
+                              </button>
+                            </li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
                     <span class="sessions-strip-pad" aria-hidden="true"></span>
                   </div>
                 {/if}
@@ -3909,6 +4266,16 @@
     </ul>
   {/if}
 </main>
+
+<SessionDock
+  entries={dockEntries}
+  on:pick={(e) => {
+    revealSession(e.detail.rowKey, e.detail.wtPath, {
+      agent: e.detail.agent,
+      source: e.detail.source,
+    });
+  }}
+/>
 
 <StickyNotesLayer changeKey={notesChangeKey} {repos} />
 

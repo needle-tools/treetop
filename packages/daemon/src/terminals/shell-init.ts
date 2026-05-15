@@ -35,6 +35,17 @@ export const ZSH_HISTORY_SNIPPET = `# supergit: harden zsh history so arrow-up w
 # across crashed sessions / closed browser tabs. Defaults are applied
 # only when the corresponding variable is empty or zero, so a user
 # who's already set HISTSIZE etc. keeps their values.
+#
+# macOS /etc/zshrc runs before this snippet and sets
+# HISTFILE=\${ZDOTDIR:-\$HOME}/.zsh_history. Because supergit sets ZDOTDIR
+# to a temp dir that gets wiped on PTY exit, that default points HISTFILE
+# at a file we then delete — so every "close terminal" silently destroys
+# the session's history. Redirect HISTFILE back to \$HOME/.zsh_history
+# when it landed inside our temp ZDOTDIR. A user who explicitly sets
+# HISTFILE in their ~/.zshrc (anywhere outside ZDOTDIR) keeps their pref.
+if [[ -n "\${ZDOTDIR-}" && "\${HISTFILE-}" == "\${ZDOTDIR}/"* ]]; then
+  HISTFILE="\${HOME}/.zsh_history"
+fi
 [[ -z "\${HISTFILE-}" ]] && HISTFILE="\${HOME}/.zsh_history"
 [[ -z "\${HISTSIZE-}" || "\${HISTSIZE-}" = "0" ]] && HISTSIZE=10000
 [[ -z "\${SAVEHIST-}" || "\${SAVEHIST-}" = "0" ]] && SAVEHIST=10000
@@ -43,11 +54,28 @@ setopt INC_APPEND_HISTORY SHARE_HISTORY EXTENDED_HISTORY
 
 /** True when the cmd[] supergit is about to spawn is a zsh shell.
  *  Matches `zsh`, `/bin/zsh`, `/usr/local/bin/zsh-5.9`. Does NOT
- *  match bash/fish/sh/dash — those use other init mechanisms. */
+ *  match bash/fish/sh/dash — those use other init mechanisms.
+ *
+ *  Also matches the renameArgv() wrapped form:
+ *    ["bash", "-c", "exec -a 'name' '/bin/zsh' '-l'"]
+ *  because the daemon wraps shell PTYs through `bash -c 'exec -a …'`
+ *  for argv[0] rename, which would otherwise hide the fact that the
+ *  inner binary is zsh and skip our ZDOTDIR + history-hardening
+ *  injection. Heuristic: cmd[0] is bash/sh and the third element
+ *  references `/bin/zsh`, `'/bin/zsh'`, or a bare `zsh` token. */
 export function isZshCmd(cmd: readonly string[]): boolean {
   if (!cmd.length) return false;
   const base = basename(cmd[0] ?? "");
-  return base === "zsh" || /^zsh-\d/.test(base);
+  if (base === "zsh" || /^zsh-\d/.test(base)) return true;
+  // Wrapped form: `bash -c "exec -a NAME '/path/to/zsh' …"`. The
+  // third arg is the script body; look for a zsh executable
+  // reference inside it. Conservative regex: a path or bare word
+  // ending in zsh, optionally version-suffixed, bounded by quote
+  // or whitespace so we don't match e.g. `mkzsh` or `zshare`.
+  if ((base === "bash" || base === "sh") && cmd[1] === "-c" && typeof cmd[2] === "string") {
+    if (/(?:^|[\s'"/])zsh(?:-\d[\d.]*)?(?:['"\s]|$)/.test(cmd[2])) return true;
+  }
+  return false;
 }
 
 /** Build a temp ZDOTDIR for a zsh PTY. Why all four files: when

@@ -295,9 +295,27 @@ export function stampDiscoveredSessionId(
   byWt: Record<string, PersistedSession[]>,
   ev: { agent: PersistedAgent; cwd: string; sessionId: string },
 ): Record<string, PersistedSession[]> {
-  if (!ev.sessionId) return byWt;
+  const res = stampDiscoveredSessionIdWithDetail(byWt, ev);
+  return res.byWt;
+}
+
+/** Same as `stampDiscoveredSessionId` but also returns the synthetic
+ *  source of the column that was just stamped (if any). The caller can
+ *  use it to migrate a server-side title from the synthetic key to the
+ *  real JSONL path (`ev.source` at the call site) — see
+ *  [[feedback-titles-linked-to-real-session-ids]] for the bug this
+ *  fixes (titles staying on disposable synthetic keys after the agent's
+ *  JSONL takes over).
+ *
+ *  `stampedSource` is `null` when nothing matched (no churn), so the
+ *  caller can short-circuit the migrate POST. */
+export function stampDiscoveredSessionIdWithDetail(
+  byWt: Record<string, PersistedSession[]>,
+  ev: { agent: PersistedAgent; cwd: string; sessionId: string },
+): { byWt: Record<string, PersistedSession[]>; stampedSource: string | null } {
+  if (!ev.sessionId) return { byWt, stampedSource: null };
   const list = byWt[ev.cwd];
-  if (!list || list.length === 0) return byWt;
+  if (!list || list.length === 0) return { byWt, stampedSource: null };
   const prefix = `__new__:${ev.agent}:`;
   const idx = list.findIndex(
     (s) =>
@@ -305,10 +323,35 @@ export function stampDiscoveredSessionId(
       s.source.startsWith(prefix) &&
       !s.resumeSessionId,
   );
-  if (idx === -1) return byWt;
+  if (idx === -1) return { byWt, stampedSource: null };
+  const target = list[idx]!;
   const next = list.slice();
-  next[idx] = { ...list[idx], resumeSessionId: ev.sessionId };
-  return { ...byWt, [ev.cwd]: next };
+  next[idx] = { ...target, resumeSessionId: ev.sessionId };
+  return {
+    byWt: { ...byWt, [ev.cwd]: next },
+    stampedSource: target.source,
+  };
+}
+
+/** Where should the manual title for a still-transient (`__new__:<agent>:…`)
+ *  column be stored? Once the activity tail has surfaced a real agent
+ *  session id and we can match it back to its JSONL path, the title
+ *  belongs there — that way a hard reload (which re-mints synthetic ids
+ *  on the *next* spawn) still surfaces the user's named title against
+ *  whatever conversation the agent is actually resuming. Before that,
+ *  fall back to the synthetic source so an unfinished name doesn't get
+ *  silently dropped. */
+export function resolveTitleSource(
+  session: { source: string; resumeSessionId?: string; agent: PersistedAgent | "shell" },
+  agents: ReadonlyArray<{ agent: string; sessionId?: string; source: string }>,
+): string {
+  if (!session.source.startsWith("__new__:")) return session.source;
+  const sid = session.resumeSessionId;
+  if (!sid) return session.source;
+  const match = agents.find(
+    (a) => a.agent === session.agent && a.sessionId === sid,
+  );
+  return match?.source ?? session.source;
 }
 
 /**

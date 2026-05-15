@@ -23,6 +23,11 @@ export interface TerminalRecord {
   pid: number;
   size: TerminalSize;
   createdAt: string;
+  /** ISO timestamp of the most recent byte emitted by this PTY. Equal
+   *  to `createdAt` until the first output arrives. Drives "is the
+   *  agent idle?" heuristics in the UI — a TUI that hasn't emitted in
+   *  a few seconds is almost certainly waiting on the user or done. */
+  lastOutputAt: string;
   exitedAt?: string;
   exitCode?: number;
   exitSignal?: string;

@@ -36,6 +36,61 @@ describe("isZshCmd", () => {
     expect(isZshCmd(["zsh-5.8"])).toBe(true);
   });
 
+  // Regression for the "every shell column ran in sh emulation" bug.
+  // supergit wraps shell cmd[] through renameArgv() for argv[0]
+  // rename (Activity Monitor visibility), producing
+  //   ["bash", "-c", "exec -a 'supergit-tui-new-shell' '/bin/zsh' '-l'"]
+  // The earlier isZshCmd only checked cmd[0] → saw "bash" → returned
+  // false → skipped ZDOTDIR injection + history hardening. Worse: the
+  // renamed argv[0] also made zsh fall back to sh emulation (no
+  // ~/.zshrc, no zle, prompt is bare "$ ", history broken). The
+  // detection MUST see through the wrapper or every later fix is
+  // building on sand.
+  test("matches zsh wrapped through `bash -c 'exec -a …'` (renameArgv)", () => {
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-new-shell' '/bin/zsh' '-l'",
+    ])).toBe(true);
+    // Also when the inner shell is referred to by bare name with no
+    // path (rare but valid — when PATH already covers it).
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' zsh -l",
+    ])).toBe(true);
+    // Versioned binary inside the wrapper.
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' /usr/local/bin/zsh-5.9 -l",
+    ])).toBe(true);
+  });
+
+  test("does NOT mistake bash-wrapped non-zsh shells for zsh", () => {
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' '/bin/bash' '-l'",
+    ])).toBe(false);
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' '/opt/homebrew/bin/fish'",
+    ])).toBe(false);
+    // Bare words that LOOK like zsh-derivatives but aren't.
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' '/usr/local/bin/mkzsh' '-l'",
+    ])).toBe(false);
+    expect(isZshCmd([
+      "bash",
+      "-c",
+      "exec -a 'supergit-tui-x' '/usr/local/bin/zshare'",
+    ])).toBe(false);
+  });
+
   test("does NOT match other shells", () => {
     expect(isZshCmd(["bash"])).toBe(false);
     expect(isZshCmd(["/bin/bash", "-l"])).toBe(false);
@@ -71,6 +126,21 @@ describe("ZSH_HISTORY_SNIPPET", () => {
       const re = new RegExp(`\\[\\[[^\\]]*${v}[^\\]]*\\]\\]`);
       expect(ZSH_HISTORY_SNIPPET).toMatch(re);
     }
+  });
+
+  // Regression guard for the "Terminal forgets history on second
+  // resume" bug. macOS /etc/zshrc unconditionally sets
+  //   HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
+  // and runs BEFORE our $ZDOTDIR/.zshrc. Because we set ZDOTDIR to
+  // a temp dir we wipe on PTY exit, HISTFILE ends up pointing at a
+  // file inside that temp dir → every "close terminal" deletes the
+  // session's history. The snippet must detect "HISTFILE lives
+  // inside the current ZDOTDIR" and redirect it back to
+  // $HOME/.zsh_history, otherwise history persistence silently
+  // breaks on macOS.
+  test("redirects HISTFILE back to $HOME when /etc/zshrc pointed it inside ZDOTDIR", () => {
+    expect(ZSH_HISTORY_SNIPPET).toContain('"${HISTFILE-}" == "${ZDOTDIR}/"*');
+    expect(ZSH_HISTORY_SNIPPET).toContain('HISTFILE="${HOME}/.zsh_history"');
   });
 
   test("uses zsh-safe parameter expansion (no unbound-var error under `setopt NO_UNSET`)", () => {

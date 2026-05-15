@@ -27,6 +27,17 @@
    *  shell confirms, …). Parent uses it to outline the column so the
    *  user notices the agent's blocked. */
   export let onAwaitingChange: (awaiting: boolean) => void = () => {};
+  /** Fires when the PTY transitions between "currently emitting output"
+   *  and "quiet". Driven locally off the WS binary frames — no daemon
+   *  round-trip — so the header animation tracks the byte stream with
+   *  no extra latency. Parent uses it to flip the agent pill between
+   *  the working/idle border styles. */
+  export let onWorkingChange: (working: boolean) => void = () => {};
+  /** A PTY that hasn't emitted a byte in this many ms is treated as
+   *  "idle" (waiting for input or done with the current turn). Short
+   *  enough that "done" feels responsive, long enough that a typical
+   *  Claude/Codex pause for a tool call doesn't flicker the border. */
+  const WORKING_IDLE_MS = 1500;
   /** When set, skip spawning a new PTY and attach to this existing one
    *  via WS. Used to reattach to live shells after a page reload (the
    *  daemon's GET /api/shells returns the live termIds + their worktrees).
@@ -51,6 +62,31 @@
   const STARTUP_TIMEOUT_MS = 10_000;
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
   let startupAbort: AbortController | null = null;
+
+  // Working-state plumbing. `lastActivityTs` is a plain mutable held
+  // outside Svelte's reactive graph (never referenced from the
+  // template / `$:`) so the per-frame writes don't trigger a re-render
+  // — only the transitions emitted via onWorkingChange touch the
+  // parent's reactive state.
+  let lastActivityTs = 0;
+  let currentWorking = false;
+  let workingTicker: ReturnType<typeof setInterval> | null = null;
+  /** Many TUIs (Claude, Codex) opt into focus-reporting (xterm sends
+   *  `\e[I` / `\e[O` on focus/blur) and redraw their status bar in
+   *  response — a short burst of PTY output that has nothing to do
+   *  with the agent actually working. Suppress noteActivity for a
+   *  brief window around focus transitions so a plain click on the
+   *  terminal doesn't flip the idle ring to working. */
+  let suppressActivityUntilTs = 0;
+  const SUPPRESS_AROUND_FOCUS_MS = 500;
+  function noteActivity() {
+    if (Date.now() < suppressActivityUntilTs) return;
+    lastActivityTs = Date.now();
+    if (!currentWorking) {
+      currentWorking = true;
+      onWorkingChange(true);
+    }
+  }
 
   function clearStartupGuard() {
     if (startupTimer !== null) {
@@ -103,6 +139,33 @@
       ws.onopen = () => {
         phase = "live";
         clearStartupGuard();
+        // Resume + autofocus contract: when a Terminal column mounts
+        // (either fresh or via Resume) we want two things, both keyed
+        // off the WS opening:
+        //
+        //  1. Send a fresh resize. The spawn POST went out with whatever
+        //     xterm.cols/rows were at onMount time — but on the second
+        //     "Resume" specifically, the column re-mounts while neighbor
+        //     columns are still in mid-layout, so fit.fit() inside
+        //     onMount returns stale dimensions. zsh then renders its
+        //     prompt at one width while xterm's viewport has another →
+        //     classic "cursor on empty line below the prompt, only last
+        //     letter visible" line-editor miscount. Re-fitting after
+        //     layout has settled (rAF) and re-sending the size pins
+        //     the two together before the user types.
+        //
+        //  2. Autofocus. Without this, a resumed column shows up but
+        //     keystrokes go to the page chrome instead of the PTY,
+        //     forcing a manual click. Brand-new columns happen to focus
+        //     correctly via the user's "Add terminal" click chain, but
+        //     resume has no click → we have to focus explicitly.
+        requestAnimationFrame(() => {
+          if (fit && xterm && containerEl && containerEl.clientWidth > 0) {
+            try { fit.fit(); } catch { /* pre-layout race; ignore */ }
+            sendResize();
+          }
+          focusTerminal();
+        });
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
@@ -124,6 +187,7 @@
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
         xterm?.write(bytes);
+        noteActivity();
       };
       ws.onerror = () => {
         if (phase !== "exited") {
@@ -225,11 +289,38 @@
     });
     resizeObs.observe(containerEl);
 
+    // Focus/blur on the xterm container (the inner textarea bubbles
+    // focusin/focusout up) arms the activity suppressor so the
+    // resulting status-bar redraw burst from a focus-reporting TUI
+    // doesn't briefly flip the working ring on. `pointerdown` covers
+    // clicks that don't move focus but still trigger a TUI redraw via
+    // mouse-tracking escape sequences.
+    const armSuppress = () => {
+      suppressActivityUntilTs = Date.now() + SUPPRESS_AROUND_FOCUS_MS;
+    };
+    containerEl.addEventListener("focusin", armSuppress);
+    containerEl.addEventListener("focusout", armSuppress);
+    containerEl.addEventListener("pointerdown", armSuppress);
+
     void spawnPtyAndConnect();
+
+    // Drive the working → idle edge. The frame handler raises the flag
+    // on every chunk; this ticker is the only thing that lowers it,
+    // after WORKING_IDLE_MS of silence.
+    workingTicker = setInterval(() => {
+      if (currentWorking && Date.now() - lastActivityTs > WORKING_IDLE_MS) {
+        currentWorking = false;
+        onWorkingChange(false);
+      }
+    }, 500);
   });
 
   onDestroy(() => {
     clearStartupGuard();
+    if (workingTicker !== null) {
+      clearInterval(workingTicker);
+      workingTicker = null;
+    }
     resizeObs?.disconnect();
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}

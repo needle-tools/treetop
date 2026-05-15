@@ -47,6 +47,11 @@
    *  Lives in App.svelte (it's also read for poll-cadence tuning), so
    *  we read it as a prop and bubble changes via on:awaitingChange. */
   export let awaiting = false;
+  /** Live "PTY is emitting output" flag. Drives the rotating-gradient
+   *  border on the agent pill (working) vs the slow pulsate (idle).
+   *  Same shape as `awaiting`: held in App.svelte and bubbled up via
+   *  on:workingChange. */
+  export let working = false;
   /** Once the agent's JSONL is detected (App.svelte matches by
    *  resumeSessionId), these mirror the equivalent SessionView props
    *  so the header's ctx chip / activity / message count light up
@@ -64,6 +69,7 @@
     restart: void;
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
+    workingChange: { working: boolean };
     titleSave: { title: string };
   }>();
 
@@ -99,6 +105,7 @@
     canResume={false}
     canEnd
     awaitingInput={awaiting}
+    {working}
     {totalMessageCount}
     {contextTokens}
     {contextTokensExact}
@@ -125,6 +132,7 @@
     {attachTermId}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
+    onWorkingChange={(next) => dispatch("workingChange", { working: next })}
     onExit={() => {
       /* Deliberately NOT closing the column on PTY exit. Some agents
          (notably `codex`) restart themselves after an in-place update —

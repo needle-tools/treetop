@@ -6,8 +6,10 @@ import {
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  resolveTitleSource,
   setSessionMode,
   stampDiscoveredSessionId,
+  stampDiscoveredSessionIdWithDetail,
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
@@ -588,6 +590,180 @@ describe("stampDiscoveredSessionId", () => {
       sessionId: "",
     });
     expect(after).toBe(before);
+  });
+});
+
+describe("stampDiscoveredSessionIdWithDetail", () => {
+  // The detail-returning variant exists so the activity-SSE handler in
+  // App.svelte can migrate the user-typed manual title from the
+  // disposable synthetic source (`__new__:claude:<rnd>`) onto the real
+  // JSONL path the conversation lives at — the
+  // [[feedback-titles-linked-to-real-session-ids]] bug fix. Without the
+  // returned `stampedSource`, the caller would have to walk the map
+  // again to find what just changed.
+  const SID = "discovered-session-id";
+
+  test("returns the synthetic source whose entry got the sid stamped onto it", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(result.stampedSource).toBe("__new__:claude:t_abc");
+    expect(result.byWt["/wt"]).toEqual([
+      {
+        agent: "claude",
+        source: "__new__:claude:t_abc",
+        resumeSessionId: SID,
+      },
+    ]);
+  });
+
+  test("returns stampedSource: null and the same map ref when nothing matched", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_abc",
+          resumeSessionId: "already-stamped",
+        },
+      ],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(result.stampedSource).toBeNull();
+    expect(result.byWt).toBe(before);
+  });
+
+  test("when two `__new__:` columns share a cwd, returns the FIRST unstamped (race-known behaviour)", () => {
+    // Pins the existing "first unstamped wins" race that the title-
+    // migration fix actually depends on: the SSE handler migrates the
+    // returned `stampedSource`, not whichever column the user typed
+    // their title into. The bug the migration fixes is "title visible
+    // on column A but resumed conversation came from column B" —
+    // migrating to ev.source lets the next reload look up the title
+    // via the matched agent's JSONL path so the title travels with the
+    // conversation regardless of which synthetic key originally
+    // received it.
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        { agent: "claude", source: "__new__:claude:t_first" },
+        { agent: "claude", source: "__new__:claude:t_second" },
+      ],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(result.stampedSource).toBe("__new__:claude:t_first");
+  });
+
+  test("ignores empty sessionId — no churn, no spurious migration trigger", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: "",
+    });
+    expect(result.stampedSource).toBeNull();
+    expect(result.byWt).toBe(before);
+  });
+});
+
+describe("resolveTitleSource", () => {
+  // The bug: with two concurrent `__new__:claude:` columns in the same
+  // worktree, the activity-SSE stamping order can race the open order,
+  // so column A's persisted entry ends up resuming column B's
+  // conversation. If the user-typed manual title stays keyed by A's
+  // synthetic source, a reload renders "A's name, but B's chat" —
+  // which is what surfaces as "TUI names are mixed".
+  // The fix: bind the title to the real JSONL path as soon as the
+  // resumeSessionId is stamped, so the title travels with the
+  // conversation. `resolveTitleSource` is the pure resolver the render
+  // path uses to decide where the title save/lookup should go.
+  const JSONL_PATH =
+    "/Users/me/.claude/projects/-Users-me-wt/sid-A.jsonl";
+
+  test("falls back to the synthetic source when no resumeSessionId yet (brand-new TUI)", () => {
+    const out = resolveTitleSource(
+      { agent: "claude", source: "__new__:claude:t_abc" },
+      [],
+    );
+    expect(out).toBe("__new__:claude:t_abc");
+  });
+
+  test("returns the matched agent's JSONL source once a sid is stamped", () => {
+    const out = resolveTitleSource(
+      {
+        agent: "claude",
+        source: "__new__:claude:t_abc",
+        resumeSessionId: "sid-A",
+      },
+      [
+        { agent: "claude", sessionId: "sid-A", source: JSONL_PATH },
+        { agent: "claude", sessionId: "sid-B", source: "/other.jsonl" },
+      ],
+    );
+    expect(out).toBe(JSONL_PATH);
+  });
+
+  test("falls back to synthetic when the stamped sid hasn't been re-detected yet", () => {
+    // After a hard reload, /api/repos is fetched after openSessionsByWt
+    // is hydrated from localStorage. There's a brief window where the
+    // persisted entry has a resumeSessionId but the matching agent
+    // isn't in the list yet — we must not lose the synthetic key as a
+    // title source, or the column briefly renders title-less.
+    const out = resolveTitleSource(
+      {
+        agent: "claude",
+        source: "__new__:claude:t_abc",
+        resumeSessionId: "sid-A",
+      },
+      [
+        { agent: "claude", sessionId: "sid-B", source: "/other.jsonl" },
+      ],
+    );
+    expect(out).toBe("__new__:claude:t_abc");
+  });
+
+  test("does not match across agents (codex sid never resolves a claude title)", () => {
+    const out = resolveTitleSource(
+      {
+        agent: "claude",
+        source: "__new__:claude:t_abc",
+        resumeSessionId: "sid-A",
+      },
+      [{ agent: "codex", sessionId: "sid-A", source: JSONL_PATH }],
+    );
+    expect(out).toBe("__new__:claude:t_abc");
+  });
+
+  test("passes through non-synthetic sources unchanged (real JSONL columns)", () => {
+    // A live SessionView column already has the real path as its
+    // source. There's nothing to resolve — return as-is so the caller
+    // can save / look up the title directly.
+    const out = resolveTitleSource(
+      { agent: "claude", source: JSONL_PATH, resumeSessionId: "sid-A" },
+      [{ agent: "claude", sessionId: "sid-A", source: JSONL_PATH }],
+    );
+    expect(out).toBe(JSONL_PATH);
+  });
+
+  test("shells fall through to synthetic — they use `__attached__:shell:<termId>` semantics, not sid linking", () => {
+    const out = resolveTitleSource(
+      { agent: "shell", source: "__attached__:shell:t_xyz" },
+      [],
+    );
+    expect(out).toBe("__attached__:shell:t_xyz");
   });
 });
 

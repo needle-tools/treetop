@@ -163,6 +163,10 @@
    *  header. Cleared automatically when the agent prints non-prompt
    *  output or the user types. */
   let awaitingInput = false;
+  /** Live "agent is emitting output right now" flag — TerminalView
+   *  raises it on each PTY frame and lowers it after ~1.5s of silence.
+   *  Drives the rotating-gradient border on the agent pill. */
+  let working = false;
 
   /** Hard ceiling on how long we wait for `DELETE /api/terminals/:id` to
    *  return before flipping the column back to read mode anyway. The
@@ -536,6 +540,7 @@
     canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
     {disposing}
     {awaitingInput}
+    working={mode === "terminal" && working}
     loadedMessageCount={session?.messages.length}
     {totalMessageCount}
     {contextTokens}
@@ -588,6 +593,7 @@
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       onSpawn={(id) => (terminalId = id)}
       onAwaitingChange={(a) => (awaitingInput = a)}
+      onWorkingChange={(w) => (working = w)}
       onExit={() => {
         // PTY finished by itself (user typed `exit`, agent crashed, ...).
         // Same effect as Dispose: flip to read, scroll to the newest
