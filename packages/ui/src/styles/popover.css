@@ -81,6 +81,16 @@
   to { transform: rotate(360deg); }
 }
 
+/* Session-menu popover: rendered by SessionMenu.svelte from the
+   per-session chat header. Narrower than the default 380px actions
+   popover — a few items, no headings. */
+.session-menu-popover {
+  width: max-content;
+  min-width: 11rem;
+  max-width: min(28rem, 90vw);
+  padding: 0.35rem;
+}
+
 /* Events popover ("diagnostics"): wider than the actions default; the
    head becomes a flex row so the "Clear" button sits at the far right. */
 .events-popover {

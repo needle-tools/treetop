@@ -321,6 +321,141 @@ export async function checkoutBranch(
   return { stashed };
 }
 
+export interface RemoteRef {
+  /** Remote name as git stores it (e.g. "origin", "upstream"). */
+  name: string;
+  /** Raw fetch URL from `git remote -v`. */
+  url: string;
+  /** Browser-openable URL derived from `url`, or null when we couldn't
+   *  parse it (rare — falls back to a generic `https://<host>/<path>`
+   *  for unknown providers, so this is only null for total garbage). */
+  webUrl: string | null;
+  /** Lowercased provider key when known: "github", "gitlab", "bitbucket",
+   *  "azure", "codeberg", "sourcehut", "gitea". Null for unknown hosts. */
+  provider: string | null;
+  /** Hostname extracted from the URL, or null if unparseable. */
+  host: string | null;
+}
+
+function detectProvider(host: string): string | null {
+  const h = host.toLowerCase();
+  if (h === "github.com" || h.endsWith(".github.com")) return "github";
+  if (h === "ssh.dev.azure.com" || h === "dev.azure.com" || h.endsWith(".visualstudio.com")) {
+    return "azure";
+  }
+  if (h === "bitbucket.org" || h.includes("bitbucket.")) return "bitbucket";
+  if (h === "codeberg.org") return "codeberg";
+  if (h === "git.sr.ht" || h.endsWith(".sr.ht")) return "sourcehut";
+  // GitLab self-hosted is common — match on hostname token. Check after
+  // bitbucket/sourcehut/codeberg so those win on overlap.
+  if (h === "gitlab.com" || h.includes("gitlab.")) return "gitlab";
+  if (h.includes("gitea")) return "gitea";
+  return null;
+}
+
+/**
+ * Parse a git remote URL into a browser-openable web URL plus host/provider
+ * metadata. Handles HTTPS, SCP-style (`git@host:path`), `ssh://`, and `git://`.
+ *
+ * The web URL is the best-effort "what would you click to view this repo in
+ * a browser" — we never invent owners or branches, just strip `.git` and
+ * rewrite the scheme. Azure DevOps gets a small special case because its
+ * SSH path differs from its HTTPS path. Everything else falls back to
+ * `https://<host>/<path>`.
+ */
+export function parseRemoteUrl(raw: string): {
+  webUrl: string | null;
+  provider: string | null;
+  host: string | null;
+} {
+  const url = (raw ?? "").trim();
+  if (!url) return { webUrl: null, provider: null, host: null };
+
+  let host: string | null = null;
+  let pathPart: string | null = null;
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    // Anything with an explicit scheme (https://, ssh://, git://, http://).
+    try {
+      const u = new URL(url);
+      host = u.hostname;
+      pathPart = u.pathname.replace(/^\/+/, "");
+    } catch {
+      return { webUrl: null, provider: null, host: null };
+    }
+  } else if (url.includes(":") && !url.startsWith("/")) {
+    // SCP-style: [user@]host:path. The `:` is mandatory and must not be
+    // followed by `//` (we already handled real URLs above). We reject
+    // forms with whitespace before the `:` because those are not URLs.
+    const colon = url.indexOf(":");
+    const left = url.slice(0, colon);
+    const right = url.slice(colon + 1);
+    if (/\s/.test(left) || left.length === 0 || right.length === 0) {
+      return { webUrl: null, provider: null, host: null };
+    }
+    const at = left.lastIndexOf("@");
+    host = at >= 0 ? left.slice(at + 1) : left;
+    pathPart = right.replace(/^\/+/, "");
+  } else {
+    return { webUrl: null, provider: null, host: null };
+  }
+
+  if (!host || !pathPart) return { webUrl: null, provider: null, host: null };
+
+  pathPart = pathPart.replace(/\.git$/, "").replace(/\/+$/, "");
+  if (!pathPart) return { webUrl: null, provider: null, host: null };
+
+  const provider = detectProvider(host);
+
+  let webUrl: string;
+  if (provider === "azure") {
+    // Azure DevOps SSH path is `v3/<org>/<project>/<repo>`, but the web URL
+    // lives at `dev.azure.com/<org>/<project>/_git/<repo>`. HTTPS form
+    // already matches the web URL, so the regex just no-ops for it.
+    const m = /^v3\/([^/]+)\/([^/]+)\/(.+)$/.exec(pathPart);
+    if (m) {
+      webUrl = `https://dev.azure.com/${m[1]}/${m[2]}/_git/${m[3]}`;
+    } else {
+      webUrl = `https://${host}/${pathPart}`;
+    }
+  } else {
+    webUrl = `https://${host}/${pathPart}`;
+  }
+
+  return { webUrl, provider, host };
+}
+
+/** Parse `git remote -v` output into `{name, url}` pairs, deduping fetch/push
+ *  entries (each remote appears twice — we keep the fetch URL only). */
+export function parseRemotesOutput(out: string): { name: string; url: string }[] {
+  const seen = new Set<string>();
+  const result: { name: string; url: string }[] = [];
+  for (const rawLine of out.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // Format: "<name>\t<url> (fetch|push)". Tab is the canonical separator
+    // but git allows whitespace, so be liberal.
+    const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line);
+    if (!m) continue;
+    if (m[3] !== "fetch") continue;
+    const name = m[1]!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    result.push({ name, url: m[2]! });
+  }
+  return result;
+}
+
+/** Run `git remote -v` and return enriched RemoteRef entries. Returns []
+ *  for non-git directories, missing paths, or repos with no remotes — the
+ *  UI can treat the result as authoritative. */
+export async function listRemotes(repoPath: string): Promise<RemoteRef[]> {
+  const r = await $`git -C ${repoPath} remote -v`.quiet().nothrow();
+  if (r.exitCode !== 0) return [];
+  const parsed = parseRemotesOutput(r.stdout.toString());
+  return parsed.map(({ name, url }) => ({ name, url, ...parseRemoteUrl(url) }));
+}
+
 export async function fetchAll(repoPath: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(

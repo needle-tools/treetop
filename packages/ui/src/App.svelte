@@ -15,9 +15,11 @@
   import { spawnNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import AnchorPicker from "./AnchorPicker.svelte";
+  import OpenInButton from "./OpenInButton.svelte";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
+    SYNTHETIC_SOURCE_PREFIXES,
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
@@ -105,6 +107,13 @@
     agents?: AgentSession[];
     nonGit?: boolean;
   }
+  interface RemoteRef {
+    name: string;
+    url: string;
+    webUrl: string | null;
+    provider: string | null;
+    host: string | null;
+  }
   interface Repo {
     id: string;
     path: string;
@@ -114,6 +123,8 @@
      *  name renders so the user can tell repos apart at a glance. */
     color?: string;
     worktrees: Worktree[];
+    /** Git remotes for this repo (empty for non-git folders). */
+    remotes?: RemoteRef[];
   }
   interface Event {
     id: string;
@@ -232,8 +243,16 @@
    *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
    *  persisted to workspace. */
   let zenRowKey: string | null = null;
+  /** Zen-mode override for notes visibility. Notes hide by default in
+   *  zen (the whole point of zen is a clean focus surface) regardless
+   *  of `notesHiddenByRow`; this flag lets the user explicitly show
+   *  them again via the row's `notes` toggle while in zen. Resets to
+   *  `false` on every zen entry/exit so the next zen session starts
+   *  clean. */
+  let notesShownInZen = false;
   function toggleZenRow(key: string) {
     zenRowKey = zenRowKey === key ? null : key;
+    notesShownInZen = false;
   }
   // toggleFullscreen() lives in NewSessionCol.svelte now (it's only
   // called from inside the new-session-column header).
@@ -558,6 +577,10 @@
               : x,
           ),
         };
+        // Carry the user's typed title across the source flip so the
+        // ShellView header stays named instead of reverting to the
+        // placeholder once the column moves to its transcript form.
+        void migrateSessionTitleOnServer(s.source, transcriptSource);
         // Mark the now-defunct `__attached__:shell:<id>` form as
         // dismissed so a UI reload while the daemon's 30s grace timer
         // is still alive doesn't have restoreLiveShells add the live
@@ -588,6 +611,10 @@
                 : x,
             ),
           };
+          // Move the user's manual title from the synthetic source to
+          // the real JSONL path so SessionView's header (which reads
+          // titles[realPath] via /api/repos) keeps showing it.
+          void migrateSessionTitleOnServer(s.source, match.source);
         }
       }
     }
@@ -955,6 +982,37 @@
       // Refresh /api/repos so a worktree row reflects the new title the
       // moment its real JSONL takes over from the synthetic source.
       void load();
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** Ask the daemon to rename a saved title's key from `oldSource` to
+   *  `newSource`, and update `newSessionTitles` to match. Called on every
+   *  source-flip a transient column can undergo: shell spawn (`__new__:shell:`
+   *  → `__attached__:shell:`) and agent dispose (`__new__:<agent>:` → real
+   *  JSONL path). Without it the user's typed title is silently orphaned
+   *  the moment the column's source changes. */
+  async function migrateSessionTitleOnServer(
+    oldSource: string,
+    newSource: string,
+  ): Promise<void> {
+    if (oldSource === newSource) return;
+    const existing = newSessionTitles[oldSource];
+    if (!existing) return; // nothing to migrate
+    try {
+      const res = await fetch("/api/session/title/migrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldSource, newSource }),
+      });
+      if (!res.ok) return;
+      const next = { ...newSessionTitles };
+      delete next[oldSource];
+      // If the user already named the destination, the daemon kept its
+      // existing title; mirror that so we don't override on the client.
+      if (!next[newSource]) next[newSource] = existing;
+      newSessionTitles = next;
     } catch {
       // best-effort
     }
@@ -1522,10 +1580,11 @@
     loading = true;
     error = "";
     try {
-      const [r, e, s] = await Promise.all([
+      const [r, e, s, t] = await Promise.all([
         fetch("/api/repos"),
         fetch("/api/events"),
         fetch("/api/shells"),
+        fetch("/api/session-titles"),
       ]);
       if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
@@ -1534,6 +1593,23 @@
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.
       if (s.ok) allShells = (await s.json()) as ShellRecord[];
+      // Pre-populate `newSessionTitles` for every saved synthetic-source
+      // title. Titles for real JSONL sources already flow through
+      // /api/repos -> agent.manualTitle, so we only adopt the entries
+      // whose key matches a synthetic prefix — keeps the in-memory map
+      // tight and avoids confusing two state sources for the same source.
+      if (t.ok) {
+        const allTitles = (await t.json()) as Record<string, string>;
+        const synthetic: Record<string, string> = {};
+        for (const [src, title] of Object.entries(allTitles)) {
+          if (SYNTHETIC_SOURCE_PREFIXES.some((p) => src.startsWith(p))) {
+            synthetic[src] = title;
+          }
+        }
+        // Merge: anything the user just typed locally wins over the
+        // server snapshot (they may have an unflushed save in flight).
+        newSessionTitles = { ...synthetic, ...newSessionTitles };
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1789,6 +1865,43 @@
     if (/Mac|iPhone|iPad/.test(ua)) return "Finder";
     if (/Win/.test(ua)) return "Explorer";
     return "Files";
+  }
+
+  /** Pair of `fileManagerLabel`: pick the matching icon-registry key
+   *  so the button shows the Finder face on macOS, the Explorer folder
+   *  on Windows, and the generic folder elsewhere. */
+  function fileManagerIcon(): string {
+    if (typeof navigator === "undefined") return "files";
+    const ua = navigator.userAgent;
+    if (/Mac|iPhone|iPad/.test(ua)) return "finder";
+    if (/Win/.test(ua)) return "explorer";
+    return "files";
+  }
+
+  const PROVIDER_LABELS: Record<string, string> = {
+    github: "GitHub",
+    gitlab: "GitLab",
+    bitbucket: "Bitbucket",
+    azure: "Azure",
+    codeberg: "Codeberg",
+    sourcehut: "sourcehut",
+    gitea: "Gitea",
+  };
+
+  /** Button label for a remote: provider name when known, else the host.
+   *  Suffixes the remote name when it's not the default `origin` so users
+   *  with multiple remotes can tell `origin` from `upstream` at a glance. */
+  function remoteButtonLabel(remote: RemoteRef): string {
+    const base =
+      (remote.provider ? PROVIDER_LABELS[remote.provider] : null) ??
+      remote.host ??
+      remote.name;
+    return remote.name === "origin" ? base : `${base} (${remote.name})`;
+  }
+
+  function openRemote(remote: RemoteRef) {
+    if (!remote.webUrl) return;
+    window.open(remote.webUrl, "_blank", "noopener,noreferrer");
   }
 
   /** Toggle the persisted "is the source-control foldout open" flag for
@@ -2377,6 +2490,7 @@
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
         zenRowKey = null;
+        notesShownInZen = false;
       }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
       // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input
@@ -2744,7 +2858,9 @@
           class="row"
           class:row-folded={rowFolded[row.key]}
           class:row-zen={zenRowKey === row.key}
-          class:row-notes-hidden={notesHiddenByRow[row.key]}
+          class:row-notes-hidden={zenRowKey !== null
+            ? zenRowKey !== row.key || !notesShownInZen
+            : !!notesHiddenByRow[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
         >
           <div class="row-content">
@@ -3246,11 +3362,16 @@
               {/if}
               <button
                 class="new-wt notes-toggle"
-                class:active={!notesHiddenByRow[row.key]}
-                title={notesHiddenByRow[row.key]
-                  ? "Show this row's sticky notes"
-                  : "Hide this row's sticky notes"}
-                on:click|stopPropagation={() => toggleNotesHidden(row.key)}
+                class:active={zenRowKey === row.key
+                  ? notesShownInZen
+                  : !notesHiddenByRow[row.key]}
+                title={(zenRowKey === row.key ? notesShownInZen : !notesHiddenByRow[row.key])
+                  ? "Hide this row's sticky notes"
+                  : "Show this row's sticky notes"}
+                on:click|stopPropagation={() => {
+                  if (zenRowKey === row.key) notesShownInZen = !notesShownInZen;
+                  else toggleNotesHidden(row.key);
+                }}
               >notes</button>
               <button
                 class="new-wt notes-add"
@@ -3259,7 +3380,9 @@
                   : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
                 on:click|stopPropagation={(e) => {
                   // Un-hide first so the freshly-spawned note is visible.
-                  if (notesHiddenByRow[row.key]) {
+                  if (zenRowKey === row.key) {
+                    notesShownInZen = true;
+                  } else if (notesHiddenByRow[row.key]) {
                     notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
                   }
                   const btn = e.currentTarget as HTMLButtonElement;
@@ -3568,27 +3691,39 @@
 
               <div class="row-actions">
                 {#each editors as ed}
-                  <button
-                    class="tiny"
-                    on:click={() => openIn(wt.path, ed.cmd)}
-                    title={`Open in ${ed.name}`}>{ed.name}</button
-                  >
+                  <OpenInButton
+                    icon={ed.cmd}
+                    label={ed.name}
+                    title={`Open in ${ed.name}`}
+                    onClick={() => openIn(wt.path, ed.cmd)}
+                  />
                 {/each}
-                <button
-                  class="tiny"
-                  on:click={() => openIn(wt.path, "fork")}
-                  title="Open in Fork">Fork</button
-                >
-                <button
-                  class="tiny"
-                  on:click={() => openIn(wt.path, "terminal")}
-                  title="Open in terminal">Terminal</button
-                >
-                <button
-                  class="tiny"
-                  on:click={() => openIn(wt.path, "files")}
-                  title="Reveal in file manager">{fileManagerLabel()}</button
-                >
+                <OpenInButton
+                  icon="fork"
+                  label="Fork"
+                  title="Open in Fork"
+                  onClick={() => openIn(wt.path, "fork")}
+                />
+                <OpenInButton
+                  icon="terminal"
+                  label="Terminal"
+                  title="Open in terminal"
+                  onClick={() => openIn(wt.path, "terminal")}
+                />
+                <OpenInButton
+                  icon={fileManagerIcon()}
+                  label={fileManagerLabel()}
+                  title="Reveal in file manager"
+                  onClick={() => openIn(wt.path, "files")}
+                />
+                {#each (repo.remotes ?? []).filter((r) => r.webUrl) as remote}
+                  <OpenInButton
+                    icon={remote.provider ?? "git"}
+                    label={remoteButtonLabel(remote)}
+                    title={`Open ${remote.name} (${remote.url}) in browser`}
+                    onClick={() => openRemote(remote)}
+                  />
+                {/each}
               </div>
             </div>
 
@@ -3694,6 +3829,16 @@
                                         : x,
                                   ),
                                 };
+                                // If the user already named this column during
+                                // the brief "starting" phase before the PTY
+                                // came up, migrate the title to the new source
+                                // key so it survives the swap (otherwise the
+                                // synthetic-source title gets orphaned and the
+                                // header reverts to "Name this session…").
+                                void migrateSessionTitleOnServer(
+                                  s.source,
+                                  attachedSource,
+                                );
                               }
                             }}
                             on:awaitingChange={(e) => {

@@ -37,10 +37,13 @@
 /* Match SessionView's .close so the transient-TUI column header
    reads exactly like a Claude chat's header — same padding,
    transparent bg, same red-on-hover destructive treatment for ×.
-   Restart (↻) sits beside it with a neutral hover. */
+   Fullscreen (⛶) shares the same glyph treatment. The burger menu
+   (☰) is owned by SessionMenu.svelte. */
 .new-session-head .close,
-.new-session-head .restart-btn,
 .new-session-head .fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   color: var(--text-muted);
   border: 0;
@@ -71,22 +74,23 @@
   border-color: color-mix(in srgb, #efaaaa 55%, transparent);
 }
 
-.new-session-head .restart-btn {
+.new-session-head .fullscreen-btn {
   margin-left: auto;
 }
 .new-session-head .close {
   margin-left: auto;
 }
-/* The trailing-actions cluster sits flush on the right: restart
-   claims the auto-margin (or close does if restart isn't there),
-   and the rest just butt up against it. */
-.new-session-head .restart-btn + .fullscreen-btn,
+/* The trailing-actions cluster sits flush on the right: fullscreen
+   claims the auto-margin (leftmost of the cluster now that restart
+   has moved into the SessionMenu burger), and the rest just butt up
+   against it. */
 .new-session-head .fullscreen-btn + .dispose-btn,
+.new-session-head .dispose-btn + .session-menu-anchor,
+.new-session-head .session-menu-anchor + .close,
 .new-session-head .fullscreen-btn + .close,
 .new-session-head .dispose-btn + .close {
   margin-left: 0;
 }
-.new-session-head .restart-btn:hover,
 .new-session-head .fullscreen-btn:hover {
   color: var(--text-1);
   background: var(--surface-3);

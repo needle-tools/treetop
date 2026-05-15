@@ -18,6 +18,7 @@ import {
   removeWorktree,
   listBranches,
   checkoutBranch,
+  listRemotes,
   resolveSubmoduleWorktreePaths,
   type Worktree,
 } from "../src/git";
@@ -84,6 +85,56 @@ describe("listWorktrees against real git", () => {
     expect(after).toHaveLength(1);
     expect(after[0]?.nonGit).toBeUndefined();
     expect(after[0]?.branch).toBe("main");
+  });
+});
+
+describe("listRemotes against real git", () => {
+  test("returns [] for a plain non-git directory", async () => {
+    const d = await realpath(await mkdtemp(join(tmpdir(), "supergit-noremote-")));
+    expect(await listRemotes(d)).toEqual([]);
+  });
+
+  test("returns [] for a path that does not exist", async () => {
+    const missing = join(
+      tmpdir(),
+      "supergit-missing-" + Date.now() + "-" + Math.random(),
+    );
+    expect(await listRemotes(missing)).toEqual([]);
+  });
+
+  test("returns [] for a fresh repo with no remote configured", async () => {
+    const repo = await tempRepo();
+    expect(await listRemotes(repo)).toEqual([]);
+  });
+
+  test("parses and enriches a single origin remote", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin https://github.com/foo/bar.git`.quiet();
+    const remotes = await listRemotes(repo);
+    expect(remotes).toEqual([
+      {
+        name: "origin",
+        url: "https://github.com/foo/bar.git",
+        webUrl: "https://github.com/foo/bar",
+        provider: "github",
+        host: "github.com",
+      },
+    ]);
+  });
+
+  test("returns multiple remotes (origin + upstream), deduped across fetch/push", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin git@gitlab.com:me/repo.git`.quiet();
+    await $`git -C ${repo} remote add upstream https://github.com/them/repo.git`.quiet();
+    const remotes = await listRemotes(repo);
+    const names = remotes.map((r) => r.name).sort();
+    expect(names).toEqual(["origin", "upstream"]);
+    const origin = remotes.find((r) => r.name === "origin")!;
+    expect(origin.provider).toBe("gitlab");
+    expect(origin.webUrl).toBe("https://gitlab.com/me/repo");
+    const upstream = remotes.find((r) => r.name === "upstream")!;
+    expect(upstream.provider).toBe("github");
+    expect(upstream.webUrl).toBe("https://github.com/them/repo");
   });
 });
 

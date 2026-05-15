@@ -21,6 +21,7 @@
    */
   import { createEventDispatcher } from "svelte";
   import TerminalView from "./TerminalView.svelte";
+  import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
 
   type AgentKind = "claude" | "codex" | "copilot" | "shell";
 
@@ -89,6 +90,25 @@
     return {};
   }
 
+  /** Burger-menu items. Hosts the Restart action (was the inline ↻
+   *  button) plus a Copy command-line option that's handy when
+   *  grabbing the exact `claude --resume <id>` line for an external
+   *  terminal. SessionMenu owns the copy-flash + close behaviour. */
+  $: menuItems = [
+    {
+      kind: "copy",
+      label: "Copy command + cwd",
+      title: "Copy the spawn command and cwd to the clipboard",
+      getText: () => `${cmd.join(" ")}\n${cwd}`,
+    },
+    {
+      kind: "action",
+      label: `Restart ${agent}`,
+      title: `Re-run \`${agent}\` in this column (use after a self-update)`,
+      onSelect: () => dispatch("restart"),
+    },
+  ] satisfies SessionMenuItem[];
+
   /** Fullscreen the column itself (xterm's FitAddon picks up the
    *  resulting resize via its ResizeObserver, no extra wiring). */
   let rootEl: HTMLDivElement | undefined;
@@ -147,12 +167,6 @@
       >needs input</span>
     {/if}
     <button
-      class="restart-btn"
-      on:click={() => dispatch("restart")}
-      title={`Re-run \`${agent}\` in this column (use after a self-update)`}
-      aria-label="Restart"
-    >↻</button>
-    <button
       class="fullscreen-btn"
       on:click={() => void toggleFullscreen()}
       title="Fullscreen this terminal (Esc to exit)"
@@ -165,6 +179,7 @@
         ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"
         : "SIGTERM the PTY — the column stays open showing the final output until you click × to close."}
     >Dispose</button>
+    <SessionMenu items={menuItems} />
     <button
       class="close"
       on:click={() => dispatch("close")}

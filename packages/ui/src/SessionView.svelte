@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
+  import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -227,6 +228,22 @@
       // ignore — most likely permissions or unfocused document.
     }
   }
+
+  /** Burger-menu items for the per-session header. SessionMenu owns the
+   *  popover, click-outside handling, and "Copied to clipboard" flash
+   *  for `kind: "copy"` items. */
+  $: menuItems = ((): SessionMenuItem[] => {
+    const sid = session?.sessionId;
+    return [
+      {
+        kind: "copy",
+        label: "Copy session ID + path",
+        disabled: !sid,
+        title: sid ? "Copy session id and file path to clipboard" : "No session id yet",
+        getText: () => `${sid}\n${source}`,
+      },
+    ];
+  })();
 
   /** Squash a tool-result blob into a single one-line preview for the
    *  chat. Newlines and consecutive whitespace collapse to a single
@@ -663,6 +680,7 @@
         </button>
       {/if}
     {/if}
+    <SessionMenu items={menuItems} />
     <button class="close" on:click={onClose} title="Close">×</button>
   </header>
 
@@ -914,7 +932,7 @@
   }
   header .close {
     flex: 0 0 auto;
-    align-self: flex-start;
+    align-self: center;
   }
   .resume-btn {
     flex: 0 0 auto;
@@ -1041,17 +1059,23 @@
   }
   .close {
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
     border: 0;
     color: var(--text-muted);
     padding: 0.1rem 0.5rem;
     font-size: 1rem;
+    line-height: 1;
     cursor: pointer;
   }
   .close:hover {
     background: var(--error-bg);
     color: var(--error-text);
   }
+  /* Burger menu UI + .session-menu-popover sizing now live in
+     SessionMenu.svelte / styles/popover.css respectively. */
   .error {
     color: var(--error-text);
     padding: 0.5rem 0.75rem;

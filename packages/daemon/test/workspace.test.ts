@@ -173,4 +173,43 @@ describe("Workspace", () => {
     await ws.setSessionTitle("/a.jsonl", "   ");
     expect(await ws.listSessionTitles()).toEqual({});
   });
+
+  test("migrateSessionTitle moves the title from oldSource to newSource", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.setSessionTitle("__new__:claude:abc", "Cool refactor");
+    await ws.migrateSessionTitle("__new__:claude:abc", "/abs/real.jsonl");
+    expect(await ws.listSessionTitles()).toEqual({
+      "/abs/real.jsonl": "Cool refactor",
+    });
+  });
+
+  test("migrateSessionTitle is a no-op when oldSource has no title", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.setSessionTitle("/abs/real.jsonl", "Already named");
+    await ws.migrateSessionTitle("__new__:claude:abc", "/abs/real.jsonl");
+    // No mutation: the existing newSource title is preserved.
+    expect(await ws.listSessionTitles()).toEqual({
+      "/abs/real.jsonl": "Already named",
+    });
+  });
+
+  test("migrateSessionTitle preserves oldSource title if newSource already has one", async () => {
+    // If the user manually named both sides we don't silently overwrite the
+    // destination — the explicit later edit wins. Source is left intact too
+    // so nothing is lost.
+    const ws = await Workspace.open(await tempDir());
+    await ws.setSessionTitle("__new__:claude:abc", "From synthetic");
+    await ws.setSessionTitle("/abs/real.jsonl", "From real");
+    await ws.migrateSessionTitle("__new__:claude:abc", "/abs/real.jsonl");
+    expect(await ws.listSessionTitles()).toEqual({
+      "__new__:claude:abc": "From synthetic",
+      "/abs/real.jsonl": "From real",
+    });
+  });
+
+  test("migrateSessionTitle rejects empty source strings", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(ws.migrateSessionTitle("", "/x")).rejects.toThrow();
+    await expect(ws.migrateSessionTitle("/x", "")).rejects.toThrow();
+  });
 });

@@ -14,6 +14,7 @@ import {
   removeWorktree,
   listBranches,
   checkoutBranch,
+  listRemotes,
   parseChangedFiles,
   parseUnpushedCommits,
   type DiffKind,
@@ -452,6 +453,8 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
           { method: "POST", path: "/api/session/title", body: { source: "string", title: "string" }, description: "set a manual title for the session keyed by `source`. Empty title clears." },
+          { method: "GET", path: "/api/session-titles", description: "return the full `{ [source]: title }` map of every saved manual title (including titles stored against synthetic `__new__:`/`__attached__:` sources)." },
+          { method: "POST", path: "/api/session/title/migrate", body: { oldSource: "string", newSource: "string" }, description: "move a saved manual title from `oldSource` to `newSource`. Used when a transient column's source flips to a new identity (shell PTY spawn, agent JSONL appears) so the user's typed title doesn't get orphaned." },
           { method: "GET", path: "/api/active-sends", description: "list claude subprocesses still in flight from /api/session/send. Optional ?sessionId=<id> to filter." },
           { method: "DELETE", path: "/api/active-sends/:id", description: "SIGTERM (then SIGKILL after 500ms) the claude subprocess for an in-flight send." },
           { method: "POST", path: "/api/terminals", body: { cmd: ["string"], cwd: "string", cols: "number?", rows: "number?", ownerId: "string?" }, description: "spawn a PTY via the supernode helper. Returns { id, pid }." },
@@ -505,7 +508,10 @@ const server = Bun.serve<TermWsData, never>({
       );
       const enriched = await Promise.all(
         repos.map(async (repo) => {
-          const worktrees = await listWorktrees(repo.path);
+          const [worktrees, remotes] = await Promise.all([
+            listWorktrees(repo.path),
+            listRemotes(repo.path),
+          ]);
           const withDetails = await Promise.all(
             worktrees.map(async (wt) => ({
               ...wt,
@@ -513,7 +519,7 @@ const server = Bun.serve<TermWsData, never>({
               agents: agentsForWorktree(wt.path, titled),
             })),
           );
-          return { ...repo, worktrees: withDetails };
+          return { ...repo, worktrees: withDetails, remotes };
         }),
       );
       return json(enriched);
@@ -554,6 +560,48 @@ const server = Bun.serve<TermWsData, never>({
         const titles = await workspace.listSessionTitles();
         broadcast("change", { kind: "session_title", source });
         return json({ source, title: titles[source] ?? "" });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 400 },
+        );
+      }
+    }
+
+    if (url.pathname === "/api/session-titles" && req.method === "GET") {
+      // Expose the full title map so the UI can pre-populate its
+      // in-memory cache for synthetic `__new__:` / `__attached__:`
+      // sources after a page reload (the per-source titles still flow
+      // through `/api/repos` for real JSONL paths, but synthetic-source
+      // titles are never surfaced there because the daemon doesn't
+      // know about transient client-side columns).
+      const titles = await workspace.listSessionTitles();
+      return json(titles);
+    }
+
+    if (url.pathname === "/api/session/title/migrate" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { oldSource?: unknown; newSource?: unknown }
+        | null;
+      const oldSource = body?.oldSource;
+      const newSource = body?.newSource;
+      if (typeof oldSource !== "string" || oldSource.length === 0) {
+        return json(
+          { error: "body.oldSource (non-empty string) is required" },
+          { status: 400 },
+        );
+      }
+      if (typeof newSource !== "string" || newSource.length === 0) {
+        return json(
+          { error: "body.newSource (non-empty string) is required" },
+          { status: 400 },
+        );
+      }
+      try {
+        await workspace.migrateSessionTitle(oldSource, newSource);
+        const titles = await workspace.listSessionTitles();
+        broadcast("change", { kind: "session_title_migrate", oldSource, newSource });
+        return json({ oldSource, newSource, title: titles[newSource] ?? "" });
       } catch (e) {
         return json(
           { error: String(e instanceof Error ? e.message : e) },

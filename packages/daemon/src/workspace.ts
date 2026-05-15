@@ -85,6 +85,36 @@ export class Workspace {
     );
   }
 
+  /** Move a manual title from `oldSource` to `newSource`. Used when a
+   *  column's source string changes mid-flight (e.g. a `__new__:shell:<random>`
+   *  PTY spawns and we swap to its `__attached__:shell:<termId>` form, or a
+   *  `__new__:claude:<random>` agent's JSONL appears on disk and we swap to
+   *  the real path). Without this, the title the user typed against the
+   *  synthetic source would be silently orphaned.
+   *
+   *  No-op if `oldSource` has no title. Preserves both entries if `newSource`
+   *  already has its own title (the more-explicit later edit wins; we never
+   *  silently overwrite). */
+  async migrateSessionTitle(oldSource: string, newSource: string): Promise<void> {
+    if (typeof oldSource !== "string" || oldSource.length === 0) {
+      throw new Error("oldSource must be a non-empty string");
+    }
+    if (typeof newSource !== "string" || newSource.length === 0) {
+      throw new Error("newSource must be a non-empty string");
+    }
+    if (oldSource === newSource) return;
+    const titles = await this.listSessionTitles();
+    const oldTitle = titles[oldSource];
+    if (!oldTitle) return;
+    if (titles[newSource]) return; // destination already named; don't clobber
+    delete titles[oldSource];
+    titles[newSource] = oldTitle;
+    await writeFile(
+      join(this.path, SESSION_TITLES_FILE),
+      JSON.stringify(titles, null, 2),
+    );
+  }
+
   async listRepos(): Promise<Repo[]> {
     const data = await readFile(join(this.path, REPOS_FILE), "utf-8");
     const parsed = JSON.parse(data) as ReposFile;
