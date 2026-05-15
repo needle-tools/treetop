@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { Terminal } from "xterm";
+  import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
-  import "xterm/css/xterm.css";
+  import "@xterm/xterm/css/xterm.css";
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
   export let cmd: string[];
