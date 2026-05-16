@@ -163,17 +163,40 @@
   /** Vertical fraction of the session column below which the pin
    *  retracts. Generous threshold so the pin shows whenever the user
    *  is reading the top of the chat, not just brushing the title. */
-  const PIN_REVEAL_RATIO = 0.6;
+  const PIN_REVEAL_RATIO = 0.7;
+  /** Hide-only debounce. The pin shows instantly when the cursor
+   *  enters the top zone, but lingers for 300ms after leaving so
+   *  small excursions (or micro-movements past the threshold while
+   *  reading) don't flicker it off. */
+  const PIN_HIDE_DELAY_MS = 300;
+  let pinHideTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelPinHide(): void {
+    if (pinHideTimer) {
+      clearTimeout(pinHideTimer);
+      pinHideTimer = null;
+    }
+  }
+  function setPinRevealed(target: boolean): void {
+    if (target) {
+      cancelPinHide();
+      if (!pinnedRevealed) pinnedRevealed = true;
+      return;
+    }
+    if (!pinnedRevealed || pinHideTimer) return;
+    pinHideTimer = setTimeout(() => {
+      pinnedRevealed = false;
+      pinHideTimer = null;
+    }, PIN_HIDE_DELAY_MS);
+  }
   function onSessionMouseMove(ev: MouseEvent): void {
     if (!sessionEl) return;
     const r = sessionEl.getBoundingClientRect();
     if (r.height <= 0) return;
     const yFrac = (ev.clientY - r.top) / r.height;
-    const next = yFrac >= 0 && yFrac <= PIN_REVEAL_RATIO;
-    if (next !== pinnedRevealed) pinnedRevealed = next;
+    setPinRevealed(yFrac >= 0 && yFrac <= PIN_REVEAL_RATIO);
   }
   function onSessionMouseLeave(): void {
-    if (pinnedRevealed) pinnedRevealed = false;
+    setPinRevealed(false);
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -631,6 +654,7 @@
   onDestroy(() => {
     if (pollTimer !== null) window.clearInterval(pollTimer);
     if (pendingTimer) clearTimeout(pendingTimer);
+    cancelPinHide();
   });
 </script>
 
@@ -899,9 +923,10 @@
     flex: 0 0 auto;
     z-index: 2;
   }
-  /* The pin hangs just below the header. Position is steady — only
-     opacity animates — so the surrounding TUI/header don't get a
-     restless moving element in their peripheral vision. */
+  /* The pin hangs just below the header. Fast opacity transition so
+     the appear/disappear feels snappy rather than gradual — short
+     enough that the backdrop-blur "growing in" effect is too brief
+     to register. */
   .pinned-last-msg-wrap {
     position: absolute;
     top: 100%;
@@ -910,12 +935,13 @@
     display: flex;
     /* Right-aligned so the pill hugs the column's right edge —
        leaves the left/centre of the TUI uncovered when the pin is
-       revealed. */
+       revealed. Tight right padding pulls the pill closer to the
+       column's outer edge. */
     justify-content: flex-end;
-    padding: 0.3rem 0.5rem 0;
+    padding: 0.3rem 0.2rem 0 0.5rem;
     pointer-events: none;
     opacity: 0;
-    transition: opacity 180ms ease;
+    transition: opacity 80ms ease;
   }
   .pinned-last-msg-wrap.revealed {
     opacity: 1;
@@ -926,33 +952,37 @@
     max-width: 50%;
     box-sizing: border-box;
     padding: 0.25rem 0.6rem;
-    background: var(--surface-2);
-    border: 1px solid var(--text-muted);
+    /* Pill on the TUI's own background colour at 60% opacity —
+       matches the terminal underneath so the pill reads as a
+       translucent overlay rather than a contrasting chip. Soft
+       30%-alpha text-muted outline gives the edge enough definition
+       to read against either dark TUI content or empty terminal
+       space. Backdrop blur further softens the text behind. */
+    background: rgba(26, 26, 27, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
     border-radius: var(--radius-sm);
     color: var(--text-2);
     font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     line-height: 1.35;
     text-align: left;
-    /* 2-line clamp via -webkit-line-clamp; standard line-clamp is set
-       too for forward-compat with engines that honour it. */
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
+    /* Hard 4-line cut via max-height + overflow: hidden. The smaller
+       font + 4-line budget shows ~30–50% more of a typical prompt
+       than the previous 3-line clamp without growing the pill's
+       footprint much. Full message remains one hover away on the
+       native title. */
+    display: block;
     overflow: hidden;
     word-break: break-word;
+    max-height: calc(4lh + 0.5rem);
   }
   /* Only re-enable pointer events on the pill once it's revealed —
      otherwise the invisible pill at rest would still swallow clicks
      meant for the TUI underneath. */
   .pinned-last-msg-wrap.revealed .pinned-last-msg {
     pointer-events: auto;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .pinned-last-msg-wrap {
-      transition: none;
-    }
   }
   /* Burger menu UI + .session-menu-popover sizing now live in
      SessionMenu.svelte / styles/popover.css respectively. */
