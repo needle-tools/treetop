@@ -25,7 +25,6 @@
 <span class="sleep-z" class:visible aria-hidden={!visible}>
   <span class="z" aria-hidden="true">z</span>
   <span class="z" aria-hidden="true">z</span>
-  <span class="z" aria-hidden="true">z</span>
 </span>
 
 <style>
@@ -35,7 +34,7 @@
     /* Reserve one z-glyph of horizontal space so the pill width is
        identical whether the trail is visible or not. The animated
        z's themselves overflow this slot upward and to the right. */
-    width: 0.55em;
+    width: 0.7em;
     height: 1em;
     /* Vertically centre on the surrounding text line — when this
        component is dropped inline alongside other text, the trail's
@@ -61,48 +60,56 @@
     font-family: ui-monospace, monospace;
     font-style: italic;
     font-weight: 600;
-    font-size: 0.7em;
+    font-size: 0.9em;
     line-height: 1;
     opacity: 0;
     transform-origin: 0% 50%;
     will-change: transform, opacity;
   }
-  /* One continuous linear translation from the badge out to the
-     fade-away point, with rotate + scale interpolated alongside.
-     Three z's share the keyframe at phase offsets 0% / 33% / 66%
-     (via negative animation-delays), so each z is always within
-     ~1/3 of a cycle behind its predecessor — the trail reads as a
-     constant "zZZ" with smooth, uniform motion rather than the
-     previous stop-go conveyor. */
+  /* Two z's share the keyframe at phase offsets 0% / 50% (via a
+     negative animation-delay), so the second z is always half a
+     cycle behind the first — the trail reads as a steady "zZ" pair
+     with breathing room between them. Per-segment timing functions
+     inside the @keyframes block ease each leg of the path so the
+     four waypoints blend into a smooth S-curve sway rather than a
+     polyline. */
   .sleep-z.visible .z {
-    animation: sleep-z-conveyor 3.6s linear infinite;
+    animation: sleep-z-conveyor 3.6s infinite;
   }
   .sleep-z .z:nth-child(2) {
-    animation-delay: -1.2s;
+    animation-delay: -1.8s;
   }
-  .sleep-z .z:nth-child(3) {
-    animation-delay: -2.4s;
-  }
-  /* Travel further along the Y axis than the X axis — gives the
-     trail a steeper, more "rising sleep" angle (~63°) instead of
-     the previous 45°. The total path length (~2.7em) is also longer
-     than before, which means the 33%-phase spacing between
-     consecutive z's grows past one z's font-size — so the three
-     z's now read as a clear stack with breathing room, not an
-     overlapping smear. */
+  /* Y rises monotonically while X zig-zags right → left → right on
+     the way up. Rotation leans in the OPPOSITE direction of travel
+     (counter-banking) so the z reads as relaxed/lazy rather than
+     leaning into its motion. Per-keyframe `animation-timing-function`
+     applies ease-in-out to each segment, blending the four waypoints
+     into a smooth S-curve sway rather than a polyline of straight
+     legs — the z visibly follows a curve through the air. */
   @keyframes sleep-z-conveyor {
     0% {
-      transform: translate(0, 0) rotate(-6deg) scale(0.45);
+      transform: translate(0, 0) rotate(8deg) scale(0.45);
       opacity: 0;
+      animation-timing-function: ease-out;
     }
     12% {
       opacity: 0.95;
+      animation-timing-function: ease-in-out;
+    }
+    33% {
+      transform: translate(0.7em, -0.3em) rotate(-10deg) scale(0.75);
+      animation-timing-function: ease-in-out;
+    }
+    66% {
+      transform: translate(-0.15em, -1.6em) rotate(10deg) scale(1);
+      animation-timing-function: ease-in-out;
     }
     85% {
       opacity: 0.55;
+      animation-timing-function: ease-in;
     }
     100% {
-      transform: translate(1.2em, -2.4em) rotate(14deg) scale(1.3);
+      transform: translate(1.2em, -2.4em) rotate(-14deg) scale(1.3);
       opacity: 0;
     }
   }
@@ -114,8 +121,7 @@
     .sleep-z.visible .z:nth-child(1) {
       opacity: 0.85;
     }
-    .sleep-z.visible .z:nth-child(2),
-    .sleep-z.visible .z:nth-child(3) {
+    .sleep-z.visible .z:nth-child(2) {
       opacity: 0;
     }
   }
