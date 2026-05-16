@@ -192,17 +192,15 @@
    *  things sane on very tall rows. */
   const NOTE_WIGGLE_UP_PX = 100;
   const NOTE_WIGGLE_UP_PCT = 0.2;
-  const NOTE_WIGGLE_DOWN_PX = 100;
-  const NOTE_WIGGLE_DOWN_PCT = 0.2;
-  /** Per-kind downward drag range. Paper notes keep the tight
-   *  `NOTE_WIGGLE_DOWN_*` clamp so they stay tucked against the row
-   *  they're pinned to (a sticky note 600px below its repo doesn't
-   *  read as "stuck to that repo" anymore). Link chips are
-   *  visually compact and the user might want to stack a queue of
-   *  them well below the row, so we give them effectively the full
-   *  notes-container area — applyRowMargins extends the row's
-   *  margin-bottom to wherever the chip lands. */
+  /** Per-kind downward drag range. Both kinds now share the same
+   *  generous allowance — paper notes used to clamp tight against
+   *  the row, but applyRowMargins' vh-based cap (70vh for notes,
+   *  40vh for links) already prevents runaway gaps, so the wiggle
+   *  itself can be liberal. The user can drag any attachment far
+   *  below the row; the row's margin only grows up to its kind
+   *  cap, past which the chip floats over the inter-row gap. */
   const LINK_WIGGLE_DOWN_PX = 1600;
+  const NOTE_WIGGLE_DOWN_PX = 1600;
   // Pleasant micro-tilt range; deterministic per id so rerenders don't
   // jitter. Using charCode parity gives a stable -2°..+2° spread.
   function tiltFor(id: string): number {
@@ -770,13 +768,12 @@
     const offsetXFrac = Math.min(1, Math.max(0, rawFrac));
     const baseY = rowDocBottom - NOTE_OVERLAP;
     const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
-    // Link chips get a much larger downward range than paper notes —
-    // the user might want to drag one well below the row's bottom
-    // edge to stack a queue of links. applyRowMargins keeps the row
-    // tall enough underneath the chip wherever it lands.
-    const wiggleDown = note.kind === "link"
-      ? LINK_WIGGLE_DOWN_PX
-      : Math.min(NOTE_WIGGLE_DOWN_PX, rowRect.height * NOTE_WIGGLE_DOWN_PCT);
+    // Both kinds use the same generous downward range now —
+    // applyRowMargins' vh-based cap (70vh for notes, 40vh for
+    // links) is the real bound on how far the row can grow, so
+    // the wiggle is free to be liberal in both cases.
+    const wiggleDown =
+      note.kind === "link" ? LINK_WIGGLE_DOWN_PX : NOTE_WIGGLE_DOWN_PX;
     const offsetY = Math.min(
       wiggleDown,
       Math.max(-wiggleUp, e.detail.y - baseY),
@@ -961,24 +958,25 @@
       // doesn't crowd the next one). Notes wiggled upward leave the
       // safety at the baseline ROW_SAFETY since their bottom edge
       // is already higher up than the default position.
-      const offsetYPx = offsets[note.id]?.offsetY ?? 0;
-      const extraSafety = Math.max(0, offsetYPx);
-      // Per-kind cap on how much *this attachment* can push the
-      // row's bottom-margin. Links are compact but the user wants
-      // them to genuinely make space below the row when dragged
-      // down (instead of floating over the next repo), so they
-      // cap at 40vh. Paper notes are larger and the user wants
-      // the next row to move out of the way, so they cap at 70vh.
-      // The row's actual margin is the MAX across attachments
-      // (last `need.set` below), so a row with both notes and
-      // links gets whichever pushes further — bounded by its
-      // kind. The chip itself is still rendered at its real
-      // offset (screenPosFor reads offsetY directly); only the
-      // spacer is capped.
+      // Just clear the chip's actual rendered bottom + a fixed
+      // ROW_SAFETY (24px). The user's drag offset is already
+      // baked into stickyRect.bottom via the DOM measurement, so
+      // adding it AGAIN as an extraSafety multiplier was doubling
+      // the gap — a note dragged 100px down was reserving 224+px
+      // of row-margin instead of 124. Fixed-gap math reads as
+      // "constant breathing room between chip and next row"
+      // regardless of how far the user pulled the chip.
+      //
+      // Per-kind cap: links 40vh, notes 70vh. The row's actual
+      // margin is the MAX across attachments (`need.set` below),
+      // so a row with both kinds picks whichever pushes further
+      // — bounded by its kind. The chip itself is still rendered
+      // at its real offset (screenPosFor reads offsetY directly);
+      // only the row-spacer is capped.
       const vh = typeof window !== "undefined" ? window.innerHeight : 800;
       const kindMax = note.kind === "link" ? vh * 0.40 : vh * 0.70;
       const wantUnclamped =
-        stickyRect.bottom + ROW_SAFETY + extraSafety - liRect.bottom;
+        stickyRect.bottom + ROW_SAFETY - liRect.bottom;
       const want = Math.max(0, Math.min(kindMax, wantUnclamped));
       const prev = need.get(li) ?? 0;
       if (want > prev) need.set(li, want);
