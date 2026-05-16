@@ -24,6 +24,7 @@
   import ManualTitle from "./ManualTitle.svelte";
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { contextChip } from "./context-tokens";
 
   export let agent: "claude" | "codex" | "copilot" | "shell";
@@ -134,7 +135,10 @@
       class="agent-pill agent-{agent}"
       class:working={mode === "terminal" && working}
       class:idle={mode === "terminal" && !working}
-    >{agent}</span>
+    >{agent}{#if mode === "terminal"}<span
+        class="sleep-slot"
+        title={!working ? "Idle — waiting for input" : ""}
+      ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
   </div>
   <div class="hdr-col col-name">
     <ManualTitle
@@ -506,6 +510,14 @@
     .agent-pill.idle {
       border-color: color-mix(in srgb, var(--agent-color) 70%, transparent);
     }
+  }
+  /* Thin wrapper around <SleepIndicationAnimation>. The component owns
+     its own layout reservation + animation; we only set the colour so
+     the z-trail picks up the agent's brand colour via currentColor. */
+  .sleep-slot {
+    display: inline-block;
+    margin-left: 0.2rem;
+    color: var(--agent-color);
   }
   /* Compact horizontal "loading bar" representation of context usage.
      The track is a thin dark strip; the fill grows with `ratio`. The
