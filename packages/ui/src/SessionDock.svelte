@@ -392,7 +392,22 @@
         on:mouseenter={(ev) => onRowEnter(ev, e)}
         on:focusin={(ev) => onRowEnter(ev, e)}
       >
-        <span class="dock-dot-inner"></span>
+        <span class="dock-dot-inner">
+          <!-- Working: a thick partial-arc SVG stroke rotates around
+               the dot's centre. SVG (rather than the old conic-
+               gradient + mask trick) lets us use
+               `stroke-linecap: round` so the visible arc's head
+               and tail are clean rounded caps. Always rendered so
+               the opacity can fade in/out on working state changes
+               — `{#if e.working}` would snap it on/off. -->
+          <svg
+            class="dock-dot-spinner"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9.5" pathLength="100" />
+          </svg>
+        </span>
         <span class="dock-label">
           <span class="dock-label-repo">{e.repoName}</span>
           {#if sessionNameFor(e)}
@@ -532,7 +547,8 @@
     box-sizing: border-box;
     transition:
       transform 160ms ease,
-      opacity 160ms ease;
+      opacity 160ms ease,
+      background-color 220ms ease;
   }
   /* "Unread" pulse: gentle scale up/down for sessions where the
      AI just finished a turn but the user hasn't focused them yet.
@@ -689,51 +705,63 @@
   .dock-dot:active {
     background: transparent;
   }
-  /* Working: slow rotating conic-gradient halo around the dot.
-     Anchored on .dock-dot-inner (the visible 10px disc) so it tracks
-     the dot rather than the much larger padded hit-zone wrapper. */
-  @property --dock-sweep-angle {
-    syntax: "<angle>";
-    initial-value: 0deg;
-    inherits: false;
+  /* Working: hide the solid dot fill entirely and show a thick
+     rotating SVG arc in its place. The arc uses `stroke-linecap:
+     round` so the head and tail are clean rounded caps — the old
+     conic-gradient + mask trick couldn't round its line ends.
+     Anchored to .dock-dot-inner so the spinner tracks the dot
+     rather than the (much larger) padded hit-zone wrapper. */
+  .dock-dot.dot-working .dock-dot-inner {
+    /* Solid fill dims to a faint hint of the repo colour so the ring
+       is the dominant element but the dot doesn't disappear entirely.
+       `color-mix(... transparent)` is the simplest way to keep the
+       hue and just fade the alpha — `opacity` would also dim the
+       child SVG ring. */
+    background: color-mix(in oklch, var(--dot-fill) 20%, transparent);
   }
-  .dock-dot.dot-working .dock-dot-inner::before {
-    content: "";
+  .dock-dot-spinner {
     position: absolute;
-    /* inset -3 + padding 3 = 3px-thick ring flush against the dot's
-       edge, 0px gap between the solid dot and the comet sweep. */
-    inset: -3px;
-    border-radius: 999px;
-    padding: 3px;
-    /* Brightened repo tint so the comet sweep is visible against the
-       same-coloured dot. Visible arc now spans ~180deg from a faded
-       tail at 180 to a bright head at 360 — reads as a longer
-       streak rather than a short comet head. */
-    background: conic-gradient(
-      from var(--dock-sweep-angle),
-      transparent 0deg,
-      transparent 180deg,
-      color-mix(in oklch, var(--dot-fill) 0%, transparent) 180deg,
-      color-mix(in oklch, var(--dot-fill) 30%, #fff 70%) 360deg
-    );
-    -webkit-mask:
-      linear-gradient(#fff 0 0) content-box,
-      linear-gradient(#fff 0 0);
-    mask:
-      linear-gradient(#fff 0 0) content-box,
-      linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    /* Round caps can extend slightly tangentially past the path's
+       bounding circle; visible overflow keeps them from clipping. */
+    overflow: visible;
     pointer-events: none;
-    animation: dock-sweep 2.4s linear infinite;
+    /* Hidden by default; the .dot-working modifier fades it in. The
+       spin animation runs unconditionally so the arc is already
+       moving the moment it becomes visible (a freshly-mounted
+       spinner doesn't snap from rest into motion). */
+    opacity: 0;
+    transition: opacity 220ms ease;
+    animation: dock-spin 0.9s linear infinite;
   }
-  @keyframes dock-sweep {
-    to { --dock-sweep-angle: 360deg; }
+  .dock-dot.dot-working .dock-dot-spinner {
+    opacity: 1;
+  }
+  .dock-dot-spinner circle {
+    fill: none;
+    /* Brightened repo tint so the arc is clearly visible against
+       whatever's behind the dock. Bumped saturation vs. the solid
+       fill so the ring reads as "this dot is doing something" at
+       a glance. */
+    stroke: color-mix(in oklch, var(--dot-fill) 65%, #fff 35%);
+    /* Thick enough to be legible at 10px; `r=9.5` keeps the outer
+       edge of the stroke flush with the dot's 10px footprint. */
+    stroke-width: 5;
+    stroke-linecap: round;
+    /* `pathLength="100"` (set on the element) lets dash values read
+       as percentages. 35/65 = a ~125° visible arc — long enough to
+       read as motion, short enough that the gap is unambiguous. */
+    stroke-dasharray: 35 65;
+  }
+  @keyframes dock-spin {
+    to { transform: rotate(360deg); }
   }
 
   /* Idle (PTY alive, nothing streaming, no prompt): no outline at
      all. The bare repo-coloured dot is the "alive" signal; the
-     comet ring + awaiting pulse are reserved for "something's
+     spinner + awaiting pulse are reserved for "something's
      happening". */
 
   /* Awaiting: stronger, attention-grabbing pulse — the dot scales up
@@ -753,7 +781,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .dock-dot.dot-working .dock-dot-inner::before,
+    .dock-dot-spinner,
     .dock-dot.dot-awaiting .dock-dot-inner { animation: none; }
   }
 </style>
