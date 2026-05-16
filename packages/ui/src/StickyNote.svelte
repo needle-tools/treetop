@@ -796,10 +796,11 @@
         <button class="sticky-btn primary" on:click={saveEdit} title="Save (Enter)">Save</button>
         <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
       {:else if editing && isLink}
-        <!-- Link editing is picker-driven (pick = save, Esc = cancel),
-             so the toolbar only needs a Cancel escape hatch for users
-             who'd rather click than press Esc. -->
-        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
+        <!-- Link editing is picker-driven: pick = save, Esc /
+             click-outside = cancel. No explicit Cancel button — it
+             was redundant with the click-outside dismiss the layer
+             already handles, and the empty toolbar gives the
+             picker more room to breathe. -->
       {:else}
         <button
           class="sticky-btn"

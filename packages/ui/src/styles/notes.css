@@ -354,6 +354,12 @@
 }
 .mention-picker-input {
   width: 100%;
+  /* border-box so width:100% + padding + border land within the
+     parent rather than spilling out the right edge — the picker
+     popover is constrained-width and the input was overflowing
+     by ~37px (28px right padding for the spinner slot + 7px left
+     + 2px border) with the default content-box. */
+  box-sizing: border-box;
   background: var(--surface-0);
   color: var(--text-1);
   border: 1px solid var(--surface-2);

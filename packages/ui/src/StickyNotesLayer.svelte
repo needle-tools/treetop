@@ -964,18 +964,19 @@
       const offsetYPx = offsets[note.id]?.offsetY ?? 0;
       const extraSafety = Math.max(0, offsetYPx);
       // Per-kind cap on how much *this attachment* can push the
-      // row's bottom-margin. Links are compact and meant to stack
-      // far down without consuming screen real estate, so they cap
-      // at 20vh — past that they float over the gap. Paper notes
-      // are larger and the user genuinely wants the next row to
-      // move out of the way, so they cap at 70vh. The row's actual
-      // margin is the MAX across attachments (last `need.set`
-      // below), so a row with both notes and links gets whichever
-      // pushes further — bounded by its kind. The chip itself is
-      // still rendered at its real offset (screenPosFor reads
-      // offsetY directly); only the spacer is capped.
+      // row's bottom-margin. Links are compact but the user wants
+      // them to genuinely make space below the row when dragged
+      // down (instead of floating over the next repo), so they
+      // cap at 40vh. Paper notes are larger and the user wants
+      // the next row to move out of the way, so they cap at 70vh.
+      // The row's actual margin is the MAX across attachments
+      // (last `need.set` below), so a row with both notes and
+      // links gets whichever pushes further — bounded by its
+      // kind. The chip itself is still rendered at its real
+      // offset (screenPosFor reads offsetY directly); only the
+      // spacer is capped.
       const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-      const kindMax = note.kind === "link" ? vh * 0.20 : vh * 0.70;
+      const kindMax = note.kind === "link" ? vh * 0.40 : vh * 0.70;
       const wantUnclamped =
         stickyRect.bottom + ROW_SAFETY + extraSafety - liRect.bottom;
       const want = Math.max(0, Math.min(kindMax, wantUnclamped));
