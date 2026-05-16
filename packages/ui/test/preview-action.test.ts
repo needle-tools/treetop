@@ -79,7 +79,8 @@ describe("summarizeToolInput", () => {
   test("truncates long values with an ellipsis", () => {
     const long = "a".repeat(120);
     const out = summarizeToolInput({ file_path: long })!;
-    expect(out.length).toBe(60);
+    // Hits the DETAIL_MAX_LEN cap (90 chars including the ellipsis).
+    expect(out.length).toBe(90);
     expect(out.endsWith("…")).toBe(true);
   });
 

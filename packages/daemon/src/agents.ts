@@ -50,19 +50,27 @@ export interface AgentSession {
    *  tell at a glance how much conversation each session contains. */
   messageCount?: number;
   /** Estimated tokens currently in the agent's context window before
-   *  the next prompt. For Claude this is exact: the last assistant
-   *  turn's `usage.input_tokens + cache_read + cache_creation`. For
-   *  Codex this is approximate: sum of message char lengths ÷ 4. The
-   *  UI surfaces this in the session header so the user can eyeball
-   *  how close they are to the model's context cap. */
+   *  the next prompt. For Claude this is exact (last assistant turn's
+   *  `usage.input + cache_read + cache_creation`). For Codex 0.130+
+   *  it's also exact when a `token_count` event is present
+   *  (`last_token_usage.input_tokens`); otherwise it falls back to a
+   *  chars/4 estimate. The UI surfaces this in the session header so
+   *  the user can eyeball how close they are to the model's context
+   *  cap. */
   contextTokens?: number;
   /** True when `contextTokens` came from an authoritative usage block
-   *  (Claude), false when it's a chars/4 estimate (Codex). The UI
-   *  prefixes estimates with `~`. */
+   *  (Claude `message.usage` / Codex `token_count` event), false when
+   *  it's a chars/4 estimate. The UI prefixes estimates with `~`. */
   contextTokensExact?: boolean;
-  /** Model id (e.g. `claude-sonnet-4-6`, `claude-opus-4-7-20250101`)
-   *  parsed from the session metadata. The UI uses this to pick a
-   *  context-window cap (200k vs 1M). */
+  /** Model context window in tokens, when the JSONL ships it. Codex
+   *  0.130+ writes `info.model_context_window` in every `token_count`
+   *  event — using that is more accurate than guessing from the
+   *  model id, especially for OpenAI's per-deployment cap variations.
+   *  The UI prefers this over its model-id heuristic when present. */
+  contextWindow?: number;
+  /** Model id (e.g. `claude-sonnet-4-6`, `claude-opus-4-7-20250101`,
+   *  `gpt-5.5`). Used by the UI for display and, when `contextWindow`
+   *  isn't shipped, as the fallback heuristic for the context cap. */
   model?: string;
 }
 
@@ -358,9 +366,14 @@ export async function scanClaudeUserMessages(
   for (const line of content.split("\n")) {
     if (!line) continue;
     // Cheap pre-filter so we don't JSON.parse every line on huge files.
+    // `compact_boundary` is rare but mandatory — when it appears after
+    // the latest assistant usage, the previous reading is stale and
+    // must be cleared. Looking for the literal substring keeps the
+    // fast path fast.
     if (
       !line.includes('"type":"user"') &&
-      !line.includes('"type":"assistant"')
+      !line.includes('"type":"assistant"') &&
+      !line.includes('"compact_boundary"')
     ) {
       continue;
     }
@@ -425,6 +438,16 @@ export async function scanClaudeUserMessages(
         lastContextTokens = inp + cr + cc;
         lastModel = typeof msg?.model === "string" ? msg.model : undefined;
       }
+    } else if (
+      obj.type === "system" &&
+      obj.subtype === "compact_boundary"
+    ) {
+      // /compact (manual or auto): the model's context window has been
+      // reset. Drop the previous reading so the chip stops lying about
+      // pre-compact size. A new assistant turn after the compact will
+      // re-populate it with fresh usage.
+      lastContextTokens = undefined;
+      // Keep `lastModel` — same model, just compacted state.
     }
   }
   const result: ClaudeUserScanResult = {
@@ -481,6 +504,90 @@ export async function scanCodexMessageCount(path: string): Promise<number> {
     }
   }
   return count;
+}
+
+/** Exact token-usage readings from a Codex JSONL.
+ *
+ *  Codex (0.130+) emits `event_msg` lines with `payload.type ===
+ *  "token_count"`. The payload's `info` block carries:
+ *    - last_token_usage.input_tokens — what the model saw on the
+ *      previous turn (≈ "current context size before next turn")
+ *    - model_context_window — the cap (in tokens) for the model that
+ *      handled this session, no heuristic required
+ *  We also pick up the most recent `turn_context.payload.model` so the
+ *  UI can show the model name alongside the chip.
+ *
+ *  Unlike Claude's `usage.input_tokens` / `cache_read_input_tokens` /
+ *  `cache_creation_input_tokens` (which are disjoint slices of the
+ *  request that we sum), OpenAI's `cached_input_tokens` is a *subset*
+ *  of `input_tokens` — informational about cache hits — so we do NOT
+ *  add it on top.
+ *
+ *  Returns undefined for any field that wasn't present in the file, so
+ *  fresh sessions (no token_count event yet) or old logs degrade
+ *  gracefully back to the chars/4 estimator. */
+export interface CodexTokenUsage {
+  lastInputTokens?: number;
+  modelContextWindow?: number;
+  model?: string;
+}
+
+export async function scanCodexTokenUsage(
+  path: string,
+): Promise<CodexTokenUsage> {
+  const empty: CodexTokenUsage = {
+    lastInputTokens: undefined,
+    modelContextWindow: undefined,
+    model: undefined,
+  };
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return empty;
+  }
+  let lastInputTokens: number | undefined;
+  let modelContextWindow: number | undefined;
+  let model: string | undefined;
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (
+      obj.type === "turn_context" &&
+      typeof obj.payload === "object" &&
+      obj.payload
+    ) {
+      const p = obj.payload as Record<string, unknown>;
+      if (typeof p.model === "string") model = p.model;
+      continue;
+    }
+    if (
+      obj.type === "event_msg" &&
+      typeof obj.payload === "object" &&
+      obj.payload
+    ) {
+      const p = obj.payload as Record<string, unknown>;
+      if (p.type !== "token_count") continue;
+      const info = p.info;
+      if (!info || typeof info !== "object") continue;
+      const infoObj = info as Record<string, unknown>;
+      const last = infoObj.last_token_usage as
+        | { input_tokens?: unknown }
+        | undefined;
+      if (last && typeof last.input_tokens === "number") {
+        lastInputTokens = last.input_tokens;
+      }
+      if (typeof infoObj.model_context_window === "number") {
+        modelContextWindow = infoObj.model_context_window;
+      }
+    }
+  }
+  return { lastInputTokens, modelContextWindow, model };
 }
 
 /** Rough char-based estimate (chars/4) of the total tokens currently in
@@ -692,7 +799,22 @@ export async function scanCodex(
         const meta = await readCodexSessionMeta(sessionPath);
         if (!meta.cwd) continue;
         const messageCount = await scanCodexMessageCount(sessionPath);
-        const contextTokens = await scanCodexContextTokens(sessionPath);
+        // Exact reading wins; chars/4 estimate is the fallback for
+        // brand-new sessions (no token_count event yet) and pre-0.130
+        // logs that never wrote the field at all.
+        const usage = await scanCodexTokenUsage(sessionPath);
+        let contextTokens: number | undefined;
+        let contextTokensExact: boolean | undefined;
+        if (usage.lastInputTokens !== undefined && usage.lastInputTokens > 0) {
+          contextTokens = usage.lastInputTokens;
+          contextTokensExact = true;
+        } else {
+          const estimate = await scanCodexContextTokens(sessionPath);
+          if (estimate > 0) {
+            contextTokens = estimate;
+            contextTokensExact = false;
+          }
+        }
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
@@ -703,8 +825,10 @@ export async function scanCodex(
           sessionId: meta.id ?? sessionPath.split("/").pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
           messageCount: messageCount > 0 ? messageCount : undefined,
-          contextTokens: contextTokens > 0 ? contextTokens : undefined,
-          contextTokensExact: contextTokens > 0 ? false : undefined,
+          contextTokens,
+          contextTokensExact,
+          contextWindow: usage.modelContextWindow,
+          model: usage.model,
         });
       } catch {
         // skip

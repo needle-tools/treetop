@@ -9,6 +9,17 @@
   export interface LinkTarget {
     type: "url" | "commit" | "session" | "file";
     value: string;
+    /** Display snapshot captured at pick-time so the chip renders
+     *  instantly without re-hitting /api/agents or /api/commits.
+     *  Round-trips through the daemon's flat-YAML frontmatter. */
+    label?: string;
+    subtitle?: string;
+    meta?: string;
+    /** Agent ("claude", "codex") — chip icon for session targets. */
+    agent?: string;
+    /** Git remote provider ("github", "gitlab", ...) — chip icon for
+     *  commit targets. */
+    provider?: string;
   }
   export interface NoteShape {
     id: string;
@@ -37,6 +48,66 @@
   import { marked } from "marked";
   import AnchorPicker from "./AnchorPicker.svelte";
   import Popover from "./Popover.svelte";
+  import MentionPicker from "./MentionPicker.svelte";
+  import AttachmentIcon from "./AttachmentIcon.svelte";
+  import { defaultProviders } from "./mention-providers";
+  import { pushRecent } from "./mention-recents";
+  import type { PickItem } from "./mention-types";
+  import { requestSessionFocus } from "./session-focus-store";
+
+  /** localStorage key for the user's preferred git client. Written
+   *  by App.svelte's openIn funnel whenever a git-client app is
+   *  invoked; read by the commit-chip click handler below when no
+   *  provider web URL is available. Default "fork" — the only git
+   *  GUI currently exposed in OpenInActions. */
+  const GIT_CLIENT_PREF_KEY = "supergit:preferred-git-client";
+
+  /** Trigger /api/open against the daemon. Mirrors App.svelte's
+   *  openIn (same payload shape) but locally available so the chip
+   *  can dispatch directly without prop-drilling another callback
+   *  through the layer. */
+  async function openInApp(path: string, app: string): Promise<void> {
+    try {
+      await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, app }),
+      });
+    } catch {
+      // Open failures are silent here — the daemon logs them, and
+      // surfacing a toast from a click on a chip is more noise than
+      // the user wants. The chip's `title` already shows the
+      // payload for manual recovery.
+    }
+  }
+
+  /** Provider-specific commit URL builder. The repo's `webUrl` is
+   *  the canonical project root (`https://github.com/foo/bar`); each
+   *  provider's commit page sits at a slightly different path.
+   *  Returns null when we don't know how to address that provider's
+   *  commit view — caller falls back to opening the git client. */
+  function buildCommitWebUrl(
+    webUrl: string,
+    provider: string | null,
+    sha: string,
+  ): string | null {
+    if (!webUrl || !sha) return null;
+    switch (provider) {
+      case "github":
+      case "codeberg":
+      case "sourcehut":
+      case "gitea":
+        return `${webUrl}/commit/${sha}`;
+      case "gitlab":
+        return `${webUrl}/-/commit/${sha}`;
+      case "bitbucket":
+        return `${webUrl}/commits/${sha}`;
+      case "azure":
+        return `${webUrl}/commit/${sha}`;
+      default:
+        return null;
+    }
+  }
 
   interface AnchorableWorktree { path: string; branch: string; }
   interface AnchorableRepo {
@@ -94,51 +165,66 @@
     grab: { id: string; grabXFrac: number; grabYFrac: number };
   }>();
 
-  /** Classify a raw input string into a LinkTarget. Conservative
-   *  heuristics — we'd rather render a "url" chip the user can fix
-   *  than mistakenly stash their pasted URL as a "commit". The order
-   *  matters: protocol URLs first (most specific), then explicit
-   *  session: prefix, then hex SHA shape, then path-like shapes, and
-   *  a bare-domain fallback wraps with https:// so click-to-open
-   *  works without the user typing the scheme. */
-  function detectTarget(raw: string): LinkTarget {
-    const v = raw.trim();
-    if (/^https?:\/\//i.test(v)) return { type: "url", value: v };
-    if (/^session:/.test(v)) {
-      return { type: "session", value: v.slice("session:".length) };
-    }
-    if (/^[0-9a-f]{7,40}$/i.test(v)) return { type: "commit", value: v };
-    if (
-      v.startsWith("/") ||
-      v.startsWith("~/") ||
-      v.startsWith("./") ||
-      v.startsWith("../")
-    ) {
-      return { type: "file", value: v };
-    }
-    return { type: "url", value: `https://${v}` };
-  }
-
-  /** Open the target in whatever app makes sense for its type. URL is
-   *  the only fully-wired case in v1; the other branches stash the
-   *  payload faithfully so future PRs can hook them up to Fork / the
-   *  session router / the editor opener without a schema change. */
+  /** Open the target in whatever app makes sense for its type.
+   *
+   *   url    : open in a new browser tab.
+   *   commit : prefer a browser commit page when we can build one
+   *            (target.provider + repo.remotes[0].webUrl + sha); else
+   *            shell out to the user's preferred git client (Fork by
+   *            default; configurable via localStorage). The git
+   *            client opens at the worktree, then the user navigates
+   *            to the sha — Fork doesn't have a `--commit=<sha>` CLI
+   *            today, so worktree-at-HEAD is the best we can do.
+   *   session: write to the cross-component focus store; App.svelte
+   *            ensures the session is visible in the row strip,
+   *            scrolls it into view, and applies a brief outline.
+   *   file   : reserved for a future /api/open file path call. */
   function openTarget(t: LinkTarget): void {
     if (t.type === "url") {
       window.open(t.value, "_blank", "noopener,noreferrer");
       return;
     }
     if (t.type === "commit") {
-      // No remote-resolution yet — open the literal value if it
-      // already looks like a URL (e.g. a GitHub commit link the user
-      // pasted), otherwise this is a no-op until the resolver lands.
+      // 1) Already a browser URL (legacy / hand-pasted) — just open it.
       if (/^https?:\/\//i.test(t.value)) {
         window.open(t.value, "_blank", "noopener,noreferrer");
+        return;
+      }
+      // 2) Build a browser URL from the repo's origin remote.
+      const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
+      const wtPath = wtAnchor?.slice("worktree:".length);
+      const repo = wtPath
+        ? repos.find((r) => r.worktrees?.some((w) => w.path === wtPath))
+        : undefined;
+      const remoteRefs =
+        (repo as { remotes?: Array<{ name: string; webUrl: string | null; provider: string | null }> } | undefined)
+          ?.remotes ?? [];
+      const origin = remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
+      if (origin?.webUrl) {
+        const url = buildCommitWebUrl(origin.webUrl, origin.provider, t.value);
+        if (url) {
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
+      }
+      // 3) Fall back to the user's preferred git client at the worktree.
+      if (wtPath) {
+        const preferred =
+          (typeof localStorage !== "undefined"
+            ? localStorage.getItem(GIT_CLIENT_PREF_KEY)
+            : null) ?? "fork";
+        void openInApp(wtPath, preferred);
       }
       return;
     }
-    // session / file: chip stores the payload but the opener belongs
-    // to a follow-up PR (session router + /api/open for files).
+    if (t.type === "session") {
+      // Surface the session in App's row strip. App owns the actual
+      // open / scroll / outline-highlight side effects so this side
+      // of the chip stays UI-state-agnostic.
+      requestSessionFocus(t.value);
+      return;
+    }
+    // file: TODO — `/api/open` with the resolved absolute path.
   }
 
   /** Short display label for the chip body. URLs get their host, file
@@ -186,17 +272,52 @@
 
   let editing = startEditing;
   let draft = note.body;
-  /** Working buffer for link-kind edits — the URL / SHA / session id
-   *  the user is typing or has pasted. Kept separate from `draft` so
-   *  switching a single attachment between note and link kinds (a
-   *  feature the schema supports for forgiveness on misclicks)
-   *  doesn't smear the two payloads. Seeded from the existing target
-   *  on mount; on save we re-detect the type from the trimmed value. */
-  let linkDraft = note.target?.value ?? "";
   /** Convenience flag — once derived it gets used a few places (CSS
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
   $: isLink = note.kind === "link";
+
+  /** Search scope derived from the note's first worktree anchor.
+   *  The MentionPicker hands this to its providers so sessions
+   *  filter to the same repo and commits hit the right worktree's
+   *  /api/commits endpoint.
+   *
+   *  IMPORTANT: a fresh object literal here would make `scope` look
+   *  changed on every render of this component, which would in turn
+   *  make the picker's reactive block re-fire and re-fetch on every
+   *  paint. Hold the values in a stable object and only reassign
+   *  when one of them actually changed. */
+  let pickerScope: {
+    currentWorktreePath?: string;
+    currentRepoPath?: string;
+    currentRepoProvider?: string;
+  } = {};
+  $: {
+    const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
+    const wtPath = wtAnchor ? wtAnchor.slice("worktree:".length) : undefined;
+    const repo = wtPath
+      ? repos.find((r) => r.worktrees?.some((w) => w.path === wtPath))
+      : undefined;
+    const nextRepoPath = repo?.path;
+    // Pull the provider off the repo's primary remote — `origin` if
+    // present, else the first detected one. Empty when the repo has
+    // no remotes; the commit chip then falls back to its generic
+    // ◆ glyph instead of a brand mark.
+    const remoteRefs = (repo as { remotes?: Array<{ name: string; provider?: string | null }> } | undefined)?.remotes ?? [];
+    const origin = remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
+    const nextProvider = origin?.provider ?? undefined;
+    if (
+      pickerScope.currentWorktreePath !== wtPath ||
+      pickerScope.currentRepoPath !== nextRepoPath ||
+      pickerScope.currentRepoProvider !== nextProvider
+    ) {
+      pickerScope = {
+        currentWorktreePath: wtPath,
+        currentRepoPath: nextRepoPath,
+        currentRepoProvider: nextProvider,
+      };
+    }
+  }
   /** Two-step delete: clicking × arms a 3-second countdown (rather
    *  than firing immediately) so the user has a generous window to
    *  back out. The button glyph swaps to ■ while armed; a second
@@ -211,7 +332,6 @@
   let dragDx = 0;
   let dragDy = 0;
   let textareaEl: HTMLTextAreaElement | null = null;
-  let linkInputEl: HTMLInputElement | null = null;
   let stickyEl: HTMLDivElement;
   let lastMouseX = 0;
 
@@ -273,6 +393,11 @@
   }
 
   function startPendulum(): void {
+    // Link chips don't swing — they're chips, not paper. Bail
+    // before the rAF loop starts so we don't burn frames on a
+    // pendulum whose output is suppressed by `displayedTilt`'s
+    // isLink branch anyway.
+    if (isLink) return;
     if (!pendulumActive) {
       pendulumActive = true;
       // Seed pivot tracking from the current state so the first frame
@@ -306,19 +431,13 @@
   export let grabYFrac = 0;
 
   onMount(() => {
-    if (editing) {
-      // Link-kind edits go into a single-line input; notes use the
-      // textarea. Same caret-at-end policy either way — pre-selecting
-      // existing content would make a re-edit feel like "overwrite"
-      // rather than "append".
-      const el: HTMLInputElement | HTMLTextAreaElement | null = isLink
-        ? linkInputEl
-        : textareaEl;
-      if (el) {
-        el.focus();
-        const end = el.value.length;
-        el.setSelectionRange(end, end);
-      }
+    if (editing && !isLink && textareaEl) {
+      // Note-kind edit: textarea gets caret-at-end so re-edits feel
+      // like "append" rather than "overwrite". Link-kind delegates
+      // focus to MentionPicker, which manages its own input.
+      textareaEl.focus();
+      const end = textareaEl.value.length;
+      textareaEl.setSelectionRange(end, end);
     }
     // Click-outside-to-save: when the note is in edit mode and the
     // user mousedowns anywhere outside this sticky's box (including
@@ -445,8 +564,13 @@
    *  the rotation prop, set externally — undo restore, etc.) + the
    *  static per-note jitter (`tilt`) + the live pendulum
    *  displacement. Pendulum is transient and decays to 0; the
-   *  rotation prop is the long-term rest angle. */
-  $: displayedTilt = tilt + rotation + pendulumAngle;
+   *  rotation prop is the long-term rest angle.
+   *
+   *  Link chips never tilt — they're chips, not paper. Force 0 so
+   *  the deterministic micro-jitter, the persisted user-drag
+   *  rotation, AND the live pendulum swing all collapse to a
+   *  straight horizontal box for kind="link". */
+  $: displayedTilt = isLink ? 0 : tilt + rotation + pendulumAngle;
 
   /** Layer-driven fly hook: while `flying` is true the parent is
    *  pumping fresh `x` values into us each frame, so kick the
@@ -484,24 +608,22 @@
     // freshly-typed text vanish 3 seconds later.
     cancelPendingDelete();
     draft = note.body;
-    linkDraft = note.target?.value ?? "";
     editing = true;
-    queueMicrotask(() => {
-      const el: HTMLInputElement | HTMLTextAreaElement | null = isLink
-        ? linkInputEl
-        : textareaEl;
-      if (el) {
-        el.focus();
-        const end = el.value.length;
-        el.setSelectionRange(end, end);
-      }
-    });
+    if (!isLink) {
+      queueMicrotask(() => {
+        if (textareaEl) {
+          textareaEl.focus();
+          const end = textareaEl.value.length;
+          textareaEl.setSelectionRange(end, end);
+        }
+      });
+    }
+    // Link-kind: MentionPicker auto-focuses its own search input.
   }
 
   function cancelEdit(): void {
     editing = false;
     draft = note.body;
-    linkDraft = note.target?.value ?? "";
     // "Discard if empty" applies to both kinds, but the emptiness
     // test differs: for notes it's the markdown body, for links it's
     // the target value (the user spawned a chip and never typed a URL).
@@ -511,26 +633,46 @@
     }
   }
 
+  /** Picker fired a pick — translate the PickItem into a save event
+   *  (target + kind), update the recents store, and exit edit mode.
+   *  The redundant-save check is the same logic the note path uses,
+   *  so re-picking the same item doesn't churn the events log.
+   *
+   *  Display snapshot (label/subtitle/meta) is captured into the
+   *  target now so the chip renders instantly on reload — no
+   *  per-chip /api/agents or /api/commits lookup needed. */
+  function onPickerPick(e: CustomEvent<PickItem>): void {
+    const item = e.detail;
+    const target: LinkTarget = {
+      type: item.targetType,
+      value: item.value,
+      ...(item.label !== undefined ? { label: item.label } : {}),
+      ...(item.subtitle !== undefined ? { subtitle: item.subtitle } : {}),
+      ...(item.meta !== undefined ? { meta: item.meta } : {}),
+      ...(item.agent !== undefined ? { agent: item.agent } : {}),
+      ...(item.provider !== undefined ? { provider: item.provider } : {}),
+    };
+    if (
+      target.type === note.target?.type &&
+      target.value === note.target?.value
+    ) {
+      editing = false;
+      return;
+    }
+    pushRecent(item);
+    editing = false;
+    dispatch("save", { id: note.id, body: "", target, kind: "link" });
+  }
+
   function saveEdit(): void {
     editing = false;
     if (isLink) {
-      const raw = linkDraft.trim();
-      if (removeIfEmpty && raw.length === 0) {
+      // Link kind commits via picker pick — explicit Save is a no-op
+      // beyond closing the editor. If the chip was staged-and-empty
+      // (no pick made), treat like cancel + discard.
+      if (removeIfEmpty && !note.target?.value) {
         dispatch("remove", { id: note.id });
-        return;
       }
-      if (raw.length === 0) return; // existing link, user cleared and bailed
-      const target = detectTarget(raw);
-      // Same skip-redundant-save check as the note path — keeps the
-      // events log free of no-op updates when the user just looked at
-      // a chip and pressed Enter.
-      if (
-        target.type === note.target?.type &&
-        target.value === note.target?.value
-      ) {
-        return;
-      }
-      dispatch("save", { id: note.id, body: "", target, kind: "link" });
       return;
     }
     const trimmed = draft;
@@ -615,13 +757,18 @@
   >
     <span class="sticky-grip" aria-hidden="true">⋮⋮</span>
     <div class="sticky-actions">
-      {#if editing}
+      {#if editing && !isLink}
         <!-- Save sits on the left, Cancel on the right: when the user
              clicks ✎ to enter edit mode, their cursor lands on the
              left slot of the toolbar — and the natural next action
              after typing is Save, not Cancel. Keeping the affirmative
              action under the cursor avoids a wasted aim. -->
         <button class="sticky-btn primary" on:click={saveEdit} title="Save (Enter)">Save</button>
+        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
+      {:else if editing && isLink}
+        <!-- Link editing is picker-driven (pick = save, Esc = cancel),
+             so the toolbar only needs a Cancel escape hatch for users
+             who'd rather click than press Esc. -->
         <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
       {:else}
         <button
@@ -645,21 +792,17 @@
 
   {#if editing}
     {#if isLink}
-      <!-- Link editor: single-line input. We deliberately re-detect
-           the target on every save (not on keystroke) so the visible
-           "what kind is this?" hint settled at commit time, not while
-           the user is still typing a partial URL. The placeholder
-           lists all four supported payload shapes — discoverability
-           without a tooltip. -->
-      <input
-        bind:this={linkInputEl}
-        class="sticky-link-input"
-        type="text"
-        bind:value={linkDraft}
-        placeholder="URL · commit SHA · session: · /path"
-        on:keydown={onKey}
-        spellcheck="false"
-        autocomplete="off"
+      <!-- Link editor: fuzzy mention picker (sessions + commits +
+           future providers). The picker IS the editor — there is no
+           free-text input fallback, so paste-detection lives inside
+           the picker's "use as URL" affordance instead of as a
+           sibling heuristic. -->
+      <MentionPicker
+        providers={defaultProviders}
+        scope={pickerScope}
+        on:pick={onPickerPick}
+        on:cancel={cancelEdit}
+        placeholder="Find a session or commit…"
       />
     {:else}
       <textarea
@@ -676,7 +819,10 @@
          primary affordance during edit — stays anchored next to
          Cancel / Save. Each button's destination Popover opens
          downward from its position; clampToViewport flips it up
-         when the note is near the bottom of the viewport. -->
+         when the note is near the bottom of the viewport. Hidden for
+         link kind: those are picker-driven and the footer's extra
+         affordances would crowd the popover. -->
+    {#if !isLink}
     <footer class="sticky-edit-footer">
       <span class="sticky-action-anchor">
         <button
@@ -731,22 +877,53 @@
         {/if}
       </span>
     </footer>
+    {/if}
   {:else if isLink}
     {#if note.target}
       <!-- Click-to-open chip body. We mousedown.stopPropagation so the
            click doesn't accidentally fire the surrounding focus/drag
            handlers; the actual open happens on click (mouseup) so a
-           drag-out from the chip still works the way the user expects. -->
+           drag-out from the chip still works the way the user expects.
+           Three-slot layout: icon + primary label (ellipsis) +
+           subtitle + meta. Snapshot fields render verbatim when
+           present; older links without a snapshot fall back to the
+           value-derived `displayLabel`. -->
+      <!-- Saved link uses the vertical CARD layout — distinct from
+           the horizontal `.attach-row` the picker dropdown uses —
+           because a pinned chip is a static artifact the user wants
+           to read in full (multi-line wrap > ellipsis). Big icon
+           up top, subject/title in the middle (wraps, line-clamped
+           to 4 lines), muted meta line at the bottom. The picker
+           rows keep .attach-row for scannable-column alignment. -->
       <button
-        class="sticky-link-body"
+        class="sticky-link-body attach-card"
         type="button"
         title={`Open ${note.target.value}`}
         on:mousedown|stopPropagation
         on:click={() => note.target && openTarget(note.target)}
         on:dblclick|stopPropagation
       >
-        <span class="sticky-link-icon" aria-hidden="true">{targetIcon(note.target)}</span>
-        <span class="sticky-link-label">{displayLabel(note.target)}</span>
+        <span class="attach-card-icon" aria-hidden="true">
+          <AttachmentIcon
+            agent={note.target.agent ?? ""}
+            provider={note.target.provider
+              ?? (note.target.type === "commit"
+                ? pickerScope.currentRepoProvider ?? ""
+                : "")}
+            glyph={targetIcon(note.target)}
+            size={56}
+          />
+        </span>
+        <span class="attach-card-label">
+          {note.target.label ?? displayLabel(note.target)}
+        </span>
+        {#if note.target.subtitle || note.target.meta}
+          <span class="attach-card-meta">
+            {#if note.target.meta}{note.target.meta}{/if}
+            {#if note.target.meta && note.target.subtitle} · {/if}
+            {#if note.target.subtitle}{note.target.subtitle}{/if}
+          </span>
+        {/if}
       </button>
     {:else}
       <!-- Pinned but never typed — the staging path always assigns a
@@ -754,14 +931,16 @@
            was kind-flipped to "link" without picking one yet. Show a
            neutral placeholder until the user edits. -->
       <div
-        class="sticky-link-body sticky-link-empty"
+        class="sticky-link-body sticky-link-empty attach-card"
         role="textbox"
         tabindex="0"
         aria-readonly="true"
         title="Double-click to edit"
       >
-        <span class="sticky-link-icon" aria-hidden="true">🔗</span>
-        <span class="sticky-link-label muted">(empty link)</span>
+        <span class="attach-card-icon" aria-hidden="true">
+          <AttachmentIcon glyph="🔗" size={56} />
+        </span>
+        <span class="attach-card-label muted">(empty link)</span>
       </div>
     {/if}
   {:else}

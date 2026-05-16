@@ -25,6 +25,23 @@ export type AttachmentKind = "note" | "link";
 export interface LinkTarget {
   type: "url" | "commit" | "session" | "file";
   value: string;
+  /** Display snapshot captured at pick-time so the chip can render
+   *  instantly without re-hitting /api/agents or /api/commits. */
+  label?: string;
+  /** Secondary line. For commits this is the author; for sessions
+   *  it's now the message count ("42 msg"). Agent / provider live
+   *  in their own fields below so the icon resolver doesn't have
+   *  to parse strings. */
+  subtitle?: string;
+  /** Tertiary line — relative age ("2d") for both types. */
+  meta?: string;
+  /** Session agent ("claude", "codex", ...) — drives the per-agent
+   *  brand mark on the chip. Empty / absent → fallback dot. */
+  agent?: string;
+  /** Git remote provider ("github", "gitlab", "bitbucket", ...) —
+   *  drives the per-provider brand mark on commit chips. Resolved
+   *  from the repo's origin remote at pick time. */
+  provider?: string;
 }
 
 export interface Note {
@@ -109,7 +126,21 @@ export function parseNoteFile(raw: string): Note {
     tValue !== undefined &&
     (tType === "url" || tType === "commit" || tType === "session" || tType === "file")
   ) {
-    note.target = { type: tType, value: tValue };
+    const target: LinkTarget = { type: tType, value: tValue };
+    // Display-snapshot fields are optional — older link files (and
+    // hand-edited ones) omit them, and the renderer falls back to
+    // value-derived display in that case.
+    const tLabel = fm.scalars.get("targetLabel");
+    const tSubtitle = fm.scalars.get("targetSubtitle");
+    const tMeta = fm.scalars.get("targetMeta");
+    const tAgent = fm.scalars.get("targetAgent");
+    const tProvider = fm.scalars.get("targetProvider");
+    if (tLabel !== undefined) target.label = tLabel;
+    if (tSubtitle !== undefined) target.subtitle = tSubtitle;
+    if (tMeta !== undefined) target.meta = tMeta;
+    if (tAgent !== undefined) target.agent = tAgent;
+    if (tProvider !== undefined) target.provider = tProvider;
+    note.target = target;
   }
   return note;
 }
@@ -190,8 +221,27 @@ export function serializeNoteFile(note: Note): string {
     out.push(`kind: ${note.kind}`);
   }
   if (note.target !== undefined) {
+    // Snapshot fields may contain arbitrary user text (session
+    // titles, commit subjects). Collapse newlines so the flat-YAML
+    // parser doesn't see a stray line and treat it as the next key.
+    const safe = (s: string) => s.replace(/\r?\n/g, " ").trim();
     out.push(`targetType: ${note.target.type}`);
-    out.push(`targetValue: ${note.target.value}`);
+    out.push(`targetValue: ${safe(note.target.value)}`);
+    if (note.target.label !== undefined) {
+      out.push(`targetLabel: ${safe(note.target.label)}`);
+    }
+    if (note.target.subtitle !== undefined) {
+      out.push(`targetSubtitle: ${safe(note.target.subtitle)}`);
+    }
+    if (note.target.meta !== undefined) {
+      out.push(`targetMeta: ${safe(note.target.meta)}`);
+    }
+    if (note.target.agent !== undefined) {
+      out.push(`targetAgent: ${safe(note.target.agent)}`);
+    }
+    if (note.target.provider !== undefined) {
+      out.push(`targetProvider: ${safe(note.target.provider)}`);
+    }
   }
   out.push("---");
   out.push(note.body);

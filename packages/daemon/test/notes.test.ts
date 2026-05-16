@@ -264,6 +264,53 @@ describe("NotesStore", () => {
     });
   });
 
+  test("preserves target snapshot fields (label/subtitle/meta) on round-trip", async () => {
+    const path = await tempDir();
+    const a = await NotesStore.open(path);
+    const created = await a.create({
+      body: "",
+      kind: "link",
+      target: {
+        type: "commit",
+        value: "abc1234deadbeef",
+        label: "Fix: handle the edge case in renderer",
+        subtitle: "alice",
+        meta: "2d",
+      },
+    });
+    expect(created.target?.label).toBe("Fix: handle the edge case in renderer");
+    // Re-open the store so we exercise the serialize → parse roundtrip
+    // (not just the in-memory pass-through).
+    const b = await NotesStore.open(path);
+    const round = await b.get(created.id);
+    expect(round?.target?.label).toBe("Fix: handle the edge case in renderer");
+    expect(round?.target?.subtitle).toBe("alice");
+    expect(round?.target?.meta).toBe("2d");
+  });
+
+  test("survives newlines in snapshot fields (collapses to space)", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const created = await store.create({
+      body: "",
+      kind: "link",
+      target: {
+        type: "session",
+        value: "/x/s.jsonl",
+        // Multi-line label — without the serializer's sanitize step
+        // the second line would be interpreted as a new frontmatter
+        // key and the parser would silently drop the rest.
+        label: "First line\nSecond line",
+        subtitle: "claude",
+        meta: "5 msg",
+      },
+    });
+    const reopened = await NotesStore.open(store.workspacePath);
+    const round = await reopened.get(created.id);
+    expect(round?.target?.label).toBe("First line Second line");
+    expect(round?.target?.subtitle).toBe("claude");
+    expect(round?.target?.meta).toBe("5 msg");
+  });
+
   test("update can flip a note to a link and back", async () => {
     const store = await NotesStore.open(await tempDir());
     const note = await store.create({ body: "draft" });

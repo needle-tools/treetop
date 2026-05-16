@@ -7,6 +7,7 @@
   import Popover from "./Popover.svelte";
   import SourceControlPane from "./SourceControlPane.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
@@ -14,6 +15,7 @@
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
   import { spawnNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
+  import { sessionFocusRequest } from "./session-focus-store";
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
@@ -86,6 +88,7 @@
     messageCount?: number;
     contextTokens?: number;
     contextTokensExact?: boolean;
+    contextWindow?: number;
     model?: string;
   }
   interface ShellRecord {
@@ -646,6 +649,71 @@
    *  to render the row's dot smaller so the user can see at a
    *  glance which TUIs are still live vs which have wound down. */
   let transientExited: Record<string, boolean> = {};
+  /** ms timestamp of the working→idle transition for each TUI.
+   *  Drives the dock's "unread" pulse on the row's dot — a quiet
+   *  reminder that the AI just finished and you haven't looked
+   *  at it yet. Cleared when the user re-focuses the session
+   *  (handlePick / revealSession) or when the PTY exits; the
+   *  dock also auto-clears the pulse after 20 min so a long-
+   *  ignored finish doesn't keep nagging. */
+  let transientFinishedAt: Record<string, number | undefined> = {};
+  /** Per-source debounce timers for `transientFinishedAt`. PTY
+   *  `working` oscillates many times within a single agent turn
+   *  (each tool call flips it), so we wait for a sustained idle
+   *  period before stamping the row as unread — otherwise the
+   *  dock would pulse on every tool-call boundary and clicking
+   *  to dismiss would never feel sticky. */
+  const FINISH_DEBOUNCE_MS = 8_000;
+  const finishedTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  function scheduleFinished(source: string): void {
+    cancelFinishedTimer(source);
+    finishedTimers[source] = setTimeout(() => {
+      finishedTimers[source] = undefined;
+      // If the user is currently focused inside the column when
+      // the AI finishes, they don't need the dock to remind them
+      // about an "unread" turn — they're already looking. Skip.
+      if (isSessionFocused(source)) return;
+      transientFinishedAt = {
+        ...transientFinishedAt,
+        [source]: Date.now(),
+      };
+    }, FINISH_DEBOUNCE_MS);
+  }
+  function handleFocusInForUnread(ev: FocusEvent): void {
+    const t = ev.target as Element | null;
+    if (!t) return;
+    const col = t.closest?.(".session-col[data-session-source]") as
+      | HTMLElement
+      | null;
+    if (!col) return;
+    const src = col.getAttribute("data-session-source");
+    if (!src) return;
+    clearFinishedFor(src);
+  }
+  function isSessionFocused(source: string): boolean {
+    if (typeof document === "undefined") return false;
+    const col = document.querySelector(
+      `.session-col[data-session-source="${CSS.escape(source)}"]`,
+    );
+    if (!col) return false;
+    return col.contains(document.activeElement);
+  }
+  function cancelFinishedTimer(source: string): void {
+    const t = finishedTimers[source];
+    if (t) {
+      clearTimeout(t);
+      finishedTimers[source] = undefined;
+    }
+  }
+  function clearFinishedFor(source: string): void {
+    cancelFinishedTimer(source);
+    if (transientFinishedAt[source] !== undefined) {
+      transientFinishedAt = {
+        ...transientFinishedAt,
+        [source]: undefined,
+      };
+    }
+  }
   /** `__new__:<agent>:<id>` source → daemon-assigned termId. Set by
    *  NewSessionCol's `on:spawn` for every agent (shell, claude, codex,
    *  copilot). Used by the Dispose button to DELETE /api/terminals/:id.
@@ -1992,8 +2060,25 @@
     }
   }
 
+  /** Apps that count as a "git client" — when the user clicks one,
+   *  remember it as their preferred client so commit-link chips
+   *  reuse it. Today this is just Fork (the single dedicated git
+   *  GUI in OpenInActions); SourceTree / Tower / GitKraken slot in
+   *  here when they're added, no commit-chip code changes needed. */
+  const GIT_CLIENT_APPS = new Set(["fork"]);
+  const GIT_CLIENT_PREF_KEY = "supergit:preferred-git-client";
+
   async function openIn(path: string, app: string) {
     error = "";
+    // Side-effect: remember the user's last git-client choice. The
+    // commit-link chip's openTarget reads the same key.
+    if (GIT_CLIENT_APPS.has(app)) {
+      try {
+        localStorage.setItem(GIT_CLIENT_PREF_KEY, app);
+      } catch {
+        // Quota / private mode — non-essential, ignore.
+      }
+    }
     try {
       const res = await fetch("/api/open", {
         method: "POST",
@@ -2335,6 +2420,11 @@
      *  the same legacy/error case as `author`. */
     date?: string;
   }
+  interface NumstatEntry {
+    added: number;
+    removed: number;
+    binary: boolean;
+  }
   interface WtSummary {
     staged: string[];
     unstaged: string[];
@@ -2345,6 +2435,13 @@
      *  at 20; the tooltip further caps display at the first 10. Optional
      *  for backwards-compat with older daemon builds. */
     unfetchedCommits?: WtCommit[];
+    /** Per-path added/removed line counts for working-tree files
+     *  (unstaged + synthesised untracked). Misses render as no count.
+     *  Optional for back-compat with older daemon builds. */
+    stats?: Record<string, NumstatEntry>;
+    /** Per-path added/removed line counts for staged files (index vs
+     *  HEAD). Optional for back-compat. */
+    stagedStats?: Record<string, NumstatEntry>;
   }
   /** Hard cap on commits rendered per tooltip. The daemon already caps at
    *  20; this trims further to keep the hover overlay glanceable. */
@@ -2563,6 +2660,12 @@
     /** True once this column's PTY has exited. Drives the smaller
      *  "ended" dot in the side dock. */
     exited: boolean;
+    /** ms timestamp of the most recent working→idle transition.
+     *  Drives the dock dot's "unread" pulse — set when the AI
+     *  just finished a turn the user hasn't focused yet. Cleared
+     *  by the dock's 20-min auto-expiry or by App's on:pick
+     *  handler when the user opens the session. */
+    finishedAt?: number;
   }> => {
     const out: ReturnType<typeof Array> = [] as any;
     for (const repo of repos) {
@@ -2626,6 +2729,7 @@
             // TUI right now: PTYs that exited, plus read-mode chat
             // columns (SessionView in mode !== "terminal").
             exited: !isLiveTui,
+            finishedAt: transientFinishedAt[s.source],
           });
         }
       }
@@ -2776,6 +2880,11 @@
     // before the popover is opened. Switches to a faster cadence in
     // `toggleTuisOpen` when the popover is on screen.
     startTuiPolling(TUI_SLOW_MS);
+    // Global focus listener — whenever the user puts focus into a
+    // session column (typing, clicking into the terminal, etc.)
+    // clear that column's "unread" pulse so it doesn't keep
+    // blinking while they're already looking at it.
+    document.addEventListener("focusin", handleFocusInForUnread);
     void load();
     // Note: SourceControlPane handles its own initial commits-load via
     // a `$: onExpandedChange(expanded, wt.path)` reactive when its
@@ -2847,6 +2956,16 @@
     }
     const unsubStream = subscribeToStream();
     const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
+    // Click-on-saved-session-link → bring the session into view.
+    // The chip writes a {source, ts} request into the focus store;
+    // we locate which worktree it belongs to (via the live
+    // repos[].worktrees[].agents data), open the column if it's not
+    // already in the strip, scroll it into view, and apply a brief
+    // outline-highlight so the user sees where the link landed.
+    const unsubFocus = sessionFocusRequest.subscribe((req) => {
+      if (!req) return;
+      void focusSessionBySource(req.source);
+    });
     return () => {
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
@@ -2854,9 +2973,56 @@
       stopTuiPolling();
       unsubStream();
       unsubErrors();
+      unsubFocus();
       clearInterval(nowTimer);
     };
   });
+
+  /** Imperative side of "click a session sticky-link → focus the
+   *  matching column in its worktree strip". Adds the session to
+   *  openSessionsByWt if it isn't already open, then on the next
+   *  tick scrolls the column into view and toggles a brief outline
+   *  highlight via `.session-col-focused`. */
+  async function focusSessionBySource(source: string): Promise<void> {
+    let targetWtPath: string | null = null;
+    let agentName: OpenSession["agent"] | null = null;
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        const found = (wt.agents ?? []).find((a) => a.source === source);
+        if (found) {
+          targetWtPath = wt.path;
+          agentName = found.agent;
+          break;
+        }
+      }
+      if (targetWtPath) break;
+    }
+    // Orphan session (no live worktree matches the saved source) —
+    // we'd need a separate "orphan strip" surface to render it. For
+    // now this is a no-op so the chip's hover-title still reads as
+    // "Open <path>" and the user can decide what to do.
+    if (!targetWtPath || !agentName) return;
+    const existing = openSessionsByWt[targetWtPath] ?? [];
+    if (!existing.some((s) => s.source === source)) {
+      openSessionsByWt = {
+        ...openSessionsByWt,
+        [targetWtPath]: [{ agent: agentName, source }, ...existing],
+      };
+    }
+    // Wait for the {#each} to commit the new column to the DOM, then
+    // scroll + flash the outline. Two ticks because scrollIntoView is
+    // a sync read that needs the layout pass after the reactivity
+    // update.
+    await tick();
+    await tick();
+    const el = document.querySelector(
+      `.session-col[data-session-source="${CSS.escape(source)}"]`,
+    ) as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    el.classList.add("session-col-focused");
+    setTimeout(() => el.classList.remove("session-col-focused"), 1800);
+  }
 </script>
 
 <main class:zen-row={zenRowKey !== null}>
@@ -3406,31 +3572,7 @@
                       {:else}
                         <!-- Mirror of the expanded summary.text tooltip:
                              staged / unstaged / untracked file lists. -->
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined}
-                            {#if s.staged.length > 0}
-                              <div class="wt-tt-section">
-                                <div class="wt-tt-section-head">staged ({s.staged.length})</div>
-                                {#each s.staged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                              </div>
-                            {/if}
-                            {#if s.unstaged.length > 0}
-                              <div class="wt-tt-section">
-                                <div class="wt-tt-section-head">unstaged ({s.unstaged.length})</div>
-                                {#each s.unstaged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                              </div>
-                            {/if}
-                            {#if s.untracked.length > 0}
-                              <div class="wt-tt-section">
-                                <div class="wt-tt-section-head">untracked ({s.untracked.length})</div>
-                                {#each s.untracked as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
+                        <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} />
                       {/if}
                     </span>
                   </Tooltip>
@@ -3949,31 +4091,7 @@
                     class:muted={!urgent}
                   >{summary.text}</span>
                   <span slot="content" class="wt-tt-content">
-                    {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                      <span class="muted small">Loading…</span>
-                    {:else}
-                      {@const s = wtSummaryByPath[wt.path]}
-                      {#if s !== "loading" && s !== undefined}
-                        {#if s.staged.length > 0}
-                          <div class="wt-tt-section">
-                            <div class="wt-tt-section-head">staged ({s.staged.length})</div>
-                            {#each s.staged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                          </div>
-                        {/if}
-                        {#if s.unstaged.length > 0}
-                          <div class="wt-tt-section">
-                            <div class="wt-tt-section-head">unstaged ({s.unstaged.length})</div>
-                            {#each s.unstaged as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                          </div>
-                        {/if}
-                        {#if s.untracked.length > 0}
-                          <div class="wt-tt-section">
-                            <div class="wt-tt-section-head">untracked ({s.untracked.length})</div>
-                            {#each s.untracked as p}<div class="wt-tt-path" title={p}>{p}</div>{/each}
-                          </div>
-                        {/if}
-                      {/if}
-                    {/if}
+                    <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} />
                   </span>
                 </Tooltip>
               {/if}
@@ -4141,6 +4259,7 @@
                             totalMessageCount={newAgentMeta?.messageCount}
                             contextTokens={newAgentMeta?.contextTokens}
                             contextTokensExact={newAgentMeta?.contextTokensExact}
+                            contextWindow={newAgentMeta?.contextWindow}
                             model={newAgentMeta?.model}
                             lastActivityIso={newAgentMeta?.lastActive}
                             on:close={() => closeSessionInWt(wt.path, s)}
@@ -4206,10 +4325,26 @@
                               };
                             }}
                             on:workingChange={(e) => {
+                              const wasWorking = !!transientWorking[s.source];
+                              const nowWorking = e.detail.working;
                               transientWorking = {
                                 ...transientWorking,
-                                [s.source]: e.detail.working,
+                                [s.source]: nowWorking,
                               };
+                              if (wasWorking && !nowWorking) {
+                                // working → idle: arm the debounced
+                                // "unread" stamp. Fires only after
+                                // FINISH_DEBOUNCE_MS of continued
+                                // idle, so tool-call oscillation
+                                // doesn't trigger the pulse.
+                                scheduleFinished(s.source);
+                              } else if (nowWorking) {
+                                // AI is working again — cancel any
+                                // pending debounce and clear an
+                                // existing pulse so the dot doesn't
+                                // keep nagging through a new turn.
+                                clearFinishedFor(s.source);
+                              }
                             }}
                             on:exit={() => {
                               transientExited = {
@@ -4225,6 +4360,7 @@
                                   [s.source]: false,
                                 };
                               }
+                              clearFinishedFor(s.source);
                               if (transientAwaiting[s.source]) {
                                 transientAwaiting = {
                                   ...transientAwaiting,
@@ -4242,9 +4378,11 @@
                           <SessionView
                             agent={s.agent as "claude" | "codex" | "copilot"}
                             source={s.source}
+                            wtPath={wt.path}
                             totalMessageCount={agentMeta?.messageCount}
                             contextTokens={agentMeta?.contextTokens}
                             contextTokensExact={agentMeta?.contextTokensExact}
+                            contextWindow={agentMeta?.contextWindow}
                             model={agentMeta?.model}
                             initialMode={s.mode === "terminal" ? "terminal" : "read"}
                             onModeChange={(m) => {
@@ -4261,10 +4399,16 @@
                               if (next !== openSessionsByWt) openSessionsByWt = next;
                             }}
                             onWorkingChange={(w) => {
+                              const wasWorking = !!transientWorking[s.source];
                               transientWorking = {
                                 ...transientWorking,
                                 [s.source]: w,
                               };
+                              if (wasWorking && !w) {
+                                scheduleFinished(s.source);
+                              } else if (w) {
+                                clearFinishedFor(s.source);
+                              }
                             }}
                             onAwaitingChange={(a) => {
                               transientAwaiting = {
@@ -4383,6 +4527,9 @@
       agent: e.detail.agent,
       source: e.detail.source,
     });
+    // User focused this session → clear the unread pulse on its
+    // dock dot (or any pending debounce that would stamp one).
+    clearFinishedFor(e.detail.source);
   }}
 />
 

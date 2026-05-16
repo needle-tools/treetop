@@ -674,6 +674,47 @@ export function parseChangedFiles(porcelain: string): {
   return { staged, unstaged, untracked };
 }
 
+/** Per-file line stats. `binary` is true when git reports `-\t-` (no
+ *  textual diff). For binary entries added/removed are 0 so callers can
+ *  still render a sentinel without a special-case. */
+export interface NumstatEntry {
+  added: number;
+  removed: number;
+  binary: boolean;
+}
+
+/** Parse `git diff --numstat` (and `--cached` / `--no-index` variants).
+ *  Each line is `added\tremoved\tpath`. Binary files print `-\t-`.
+ *  Renames with default rename detection print `path` as `{old => new}`
+ *  or `dir/{a => b}/file` — callers that need plain paths should pass
+ *  `--no-renames` so each side reports as separate add/delete entries. */
+export function parseNumstat(out: string): Record<string, NumstatEntry> {
+  const map: Record<string, NumstatEntry> = {};
+  for (const line of out.split("\n")) {
+    if (line.length === 0) continue;
+    // Split on the FIRST two tabs only; paths can contain tabs in theory
+    // but are vanishingly rare. The path field is everything after the
+    // second tab.
+    const t1 = line.indexOf("\t");
+    if (t1 < 0) continue;
+    const t2 = line.indexOf("\t", t1 + 1);
+    if (t2 < 0) continue;
+    const addedStr = line.slice(0, t1);
+    const removedStr = line.slice(t1 + 1, t2);
+    const path = line.slice(t2 + 1);
+    if (path.length === 0) continue;
+    if (addedStr === "-" || removedStr === "-") {
+      map[path] = { added: 0, removed: 0, binary: true };
+      continue;
+    }
+    const added = Number.parseInt(addedStr, 10);
+    const removed = Number.parseInt(removedStr, 10);
+    if (!Number.isFinite(added) || !Number.isFinite(removed)) continue;
+    map[path] = { added, removed, binary: false };
+  }
+  return map;
+}
+
 /** Subjects of the commits that are on HEAD but not on the upstream
  *  yet (or, in the inbound direction, commits we haven't fetched/pulled
  *  yet). Drives the "↑N" / "↓N" hover tooltips. Input is the output of

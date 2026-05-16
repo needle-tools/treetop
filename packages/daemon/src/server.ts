@@ -16,6 +16,7 @@ import {
   checkoutBranch,
   listRemotes,
   parseChangedFiles,
+  parseNumstat,
   parseUnpushedCommits,
   type DiffKind,
 } from "./git";
@@ -127,7 +128,13 @@ function parseKind(v: unknown): AttachmentKind | undefined {
  *  but an empty value would render as a broken chip in the UI). */
 function parseTarget(v: unknown): LinkTarget | undefined {
   if (!v || typeof v !== "object") return undefined;
-  const obj = v as { type?: unknown; value?: unknown };
+  const obj = v as {
+    type?: unknown;
+    value?: unknown;
+    label?: unknown;
+    subtitle?: unknown;
+    meta?: unknown;
+  };
   if (typeof obj.value !== "string" || obj.value.length === 0) return undefined;
   if (
     obj.type === "url" ||
@@ -135,7 +142,28 @@ function parseTarget(v: unknown): LinkTarget | undefined {
     obj.type === "session" ||
     obj.type === "file"
   ) {
-    return { type: obj.type, value: obj.value };
+    const target: LinkTarget = { type: obj.type, value: obj.value };
+    // Display-snapshot fields are pass-through with a string + length
+    // guard — empty strings would write empty frontmatter keys we'd
+    // then re-parse as empty values, which is fine but pointless.
+    if (typeof obj.label === "string" && obj.label.length > 0) {
+      target.label = obj.label;
+    }
+    if (typeof obj.subtitle === "string" && obj.subtitle.length > 0) {
+      target.subtitle = obj.subtitle;
+    }
+    if (typeof obj.meta === "string" && obj.meta.length > 0) {
+      target.meta = obj.meta;
+    }
+    if (typeof (obj as { agent?: unknown }).agent === "string"
+        && ((obj as { agent: string }).agent).length > 0) {
+      target.agent = (obj as { agent: string }).agent;
+    }
+    if (typeof (obj as { provider?: unknown }).provider === "string"
+        && ((obj as { provider: string }).provider).length > 0) {
+      target.provider = (obj as { provider: string }).provider;
+    }
+    return target;
   }
   return undefined;
 }
@@ -1351,7 +1379,13 @@ const server = Bun.serve<TermWsData, never>({
       // and behind (commits we'd get on the next fetch/pull). Each is
       // capped at 20; the UI tooltip further caps at the first 10.
       const fmt = "%H%x00%s%x00%an%x00%ar";
-      const [statusOut, aheadOut, behindOut] = await Promise.all([
+      const [
+        statusOut,
+        aheadOut,
+        behindOut,
+        numstatUnstaged,
+        numstatStaged,
+      ] = await Promise.all([
         $`git -C ${path} status --porcelain`.quiet().nothrow().text(),
         $`git -C ${path} log @{u}..HEAD --pretty=format:${fmt} -n 20`
           .quiet()
@@ -1361,11 +1395,84 @@ const server = Bun.serve<TermWsData, never>({
           .quiet()
           .nothrow()
           .text(),
+        // --no-renames so paths line up 1:1 with parseChangedFiles output;
+        // otherwise renames render as `{a => b}` and wouldn't match.
+        $`git -C ${path} diff --numstat --no-renames`.quiet().nothrow().text(),
+        $`git -C ${path} diff --cached --numstat --no-renames`
+          .quiet()
+          .nothrow()
+          .text(),
       ]);
       const files = parseChangedFiles(statusOut);
       const unpushedCommits = parseUnpushedCommits(aheadOut);
       const unfetchedCommits = parseUnpushedCommits(behindOut);
-      return json({ ...files, unpushedCommits, unfetchedCommits });
+      // Per-path line stats. Two maps: one for the working tree (covers
+      // `unstaged` + we synthesise entries for `untracked` below), one
+      // for the index (`staged`). Looking up by path on the UI side is
+      // O(1) and tolerates the lists drifting from the stats (e.g. a
+      // file vanishing between status and diff — stats just come back
+      // undefined and the tooltip shows the path without a count).
+      const stats: Record<
+        string,
+        { added: number; removed: number; binary: boolean }
+      > = {
+        ...parseNumstat(numstatUnstaged),
+      };
+      const stagedStats = parseNumstat(numstatStaged);
+      // Untracked files don't appear in `git diff`. Use --no-index per
+      // file (parallel) so the tooltip can show "all new lines" instead
+      // of a bare filename. Cap to keep an accidental 10k-untracked-dir
+      // hover from spawning thousands of processes; rest fall back to
+      // no-stats display.
+      const UNTRACKED_STAT_CAP = 200;
+      const untrackedToStat = files.untracked.slice(0, UNTRACKED_STAT_CAP);
+      const untrackedResults = await Promise.all(
+        untrackedToStat.map(async (rel) => {
+          // --no-index always exits non-zero when files differ; nothrow
+          // and just read stdout.
+          const out = await $`git -C ${path} diff --no-index --numstat /dev/null ${rel}`
+            .quiet()
+            .nothrow()
+            .text();
+          return { rel, parsed: parseNumstat(out) };
+        }),
+      );
+      for (const { rel, parsed } of untrackedResults) {
+        // `git diff --no-index /dev/null <file>` reports the path as
+        // `/dev/null => <file>` (a synthetic rename), so look up by
+        // value: there's at most one entry per call.
+        const entry = Object.values(parsed)[0];
+        if (entry) stats[rel] = entry;
+      }
+      // Per-path mtimes (epoch ms) so the UI can sort buckets by
+      // most-recently-touched. Stat every path across all three
+      // buckets in parallel; deleted files (e.g. staged removals)
+      // come back as undefined and the UI sorts them last. join()
+      // resolves to an absolute path; relative paths from
+      // parseChangedFiles are interpreted under the worktree.
+      const allPaths = Array.from(
+        new Set([...files.staged, ...files.unstaged, ...files.untracked]),
+      );
+      const mtimes: Record<string, number> = {};
+      await Promise.all(
+        allPaths.map(async (rel) => {
+          try {
+            const s = await fsStat(join(path, rel));
+            mtimes[rel] = s.mtimeMs;
+          } catch {
+            // Vanished between status and stat (race on a fast rm) —
+            // leave undefined; sort puts it at the bottom.
+          }
+        }),
+      );
+      return json({
+        ...files,
+        unpushedCommits,
+        unfetchedCommits,
+        stats,
+        stagedStats,
+        mtimes,
+      });
     }
 
     if (url.pathname === "/api/diff" && req.method === "GET") {

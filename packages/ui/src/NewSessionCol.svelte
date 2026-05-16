@@ -60,6 +60,7 @@
   export let totalMessageCount: number | undefined = undefined;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
+  export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
 
@@ -110,6 +111,7 @@
     {totalMessageCount}
     {contextTokens}
     {contextTokensExact}
+    {contextWindow}
     {model}
     {lastActivityIso}
     lastActivityFallback="new session"

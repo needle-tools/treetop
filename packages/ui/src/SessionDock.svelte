@@ -14,7 +14,8 @@
    *              scroll the strip, flash the column briefly).
    *  - Hover  -> tooltip with repo/branch + title + last user prompt.
    */
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import ToolIcon from "./ToolIcon.svelte";
   import {
     buildPreviewItems,
     type PreviewAction,
@@ -55,11 +56,44 @@
      *  the dock (hover + click still work) but the dot shrinks to
      *  signal the session is ended. */
     exited: boolean;
+    /** Timestamp (ms) of the most recent working→idle transition.
+     *  When set and recent (< PULSE_MAX_MS), the dock pulses the
+     *  dot as an "unread" reminder until the user re-focuses the
+     *  session. */
+    finishedAt?: number;
   }
 
   export let entries: DockEntry[];
 
   const dispatch = createEventDispatcher<{ pick: DockEntry }>();
+
+  /** How long the "unread" pulse stays on after the AI finishes
+   *  a turn (working → idle). Caps the noise so a long-ignored
+   *  finished session doesn't keep nagging forever. */
+  const PULSE_MAX_MS = 20 * 60 * 1000;
+  /** Clock tick. Re-rendered every minute so the per-row
+   *  `isPulsing(e)` derivation expires `finishedAt` markers
+   *  cleanly without a per-row timer. */
+  let nowTick = Date.now();
+  let nowTimer: ReturnType<typeof setInterval> | null = null;
+  onMount(() => {
+    nowTimer = setInterval(() => {
+      nowTick = Date.now();
+    }, 60_000);
+  });
+  onDestroy(() => {
+    if (nowTimer) {
+      clearInterval(nowTimer);
+      nowTimer = null;
+    }
+  });
+
+  function isPulsing(e: DockEntry, now: number): boolean {
+    if (e.exited) return false;
+    if (e.working || e.awaiting) return false;
+    if (typeof e.finishedAt !== "number") return false;
+    return now - e.finishedAt < PULSE_MAX_MS;
+  }
 
   /** Suppress the hover/focus label-reveal for a short window right
    *  after a click. Without this, the focused button keeps
@@ -311,13 +345,15 @@
   }
   /** Repo colours can land arbitrarily close to the dashboard's
    *  background (`--surface-0` ≈ #23261d) — when that happens the
-   *  dot effectively disappears. This brightens any colour whose
-   *  perceived luminance is below ~80/255 by mixing it with white,
-   *  scaling the boost so really-dark colours lift more than
-   *  almost-bright ones. Bright colours pass through untouched. */
+   *  dot effectively disappears. This boosts any colour whose
+   *  perceived luminance is below ~140/255 OR whose chroma (max
+   *  channel − min channel) is low (i.e. a grey close to the bg
+   *  brightness). Bright, saturated colours pass through. */
+  const BRIGHTEN_LUM_MIN = 140;
+  const BRIGHTEN_CHROMA_MIN = 30;
   function brightenIfDark(hex: string | undefined): string {
-    if (!hex) return "var(--surface-3)";
-    const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex);
+    if (!hex) hex = "#888888";
+    const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex);
     if (!m) return hex;
     const raw = m[1];
     const hex6 =
@@ -331,12 +367,21 @@
     const r = (n >> 16) & 0xff;
     const g = (n >> 8) & 0xff;
     const b = n & 0xff;
-    // Perceived luminance — Rec.601 weights. Close enough for a
-    // "is this dot going to vanish on the dashboard bg" check.
     const lum = (r * 299 + g * 587 + b * 114) / 1000;
-    if (lum >= 80) return hex;
-    const t = Math.min(1, (80 - lum) / 80);
-    const lift = (c: number) => Math.round(c + (255 - c) * t * 0.5);
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    const tooDark = lum < BRIGHTEN_LUM_MIN;
+    const tooGrey = chroma < BRIGHTEN_CHROMA_MIN && lum < 200;
+    if (!tooDark && !tooGrey) return hex;
+    // Boost strength scales with how dark the colour is. Grey-but-
+    // not-dark colours still get a small lift so they pop more
+    // against the page background.
+    const darknessT = Math.max(
+      0,
+      Math.min(1, (BRIGHTEN_LUM_MIN - lum) / BRIGHTEN_LUM_MIN),
+    );
+    const greynessT = tooGrey ? 0.3 : 0;
+    const t = Math.min(1, darknessT * 0.65 + greynessT);
+    const lift = (c: number) => Math.round(c + (255 - c) * t);
     return `#${[lift(r), lift(g), lift(b)]
       .map((c) => c.toString(16).padStart(2, "0"))
       .join("")}`;
@@ -373,6 +418,7 @@
         class:dot-working={e.working}
         class:dot-awaiting={e.awaiting}
         class:dot-exited={e.exited}
+        class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
         style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
@@ -407,7 +453,7 @@
             {#each previews[hoveredEntry.transcriptSource] as item}
               {#if item.kind === "action"}
                 <div class="dock-preview-action">
-                  <span class="dock-preview-action-label">now</span>
+                  <ToolIcon name={item.toolName} />
                   <span class="dock-preview-action-name">{item.toolName}</span>
                   {#if item.detail}
                     <span class="dock-preview-action-detail">{item.detail}</span>
@@ -417,6 +463,14 @@
                 <div class="dock-preview-msg dock-preview-role-{item.role}">
                   <span class="dock-preview-head">
                     <span class="dock-preview-role">
+                      {#if item.role === "assistant" && (hoveredEntry.agent === "claude" || hoveredEntry.agent === "codex")}
+                        <img
+                          class="dock-preview-agent-icon"
+                          src="/agents/{hoveredEntry.agent}.svg"
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      {/if}
                       {item.role === "assistant" ? hoveredEntry.agent : item.role}
                     </span>
                     {#if item.timestamp}
@@ -484,7 +538,7 @@
      perceptible alongside the page-bg card and revealed labels.
      Resting state stays chrome-free. */
   .session-dock.show-labels {
-    border-color: color-mix(in srgb, var(--text-1, #e8e8e8) 20%, transparent);
+    border-color: color-mix(in oklch, var(--text-1, #e8e8e8) 20%, transparent);
   }
   /* `.show-labels` is set by JS (mouseenter on the dock, plus a
      1s grace timer on mouseleave) so labels + chat preview share
@@ -552,6 +606,21 @@
       transform 160ms ease,
       opacity 160ms ease;
   }
+  /* "Unread" pulse: gentle scale up/down for sessions where the
+     AI just finished a turn but the user hasn't focused them yet.
+     Animation runs forever in CSS — the JS side toggles the
+     class off after 20 min or when the row is picked. Skipped
+     when working or awaiting already cover the dot. */
+  .dock-dot.dot-pulsing .dock-dot-inner {
+    animation: dock-unread-pulse 0.6s ease-in-out infinite;
+  }
+  @keyframes dock-unread-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.25); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dock-dot.dot-pulsing .dock-dot-inner { animation: none; }
+  }
   /* Ended / inactive session: shrink the visible dot via a transform
      so the box dimensions stay at 10×10. Keeping the box size means
      the small dot is horizontally centered on the same x as the
@@ -575,18 +644,17 @@
      the dock itself stays chrome-free per request, and labels still
      read against busy content behind the page. */
   .dock-label {
-    /* Inline flex child of the dot button so the dock's bounding
-       box grows to enclose dots + labels when revealed on hover —
-       the dock paints one rounded background behind everything,
-       no per-label tile needed. Padding stays constant whether the
-       label is hidden or visible so the button's height never
-       shifts (preventing the column from jittering on hover). */
+    /* Inline-flex so children (repo / title / time) align on a
+       single baseline and the time segment can push to the right
+       edge via margin-left: auto — that way the rightmost time
+       column lines up vertically across every row, regardless of
+       title width. Padding stays constant between rest / hover so
+       the button never shifts vertically when labels appear. */
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3em;
     overflow: hidden;
     white-space: nowrap;
-    /* Buttons default to text-align: center; force left-alignment
-       so the repo · title · time row reads as a normal list line
-       rather than centered text. */
-    text-align: left;
     max-width: 0;
     opacity: 0;
     padding: 3px 0;
@@ -634,7 +702,10 @@
   .dock-label-time {
     vertical-align: baseline;
     color: var(--text-muted, #9a9aa0);
-    margin-left: 0.3em;
+    /* Pushes the time chip to the right edge of the label so every
+       row's time aligns in the same vertical column. */
+    margin-left: auto;
+    padding-left: 1em;
   }
   .dock-label-title {
     display: inline-block;
@@ -718,16 +789,44 @@
     margin-bottom: 0;
   }
   .dock-preview-role-user {
-    /* Opaque tint over the page bg — no alpha — so chat bubbles
-       stay readable regardless of what's behind the panel. Both
-       roles align to the left; the per-role tint + caption do the
-       differentiation, not horizontal position. */
-    background: color-mix(in srgb, var(--brand, #60b74c) 18%, var(--surface-0, #23261d));
-    border: 1px solid color-mix(in srgb, var(--brand, #60b74c) 35%, var(--surface-0, #23261d));
+    /* Brand-tinted opaque surface so chat bubbles stay readable
+       regardless of what's behind the panel. Both roles align to
+       the left; the per-role tint + caption do the differentiation,
+       not horizontal position. */
+    background: var(--dock-user-bg);
+    border: 1px solid var(--dock-user-border);
+    color: var(--dock-user-text);
+  }
+  /* Two parallel chat-bubble palettes, both derived from existing
+     dark-theme tokens. Override any of these eight tokens at
+     `.session-dock` (or `:root`) to retune the preview without
+     touching block-specific rules.
+       User bubble  — brand-tinted dark surface, bright text.
+       AI / tool    — light surface (inverted from the page bg)
+                      so AI messages "pop" off the dashboard. */
+  .dock-preview {
+    --dock-user-bg: color-mix(in oklch, var(--brand, #60b74c) 18%, var(--surface-0, #23261d));
+    --dock-user-border: var(--text-muted, #888);
+    --dock-user-text: var(--text-1, #e8e8e8);
+    --dock-user-role: color-mix(in oklch, var(--brand, #60b74c) 70%, var(--text-1, #e8e8e8));
+
+    --dock-ai-bg: var(--text-1, #e8e8e8);
+    --dock-ai-border: var(--text-muted, #888);
+    --dock-ai-text: var(--surface-0, #23261d);
   }
   .dock-preview-role-assistant {
-    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 70%, var(--surface-0, #23261d));
-    border: 1px solid color-mix(in srgb, var(--text-muted, #888) 40%, var(--surface-0, #23261d));
+    background: var(--dock-ai-bg);
+    border: 1px solid var(--dock-ai-border);
+    color: var(--dock-ai-text);
+  }
+  /* Role caption + timestamp inside an AI bubble derive from
+     `--dock-ai-text` so they automatically follow any retune. */
+  .dock-preview-role-assistant .dock-preview-role {
+    color: var(--dock-ai-text);
+    font-weight: 700;
+  }
+  .dock-preview-role-assistant .dock-preview-time {
+    color: color-mix(in oklch, var(--dock-ai-text) 85%, transparent);
   }
   .dock-preview-head {
     display: inline-flex;
@@ -737,6 +836,12 @@
        it reads as a caption above the text, not a trailing tag. */
     align-self: flex-start;
   }
+  .dock-preview-agent-icon {
+    width: 0.9em;
+    height: 0.9em;
+    vertical-align: -0.15em;
+    margin-right: 0.2em;
+  }
   .dock-preview-role {
     text-transform: uppercase;
     font-size: 0.58rem;
@@ -745,14 +850,18 @@
   }
   .dock-preview-time {
     font-size: 0.58rem;
-    color: var(--text-faint, #666);
+    /* Default (user bubbles, on dark brand-tinted bg) — use a
+       brighter text token than --text-faint so the timestamp is
+       readable on the dark surface. Assistant bubbles override
+       this with a --dock-ai-text-derived value. */
+    color: var(--text-2, #d0d0d0);
   }
   .dock-preview-role-user .dock-preview-role {
-    color: color-mix(in srgb, var(--brand, #60b74c) 70%, white);
+    color: var(--dock-user-role);
   }
-  .dock-preview-role-assistant .dock-preview-role {
-    color: var(--chip-orange-text, #ffb86b);
-  }
+  /* (Assistant role caption colour is set above where the inverted
+     `--dock-ai-text` palette is defined — no per-agent hardcoded
+     hue needed.) */
   .dock-preview-text {
     white-space: pre-wrap;
     word-break: break-word;
@@ -771,7 +880,7 @@
     width: 0.7rem;
     height: 0.7rem;
     border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--text-muted, #888) 35%, transparent);
+    border: 2px solid color-mix(in oklch, var(--text-muted, #888) 35%, transparent);
     border-top-color: var(--text-1, #e8e8e8);
     animation: dock-preview-spin 0.8s linear infinite;
   }
@@ -784,57 +893,71 @@
   /* "+ N messages" gap bubble between selected previews. Tiny pill,
      centered, neutral — reads as "there's stuff here we're hiding"
      without competing with the actual chat bubbles. */
-  /* "Now:" action chip — single status line. Borrows the AI
-     bubble's neutral surface tint + bright border so tool chips
-     read as part of the same visual family as the assistant
-     messages they sit between (or follow). */
+  /* "Now:" action chip — shares the AI bubble's inverted palette
+     so tool messages read as the same visual family as the AI
+     bubbles they sit between. All colours derive from
+     --dock-ai-* so retuning the AI bubble retunes the chip too. */
   .dock-preview-action {
-    align-self: stretch;
+    /* Same width budget as the chat bubbles (85%) so tool chips
+       sit within the same visual column. Single-line layout:
+       icon + tool name + detail flow inline; the detail
+       truncates with an ellipsis if it can't fit. */
+    align-self: flex-start;
+    max-width: 85%;
     display: flex;
-    align-items: baseline;
+    flex-direction: row;
+    align-items: center;
     gap: 0.4rem;
     margin-bottom: 0.45rem;
     padding: 0.25rem 0.5rem;
     border-radius: var(--radius-sm, 4px);
-    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 70%, var(--surface-0, #23261d));
-    border: 1px solid color-mix(in srgb, var(--text-muted, #888) 40%, var(--surface-0, #23261d));
+    background: var(--dock-ai-bg);
+    border: 1px solid var(--dock-ai-border);
     font-family: ui-monospace, monospace;
     font-size: 0.66rem;
-    color: var(--text-1, #e8e8e8);
+    color: var(--dock-ai-text);
+    overflow: hidden;
   }
-  .dock-preview-action-label {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-size: 0.58rem;
-    color: var(--text-muted, #9a9aa0);
+  .dock-preview-action :global(.tool-icon) {
+    width: 1em;
+    height: 1em;
+    flex: 0 0 auto;
+    /* Heavier stroke than the default 2 — thin SVG lines read
+       lighter than text at the same colour, so bump the stroke
+       to match the surrounding bold tool name visually. */
+    stroke-width: 2.6;
   }
   .dock-preview-action-name {
-    color: var(--chip-orange-text, #ffb86b);
+    color: var(--dock-ai-text);
     font-weight: 600;
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
   .dock-preview-action-detail {
-    color: var(--text-2, #d0d0d0);
+    color: color-mix(in oklch, var(--dock-ai-text) 80%, transparent);
+    /* Stay on one line; truncate with ellipsis when the detail
+       would otherwise push past the chip's 85%-width budget. */
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
   }
   .dock-preview-gap {
-    /* Half-width strip pinned to the left edge so the gap reads
-       as a quiet in-band separator rather than a centered pill or
-       a full-width banner. */
+    /* Sits at the left edge and shrinks to its content's natural
+       width — reads as a quiet in-band separator. Colours derive
+       from the same --dock-ai-* palette as the AI bubbles +
+       action chip so the whole preview reads as one family. */
     align-self: flex-start;
-    width: 50%;
-    text-align: center;
+    width: fit-content;
+    text-align: left;
     margin: 0.1rem 0 0.4rem 0;
-    font-size: 0.6rem;
-    color: var(--text-muted, #9a9aa0);
-    padding: 0.2rem 0.55rem;
+    font-size: 0.62rem;
+    color: color-mix(in oklch, var(--dock-ai-text) 90%, transparent);
+    padding: 0.1rem 0.45rem;
     border-radius: var(--radius-sm, 4px);
-    background: color-mix(in srgb, var(--surface-2, #2b2b2c) 50%, var(--surface-0, #23261d));
-    /* Brighter outline than the AI bubbles so the gap reads as a
-       distinct in-band marker rather than another message. */
-    border: 1px solid color-mix(in srgb, var(--text-muted, #888) 65%, var(--surface-0, #23261d));
+    background: var(--dock-ai-bg);
+    border: 1px solid var(--dock-ai-border);
   }
   /* Belt-and-braces: kill any user-agent / inherited hover background
      on the button itself. The dot is its own visual; the wrapper is
@@ -870,8 +993,8 @@
       from var(--dock-sweep-angle),
       transparent 0deg,
       transparent 180deg,
-      color-mix(in srgb, var(--dot-fill) 0%, transparent) 180deg,
-      color-mix(in srgb, var(--dot-fill) 30%, #fff 70%) 360deg
+      color-mix(in oklch, var(--dot-fill) 0%, transparent) 180deg,
+      color-mix(in oklch, var(--dot-fill) 30%, #fff 70%) 360deg
     );
     -webkit-mask:
       linear-gradient(#fff 0 0) content-box,
@@ -902,11 +1025,11 @@
   @keyframes dock-awaiting {
     0%, 100% {
       transform: scale(1);
-      box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-fill) 30%, #fff 70%);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
     }
     50% {
       transform: scale(1.25);
-      box-shadow: 0 0 0 4px color-mix(in srgb, var(--dot-fill) 0%, transparent);
+      box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-fill) 0%, transparent);
     }
   }
   @media (prefers-reduced-motion: reduce) {

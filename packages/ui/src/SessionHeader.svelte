@@ -51,6 +51,9 @@
   export let totalMessageCount: number | undefined = undefined;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
+  /** Authoritative cap shipped by the agent's JSONL (Codex 0.130+).
+   *  Wins over the model-id heuristic inside contextChip. */
+  export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
   export let pollCount: number = 0;
@@ -92,6 +95,7 @@
     exact: contextTokensExact,
     model,
     agent: agent === "shell" ? undefined : agent,
+    cap: contextWindow,
   });
 
   function relTimeFromNow(ts: number): string {
@@ -139,7 +143,8 @@
       on:saved={(e) => onTitleSaved(e.detail.title)}
     />
     {#if ctxChip}
-      <Tooltip variant="wide" placement="bottom">
+      <Tooltip variant="wide" placement="bottom" escapeClip>
+
         <span
           slot="trigger"
           class="ctx-bar"

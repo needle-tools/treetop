@@ -158,6 +158,46 @@ describe("contextChip", () => {
     expect(chip!.text).toBe("250k / 1M ctx (25%)");
   });
 
+  test("explicit `cap` from the JSONL wins over the model-id heuristic", () => {
+    // Real Codex 0.130 case: the file ships `info.model_context_window`
+    // (258,400 in the wild). We must use that — not whatever guess the
+    // gpt-5.5 model id would otherwise resolve to (which is "unknown",
+    // since OpenAI ids fall through to undefined now).
+    const codex = contextChip({
+      tokens: 49_868,
+      exact: true,
+      model: "gpt-5.5",
+      agent: "codex",
+      cap: 258_400,
+    });
+    expect(codex).not.toBeNull();
+    expect(codex!.capText).toBe("258k");
+    expect(codex!.ratio).toBeCloseTo(49_868 / 258_400, 5);
+    expect(codex!.text).toBe("49.9k / 258k ctx (19%)");
+    expect(codex!.exact).toBe(true);
+  });
+
+  test("an explicit cap of 0 / NaN falls back to the model heuristic instead of silently disabling the cap", () => {
+    const fallback = contextChip({
+      tokens: 50_000,
+      exact: true,
+      model: "claude-opus-4-7",
+      cap: 0,
+    });
+    expect(fallback!.capText).toBe("1M");
+  });
+
+  test("explicit cap also fills in a meaningful chip when the model id is unknown", () => {
+    const chip = contextChip({
+      tokens: 1_000,
+      exact: true,
+      model: undefined,
+      agent: "codex",
+      cap: 200_000,
+    });
+    expect(chip!.text).toBe("1k / 200k ctx (1%)");
+  });
+
   test("exposes `absolute` and `capText` so the header can render them separately", () => {
     const known = contextChip({
       tokens: 220_561,

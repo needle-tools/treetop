@@ -5,6 +5,7 @@
   import TerminalView from "./TerminalView.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
+  import { relativeAge } from "./mention-providers";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -61,6 +62,12 @@
 
   export let agent: "claude" | "codex" | "copilot" = "claude";
   export let source: string;
+  /** Worktree this session column lives in. Used by the "Save as
+   *  link" menu item to anchor the resulting sticky-link chip.
+   *  Empty when the column is rendered outside a worktree context
+   *  (orphan view, future surfaces) — the menu item is disabled
+   *  then. */
+  export let wtPath: string = "";
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
   /** Called when the user successfully renames this session. Lets the
@@ -99,6 +106,10 @@
    *  (Claude), false when it's a Codex chars/4 estimate. Drives the
    *  leading `~` in the chip. */
   export let contextTokensExact: boolean | undefined = undefined;
+  /** Authoritative context-window cap shipped by the agent's JSONL
+   *  itself (Codex 0.130+). When set, the chip uses it instead of the
+   *  model-id heuristic. */
+  export let contextWindow: number | undefined = undefined;
   /** Model id so the chip can pick a context-window cap (200k vs 1M). */
   export let model: string | undefined = undefined;
 
@@ -272,8 +283,99 @@
         title: sid ? "Copy session id and file path to clipboard" : "No session id yet",
         getText: () => `${sid}\n${source}`,
       },
+      {
+        kind: "action",
+        label: "Save as link",
+        // Anchor is the current worktree — same data the saved-link
+        // chip uses for its commit-provider / move-to picker. No
+        // worktree → no anchor → disable.
+        disabled: !wtPath,
+        title: wtPath
+          ? "Pin this session as a sticky-link on the row"
+          : "No worktree to pin to",
+        onSelect: () => void saveAsLink(),
+      },
     ];
   })();
+
+  /** POST a kind="link" sticky note anchored to the current worktree,
+   *  targeting this session. The display snapshot (label/agent/
+   *  msgCount/age) is read from /api/agents so the chip renders
+   *  instantly without a follow-up lookup — same data shape the
+   *  picker would produce if the user had searched for this session
+   *  via the 🔗 button. SSE notifies the notes layer which appends
+   *  the new chip into its row strip. */
+  async function saveAsLink(): Promise<void> {
+    if (!wtPath) return;
+    type AgentRow = {
+      source: string;
+      agent: string;
+      title?: string;
+      manualTitle?: string;
+      firstUserMessage?: string;
+      sessionId?: string;
+      messageCount?: number;
+      lastActive: string;
+    };
+    let label = "(session)";
+    let agentName: string = agent;
+    let msgCount = 0;
+    let lastActive = new Date().toISOString();
+    try {
+      const res = await fetch("/api/agents");
+      if (res.ok) {
+        const all = (await res.json()) as AgentRow[];
+        const found = all.find((s) => s.source === source);
+        if (found) {
+          agentName = found.agent;
+          label =
+            (found.manualTitle && found.manualTitle.trim()) ||
+            (found.title && found.title.trim()) ||
+            (found.firstUserMessage && found.firstUserMessage.trim()) ||
+            (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : "(untitled)");
+          msgCount = found.messageCount ?? 0;
+          lastActive = found.lastActive;
+        }
+      }
+    } catch {
+      // Snapshot is best-effort — falling through with defaults still
+      // produces a valid (less-rich) link chip.
+    }
+    const target = {
+      type: "session" as const,
+      value: source,
+      label,
+      agent: agentName,
+      subtitle: msgCount > 0 ? `${msgCount} msg` : "",
+      meta: relativeAge(lastActive),
+    };
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: "",
+          anchors: [`worktree:${wtPath}`],
+          kind: "link",
+          target,
+        }),
+      });
+      if (!res.ok) {
+        // Bubble the daemon's error reason up to the chat header
+        // so a 4xx (validation, ID conflict) doesn't fail silently
+        // — the user just sees "menu item did nothing" otherwise.
+        const errBody = await res.json().catch(() => ({}));
+        error = `save-as-link failed: ${errBody.error ?? `HTTP ${res.status}`}`;
+        return;
+      }
+      // The daemon broadcasts a `change` SSE on success; the notes
+      // layer picks it up via changeKey++ → refresh() and renders
+      // the new chip in the row strip. No imperative client state
+      // change needed here.
+    } catch (e) {
+      error = `save-as-link failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
 
   /** Squash a tool-result blob into a single one-line preview for the
    *  chat. Newlines and consecutive whitespace collapse to a single
@@ -550,6 +652,7 @@
     {totalMessageCount}
     {contextTokens}
     {contextTokensExact}
+    {contextWindow}
     {model}
     lastActivityIso={session?.endedAt}
     {pollCount}

@@ -15,6 +15,7 @@ import {
   scanClaudeUserMessages,
   scanCodexMessageCount,
   scanCodexContextTokens,
+  scanCodexTokenUsage,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -460,6 +461,99 @@ describe("scanClaudeUserMessages", () => {
     expect(stats.lastContextTokens).toBeUndefined();
     expect(stats.model).toBeUndefined();
   });
+
+  test("a compact_boundary AFTER the last usage clears the reading (post-/compact, awaiting next turn)", async () => {
+    // Mirrors what Claude Code writes in real sessions: a usage-bearing
+    // assistant turn, then a `system / compact_boundary` line. Until a
+    // NEW assistant turn lands with fresh usage, the previous reading
+    // is stale — show nothing rather than the pre-compact value.
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-7",
+            content: "before compact",
+            usage: {
+              input_tokens: 5,
+              cache_creation_input_tokens: 100_000,
+              cache_read_input_tokens: 100_000,
+              output_tokens: 50,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "system",
+          subtype: "compact_boundary",
+          content: "Conversation compacted",
+          compactMetadata: { trigger: "auto", preTokens: 200_005 },
+        }),
+        // Post-compact "continued from previous" user message exists
+        // in real files; including it to prove the parser doesn't
+        // accidentally treat the summary as a new usage reading.
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content:
+              "This session is being continued from a previous conversation that ran out of context.",
+          },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.lastContextTokens).toBeUndefined();
+  });
+
+  test("a fresh assistant usage AFTER a compact_boundary overrides the reset (chip refills)", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-7",
+            content: "before",
+            usage: {
+              input_tokens: 5,
+              cache_creation_input_tokens: 100_000,
+              cache_read_input_tokens: 100_000,
+              output_tokens: 50,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "system",
+          subtype: "compact_boundary",
+          compactMetadata: { trigger: "manual", preTokens: 200_005 },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-7",
+            content: "after compact",
+            usage: {
+              input_tokens: 1,
+              cache_creation_input_tokens: 5_000,
+              cache_read_input_tokens: 0,
+              output_tokens: 20,
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.lastContextTokens).toBe(5_001);
+    expect(stats.model).toBe("claude-opus-4-7");
+  });
 });
 
 describe("scanClaude", () => {
@@ -614,6 +708,165 @@ describe("scanCodexContextTokens", () => {
       ].join("\n"),
     );
     expect(await scanCodexContextTokens(file)).toBe(3);
+  });
+});
+
+describe("scanCodexTokenUsage", () => {
+  test("returns all-undefined on a missing file", async () => {
+    expect(await scanCodexTokenUsage("/no/such/file")).toEqual({
+      lastInputTokens: undefined,
+      modelContextWindow: undefined,
+      model: undefined,
+    });
+  });
+
+  test("returns all-undefined when no token_count events are present", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "x", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexTokenUsage(file)).toEqual({
+      lastInputTokens: undefined,
+      modelContextWindow: undefined,
+      model: undefined,
+    });
+  });
+
+  test("ignores token_count events whose info is null (no tokens yet)", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "token_count", info: null },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexTokenUsage(file)).toEqual({
+      lastInputTokens: undefined,
+      modelContextWindow: undefined,
+      model: undefined,
+    });
+  });
+
+  test("extracts last_token_usage.input_tokens + model_context_window from the latest token_count event", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    // Two token_count events; the later one wins.
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-5.5", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 100,
+                cached_input_tokens: 0,
+                output_tokens: 50,
+                reasoning_output_tokens: 10,
+                total_tokens: 150,
+              },
+              last_token_usage: {
+                input_tokens: 100,
+                cached_input_tokens: 0,
+                output_tokens: 50,
+                reasoning_output_tokens: 10,
+                total_tokens: 150,
+              },
+              model_context_window: 258_400,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 242_571,
+                cached_input_tokens: 144_896,
+                output_tokens: 2_775,
+                reasoning_output_tokens: 1_106,
+                total_tokens: 245_346,
+              },
+              last_token_usage: {
+                input_tokens: 49_868,
+                cached_input_tokens: 20_864,
+                output_tokens: 670,
+                reasoning_output_tokens: 496,
+                total_tokens: 50_538,
+              },
+              model_context_window: 258_400,
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const usage = await scanCodexTokenUsage(file);
+    // We expose `lastInputTokens` as "what the model saw on the most
+    // recent turn" — that's Codex's analog of Claude's full input
+    // (input_tokens already includes cached_input_tokens, unlike
+    // Claude's disjoint cache_read / cache_creation split, so we DO
+    // NOT add cached_input_tokens on top).
+    expect(usage.lastInputTokens).toBe(49_868);
+    expect(usage.modelContextWindow).toBe(258_400);
+    expect(usage.model).toBe("gpt-5.5");
+  });
+
+  test("uses the latest turn_context.payload.model when multiple are present", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-5", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-5.5", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 1 },
+              last_token_usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 1 },
+              model_context_window: 200_000,
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const usage = await scanCodexTokenUsage(file);
+    expect(usage.model).toBe("gpt-5.5");
+    expect(usage.lastInputTokens).toBe(1);
+    expect(usage.modelContextWindow).toBe(200_000);
   });
 });
 

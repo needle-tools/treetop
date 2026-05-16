@@ -126,6 +126,13 @@
   const OFFSETS_KEY = "supergit:notes-offsets";
   const Z_KEY = "supergit:notes-zorder";
   const NOTE_W = 240;
+  /** Upper bound on the link chip's rendered width — matches the
+   *  `.sticky.sticky-link` max-width in notes.css. Used purely for
+   *  clamping screen position so the chip + its picker don't run
+   *  off the right edge of the viewport when staged near an
+   *  edge-aligned + button. Bumping the CSS max-width? Bump this
+   *  too. */
+  const LINK_W = 540;
   /** How far the note's TOP edge sits above the row's bottom edge.
    *  The overlap is where the sticker-tape pseudo-element lives — the
    *  note "hangs" from the row's bottom, like a Post-it taped to the
@@ -144,6 +151,15 @@
   const NOTE_WIGGLE_UP_PCT = 0.2;
   const NOTE_WIGGLE_DOWN_PX = 100;
   const NOTE_WIGGLE_DOWN_PCT = 0.2;
+  /** Per-kind downward drag range. Paper notes keep the tight
+   *  `NOTE_WIGGLE_DOWN_*` clamp so they stay tucked against the row
+   *  they're pinned to (a sticky note 600px below its repo doesn't
+   *  read as "stuck to that repo" anymore). Link chips are
+   *  visually compact and the user might want to stack a queue of
+   *  them well below the row, so we give them effectively the full
+   *  notes-container area — applyRowMargins extends the row's
+   *  margin-bottom to wherever the chip lands. */
+  const LINK_WIGGLE_DOWN_PX = 1600;
   // Pleasant micro-tilt range; deterministic per id so rerenders don't
   // jitter. Using charCode parity gives a stable -2°..+2° spread.
   function tiltFor(id: string): number {
@@ -248,9 +264,17 @@
     // Staged notes float beneath the "+" button until the user commits
     // text (or discards via Esc / click-outside). docX/docY were
     // captured at spawn so the note scrolls naturally with the page.
+    // Clamp against the *visible viewport's right edge*, not the
+    // document's scrollWidth — a staged chip near an edge-aligned
+    // button would otherwise extend off-screen on a non-scrolling
+    // page (the chip itself doesn't widen the document, but
+    // scrollWidth doesn't account for that either, leaving the
+    // popover-style content invisible past the viewport edge).
     const st = staging[note.id];
     if (st) {
-      const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
+      const w = note.kind === "link" ? LINK_W : NOTE_W;
+      const viewportRight = window.scrollX + window.innerWidth - 8;
+      const maxX = Math.max(0, viewportRight - w);
       return { x: Math.min(Math.max(0, st.docX), maxX), y: st.docY };
     }
     // Mid-fly: ease-out cubic between captured from/to. The pendulum
@@ -507,6 +531,25 @@
       const next = { ...staging };
       delete next[e.detail.id];
       staging = next;
+      // Optimistic local update — without this the chip renders its
+      // "(empty link)" placeholder for the ~50-300ms between
+      // staging-clear and the PUT response arriving, which makes
+      // the icon flash in (no logo → logo). Apply the same target
+      // + kind we're about to PUT so the chip flies into its slot
+      // already wearing the right brand mark.
+      if (e.detail.target || e.detail.kind) {
+        notes = notes.map((n) =>
+          n.id === e.detail.id
+            ? {
+                ...n,
+                ...(e.detail.target
+                  ? { target: e.detail.target as NoteShape["target"] }
+                  : {}),
+                ...(e.detail.kind ? { kind: e.detail.kind } : {}),
+              }
+            : n,
+        );
+      }
     }
     try {
       // PUT body shape mirrors the daemon's accepted fields. We only
@@ -653,7 +696,13 @@
     const offsetXFrac = Math.min(1, Math.max(0, rawFrac));
     const baseY = rowDocBottom - NOTE_OVERLAP;
     const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
-    const wiggleDown = Math.min(NOTE_WIGGLE_DOWN_PX, rowRect.height * NOTE_WIGGLE_DOWN_PCT);
+    // Link chips get a much larger downward range than paper notes —
+    // the user might want to drag one well below the row's bottom
+    // edge to stack a queue of links. applyRowMargins keeps the row
+    // tall enough underneath the chip wherever it lands.
+    const wiggleDown = note.kind === "link"
+      ? LINK_WIGGLE_DOWN_PX
+      : Math.min(NOTE_WIGGLE_DOWN_PX, rowRect.height * NOTE_WIGGLE_DOWN_PCT);
     const offsetY = Math.min(
       wiggleDown,
       Math.max(-wiggleUp, e.detail.y - baseY),
@@ -840,10 +889,22 @@
       // is already higher up than the default position.
       const offsetYPx = offsets[note.id]?.offsetY ?? 0;
       const extraSafety = Math.max(0, offsetYPx);
-      const want = Math.max(
-        0,
-        stickyRect.bottom + ROW_SAFETY + extraSafety - liRect.bottom,
-      );
+      // Per-kind cap on how much *this attachment* can push the
+      // row's bottom-margin. Links are compact and meant to stack
+      // far down without consuming screen real estate, so they cap
+      // at 20vh — past that they float over the gap. Paper notes
+      // are larger and the user genuinely wants the next row to
+      // move out of the way, so they cap at 70vh. The row's actual
+      // margin is the MAX across attachments (last `need.set`
+      // below), so a row with both notes and links gets whichever
+      // pushes further — bounded by its kind. The chip itself is
+      // still rendered at its real offset (screenPosFor reads
+      // offsetY directly); only the spacer is capped.
+      const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+      const kindMax = note.kind === "link" ? vh * 0.20 : vh * 0.70;
+      const wantUnclamped =
+        stickyRect.bottom + ROW_SAFETY + extraSafety - liRect.bottom;
+      const want = Math.max(0, Math.min(kindMax, wantUnclamped));
       const prev = need.get(li) ?? 0;
       if (want > prev) need.set(li, want);
     }

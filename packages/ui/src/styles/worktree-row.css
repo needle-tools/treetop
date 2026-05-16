@@ -932,6 +932,70 @@ button.branch-button:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Per-file numstat grid: path · +added · −removed. Path takes the
+   full row width; counts hug the right edge and stay in a tabular
+   gutter so 1- vs 3-digit values line up. Path column allows wrap
+   instead of ellipsizing — within the wide tooltip that gives long
+   paths a chance to render fully on two lines instead of being cut. */
+/* Horizontal layout: each bucket (staged / unstaged / untracked)
+   becomes its own column, side by side. Generous column gap so
+   the buckets don't visually run together; align-items: start so
+   columns of unequal length top-align rather than centering. */
+.wt-tt-cols {
+  display: flex;
+  flex-direction: row;
+  gap: 1.4rem;
+  align-items: flex-start;
+}
+.wt-tt-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.wt-tt-files {
+  display: grid;
+  /* Per-column 3-cell grid. Path takes its natural width, then
+     +added / −removed hug the right with a tabular gutter. */
+  grid-template-columns: auto auto auto;
+  column-gap: 0.6rem;
+  row-gap: 0.18rem;
+  align-items: baseline;
+}
+/* Footer when the file list was truncated. Sits below the grid (not
+   inside it, so the column alignment stays clean) with a hairline
+   rule separating it from the last file row. Muted nudge tone — this
+   is suggestion-grade copy, not a warning. */
+.wt-tt-more-files {
+  margin-top: 0.45rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+  font-size: 0.72rem;
+  color: var(--text-3);
+  font-style: italic;
+}
+/* Override the base `.wt-tt-path` ellipsis behaviour inside this
+   grid: the column is `auto`, so it sizes to the longest path,
+   and we want the path text to render in full — no clipping, no
+   ellipsis. Stays one line per file (nowrap inherited). */
+.wt-tt-files .wt-tt-path {
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+}
+.wt-tt-added,
+.wt-tt-removed {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.wt-tt-added {
+  color: var(--status-clean, #5bbf76);
+}
+.wt-tt-removed {
+  color: var(--error-text, #ffaaaa);
+}
 /* The ↑/↓ tooltip lists commits in a 4-column grid so sha / subject /
    author / time line up vertically across rows: easier to scan than a
    flow layout. All three "meta" columns (sha, author, date) render in
@@ -1190,6 +1254,16 @@ button.branch-button:hover {
    crisp ring). Fades out via the outline-color transition above. */
 .session-col-flash {
   outline-color: var(--brand);
+}
+/* Outline applied for ~1.8s when the user clicks a saved session
+   sticky-link. Same brand-coloured crisp ring as .session-col-flash,
+   but slightly thicker so the user can clearly trace WHERE the
+   link landed when their attention was elsewhere on the page. */
+.session-col-focused {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: var(--radius-md);
+  transition: outline-color 0.25s ease;
 }
 /* CSS-only filter: hide columns whose session doesn't match the
    inline strip search. We deliberately don't unmount — `display:none`

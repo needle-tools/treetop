@@ -20,6 +20,10 @@ export interface ContextChipInput {
   /** Used when `model` is undefined — lets the UI fall back to a sensible
    *  per-agent default cap (Claude → 200k, Codex → 200k). */
   agent?: "claude" | "codex" | "copilot";
+  /** Authoritative cap if the JSONL itself shipped one (Codex 0.130+
+   *  writes `info.model_context_window`). Takes precedence over the
+   *  model-id heuristic — the file knows better than we do. */
+  cap?: number | undefined;
 }
 
 export interface ContextChip {
@@ -109,8 +113,14 @@ export function formatTokens(n: number): string {
  *  writes its first JSONL line. With neither a count nor a cap we
  *  truly have nothing to draw, so return null. */
 export function contextChip(input: ContextChipInput): ContextChip | null {
-  const { tokens, exact, model, agent } = input;
-  const cap = modelContextCap(model, agent);
+  const { tokens, exact, model, agent, cap: explicitCap } = input;
+  // Explicit cap from the JSONL trumps any model-id heuristic. We
+  // accept it only when it's a positive finite number — a stray 0
+  // or NaN slipping in must NOT silently turn into "unknown cap."
+  const cap =
+    typeof explicitCap === "number" && explicitCap > 0
+      ? explicitCap
+      : modelContextCap(model, agent);
   const empty = tokens === undefined || tokens <= 0;
   if (empty && cap === undefined) return null;
   const isExact = exact !== false;

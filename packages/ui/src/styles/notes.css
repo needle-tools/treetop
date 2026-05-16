@@ -107,8 +107,13 @@
    selector churn. */
 .sticky.sticky-link {
   width: auto;
-  min-width: 160px;
-  max-width: 320px;
+  /* Wider envelope so commit subjects + session titles stay readable
+     before the ellipsis bites. The label column's own `min-width:
+     20ch` is what guarantees the readable minimum; min-width here
+     just sets a comfortable starting size for chips with very short
+     labels. */
+  min-width: 260px;
+  max-width: 540px;
   min-height: 0;
   background: var(--surface-1);
   background-image: none;
@@ -172,10 +177,29 @@
   background: color-mix(in srgb, var(--ctx-hot) 18%, transparent);
   color: var(--ctx-hot);
 }
-.sticky-link-body {
+/* Shared row layout for any "icon · label · subtitle · meta" line:
+   the sticky-link chip in view mode, every row of the mention
+   picker dropdown, and future call sites that render a saved or
+   suggested attachment. One grid, one set of typography rules, one
+   nowrap policy — no divergence between "recent pick" and "fresh
+   suggestion" rendering because they go through the same classes.
+   Wrapper classes (.sticky-link-body, .mention-picker-row) add
+   variant chrome (hover/active states) on top. */
+.attach-row {
+  /* Flexbox over grid because:
+     1. Items pack left, leaving any remaining row width as empty
+        space on the right rather than spreading auto-tracks apart
+        (so short labels don't have their subtitle pinned to the
+        chip's far edge).
+     2. `align-items: center` is the authoritative vertical-centre
+        of every item — image, svg, and text all centre on their
+        own cross-axis midpoints. Grid's baseline behaviour was
+        misaligning the agent SVG with the label text.
+     The label still floors at 20ch via `min-width` + `flex-shrink:
+     1`, so it ellipsises before pushing the meta column out. */
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 1rem;
   width: 100%;
   padding: 2px 4px;
   background: none;
@@ -184,31 +208,206 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
-.sticky-link-body:hover {
-  background: var(--surface-3);
-}
-.sticky-link-icon {
-  flex: 0 0 auto;
+.attach-row-icon {
   width: 14px;
-  text-align: center;
-  /* Inherit the chip's text colour — the brand-green tint was
-     decorative noise here; the icon belongs to the same "text" tier
-     as the label next to it so a uniform colour reads as one
-     glyph-pair rather than a chip-plus-accent. */
-  color: inherit;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  color: var(--text-muted);
   font-size: 13px;
 }
-.sticky-link-label {
-  flex: 1 1 auto;
+/* Glyph variant — picker rows that use a ◆ / · character instead
+   of a brand image. Matches the chip's icon colour so the picker
+   and chip read in the same tier. */
+.attach-row-icon-glyph {
+  color: inherit;
+}
+.attach-row-label {
+  /* Shrinkable, not growable — so the row packs left and any
+     leftover width stays empty on the right. min-width:20ch is the
+     readable floor; flex-shrink:1 lets the label ellipsis when the
+     row IS constrained (lots of subtitle / meta content). */
+  flex: 0 1 auto;
+  min-width: 20ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sticky-link-label.muted {
+.attach-row-label.muted {
   color: var(--text-muted);
 }
+.attach-row-subtitle,
+.attach-row-meta {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  /* Fixed-width columns that don't grow OR shrink: their content
+     (author / message-count / relative-age) always renders in full.
+     The label is the only flexible column. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.attach-row-subtitle {
+  font-family: ui-monospace, monospace;
+}
+
+/* Saved chip's body: vertical card layout. A bigger icon up top,
+   subject/title underneath that's free to wrap, and a muted meta
+   line at the bottom. Distinct from `.attach-row` (used by the
+   picker dropdown) because a chip in the row strip is a static
+   artifact the user wants to read in full — wrapping > ellipsis —
+   while a dropdown row is a scannable list item where the
+   icon/label/subtitle/meta columns alignment matters more than
+   per-item content density. */
+.attach-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.attach-card-icon {
+  /* Big-ish brand mark — ~4× the picker's 14px. flex-shrink: 0 so
+     the icon never compresses when the label wraps to multiple
+     lines and the card's intrinsic height grows. */
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-1);
+  flex-shrink: 0;
+}
+.attach-card-label {
+  /* Wrappable subject / title. No nowrap, no ellipsis — the chip
+     is meant to read in full. line-clamp keeps a runaway 8-line
+     commit body from making the card consume the whole row. */
+  font-size: var(--fs-md);
+  line-height: 1.3;
+  color: var(--text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.attach-card-label.muted {
+  color: var(--text-muted);
+}
+.attach-card-meta {
+  /* Time-since + author / msg-count concatenated for the card's
+     tertiary row. nowrap so a long author name truncates rather
+     than wrapping (the rows above already convey the primary
+     info). */
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Wrapper variants — chip uses `.attach-card` for layout, picker
+   rows use `.attach-row`. These rules add only the chrome each
+   variant needs on top of its shared layout class. */
+.sticky-link-body:hover {
+  background: var(--surface-3);
+}
+/* Inline mention picker, used inside the link chip in edit mode
+   (and in the future the @-trigger popover in note bodies). Pure
+   "list of rows" styling — the parent owns position/size. */
+.mention-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Wide enough to fit a readable session title or commit subject
+     plus the subtitle/meta columns. The parent (`.sticky.sticky-link`
+     in edit mode) max-widths 540px, so 360px here gives the chip
+     room to flex up to the cap. */
+  min-width: 360px;
+}
+.mention-picker-input {
+  width: 100%;
+  background: var(--surface-0);
+  color: var(--text-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 4px 7px;
+  font: inherit;
+  outline: none;
+}
+.mention-picker-input:focus {
+  border-color: var(--brand);
+}
+.mention-picker-list {
+  max-height: 240px;
+  overflow-y: auto;
+  /* Picker is a single grid so each row's columns line up with
+     every other row's columns — the user can scan a vertical
+     stripe of "authors" and "times" without their eye chasing a
+     ragged left edge. Rows opt into these tracks via subgrid (see
+     .mention-picker-row below). The label column floors at 20ch
+     and grows to its content, but max-content keeps a single
+     ultra-long subject from blowing the picker wider than its
+     container. */
+  display: grid;
+  grid-template-columns: auto minmax(20ch, max-content) auto auto;
+  align-items: stretch;
+}
+.mention-picker-empty {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: 6px 8px;
+}
+.mention-picker-group-label {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  /* Left padding matches the row's icon offset (`.attach-row` has
+     padding-inline 4px; the icon then sits at 4px). The heading
+     reads at the same column gutter as the brand mark below it. */
+  padding: 6px 4px 2px;
+}
+/* Picker-row variant. Overrides .attach-row's flex display with
+   a subgrid that pulls its column tracks from
+   .mention-picker-list — so every row's icon/label/subtitle/meta
+   line up vertically with its neighbours' (the scannable-column
+   property the user asked for). The chip's .attach-row keeps
+   flex because it's a single row with no neighbours to align with. */
+.mention-picker-row.attach-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  /* gap is inherited from the parent grid's column-gap (set
+     below). Subgrid items use the parent's gaps, not their own. */
+  column-gap: 1rem;
+  padding: 2px 4px;
+}
+.mention-picker-list {
+  column-gap: 1rem;
+}
+.mention-picker-row.active,
+.mention-picker-row:focus-visible {
+  background: var(--surface-3);
+  outline: none;
+}
+
 .sticky-link-input {
   width: 100%;
   background: var(--surface-0);

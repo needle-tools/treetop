@@ -16,9 +16,50 @@
    *  in a 4-column grid) have room to render in full without forcing
    *  the default tooltips elsewhere to grow. */
   export let variant: "default" | "wide" = "default";
+  /** When true, the popup is teleported to `<body>` via a Svelte
+   *  action and positioned with `position: fixed` against the
+   *  trigger's bounding rect. Use this when an ancestor of the
+   *  trigger has `overflow: hidden` (which would clip the default
+   *  absolutely-positioned popup). Default off so existing tooltips
+   *  behave identically. */
+  export let escapeClip: boolean = false;
 
   let open = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Trigger wrapper — used by the portal action to anchor coords. */
+  let wrapEl: HTMLDivElement | null = null;
+
+  /** Svelte action: move the popup to document.body, position it
+   *  with `position: fixed` against `wrapEl`'s rect, and reposition
+   *  on scroll/resize while open. Cleaned up on unmount so it can't
+   *  leak across hover cycles. */
+  function portal(node: HTMLElement) {
+    if (typeof document === "undefined") return {};
+    document.body.appendChild(node);
+    function reposition() {
+      if (!wrapEl) return;
+      const r = wrapEl.getBoundingClientRect();
+      node.style.position = "fixed";
+      node.style.left = `${Math.round(r.left)}px`;
+      if (placement === "top") {
+        node.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+        node.style.top = "auto";
+      } else {
+        node.style.top = `${Math.round(r.bottom + 6)}px`;
+        node.style.bottom = "auto";
+      }
+    }
+    reposition();
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return {
+      destroy() {
+        window.removeEventListener("scroll", reposition, true);
+        window.removeEventListener("resize", reposition);
+        node.remove();
+      },
+    };
+  }
 
   function start() {
     if (timer) clearTimeout(timer);
@@ -52,6 +93,7 @@
      looking like a span at the layout level. -->
 <div
   class="tt-wrap"
+  bind:this={wrapEl}
   on:mouseenter={start}
   on:mouseleave={stop}
   on:focusin={start}
@@ -60,9 +102,22 @@
 >
   <slot name="trigger" />
   {#if open}
-    <div class="tt tt-{placement} tt-{variant}" role="tooltip">
-      <slot name="content" />
-    </div>
+    {#if escapeClip}
+      <!-- Teleported to <body> via the portal action; positioning
+           switches to position:fixed so an `overflow:hidden` ancestor
+           of the trigger can't clip it. -->
+      <div
+        class="tt tt-{placement} tt-{variant} tt-portal"
+        role="tooltip"
+        use:portal
+      >
+        <slot name="content" />
+      </div>
+    {:else}
+      <div class="tt tt-{placement} tt-{variant}" role="tooltip">
+        <slot name="content" />
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -101,7 +156,7 @@
      only cap. `92vw` keeps the tooltip from butting against the
      right edge on small screens. */
   .tt-wide {
-    max-width: 92vw;
+    max-width: 96vw;
   }
   .tt-bottom {
     top: calc(100% + 0.35rem);

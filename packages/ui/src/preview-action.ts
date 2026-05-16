@@ -66,7 +66,7 @@ const DETAIL_FIELDS = [
   "notebook_path",
 ] as const;
 
-const DETAIL_MAX_LEN = 60;
+const DETAIL_MAX_LEN = 90;
 
 /** Pick the most informative single-line summary from a tool's
  *  input. Walks a small allowlist of common field names — file
