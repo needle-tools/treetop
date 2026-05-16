@@ -68,7 +68,7 @@
   }
   .shell-preview-row {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: baseline;
     gap: 0.4rem;
     min-width: 0;
@@ -78,7 +78,7 @@
     font-weight: 700;
   }
   .shell-preview-line {
-    white-space: pre;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;

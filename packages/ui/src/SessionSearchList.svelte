@@ -300,10 +300,14 @@
           <span
             class="muted small agent-msgs"
             title={sess.messageCount
-              ? `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
-              : "no messages counted"}
+              ? sess.agent === "shell"
+                ? `${sess.messageCount.toLocaleString()} command${sess.messageCount === 1 ? "" : "s"} in this session`
+                : `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
+              : sess.agent === "shell"
+                ? "no commands captured"
+                : "no messages counted"}
           >
-            {#if sess.messageCount}{sess.messageCount.toLocaleString()} msg{:else}—{/if}
+            {#if sess.messageCount}{sess.messageCount.toLocaleString()} {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}
           </span>
           <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
           {#if sess.sessionId}
@@ -417,6 +421,10 @@
     font-size: 0.7rem;
     color: var(--text-muted);
     font-weight: 400;
+    max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .orphan-tag {
     font-size: 0.65rem;

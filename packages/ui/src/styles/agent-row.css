@@ -31,7 +31,7 @@
   /* icon · agent-name · title · msgs · time · short-sha · close-x
      The close column is reserved on every row (open or not) so opening
      and closing sessions doesn't shift other rows' columns. */
-  grid-template-columns: 16px auto 1fr auto auto auto 18px;
+  grid-template-columns: 16px auto minmax(0, 1fr) auto auto auto 18px;
   gap: 0.5rem;
   align-items: center;
   width: 100%;

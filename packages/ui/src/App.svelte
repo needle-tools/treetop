@@ -108,6 +108,9 @@
      *  `lastActive` so shells age by their most recent use, not by
      *  spawn time. */
     lastCmdTs?: string;
+    /** User-set title keyed by `shell:<termId>` in the workspace's
+     *  session-title store; takes precedence over the inline last-cmd. */
+    manualTitle?: string;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -2620,6 +2623,8 @@
       // renders inline on the row and participates in fuzzy search
       // ("which shell did I run `bun test` in?").
       lastUserMessage: sh.lastCmd,
+      messageCount: sh.cmdCount,
+      manualTitle: sh.manualTitle,
     };
   }
 
