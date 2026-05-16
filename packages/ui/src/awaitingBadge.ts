@@ -23,6 +23,24 @@ let baseTitle: string | null = null;
 let baseImage: HTMLImageElement | null = null;
 let baseImageReady = false;
 let lastCount = -1;
+// One canvas + 2D context reused for every favicon redraw. Allocating
+// a fresh 32×32 canvas per frame (we're at 20 fps whenever something
+// is working/awaiting) churns GC and forces the browser to re-acquire
+// a GPU-backed canvas each tick.
+let sharedCanvas: HTMLCanvasElement | null = null;
+let sharedCtx: CanvasRenderingContext2D | null = null;
+function getCanvas(size: number): CanvasRenderingContext2D | null {
+  if (typeof document === "undefined") return null;
+  if (!sharedCanvas) {
+    sharedCanvas = document.createElement("canvas");
+    sharedCanvas.width = size;
+    sharedCanvas.height = size;
+  }
+  if (!sharedCtx) sharedCtx = sharedCanvas.getContext("2d");
+  if (!sharedCtx) return null;
+  sharedCtx.clearRect(0, 0, size, size);
+  return sharedCtx;
+}
 
 export interface TabState {
   awaiting: number;
@@ -194,10 +212,7 @@ function getFaviconLink(): HTMLLinkElement | null {
 function drawBadge(count: number): void {
   if (!baseImage || !baseImageReady) return;
   const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
+  const ctx = getCanvas(size);
   if (!ctx) return;
   try {
     ctx.drawImage(baseImage, 0, 0, size, size);
@@ -222,10 +237,10 @@ function drawBadge(count: number): void {
     ctx.fillText(String(count), cx, cy + 0.5);
   }
   const link = getFaviconLink();
-  if (!link) return;
+  if (!link || !sharedCanvas) return;
   try {
     link.type = "image/png";
-    link.href = canvas.toDataURL("image/png");
+    link.href = sharedCanvas.toDataURL("image/png");
   } catch {
     // Tainted canvas (CORS) — leave the favicon alone, title still updates.
   }
@@ -240,10 +255,7 @@ function clearBadge(): void {
 
 function drawIndicator(state: TabState, tMs: number): void {
   const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
+  const ctx = getCanvas(size);
   if (!ctx) return;
   // Everything below is driven by wall-clock time (seconds) so the
   // visible speed is independent of the redraw fps.
@@ -304,10 +316,10 @@ function drawIndicator(state: TabState, tMs: number): void {
   }
 
   const link = getFaviconLink();
-  if (!link) return;
+  if (!link || !sharedCanvas) return;
   try {
     link.type = "image/png";
-    link.href = canvas.toDataURL("image/png");
+    link.href = sharedCanvas.toDataURL("image/png");
   } catch {}
 }
 
