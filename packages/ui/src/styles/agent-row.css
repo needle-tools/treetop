@@ -47,8 +47,10 @@
 .agent-row:hover {
   background: var(--surface-2);
 }
-/* "Already open" rows: faded so they read as background context, not
-   primary candidates. Click still toggles them closed. */
+/* Dimmed rows read as background context. In the session picker this
+   marks sessions that are NOT currently open (so the open/active ones
+   stand out at full brightness); in the anchor picker it marks the
+   current anchor. */
 .agent-row.dimmed {
   opacity: 0.45;
 }
@@ -122,7 +124,7 @@
 
 .agent-row .row-close {
   /* Always rendered to reserve column space; hidden by default,
-     revealed on hover but only meaningful for open (dimmed) rows. */
+     revealed on hover only on rows that are currently open. */
   width: 18px;
   height: 18px;
   display: inline-flex;
@@ -134,9 +136,10 @@
   border-radius: var(--radius-sm);
   pointer-events: none;
 }
-/* Reveal + enable the X only on hover of a row that's already open
-   (we use the .dimmed class as the marker for "open elsewhere"). */
-.agent-row.dimmed:hover .row-close {
+/* Reveal + enable the X only on hover of an open row. In the session
+   picker the open rows are the non-dimmed ones (dimmed marks the
+   not-open background). */
+.agent-row:not(.dimmed):hover .row-close {
   opacity: 1;
   pointer-events: auto;
 }

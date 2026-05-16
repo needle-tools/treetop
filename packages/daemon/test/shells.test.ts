@@ -175,4 +175,31 @@ describe("ShellsLog", () => {
     const log = await ShellsLog.open(ws);
     expect(await log.readTranscript("nope")).toBeNull();
   });
+
+  test("cmdSummary reports count plus the latest cmd line and timestamp", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    await log.writeHeader({
+      kind: "header",
+      termId: "t",
+      wt: "/wt",
+      spawnCwd: "/wt",
+      createdAt: "t0",
+    });
+    expect(await log.cmdSummary("t")).toEqual({ count: 0 });
+    await log.append("t", { kind: "cmd", ts: "t1", line: "ls", cwd: "/wt" });
+    await log.append("t", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/wt" });
+    await log.append("t", { kind: "exit", ts: "t3", code: 0 });
+    expect(await log.cmdSummary("t")).toEqual({
+      count: 2,
+      lastLine: "pwd",
+      lastTs: "t2",
+    });
+  });
+
+  test("cmdSummary returns count 0 for an unknown termId", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    expect(await log.cmdSummary("nope")).toEqual({ count: 0 });
+  });
 });

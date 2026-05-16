@@ -155,6 +155,45 @@ export class ShellsLog {
     return out;
   }
 
+  /** Summarise the `kind: "cmd"` entries of a shell's JSONL in a single
+   *  file read: total count plus the latest captured line and its
+   *  timestamp. The picker uses this to filter out "saved with no
+   *  commands" shells (count === 0) and to render the most recent
+   *  command inline under each surviving shell row. Returns
+   *  `{ count: 0 }` when the file is missing or unreadable. */
+  async cmdSummary(termId: string): Promise<{
+    count: number;
+    lastLine?: string;
+    lastTs?: string;
+  }> {
+    let text: string;
+    try {
+      text = await readFile(this.pathFor(termId), "utf-8");
+    } catch {
+      return { count: 0 };
+    }
+    let count = 0;
+    let lastLine: string | undefined;
+    let lastTs: string | undefined;
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      try {
+        const obj = JSON.parse(line) as {
+          kind?: unknown;
+          line?: unknown;
+          ts?: unknown;
+        };
+        if (obj.kind !== "cmd") continue;
+        count++;
+        if (typeof obj.line === "string") lastLine = obj.line;
+        if (typeof obj.ts === "string") lastTs = obj.ts;
+      } catch {
+        // skip malformed
+      }
+    }
+    return { count, lastLine, lastTs };
+  }
+
   /** Read the full transcript of a shell: header, every command, and the
    *  exit entry if the PTY has ended. Returns null when the file is
    *  missing or the header line is invalid (we treat that as "no real

@@ -22,7 +22,7 @@
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
-  import { updateAwaitingBadge } from "./awaitingBadge";
+  import { updateTabIndicator } from "./awaitingBadge";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -98,6 +98,16 @@
     currentCwd?: string;
     createdAt: string;
     alive: boolean;
+    /** Number of Enter-terminated command lines captured for this shell.
+     *  Drives the "hide empty saved shells" filter in the picker. */
+    cmdCount?: number;
+    /** Most recent Enter-terminated command line captured for this
+     *  shell, surfaced as a muted inline snippet on the picker row. */
+    lastCmd?: string;
+    /** Timestamp of `lastCmd` (ISO string). Used as the row's
+     *  `lastActive` so shells age by their most recent use, not by
+     *  spawn time. */
+    lastCmdTs?: string;
   }
   interface ActivityEvent {
     agent: "claude" | "codex" | "copilot";
@@ -2597,12 +2607,19 @@
     return {
       agent: "shell",
       cwd: sh.wt,
-      lastActive: sh.createdAt,
+      // Age by most recent activity, not spawn time, so a shell the
+      // user touched five minutes ago ranks above one they spawned an
+      // hour ago and abandoned.
+      lastActive: sh.lastCmdTs ?? sh.createdAt,
       source: sh.alive
         ? `__attached__:shell:${sh.termId}`
         : `__transcript__:shell:${sh.termId}`,
       title: sh.currentCwd ?? sh.spawnCwd,
       sessionId: sh.termId,
+      // Feed the last command through `lastUserMessage` so it both
+      // renders inline on the row and participates in fuzzy search
+      // ("which shell did I run `bun test` in?").
+      lastUserMessage: sh.lastCmd,
     };
   }
 
@@ -2632,14 +2649,19 @@
   })();
 
   /** wt.path → agents + shells merged, sorted by lastActive desc.
-   *  Drives the "+N sessions in this worktree" picker. */
+   *  Drives the "+N sessions in this worktree" picker. Dead shells with
+   *  zero captured commands are hidden — they're empty terminals that
+   *  were opened and closed without typing anything, just visual noise.
+   *  Alive shells are always kept (user may be mid-type). */
   $: pickerSessionsByWt = ((): Record<string, AgentSession[]> => {
     const m: Record<string, AgentSession[]> = {};
     for (const repo of repos) {
       for (const wt of repo.worktrees ?? []) {
         const merged: AgentSession[] = [...(wt.agents ?? [])];
         for (const sh of allShells) {
-          if (sh.wt === wt.path) merged.push(shellToSession(sh));
+          if (sh.wt !== wt.path) continue;
+          if (!sh.alive && (sh.cmdCount ?? 0) === 0) continue;
+          merged.push(shellToSession(sh));
         }
         merged.sort(
           (a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive),
@@ -2764,13 +2786,25 @@
     return out as any;
   })();
 
-  /** Browser-tab badge: a dot on the favicon + a `(N) ` title prefix
-   *  whenever at least one open session is waiting for the user. Picks
-   *  up changes via the reactive dependency on `dockEntries`. */
-  $: updateAwaitingBadge(
-    dockEntries.reduce((n, e) => (e.awaiting ? n + 1 : n), 0),
+  /** Browser-tab indicator: animates the favicon (pulsing dot when
+   *  waiting, rotating arc when working) and sets the title + meta
+   *  description to a per-session breakdown (with names + agents)
+   *  that the hover tooltip can show. Picks up changes via the
+   *  reactive dependency on `dockEntries`. Exited columns don't
+   *  count — they're closed PTYs, not live TUIs. */
+  $: updateTabIndicator(
+    dockEntries
+      .filter((e) => !e.exited)
+      .map((e) => ({
+        state: e.awaiting
+          ? ("awaiting" as const)
+          : e.working
+            ? ("working" as const)
+            : ("idle" as const),
+        name: (e.manualTitle || e.title || e.branch || "").trim(),
+        agent: e.agent,
+      })),
   );
-
   function handleDocClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
     if (actionsOpen && !target?.closest(".actions-anchor")) {

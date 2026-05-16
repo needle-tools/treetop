@@ -956,21 +956,30 @@ const server = Bun.serve<TermWsData, never>({
       // can show / edit a user-set name (same workspace storage the AI
       // session titles use, just a different key prefix).
       const titles = await workspace.listSessionTitles();
-      const records = headers.map((h) => {
-        const alive = terminalBackend.get(h.termId) !== undefined;
-        return {
-          termId: h.termId,
-          wt: h.wt,
-          spawnCwd: h.spawnCwd,
-          createdAt: h.createdAt,
-          // The cwd sampler hasn't necessarily run yet for a freshly
-          // spawned shell — fall back to spawnCwd so the UI can show
-          // *something* immediately and refine on the next poll cycle.
-          currentCwd: shellCwds.get(h.termId) ?? h.spawnCwd,
-          alive,
-          manualTitle: titles[`shell:${h.termId}`],
-        };
-      });
+      const records = await Promise.all(
+        headers.map(async (h) => {
+          const alive = terminalBackend.get(h.termId) !== undefined;
+          const summary = await shells.cmdSummary(h.termId);
+          return {
+            termId: h.termId,
+            wt: h.wt,
+            spawnCwd: h.spawnCwd,
+            createdAt: h.createdAt,
+            // The cwd sampler hasn't necessarily run yet for a freshly
+            // spawned shell — fall back to spawnCwd so the UI can show
+            // *something* immediately and refine on the next poll cycle.
+            currentCwd: shellCwds.get(h.termId) ?? h.spawnCwd,
+            alive,
+            cmdCount: summary.count,
+            // Last captured cmd line + its timestamp, so the picker can
+            // render the most recent command inline as a muted snippet
+            // (and sort/age the row by when it was actually used).
+            lastCmd: summary.lastLine,
+            lastCmdTs: summary.lastTs,
+            manualTitle: titles[`shell:${h.termId}`],
+          };
+        }),
+      );
       // Newest first so the UI's restore loop renders recent shells at
       // the front of each worktree's column strip.
       records.sort((a, b) =>
