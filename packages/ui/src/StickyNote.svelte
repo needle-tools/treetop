@@ -227,6 +227,44 @@
     // file: TODO — `/api/open` with the resolved absolute path.
   }
 
+  /** Live-resolved label for SESSION chips, derived from the
+   *  current `repos[].worktrees[].agents` snapshot the layer
+   *  passes us. When the user renames a session (sets manualTitle)
+   *  the change SSE refreshes /api/repos → repos prop updates →
+   *  this `$:` re-derives → the chip's displayed text updates
+   *  without re-saving the link. Falls back to `null` when no
+   *  live row matches (orphan session, repo not loaded yet) so
+   *  the chip uses the pick-time snapshot label. */
+  $: liveSessionLabel = (() => {
+    if (note.kind !== "link" || !note.target || note.target.type !== "session") {
+      return null;
+    }
+    const src = note.target.value;
+    for (const r of repos) {
+      for (const wt of r.worktrees ?? []) {
+        const found = (wt as { agents?: Array<{
+          source: string;
+          manualTitle?: string;
+          title?: string;
+          firstUserMessage?: string;
+          sessionId?: string;
+        }> }).agents?.find((a) => a.source === src);
+        if (found) {
+          return (
+            (found.manualTitle && found.manualTitle.trim()) ||
+            (found.title && found.title.trim()) ||
+            (found.firstUserMessage && found.firstUserMessage.trim()) ||
+            (found.sessionId
+              ? `session ${found.sessionId.slice(0, 8)}`
+              : null) ||
+            null
+          );
+        }
+      }
+    }
+    return null;
+  })();
+
   /** Short display label for the chip body. URLs get their host, file
    *  paths get the basename, commits get the short SHA. Falls back to
    *  the raw value when no nicer reduction applies. */
@@ -393,11 +431,6 @@
   }
 
   function startPendulum(): void {
-    // Link chips don't swing — they're chips, not paper. Bail
-    // before the rAF loop starts so we don't burn frames on a
-    // pendulum whose output is suppressed by `displayedTilt`'s
-    // isLink branch anyway.
-    if (isLink) return;
     if (!pendulumActive) {
       pendulumActive = true;
       // Seed pivot tracking from the current state so the first frame
@@ -564,13 +597,10 @@
    *  the rotation prop, set externally — undo restore, etc.) + the
    *  static per-note jitter (`tilt`) + the live pendulum
    *  displacement. Pendulum is transient and decays to 0; the
-   *  rotation prop is the long-term rest angle.
-   *
-   *  Link chips never tilt — they're chips, not paper. Force 0 so
-   *  the deterministic micro-jitter, the persisted user-drag
-   *  rotation, AND the live pendulum swing all collapse to a
-   *  straight horizontal box for kind="link". */
-  $: displayedTilt = isLink ? 0 : tilt + rotation + pendulumAngle;
+   *  rotation prop is the long-term rest angle. Applies to both
+   *  paper notes and link cards — both swing on drag and carry a
+   *  small static jitter so the row looks alive. */
+  $: displayedTilt = tilt + rotation + pendulumAngle;
 
   /** Layer-driven fly hook: while `flying` is true the parent is
    *  pumping fresh `x` values into us each frame, so kick the
@@ -915,7 +945,7 @@
           />
         </span>
         <span class="attach-card-label">
-          {note.target.label ?? displayLabel(note.target)}
+          {liveSessionLabel ?? note.target.label ?? displayLabel(note.target)}
         </span>
         {#if note.target.subtitle || note.target.meta}
           <span class="attach-card-meta">

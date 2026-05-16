@@ -16,6 +16,7 @@
   import type { PickItem, Provider, SearchScope } from "./mention-types";
   import { recents } from "./mention-recents";
   import AttachmentIcon from "./AttachmentIcon.svelte";
+  import LoadingSpinner from "./LoadingSpinner.svelte";
 
   export let providers: Provider[];
   export let scope: SearchScope = {};
@@ -58,6 +59,15 @@
    *  paint the empty-state message once we've heard from every
    *  provider at least once for the current query. */
   let queryLoadedEpoch = -1;
+  /** Are we currently waiting on at least one provider for the
+   *  current query? Drives the spinner + the "Searching…" empty
+   *  state. Set true synchronously when the reactive query change
+   *  fires, cleared by buildEmpty/SearchView when the epoch they
+   *  observed is still the latest one. Without this the spinner
+   *  would flicker off briefly between user keystrokes because the
+   *  intermediate epochs (whose responses we drop) wouldn't clear
+   *  it themselves. */
+  let loading = false;
 
   /** Empty-query path: ask every provider for its top-N most-recent
    *  items (search with `""` is treated as "match everything" by the
@@ -104,6 +114,7 @@
     groups = grp;
     cursor = 0;
     queryLoadedEpoch = epoch;
+    if (epoch === queryEpoch) loading = false;
   }
 
   /** Search path: query each provider in parallel, then assemble in
@@ -134,6 +145,7 @@
     groups = grp;
     cursor = 0;
     queryLoadedEpoch = epoch;
+    if (epoch === queryEpoch) loading = false;
   }
 
   $: {
@@ -147,6 +159,12 @@
     queryEpoch++;
     const epoch = queryEpoch;
     const q = query.trim();
+    // Loading flag flips on synchronously so the spinner appears
+    // immediately when the user opens the picker / types a new
+    // query — the fetch's own resolution clears it. Keeping it on
+    // through the entire pending-window means the picker reads as
+    // "still working" even if a stale response landed earlier.
+    loading = true;
     if (q.length === 0) {
       void buildEmptyView(epoch);
     } else {
@@ -193,26 +211,42 @@
 </script>
 
 <div class="mention-picker" role="combobox" aria-expanded="true">
-  <input
-    bind:this={inputEl}
-    bind:value={query}
-    on:keydown={onKey}
-    type="text"
-    {placeholder}
-    spellcheck="false"
-    autocomplete="off"
-    class="mention-picker-input"
-    aria-label="Search"
-  />
+  <!-- Input + inline spinner. The spinner only renders while a
+       provider fetch is in flight, sits absolute over the input's
+       right edge, and disappears the moment results land. This is
+       the affordance the user was missing — the picker used to look
+       "broken" on first open because the empty-state message
+       appeared before /api/agents and /api/commits returned. -->
+  <div class="mention-picker-input-wrap">
+    <input
+      bind:this={inputEl}
+      bind:value={query}
+      on:keydown={onKey}
+      type="text"
+      {placeholder}
+      spellcheck="false"
+      autocomplete="off"
+      class="mention-picker-input"
+      aria-label="Search"
+    />
+    {#if loading}
+      <span class="mention-picker-spinner-slot">
+        <LoadingSpinner size="14px" label="Searching" />
+      </span>
+    {/if}
+  </div>
   <div class="mention-picker-list" role="listbox">
     {#if visibleItems.length === 0}
       <div class="mention-picker-empty">
-        {#if query.trim().length === 0}
+        {#if loading}
+          <span class="mention-picker-empty-spinner">
+            <LoadingSpinner size="12px" label="Loading" />
+          </span>
+          Loading recent picks…
+        {:else if query.trim().length === 0}
           No recent picks yet — start typing to search.
-        {:else if queryLoadedEpoch === queryEpoch}
-          No matches.
         {:else}
-          Searching…
+          No matches.
         {/if}
       </div>
     {:else}

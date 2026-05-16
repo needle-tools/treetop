@@ -8,26 +8,69 @@
    * threading props through the App tree. The layer registers itself
    * on mount; spawnNote queues calls made before mount.
    */
+  /** Reusable spawn payload — the same shape powers every "create
+   *  a new attachment" entry point in the app:
+   *   - The `+`/🔗 toolbar buttons (target undefined → user picks).
+   *   - The Save-as-link menu item on SessionView (target preset →
+   *     auto-commit + fly).
+   *   - Future surfaces (drag-from-commit, slash-command, etc.).
+   *
+   *  When `target` is omitted the layer stages the attachment at
+   *  `originRect` and opens the picker. When `target` is provided
+   *  the same staging-then-fly animation runs but the layer
+   *  auto-commits without showing the picker, so the chip lands in
+   *  its pin slot in one continuous motion. Both paths share the
+   *  best-free-slot picker and the fly rAF loop. */
   type SpawnArgs = {
     anchor: string;
-    /** Bounding rect of the element that triggered the spawn — used to
-     *  derive the new note's horizontal offset (so it appears beneath
-     *  the click origin). */
+    /** Bounding rect of the element that triggered the spawn — used
+     *  to derive the staged attachment's horizontal offset. The fly
+     *  animation interpolates FROM this rect TO the chosen pin
+     *  slot, so the user's eye follows the chip from where they
+     *  clicked. */
     originRect: DOMRect;
-    /** Which attachment to seed. Defaults to "note" so existing callers
-     *  (the original + button) keep working unchanged. */
+    /** Which attachment to seed. Defaults to "note". */
     kind?: "note" | "link";
+    /** Pre-resolved link target. Set by callers (like the chat
+     *  burger-menu) that already know the exact session/commit/url
+     *  the user wants — the layer skips the picker, stages briefly
+     *  at `originRect`, then flies to the pin slot. Empty/absent
+     *  means "open the picker so the user can choose". */
+    target?: {
+      type: "url" | "commit" | "session" | "file";
+      value: string;
+      label?: string;
+      subtitle?: string;
+      meta?: string;
+      agent?: string;
+      provider?: string;
+    };
   };
 
   let registered: ((args: SpawnArgs) => Promise<void>) | null = null;
   const pending: SpawnArgs[] = [];
 
+  /** Canonical spawn entry-point. Aliased as `spawnLinkWithTarget`
+   *  below for callers whose semantics are "create this exact link
+   *  now" rather than "open the picker"; both call the same layer
+   *  function under the hood. */
   export async function spawnNote(args: SpawnArgs): Promise<void> {
     if (registered) {
       await registered(args);
       return;
     }
     pending.push(args);
+  }
+
+  /** Semantic alias of spawnNote for the auto-commit case. Callers
+   *  pre-fill `target` (and usually `kind: "link"`) so the layer
+   *  skips the picker, flies the chip into its slot, and brings it
+   *  to front — same animation the picker path uses, just no human
+   *  in the loop. */
+  export async function spawnLinkWithTarget(
+    args: Omit<SpawnArgs, "kind"> & { target: NonNullable<SpawnArgs["target"]> },
+  ): Promise<void> {
+    await spawnNote({ ...args, kind: "link" });
   }
 
   export function _registerLayer(fn: (args: SpawnArgs) => Promise<void>): void {
@@ -394,9 +437,23 @@
     anchor: string;
     originRect: DOMRect;
     kind?: "note" | "link";
+    target?: {
+      type: "url" | "commit" | "session" | "file";
+      value: string;
+      label?: string;
+      subtitle?: string;
+      meta?: string;
+      agent?: string;
+      provider?: string;
+    };
   }): Promise<void> {
     const kind = args.kind ?? "note";
+    const hasTarget = !!args.target;
     try {
+      // POST with target up-front when the caller already knows it
+      // (Save-as-link path) — skips an extra PUT round-trip and
+      // means the server returns a fully-formed note we can drop
+      // straight into the fly animation.
       const res = await fetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -404,32 +461,84 @@
           body: "",
           anchors: [args.anchor],
           ...(kind === "link" ? { kind: "link" } : {}),
+          ...(args.target ? { target: args.target } : {}),
         }),
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
-      // Park the new note as "staged": it floats beneath the "+"
-      // button (centered horizontally, just below) instead of in its
-      // permanent pin slot. The user types content and Enter/clicks
-      // out → the note flies to the row's best free slot. If the user
-      // leaves edit mode without typing anything, StickyNote dispatches
-      // `remove` (via `removeIfEmpty`) and we delete + fade.
+      // Park the new note as "staged" at originRect — same launching
+      // pad whether the user is about to pick from the dropdown OR
+      // we already have the target and are about to fly the chip
+      // straight into its slot. Centred horizontally on the trigger.
       const docX =
         args.originRect.left + args.originRect.width / 2 - NOTE_W / 2 + window.scrollX;
       const docY = args.originRect.bottom + 8 + window.scrollY;
       staging = { ...staging, [created.id]: { docX, docY, anchor: args.anchor } };
       notes = [created, ...notes];
-      editingId = created.id;
+      // Bring to front so the new chip always sits above any
+      // previously-pinned attachments — both the picker case and
+      // the auto-commit case use the same z-order, which means
+      // Save-as-link is no longer hidden behind an older chip.
       bringToFront(created.id);
+      // Picker case: enter edit mode so the user can search. Auto-
+      // commit case: skip edit mode entirely — the target is set,
+      // we're just animating it home.
+      editingId = hasTarget ? null : created.id;
       tick++;
-      // editingId is one-shot: the new note's `startEditing` prop is
-      // read by StickyNote on its initial `onMount`, so we clear the
-      // signal after Svelte commits the next render. Without this,
-      // any later remount (e.g. a row collapse+expand) would pull
-      // the note back into edit mode unprompted.
       await svelteTick();
       editingId = null;
+      if (hasTarget) {
+        // Same staging→pinned animation `handleSave` runs after a
+        // picker pick. Reusing it (rather than duplicating the
+        // offset/fly setup) keeps the two spawn paths visually
+        // identical, including the pendulum swing during travel.
+        await flyStagedToPin(created.id);
+      }
     } catch {}
+  }
+
+  /** Common "staged → pinned" animation: pick the best slot on the
+   *  anchor row, lock in the offset, kick off the rAF fly loop, and
+   *  clear staging. Called from `handleSave` (picker pick) AND from
+   *  `handleSpawn` when an auto-commit target was supplied. */
+  async function flyStagedToPin(id: string): Promise<void> {
+    const st = staging[id];
+    if (!st) return;
+    const offsetXFrac = findBestOffsetXFrac(st.anchor, id);
+    const prev = offsets[id] ?? {};
+    offsets = { ...offsets, [id]: { ...prev, offsetXFrac } };
+    saveOffsets();
+    const note = notes.find((n) => n.id === id);
+    const li = note ? findAnchorLi(note) : null;
+    if (li) {
+      const r = li.getBoundingClientRect();
+      const docLeft = r.left + window.scrollX;
+      const docBottom = r.bottom + window.scrollY;
+      const maxX = Math.max(
+        0,
+        document.documentElement.scrollWidth - NOTE_W - 4,
+      );
+      const toX = Math.min(
+        Math.max(0, docLeft + offsetXFrac * r.width),
+        maxX,
+      );
+      const toY = docBottom - NOTE_OVERLAP;
+      flyingNotes = {
+        ...flyingNotes,
+        [id]: {
+          fromX: st.docX,
+          fromY: st.docY,
+          toX,
+          toY,
+          startMs: performance.now(),
+          durationMs: 550,
+        },
+      };
+      startFlyLoop();
+    }
+    const next = { ...staging };
+    delete next[id];
+    staging = next;
   }
 
   /** Pick a horizontal slot (offsetXFrac) on the anchor row that has
@@ -491,52 +600,13 @@
       kind?: "note" | "link";
     }>,
   ): Promise<void> {
-    const st = staging[e.detail.id];
-    if (st) {
-      // First commit of a staged note: pick the best free slot on the
-      // row, lock in offsetXFrac, then animate the note from its
-      // floating-below-the-button spot down into the pin slot. The
-      // motion is rAF-driven (not a CSS transition) so each `x` update
-      // propagates into StickyNote's pendulum and tilts the note
-      // during travel — same physics as a real drag.
-      const offsetXFrac = findBestOffsetXFrac(st.anchor, e.detail.id);
-      const prev = offsets[e.detail.id] ?? {};
-      offsets = { ...offsets, [e.detail.id]: { ...prev, offsetXFrac } };
-      saveOffsets();
-      // Compute the pin-slot doc coords from the same row geometry
-      // screenPosFor uses, so the rAF interpolation lands exactly on
-      // the resting position the anchored path will subsequently report.
-      const note = notes.find((n) => n.id === e.detail.id);
-      const li = note ? findAnchorLi(note) : null;
-      if (li) {
-        const r = li.getBoundingClientRect();
-        const docLeft = r.left + window.scrollX;
-        const docBottom = r.bottom + window.scrollY;
-        const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
-        const toX = Math.min(Math.max(0, docLeft + offsetXFrac * r.width), maxX);
-        const toY = docBottom - NOTE_OVERLAP;
-        flyingNotes = {
-          ...flyingNotes,
-          [e.detail.id]: {
-            fromX: st.docX,
-            fromY: st.docY,
-            toX,
-            toY,
-            startMs: performance.now(),
-            durationMs: 550,
-          },
-        };
-        startFlyLoop();
-      }
-      const next = { ...staging };
-      delete next[e.detail.id];
-      staging = next;
-      // Optimistic local update — without this the chip renders its
-      // "(empty link)" placeholder for the ~50-300ms between
-      // staging-clear and the PUT response arriving, which makes
-      // the icon flash in (no logo → logo). Apply the same target
-      // + kind we're about to PUT so the chip flies into its slot
-      // already wearing the right brand mark.
+    if (staging[e.detail.id]) {
+      // First commit of a staged note. Optimistically apply the
+      // picked target + kind locally so the chip wears the right
+      // brand mark while the fly animation runs and the PUT
+      // round-trips. Without this it'd render its "(empty link)"
+      // placeholder for ~50-300ms — the icon would visibly flash
+      // in after the PUT response landed.
       if (e.detail.target || e.detail.kind) {
         notes = notes.map((n) =>
           n.id === e.detail.id
@@ -550,6 +620,10 @@
             : n,
         );
       }
+      // Shared with the auto-commit Save-as-link path. One helper,
+      // one fly animation — picker pick and "save with target"
+      // both look identical from this point forward.
+      await flyStagedToPin(e.detail.id);
     }
     try {
       // PUT body shape mirrors the daemon's accepted fields. We only

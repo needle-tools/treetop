@@ -118,7 +118,10 @@
   background: var(--surface-1);
   background-image: none;
   color: var(--text-1);
-  border: 1px solid var(--surface-2);
+  /* Muted-text border colour — reads as a deliberate frame
+     against the dark chip surface, instead of the near-invisible
+     surface-2 line we used before. */
+  border: 1px solid var(--text-muted);
   border-radius: var(--radius-md);
   padding: 4px 8px 4px 6px;
   box-shadow:
@@ -321,9 +324,17 @@
 
 /* Wrapper variants — chip uses `.attach-card` for layout, picker
    rows use `.attach-row`. These rules add only the chrome each
-   variant needs on top of its shared layout class. */
-.sticky-link-body:hover {
-  background: var(--surface-3);
+   variant needs on top of its shared layout class. The chip
+   intentionally keeps its background steady on hover — the cursor
+   pointer + chip shadow are signal enough; a bg flicker on every
+   pass made the row feel busy.
+   The :hover:not(:disabled) override below is load-bearing: a
+   global `button:hover { background: var(--surface-3) }` rule
+   lives in base.css (0,1,1 specificity), so a plain
+   `.sticky-link-body:hover` (0,2,0) loses the cascade. Adding
+   `:not(:disabled)` here bumps to 0,3,0 and reliably wins. */
+.sticky-link-body:hover:not(:disabled) {
+  background: transparent;
 }
 /* Inline mention picker, used inside the link chip in edit mode
    (and in the future the @-trigger popover in note bodies). Pure
@@ -338,18 +349,47 @@
      room to flex up to the cap. */
   min-width: 360px;
 }
+.mention-picker-input-wrap {
+  position: relative;
+}
 .mention-picker-input {
   width: 100%;
   background: var(--surface-0);
   color: var(--text-1);
   border: 1px solid var(--surface-2);
   border-radius: var(--radius-sm);
-  padding: 4px 7px;
+  /* Right padding leaves room for the absolute-positioned spinner
+     when it appears — without it the user's typing slides under
+     the spinner. Stays at this size whether the spinner is visible
+     or not, so the input never resizes mid-keystroke. */
+  padding: 4px 28px 4px 7px;
   font: inherit;
   outline: none;
 }
 .mention-picker-input:focus {
   border-color: var(--brand);
+}
+/* Positioning shells for the shared <LoadingSpinner> component used
+   while a picker provider fetch is in flight. The spinner glyph's
+   look (ring colours, animation, sizing) lives in
+   LoadingSpinner.svelte — these rules just place it where the
+   picker needs it: absolute over the input's right edge, or inline
+   in front of the "Loading…" empty-state text. */
+.mention-picker-spinner-slot {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  /* currentColor on the LoadingSpinner ring → muted text colour so
+     the spinner doesn't shout against the input's neutral palette. */
+  color: var(--text-muted);
+}
+.mention-picker-empty-spinner {
+  display: inline-flex;
+  margin-right: 0.45rem;
+  color: var(--text-muted);
+  vertical-align: middle;
 }
 .mention-picker-list {
   max-height: 240px;

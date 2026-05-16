@@ -5,7 +5,7 @@
   import TerminalView from "./TerminalView.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
-  import { relativeAge } from "./mention-providers";
+  import { saveSessionAsLink } from "./save-session-as-link";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -148,6 +148,11 @@
   let session: NormalizedSession | null = null;
   let loading = false;
   let error = "";
+  /** Outer column wrapper — used by the Save-as-link action so the
+   *  fly animation can launch from the session column's bounding
+   *  rect (visually anchors the chip to the source the user clicked
+   *  from) before flying into the row's pin slot. */
+  let sessionEl: HTMLDivElement | null = null;
   let messagesEl: HTMLElement | null = null;
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -293,85 +298,32 @@
         title: wtPath
           ? "Pin this session as a sticky-link on the row"
           : "No worktree to pin to",
-        onSelect: () => void saveAsLink(),
+        // SessionMenu passes the burger-button's bounding rect so
+        // the fly animation launches from where the user actually
+        // clicked, not from the whole session column.
+        onSelect: (triggerRect: DOMRect) => void saveAsLink(triggerRect),
       },
     ];
   })();
 
-  /** POST a kind="link" sticky note anchored to the current worktree,
-   *  targeting this session. The display snapshot (label/agent/
-   *  msgCount/age) is read from /api/agents so the chip renders
-   *  instantly without a follow-up lookup — same data shape the
-   *  picker would produce if the user had searched for this session
-   *  via the 🔗 button. SSE notifies the notes layer which appends
-   *  the new chip into its row strip. */
-  async function saveAsLink(): Promise<void> {
+  /** Pin this session as a sticky-link chip on the current
+   *  worktree's row. Thin wrapper over the shared
+   *  `saveSessionAsLink` util so chat-session and active-TUI
+   *  surfaces stay in sync — bug fixes / display-shape changes
+   *  land in one place. */
+  async function saveAsLink(triggerRect?: DOMRect): Promise<void> {
     if (!wtPath) return;
-    type AgentRow = {
-      source: string;
-      agent: string;
-      title?: string;
-      manualTitle?: string;
-      firstUserMessage?: string;
-      sessionId?: string;
-      messageCount?: number;
-      lastActive: string;
-    };
-    let label = "(session)";
-    let agentName: string = agent;
-    let msgCount = 0;
-    let lastActive = new Date().toISOString();
+    const origin =
+      triggerRect ??
+      sessionEl?.getBoundingClientRect() ??
+      new DOMRect(window.innerWidth / 2 - 100, window.innerHeight / 2 - 50, 200, 100);
     try {
-      const res = await fetch("/api/agents");
-      if (res.ok) {
-        const all = (await res.json()) as AgentRow[];
-        const found = all.find((s) => s.source === source);
-        if (found) {
-          agentName = found.agent;
-          label =
-            (found.manualTitle && found.manualTitle.trim()) ||
-            (found.title && found.title.trim()) ||
-            (found.firstUserMessage && found.firstUserMessage.trim()) ||
-            (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : "(untitled)");
-          msgCount = found.messageCount ?? 0;
-          lastActive = found.lastActive;
-        }
-      }
-    } catch {
-      // Snapshot is best-effort — falling through with defaults still
-      // produces a valid (less-rich) link chip.
-    }
-    const target = {
-      type: "session" as const,
-      value: source,
-      label,
-      agent: agentName,
-      subtitle: msgCount > 0 ? `${msgCount} msg` : "",
-      meta: relativeAge(lastActive),
-    };
-    try {
-      const res = await fetch("/api/notes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: "",
-          anchors: [`worktree:${wtPath}`],
-          kind: "link",
-          target,
-        }),
+      await saveSessionAsLink({
+        wtPath,
+        source,
+        fallbackAgent: agent,
+        triggerRect: origin,
       });
-      if (!res.ok) {
-        // Bubble the daemon's error reason up to the chat header
-        // so a 4xx (validation, ID conflict) doesn't fail silently
-        // — the user just sees "menu item did nothing" otherwise.
-        const errBody = await res.json().catch(() => ({}));
-        error = `save-as-link failed: ${errBody.error ?? `HTTP ${res.status}`}`;
-        return;
-      }
-      // The daemon broadcasts a `change` SSE on success; the notes
-      // layer picks it up via changeKey++ → refresh() and renders
-      // the new chip in the row strip. No imperative client state
-      // change needed here.
     } catch (e) {
       error = `save-as-link failed: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -637,7 +589,11 @@
   });
 </script>
 
-<div class="session" class:awaiting-input={mode === "terminal" && awaitingInput}>
+<div
+  class="session"
+  class:awaiting-input={mode === "terminal" && awaitingInput}
+  bind:this={sessionEl}
+>
   <SessionHeader
     {agent}
     {source}

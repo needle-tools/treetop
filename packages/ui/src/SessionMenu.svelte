@@ -12,7 +12,11 @@
     | {
         kind: "action";
         label: string;
-        onSelect: () => void;
+        /** Called when the user picks this item. The `triggerRect`
+         *  is the bounding box of the burger button that opened
+         *  the menu — useful for actions that animate something
+         *  away from the click origin (Save-as-link's fly). */
+        onSelect: (triggerRect: DOMRect) => void;
         disabled?: boolean;
         title?: string;
       }
@@ -38,6 +42,10 @@
   export let triggerLabel: string = "Session menu";
 
   let open = false;
+  /** Burger trigger element — captured so action items can read its
+   *  bounding rect when they fire. Save-as-link uses that rect as
+   *  the origin for its fly animation. */
+  let triggerEl: HTMLButtonElement | null = null;
   /** Index of the item whose "Copied" flash is currently visible. */
   let copiedIndex: number | null = null;
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -50,7 +58,14 @@
     if (item.disabled) return;
     if (item.kind === "action") {
       open = false;
-      item.onSelect();
+      // Hand the action the trigger button's bounding rect so it
+      // can animate from where the user clicked. Falls back to a
+      // centred rect if the binding hasn't resolved yet (effectively
+      // never, since we only get here from a click on the trigger).
+      const rect =
+        triggerEl?.getBoundingClientRect() ??
+        new DOMRect(window.innerWidth / 2 - 10, window.innerHeight / 2 - 10, 20, 20);
+      item.onSelect(rect);
       return;
     }
     // kind === "copy"
@@ -82,6 +97,7 @@
   <button
     class="menu-btn"
     type="button"
+    bind:this={triggerEl}
     on:click|stopPropagation={toggle}
     aria-haspopup="menu"
     aria-expanded={open}

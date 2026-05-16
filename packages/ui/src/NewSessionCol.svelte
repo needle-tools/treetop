@@ -23,6 +23,7 @@
   import TerminalView from "./TerminalView.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
+  import { saveSessionAsLink } from "./save-session-as-link";
 
   type AgentKind = "claude" | "codex" | "copilot" | "shell";
 
@@ -76,9 +77,14 @@
   }>();
 
   /** Burger-menu items. Hosts the Restart action (was the inline ↻
-   *  button) plus a Copy command-line option that's handy when
-   *  grabbing the exact `claude --resume <id>` line for an external
-   *  terminal. SessionMenu owns the copy-flash + close behaviour. */
+   *  button), a Copy command-line option (handy when grabbing the
+   *  exact `claude --resume <id>` line for an external terminal),
+   *  and Save-as-link for the active TUI — same chip the chat-
+   *  session menu produces, so a running shell / Claude TUI can be
+   *  pinned to the row before any JSONL exists. The chip's title
+   *  picks up the real session name once the agent writes to disk
+   *  (StickyNote resolves the label live from repos[].worktrees[].
+   *  agents on every render). */
   $: menuItems = [
     {
       kind: "copy",
@@ -88,11 +94,38 @@
     },
     {
       kind: "action",
+      label: "Save as link",
+      disabled: !wtPath,
+      title: wtPath
+        ? "Pin this TUI as a sticky-link on the row (auto-updates when the session names itself)"
+        : "No worktree to pin to",
+      onSelect: (triggerRect: DOMRect) => void saveAsLink(triggerRect),
+    },
+    {
+      kind: "action",
       label: `Restart ${agent}`,
       title: `Re-run \`${agent}\` in this column (use after a self-update)`,
       onSelect: () => dispatch("restart"),
     },
   ] satisfies SessionMenuItem[];
+
+  async function saveAsLink(triggerRect: DOMRect): Promise<void> {
+    if (!wtPath) return;
+    try {
+      await saveSessionAsLink({
+        wtPath,
+        source,
+        fallbackAgent: agent,
+        fallbackLabel: manualTitle,
+        triggerRect,
+      });
+    } catch {
+      // Best-effort — no error slot on this column. The
+      // saveSessionAsLink helper itself only throws on a truly
+      // unexpected failure (e.g. a runtime bug); 4xx/5xx are
+      // already swallowed at the fetch boundary.
+    }
+  }
 </script>
 
 <div
