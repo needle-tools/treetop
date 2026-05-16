@@ -454,25 +454,29 @@
     padding: 0.4rem 0.5rem;
     overflow: hidden;
   }
+  /* Chrome-free centered status line (e.g. "starting terminal…").
+     Vertically centred in the terminal area, then nudged up by one
+     line height so it sits comfortably above the optical centre.
+     The error variant adds back its own background so the warning
+     still reads as a callout. */
   .overlay {
     position: absolute;
-    top: 0.5rem;
+    top: 50%;
     left: 50%;
-    transform: translateX(-50%);
+    transform: translate(-50%, calc(-50% - 1lh));
     z-index: 2;
-    background: var(--surface-2);
     color: var(--text-1);
     padding: 0.3rem 0.7rem;
-    border-radius: var(--radius-sm);
     font-size: 0.75rem;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .overlay.error {
     background: var(--error-bg);
     color: var(--error-text);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .spinner {
     display: inline-block;

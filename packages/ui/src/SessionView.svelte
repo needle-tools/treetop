@@ -154,6 +154,27 @@
    *  from) before flying into the row's pin slot. */
   let sessionEl: HTMLDivElement | null = null;
   let messagesEl: HTMLElement | null = null;
+  /** True while the cursor sits in the top 60% of the session column.
+   *  Drives the pinned-last-message reveal: at rest the pin is hidden
+   *  (out of the way of the TUI); a hover anywhere in the upper area
+   *  fades it in so the user can glance back at their last prompt
+   *  without scrolling the column. */
+  let pinnedRevealed = false;
+  /** Vertical fraction of the session column below which the pin
+   *  retracts. Generous threshold so the pin shows whenever the user
+   *  is reading the top of the chat, not just brushing the title. */
+  const PIN_REVEAL_RATIO = 0.6;
+  function onSessionMouseMove(ev: MouseEvent): void {
+    if (!sessionEl) return;
+    const r = sessionEl.getBoundingClientRect();
+    if (r.height <= 0) return;
+    const yFrac = (ev.clientY - r.top) / r.height;
+    const next = yFrac >= 0 && yFrac <= PIN_REVEAL_RATIO;
+    if (next !== pinnedRevealed) pinnedRevealed = next;
+  }
+  function onSessionMouseLeave(): void {
+    if (pinnedRevealed) pinnedRevealed = false;
+  }
   let lastLoadedAt = 0;
   let pollCount = 0;
   let inputText = "";
@@ -274,6 +295,30 @@
       // ignore — most likely permissions or unfocused document.
     }
   }
+
+  /** Walk the normalized message tree from the tail and return the
+   *  text content of the most recent user-typed message — used by the
+   *  header's "last activity" tooltip so the user can glance back at
+   *  what they just asked without scrolling the column. Skips user
+   *  messages whose only blocks are tool_result payloads (Claude
+   *  routes those under role: "user" but they aren't user-typed). */
+  $: lastUserMessage = ((): string | undefined => {
+    const msgs = session?.messages;
+    if (!msgs || msgs.length === 0) return undefined;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.role !== "user") continue;
+      const parts: string[] = [];
+      for (const b of m.blocks ?? []) {
+        if (b?.type === "text" && typeof b.text === "string" && b.text.length > 0) {
+          parts.push(b.text);
+        }
+      }
+      const joined = parts.join("\n").trim();
+      if (joined.length > 0) return joined;
+    }
+    return undefined;
+  })();
 
   /** Burger-menu items for the per-session header. SessionMenu owns the
    *  popover, click-outside handling, and "Copied to clipboard" flash
@@ -593,38 +638,55 @@
   class="session"
   class:awaiting-input={mode === "terminal" && awaitingInput}
   bind:this={sessionEl}
+  on:mousemove={onSessionMouseMove}
+  on:mouseleave={onSessionMouseLeave}
+  role="presentation"
 >
-  <SessionHeader
-    {agent}
-    {source}
-    {manualTitle}
-    {mode}
-    canResume={!!session?.sessionId && (agent === "claude" || agent === "codex")}
-    canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
-    {disposing}
-    {awaitingInput}
-    working={mode === "terminal" && working}
-    loadedMessageCount={session?.messages.length}
-    {totalMessageCount}
-    {contextTokens}
-    {contextTokensExact}
-    {contextWindow}
-    {model}
-    lastActivityIso={session?.endedAt}
-    {pollCount}
-    {lastLoadedAt}
-    {inflight}
-    {menuItems}
-    onTitleSaved={(next) => onManualTitleSaved(next)}
-    onResume={() => (mode = "terminal")}
-    onEndSession={disposeTerminal}
-    onCancelInflight={cancelAllInflight}
-    {onClose}
-    {onDragStart}
-    resumeTitle={agent === "codex"
-      ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
-      : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
-  />
+  <!-- Header + the pinned "last message" reminder live in the same
+       relative box so the pin can hang below the header without
+       pushing the TUI down. The pin floats over the top of the TUI
+       (no layout impact); hover reveals the full text. -->
+  <div class="session-head-stack">
+    <SessionHeader
+      {agent}
+      {source}
+      {manualTitle}
+      {mode}
+      canResume={!!session?.sessionId && (agent === "claude" || agent === "codex")}
+      canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
+      {disposing}
+      {awaitingInput}
+      working={mode === "terminal" && working}
+      loadedMessageCount={session?.messages.length}
+      {totalMessageCount}
+      {contextTokens}
+      {contextTokensExact}
+      {contextWindow}
+      {model}
+      lastActivityIso={session?.endedAt}
+      {lastUserMessage}
+      {pollCount}
+      {lastLoadedAt}
+      {inflight}
+      {menuItems}
+      onTitleSaved={(next) => onManualTitleSaved(next)}
+      onResume={() => (mode = "terminal")}
+      onEndSession={disposeTerminal}
+      onCancelInflight={cancelAllInflight}
+      {onClose}
+      {onDragStart}
+      resumeTitle={agent === "codex"
+        ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
+        : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
+    />
+    {#if mode === "terminal" && lastUserMessage && lastUserMessage.trim().length > 0}
+      <div class="pinned-last-msg-wrap" class:revealed={pinnedRevealed}>
+        <div class="pinned-last-msg" title={lastUserMessage}>
+          {lastUserMessage}
+        </div>
+      </div>
+    {/if}
+  </div>
 
   {#if mode === "terminal" && session?.sessionId && session.cwd}
     <TerminalView
@@ -825,6 +887,72 @@
   @keyframes session-awaiting-pulse {
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
     50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
+  }
+  /* The head-stack hosts the header + the absolutely-positioned pin.
+     `z-index: 2` lifts its entire compositing layer above the TUI
+     (which has implicit auto stacking from flex document order), so
+     the pin — painted within head-stack's layer — can overlay the
+     top of the TUI when revealed. Without this, the TUI would paint
+     on top of the revealed pin and visually swallow it. */
+  .session-head-stack {
+    position: relative;
+    flex: 0 0 auto;
+    z-index: 2;
+  }
+  /* The pin hangs just below the header. Position is steady — only
+     opacity animates — so the surrounding TUI/header don't get a
+     restless moving element in their peripheral vision. */
+  .pinned-last-msg-wrap {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: flex;
+    /* Right-aligned so the pill hugs the column's right edge —
+       leaves the left/centre of the TUI uncovered when the pin is
+       revealed. */
+    justify-content: flex-end;
+    padding: 0.3rem 0.5rem 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 180ms ease;
+  }
+  .pinned-last-msg-wrap.revealed {
+    opacity: 1;
+  }
+  .pinned-last-msg {
+    /* Intrinsic text width, capped so a long message stays compact
+       and doesn't crowd the TUI underneath. */
+    max-width: 50%;
+    box-sizing: border-box;
+    padding: 0.25rem 0.6rem;
+    background: var(--surface-2);
+    border: 1px solid var(--text-muted);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    text-align: left;
+    /* 2-line clamp via -webkit-line-clamp; standard line-clamp is set
+       too for forward-compat with engines that honour it. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  /* Only re-enable pointer events on the pill once it's revealed —
+     otherwise the invisible pill at rest would still swallow clicks
+     meant for the TUI underneath. */
+  .pinned-last-msg-wrap.revealed .pinned-last-msg {
+    pointer-events: auto;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pinned-last-msg-wrap {
+      transition: none;
+    }
   }
   /* Burger menu UI + .session-menu-popover sizing now live in
      SessionMenu.svelte / styles/popover.css respectively. */

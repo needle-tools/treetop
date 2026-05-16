@@ -57,6 +57,12 @@
   export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
+  /** Text of the user's most recent message in this session, surfaced
+   *  in the rich hover-tooltip on the "last activity" chip. Often the
+   *  user wants a quick "what did I last ask?" reminder without
+   *  scrolling the column — this is that reminder. Undefined ⇒ the
+   *  tooltip omits the "Your last message" section. */
+  export let lastUserMessage: string | undefined = undefined;
   export let pollCount: number = 0;
   export let lastLoadedAt: number = 0;
   export let inflight: InflightRec[] = [];
@@ -235,10 +241,19 @@
   </div>
   <div class="hdr-col col-meta">
     {#if lastActivityIso}
-      <span
-        class="muted small last-activity"
-        title={`Last message ${new Date(lastActivityIso).toLocaleString()}\nPolled ${pollCount}× since open${lastLoadedAt ? ` (most recent ${relTimeFromNow(lastLoadedAt)})` : ""}`}
-      >last activity {relTimeFromIso(lastActivityIso)}</span>
+      {#if lastUserMessage && lastUserMessage.trim().length > 0}
+        <Tooltip variant="wide" placement="bottom" escapeClip>
+          <span
+            slot="trigger"
+            class="muted small last-activity"
+          >last activity {relTimeFromIso(lastActivityIso)}</span>
+          <pre slot="content" class="la-tt-msg">{lastUserMessage}</pre>
+        </Tooltip>
+      {:else}
+        <span
+          class="muted small last-activity"
+        >last activity {relTimeFromIso(lastActivityIso)}</span>
+      {/if}
     {:else if lastActivityFallback}
       <span class="muted small last-activity placeholder">{lastActivityFallback}</span>
     {/if}
@@ -664,6 +679,21 @@
     background: var(--surface-3);
     padding: 0 0.2em;
     border-radius: 2px;
+  }
+  /* "Last activity" hover tooltip — just the user's last message, no
+     extra meta. `:global()` because the slot content renders inside
+     Tooltip.svelte's DOM so scoped selectors don't reach it. */
+  :global(.la-tt-msg) {
+    margin: 0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-1);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-width: min(72ch, 92vw);
+    max-height: 40vh;
+    overflow-y: auto;
   }
   .awaiting-pill {
     background: color-mix(in srgb, var(--status-dirty) 25%, transparent);
