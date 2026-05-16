@@ -4328,6 +4328,7 @@
                             contextWindow={newAgentMeta?.contextWindow}
                             model={newAgentMeta?.model}
                             lastActivityIso={newAgentMeta?.lastActive}
+                            lastUserMessage={newAgentMeta?.lastUserMessage}
                             on:close={() => closeSessionInWt(wt.path, s)}
                             on:dispose={() =>
                               disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}

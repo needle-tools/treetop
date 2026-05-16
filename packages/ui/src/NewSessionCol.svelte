@@ -64,6 +64,11 @@
   export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
+  /** Text of the user's most recent message in this session — fed
+   *  through to SessionHeader so the "last activity" chip's hover
+   *  tooltip can show it. App.svelte derives this from the daemon's
+   *  AgentSession index (same source as `lastActivityIso`). */
+  export let lastUserMessage: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -147,6 +152,7 @@
     {contextWindow}
     {model}
     {lastActivityIso}
+    {lastUserMessage}
     lastActivityFallback="new session"
     messageCountFallback={agent === "shell" ? "starting…" : "no messages yet"}
     {menuItems}
