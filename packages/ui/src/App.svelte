@@ -984,9 +984,19 @@
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:${agent}:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
+    // Preassign a UUID for Claude so we can pass `--session-id <uuid>`
+    // on spawn. Without it, recent Claude versions auto-load the cwd's
+    // most-recent conversation when invoked as bare `claude`, which
+    // makes "+ new session" silently resume the wrong thing. Codex has
+    // no equivalent flag and isn't affected.
+    const entry: { agent: "claude" | "codex"; source: string; preassignedSessionId?: string } =
+      { agent, source: synthetic };
+    if (agent === "claude") {
+      entry.preassignedSessionId = crypto.randomUUID();
+    }
     openSessionsByWt = {
       ...openSessionsByWt,
-      [wtPath]: [{ agent, source: synthetic }, ...existing],
+      [wtPath]: [entry, ...existing],
     };
   }
 
@@ -1145,10 +1155,20 @@
   function restartNewAgentSession(wtPath: string, current: { agent: string; source: string }) {
     const existing = openSessionsByWt[wtPath] ?? [];
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    const replacement = {
+    const replacement: {
+      agent: "claude" | "codex" | "copilot";
+      source: string;
+      preassignedSessionId?: string;
+    } = {
       agent: current.agent as "claude" | "codex" | "copilot",
       source: `__new__:${current.agent}:${id}`,
     };
+    // Restart means a fresh conversation, not a continuation — mint a
+    // new UUID for Claude so `--session-id` lands on a new file rather
+    // than colliding with the dying PTY's id.
+    if (current.agent === "claude") {
+      replacement.preassignedSessionId = crypto.randomUUID();
+    }
     openSessionsByWt = {
       ...openSessionsByWt,
       [wtPath]: existing.map((x) =>
@@ -1306,6 +1326,13 @@
      *  `OpenSessionsStore`. On remount, `cmdForOpenSession` uses it to
      *  spawn `claude --resume <sid>` instead of bare `claude`. */
     resumeSessionId?: string;
+    /** Optional. UUID generated when this column was opened via the
+     *  "+ new session" button, passed as `claude --session-id <uuid>`
+     *  on spawn to force a fresh conversation. Once `resumeSessionId`
+     *  is stamped (the activity tail surfaced the real agent-side id —
+     *  same UUID, just observed via JSONL) the resume path takes
+     *  over. Claude-only; codex has no equivalent flag. */
+    preassignedSessionId?: string;
     /** Optional. `"terminal"` means SessionView should hydrate in
      *  terminal mode on remount (i.e. immediately spawn the resume PTY
      *  instead of showing the read-only chat view). Absent ⇒ read. */
@@ -4275,6 +4302,34 @@
                                 newTermIds = {
                                   ...newTermIds,
                                   [s.source]: e.detail.id,
+                                };
+                              }
+                              // Claude with a preassignedSessionId: by
+                              // this point claude has been exec'd with
+                              // `--session-id <uuid>` and has created
+                              // the JSONL. Promote the preassigned id to
+                              // resumeSessionId so a reload spawns
+                              // `claude --resume <uuid>` instead of
+                              // re-passing `--session-id` (which now
+                              // errors with "Session ID is already in
+                              // use"). The activity-tail stamping does
+                              // the same thing eventually, but it's
+                              // racy — the user can reload faster than
+                              // the SSE event arrives.
+                              if (
+                                s.source.startsWith("__new__:claude:") &&
+                                s.preassignedSessionId &&
+                                !s.resumeSessionId
+                              ) {
+                                const sid = s.preassignedSessionId;
+                                openSessionsByWt = {
+                                  ...openSessionsByWt,
+                                  [wt.path]: (openSessionsByWt[wt.path] ?? []).map(
+                                    (x) =>
+                                      x.source === s.source
+                                        ? { ...x, resumeSessionId: sid }
+                                        : x,
+                                  ),
                                 };
                               }
                               // SHELLS only: also swap the persisted
