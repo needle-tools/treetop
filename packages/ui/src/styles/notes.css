@@ -336,6 +336,22 @@
 .sticky-link-body:hover:not(:disabled) {
   background: transparent;
 }
+/* Hover preview anchored to the right of a session-link sticky.
+   Portalled to <body>, positioned at fixed viewport coordinates
+   from the card's bounding rect. Transparent panel — bubbles
+   carry their own per-role tint. */
+.sticky-link-preview {
+  position: fixed;
+  transform: translateY(-50%);
+  width: 26rem;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 0.55rem 0.7rem;
+  background: transparent;
+  pointer-events: auto;
+  z-index: 2200;
+  transition: top 120ms ease, left 120ms ease;
+}
 /* Inline mention picker, used inside the link chip in edit mode
    (and in the future the @-trigger popover in note bodies). Pure
    "list of rows" styling — the parent owns position/size. */

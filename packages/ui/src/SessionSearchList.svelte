@@ -16,6 +16,13 @@
    *   - what happens on pick / close (route to a worktree, etc.).
    */
   import Popover from "./Popover.svelte";
+  import ChatPreview from "./ChatPreview.svelte";
+  import {
+    fetchPreviewItems,
+    type PreviewAction,
+    type PreviewGap,
+    type PreviewMsg,
+  } from "./preview-action";
   import { filterSessions, type AgentSession } from "./sessionSearch";
 
   export let sessions: AgentSession[];
@@ -36,11 +43,108 @@
   let query = "";
   $: filtered = filterSessions(sessions, query);
 
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
   const dispatch = createEventDispatcher<{
     pick: AgentSession;
     close: AgentSession;
   }>();
+
+  // ── Hover preview ───────────────────────────────────────────────
+  // Per-row hover opens a ChatPreview anchored to the right of the
+  // hovered row, in a fixed-position panel. Same fetch helper as the
+  // session dock so the rendering and timestamps match.
+  type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
+  let previewCache: Record<string, PreviewItem[]> = {};
+  let previewLoading: Record<string, boolean> = {};
+  let hoveredSess: AgentSession | null = null;
+  let hoveredTop = 0;
+  let hoveredLeft = 0;
+  /** Slight delay so brushing past rows doesn't fire /api/session
+   *  fetches for each one. Once a preview is on screen, switching
+   *  between rows is instant — the user is hovering with intent. */
+  const SHOW_DELAY_MS = 280;
+  const DISMISS_DELAY_MS = 120;
+  let showTimer: ReturnType<typeof setTimeout> | null = null;
+  let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+  let poller: ReturnType<typeof setInterval> | null = null;
+  const POLL_MS = 1500;
+
+  function cancelShow() {
+    if (showTimer) {
+      clearTimeout(showTimer);
+      showTimer = null;
+    }
+  }
+  function cancelDismiss() {
+    if (dismissTimer) {
+      clearTimeout(dismissTimer);
+      dismissTimer = null;
+    }
+  }
+  function stopPoll() {
+    if (poller) {
+      clearInterval(poller);
+      poller = null;
+    }
+  }
+
+  async function loadPreview(
+    source: string,
+    opts: { force?: boolean } = {},
+  ): Promise<void> {
+    if (previewLoading[source]) return;
+    if (!opts.force && previewCache[source]) return;
+    previewLoading = { ...previewLoading, [source]: true };
+    const r = await fetchPreviewItems(source);
+    if (r) previewCache = { ...previewCache, [source]: r.items };
+    previewLoading = { ...previewLoading, [source]: false };
+  }
+
+  function onRowEnter(ev: Event, sess: AgentSession) {
+    cancelDismiss();
+    cancelShow();
+    // Shell sessions don't have a transcript backing — the daemon's
+    // /api/session route would have nothing to return. Skip the
+    // preview rather than render an empty panel.
+    if (sess.agent === "shell") {
+      hoveredSess = null;
+      stopPoll();
+      return;
+    }
+    const el = ev.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    hoveredTop = r.top + r.height / 2;
+    hoveredLeft = r.right + 8;
+    const open = () => {
+      hoveredSess = sess;
+      void loadPreview(sess.source);
+      stopPoll();
+      poller = setInterval(() => void loadPreview(sess.source, { force: true }), POLL_MS);
+    };
+    if (hoveredSess) open();
+    else showTimer = setTimeout(open, SHOW_DELAY_MS);
+  }
+
+  function onRowLeave() {
+    cancelShow();
+    cancelDismiss();
+    dismissTimer = setTimeout(() => {
+      hoveredSess = null;
+      stopPoll();
+      dismissTimer = null;
+    }, DISMISS_DELAY_MS);
+  }
+
+  function onPanelEnter() {
+    cancelDismiss();
+  }
+
+  onDestroy(() => {
+    cancelShow();
+    cancelDismiss();
+    stopPoll();
+  });
 
   function relTime(iso: string): string {
     const d = Date.now() - Date.parse(iso);
@@ -93,8 +197,13 @@
           class="agent-row brand-{sess.agent}"
           class:dimmed={isOpen(sess)}
           class:orphan-row={orphanSources.has(sess.source)}
+          class:preview-open={hoveredSess?.source === sess.source}
           title={isOpen(sess) ? "Already open — click to close" : tooltipFor(sess)}
           on:click={() => dispatch("pick", sess)}
+          on:mouseenter={(ev) => onRowEnter(ev, sess)}
+          on:mouseleave={onRowLeave}
+          on:focusin={(ev) => onRowEnter(ev, sess)}
+          on:focusout={onRowLeave}
         >
           {#if sess.agent === "claude"}
             <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
@@ -117,12 +226,9 @@
                 ? "Codex"
                 : sess.agent}
           </span>
-          <span
-            class="agent-title"
-            class:manual={!!sess.manualTitle}
-          >
-            {sess.manualTitle ?? sess.title ?? "(no title)"}
-          </span>
+          {#if sess.manualTitle && sess.manualTitle.trim().length > 0}
+            <span class="agent-title manual">{sess.manualTitle}</span>
+          {/if}
           {#if orphanSources.has(sess.source)}
             <span class="orphan-tag" title={`Originated in ${sess.cwd} — no live worktree matches this path anymore.`}>orphan</span>
           {/if}
@@ -156,6 +262,23 @@
     {/if}
   </ul>
 </Popover>
+
+{#if hoveredSess}
+  <aside
+    class="session-search-preview"
+    style:top="{hoveredTop}px"
+    style:left="{hoveredLeft}px"
+    aria-hidden="true"
+    on:mouseenter={onPanelEnter}
+    on:mouseleave={onRowLeave}
+  >
+    <ChatPreview
+      items={previewCache[hoveredSess.source]}
+      agent={hoveredSess.agent}
+      loading={previewLoading[hoveredSess.source] ?? false}
+    />
+  </aside>
+{/if}
 
 <style>
   .session-search-head {
@@ -225,5 +348,22 @@
   }
   :global(.orphan-row) {
     opacity: 0.85;
+  }
+
+  /* Per-row chat preview pinned to the right of the hovered row.
+     Fixed positioning so the panel anchors to the viewport — the
+     popover's transformed parent is not its containing block. The
+     panel captures pointer events so the user can move the cursor
+     onto it without dismissing. */
+  .session-search-preview {
+    position: fixed;
+    transform: translateY(-50%);
+    width: 26rem;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 0.55rem 0.7rem;
+    background: transparent;
+    z-index: 2200;
+    transition: top 120ms ease, left 120ms ease;
   }
 </style>

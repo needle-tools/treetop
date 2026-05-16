@@ -44,12 +44,19 @@
    * Part of v1.y (floating-overlay phase) of the notes feature — see
    * plans/PLAN.md §"Notes with anchors + floating overlay".
    */
-  import { onMount, createEventDispatcher } from "svelte";
+  import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { marked } from "marked";
   import AnchorPicker from "./AnchorPicker.svelte";
   import Popover from "./Popover.svelte";
   import MentionPicker from "./MentionPicker.svelte";
   import AttachmentIcon from "./AttachmentIcon.svelte";
+  import ChatPreview from "./ChatPreview.svelte";
+  import {
+    fetchPreviewItems,
+    type PreviewAction,
+    type PreviewGap,
+    type PreviewMsg,
+  } from "./preview-action";
   import { defaultProviders } from "./mention-providers";
   import { pushRecent } from "./mention-recents";
   import type { PickItem } from "./mention-types";
@@ -314,6 +321,123 @@
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
   $: isLink = note.kind === "link";
+  $: isSessionLink =
+    isLink &&
+    note.target?.type === "session" &&
+    !!note.target.value &&
+    note.target.agent !== "shell";
+
+  // ── Hover chat preview ──────────────────────────────────────────
+  // Session-link cards expose a hover panel that previews the last
+  // few user/assistant messages of the target session. Uses the same
+  // ChatPreview component + fetch helper as the session dock and the
+  // session-search popover, so the rendering stays consistent.
+  type StickyPreviewItem = PreviewMsg | PreviewGap | PreviewAction;
+  let previewItems: StickyPreviewItem[] | undefined = undefined;
+  let previewLoading = false;
+  let previewSource: string | null = null;
+  let previewOpen = false;
+  let previewTop = 0;
+  let previewLeft = 0;
+  const PREVIEW_SHOW_DELAY_MS = 280;
+  const PREVIEW_DISMISS_DELAY_MS = 120;
+  const PREVIEW_POLL_MS = 1500;
+  let previewShowTimer: ReturnType<typeof setTimeout> | null = null;
+  let previewDismissTimer: ReturnType<typeof setTimeout> | null = null;
+  let previewPoller: ReturnType<typeof setInterval> | null = null;
+
+  function clearPreviewTimers() {
+    if (previewShowTimer) {
+      clearTimeout(previewShowTimer);
+      previewShowTimer = null;
+    }
+    if (previewDismissTimer) {
+      clearTimeout(previewDismissTimer);
+      previewDismissTimer = null;
+    }
+    if (previewPoller) {
+      clearInterval(previewPoller);
+      previewPoller = null;
+    }
+  }
+
+  async function loadStickyPreview(source: string): Promise<void> {
+    const r = await fetchPreviewItems(source);
+    if (r && previewSource === source) {
+      previewItems = r.items;
+    }
+    previewLoading = false;
+  }
+
+  function onLinkCardEnter(ev: MouseEvent | FocusEvent) {
+    if (!isSessionLink || !note.target) return;
+    if (previewDismissTimer) {
+      clearTimeout(previewDismissTimer);
+      previewDismissTimer = null;
+    }
+    if (previewShowTimer) clearTimeout(previewShowTimer);
+    const el = ev.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    previewTop = r.top + r.height / 2;
+    previewLeft = r.right + 8;
+    const src = note.target.value;
+    const open = () => {
+      previewOpen = true;
+      previewSource = src;
+      if (!previewItems) previewLoading = true;
+      void loadStickyPreview(src);
+      if (previewPoller) clearInterval(previewPoller);
+      previewPoller = setInterval(
+        () => void loadStickyPreview(src),
+        PREVIEW_POLL_MS,
+      );
+    };
+    if (previewOpen) open();
+    else previewShowTimer = setTimeout(open, PREVIEW_SHOW_DELAY_MS);
+  }
+
+  function onLinkCardLeave() {
+    if (previewShowTimer) {
+      clearTimeout(previewShowTimer);
+      previewShowTimer = null;
+    }
+    if (previewDismissTimer) clearTimeout(previewDismissTimer);
+    previewDismissTimer = setTimeout(() => {
+      previewOpen = false;
+      if (previewPoller) {
+        clearInterval(previewPoller);
+        previewPoller = null;
+      }
+      previewDismissTimer = null;
+    }, PREVIEW_DISMISS_DELAY_MS);
+  }
+
+  function onPreviewPanelEnter() {
+    if (previewDismissTimer) {
+      clearTimeout(previewDismissTimer);
+      previewDismissTimer = null;
+    }
+  }
+
+  onDestroy(() => clearPreviewTimers());
+
+  /** Move a node to document.body on mount so it escapes any
+   *  transformed ancestor (the sticky's `transform: rotate(...)`
+   *  would otherwise become the containing block for `position:
+   *  fixed` children — fixed coords would be relative to the
+   *  rotated sticky instead of the viewport). Reverses on destroy. */
+  function portal(node: HTMLElement) {
+    const orig = node.parentNode;
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (orig && orig.contains(node) === false) {
+          try { node.remove(); } catch {}
+        }
+      },
+    };
+  }
 
   /** Search scope derived from the note's first worktree anchor.
    *  The MentionPicker hands this to its providers so sessions
@@ -929,10 +1053,14 @@
       <button
         class="sticky-link-body attach-card"
         type="button"
-        title={`Open ${note.target.value}`}
+        title="Click to open"
         on:mousedown|stopPropagation
         on:click={() => note.target && openTarget(note.target)}
         on:dblclick|stopPropagation
+        on:mouseenter={onLinkCardEnter}
+        on:mouseleave={onLinkCardLeave}
+        on:focusin={onLinkCardEnter}
+        on:focusout={onLinkCardLeave}
       >
         <span class="attach-card-icon" aria-hidden="true">
           <AttachmentIcon
@@ -983,6 +1111,29 @@
       aria-readonly="true"
       title="Double-click to edit"
     >{@html rendered(note.body)}</div>
+  {/if}
+
+  {#if isSessionLink && previewOpen}
+    <aside
+      use:portal
+      class="sticky-link-preview"
+      style:top="{previewTop}px"
+      style:left="{previewLeft}px"
+      aria-hidden="true"
+      on:mouseenter={onPreviewPanelEnter}
+      on:mouseleave={onLinkCardLeave}
+    >
+      <ChatPreview
+        items={previewItems}
+        agent={(note.target?.agent ?? undefined) as
+          | "claude"
+          | "codex"
+          | "copilot"
+          | "shell"
+          | undefined}
+        loading={previewLoading}
+      />
+    </aside>
   {/if}
 
   {#if confirmingDelete}

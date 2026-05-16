@@ -336,3 +336,35 @@ export function buildPreviewItems(
 
   return out;
 }
+
+/** Fetch a session's transcript from the daemon and produce both the
+ *  preview render list and the timestamp of the most recent user/
+ *  assistant message. Two callers want this: the session dock (for
+ *  its hover panel) and the future linked-session / worktree-sessions
+ *  hover preview. Returns `null` on network or HTTP errors so callers
+ *  can leave previous state in place. */
+export async function fetchPreviewItems(
+  source: string,
+): Promise<{ items: PreviewItem[]; latestTs?: string } | null> {
+  try {
+    const res = await fetch(`/api/session?source=${encodeURIComponent(source)}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      messages?: PreviewActionMessage[];
+    };
+    const all = data.messages ?? [];
+    const items = buildPreviewItems(all);
+    let latestTs: string | undefined;
+    for (let i = all.length - 1; i >= 0; i--) {
+      const m = all[i]!;
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      if (typeof m.timestamp === "string" && m.timestamp.length > 0) {
+        latestTs = m.timestamp;
+        break;
+      }
+    }
+    return { items, latestTs };
+  } catch {
+    return null;
+  }
+}

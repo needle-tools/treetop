@@ -15,9 +15,9 @@
    *  - Hover  -> tooltip with repo/branch + title + last user prompt.
    */
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
-  import ToolIcon from "./ToolIcon.svelte";
+  import ChatPreview from "./ChatPreview.svelte";
   import {
-    buildPreviewItems,
+    fetchPreviewItems,
     type PreviewAction,
     type PreviewGap,
     type PreviewMsg,
@@ -174,43 +174,14 @@
     // hovered TUI keeps updating in the panel.
     if (!opts.force && previews[source]) return;
     previewLoading = { ...previewLoading, [source]: true };
-    try {
-      const res = await fetch(`/api/session?source=${encodeURIComponent(source)}`);
-      if (!res.ok) return;
-      const data = (await res.json()) as {
-        messages?: Array<{
-          role: string;
-          timestamp?: string;
-          blocks: Array<{
-            type?: string;
-            text?: string;
-            toolName?: string;
-            toolInput?: unknown;
-          }>;
-        }>;
-      };
-      const all = data.messages ?? [];
-      previews = { ...previews, [source]: buildPreviewItems(all) };
-      // Newest user/assistant message timestamp, used by the dock
-      // label's "x time ago" so it reflects actual chat activity
-      // rather than the session file's mtime.
-      let latest: string | undefined;
-      for (let i = all.length - 1; i >= 0; i--) {
-        const m = all[i]!;
-        if (m.role !== "user" && m.role !== "assistant") continue;
-        if (typeof m.timestamp === "string" && m.timestamp.length > 0) {
-          latest = m.timestamp;
-          break;
-        }
+    const result = await fetchPreviewItems(source);
+    if (result) {
+      previews = { ...previews, [source]: result.items };
+      if (result.latestTs) {
+        latestMessageTs = { ...latestMessageTs, [source]: result.latestTs };
       }
-      if (latest) {
-        latestMessageTs = { ...latestMessageTs, [source]: latest };
-      }
-    } catch {
-      // ignore network blips; the poll timer will catch up
-    } finally {
-      previewLoading = { ...previewLoading, [source]: false };
     }
+    previewLoading = { ...previewLoading, [source]: false };
   }
 
   /** While a row is hovered, refresh its preview at a snappy
@@ -231,11 +202,6 @@
       clearInterval(previewPoller);
       previewPoller = null;
     }
-  }
-
-  function previewSnippet(text: string): string {
-    if (text.length <= 240) return text;
-    return text.slice(0, 239) + "…";
   }
 
   /** Single shared preview state: which row is hovered (drives which
@@ -446,49 +412,11 @@
         on:mouseenter={onDockEnter}
         on:mouseleave={onDockLeave}
       >
-        {#if previews[hoveredEntry.transcriptSource]}
-          {#if previews[hoveredEntry.transcriptSource].length === 0}
-            <div class="dock-preview-empty muted">No messages yet.</div>
-          {:else}
-            {#each previews[hoveredEntry.transcriptSource] as item}
-              {#if item.kind === "action"}
-                <div class="dock-preview-action">
-                  <ToolIcon name={item.toolName} />
-                  <span class="dock-preview-action-name">{item.toolName}</span>
-                  {#if item.detail}
-                    <span class="dock-preview-action-detail">{item.detail}</span>
-                  {/if}
-                </div>
-              {:else if item.kind === "msg"}
-                <div class="dock-preview-msg dock-preview-role-{item.role}">
-                  <span class="dock-preview-head">
-                    <span class="dock-preview-role">
-                      {#if item.role === "assistant" && (hoveredEntry.agent === "claude" || hoveredEntry.agent === "codex")}
-                        <img
-                          class="dock-preview-agent-icon"
-                          src="/agents/{hoveredEntry.agent}.svg"
-                          alt=""
-                          aria-hidden="true"
-                        />
-                      {/if}
-                      {item.role === "assistant" ? hoveredEntry.agent : item.role}
-                    </span>
-                    {#if item.timestamp}
-                      <span class="dock-preview-time">· {relTime(item.timestamp)}</span>
-                    {/if}
-                  </span>
-                  <span class="dock-preview-text">{previewSnippet(item.text)}</span>
-                </div>
-              {:else}
-                <div class="dock-preview-gap">+ {item.count} message{item.count === 1 ? "" : "s"}</div>
-              {/if}
-            {/each}
-          {/if}
-        {:else if previewLoading[hoveredEntry.transcriptSource]}
-          <div class="dock-preview-loading">
-            <span class="dock-preview-spinner" aria-hidden="true"></span>
-          </div>
-        {/if}
+        <ChatPreview
+          items={previews[hoveredEntry.transcriptSource]}
+          agent={hoveredEntry.agent}
+          loading={previewLoading[hoveredEntry.transcriptSource] ?? false}
+        />
       </aside>
     {/if}
   </div>
@@ -728,236 +656,28 @@
     text-underline-offset: 1px;
   }
 
-  /* Side preview panel — last 2-3 user/assistant messages of the
-     hovered session, fetched on demand from /api/session. Anchored
-     to the right edge of the dot's button so it floats out past the
-     dock without affecting any column layout. Only one is visible
-     at a time (per-row :hover), so even rendering one aside per
-     row in the DOM is cheap. */
+  /* Side preview panel — positioned container around <ChatPreview>.
+     Anchored to the dock container (not a specific button) so its
+     x position stays constant; `top` is set inline from the hovered
+     button's offsetTop so the panel slides vertically to align with
+     the active row but never shifts horizontally. The bubble styles
+     themselves live in ChatPreview.svelte. */
   .dock-preview {
-    /* Anchored to the dock container (not a specific button) so its
-       x position stays constant — labels expanding or different
-       per-row widths can't shift the panel. `top` is set inline from
-       the hovered button's offsetTop so the panel slides vertically
-       to align with the active row, but never moves horizontally. */
     position: absolute;
     left: 100%;
     margin-left: 0.15rem;
     transform: translateY(-50%);
     width: 26rem;
-    /* Fully transparent — chat bubbles carry their own per-role
-       tint, so the panel is just a positioned container. The drop
-       shadow is gone with the background; bubbles read on their
-       own against whatever's behind. */
     background: transparent;
     border-radius: var(--radius-md, 8px);
     padding: 0.55rem 0.7rem;
-    font-size: 0.72rem;
-    line-height: 1.4;
-    color: var(--text-1, #e8e8e8);
-    text-align: left;
-    /* Flex column so children (msg bubbles + the gap pill) can
-       choose their own horizontal alignment via `align-self`. */
-    display: flex;
-    flex-direction: column;
     /* Capture hover events so moving onto the preview keeps the
        overlay alive (the dock's mouseleave fires when the cursor
        crosses out of its bbox into the preview area — the panel's
        own mouseenter cancels the dismiss timer). */
     pointer-events: auto;
-    /* Smooth vertical follow as the user moves between rows.
-       Opacity transitions with the panel's mount via Svelte's
-       reactive {#if}, so no opacity rule here. */
+    /* Smooth vertical follow as the user moves between rows. */
     transition: top 140ms ease;
-  }
-  /* Chat-style preview: each message becomes a soft bubble. User
-     bubbles align right (sender side); assistant bubbles align left
-     (their reply lands under the user's). Each role has its own
-     tint so a glance at the side panel reads as a conversation
-     rather than a flat list. */
-  .dock-preview-msg {
-    display: flex;
-    flex-direction: column;
-    max-width: 85%;
-    margin: 0 0 0.45rem 0;
-    padding: 0.35rem 0.5rem 0.4rem 0.5rem;
-    border-radius: 0.6rem;
-    /* Tight inner spacing so role + text read as one bubble. */
-    gap: 0.1rem;
-  }
-  .dock-preview-msg:last-child {
-    margin-bottom: 0;
-  }
-  .dock-preview-role-user {
-    /* Brand-tinted opaque surface so chat bubbles stay readable
-       regardless of what's behind the panel. Both roles align to
-       the left; the per-role tint + caption do the differentiation,
-       not horizontal position. */
-    background: var(--dock-user-bg);
-    border: 1px solid var(--dock-user-border);
-    color: var(--dock-user-text);
-  }
-  /* Two parallel chat-bubble palettes, both derived from existing
-     dark-theme tokens. Override any of these eight tokens at
-     `.session-dock` (or `:root`) to retune the preview without
-     touching block-specific rules.
-       User bubble  — brand-tinted dark surface, bright text.
-       AI / tool    — light surface (inverted from the page bg)
-                      so AI messages "pop" off the dashboard. */
-  .dock-preview {
-    --dock-user-bg: color-mix(in oklch, var(--brand, #60b74c) 18%, var(--surface-0, #23261d));
-    --dock-user-border: var(--text-muted, #888);
-    --dock-user-text: var(--text-1, #e8e8e8);
-    --dock-user-role: color-mix(in oklch, var(--brand, #60b74c) 70%, var(--text-1, #e8e8e8));
-
-    --dock-ai-bg: var(--text-1, #e8e8e8);
-    --dock-ai-border: var(--text-muted, #888);
-    --dock-ai-text: var(--surface-0, #23261d);
-  }
-  .dock-preview-role-assistant {
-    background: var(--dock-ai-bg);
-    border: 1px solid var(--dock-ai-border);
-    color: var(--dock-ai-text);
-  }
-  /* Role caption + timestamp inside an AI bubble derive from
-     `--dock-ai-text` so they automatically follow any retune. */
-  .dock-preview-role-assistant .dock-preview-role {
-    color: var(--dock-ai-text);
-    font-weight: 700;
-  }
-  .dock-preview-role-assistant .dock-preview-time {
-    color: color-mix(in oklch, var(--dock-ai-text) 85%, transparent);
-  }
-  .dock-preview-head {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35em;
-    /* Keep header pinned to the bubble's left edge in both roles so
-       it reads as a caption above the text, not a trailing tag. */
-    align-self: flex-start;
-  }
-  .dock-preview-agent-icon {
-    width: 0.9em;
-    height: 0.9em;
-    vertical-align: -0.15em;
-    margin-right: 0.2em;
-  }
-  .dock-preview-role {
-    text-transform: uppercase;
-    font-size: 0.58rem;
-    letter-spacing: 0.06em;
-    color: var(--text-muted, #9a9aa0);
-  }
-  .dock-preview-time {
-    font-size: 0.58rem;
-    /* Default (user bubbles, on dark brand-tinted bg) — use a
-       brighter text token than --text-faint so the timestamp is
-       readable on the dark surface. Assistant bubbles override
-       this with a --dock-ai-text-derived value. */
-    color: var(--text-2, #d0d0d0);
-  }
-  .dock-preview-role-user .dock-preview-role {
-    color: var(--dock-user-role);
-  }
-  /* (Assistant role caption colour is set above where the inverted
-     `--dock-ai-text` palette is defined — no per-agent hardcoded
-     hue needed.) */
-  .dock-preview-text {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .dock-preview-loading,
-  .dock-preview-empty {
-    font-style: italic;
-    padding: 0.2rem 0;
-  }
-  .dock-preview-loading {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  .dock-preview-spinner {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 50%;
-    border: 2px solid color-mix(in oklch, var(--text-muted, #888) 35%, transparent);
-    border-top-color: var(--text-1, #e8e8e8);
-    animation: dock-preview-spin 0.8s linear infinite;
-  }
-  @keyframes dock-preview-spin {
-    to { transform: rotate(360deg); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .dock-preview-spinner { animation: none; }
-  }
-  /* "+ N messages" gap bubble between selected previews. Tiny pill,
-     centered, neutral — reads as "there's stuff here we're hiding"
-     without competing with the actual chat bubbles. */
-  /* "Now:" action chip — shares the AI bubble's inverted palette
-     so tool messages read as the same visual family as the AI
-     bubbles they sit between. All colours derive from
-     --dock-ai-* so retuning the AI bubble retunes the chip too. */
-  .dock-preview-action {
-    /* Same width budget as the chat bubbles (85%) so tool chips
-       sit within the same visual column. Single-line layout:
-       icon + tool name + detail flow inline; the detail
-       truncates with an ellipsis if it can't fit. */
-    align-self: flex-start;
-    max-width: 85%;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.45rem;
-    padding: 0.25rem 0.5rem;
-    border-radius: var(--radius-sm, 4px);
-    background: var(--dock-ai-bg);
-    border: 1px solid var(--dock-ai-border);
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
-    color: var(--dock-ai-text);
-    overflow: hidden;
-  }
-  .dock-preview-action :global(.tool-icon) {
-    width: 1em;
-    height: 1em;
-    flex: 0 0 auto;
-    /* Heavier stroke than the default 2 — thin SVG lines read
-       lighter than text at the same colour, so bump the stroke
-       to match the surrounding bold tool name visually. */
-    stroke-width: 2.6;
-  }
-  .dock-preview-action-name {
-    color: var(--dock-ai-text);
-    font-weight: 600;
-    flex: 0 0 auto;
-    white-space: nowrap;
-  }
-  .dock-preview-action-detail {
-    color: color-mix(in oklch, var(--dock-ai-text) 80%, transparent);
-    /* Stay on one line; truncate with ellipsis when the detail
-       would otherwise push past the chip's 85%-width budget. */
-    flex: 1 1 auto;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dock-preview-gap {
-    /* Sits at the left edge and shrinks to its content's natural
-       width — reads as a quiet in-band separator. Colours derive
-       from the same --dock-ai-* palette as the AI bubbles +
-       action chip so the whole preview reads as one family. */
-    align-self: flex-start;
-    width: fit-content;
-    text-align: left;
-    margin: 0.1rem 0 0.4rem 0;
-    font-size: 0.62rem;
-    color: color-mix(in oklch, var(--dock-ai-text) 90%, transparent);
-    padding: 0.1rem 0.45rem;
-    border-radius: var(--radius-sm, 4px);
-    background: var(--dock-ai-bg);
-    border: 1px solid var(--dock-ai-border);
   }
   /* Belt-and-braces: kill any user-agent / inherited hover background
      on the button itself. The dot is its own visual; the wrapper is
