@@ -39,6 +39,11 @@
    *  after a UI reload), `attachTermId` carries the existing id and
    *  TerminalView skips the spawn POST. */
   export let attachTermId: string | undefined = undefined;
+  /** When this shell column is a Resume of a past shell, the prior
+   *  termId. Forwarded to TerminalView, which sends it in the spawn
+   *  POST so the daemon pre-seeds the new shell's JSONL with the prior
+   *  cmd history. Shell-only — agent restarts mint fresh transcripts. */
+  export let resumeFromTermId: string | undefined = undefined;
   /** The saved manual title for this column (lives in App.svelte's
    *  `newSessionTitles` map, persisted server-side via `/api/session/title`).
    *  Empty / undefined → render the "Name this session…" placeholder. */
@@ -175,6 +180,7 @@
     {cwd}
     {procName}
     {attachTermId}
+    {resumeFromTermId}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}

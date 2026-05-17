@@ -61,7 +61,21 @@ export interface ShellCmdEntry {
   cwd: string;
 }
 
-export type ShellEntry = ShellHeader | ShellExitEntry | ShellCmdEntry;
+/** Separator written when a Terminal column resumes from a prior shell.
+ *  The new file starts with the carry-over: prior file's cmd entries,
+ *  then this marker, then the new header. Lets the UI render a visible
+ *  "--- resumed from <id> ---" divider between past and current session. */
+export interface ShellResumeEntry {
+  kind: "resume";
+  ts: string;
+  fromTermId: string;
+}
+
+export type ShellEntry =
+  | ShellHeader
+  | ShellExitEntry
+  | ShellCmdEntry
+  | ShellResumeEntry;
 
 /** Read-side projection of a shell record. `alive` reflects whether the
  *  termId is still present in `terminalBackend` at lookup time; the daemon
@@ -97,9 +111,65 @@ export class ShellsLog {
     return join(this.dir, `${termId}.jsonl`);
   }
 
-  /** Write the header line. Called once per shell, on spawn. */
-  async writeHeader(header: ShellHeader): Promise<void> {
-    await appendFile(this.pathFor(header.termId), JSON.stringify(header) + "\n");
+  /** Write the header line. Called once per shell, on spawn.
+   *
+   *  When `previousTermId` is provided, the new file is pre-seeded with
+   *  the prior session's `cmd` entries (so the user's command history
+   *  carries over across a Resume), then a `resume` separator, then the
+   *  new header. The prior file is left on disk untouched — keeps
+   *  history-of-history if the user ever wants to dig back.
+   *
+   *  Resume chains: if the prior file ALSO carries entries from its own
+   *  predecessor (because it too was a resume), those are already in
+   *  the prior file's body and get carried forward, so the chain stays
+   *  unbroken across N resumes.
+   *
+   *  cwd entries are not carried because they'd be misleading — a `cwd`
+   *  line from a past shell session doesn't describe the new PTY. */
+  async writeHeader(header: ShellHeader, previousTermId?: string): Promise<void> {
+    const target = this.pathFor(header.termId);
+    if (previousTermId) {
+      const carry = await this.collectCarryOver(previousTermId);
+      if (carry.length > 0) {
+        const body =
+          carry.map((e) => JSON.stringify(e)).join("\n") + "\n" +
+          JSON.stringify({
+            kind: "resume",
+            ts: new Date().toISOString(),
+            fromTermId: previousTermId,
+          } satisfies ShellResumeEntry) + "\n";
+        await appendFile(target, body);
+      }
+    }
+    await appendFile(target, JSON.stringify(header) + "\n");
+  }
+
+  /** Read prior file and return entries worth carrying forward on a
+   *  resume: only `cmd` lines and prior `resume` separators (so the
+   *  ordered chain across N resumes stays intact). Headers and exits
+   *  are dropped — header would confuse `readTranscript` (which picks
+   *  the first header it sees as "the session's header"), and exit
+   *  would make a live resumed shell appear already-exited. */
+  private async collectCarryOver(prevTermId: string): Promise<ShellEntry[]> {
+    let text: string;
+    try {
+      text = await readFile(this.pathFor(prevTermId), "utf-8");
+    } catch {
+      return [];
+    }
+    const out: ShellEntry[] = [];
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line) as ShellEntry;
+        if (obj.kind === "cmd" || obj.kind === "resume") {
+          out.push(obj);
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+    return out;
   }
 
   /** Append an arbitrary entry to a shell's JSONL. */

@@ -202,4 +202,141 @@ describe("ShellsLog", () => {
     const log = await ShellsLog.open(ws);
     expect(await log.cmdSummary("nope")).toEqual({ count: 0 });
   });
+
+  describe("Resume carry-over (writeHeader with previousTermId)", () => {
+    test("new file contains prior cmd lines + a resume marker + new header", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      // Seed prior session: header + two cmds + exit
+      await log.writeHeader({
+        kind: "header",
+        termId: "t-prev",
+        wt: "/w",
+        spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
+      await log.append("t-prev", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+      await log.append("t-prev", { kind: "exit", ts: "t3", code: 0 });
+
+      // Resume into a new shell, passing the prior termId.
+      await log.writeHeader(
+        {
+          kind: "header",
+          termId: "t-new",
+          wt: "/w",
+          spawnCwd: "/w",
+          createdAt: "2026-05-13T01:00:00Z",
+        },
+        "t-prev",
+      );
+
+      const content = await readFile(join(log.dir, "t-new.jsonl"), "utf-8");
+      const lines = content.trim().split("\n").map((l) => JSON.parse(l));
+      // Expected order: carried cmds → resume marker → new header.
+      // Prior header and exit are NOT carried (would confuse readTranscript).
+      expect(lines.map((l) => l.kind)).toEqual([
+        "cmd",
+        "cmd",
+        "resume",
+        "header",
+      ]);
+      expect(lines[0].line).toBe("ls");
+      expect(lines[1].line).toBe("pwd");
+      expect(lines[2].fromTermId).toBe("t-prev");
+      expect(lines[3].termId).toBe("t-new");
+    });
+
+    test("readTranscript on the resumed file shows carried cmds under the new header", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header",
+        termId: "t-prev",
+        wt: "/w",
+        spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
+      await log.writeHeader(
+        {
+          kind: "header",
+          termId: "t-new",
+          wt: "/w",
+          spawnCwd: "/w",
+          createdAt: "2026-05-13T01:00:00Z",
+        },
+        "t-prev",
+      );
+      await log.append("t-new", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+
+      const t = await log.readTranscript("t-new");
+      expect(t).not.toBeNull();
+      expect(t!.header.termId).toBe("t-new"); // new header wins, not carried
+      expect(t!.cmds.map((c) => c.line)).toEqual(["ls", "pwd"]);
+      expect(t!.exit).toBeNull(); // no exit yet — resume is still alive
+      expect(t!.lastCwd).toBe("/w");
+    });
+
+    test("chains across multiple resumes — order preserved", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      // Session A
+      await log.writeHeader({
+        kind: "header", termId: "A", wt: "/w", spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await log.append("A", { kind: "cmd", ts: "a1", line: "echo A", cwd: "/w" });
+      // Resume → Session B
+      await log.writeHeader(
+        {
+          kind: "header", termId: "B", wt: "/w", spawnCwd: "/w",
+          createdAt: "2026-05-13T01:00:00Z",
+        },
+        "A",
+      );
+      await log.append("B", { kind: "cmd", ts: "b1", line: "echo B", cwd: "/w" });
+      // Resume → Session C
+      await log.writeHeader(
+        {
+          kind: "header", termId: "C", wt: "/w", spawnCwd: "/w",
+          createdAt: "2026-05-13T02:00:00Z",
+        },
+        "B",
+      );
+      await log.append("C", { kind: "cmd", ts: "c1", line: "echo C", cwd: "/w" });
+
+      const t = await log.readTranscript("C");
+      expect(t).not.toBeNull();
+      expect(t!.cmds.map((c) => c.line)).toEqual(["echo A", "echo B", "echo C"]);
+      expect(t!.header.termId).toBe("C");
+    });
+
+    test("missing prior file is a no-op (just writes the new header)", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader(
+        {
+          kind: "header", termId: "t-new", wt: "/w", spawnCwd: "/w",
+          createdAt: "2026-05-13T00:00:00Z",
+        },
+        "t-does-not-exist",
+      );
+      const t = await log.readTranscript("t-new");
+      expect(t).not.toBeNull();
+      expect(t!.header.termId).toBe("t-new");
+      expect(t!.cmds).toEqual([]);
+    });
+
+    test("undefined previousTermId behaves like the no-resume path", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header", termId: "t-fresh", wt: "/w", spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      const t = await log.readTranscript("t-fresh");
+      expect(t!.cmds).toEqual([]);
+    });
+  });
 });

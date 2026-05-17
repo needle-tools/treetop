@@ -44,6 +44,11 @@
    *  daemon's GET /api/shells returns the live termIds + their worktrees).
    *  `cmd` and `cwd` are ignored when this is set. */
   export let attachTermId: string | undefined = undefined;
+  /** When this PTY is a Resume of a past shell, the prior termId. Sent
+   *  to the daemon so the new shell's JSONL is pre-seeded with the
+   *  prior cmd history (visible in ShellView next time the column is
+   *  closed and reopened in read mode). */
+  export let resumeFromTermId: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -199,7 +204,15 @@
         const res = await fetch("/api/terminals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cmd, cwd, cols, rows, ownerId, procName }),
+          body: JSON.stringify({
+            cmd,
+            cwd,
+            cols,
+            rows,
+            ownerId,
+            procName,
+            previousTermId: resumeFromTermId,
+          }),
           signal: startupAbort.signal,
         });
         if (!res.ok) {

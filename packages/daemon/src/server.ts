@@ -834,6 +834,11 @@ const server = Bun.serve<TermWsData, never>({
             rows?: number;
             ownerId?: string;
             procName?: string;
+            /** When this spawn is a Resume of a past shell, the prior
+             *  termId. Daemon pre-seeds the new shell's JSONL with the
+             *  prior cmd history so the user's command transcript
+             *  carries over across Resume. */
+            previousTermId?: string;
           }
         | null;
       if (!body || !Array.isArray(body.cmd) || body.cmd.length === 0 || !body.cwd) {
@@ -913,13 +918,16 @@ const server = Bun.serve<TermWsData, never>({
         // hits GET /api/shells, gets the live set, and reattaches.
         if (agentHint === "shell") {
           await shells
-            .writeHeader({
-              kind: "header",
-              termId: handle.id,
-              wt: body.cwd,
-              spawnCwd: body.cwd,
-              createdAt: new Date().toISOString(),
-            })
+            .writeHeader(
+              {
+                kind: "header",
+                termId: handle.id,
+                wt: body.cwd,
+                spawnCwd: body.cwd,
+                createdAt: new Date().toISOString(),
+              },
+              body.previousTermId,
+            )
             .catch((err) => {
               console.error(
                 `supergit daemon: shells.writeHeader failed for ${handle.id}: ${err}`,

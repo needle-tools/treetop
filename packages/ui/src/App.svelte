@@ -19,6 +19,7 @@
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
+  import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
@@ -1160,6 +1161,20 @@
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const newSource = `__new__:shell:${id}`;
     shellResumeCwd = { ...shellResumeCwd, [newSource]: lastCwd };
+    // Extract the prior termId from the `__transcript__:shell:<termId>`
+    // source so the daemon can carry the prior cmd history forward
+    // into the resumed shell's JSONL. ShellView mounts at this format
+    // (see App.svelte's __transcript__: branch), so the termId is the
+    // last colon-separated chunk.
+    const previousTermId = transcriptSource.startsWith("__transcript__:shell:")
+      ? transcriptSource.slice("__transcript__:shell:".length)
+      : undefined;
+    if (previousTermId) {
+      shellResumeFromTermId = {
+        ...shellResumeFromTermId,
+        [newSource]: previousTermId,
+      };
+    }
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
       ...openSessionsByWt,
@@ -1170,6 +1185,11 @@
       ),
     };
   }
+  /** Synthetic-source → prior termId map. Populated by `resumePastShell`
+   *  and consumed by NewSessionCol via the `resumeFromTermId` prop
+   *  (which it forwards to TerminalView's spawn POST). Pruned in
+   *  `disposeNewSessionColumn` when the column finally closes. */
+  let shellResumeFromTermId: Record<string, string> = {};
 
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
    *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
@@ -3570,8 +3590,9 @@
 
   {#if loading && repos.length === 0}
     <div class="loading-screen">
-      <div class="loading-overlay">
-        <span class="spinner" aria-hidden="true"></span> loading repos…
+      <div class="loading-inline">
+        <LoadingSpinner size="0.85rem" label="Loading repos" />
+        <span>loading repos…</span>
       </div>
     </div>
   {:else if rows.length === 0}
@@ -4583,6 +4604,7 @@
                             attachTermId={s.source.startsWith("__attached__:")
                               ? s.source.split(":").pop()
                               : undefined}
+                            resumeFromTermId={shellResumeFromTermId[s.source]}
                             manualTitle={newAgentMeta?.manualTitle ??
                               newSessionTitles[titleSource] ??
                               newSessionTitles[s.source]}
