@@ -167,7 +167,6 @@ main > header > h1 {
   animation: hot-border-spin 2.4s linear infinite;
   pointer-events: none;
   z-index: -1;
-  will-change: transform;
 }
 .actions-btn.hot::after {
   /* The 2px "hole" — covers the interior with the button bg so only

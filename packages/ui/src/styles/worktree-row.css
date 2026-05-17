@@ -642,7 +642,6 @@ button.branch-button:hover {
   );
   animation: badge-edge-flow-up 1.8s linear infinite;
   pointer-events: none;
-  will-change: transform;
 }
 .status-badge-ahead::before { left: 0; }
 .status-badge-ahead::after { right: 0; }
@@ -723,7 +722,6 @@ button.branch-button:hover {
   );
   animation: badge-edge-flow-down 2.4s linear infinite;
   pointer-events: none;
-  will-change: transform;
 }
 .status-badge-behind::before { left: 0; }
 .status-badge-behind::after { right: 0; }

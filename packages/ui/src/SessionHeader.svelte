@@ -456,11 +456,19 @@
     color: var(--text-2);
     --agent-color: var(--text-2);
   }
-  /* Working: comet-trail conic-gradient ring (same idiom as the
-     header's TUIs hot button). `from` angle is animated via a
-     @property-registered custom prop so the arc actually sweeps —
-     transform-rotate on a mask-composited pseudo-element doesn't
-     paint reliably in all engines. */
+  /* Stacking context for the idle pulse pseudo below. */
+  .agent-pill.idle {
+    isolation: isolate;
+  }
+  /* Working: comet-trail conic-gradient ring. The @property-animated
+     `from` angle sweeps the bright arc smoothly around the pill's
+     border outline — keeping the gradient ANGLE in motion (rather
+     than rotating the pseudo) is what makes the sweep follow the pill
+     shape uniformly on wide rectangles. Yes this repaints the pseudo
+     every frame; .working is transient (only on while an agent turn
+     is in flight) so the paint cost is bounded. Transform-rotating a
+     static conic was tried and produced a visibly non-uniform sweep
+     on the pill's wide aspect ratio. */
   @property --pill-sweep-angle {
     syntax: "<angle>";
     initial-value: 0deg;
@@ -470,8 +478,7 @@
     content: "";
     position: absolute;
     /* Extend 3px outside so the comet sweep hugs the pill's outer
-       edge instead of sitting on top of the text. Corners scale by
-       the same 3px so they stay concentric with the pill. */
+       edge instead of sitting on top of the text. */
     inset: -3px;
     border-radius: calc(var(--radius-sm) + 3px);
     padding: 2px;
@@ -495,32 +502,42 @@
     animation: pill-sweep 3.2s linear infinite;
   }
   @keyframes pill-sweep {
-    to {
-      --pill-sweep-angle: 360deg;
-    }
+    to { --pill-sweep-angle: 360deg; }
   }
-  /* Idle / waiting: solid border in the agent's colour, smoothly
-     pulsing between dim and bright. No glow / box-shadow — just the
-     border colour change. */
+  /* Idle / waiting: a static dim border (always-visible signal) with a
+     bright overlay border whose opacity pulses. Animating opacity on a
+     positioned overlay is composited; previously this animated
+     `border-color` directly, which is paint-time and showed up as the
+     single biggest paint cost in the trace. */
   .agent-pill.idle {
     border-color: color-mix(in srgb, var(--agent-color) 30%, transparent);
-    animation: pill-idle-blink 1.6s ease-in-out infinite alternate;
   }
-  @keyframes pill-idle-blink {
-    from {
-      border-color: color-mix(in srgb, var(--agent-color) 25%, transparent);
-    }
-    to {
-      border-color: var(--agent-color);
-    }
+  .agent-pill.idle::before {
+    content: "";
+    position: absolute;
+    /* Sit on top of the parent's 1px border so the overlay's brighter
+       border lines up with it visually. */
+    inset: -1px;
+    border: 1px solid var(--agent-color);
+    border-radius: inherit;
+    pointer-events: none;
+    animation: pill-idle-fade 1.6s ease-in-out infinite alternate;
+    z-index: -1;
+  }
+  @keyframes pill-idle-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
   @media (prefers-reduced-motion: reduce) {
     .agent-pill.working::before,
-    .agent-pill.idle {
+    .agent-pill.idle::before {
       animation: none;
     }
     .agent-pill.idle {
       border-color: color-mix(in srgb, var(--agent-color) 70%, transparent);
+    }
+    .agent-pill.idle::before {
+      opacity: 1;
     }
   }
   /* Thin wrapper around <SleepIndicationAnimation>. The component owns
