@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
+  import LoadingOverlay from "./LoadingOverlay.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
@@ -827,9 +828,7 @@
   {:else if error}
     <p class="error">{error}</p>
   {:else if loading && !session}
-    <div class="loading-overlay">
-      <span class="spinner" aria-hidden="true"></span> loading session…
-    </div>
+    <LoadingOverlay text="loading session…" />
   {:else if session && session.messages.length === 0}
     <p class="muted small">No messages parsed from this session.</p>
   {:else if session}
@@ -937,6 +936,9 @@
 
 <style>
   .session {
+    /* Relative so the LoadingOverlay (and any other absolutely
+       positioned in-column callout) anchors against the column box. */
+    position: relative;
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-md);
     background: var(--surface-1);
@@ -1147,37 +1149,10 @@
   .composer-send:disabled:not(.is-sending) {
     color: var(--text-faint);
   }
-  /* Matches the TerminalView "starting terminal…" pill so the
-     read-mode load state and the live-TUI load state read identically. */
-  .loading-overlay {
-    align-self: center;
-    margin-top: 0.5rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: var(--surface-2);
-    color: var(--text-1);
-    padding: 0.3rem 0.7rem;
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  }
-  .loading-overlay .spinner {
-    width: 0.75rem;
-    height: 0.75rem;
-    border-width: 2px;
-  }
-  .spinner {
-    width: 0.9rem;
-    height: 0.9rem;
-    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
-    border-top-color: currentColor;
-    border-radius: 50%;
-    animation: spinner-spin 0.6s linear infinite;
-  }
-  @keyframes spinner-spin {
-    to { transform: rotate(360deg); }
-  }
+  /* `.loading-overlay` + `.spinner` retired — the shared
+     LoadingOverlay component now renders both the chat read-mode
+     load state and the TUI starting state, in matching chrome-free
+     style. */
   .muted {
     color: var(--text-muted);
   }

@@ -4,6 +4,7 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import "@xterm/xterm/css/xterm.css";
+  import LoadingOverlay from "./LoadingOverlay.svelte";
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
   export let cmd: string[];
@@ -486,9 +487,7 @@
   role="presentation"
 >
   {#if phase === "starting"}
-    <div class="overlay">
-      <span class="spinner" aria-hidden="true"></span> starting terminal…
-    </div>
+    <LoadingOverlay text="starting terminal…" />
   {/if}
   {#if phase === "error"}
     <div class="overlay error">
@@ -544,29 +543,21 @@
     padding: 0.4rem 0.5rem;
     overflow: hidden;
   }
-  /* Chrome-free centered status line (e.g. "starting terminal…").
-     Vertically centred in the terminal area, then nudged up by one
-     line height so it sits comfortably above the optical centre.
-     The error variant adds back its own background so the warning
-     still reads as a callout. */
-  .overlay {
+  /* Error callout — same anchor as the LoadingOverlay (centred,
+     nudged up one line) but with its own background so the warning
+     reads as a chip rather than inline text. The loading-state pill
+     lives in `./LoadingOverlay.svelte`. */
+  .overlay.error {
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, calc(-50% - 1lh));
     z-index: 2;
-    color: var(--text-1);
-    padding: 0.3rem 0.7rem;
-    font-size: 0.75rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  .overlay.error {
     background: var(--error-bg);
     color: var(--error-text);
     border-radius: var(--radius-sm);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    display: inline-flex;
     flex-direction: column;
     align-items: center;
     gap: 0.55rem;
@@ -595,17 +586,5 @@
   .retry-btn:focus-visible {
     outline: 2px solid currentColor;
     outline-offset: 1px;
-  }
-  .spinner {
-    display: inline-block;
-    width: 0.75rem;
-    height: 0.75rem;
-    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
-    border-top-color: currentColor;
-    border-radius: 50%;
-    animation: t-spin 0.6s linear infinite;
-  }
-  @keyframes t-spin {
-    to { transform: rotate(360deg); }
   }
 </style>
