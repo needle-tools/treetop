@@ -726,6 +726,7 @@
 <div
   class="session"
   class:awaiting-input={mode === "terminal" && awaitingInput}
+  class:read-mode={mode === "read"}
   bind:this={sessionEl}
   on:mousemove={onSessionMouseMove}
   on:mouseleave={onSessionMouseLeave}

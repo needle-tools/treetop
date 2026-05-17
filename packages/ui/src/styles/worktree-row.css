@@ -1205,10 +1205,25 @@ button.branch-button:hover {
   min-width: 60ch;
   max-width: 90ch;
   box-sizing: border-box;
-  /* Smooth fade of the flash outline so the cue doesn't snap off. */
-  transition: outline-color 0.25s ease-out;
+  /* Smooth fade of the flash outline + smooth flex/width transitions
+     so the read-mode shrink (15% narrower) glides into place. */
+  transition:
+    outline-color 0.25s ease-out,
+    flex-basis 0.25s ease,
+    min-width 0.25s ease,
+    max-width 0.25s ease;
   outline: 2px solid transparent;
   outline-offset: 2px;
+}
+/* Read-mode (inactive) chat columns shrink to 85% of their normal
+   width so live TUI sessions visually dominate the strip while the
+   archived ones recede. Uses `:has()` so the modifier is driven by
+   the inner `.session.read-mode` flag (set by SessionView based on
+   its `mode`), keeping width control in one CSS place. */
+.session-col:has(> .session.read-mode) {
+  flex-basis: 59.5ch;
+  min-width: 51ch;
+  max-width: 76.5ch;
 }
 /* Transient highlight applied for ~2s when the user reveals a session
    from a folded row, so the eye can find the column they just asked
