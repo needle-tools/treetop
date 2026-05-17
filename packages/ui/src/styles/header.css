@@ -123,51 +123,70 @@ main > header > h1 {
 .actions-btn.hot {
   background: var(--error-bg, #3f1f1f);
   color: var(--error-text, #ffaaaa);
-  /* Anchor for the rotating-border pseudo-element below. */
+  /* Anchor + clip + stacking context for the rotating-border pseudo
+     elements below. `overflow: hidden` keeps the oversized rotating
+     conic from spilling past the button; `isolation: isolate` makes
+     the pseudos' `z-index: -1` local so they don't punch through to
+     anything underneath. */
   position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 .actions-btn.hot:hover,
 .actions-btn.hot.open {
   background: color-mix(in srgb, var(--error-bg, #3f1f1f) 70%, white 15%);
   color: var(--error-text, #ffaaaa);
 }
-/* Rotating 2px gradient border. A conic-gradient (mostly transparent
-   with a ~90° red arc) on a pseudo-element, masked down to just the
-   button's outline so the arc reads as a comet trail circling the
-   button. The `--hot-angle` custom property is animated by registering
-   it via `@property`, which is what makes the conic-gradient's `from`
-   angle interpolate smoothly instead of snapping. Supported in modern
-   Chromium / Safari; Firefox falls back to a static red ring (still
-   readable, just doesn't move). */
-@property --hot-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
+/* Rotating 2px gradient border. Previously this was a conic-gradient
+   whose `from` angle was animated via @property — visually clean, but
+   the gradient angle is a paint-time property: every frame Chrome had
+   to re-rasterize the whole button (and the mask-composite layer on
+   top), which dominated the perf trace.
+   New approach: a static conic-gradient on an oversized pseudo
+   (`::before`) that's rotated via `transform`. Rotation is composited
+   on the GPU — zero per-frame paint. A second pseudo (`::after`)
+   fills the interior with the button's bg colour, leaving a 2px ring
+   of the rotating conic visible at the edge. */
 .actions-btn.hot::before {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 2px;
+  /* Oversize square centred on the button so the conic always covers
+     the full visible area regardless of rotation. 200% × 200% is
+     plenty for any aspect ratio we ship. */
+  top: 50%;
+  left: 50%;
+  width: 200%;
+  height: 200%;
   background: conic-gradient(
-    from var(--hot-angle),
     transparent 0deg,
     transparent 250deg,
     rgba(255, 100, 100, 0) 270deg,
     rgba(255, 100, 100, 0.95) 340deg,
     rgba(255, 200, 200, 1) 360deg
   );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
   animation: hot-border-spin 2.4s linear infinite;
   pointer-events: none;
+  z-index: -1;
+  will-change: transform;
+}
+.actions-btn.hot::after {
+  /* The 2px "hole" — covers the interior with the button bg so only
+     a 2px ring of the rotating conic shows around the edge. */
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: inherit;
+  background: var(--error-bg, #3f1f1f);
+  pointer-events: none;
+  z-index: -1;
+}
+.actions-btn.hot:hover::after,
+.actions-btn.hot.open::after {
+  background: color-mix(in srgb, var(--error-bg, #3f1f1f) 70%, white 15%);
 }
 @keyframes hot-border-spin {
-  to { --hot-angle: 360deg; }
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
 /* Add-folder button (header strip, far right). */

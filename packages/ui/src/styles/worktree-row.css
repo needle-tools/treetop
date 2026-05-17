@@ -612,25 +612,25 @@ button.branch-button:hover {
   overflow: hidden;
   isolation: isolate;
 }
-.status-badge-ahead::before {
+/* Two narrow edge strips (left = ::before, right = ::after) instead of
+   a full-width pseudo masked down to the edges. CSS masks force a
+   per-frame repaint of the whole masked layer even when only `transform`
+   animates; this version drops the mask so each strip can be promoted
+   to its own GPU layer and the translateY animation runs entirely on
+   the compositor. (Previously this rule was the dominant per-row paint
+   cost — multiplied by every visible ahead/behind badge.) Pseudo is
+   2× badge height so the comet streak is 2× as long; the badge's
+   `overflow: hidden` clips them. Comet shape: badge flows UP, so the
+   leading edge (head) sits at the TOP of the gradient and fades down
+   into a long tail. */
+.status-badge-ahead::before,
+.status-badge-ahead::after {
   content: "";
   position: absolute;
-  /* Pseudo is 2× badge height so the comet streak is 2× as long. The
-     gradient stops still span 0%→100% of the pseudo, which is now
-     2× badge height in pixels. The horizontal mask + translateY
-     animation are unchanged: badge's `overflow: hidden` clips the
-     pseudo to the badge's visible area, and the pseudo is fully
-     off-screen at both translateY endpoints so the loop stays
-     seamless. */
   top: 0;
-  left: 0;
-  right: 0;
+  width: 1.5px;
   height: 200%;
   z-index: -1;
-  /* Comet shape: the badge flows UP, so the leading edge (head) of
-     the highlight sits at the TOP of the gradient and fades down
-     into a long tail. Tight transparent→peak ramp (0% → 12%), then
-     a gradual peak→transparent fall (12% → 100%). */
   background: linear-gradient(
     180deg,
     transparent 0%,
@@ -640,30 +640,12 @@ button.branch-button:hover {
     color-mix(in srgb, var(--chip-green-text) 12%, transparent) 80%,
     transparent 100%
   );
-  /* Reveal only ~1.5px-wide strips at the left and right edges. */
-  -webkit-mask:
-    linear-gradient(
-      90deg,
-      black 0,
-      black 1.5px,
-      transparent 1.5px,
-      transparent calc(100% - 1.5px),
-      black calc(100% - 1.5px),
-      black 100%
-    );
-  mask:
-    linear-gradient(
-      90deg,
-      black 0,
-      black 1.5px,
-      transparent 1.5px,
-      transparent calc(100% - 1.5px),
-      black calc(100% - 1.5px),
-      black 100%
-    );
   animation: badge-edge-flow-up 1.8s linear infinite;
   pointer-events: none;
+  will-change: transform;
 }
+.status-badge-ahead::before { left: 0; }
+.status-badge-ahead::after { right: 0; }
 /* translateY 100% = pseudo's TOP is at the parent's BOTTOM edge — the
    pseudo (and its mask) is entirely below the visible badge. -100% =
    pseudo's BOTTOM is at the parent's TOP edge — entirely above. So
@@ -705,7 +687,9 @@ button.branch-button:hover {
     );
   }
   .status-badge-ahead::before,
-  .status-badge-behind::before {
+  .status-badge-ahead::after,
+  .status-badge-behind::before,
+  .status-badge-behind::after {
     animation: none;
   }
 }
@@ -717,20 +701,17 @@ button.branch-button:hover {
   overflow: hidden;
   isolation: isolate;
 }
-.status-badge-behind::before {
+/* Same edge-strip restructure as the ahead variant — see the note
+   above. Comet shape: badge flows DOWN, so the leading edge (head)
+   sits at the BOTTOM of the gradient. */
+.status-badge-behind::before,
+.status-badge-behind::after {
   content: "";
   position: absolute;
-  /* Same 2× pseudo-height as the ahead variant — see the note there
-     for the seamless-loop reasoning. */
   top: 0;
-  left: 0;
-  right: 0;
+  width: 1.5px;
   height: 200%;
   z-index: -1;
-  /* Comet shape: badge flows DOWN, so the leading edge (head) sits
-     at the BOTTOM of the gradient. Long tail above (gradual fade-in
-     from 0% to 88%), tight peak→transparent ramp at the bottom
-     (88% → 100%). */
   background: linear-gradient(
     180deg,
     transparent 0%,
@@ -740,29 +721,12 @@ button.branch-button:hover {
     rgba(255, 220, 150, 1) 88%,
     transparent 100%
   );
-  -webkit-mask:
-    linear-gradient(
-      90deg,
-      black 0,
-      black 1.5px,
-      transparent 1.5px,
-      transparent calc(100% - 1.5px),
-      black calc(100% - 1.5px),
-      black 100%
-    );
-  mask:
-    linear-gradient(
-      90deg,
-      black 0,
-      black 1.5px,
-      transparent 1.5px,
-      transparent calc(100% - 1.5px),
-      black calc(100% - 1.5px),
-      black 100%
-    );
   animation: badge-edge-flow-down 2.4s linear infinite;
   pointer-events: none;
+  will-change: transform;
 }
+.status-badge-behind::before { left: 0; }
+.status-badge-behind::after { right: 0; }
 /* -100% → 100% moves the pseudo DOWN through the visible region.
    Edge streaks travel DOWN — "commits coming down from upstream." */
 @keyframes badge-edge-flow-down {
