@@ -36,53 +36,53 @@ describe("titleForCount", () => {
 
 describe("titleForState", () => {
   test("returns the base title when nothing is active", () => {
-    expect(titleForState("supergit", { awaiting: 0, working: 0, idle: 0 })).toBe(
-      "supergit",
-    );
+    expect(
+      titleForState("supergit", { awaiting: 0, working: 0, unread: 0, idle: 0 }),
+    ).toBe("supergit");
   });
 
   test("keeps the awaiting-count prefix so the tab strip still flags attention", () => {
-    expect(titleForState("supergit", { awaiting: 2, working: 0, idle: 0 })).toBe(
-      "(2) supergit — 2 waiting",
-    );
+    expect(
+      titleForState("supergit", { awaiting: 2, working: 0, unread: 0, idle: 0 }),
+    ).toBe("(2) supergit — 2 waiting");
   });
 
   test("appends a tooltip-friendly breakdown after the base title", () => {
-    expect(titleForState("supergit", { awaiting: 1, working: 2, idle: 3 })).toBe(
-      "(1) supergit — 1 waiting, 2 working, 3 idle",
-    );
+    expect(
+      titleForState("supergit", { awaiting: 1, working: 2, unread: 1, idle: 3 }),
+    ).toBe("(1) supergit — 1 waiting, 2 working, 1 unread, 3 idle");
   });
 
   test("omits the prefix when only working/idle are active", () => {
-    expect(titleForState("supergit", { awaiting: 0, working: 2, idle: 1 })).toBe(
-      "supergit — 2 working, 1 idle",
-    );
+    expect(
+      titleForState("supergit", { awaiting: 0, working: 2, unread: 0, idle: 1 }),
+    ).toBe("supergit — 2 working, 1 idle");
   });
 });
 
 describe("descriptionForState", () => {
   test("describes an empty state plainly", () => {
-    expect(descriptionForState({ awaiting: 0, working: 0, idle: 0 })).toBe(
-      "No active TUIs",
-    );
+    expect(
+      descriptionForState({ awaiting: 0, working: 0, unread: 0, idle: 0 }),
+    ).toBe("No active TUIs");
   });
 
   test("phrases waiting first since that's what the user cares about", () => {
-    expect(descriptionForState({ awaiting: 2, working: 1, idle: 0 })).toBe(
-      "2 waiting for input, 1 working",
-    );
+    expect(
+      descriptionForState({ awaiting: 2, working: 1, unread: 0, idle: 0 }),
+    ).toBe("2 waiting for input, 1 working");
   });
 
   test("singularizes the waiting label when it's exactly one", () => {
-    expect(descriptionForState({ awaiting: 1, working: 0, idle: 0 })).toBe(
-      "1 waiting for input",
-    );
+    expect(
+      descriptionForState({ awaiting: 1, working: 0, unread: 0, idle: 0 }),
+    ).toBe("1 waiting for input");
   });
 
-  test("includes idle counts so og previews show the full picture", () => {
-    expect(descriptionForState({ awaiting: 0, working: 0, idle: 3 })).toBe(
-      "3 idle",
-    );
+  test("includes idle and unread counts so og previews show the full picture", () => {
+    expect(
+      descriptionForState({ awaiting: 0, working: 0, unread: 2, idle: 3 }),
+    ).toBe("2 unread, 3 idle");
   });
 });
 
@@ -144,6 +144,29 @@ describe("titleForSessions", () => {
     expect(
       titleForSessions("supergit", [{ state: "working", name: "", agent: "codex" }]),
     ).toBe("supergit — working: codex");
+  });
+
+  test("lists unread sessions by name (they're actionable — go look at them)", () => {
+    const sessions: TabSession[] = [
+      s("unread", "refactor", "codex"),
+      s("unread", "auth-fix", "claude"),
+      s("idle", "profile"),
+    ];
+    expect(titleForSessions("supergit", sessions)).toBe(
+      "supergit — unread: refactor (codex), auth-fix (claude) · 1 idle",
+    );
+  });
+
+  test("orders categories awaiting → working → unread → idle", () => {
+    const sessions: TabSession[] = [
+      s("idle", "x"),
+      s("unread", "u", "codex"),
+      s("working", "w", "claude"),
+      s("awaiting", "a", "claude"),
+    ];
+    expect(titleForSessions("supergit", sessions)).toBe(
+      "(1) supergit — waiting: a (claude) · working: w (claude) · unread: u (codex) · 1 idle",
+    );
   });
 });
 

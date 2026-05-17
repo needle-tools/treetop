@@ -45,11 +45,16 @@ function getCanvas(size: number): CanvasRenderingContext2D | null {
 export interface TabState {
   awaiting: number;
   working: number;
+  /** Sessions whose AI finished a turn the user hasn't focused yet.
+   *  A subset of "idle from the agent's perspective" that's worth
+   *  surfacing because the user has new output to look at. */
+  unread: number;
+  /** Sessions that are quiet AND already read — nothing to do. */
   idle: number;
 }
 
 export interface TabSession {
-  state: "awaiting" | "working" | "idle";
+  state: "awaiting" | "working" | "unread" | "idle";
   /** Human label — usually `manualTitle ?? title ?? branch`. Empty string
    *  is allowed; we fall back to the agent name. */
   name: string;
@@ -60,7 +65,7 @@ export interface TabSession {
 const NAME_LIMIT_PER_CATEGORY = 3;
 
 let lastStateKey = "";
-let currentState: TabState = { awaiting: 0, working: 0, idle: 0 };
+let currentState: TabState = { awaiting: 0, working: 0, unread: 0, idle: 0 };
 let animationTimer: ReturnType<typeof setInterval> | null = null;
 let animationStart = 0;
 
@@ -79,6 +84,7 @@ export function titleForState(base: string, state: TabState): string {
   const parts: string[] = [];
   if (state.awaiting > 0) parts.push(`${state.awaiting} waiting`);
   if (state.working > 0) parts.push(`${state.working} working`);
+  if (state.unread > 0) parts.push(`${state.unread} unread`);
   if (state.idle > 0) parts.push(`${state.idle} idle`);
   const suffix = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
   return `${prefix}${base}${suffix}`;
@@ -87,11 +93,12 @@ export function titleForState(base: string, state: TabState): string {
 /** Pure helper: the longer breakdown used for the meta description and
  *  the og:description tag (for link unfurls). */
 export function descriptionForState(state: TabState): string {
-  const total = state.awaiting + state.working + state.idle;
+  const total = state.awaiting + state.working + state.unread + state.idle;
   if (total === 0) return "No active TUIs";
   const parts: string[] = [];
   if (state.awaiting > 0) parts.push(`${state.awaiting} waiting for input`);
   if (state.working > 0) parts.push(`${state.working} working`);
+  if (state.unread > 0) parts.push(`${state.unread} unread`);
   if (state.idle > 0) parts.push(`${state.idle} idle`);
   return parts.join(", ");
 }
@@ -109,7 +116,7 @@ function joinWithLimit(items: string[], limit: number): string {
 }
 
 function summarize(sessions: TabSession[]): TabState {
-  const out: TabState = { awaiting: 0, working: 0, idle: 0 };
+  const out: TabState = { awaiting: 0, working: 0, unread: 0, idle: 0 };
   for (const s of sessions) out[s.state]++;
   return out;
 }
@@ -123,6 +130,7 @@ export function titleForSessions(base: string, sessions: TabSession[]): string {
   if (sessions.length === 0) return base;
   const awaiting = sessions.filter((s) => s.state === "awaiting");
   const working = sessions.filter((s) => s.state === "working");
+  const unread = sessions.filter((s) => s.state === "unread");
   const idle = sessions.filter((s) => s.state === "idle");
 
   const prefix = awaiting.length > 0 ? `(${awaiting.length}) ` : "";
@@ -136,6 +144,14 @@ export function titleForSessions(base: string, sessions: TabSession[]): string {
   if (working.length > 0) {
     parts.push(
       `working: ${joinWithLimit(working.map(labelFor), NAME_LIMIT_PER_CATEGORY)}`,
+    );
+  }
+  // Unread sessions ARE actionable (the AI finished and the user
+  // hasn't looked yet), so show names like waiting/working — not
+  // just a count.
+  if (unread.length > 0) {
+    parts.push(
+      `unread: ${joinWithLimit(unread.map(labelFor), NAME_LIMIT_PER_CATEGORY)}`,
     );
   }
   // Idle sessions aren't actionable — just show the count so the
@@ -153,7 +169,8 @@ export function descriptionForSessions(sessions: TabSession[]): string {
   if (sessions.length === 0) return "No active TUIs";
   const counts = descriptionForState(summarize(sessions));
   // Normalise the internal "awaiting" state name to "waiting" so the
-  // description reads naturally to a human.
+  // description reads naturally to a human. Other state words ("working",
+  // "unread", "idle") already read fine as-is.
   const stateWord = (s: TabSession) =>
     s.state === "awaiting" ? "waiting" : s.state;
   const details = sessions
@@ -294,25 +311,80 @@ function drawIndicator(state: TabState, tMs: number): void {
       ctx.fillText(String(state.awaiting), cx, cy + 0.5);
     }
   } else if (state.working > 0) {
-    // Working-only: replace the logo entirely with a full-favicon
-    // rotating arc spinner so it reads as "busy" at tab-strip size.
+    // Working-only: needle logo dimmed slightly with a brand-green
+    // "stitching" ring rotating around it. Dashes (rather than a
+    // continuous arc) read as sewing stitches → on-brand for Needle
+    // and visually distinct from a generic page-loading spinner.
+    if (!baseImage || !baseImageReady) return;
+    // Inset the logo a touch so the stitch ring has room without
+    // overlapping the needles themselves.
+    const inset = 3;
+    ctx.save();
+    ctx.globalAlpha = 0.78;
+    try {
+      ctx.drawImage(baseImage, inset, inset, size - inset * 2, size - inset * 2);
+    } catch {
+      ctx.restore();
+      return;
+    }
+    ctx.restore();
+    // Brand-green stitch ring: 8 evenly-spaced dashes rotating around
+    // the logo perimeter at ~0.4 turns/sec.
     const cx = size / 2;
     const cy = size / 2;
-    const r = 12;
+    const r = (size - 2) / 2; // 15px → sits just inside the favicon edge
+    const angle = t * 0.8 * Math.PI; // 0.4 turns/sec
+    const segments = 8;
+    const arcPer = (Math.PI * 2) / segments;
+    const dashSweep = arcPer * 0.45; // 45% stitch, 55% gap
+    ctx.lineWidth = 2.25;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#60b74c"; // --brand
+    for (let i = 0; i < segments; i++) {
+      const a0 = angle + i * arcPer;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, a0, a0 + dashSweep);
+      ctx.stroke();
+    }
+  } else if (state.unread > 0) {
+    // Idle but with unread sessions: base logo + brand-green badge
+    // with the count in the top-right corner. Gentle pulse (0.5 Hz)
+    // so it reads as "you have new messages" without nagging like
+    // the red awaiting dot.
+    if (!baseImage || !baseImageReady) return;
+    try {
+      ctx.drawImage(baseImage, 0, 0, size, size);
+    } catch {
+      return;
+    }
+    const pulse = (Math.sin(t * Math.PI) + 1) / 2;
+    const alpha = 0.8 + 0.2 * pulse;
+    const r = 8;
+    const cx = size - r - 0.5;
+    const cy = r + 0.5;
+    ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(59, 130, 246, 0.2)";
-    ctx.lineWidth = 4;
+    ctx.fillStyle = "#60b74c"; // --brand
+    ctx.fill();
+    ctx.restore();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
     ctx.stroke();
-    // ~0.5 turns/sec; a 270° sweep gives a clear head/tail.
-    const start = t * Math.PI; // π rad/sec = 0.5 turns/sec
-    const sweep = Math.PI * 1.5;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, start, start + sweep);
-    ctx.strokeStyle = "#3b82f6";
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.stroke();
+    if (state.unread >= 1 && state.unread <= 9) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(state.unread), cx, cy + 0.5);
+    } else if (state.unread > 9) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 9px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("9+", cx, cy + 0.5);
+    }
   }
 
   const link = getFaviconLink();
@@ -414,7 +486,8 @@ export function updateTabIndicator(sessions: TabSession[]): void {
     setMeta("og:description", desc, true);
   }
 
-  const needsAnimation = counts.awaiting > 0 || counts.working > 0;
+  const needsAnimation =
+    counts.awaiting > 0 || counts.working > 0 || counts.unread > 0;
   if (!needsAnimation) {
     stopAnimation();
     clearBadge();
