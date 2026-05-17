@@ -360,14 +360,24 @@
   }
 
   /** Walk the normalized message tree from the tail and return the
-   *  text content of the most recent user-typed message — used by the
-   *  header's "last activity" tooltip so the user can glance back at
-   *  what they just asked without scrolling the column. Skips user
-   *  messages whose only blocks are tool_result payloads (Claude
-   *  routes those under role: "user" but they aren't user-typed). */
+   *  text content of the most recent user-typed message(s) — used by
+   *  the header's "last activity" tooltip + the pinned overlay so
+   *  the user can glance back at what they just asked without
+   *  scrolling the column. Skips user messages whose only blocks are
+   *  tool_result payloads (Claude routes those under role: "user"
+   *  but they aren't user-typed).
+   *
+   *  If multiple user messages were sent in a short burst — each
+   *  within `BURST_GAP_MS` of the next — they're combined into a
+   *  single newline-joined preview in chronological order, so a
+   *  rapid-fire "5 quick messages" sequence shows the whole thread
+   *  of intent rather than only the last fragment. */
+  const BURST_GAP_MS = 30_000;
   $: lastUserMessage = ((): string | undefined => {
     const msgs = session?.messages;
     if (!msgs || msgs.length === 0) return undefined;
+    const collected: string[] = [];
+    let prevTs: number | null = null;
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (!m || m.role !== "user") continue;
@@ -377,10 +387,21 @@
           parts.push(b.text);
         }
       }
-      const joined = parts.join("\n").trim();
-      if (joined.length > 0) return joined;
+      const text = parts.join("\n").trim();
+      if (text.length === 0) continue;
+      const tsRaw = m.timestamp ? Date.parse(m.timestamp) : NaN;
+      const ts = Number.isNaN(tsRaw) ? null : tsRaw;
+      // Stop walking back once we find a user message whose timestamp
+      // is more than BURST_GAP_MS older than the previous one we
+      // kept — that's the boundary of the most recent burst.
+      if (collected.length > 0 && prevTs !== null && ts !== null) {
+        if (prevTs - ts > BURST_GAP_MS) break;
+      }
+      collected.unshift(text);
+      if (ts !== null) prevTs = ts;
     }
-    return undefined;
+    if (collected.length === 0) return undefined;
+    return collected.join("\n");
   })();
 
   /** Burger-menu items for the per-session header. SessionMenu owns the
@@ -1017,15 +1038,25 @@
     font-size: 0.65rem;
     line-height: 1.35;
     text-align: left;
-    /* Hard 4-line cut via max-height + overflow: hidden. The smaller
-       font + 4-line budget shows ~30–50% more of a typical prompt
-       than the previous 3-line clamp without growing the pill's
-       footprint much. Full message remains one hover away on the
-       native title. */
+    /* Resting state: hard 3-line cut via max-height + overflow:
+       hidden. On hover the pill expands to show up to ~50vh of
+       content so the user can read a longer burst in full without
+       jumping into the chat. Both heights animate so the expand
+       feels intentional rather than snapping. */
     display: block;
     overflow: hidden;
     word-break: break-word;
-    max-height: calc(4lh + 0.5rem);
+    max-height: calc(3lh + 0.5rem);
+    transition: max-height 180ms ease;
+  }
+  .pinned-last-msg:hover {
+    /* Tall enough for a long burst of quick messages but capped so
+       the pill never grows beyond the visible column. Overflow stays
+       hidden, switching to auto only when the natural content is
+       taller than the cap — so the user can scroll within the
+       expanded pill if they really need to. */
+    max-height: 50vh;
+    overflow: auto;
   }
   /* Only re-enable pointer events on the pill once it's revealed —
      otherwise the invisible pill at rest would still swallow clicks
