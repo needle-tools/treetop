@@ -30,7 +30,7 @@
   export let agent: "claude" | "codex" | "copilot" | "shell";
   export let source: string;
   export let manualTitle: string = "";
-  /** "read" hides End Session / fullscreen; "terminal" shows them. */
+  /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
   export let mode: "read" | "terminal" = "terminal";
   /** Whether the column should expose a Resume button (only meaningful
    *  when mode === "read" and we have a sessionId to resume against). */
@@ -84,7 +84,7 @@
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
 
-  /** Tooltip strings for the End Session / Resume buttons. Default
+  /** Tooltip strings for the Stop Session / Resume buttons. Default
    *  texts work for SessionView; NewSessionCol can override. */
   export let endSessionTitle: string =
     "SIGTERM the PTY and flip back to the chat view";
@@ -139,12 +139,13 @@
   /** When the column is in TUI mode we splice a "Toggle fullscreen"
    *  entry on top of whatever the parent passed in. Keeps the action
    *  reachable for keyboard users (the burger is focusable) and trims
-   *  the right-side button cluster down to just End Session + ×. */
+   *  the right-side button cluster down to just Stop Session + ×. */
   $: effectiveMenuItems = mode === "terminal"
     ? ([
         {
           kind: "action",
           label: "Toggle fullscreen",
+          icon: "⛶",
           title: "Fill the viewport with this column (Esc to exit)",
           onSelect: () => toggleFullscreen(),
         },
@@ -319,7 +320,7 @@
           disabled={disposing}
           title={endSessionTitle}
         >
-          {disposing ? "Ending…" : "End Session"}
+          {disposing ? "Stopping…" : "Stop Session"}
         </button>
       {/if}
     {/if}

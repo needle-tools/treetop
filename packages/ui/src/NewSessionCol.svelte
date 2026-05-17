@@ -94,12 +94,14 @@
     {
       kind: "copy",
       label: "Copy command + cwd",
+      icon: "⧉",
       title: "Copy the spawn command and cwd to the clipboard",
       getText: () => `${cmd.join(" ")}\n${cwd}`,
     },
     {
       kind: "action",
       label: "Save as link",
+      icon: "⤴",
       disabled: !wtPath,
       title: wtPath
         ? "Pin this TUI as a sticky-link on the row (auto-updates when the session names itself)"
@@ -109,6 +111,7 @@
     {
       kind: "action",
       label: `Restart ${agent}`,
+      icon: "↻",
       title: `Re-run \`${agent}\` in this column (use after a self-update)`,
       onSelect: () => dispatch("restart"),
     },

@@ -19,6 +19,10 @@
         onSelect: (triggerRect: DOMRect) => void;
         disabled?: boolean;
         title?: string;
+        /** Optional leading glyph rendered before the label. Same
+         *  vocabulary the rest of the header uses (⛶, ↻, ⎘, …) so the
+         *  popover reads as part of the same visual system. */
+        icon?: string;
       }
     | {
         kind: "copy";
@@ -29,6 +33,7 @@
         getText: () => string;
         disabled?: boolean;
         title?: string;
+        icon?: string;
       };
 </script>
 
@@ -119,9 +124,15 @@
               title={item.title ?? item.label}
             >
               {#if isCopied}
-                <span class="check" aria-hidden="true">✓</span> Copied to clipboard
+                <span class="check" aria-hidden="true">✓</span>
+                <span class="label">Copied to clipboard</span>
               {:else}
-                {item.label}
+                {#if item.icon}
+                  <span class="icon" aria-hidden="true">{item.icon}</span>
+                {:else}
+                  <span class="icon icon-empty" aria-hidden="true"></span>
+                {/if}
+                <span class="label">{item.label}</span>
               {/if}
             </button>
           </li>
@@ -175,6 +186,36 @@
     font: inherit;
     font-size: 0.82rem;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .menu-item .icon {
+    /* Fixed-width gutter so item labels line up even when one row's
+       icon is wider (⛶) than the next (↻). The empty span keeps the
+       alignment when an item has no icon. Bumped to 1.05rem so the
+       Unicode glyphs (⧉, ⛶, ↻, ⤴) sit visually similar to the 0.82rem
+       label — the project uses sub-1rem font-sizes throughout, but
+       these monochrome glyphs render quite slim, so they need a bit
+       more pixel weight than the text to feel "the same size." */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    color: var(--text-muted);
+    font-size: 1.05rem;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  .menu-item:hover:not(:disabled) .icon {
+    color: var(--text-1);
+  }
+  .menu-item .label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .menu-item:hover:not(:disabled) {
     background: var(--surface-2);
@@ -190,8 +231,12 @@
     opacity: 1;
   }
   .menu-item .check {
-    display: inline-block;
-    margin-right: 0.3rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.1rem;
     font-weight: 700;
+    color: var(--status-clean);
+    flex: 0 0 auto;
   }
 </style>
