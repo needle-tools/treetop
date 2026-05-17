@@ -64,6 +64,12 @@
   }
 
   export let entries: DockEntry[];
+  /** Source of the session the user most recently focused via this
+   *  dock. The matching row paints a small left-pointing triangle so
+   *  the user can scan the strip and instantly see which dot maps to
+   *  the column they're currently looking at. `null` ⇒ no row is
+   *  marked as focused. */
+  export let focusedSource: string | null = null;
 
   const dispatch = createEventDispatcher<{ pick: DockEntry }>();
 
@@ -441,6 +447,7 @@
         class:dot-awaiting={e.awaiting}
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
+        class:dock-dot-focused={focusedSource === e.source}
         class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
         style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
@@ -448,6 +455,19 @@
         on:mouseenter={(ev) => onRowEnter(ev, e)}
         on:focusin={(ev) => onRowEnter(ev, e)}
       >
+        {#if focusedSource === e.source}
+          <!-- Focus marker: tall slim outlined triangle pointing at
+               the dot. SVG (rather than the older CSS border-trick)
+               lets us draw a hollow shape with rounded joins; the
+               border-trick can only produce filled triangles. -->
+          <svg
+            class="dock-dot-arrow"
+            viewBox="0 0 5 10"
+            aria-hidden="true"
+          >
+            <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
+          </svg>
+        {/if}
         <span class="dock-dot-inner">
           <!-- Working: a thick partial-arc SVG stroke rotates around
                the dot's centre. SVG (rather than the old conic-
@@ -584,6 +604,41 @@
      the markup using a prev-entry-vs-current-entry repoId compare. */
   .dock-dot.dock-dot-repo-first {
     margin-top: 0.5rem;
+  }
+  /* Focused row: small triangle pointing right at the dot, painted in
+     the button's left padding area so it doesn't push the dot
+     horizontally. CSS border-trick triangle — no extra DOM. The
+     button's `position: relative` (set above) anchors the ::before
+     to the button's bounds. */
+  .dock-dot-arrow {
+    position: absolute;
+    /* Negative left pulls the triangle into the dock's left padding
+       (the dock itself has 0.5rem of padding to spare here), giving
+       it a clear gap from the dot it points at. */
+    left: -3px;
+    top: 50%;
+    width: 5px;
+    height: 10px;
+    transform: translateY(-50%);
+    pointer-events: none;
+    /* Pop in/out softly when focus moves between rows so the eye can
+       follow the marker rather than seeing it teleport. */
+    transition: opacity 140ms ease;
+    /* Visible overflow so rounded line joins don't get clipped by
+       the tight viewBox bounds. */
+    overflow: visible;
+  }
+  .dock-dot-arrow polyline {
+    /* Lower-contrast "you are here" chevron — open shape (no back
+       edge connecting the top-left and bottom-left points) so it
+       reads as a chevron mark rather than a filled arrowhead.
+       text-muted at ~55% alpha keeps it from competing with the
+       live working/awaiting animations. */
+    fill: none;
+    stroke: color-mix(in oklch, var(--text-muted, #9a9aa0) 55%, transparent);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
   }
   /* The inner span IS the visible dot. Keeping the click target as the
      wrapper button means the hit area can stay larger (14px) than the

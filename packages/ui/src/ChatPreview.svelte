@@ -63,7 +63,10 @@
             {/if}
           </div>
         {:else if item.kind === "msg"}
-          <div class="chat-preview-msg chat-preview-role-{item.role}">
+          <div
+            class="chat-preview-msg chat-preview-role-{item.role}"
+            class:chat-preview-older={item.role === "assistant" && item.older}
+          >
             <span class="chat-preview-head">
               <span class="chat-preview-role">
                 {#if item.role === "assistant" && (agent === "claude" || agent === "codex")}
@@ -154,6 +157,28 @@
   }
   .chat-preview-role-assistant .chat-preview-time {
     color: color-mix(in oklch, var(--chat-preview-ai-text) 85%, transparent);
+  }
+  /* Older assistant turns sit before the latest user prompt and are
+     shown as context only — fade the bubble so the eye lands on the
+     current exchange first. Per-channel color-mix toward transparent
+     (not `opacity`) keeps the layer flat: no compositing stack on
+     top of the host's transparent panel background, and the dimmed
+     bubble can still mix correctly with whatever sits behind the
+     preview panel. */
+  .chat-preview-msg.chat-preview-older {
+    /* Mix the bubble's light surface toward the dark page background
+       rather than toward `transparent` — keeps the bubble fully
+       opaque (readable against any layer behind the panel) but
+       drops its contrast so it reads as muted context. The text
+       channel mixes too so the type doesn't punch out over the
+       darker surface. */
+    background: color-mix(in oklch, var(--chat-preview-ai-bg) 55%, var(--surface-0, #23261d));
+    border-color: color-mix(in oklch, var(--chat-preview-ai-border) 50%, var(--surface-0, #23261d));
+    color: color-mix(in oklch, var(--chat-preview-ai-text) 65%, var(--surface-0, #23261d));
+  }
+  .chat-preview-msg.chat-preview-older .chat-preview-role,
+  .chat-preview-msg.chat-preview-older .chat-preview-time {
+    color: color-mix(in oklch, var(--chat-preview-ai-text) 65%, var(--surface-0, #23261d));
   }
   .chat-preview-head {
     display: inline-flex;

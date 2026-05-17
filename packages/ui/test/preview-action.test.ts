@@ -219,8 +219,12 @@ describe("buildPreviewItems", () => {
       aiText("r2"),
     ]);
     expect(items).toEqual([
-      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined },
+      // r1 precedes the latest user message (q2) → tagged `older`
+      // so the preview renders it dimmed as background context.
+      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined, older: true },
       { kind: "msg", role: "user", text: "q2", timestamp: undefined },
+      // r2 lands after the latest user message — the current reply,
+      // shown at full contrast.
       { kind: "msg", role: "assistant", text: "r2", timestamp: undefined },
     ]);
   });

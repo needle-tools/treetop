@@ -38,6 +38,11 @@ export interface PreviewMsg {
   role: "user" | "assistant";
   text: string;
   timestamp?: string;
+  /** Assistant message that predates the latest user prompt — i.e.
+   *  context the user was responding to. Rendered with reduced
+   *  contrast so the eye snaps to the current exchange first. Only
+   *  meaningful for `role: "assistant"`. */
+  older?: boolean;
 }
 
 export interface PreviewGap {
@@ -139,6 +144,7 @@ export function extractLatestAction(
 function expandAssistant(
   m: PreviewActionMessage,
   out: PreviewItem[],
+  opts: { older?: boolean } = {},
 ): { emittedTextBubble: boolean; emittedAction: boolean } {
   const blocks = Array.isArray(m.blocks) ? m.blocks : [];
   let textBuf: string[] = [];
@@ -153,6 +159,7 @@ function expandAssistant(
       role: "assistant",
       text: joined,
       timestamp: m.timestamp,
+      ...(opts.older ? { older: true } : {}),
     });
     emittedTextBubble = true;
   };
@@ -375,9 +382,16 @@ export function buildPreviewItems(
       });
       continue;
     }
+    // An assistant turn is "older" when it precedes the latest user
+    // message in the conversation. Those bubbles render dimmed so the
+    // user's eye lands on the current user prompt + the in-progress
+    // reply rather than the context that surrounded the prompt.
+    const latestUserIdx = burstAnchor?.idx ?? -1;
+    const isOlder = latestUserIdx >= 0 && it.idx < latestUserIdx;
     const { emittedTextBubble, emittedAction } = expandAssistant(
       fullMessage,
       out,
+      { older: isOlder },
     );
     // Guarantee the latest assistant turn is always represented in
     // the visible stream, even when it hasn't produced any text or

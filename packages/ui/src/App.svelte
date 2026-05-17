@@ -229,6 +229,14 @@
   }
   let streamConnected = false;
 
+  /** Source of the session the user most recently focused via the
+   *  side dock (or a direct session-column click). Drives the small
+   *  triangle marker in SessionDock — purely a visual indicator of
+   *  "the column you just navigated to is this one". Resets to null
+   *  when that session is closed, and stays in memory only (a reload
+   *  starts unfocused). */
+  let focusedSource: string | null = null;
+
   // The unique row key (repoId + worktree path) currently being renamed.
   // Was just editingRepoId — but repos with multiple worktrees produce
   // multiple rows for the same repo, so a repo-id match would render two
@@ -1449,6 +1457,7 @@
         (x) => x.source !== s.source,
       ),
     };
+    if (focusedSource === s.source) focusedSource = null;
   }
 
   // Drag-to-reorder for sessions inside one worktree's strip. We don't
@@ -1732,6 +1741,119 @@
     s: OpenSession,
   ): void {
     applyRevealPlan(rowKey, wtPath, s, "reveal");
+  }
+
+  /** Dock click handler. The scroll-and-flash path silently returns
+   *  when its `[data-wt-strip]` / `.session-col` queries miss, so we
+   *  first force-clear every condition that could hide the target
+   *  row from the DOM (hidden worktree, zen-mask on another row, a
+   *  folded row — the existing reveal plan already handles folded).
+   *  Then we attempt the reveal.
+   *
+   *  If the column STILL can't be located after a tick, the dock
+   *  entry is pointing at something the rest of the UI can't render.
+   *  We only treat that as "stale, clean up" when the daemon is
+   *  reachable AND confirms the source/worktree is gone — an
+   *  unreachable daemon could just be a restart in progress and
+   *  must not trigger any state mutation. */
+  async function onDockPick(entry: {
+    rowKey: string;
+    wtPath: string;
+    agent: OpenSession["agent"];
+    source: string;
+    repoId: string;
+    title?: string;
+    manualTitle?: string;
+  }): Promise<void> {
+    const repo = repos.find((r) => r.id === entry.repoId);
+    if (repo) {
+      const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
+      const visible = effectiveVisibleWorktrees(
+        repo.id,
+        diskPaths,
+        visibleWorktreesByRepo,
+      );
+      if (!visible.includes(entry.wtPath)) {
+        // Worktree row is hidden from the dashboard — the strip
+        // element won't exist in the DOM until we restore it.
+        visibleWorktreesByRepo = {
+          ...visibleWorktreesByRepo,
+          [repo.id]: [...visible, entry.wtPath],
+        };
+      }
+    }
+    if (zenRowKey && zenRowKey !== entry.rowKey) {
+      // Zen mode is focused on a different row, so this row is in a
+      // `display: none` subtree (zen-row.css:18). Exit zen so the
+      // clicked row is back in the layout flow.
+      zenRowKey = null;
+    }
+    revealSession(entry.rowKey, entry.wtPath, {
+      agent: entry.agent,
+      source: entry.source,
+    });
+    clearFinishedFor(entry.source);
+    focusedSource = entry.source;
+
+    // After one Svelte flush + a paint, check whether the column
+    // actually landed in the DOM. If not, the dock entry is genuinely
+    // unreachable and we should clean it up — but only if the daemon
+    // confirms the underlying source is gone, never on a network blip.
+    await tick();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    const stripEl = document.querySelector(
+      `[data-wt-strip="${CSS.escape(entry.wtPath)}"]`,
+    );
+    const colEl = stripEl?.querySelector(
+      `.session-col[data-session-source="${CSS.escape(entry.source)}"]`,
+    );
+    if (colEl) return;
+    let daemonReachable = false;
+    let stillExists = false;
+    try {
+      const r = await fetch("/api/repos", { cache: "no-cache" });
+      if (r.ok) {
+        daemonReachable = true;
+        const fresh = (await r.json()) as typeof repos;
+        const isSynthetic = SYNTHETIC_SOURCE_PREFIXES.some((p) =>
+          entry.source.startsWith(p),
+        );
+        if (isSynthetic) {
+          // Synthetic sources (__new__:, __attached__:, __transcript__:)
+          // are managed client-side — they "exist" so long as their
+          // owning worktree still exists on disk. The agents list
+          // wouldn't carry them.
+          stillExists = fresh.some((rr) =>
+            (rr.worktrees ?? []).some((w) => w.path === entry.wtPath),
+          );
+        } else {
+          stillExists = fresh.some((rr) =>
+            (rr.worktrees ?? []).some((w) =>
+              (w.agents ?? []).some((a) => a.source === entry.source),
+            ),
+          );
+        }
+      }
+    } catch {
+      daemonReachable = false;
+    }
+    if (daemonReachable && !stillExists) {
+      const label = entry.manualTitle ?? entry.title ?? "this session";
+      addToast({
+        kind: "info",
+        title: "Stale session removed",
+        message: `${label} no longer exists on disk; closing its dock entry.`,
+      });
+      closeSessionInWt(entry.wtPath, {
+        agent: entry.agent,
+        source: entry.source,
+      } as OpenSession);
+    }
+    // daemonReachable === false → daemon is down or restarting; leave
+    // openSessionsByWt untouched so the entry is still there once the
+    // daemon comes back up.
   }
   /** After unfold (and any state mutation), wait for Svelte to flush
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
@@ -2854,11 +2976,15 @@
     dockEntries
       .filter((e) => !e.exited)
       .map((e) => ({
+        // Priority: awaiting > working > unread (= AI finished a turn
+        // the user hasn't focused yet, signalled by `finishedAt`) > idle.
         state: e.awaiting
           ? ("awaiting" as const)
           : e.working
             ? ("working" as const)
-            : ("idle" as const),
+            : e.finishedAt !== undefined
+              ? ("unread" as const)
+              : ("idle" as const),
         name: (e.manualTitle || e.title || e.branch || "").trim(),
         agent: e.agent,
       })),
@@ -4395,8 +4521,17 @@
                         on:dragover={handleSessionDragOver}
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
-                        on:click={() =>
-                          commitStripSearch(row.key, wt.path, s.source)}
+                        on:click={() => {
+                          commitStripSearch(row.key, wt.path, s.source);
+                          // Bubbles from any click inside the column — a
+                          // child handler that closes the session will
+                          // have run first, so guard with isOpenInWt so
+                          // we don't park `focusedSource` on a source
+                          // that's already been removed.
+                          if (isOpenInWt(wt.path, s.source)) {
+                            focusedSource = s.source;
+                          }
+                        }}
                         out:closeColumn
                       >
                         {#if s.source.startsWith("__transcript__:")}
@@ -4740,15 +4875,8 @@
 
 <SessionDock
   entries={dockEntries}
-  on:pick={(e) => {
-    revealSession(e.detail.rowKey, e.detail.wtPath, {
-      agent: e.detail.agent,
-      source: e.detail.source,
-    });
-    // User focused this session → clear the unread pulse on its
-    // dock dot (or any pending debounce that would stamp one).
-    clearFinishedFor(e.detail.source);
-  }}
+  {focusedSource}
+  on:pick={(e) => void onDockPick(e.detail)}
 />
 
 <StickyNotesLayer changeKey={notesChangeKey} {repos} />
