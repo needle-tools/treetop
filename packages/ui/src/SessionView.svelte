@@ -198,6 +198,42 @@
   function onSessionMouseLeave(): void {
     setPinRevealed(false);
   }
+
+  /** Settle-debounce for the chat scroll container. The user's
+   *  complaint: when scrolling the page, drifting the cursor over
+   *  the chat by accident hands the wheel to the chat and the page
+   *  stops scrolling. Fix: only let `.messages` capture the wheel
+   *  after the cursor has been parked inside for ≥ 300ms. Until
+   *  then, wheel events are forwarded to the window so the page
+   *  keeps scrolling. Combined with `overscroll-behavior: contain`
+   *  on `.messages` this means: the chat is a true "scroll island"
+   *  — needs intent to enter, and once entered won't bleed scroll
+   *  back into the page. */
+  const MSG_SETTLE_MS = 300;
+  let msgCursorSettled = false;
+  let msgSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  function onMessagesEnter(): void {
+    msgCursorSettled = false;
+    if (msgSettleTimer) clearTimeout(msgSettleTimer);
+    msgSettleTimer = setTimeout(() => {
+      msgCursorSettled = true;
+      msgSettleTimer = null;
+    }, MSG_SETTLE_MS);
+  }
+  function onMessagesLeave(): void {
+    msgCursorSettled = false;
+    if (msgSettleTimer) {
+      clearTimeout(msgSettleTimer);
+      msgSettleTimer = null;
+    }
+  }
+  function onMessagesWheel(ev: WheelEvent): void {
+    if (msgCursorSettled) return;
+    // Cursor hasn't been parked long enough — treat this wheel tick
+    // as still part of a page-scroll session and forward it.
+    ev.preventDefault();
+    window.scrollBy({ top: ev.deltaY, left: ev.deltaX, behavior: "auto" });
+  }
   let lastLoadedAt = 0;
   let pollCount = 0;
   let inputText = "";
@@ -655,6 +691,7 @@
     if (pollTimer !== null) window.clearInterval(pollTimer);
     if (pendingTimer) clearTimeout(pendingTimer);
     cancelPinHide();
+    if (msgSettleTimer) clearTimeout(msgSettleTimer);
   });
 </script>
 
@@ -769,7 +806,13 @@
   {:else if session && session.messages.length === 0}
     <p class="muted small">No messages parsed from this session.</p>
   {:else if session}
-    <ul class="messages" bind:this={messagesEl}>
+    <ul
+      class="messages"
+      bind:this={messagesEl}
+      on:mouseenter={onMessagesEnter}
+      on:mouseleave={onMessagesLeave}
+      on:wheel={onMessagesWheel}
+    >
       {#each session.messages as m}
         <li class="msg role-{m.role}">
           <div class="msg-head">
@@ -1113,6 +1156,12 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+    /* Stop the chat from chaining its scroll back into the page when
+       it reaches the top or bottom — once the user is intentionally
+       scrolling this column, the page stays put. (Accidental hijack
+       of *outbound* page scrolling is handled separately by the
+       300ms settle-debounce in the wheel handler.) */
+    overscroll-behavior: contain;
   }
   .msg {
     padding: 0.45rem 0.6rem;
