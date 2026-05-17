@@ -38,6 +38,10 @@
   /** Sessions whose `source` is in this set render with an "orphan" tag
    *  (i.e. their cwd no longer maps to a live worktree). Empty by default. */
   export let orphanSources: Set<string> = new Set();
+  /** Sources the user has dismissed from this list — rendered in a
+   *  separate "Dismissed" group at the bottom so the active list stays
+   *  clean. Persisted by the parent; we just consume the set. */
+  export let dismissedSources: Set<string> = new Set();
   /** Whether each row is already open as a column. Rows that are NOT
    *  open render dimmed so the already-open (active) ones stand out;
    *  open rows additionally reveal the inline close affordance. */
@@ -51,10 +55,44 @@
   let query = "";
   $: filtered = filterSessions(sessions, query);
 
+  /** Active rows above the divider, dismissed rows below. Computed
+   *  off the same `filtered` list so search applies to both groups. */
+  $: activeFiltered = filtered.filter((s) => !dismissedSources.has(s.source));
+  $: dismissedFiltered = filtered.filter((s) => dismissedSources.has(s.source));
+  /** One flat array of `{kind, ...}` so a single each-block can
+   *  `animate:flip` rows as they move between the active and
+   *  dismissed groups. A sentinel header object marks where the
+   *  divider goes; its key is stable so its slot doesn't churn. */
+  type RowItem =
+    | { kind: "row"; sess: AgentSession; dismissed: boolean; key: string }
+    | { kind: "header"; count: number; key: string };
+  $: rendered = ((): RowItem[] => {
+    const out: RowItem[] = activeFiltered.map((s) => ({
+      kind: "row",
+      sess: s,
+      dismissed: false,
+      key: s.source,
+    }));
+    if (dismissedFiltered.length > 0) {
+      out.push({
+        kind: "header",
+        count: dismissedFiltered.length,
+        key: "__dismissed_header__",
+      });
+      for (const s of dismissedFiltered) {
+        out.push({ kind: "row", sess: s, dismissed: true, key: s.source });
+      }
+    }
+    return out;
+  })();
+
   import { createEventDispatcher, onDestroy } from "svelte";
+  import { flip } from "svelte/animate";
   const dispatch = createEventDispatcher<{
     pick: AgentSession;
     close: AgentSession;
+    dismiss: AgentSession;
+    restore: AgentSession;
   }>();
 
   // ── Hover preview ───────────────────────────────────────────────
@@ -233,11 +271,20 @@
   </svelte:fragment>
 
   <ul class="agents-list">
-    {#each filtered as sess (sess.source)}
-      <li>
+    {#each rendered as item (item.key)}
+      <li
+        class:dismissed-header={item.kind === "header"}
+        animate:flip={{ duration: 250 }}
+      >
+      {#if item.kind === "header"}
+        <span class="dismissed-header-text">Dismissed</span>
+        <span class="dismissed-header-count">{item.count}</span>
+      {:else}
+        {@const sess = item.sess}
         <button
           class="agent-row brand-{sess.agent}"
-          class:dimmed={!isOpen(sess)}
+          class:dimmed={!isOpen(sess) && !item.dismissed}
+          class:dismissed-row={item.dismissed}
           class:orphan-row={orphanSources.has(sess.source)}
           class:preview-open={hoveredSess?.source === sess.source}
           title={isOpen(sess) ? "Already open — click to close" : tooltipFor(sess)}
@@ -293,6 +340,16 @@
             <span class="agent-title agent-last-cmd" title={sess.lastUserMessage}>
               {sess.lastUserMessage}
             </span>
+          {:else if sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
+            <!-- Chat session without a user-set title: fall back to
+                 the most recent user message so the row still says
+                 something identifiable instead of being blank. Wrapped
+                 to one line and clamped via .agent-last-user-msg. -->
+            <span class="agent-title agent-last-user-msg" title={sess.lastUserMessage}>
+              {sess.lastUserMessage}
+            </span>
+          {:else if sess.title && sess.title.trim().length > 0}
+            <span class="agent-title">{sess.title}</span>
           {/if}
           {#if orphanSources.has(sess.source)}
             <span class="orphan-tag" title={`Originated in ${sess.cwd} — no live worktree matches this path anymore.`}>orphan</span>
@@ -321,7 +378,71 @@
             }}
             title="Close this session"
           >×</span>
+          {#if item.dismissed}
+            <span
+              class="row-action row-restore"
+              role="button"
+              tabindex="0"
+              title="Restore this session to the active list"
+              on:click|stopPropagation={() => dispatch("restore", sess)}
+              on:keydown|stopPropagation={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  dispatch("restore", sess);
+                }
+              }}
+              aria-label="Restore session"
+            >
+              <!-- Lucide rotate-ccw — the standard "undo / restore"
+                   glyph; pairs visually with the archive icon used
+                   for dismiss. -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-6.74 2.74L3 8" />
+                <polyline points="3 3 3 8 8 8" />
+              </svg>
+            </span>
+          {:else}
+            <span
+              class="row-action row-dismiss"
+              role="button"
+              tabindex="0"
+              title="Dismiss this session — moves it to the Dismissed group at the bottom"
+              on:click|stopPropagation={() => dispatch("dismiss", sess)}
+              on:keydown|stopPropagation={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  dispatch("dismiss", sess);
+                }
+              }}
+              aria-label="Dismiss session"
+            >
+              <!-- Lucide archive — reads as "stash this away" without
+                   implying destructive delete (a trash icon would). -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="18" height="5" rx="1" />
+                <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+                <line x1="10" y1="13" x2="14" y2="13" />
+              </svg>
+            </span>
+          {/if}
         </button>
+      {/if}
       </li>
     {/each}
     {#if filtered.length === 0}
@@ -413,6 +534,90 @@
     padding: 0.6rem 0.8rem;
     text-align: center;
   }
+
+  /* Divider between the active rows and the "Dismissed" group at the
+     bottom of the list. Sits in the same <ul> so animate:flip can
+     move rows past it; styled to look like a section header, not
+     another picker row. */
+  .dismissed-header {
+    list-style: none;
+    margin: 0.35rem 0 0.15rem;
+    padding: 0.25rem 0.6rem 0.15rem;
+    border-top: 1px dashed var(--border-1, rgba(255, 255, 255, 0.12));
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+  }
+  .dismissed-header-count {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-2, var(--text-muted));
+  }
+
+  /* Rows the user has dismissed — visually dimmed (but still clickable
+     so they can be opened directly) and rendered below the divider. */
+  :global(.agents-list .agent-row.dismissed-row) {
+    opacity: 0.55;
+    filter: saturate(0.7);
+  }
+  :global(.agents-list .agent-row.dismissed-row:hover) {
+    opacity: 0.85;
+  }
+
+  /* In this popover the row grid grows by one trailing cell so the
+     dismiss/restore icon always lives in its own column at the far
+     right — instead of overflowing into a new grid row when the
+     parent .agent-row template only reserves 7 cells. Scoped via the
+     popover root so other consumers of .agent-row are untouched. */
+  :global(.session-search-popover .agent-row) {
+    grid-template-columns: 16px auto minmax(0, 1fr) auto auto auto 18px 18px;
+  }
+  :global(.session-search-popover .agent-row > .row-action) {
+    grid-column: 8;
+  }
+
+  /* Dismiss / restore affordances on each row. Same 18px hit-zone
+     as `.row-close` so the right-side cluster reads as one column. */
+  .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 0;
+    opacity: 0;
+    transition:
+      opacity 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+  .row-action > svg {
+    width: 12px;
+    height: 12px;
+  }
+  /* Reveal the icon on row hover so the user discovers the
+     dismiss/restore affordance without having to know it's there. */
+  :global(.agents-list .agent-row:hover) .row-action,
+  :global(.agents-list .agent-row:focus-within) .row-action {
+    opacity: 0.8;
+  }
+  .row-action:hover {
+    opacity: 1 !important;
+    background: var(--surface-3);
+    color: var(--text-1);
+  }
+  /* Restore on a dismissed row stays subtly visible even when not
+     hovered — it's the only way back. */
+  :global(.agents-list .agent-row.dismissed-row) .row-restore {
+    opacity: 0.55;
+  }
   /* Shell rows: most recent captured command, shown in the title
      slot as a muted monospace snippet. Inherits the title cell's
      ellipsis/overflow rules; just retunes typography + colour. */
@@ -422,6 +627,18 @@
     color: var(--text-muted);
     font-weight: 400;
     max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Chat row fallback when there's no manualTitle: render the last
+     user message in the title slot. Muted vs. a real title so the
+     reader can tell it's a stand-in. Clamped to 50ch and ellipsized
+     on one line, like the shell fallback. */
+  :global(.agent-row .agent-title.agent-last-user-msg) {
+    color: var(--text-muted);
+    font-weight: 400;
+    max-width: 50ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

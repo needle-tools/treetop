@@ -122,10 +122,12 @@
     return `${Math.floor(s / 86400)} days ago`;
   }
 
-  function toggleFullscreen(e: MouseEvent) {
-    const el = (e.currentTarget as HTMLElement).closest(
-      ".session",
-    ) as HTMLElement | null;
+  /** Bound to the header element so the burger-menu "Toggle fullscreen"
+   *  action can find its `.session` ancestor without an event target —
+   *  the menu hands actions a bounding rect, not the clicked node. */
+  let headerEl: HTMLElement | null = null;
+  function toggleFullscreen() {
+    const el = headerEl?.closest(".session") as HTMLElement | null;
     if (!el) return;
     if (document.fullscreenElement === el) {
       void document.exitFullscreen().catch(() => {});
@@ -133,9 +135,25 @@
       void el.requestFullscreen().catch(() => {});
     }
   }
+
+  /** When the column is in TUI mode we splice a "Toggle fullscreen"
+   *  entry on top of whatever the parent passed in. Keeps the action
+   *  reachable for keyboard users (the burger is focusable) and trims
+   *  the right-side button cluster down to just End Session + ×. */
+  $: effectiveMenuItems = mode === "terminal"
+    ? ([
+        {
+          kind: "action",
+          label: "Toggle fullscreen",
+          title: "Fill the viewport with this column (Esc to exit)",
+          onSelect: () => toggleFullscreen(),
+        },
+        ...menuItems,
+      ] satisfies SessionMenuItem[])
+    : menuItems;
 </script>
 
-<header draggable="true" on:dragstart={onDragStart}>
+<header bind:this={headerEl} draggable="true" on:dragstart={onDragStart}>
   <div class="hdr-col col-agent">
     <span
       class="agent-pill agent-{agent}"
@@ -294,12 +312,6 @@
           title="The agent is paused on a prompt — focus the terminal and respond."
         >needs input</span>
       {/if}
-      <button
-        class="fullscreen-btn"
-        on:click={toggleFullscreen}
-        title="Fullscreen this terminal (Esc to exit)"
-        aria-label="Fullscreen"
-      >⛶</button>
       {#if canEnd}
         <button
           class="resume-btn dispose-btn"
@@ -311,8 +323,8 @@
         </button>
       {/if}
     {/if}
-    {#if menuItems.length > 0}
-      <SessionMenu items={menuItems} />
+    {#if effectiveMenuItems.length > 0}
+      <SessionMenu items={effectiveMenuItems} />
     {/if}
     <button class="close" on:click={onClose} title={closeTitle} aria-label="Close column">×</button>
   </div>
@@ -407,22 +419,6 @@
   .resume-btn:disabled {
     opacity: 0.55;
     cursor: not-allowed;
-  }
-  .fullscreen-btn {
-    flex: 0 0 auto;
-    align-self: center;
-    background: transparent;
-    color: var(--text-muted);
-    border: 0;
-    padding: 0.1rem 0.5rem;
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .fullscreen-btn:hover {
-    color: var(--text-1);
-    background: var(--surface-3);
-    border-radius: var(--radius-sm);
   }
   .agent-pill {
     /* Position-relative so the .working state's ::before ring can

@@ -49,6 +49,46 @@ export class ExpandedStore {
 }
 
 /**
+ * Persisted set of "dismissed" session sources. Sessions in this set
+ * are pushed into a separate "Dismissed" group at the bottom of the
+ * session picker so the active list stays clean. Restoring removes
+ * the source from the set. Same shape / corruption-tolerance as
+ * ExpandedStore — keyed on the session's stable `source` string.
+ */
+export class DismissedSessionsStore {
+  constructor(
+    private readonly storage: KVStore,
+    private readonly key: string,
+  ) {}
+
+  load(): Set<string> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return new Set();
+    }
+    if (raw === null) return new Set();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return new Set();
+    }
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+  }
+
+  save(sources: Iterable<string>): void {
+    try {
+      this.storage.setItem(this.key, JSON.stringify([...sources]));
+    } catch {
+      // ignore — persistence is best-effort
+    }
+  }
+}
+
+/**
  * Persisted map of "which sessions were open under which worktree". Survives
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.

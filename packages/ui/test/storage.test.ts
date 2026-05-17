@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  DismissedSessionsStore,
   ExpandedStore,
   OpenSessionsStore,
   VisibleWorktreesStore,
@@ -98,6 +99,60 @@ describe("ExpandedStore", () => {
   test("returns empty set when storage throws on read", () => {
     const s = new ExpandedStore(new ThrowingStore(), KEY);
     expect([...s.load()]).toEqual([]);
+  });
+});
+
+describe("DismissedSessionsStore", () => {
+  const DK = "supergit:dismissedSessions";
+
+  test("returns empty set when nothing is stored", () => {
+    const s = new DismissedSessionsStore(new MemStore(), DK);
+    expect([...s.load()]).toEqual([]);
+  });
+
+  test("save then load round-trips sources", () => {
+    const m = new MemStore();
+    const s = new DismissedSessionsStore(m, DK);
+    s.save(["/a.jsonl", "__attached__:shell:abc"]);
+    expect([...s.load()]).toEqual([
+      "/a.jsonl",
+      "__attached__:shell:abc",
+    ]);
+  });
+
+  test("save replaces, not merges", () => {
+    const m = new MemStore();
+    const s = new DismissedSessionsStore(m, DK);
+    s.save(["a", "b"]);
+    s.save(["c"]);
+    expect([...s.load()]).toEqual(["c"]);
+  });
+
+  test("tolerates corrupt JSON", () => {
+    const m = new MemStore();
+    m.setItem(DK, "{not json");
+    expect([...new DismissedSessionsStore(m, DK).load()]).toEqual([]);
+  });
+
+  test("tolerates non-array values", () => {
+    const m = new MemStore();
+    m.setItem(DK, JSON.stringify({ a: 1 }));
+    expect([...new DismissedSessionsStore(m, DK).load()]).toEqual([]);
+  });
+
+  test("drops non-string entries", () => {
+    const m = new MemStore();
+    m.setItem(DK, JSON.stringify(["a", 1, null, "b"]));
+    expect([...new DismissedSessionsStore(m, DK).load()]).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  test("storage exceptions don't propagate", () => {
+    const s = new DismissedSessionsStore(new ThrowingStore(), DK);
+    expect([...s.load()]).toEqual([]);
+    expect(() => s.save(["a"])).not.toThrow();
   });
 });
 

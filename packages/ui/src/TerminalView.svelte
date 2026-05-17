@@ -46,6 +46,40 @@
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
+  /** Settle-debounce for wheel hijacking — same idea as the chat
+   *  scroll-island in SessionView. While the cursor hasn't been
+   *  parked over the terminal for ≥ 300ms, we capture wheel events
+   *  at the wrapper (before xterm's internal handler sees them) and
+   *  forward the delta to the window so a page-scroll session
+   *  continues even when the cursor drifts across the TUI. */
+  const TUI_WHEEL_SETTLE_MS = 300;
+  let tuiCursorSettled = false;
+  let tuiSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  function onTuiWrapEnter(): void {
+    tuiCursorSettled = false;
+    if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
+    tuiSettleTimer = setTimeout(() => {
+      tuiCursorSettled = true;
+      tuiSettleTimer = null;
+    }, TUI_WHEEL_SETTLE_MS);
+  }
+  function onTuiWrapLeave(): void {
+    tuiCursorSettled = false;
+    if (tuiSettleTimer) {
+      clearTimeout(tuiSettleTimer);
+      tuiSettleTimer = null;
+    }
+  }
+  /** Capture-phase wheel handler on `.terminal-wrap`. Capture fires
+   *  before xterm's listener on its internal viewport, so calling
+   *  `stopPropagation` here prevents xterm from receiving the
+   *  scroll. We forward the delta to the page instead. */
+  function onTuiWrapWheel(ev: WheelEvent): void {
+    if (tuiCursorSettled) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    window.scrollBy({ top: ev.deltaY, left: ev.deltaX, behavior: "auto" });
+  }
   let fit: FitAddon | null = null;
   let ws: WebSocket | null = null;
   let resizeObs: ResizeObserver | null = null;
@@ -94,6 +128,26 @@
       startupTimer = null;
     }
     startupAbort = null;
+  }
+
+  /** Retry after a failed spawn. Tears down whatever half-state the
+   *  failed attempt left behind (ws, startup guard, error text) and
+   *  re-enters the spawn flow from scratch. The xterm instance itself
+   *  stays — it's just a renderer; clearing it gives the user a clean
+   *  buffer rather than the previous attempt's garbage scrollback. */
+  function retry() {
+    if (phase !== "error") return;
+    clearStartupGuard();
+    if (ws) {
+      try { ws.close(1000, "retry"); } catch {}
+      ws = null;
+    }
+    error = "";
+    exitInfo = null;
+    terminalId = "";
+    xterm?.clear();
+    phase = "starting";
+    void spawnPtyAndConnect();
   }
 
   async function spawnPtyAndConnect() {
@@ -321,6 +375,7 @@
       clearInterval(workingTicker);
       workingTicker = null;
     }
+    if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
@@ -403,14 +458,24 @@
   }
 </script>
 
-<div class="terminal-wrap" class:focused>
+<div
+  class="terminal-wrap"
+  class:focused
+  on:mouseenter={onTuiWrapEnter}
+  on:mouseleave={onTuiWrapLeave}
+  on:wheel|capture={onTuiWrapWheel}
+  role="presentation"
+>
   {#if phase === "starting"}
     <div class="overlay">
       <span class="spinner" aria-hidden="true"></span> starting terminal…
     </div>
   {/if}
   {#if phase === "error"}
-    <div class="overlay error">{error || "terminal error"}</div>
+    <div class="overlay error">
+      <span class="error-msg">{error || "terminal error"}</span>
+      <button type="button" class="retry-btn" on:click={retry}>Retry</button>
+    </div>
   {/if}
 
   <div
@@ -444,6 +509,11 @@
     overflow: hidden;
     border: 1px solid var(--surface-2);
     transition: border-color 120ms ease, box-shadow 120ms ease;
+    /* Once the user is intentionally scrolling the TUI's scrollback,
+       hitting top/bottom shouldn't chain back into the page. Pairs
+       with the cursor-settle wheel handler that ignores incidental
+       hover-through during a page-scroll session. */
+    overscroll-behavior: contain;
   }
   .terminal-wrap.focused {
     border-color: var(--brand);
@@ -477,6 +547,34 @@
     color: var(--error-text);
     border-radius: var(--radius-sm);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    flex-direction: column;
+    align-items: center;
+    gap: 0.55rem;
+    max-width: min(90%, 32rem);
+    text-align: center;
+    padding: 0.55rem 0.9rem 0.6rem;
+  }
+  .error-msg {
+    line-height: 1.35;
+  }
+  .retry-btn {
+    appearance: none;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+    padding: 0.2rem 0.75rem;
+    border-radius: var(--radius-sm);
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .retry-btn:hover {
+    background: color-mix(in srgb, currentColor 22%, transparent);
+    border-color: color-mix(in srgb, currentColor 65%, transparent);
+  }
+  .retry-btn:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
   }
   .spinner {
     display: inline-block;

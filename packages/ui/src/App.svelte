@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { ExpandedStore } from "./storage";
+  import { DismissedSessionsStore, ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
@@ -530,6 +530,11 @@
 
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
+  /** Per worktree: is the badge's "active TUIs" popover open? Distinct
+   *  from `agentsPopoverOpen` (the count-chip picker over every known
+   *  session) — this one lists only sessions currently mounted as
+   *  columns, used as a fast jumper when several TUIs are live. */
+  let activeTuisPopoverOpen: Record<string, boolean> = {};
   // Per worktree: inline session-strip search. `open` controls whether
   // the search input is expanded next to the count badge; `query` is
   // the current text. Closed + empty query = strip renders unfiltered.
@@ -1509,6 +1514,30 @@
       : ({ getItem: () => null, setItem: () => {} }),
     "supergit:commitsExpanded",
   );
+  const dismissedSessionsStore = new DismissedSessionsStore(
+    typeof window !== "undefined"
+      ? window.localStorage
+      : ({ getItem: () => null, setItem: () => {} }),
+    "supergit:dismissedSessions",
+  );
+  /** Sources the user has dismissed from session pickers. Mutated via
+   *  `dismissSession` / `restoreSession` — both reassign a new Set so
+   *  Svelte triggers reactivity and the persisted JSON stays in sync. */
+  let dismissedSessions: Set<string> = dismissedSessionsStore.load();
+  function dismissSession(source: string): void {
+    if (dismissedSessions.has(source)) return;
+    const next = new Set(dismissedSessions);
+    next.add(source);
+    dismissedSessions = next;
+    dismissedSessionsStore.save(next);
+  }
+  function restoreSession(source: string): void {
+    if (!dismissedSessions.has(source)) return;
+    const next = new Set(dismissedSessions);
+    next.delete(source);
+    dismissedSessions = next;
+    dismissedSessionsStore.save(next);
+  }
   const openSessionsPersistence = new OpenSessionsStore(
     typeof window !== "undefined"
       ? window.localStorage
@@ -2677,6 +2706,30 @@
     return m;
   })();
 
+  /** Currently-active TUIs per worktree: the subset of
+   *  `pickerSessionsByWt` whose source is mounted as a column AND not
+   *  a `__transcript__:` read-only view (which has no live PTY).
+   *  Drives the agent-badge → "jump to TUI" popover so the user can
+   *  hop between multiple running TUIs from a single click. */
+  $: activeTuisByWt = ((): Record<string, AgentSession[]> => {
+    const m: Record<string, AgentSession[]> = {};
+    for (const wtPath of Object.keys(pickerSessionsByWt)) {
+      const openSources = new Set(
+        (openSessionsByWt[wtPath] ?? [])
+          .filter((o) => !o.source.startsWith("__transcript__:"))
+          .map((o) => o.source),
+      );
+      if (openSources.size === 0) {
+        m[wtPath] = [];
+        continue;
+      }
+      m[wtPath] = (pickerSessionsByWt[wtPath] ?? []).filter((s) =>
+        openSources.has(s.source),
+      );
+    }
+    return m;
+  })();
+
   /** Side-dock entries: one per currently-open session column that
    *  hosts a live PTY (an "active TUI"), with the colors / metadata
    *  SessionDock needs to render the dot + its hover tooltip. Pulls
@@ -2852,6 +2905,14 @@
       const anchor = target?.closest(`[data-agents-anchor="${key}"]`);
       if (!anchor) {
         agentsPopoverOpen = { ...agentsPopoverOpen, [key]: false };
+      }
+    }
+    // Same dance for the badge's active-TUIs jump popover.
+    for (const key of Object.keys(activeTuisPopoverOpen)) {
+      if (!activeTuisPopoverOpen[key]) continue;
+      const anchor = target?.closest(`[data-active-tuis-anchor="${key}"]`);
+      if (!anchor) {
+        activeTuisPopoverOpen = { ...activeTuisPopoverOpen, [key]: false };
       }
     }
   }
@@ -3647,10 +3708,12 @@
               {#if wt}
                 {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
                 {@const pickerSessions = pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
+                {@const activeTuis = activeTuisByWt[wt.path] ?? []}
                 <span
                   class="agent-wrap"
                   style={repo.color ? `--repo-bg: ${repo.color}` : ""}
                   data-agents-anchor={wt.path}
+                  data-active-tuis-anchor={wt.path}
                   data-new-agent-anchor={wt.path}
                 >
                   <button
@@ -3720,21 +3783,71 @@
                   <button
                     class="agent-badge agent-{a.agent}"
                     class:active={isOpenInWt(wt.path, a.source)}
-                    title={`${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
-                    on:click={() =>
+                    title={activeTuis.length > 1
+                      ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
+                      : `${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
+                    on:click|stopPropagation={() => {
+                      // With several live TUIs, the badge becomes a
+                      // jumper popover — listing only sessions whose
+                      // PTY is mounted right now — so the user can hop
+                      // between them in one click instead of cycling
+                      // via revealSession. With ≤1 active TUI the
+                      // popover would be empty/redundant, so fall
+                      // through to the classic reveal behavior.
+                      if (activeTuis.length > 1) {
+                        // Mutually exclusive with the count-chip's
+                        // "all sessions" popover — only one of the two
+                        // row-head popovers should be open at a time.
+                        agentsPopoverOpen = {
+                          ...agentsPopoverOpen,
+                          [wt.path]: false,
+                        };
+                        activeTuisPopoverOpen = {
+                          ...activeTuisPopoverOpen,
+                          [wt.path]: !activeTuisPopoverOpen[wt.path],
+                        };
+                        return;
+                      }
                       revealSession(row.key, wt.path, {
                         agent: a.agent,
                         source: a.source,
-                      })}
+                      });
+                    }}
                   >
-                    <span class="agent-dot"></span>
                     {#if a.manualTitle}
                       <span class="agent-manual-title">{a.manualTitle}</span>
-                      <span class="muted small">· {relTime(a.lastActive)}</span>
+                      <span class="muted small">{relTime(a.lastActive)}</span>
                     {:else}
-                      {a.agent} · {relTime(a.lastActive)}
+                      {a.agent} {relTime(a.lastActive)}
                     {/if}
                   </button>
+                  {#if activeTuisPopoverOpen[wt.path] && activeTuis.length > 1}
+                    <SessionSearchList
+                      sessions={activeTuis}
+                      headText={`${activeTuis.length} active TUIs in this worktree`}
+                      dismissedSources={dismissedSessions}
+                      isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                      tooltipFor={(s) => sessionTooltip(s)}
+                      on:pick={(e) => {
+                        activeTuisPopoverOpen = {
+                          ...activeTuisPopoverOpen,
+                          [wt.path]: false,
+                        };
+                        revealSession(row.key, wt.path, {
+                          agent: e.detail.agent,
+                          source: e.detail.source,
+                        });
+                      }}
+                      on:close={(e) => {
+                        toggleOpenSessionInWt(wt.path, {
+                          agent: e.detail.agent,
+                          source: e.detail.source,
+                        });
+                      }}
+                      on:dismiss={(e) => dismissSession(e.detail.source)}
+                      on:restore={(e) => restoreSession(e.detail.source)}
+                    />
+                  {/if}
                   {/if}
                   {#if a && pickerSessions.length > 1}
                     <button
@@ -3742,6 +3855,13 @@
                       class:has-search={stripSearchOpen[wt.path]}
                       title={`Pick from ${pickerSessions.length} sessions in this worktree`}
                       on:click|stopPropagation={() => {
+                        // Mutually exclusive with the agent-badge's
+                        // active-TUIs jumper — only one of the two
+                        // row-head popovers should be open at a time.
+                        activeTuisPopoverOpen = {
+                          ...activeTuisPopoverOpen,
+                          [wt.path]: false,
+                        };
                         agentsPopoverOpen = {
                           ...agentsPopoverOpen,
                           [wt.path]: !agentsPopoverOpen[wt.path],
@@ -3804,6 +3924,7 @@
                       <SessionSearchList
                         sessions={pickerSessions}
                         headText={`${pickerSessions.length} sessions in this worktree`}
+                        dismissedSources={dismissedSessions}
                         isOpen={(s) => isOpenInWt(wt.path, s.source)}
                         tooltipFor={(s) => sessionTooltip(s)}
                         on:pick={(e) => {
@@ -3829,6 +3950,8 @@
                             source: e.detail.source,
                           });
                         }}
+                        on:dismiss={(e) => dismissSession(e.detail.source)}
+                        on:restore={(e) => restoreSession(e.detail.source)}
                       />
                     {/if}
                   {/if}
