@@ -80,13 +80,28 @@
     nowTimer = setInterval(() => {
       nowTick = Date.now();
     }, 60_000);
+    window.addEventListener("resize", clampPreviewTop);
   });
   onDestroy(() => {
     if (nowTimer) {
       clearInterval(nowTimer);
       nowTimer = null;
     }
+    window.removeEventListener("resize", clampPreviewTop);
+    previewResizeObs?.disconnect();
+    previewResizeObs = null;
   });
+  // Whenever the preview node mounts/unmounts, attach a
+  // ResizeObserver so content growth (poll-driven new messages,
+  // long bursts that expand on hover) triggers a re-clamp.
+  $: if (previewEl) {
+    previewResizeObs?.disconnect();
+    previewResizeObs = new ResizeObserver(() => clampPreviewTop());
+    previewResizeObs.observe(previewEl);
+  } else if (previewResizeObs) {
+    previewResizeObs.disconnect();
+    previewResizeObs = null;
+  }
 
   function isPulsing(e: DockEntry, now: number): boolean {
     if (e.exited) return false;
@@ -212,6 +227,46 @@
    *  regardless of label widths, which the user explicitly wanted. */
   let hoveredEntry: DockEntry | null = null;
   let hoveredTop = 0;
+  /** Bound to the `.session-dock` root and the `.dock-preview` aside
+   *  so we can clamp the preview's vertical position to the viewport
+   *  — without it, hovering a row near the bottom of the screen lets
+   *  the preview spill off the visible area. */
+  let dockEl: HTMLElement | null = null;
+  let previewEl: HTMLElement | null = null;
+  let previewResizeObs: ResizeObserver | null = null;
+  /** Viewport edge padding for the clamp. */
+  const PREVIEW_VIEWPORT_INSET = 8;
+  /** Re-clamp `hoveredTop` so the preview's full height stays in the
+   *  viewport. Runs on hover change, preview content resize, and
+   *  window resize. */
+  function clampPreviewTop(): void {
+    if (!previewEl || !dockEl) return;
+    const h = previewEl.offsetHeight;
+    if (h <= 0) return;
+    const dockRect = dockEl.getBoundingClientRect();
+    // Target viewport-y for the preview's centre is the hovered
+    // button's centre in dock-local coords, projected through the
+    // dock's current viewport top.
+    const desiredCenterVp = dockRect.top + hoveredTop;
+    const minCenterVp = PREVIEW_VIEWPORT_INSET + h / 2;
+    const maxCenterVp = window.innerHeight - PREVIEW_VIEWPORT_INSET - h / 2;
+    // If the preview is taller than the viewport, anchor to the top
+    // instead of trying to centre — at least the user sees the head.
+    let clampedCenterVp: number;
+    if (minCenterVp > maxCenterVp) {
+      clampedCenterVp = PREVIEW_VIEWPORT_INSET + h / 2;
+    } else {
+      clampedCenterVp = Math.max(minCenterVp, Math.min(maxCenterVp, desiredCenterVp));
+    }
+    const clampedTop = clampedCenterVp - dockRect.top;
+    if (Math.abs(clampedTop - hoveredTop) > 0.5) hoveredTop = clampedTop;
+  }
+  $: if (hoveredEntry && previewEl && dockEl) {
+    // After layout settles (next frame), measure + clamp. The
+    // dependency on hoveredEntry re-fires the clamp whenever the
+    // user moves to a different row.
+    void Promise.resolve().then(() => requestAnimationFrame(clampPreviewTop));
+  }
   /** Driven by JS instead of plain :hover/:focus-within so the
    *  whole dock — labels AND chat preview — can stay visible for a
    *  grace period after the cursor leaves. */
@@ -368,6 +423,7 @@
 
 {#if entries.length > 0}
   <div
+    bind:this={dockEl}
     class="session-dock"
     class:collapsed={collapseAfterClick}
     class:show-labels={showLabels}
@@ -421,6 +477,7 @@
     {/each}
     {#if hoveredEntry?.transcriptSource}
       <aside
+        bind:this={previewEl}
         class="dock-preview"
         style:top="{hoveredTop}px"
         aria-hidden="true"

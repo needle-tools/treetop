@@ -51,6 +51,22 @@ export type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
  *  ones collapse into the "+N messages" gap pill. */
 export const PREVIEW_MAX_ASSISTANTS = 3;
 
+/** Consecutive user messages sent within this many ms of each other
+ *  are collapsed into a single newline-joined preview bubble. Catches
+ *  rapid-fire "5 quick prompts" sequences so the bubble shows the
+ *  full thread of intent, not just the last fragment. */
+const USER_BURST_GAP_MS = 30_000;
+
+/** Hard cap on the merged-burst text rendered in a single user
+ *  preview bubble. The bubble is a glance, not a full transcript —
+ *  beyond this the reader should be opening the column. */
+const USER_BURST_CHAR_CAP = 300;
+
+function clampUserBurst(text: string): string {
+  if (text.length <= USER_BURST_CHAR_CAP) return text;
+  return text.slice(0, USER_BURST_CHAR_CAP - 1) + "…";
+}
+
 /** Placeholder used when the latest assistant message has neither
  *  text nor a tool_use block yet (mid-stream). Guarantees the user
  *  always sees a row for the latest AI turn. */
@@ -263,10 +279,43 @@ export function buildPreviewItems(
   const lastAssistants = items
     .filter((x) => x.role === "assistant")
     .slice(-PREVIEW_MAX_ASSISTANTS);
-  const lastUser = items.filter((x) => x.role === "user").slice(-1);
+  // Most recent user-side burst: walk back from the latest user
+  // message and keep collecting consecutive earlier user messages
+  // (no assistant in between) whose timestamps are within
+  // USER_BURST_GAP_MS of the next-kept one. The burst is rendered
+  // as a single merged bubble; the individual messages remain in
+  // `includedIdxs` so they don't get counted as skipped in the
+  // "+N messages" gap pill math.
+  let latestUserItemsIdx = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.role === "user") {
+      latestUserItemsIdx = i;
+      break;
+    }
+  }
+  const burstUsers: Indexed[] = [];
+  if (latestUserItemsIdx >= 0) {
+    let prevTs: number | null = null;
+    for (let i = latestUserItemsIdx; i >= 0; i--) {
+      const u = items[i]!;
+      if (u.role !== "user") break;
+      const tsRaw = u.timestamp ? Date.parse(u.timestamp) : NaN;
+      const ts = Number.isNaN(tsRaw) ? null : tsRaw;
+      if (burstUsers.length > 0 && prevTs !== null && ts !== null) {
+        if (prevTs - ts > USER_BURST_GAP_MS) break;
+      }
+      burstUsers.unshift(u);
+      if (ts !== null) prevTs = ts;
+    }
+  }
+  const burstIdxs = new Set<number>(burstUsers.map((u) => u.idx));
+  const burstAnchor = burstUsers[burstUsers.length - 1];
+  const burstMergedText = clampUserBurst(
+    burstUsers.map((u) => u.text).join("\n"),
+  );
   const includedIdxs = new Set<number>([
     ...lastAssistants.map((x) => x.idx),
-    ...lastUser.map((x) => x.idx),
+    ...burstIdxs,
   ]);
   // Guarantee: always include the most recent assistant message
   // that actually contains text (not just tool_use blocks). Tool
@@ -289,6 +338,7 @@ export function buildPreviewItems(
     ? lastAssistants[lastAssistants.length - 1]!.idx
     : -1;
 
+  let burstEmitted = false;
   for (let i = 0; i < included.length; i++) {
     if (i > 0) {
       const prev = included[i - 1]!;
@@ -303,6 +353,20 @@ export function buildPreviewItems(
     const it = included[i]!;
     const fullMessage = all[it.idx]!;
     if (it.role === "user") {
+      // All burst user messages are in `included`; emit one merged
+      // bubble at the first occurrence and silently skip the rest so
+      // they don't render as duplicates.
+      if (burstIdxs.has(it.idx)) {
+        if (burstEmitted) continue;
+        out.push({
+          kind: "msg",
+          role: "user",
+          text: burstMergedText,
+          timestamp: burstAnchor?.timestamp,
+        });
+        burstEmitted = true;
+        continue;
+      }
       out.push({
         kind: "msg",
         role: "user",

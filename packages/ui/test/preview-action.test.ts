@@ -269,10 +269,11 @@ describe("buildPreviewItems", () => {
     expect((items[4] as { text: string }).text).toBe("r5");
   });
 
-  test("only the LATEST user turn is shown; earlier user turns drop silently", () => {
-    // Older user turns that fall outside the displayed window are
-    // hidden without a gap pill (gap pills only mark messages
-    // skipped BETWEEN two visible items, not before/after them).
+  test("consecutive user turns merge into one bubble when no timestamps gate them", () => {
+    // Without timestamps the gap check is a no-op, so a rapid-fire
+    // sequence of user messages collapses into a single burst bubble
+    // (newline-joined in chronological order). No gap pill — every
+    // user message is "included" for gap-math purposes.
     const items = buildPreviewItems([
       userMsg("q1"),
       userMsg("q2"),
@@ -283,11 +284,66 @@ describe("buildPreviewItems", () => {
       (it) => it.kind === "msg" && it.role === "user",
     );
     expect(userBubbles).toHaveLength(1);
-    expect((userBubbles[0] as { text: string }).text).toBe("q3");
-    // No gap: q3 (idx 2) and r1 (idx 3) are adjacent, and q1/q2
-    // sit before the visible window — outside the algorithm's
-    // inter-item span.
+    expect((userBubbles[0] as { text: string }).text).toBe("q1\nq2\nq3");
     expect(items.filter((it) => it.kind === "gap")).toEqual([]);
+  });
+
+  test("user messages within 30s of each other merge into one burst bubble", () => {
+    const base = new Date("2026-01-01T12:00:00Z").getTime();
+    const at = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+    const items = buildPreviewItems([
+      userMsg("q1", { timestamp: at(0) }),
+      userMsg("q2", { timestamp: at(10_000) }), // +10s
+      userMsg("q3", { timestamp: at(25_000) }), // +25s
+      aiText("r1", { timestamp: at(40_000) }),
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("q1\nq2\nq3");
+  });
+
+  test("gap > 30s breaks the burst — only the post-gap user message survives", () => {
+    const base = new Date("2026-01-01T12:00:00Z").getTime();
+    const at = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+    const items = buildPreviewItems([
+      userMsg("old1", { timestamp: at(0) }),
+      userMsg("old2", { timestamp: at(5_000) }),
+      // Big pause — anything beyond 30s breaks the burst.
+      userMsg("fresh", { timestamp: at(120_000) }),
+      aiText("r1", { timestamp: at(125_000) }),
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("fresh");
+  });
+
+  test("merged burst is clamped to ~300 chars with an ellipsis", () => {
+    const long = "a".repeat(400);
+    const items = buildPreviewItems([userMsg(long), userMsg("tail")]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    const text = (userBubbles[0] as { text: string }).text;
+    expect(text.length).toBe(300);
+    expect(text.endsWith("…")).toBe(true);
+  });
+
+  test("assistant between user turns breaks the burst — only post-assistant user is kept", () => {
+    const items = buildPreviewItems([
+      userMsg("first ask"),
+      aiText("answer"),
+      userMsg("followup"),
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("followup");
   });
 
   test("assistant with mixed text + tool_use → bubbles and chips render inline in source order", () => {
