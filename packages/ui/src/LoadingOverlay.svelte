@@ -28,11 +28,14 @@
     transform: translate(-50%, calc(-50% - 1lh));
     z-index: 2;
     color: var(--text-1);
-    padding: 0.3rem 0.7rem;
     font-size: 0.75rem;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
   }
   .loading-overlay-spinner {
     display: inline-block;

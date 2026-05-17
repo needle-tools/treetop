@@ -55,36 +55,12 @@ main {
   justify-content: center;
   min-height: 60vh;
 }
-.loading-overlay {
+.loading-inline {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  background: var(--surface-2);
   color: var(--text-1);
-  padding: 0.4rem 0.85rem;
-  border-radius: var(--radius-sm);
   font-size: 0.8rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-}
-/* The initial app-wide "loading repos…" state sits on the empty page
- * background; the pill chrome (surface-2 + shadow) reads as
- * unnecessary visual weight against a blank canvas. Strip both so it's
- * just the spinner + text. The TUI / SessionView usages keep the pill
- * because they sit on top of busy content. */
-.loading-screen .loading-overlay {
-  background: transparent;
-  box-shadow: none;
-}
-.loading-overlay .spinner {
-  width: 0.85rem;
-  height: 0.85rem;
-  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: app-spin 0.6s linear infinite;
-}
-@keyframes app-spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Form-element baselines. Everything else (e.g. `button.tiny`,
