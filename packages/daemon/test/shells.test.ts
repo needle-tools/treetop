@@ -339,4 +339,42 @@ describe("ShellsLog", () => {
       expect(t!.cmds).toEqual([]);
     });
   });
+
+  describe("getCarryOverCmdLines (HISTFILE seeding source)", () => {
+    test("returns only cmd line strings in order", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header", termId: "t-a", wt: "/w", spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await log.append("t-a", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
+      await log.append("t-a", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+      await log.append("t-a", { kind: "exit", ts: "t3", code: 0 });
+      expect(await log.getCarryOverCmdLines("t-a")).toEqual(["ls", "pwd"]);
+    });
+
+    test("missing file returns []", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      expect(await log.getCarryOverCmdLines("nope")).toEqual([]);
+    });
+
+    test("traverses a resume chain so the seed reflects every prior session", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header", termId: "A", wt: "/w", spawnCwd: "/w",
+        createdAt: "2026-05-13T00:00:00Z",
+      });
+      await log.append("A", { kind: "cmd", ts: "a1", line: "echo A", cwd: "/w" });
+      await log.writeHeader(
+        { kind: "header", termId: "B", wt: "/w", spawnCwd: "/w", createdAt: "x" },
+        "A",
+      );
+      await log.append("B", { kind: "cmd", ts: "b1", line: "echo B", cwd: "/w" });
+      // Seeding C from B should yield A's + B's commands.
+      expect(await log.getCarryOverCmdLines("B")).toEqual(["echo A", "echo B"]);
+    });
+  });
 });

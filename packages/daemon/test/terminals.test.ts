@@ -162,20 +162,25 @@ describe("NodePtyBackend integration", () => {
   );
 
   // End-to-end check: when we spawn a zsh shell, the injected ZDOTDIR
-  // makes `setopt INC_APPEND_HISTORY SHARE_HISTORY` active. Skipped
+  // pins HISTFILE to "$ZDOTDIR/.histfile" (per-column scope) and
+  // enables INC_APPEND_HISTORY so each Enter flushes immediately.
+  // SHARE_HISTORY is deliberately OFF — supergit columns are isolated
+  // from each other AND from the user's global ~/.zsh_history. Skipped
   // on machines without zsh (CI's Ubuntu image, primarily).
   const zshBin = Bun.which("zsh");
   test.skipIf(!zshBin)(
-    "zsh shell gets INC_APPEND_HISTORY + SHARE_HISTORY active via injected ZDOTDIR",
+    "zsh shell gets INC_APPEND_HISTORY active + HISTFILE pinned per-column via ZDOTDIR",
     async () => {
       const handle = await backend.spawn({
         // -i forces an interactive shell so ZDOTDIR's .zshrc is sourced.
-        // `setopt` with no args prints only the *enabled* options;
-        // each is on its own line in lowercase with no underscores.
-        // We run setopt, then exit, then assert the output contains
-        // both flags. Using `setopt` (not `setopt | grep`) keeps the
-        // command portable and avoids pipe-completion races.
-        cmd: ["zsh", "-i", "-c", "setopt; exit"],
+        // Combine setopt (lists enabled opts, lowercase no underscores)
+        // with `print -- $HISTFILE` so we can assert the path is inside
+        // the per-PTY ZDOTDIR (the marker `supergit-zsh-` is in our
+        // mkdtemp prefix).
+        cmd: [
+          "zsh", "-i", "-c",
+          'echo "::HISTFILE::${HISTFILE}::"; setopt; exit',
+        ],
         cwd: "/tmp",
         size: { cols: 80, rows: 24 },
       });
@@ -191,7 +196,10 @@ describe("NodePtyBackend integration", () => {
       // zsh's `setopt` lists active options lowercase, no underscores:
       // INC_APPEND_HISTORY → "incappendhistory"
       expect(combined.toLowerCase()).toContain("incappendhistory");
-      expect(combined.toLowerCase()).toContain("sharehistory");
+      // SHARE_HISTORY is explicitly unsetopt'd by the snippet.
+      expect(combined.toLowerCase()).not.toContain("sharehistory");
+      // HISTFILE lives inside the per-PTY temp ZDOTDIR.
+      expect(combined).toMatch(/::HISTFILE::.*supergit-zsh-[^/]+\/\.histfile::/);
     },
     15_000,
   );
@@ -252,77 +260,69 @@ describe("NodePtyBackend integration", () => {
     15_000,
   );
 
-  // Resume invariant: when the user closes a Terminal column and then
-  // re-opens one in the same worktree, the new zsh PTY must see every
-  // command the previous PTYs typed via arrow-up history. This is the
-  // "history is always additive, never lost" contract — a regression
-  // in the snippet (e.g. accidentally enabling HIST_NO_STORE or
-  // disabling INC_APPEND_HISTORY) would silently drop commands and
-  // the user would only notice when they reach for arrow-up.
-  //
-  // We can't easily drive keystrokes through the PTY with reliable
-  // timing in a test, so we use zsh's `print -s "<line>"` (adds to
-  // the in-memory history list) + `fc -A` (appends new entries to
-  // HISTFILE) — same effect on the histfile as an interactive Enter,
-  // without depending on the line editor.
+  // Resume invariant: the historyPreload lines reach the spawned zsh's
+  // in-memory history buffer (so arrow-up surfaces them), AND the
+  // user's global ~/.zsh_history is never touched (per-column scope).
+  // This replaces an earlier test that asserted commands persisted into
+  // $HOME/.zsh_history — that's the OPPOSITE of what we want now.
   test.skipIf(!zshBin)(
-    "zsh history persists additively across multiple PTY spawns (resume invariant)",
+    "historyPreload reaches zsh's in-memory history; global ~/.zsh_history is NOT polluted",
     async () => {
       const fakeHome = await mkdtemp(join(tmpdir(), "supergit-fakehome-hist-"));
       try {
-        // Empty .zshrc so the snippet's defaults apply (no user
-        // override of HISTFILE / HISTSIZE / SAVEHIST). With an empty
-        // file the snippet's `[[ -z "${HISTFILE-}" ]]` guard kicks
-        // in and points HISTFILE at $HOME/.zsh_history.
         await writeFile(join(fakeHome, ".zshrc"), "", "utf-8");
 
-        // CRITICAL: we deliberately do NOT pass HISTFILE in env. The
-        // bug this test guards against is /etc/zshrc on macOS doing
-        // `HISTFILE=\${ZDOTDIR:-$HOME}/.zsh_history` — i.e. pointing
-        // HISTFILE inside the temp ZDOTDIR that supergit deletes on
-        // PTY exit. The snippet must detect that and redirect HISTFILE
-        // back to $HOME/.zsh_history, which is what we want to assert.
-        const histPath = join(fakeHome, ".zsh_history");
-        const runHistCmd = async (line: string) => {
-          const handle = await backend.spawn({
-            // -i so .zshrc + the supergit snippet are sourced. We
-            // use `print -s` to push a line into the in-memory
-            // history list and `fc -W` to write the full history
-            // to HISTFILE; in production, INC_APPEND_HISTORY does
-            // the equivalent on every Enter at the prompt.
-            // `fc -A` appends only the new entries in this shell's
-            // in-memory history to HISTFILE — it does NOT overwrite
-            // the file with the current in-memory list, so prior
-            // PTYs' entries stay put. In production this happens
-            // automatically on every Enter via INC_APPEND_HISTORY.
-            cmd: ["zsh", "-i", "-c", `print -s '${line}'; fc -A; exit`],
-            cwd: "/tmp",
-            size: { cols: 80, rows: 24 },
-            env: { HOME: fakeHome },
+        const handle = await backend.spawn({
+          // -i so the supergit snippet runs. `fc -l 1` lists every
+          // entry in the in-memory history buffer; we then mark the
+          // boundary so substring assertions can't pick up the
+          // command literal itself.
+          cmd: [
+            "zsh",
+            "-i",
+            "-c",
+            'echo "::HIST::START::"; fc -l 1; echo "::HIST::END::"; print -s freshly_typed; fc -A; exit',
+          ],
+          cwd: "/tmp",
+          size: { cols: 80, rows: 24 },
+          env: { HOME: fakeHome },
+          historyPreload: ["echo from_prev_session", "ls -la"],
+        });
+        const out: string[] = [];
+        await new Promise<void>((resolve) => {
+          handle.subscribe({
+            onData(c) { out.push(new TextDecoder().decode(c)); },
+            onExit() { resolve(); },
           });
-          await new Promise<void>((resolve) => {
-            handle.subscribe({ onData() {}, onExit() { resolve(); } });
-          });
-        };
+        });
+        const combined = out.join("");
 
-        // Three "open → type → close" cycles. The 2nd/3rd are the
-        // user's "second resume" — the case that prompted this test.
-        await runHistCmd("echo first");
-        await runHistCmd("echo second");
-        await runHistCmd("echo third");
+        // Both seeded lines must show up between the START/END markers.
+        const histSection = combined
+          .split("::HIST::START::")[1]
+          ?.split("::HIST::END::")[0] ?? "";
+        expect(histSection).toContain("echo from_prev_session");
+        expect(histSection).toContain("ls -la");
 
-        const hist = await readFile(histPath, "utf-8");
-        // Each command must still be present after subsequent resumes.
-        // Tolerate EXTENDED_HISTORY's ": <ts>:0;<cmd>" prefix by using
-        // substring matches rather than line equality.
-        expect(hist).toContain("echo first");
-        expect(hist).toContain("echo second");
-        expect(hist).toContain("echo third");
+        // The user's GLOBAL ~/.zsh_history must remain untouched —
+        // per-column scope is the whole point of the redesign.
+        const globalHist = join(fakeHome, ".zsh_history");
+        let globalExists = true;
+        try {
+          await readFile(globalHist, "utf-8");
+        } catch {
+          globalExists = false;
+        }
+        if (globalExists) {
+          const globalContent = await readFile(globalHist, "utf-8");
+          expect(globalContent).not.toContain("freshly_typed");
+          expect(globalContent).not.toContain("from_prev_session");
+        }
       } finally {
         await rm(fakeHome, { recursive: true, force: true });
       }
     },
-    30_000,
+    15_000,
   );
 
   // Regression for the worst bug in this saga: every shell PTY

@@ -144,6 +144,14 @@ export class ShellsLog {
     await appendFile(target, JSON.stringify(header) + "\n");
   }
 
+  /** Return only the `cmd` lines from a prior shell's JSONL, in order.
+   *  Used to seed the new column's per-shell HISTFILE on Resume so
+   *  zsh arrow-up shows the prior session's commands. */
+  async getCarryOverCmdLines(prevTermId: string): Promise<string[]> {
+    const entries = await this.collectCarryOver(prevTermId);
+    return entries.filter((e): e is ShellCmdEntry => e.kind === "cmd").map((e) => e.line);
+  }
+
   /** Read prior file and return entries worth carrying forward on a
    *  resume: only `cmd` lines and prior `resume` separators (so the
    *  ordered chain across N resumes stays intact). Headers and exits

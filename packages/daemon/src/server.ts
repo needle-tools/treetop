@@ -896,6 +896,14 @@ const server = Bun.serve<TermWsData, never>({
         effectiveProcName && process.platform !== "win32"
           ? renameArgv(effectiveProcName, resolvedCmd)
           : resolvedCmd;
+      // For a shell Resume, fetch the prior column's cmd lines so the
+      // spawned zsh's per-column HISTFILE can be seeded — arrow-up
+      // inside the resumed shell then surfaces commands typed in this
+      // column's lineage, not the user's global ~/.zsh_history.
+      const historyPreload =
+        agentHint === "shell" && body.previousTermId
+          ? await shells.getCarryOverCmdLines(body.previousTermId).catch(() => [])
+          : undefined;
       try {
         const handle = await terminalBackend.spawn({
           cmd,
@@ -911,6 +919,7 @@ const server = Bun.serve<TermWsData, never>({
           // 2-wide. Floor of 20x5 is below any usable display but well
           // above the garbage-layout values.
           size: { cols: clampCols(body.cols), rows: clampRows(body.rows) },
+          historyPreload,
         });
         // For shell PTYs, persist a header into <workspace>/shells/<id>.jsonl
         // so the workspace (not the browser's localStorage) is the source

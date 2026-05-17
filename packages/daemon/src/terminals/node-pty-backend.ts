@@ -335,7 +335,7 @@ export class NodePtyBackend implements PtyBackend {
     // (sources user's rc + appends INC_APPEND_HISTORY/SHARE_HISTORY).
     // Toggle for A/B-ing whether our injection is to blame for input bugs.
     if (isZshCmd(opts.cmd) && process.env.SUPERGIT_DISABLE_ZSH_HARDENING !== "1") {
-      const zdotdir = await makeZshZdotdir();
+      const zdotdir = await makeZshZdotdir(opts.historyPreload ?? []);
       t.zdotdir = zdotdir;
       env = { ...(opts.env ?? {}), ZDOTDIR: zdotdir };
     }

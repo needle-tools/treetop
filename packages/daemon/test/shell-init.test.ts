@@ -113,43 +113,40 @@ describe("isZshCmd", () => {
 });
 
 describe("ZSH_HISTORY_SNIPPET", () => {
-  test("sets the three history options we care about", () => {
+  // The snippet pins HISTFILE inside ZDOTDIR so each supergit column
+  // gets its own per-PTY history. arrow-up then only surfaces commands
+  // typed in this column's lineage (seeded from the JSONL on Resume),
+  // never the user's global ~/.zsh_history. This was a deliberate
+  // behavior change — the earlier snippet did the opposite (redirected
+  // HISTFILE back to $HOME) because at the time we just wanted "arrow-up
+  // works at all"; users asked for per-column scope instead.
+  test("HISTFILE is pinned to a per-column file inside ZDOTDIR", () => {
+    expect(ZSH_HISTORY_SNIPPET).toContain('HISTFILE="${ZDOTDIR}/.histfile"');
+  });
+
+  test("does NOT enable SHARE_HISTORY — columns are deliberately isolated", () => {
+    expect(ZSH_HISTORY_SNIPPET).toContain("unsetopt SHARE_HISTORY");
+    // Belt-and-braces: also assert we never SET it earlier in the snippet.
+    // (?<![a-z]) avoids matching `unsetopt SHARE_HISTORY` further down.
+    expect(ZSH_HISTORY_SNIPPET).not.toMatch(/(?<![a-z])setopt[^\n]*SHARE_HISTORY/);
+  });
+
+  test("enables INC_APPEND_HISTORY + EXTENDED_HISTORY so every Enter flushes", () => {
     expect(ZSH_HISTORY_SNIPPET).toContain("INC_APPEND_HISTORY");
-    expect(ZSH_HISTORY_SNIPPET).toContain("SHARE_HISTORY");
     expect(ZSH_HISTORY_SNIPPET).toContain("EXTENDED_HISTORY");
   });
 
-  test("guards every default with a [[ -z ]] / = 0 check", () => {
-    // Each of HISTFILE/HISTSIZE/SAVEHIST must be set conditionally
-    // so we never clobber an explicit user preference.
-    for (const v of ["HISTFILE", "HISTSIZE", "SAVEHIST"]) {
-      const re = new RegExp(`\\[\\[[^\\]]*${v}[^\\]]*\\]\\]`);
-      expect(ZSH_HISTORY_SNIPPET).toMatch(re);
-    }
+  test("re-reads HISTFILE so the in-memory buffer reflects the seeded file", () => {
+    // /etc/zshrc loads $HOME/.zsh_history into the in-memory buffer
+    // BEFORE our snippet runs. Without an explicit `fc -R`, arrow-up
+    // would still surface those global commands instead of our seeded
+    // per-column ones.
+    expect(ZSH_HISTORY_SNIPPET).toContain('fc -R "${HISTFILE}"');
   });
 
-  // Regression guard for the "Terminal forgets history on second
-  // resume" bug. macOS /etc/zshrc unconditionally sets
-  //   HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
-  // and runs BEFORE our $ZDOTDIR/.zshrc. Because we set ZDOTDIR to
-  // a temp dir we wipe on PTY exit, HISTFILE ends up pointing at a
-  // file inside that temp dir → every "close terminal" deletes the
-  // session's history. The snippet must detect "HISTFILE lives
-  // inside the current ZDOTDIR" and redirect it back to
-  // $HOME/.zsh_history, otherwise history persistence silently
-  // breaks on macOS.
-  test("redirects HISTFILE back to $HOME when /etc/zshrc pointed it inside ZDOTDIR", () => {
-    expect(ZSH_HISTORY_SNIPPET).toContain('"${HISTFILE-}" == "${ZDOTDIR}/"*');
-    expect(ZSH_HISTORY_SNIPPET).toContain('HISTFILE="${HOME}/.zsh_history"');
-  });
-
-  test("uses zsh-safe parameter expansion (no unbound-var error under `setopt NO_UNSET`)", () => {
-    // `${HISTFILE-}` defaults to empty if unset; bare `$HISTFILE`
-    // would raise under NO_UNSET. We want the snippet to survive
-    // strict shells.
-    expect(ZSH_HISTORY_SNIPPET).toContain("${HISTFILE-}");
-    expect(ZSH_HISTORY_SNIPPET).toContain("${HISTSIZE-}");
-    expect(ZSH_HISTORY_SNIPPET).toContain("${SAVEHIST-}");
+  test("HISTSIZE / SAVEHIST set high enough to retain typical chain across N resumes", () => {
+    expect(ZSH_HISTORY_SNIPPET).toContain("HISTSIZE=10000");
+    expect(ZSH_HISTORY_SNIPPET).toContain("SAVEHIST=10000");
   });
 });
 
@@ -165,7 +162,7 @@ describe("makeZshZdotdir / cleanupZdotdir", () => {
       expect(rc).toContain('source "$HOME/.zshrc"');
       // …then layers our snippet on top.
       expect(rc).toContain("INC_APPEND_HISTORY");
-      expect(rc).toContain("SHARE_HISTORY");
+      expect(rc).toContain('HISTFILE="${ZDOTDIR}/.histfile"');
     } finally {
       await cleanupZdotdir(dir);
     }
@@ -238,5 +235,52 @@ describe("makeZshZdotdir / cleanupZdotdir", () => {
     } finally {
       await cleanupZdotdir(dir);
     }
+  });
+
+  describe("historyPreload (Resume seeding)", () => {
+    test("no preload → no .histfile is written (fresh shell starts empty)", async () => {
+      const dir = await makeZshZdotdir();
+      try {
+        expect(existsSync(join(dir, ".histfile"))).toBe(false);
+      } finally {
+        await cleanupZdotdir(dir);
+      }
+    });
+
+    test("with preload → .histfile contains one line per command, in order", async () => {
+      const dir = await makeZshZdotdir(["ls", "pwd", "echo hi"]);
+      try {
+        const path = join(dir, ".histfile");
+        expect(existsSync(path)).toBe(true);
+        const body = await readFile(path, "utf-8");
+        // Plain "<cmd>\n" — zsh tolerates plain entries in a file that
+        // EXTENDED_HISTORY then later appends to.
+        expect(body).toBe("ls\npwd\necho hi\n");
+      } finally {
+        await cleanupZdotdir(dir);
+      }
+    });
+
+    test("multi-line commands are flattened so each histfile entry stays single-line", async () => {
+      // zsh's histfile format is one entry per line. A carried-over cmd
+      // that somehow contains a literal newline would split into two
+      // entries on read; flatten to a space so the chain stays intact.
+      const dir = await makeZshZdotdir(["echo a\nb", "ls"]);
+      try {
+        const body = await readFile(join(dir, ".histfile"), "utf-8");
+        expect(body).toBe("echo a b\nls\n");
+      } finally {
+        await cleanupZdotdir(dir);
+      }
+    });
+
+    test("empty preload array → no .histfile written", async () => {
+      const dir = await makeZshZdotdir([]);
+      try {
+        expect(existsSync(join(dir, ".histfile"))).toBe(false);
+      } finally {
+        await cleanupZdotdir(dir);
+      }
+    });
   });
 });

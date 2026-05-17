@@ -42,6 +42,11 @@ export interface SpawnOptions {
   /** Optional override so callers can label the agent before any `bash -c`
    *  wrapping (which would otherwise make detectAgent see "bash"). */
   agent?: string;
+  /** Command lines to pre-seed the spawned zsh's HISTFILE with — one
+   *  per element. Only applied to zsh PTYs (where supergit creates a
+   *  per-column ZDOTDIR). Used by Resume to surface the prior column's
+   *  cmd transcript in arrow-up. */
+  historyPreload?: readonly string[];
 }
 
 export interface TerminalSubscriber {
