@@ -89,6 +89,18 @@ rl.on("line", (line) => {
         // supergit has its own history + transcript machinery; we
         // never want Apple's parallel session-restore on top.
         cleaned.SHELL_SESSIONS_DISABLE = "1";
+        // SHELL_SESSIONS_DISABLE alone is not enough. With TERM_PROGRAM
+        // and TERM_SESSION_ID still inherited from Terminal.app, anything
+        // in the user's rc that branches on `$TERM_PROGRAM == Apple_Terminal`
+        // (Apple's shell-integration in /etc/zshrc_Apple_Terminal, p10k's
+        // Terminal-specific bits, iTerm2 shell-integration scripts) still
+        // emits OSC sequences xterm.js doesn't fully implement -> zle redraws
+        // the input line in the wrong column and each keystroke looks like
+        // it clears the row. Delete both so the spawned shell starts with
+        // no terminal-emulator identity beyond TERM=xterm-256color.
+        delete cleaned.TERM_PROGRAM;
+        delete cleaned.TERM_PROGRAM_VERSION;
+        delete cleaned.TERM_SESSION_ID;
         const term = ptySpawn(cmd[0], cmd.slice(1), {
           name: "xterm-256color",
           cols: cols ?? 80,

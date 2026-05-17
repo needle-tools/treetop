@@ -331,7 +331,10 @@ export class NodePtyBackend implements PtyBackend {
     // command typed before the PTY is killed never reaches the
     // histfile. Cleaned up on PTY exit.
     let env: Record<string, string> | undefined = opts.env;
-    if (isZshCmd(opts.cmd)) {
+    // SUPERGIT_DISABLE_ZSH_HARDENING=1 bypasses our temp-ZDOTDIR wrapper
+    // (sources user's rc + appends INC_APPEND_HISTORY/SHARE_HISTORY).
+    // Toggle for A/B-ing whether our injection is to blame for input bugs.
+    if (isZshCmd(opts.cmd) && process.env.SUPERGIT_DISABLE_ZSH_HARDENING !== "1") {
       const zdotdir = await makeZshZdotdir();
       t.zdotdir = zdotdir;
       env = { ...(opts.env ?? {}), ZDOTDIR: zdotdir };

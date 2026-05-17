@@ -188,8 +188,14 @@
         // /api/shells). Skip the spawn POST and go straight to WS.
         id = attachTermId;
       } else {
-        const cols = xterm?.cols ?? 80;
-        const rows = xterm?.rows ?? 24;
+        // xterm.cols/rows can be near-zero when the container hasn't
+        // laid out yet (Svelte onMount races flex-parent settle). If we
+        // POST cols: 2 the PTY spawns 2-wide and zsh wraps the prompt
+        // onto itself — visible bug: "input clears the row" + dquote>.
+        // Floor to 80x24; the rAF re-fit in ws.onopen will send the
+        // real size before the user can type anything.
+        const cols = Math.max(xterm?.cols ?? 80, 80);
+        const rows = Math.max(xterm?.rows ?? 24, 24);
         const res = await fetch("/api/terminals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -123,6 +123,8 @@ function parseKind(v: unknown): AttachmentKind | undefined {
   return v === "note" || v === "link" ? v : undefined;
 }
 
+import { clampCols, clampRows } from "./term-clamp";
+
 /** Same posture for `target`. The whole object is dropped if any field
  *  is malformed; we don't half-accept (a note with a recognised type
  *  but an empty value would render as a broken chip in the UI). */
@@ -895,7 +897,15 @@ const server = Bun.serve<TermWsData, never>({
           cwd: body.cwd,
           ownerId: body.ownerId,
           agent: agentHint,
-          size: { cols: body.cols ?? 80, rows: body.rows ?? 24 },
+          // Clamp absurd dims to a sane floor. The frontend reads
+          // xterm.cols/rows in onMount; if the container hasn't laid out
+          // yet (clientWidth ≈ 0), the FitAddon proposes 2 cols and zsh
+          // wraps the prompt onto itself — visible bug: keystrokes
+          // overwrite the prompt, dquote> from lost quotes. A later rAF
+          // re-fit corrects the viewport but the PTY was already spawned
+          // 2-wide. Floor of 20x5 is below any usable display but well
+          // above the garbage-layout values.
+          size: { cols: clampCols(body.cols), rows: clampRows(body.rows) },
         });
         // For shell PTYs, persist a header into <workspace>/shells/<id>.jsonl
         // so the workspace (not the browser's localStorage) is the source
@@ -1975,8 +1985,8 @@ const server = Bun.serve<TermWsData, never>({
           const parsed = JSON.parse(msg);
           if (parsed?.type === "resize") {
             handle.resize({
-              cols: Number(parsed.cols) || 80,
-              rows: Number(parsed.rows) || 24,
+              cols: clampCols(Number(parsed.cols)),
+              rows: clampRows(Number(parsed.rows)),
             });
           }
         } catch {
