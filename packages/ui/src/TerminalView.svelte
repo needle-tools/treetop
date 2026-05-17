@@ -71,14 +71,33 @@
     }
   }
   /** Capture-phase wheel handler on `.terminal-wrap`. Capture fires
-   *  before xterm's listener on its internal viewport, so calling
-   *  `stopPropagation` here prevents xterm from receiving the
-   *  scroll. We forward the delta to the page instead. */
+   *  before xterm's listener on its internal viewport. We do three
+   *  things here, in order:
+   *
+   *   1. Horizontal-dominant wheel (trackpad swipe across the
+   *      sessions strip): always stopPropagation so xterm doesn't
+   *      preventDefault it and kill the strip's pan, but do NOT
+   *      preventDefault — the browser then handles the default
+   *      scroll on the strip's overflow-x: auto container. Skipping
+   *      stopPropagation here was breaking horizontal scroll because
+   *      xterm grabs every wheel and preventDefault's it internally.
+   *
+   *   2. If the cursor hasn't settled yet (< 300ms parked in the
+   *      TUI), treat the wheel as part of a page-scroll session:
+   *      preventDefault, stopPropagation, forward vertical delta to
+   *      the window.
+   *
+   *   3. Otherwise the user is intentionally in the TUI — let xterm
+   *      handle the scroll natively. */
   function onTuiWrapWheel(ev: WheelEvent): void {
+    if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {
+      ev.stopPropagation();
+      return;
+    }
     if (tuiCursorSettled) return;
     ev.preventDefault();
     ev.stopPropagation();
-    window.scrollBy({ top: ev.deltaY, left: ev.deltaX, behavior: "auto" });
+    window.scrollBy({ top: ev.deltaY, behavior: "auto" });
   }
   let fit: FitAddon | null = null;
   let ws: WebSocket | null = null;
@@ -509,11 +528,12 @@
     overflow: hidden;
     border: 1px solid var(--surface-2);
     transition: border-color 120ms ease, box-shadow 120ms ease;
-    /* Once the user is intentionally scrolling the TUI's scrollback,
-       hitting top/bottom shouldn't chain back into the page. Pairs
-       with the cursor-settle wheel handler that ignores incidental
-       hover-through during a page-scroll session. */
-    overscroll-behavior: contain;
+    /* Contain VERTICAL scroll chaining only — hitting top/bottom of
+       the TUI scrollback shouldn't bleed into the page. Horizontal
+       stays `auto` so a trackpad swipe over the TUI passes through
+       to the parent `.sessions-strip` and pans the row. (Order is
+       `<x> <y>` in the shorthand.) */
+    overscroll-behavior: auto contain;
   }
   .terminal-wrap.focused {
     border-color: var(--brand);

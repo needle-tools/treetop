@@ -229,10 +229,14 @@
   }
   function onMessagesWheel(ev: WheelEvent): void {
     if (msgCursorSettled) return;
+    // Horizontal-dominant wheels (trackpad swipes across the sessions
+    // strip) must pass through so the parent strip can pan — don't
+    // intercept those.
+    if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) return;
     // Cursor hasn't been parked long enough — treat this wheel tick
     // as still part of a page-scroll session and forward it.
     ev.preventDefault();
-    window.scrollBy({ top: ev.deltaY, left: ev.deltaX, behavior: "auto" });
+    window.scrollBy({ top: ev.deltaY, behavior: "auto" });
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -388,6 +392,7 @@
       {
         kind: "copy",
         label: "Copy session ID + path",
+        icon: "⧉",
         disabled: !sid,
         title: sid ? "Copy session id and file path to clipboard" : "No session id yet",
         getText: () => `${sid}\n${source}`,
@@ -395,6 +400,7 @@
       {
         kind: "action",
         label: "Save as link",
+        icon: "⤴",
         // Anchor is the current worktree — same data the saved-link
         // chip uses for its commit-provider / move-to picker. No
         // worktree → no anchor → disable.
@@ -1156,12 +1162,13 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    /* Stop the chat from chaining its scroll back into the page when
-       it reaches the top or bottom — once the user is intentionally
-       scrolling this column, the page stays put. (Accidental hijack
-       of *outbound* page scrolling is handled separately by the
-       300ms settle-debounce in the wheel handler.) */
-    overscroll-behavior: contain;
+    /* Contain VERTICAL scroll chaining only — once the user is
+       intentionally scrolling this column, hitting top/bottom won't
+       scroll the page. Horizontal stays `auto` so a trackpad swipe
+       over the chat still reaches the parent `.sessions-strip` and
+       pans the row of columns. (Order is `<x> <y>` in the
+       shorthand.) */
+    overscroll-behavior: auto contain;
   }
   .msg {
     padding: 0.45rem 0.6rem;
