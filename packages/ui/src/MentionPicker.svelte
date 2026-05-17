@@ -28,6 +28,13 @@
   export let resultCountPerProvider: number = 6;
   export let placeholder: string = "Search sessions, commits…";
   export let autofocus: boolean = true;
+  /** Embedded mode: caller drives query + keyboard externally. Used by
+   *  the note-body `@`-mention flow where the textarea stays focused
+   *  and forwards typing/arrow-keys/Enter/Esc into us via bind:this.
+   *  When set, the input element is hidden and `externalQuery` is the
+   *  source of truth for the search string. */
+  export let hideInput: boolean = false;
+  export let externalQuery: string = "";
 
   const dispatch = createEventDispatcher<{
     pick: PickItem;
@@ -36,6 +43,7 @@
 
   let inputEl: HTMLInputElement | null = null;
   let query = "";
+  $: effectiveQuery = hideInput ? externalQuery : query;
   /** Flat list in render order — recomputed reactively from `query`
    *  + provider results + recents. The flat shape is what makes
    *  arrow-key navigation trivial: just index into one array. */
@@ -149,8 +157,8 @@
   }
 
   $: {
-    // Reactive on `query`, `$recents`, providers, scope. Both paths
-    // are async (the empty path also fires provider.search to fill
+    // Reactive on `effectiveQuery`, `$recents`, providers, scope. Both
+    // paths are async (the empty path also fires provider.search to fill
     // a "recent items by date" baseline), and the epoch guard
     // handles out-of-order responses uniformly.
     void $recents;
@@ -158,7 +166,7 @@
     void scope;
     queryEpoch++;
     const epoch = queryEpoch;
-    const q = query.trim();
+    const q = effectiveQuery.trim();
     // Loading flag flips on synchronously so the spinner appears
     // immediately when the user opens the picker / types a new
     // query — the fetch's own resolution clears it. Keeping it on
@@ -203,8 +211,24 @@
     }
   }
 
+  /** Public handles for embedded mode. The note-body `@`-mention flow
+   *  keeps focus on the textarea, then forwards arrow/enter keystrokes
+   *  in via these — the picker itself never sees the keyboard. */
+  export function moveCursor(delta: number): void {
+    if (visibleItems.length === 0) return;
+    cursor = (cursor + delta + visibleItems.length) % visibleItems.length;
+  }
+  export function commitCurrent(): boolean {
+    if (!visibleItems[cursor]) return false;
+    pickCurrent();
+    return true;
+  }
+  export function hasResults(): boolean {
+    return visibleItems.length > 0;
+  }
+
   onMount(() => {
-    if (autofocus && inputEl) {
+    if (autofocus && inputEl && !hideInput) {
       inputEl.focus();
     }
   });
@@ -216,25 +240,30 @@
        right edge, and disappears the moment results land. This is
        the affordance the user was missing — the picker used to look
        "broken" on first open because the empty-state message
-       appeared before /api/agents and /api/commits returned. -->
-  <div class="mention-picker-input-wrap">
-    <input
-      bind:this={inputEl}
-      bind:value={query}
-      on:keydown={onKey}
-      type="text"
-      {placeholder}
-      spellcheck="false"
-      autocomplete="off"
-      class="mention-picker-input"
-      aria-label="Search"
-    />
-    {#if loading}
-      <span class="mention-picker-spinner-slot">
-        <LoadingSpinner size="14px" label="Searching" />
-      </span>
-    {/if}
-  </div>
+       appeared before /api/agents and /api/commits returned.
+       Hidden in embedded mode — the host (e.g. note textarea
+       `@`-mention flow) keeps its own focus and feeds us the query
+       via `externalQuery`. -->
+  {#if !hideInput}
+    <div class="mention-picker-input-wrap">
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        on:keydown={onKey}
+        type="text"
+        {placeholder}
+        spellcheck="false"
+        autocomplete="off"
+        class="mention-picker-input"
+        aria-label="Search"
+      />
+      {#if loading}
+        <span class="mention-picker-spinner-slot">
+          <LoadingSpinner size="14px" label="Searching" />
+        </span>
+      {/if}
+    </div>
+  {/if}
   <div class="mention-picker-list" role="listbox">
     {#if visibleItems.length === 0}
       <div class="mention-picker-empty">

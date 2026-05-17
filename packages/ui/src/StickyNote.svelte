@@ -88,6 +88,60 @@
     }
   }
 
+  /** Encode a LinkTarget as a compact `supergit://` href for inline
+   *  markdown mentions. Three deliberate compactness choices:
+   *    1. No snapshot fields — the `[label]` half of the markdown link
+   *       already carries the human-readable text; chip-style metadata
+   *       (subtitle/meta/agent/provider) isn't shown inline and would
+   *       just bloat the URL.
+   *    2. Sessions store just the sessionId (UUID) rather than the
+   *       full JSONL source path. `hrefToLinkTarget` resolves the live
+   *       source from `repos[].worktrees[].agents` on click — same
+   *       lookup the `liveSessionLabel` derivation already does.
+   *    3. URL kind passes through verbatim (no wrapping needed for a
+   *       plain https link). */
+  function linkTargetToHref(t: LinkTarget): string {
+    if (t.type === "url") return t.value;
+    let value = t.value;
+    if (t.type === "session") {
+      const m = t.value.match(/\/([^/]+?)\.jsonl$/i);
+      if (m) value = m[1];
+    }
+    return `supergit://${t.type}/${encodeURIComponent(value)}`;
+  }
+
+  /** Inverse of linkTargetToHref. Returns null when the href isn't a
+   *  recognized supergit:// URL — caller then treats it as a plain
+   *  external link. For sessions, walks the live repos snapshot to
+   *  swap a stored sessionId back to its current source path; falls
+   *  back to the raw value if no live match (orphan session) so click
+   *  is a safe no-op rather than wrong. */
+  function hrefToLinkTarget(href: string): LinkTarget | null {
+    if (!href.startsWith("supergit://")) return null;
+    try {
+      const u = new URL(href);
+      const type = u.host as LinkTarget["type"];
+      if (!["url", "commit", "session", "file"].includes(type)) return null;
+      let value = decodeURIComponent(u.pathname.replace(/^\//, ""));
+      if (type === "session") {
+        const id = value;
+        outer: for (const r of repos) {
+          for (const wt of r.worktrees ?? []) {
+            const agents = (wt as { agents?: Array<{ source: string; sessionId?: string }> }).agents;
+            const a = agents?.find((x) => x.sessionId === id);
+            if (a) {
+              value = a.source;
+              break outer;
+            }
+          }
+        }
+      }
+      return { type, value };
+    } catch {
+      return null;
+    }
+  }
+
   /** Provider-specific commit URL builder. The repo's `webUrl` is
    *  the canonical project root (`https://github.com/foo/bar`); each
    *  provider's commit page sits at a slightly different path.
@@ -480,6 +534,111 @@
       };
     }
   }
+  /** Inline @-mention state. Typing `@` inside the textarea (at the
+   *  start of the body OR right after whitespace / newline) opens the
+   *  MentionPicker as an embedded popover. The textarea keeps focus
+   *  and forwards arrow/Enter/Esc keystrokes into the picker via the
+   *  exported handles below. Picking inserts a markdown link with a
+   *  `supergit://` href that `onBodyClick` later resolves and opens. */
+  let mentionOpen = false;
+  let mentionStart = -1;
+  let mentionQuery = "";
+  let mentionPickerRef: {
+    moveCursor: (delta: number) => void;
+    commitCurrent: () => boolean;
+    hasResults: () => boolean;
+  } | null = null;
+
+  function closeMention(): void {
+    mentionOpen = false;
+    mentionStart = -1;
+    mentionQuery = "";
+  }
+
+  function onTextareaInput(): void {
+    if (!textareaEl) return;
+    const caret = textareaEl.selectionStart ?? 0;
+    const text = draft;
+    if (mentionOpen) {
+      // Track the live query span between the `@` and the caret.
+      // Close if the user erased the `@`, moved the caret behind it,
+      // or typed whitespace (mentions are single-token by design).
+      if (mentionStart < 0 || text[mentionStart] !== "@" || caret <= mentionStart) {
+        closeMention();
+        return;
+      }
+      const span = text.slice(mentionStart + 1, caret);
+      if (/\s/.test(span)) {
+        closeMention();
+        return;
+      }
+      mentionQuery = span;
+      return;
+    }
+    // Detect a fresh `@` at the start of the body or after whitespace.
+    if (caret > 0 && text[caret - 1] === "@") {
+      const prev = caret >= 2 ? text[caret - 2] : "";
+      if (caret === 1 || prev === " " || prev === "\t" || prev === "\n") {
+        mentionStart = caret - 1;
+        mentionQuery = "";
+        mentionOpen = true;
+      }
+    }
+  }
+
+  function onMentionPick(e: CustomEvent<PickItem>): void {
+    if (!mentionOpen || !textareaEl) return;
+    const item = e.detail;
+    const target: LinkTarget = {
+      type: item.targetType,
+      value: item.value,
+      ...(item.label !== undefined ? { label: item.label } : {}),
+      ...(item.subtitle !== undefined ? { subtitle: item.subtitle } : {}),
+      ...(item.meta !== undefined ? { meta: item.meta } : {}),
+      ...(item.agent !== undefined ? { agent: item.agent } : {}),
+      ...(item.provider !== undefined ? { provider: item.provider } : {}),
+    };
+    const label = (item.label || item.value).replace(/[\[\]]/g, "");
+    const href = linkTargetToHref(target);
+    const insertion = `[@${label}](${href})`;
+    const caret = textareaEl.selectionStart ?? mentionStart + 1;
+    const before = draft.slice(0, mentionStart);
+    const after = draft.slice(caret);
+    draft = before + insertion + after;
+    pushRecent(item);
+    const newCaret = before.length + insertion.length;
+    closeMention();
+    queueMicrotask(() => {
+      if (!textareaEl) return;
+      textareaEl.focus();
+      textareaEl.setSelectionRange(newCaret, newCaret);
+      // Re-run autosize so the textarea re-measures with the inserted text.
+      textareaEl.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  /** Click delegate on the rendered note body: intercept
+   *  `supergit://` links and route them through openTarget; let plain
+   *  http(s) anchors open in a new tab. Markdown produces real
+   *  `<a href>`s; this lets inline mentions behave identically to the
+   *  standalone link chip without re-rendering Svelte for each one. */
+  function onBodyClick(e: MouseEvent): void {
+    const t = e.target as HTMLElement | null;
+    const a = t?.closest("a") as HTMLAnchorElement | null;
+    if (!a) return;
+    const href = a.getAttribute("href") ?? "";
+    if (href.startsWith("supergit://")) {
+      e.preventDefault();
+      const target = hrefToLinkTarget(href);
+      if (target) openTarget(target);
+      return;
+    }
+    if (/^https?:\/\//i.test(href)) {
+      e.preventDefault();
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+  }
+
   /** Two-step delete: clicking × arms a 3-second countdown (rather
    *  than firing immediately) so the user has a generous window to
    *  back out. The button glyph swaps to ■ while armed; a second
@@ -839,6 +998,35 @@
   }
 
   function onKey(e: KeyboardEvent): void {
+    // While the @-mention picker is open, the textarea forwards
+    // navigation/commit keys into it. The picker decides whether the
+    // current cursor maps to a real pick; if not, fall through so
+    // Enter still saves the note.
+    if (mentionOpen && mentionPickerRef) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        mentionPickerRef.moveCursor(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        mentionPickerRef.moveCursor(-1);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (mentionPickerRef.hasResults()) {
+          e.preventDefault();
+          mentionPickerRef.commitCurrent();
+          return;
+        }
+        // No results yet — fall through to save.
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMention();
+        return;
+      }
+    }
     // Enter (no modifier) saves — sticky notes are short scratchpads,
     // so plain Enter as the save shortcut is the muscle memory the
     // user wants. Shift+Enter falls through to the textarea default
@@ -960,14 +1148,35 @@
         placeholder="Find a session or commit…"
       />
     {:else}
-      <textarea
-        bind:this={textareaEl}
-        class="sticky-textarea"
-        bind:value={draft}
-        placeholder="Write something… markdown OK. Enter saves, Shift+Enter newline, Esc reverts."
-        on:keydown={onKey}
-        use:autosize
-      ></textarea>
+      <div class="sticky-textarea-wrap">
+        <textarea
+          bind:this={textareaEl}
+          class="sticky-textarea"
+          bind:value={draft}
+          placeholder="Write something… markdown OK. Type @ to link a session or commit. Enter saves, Shift+Enter newline, Esc reverts."
+          on:keydown={onKey}
+          on:input={onTextareaInput}
+          use:autosize
+        ></textarea>
+        {#if mentionOpen}
+          <!-- Inline @-mention popover. Embedded mode: the picker
+               hides its own input and is driven by `externalQuery` +
+               our forwarded arrow/enter keystrokes, so the textarea
+               stays focused while the user keeps typing. -->
+          <div class="sticky-mention-popover">
+            <MentionPicker
+              bind:this={mentionPickerRef}
+              providers={defaultProviders}
+              scope={pickerScope}
+              hideInput={true}
+              externalQuery={mentionQuery}
+              autofocus={false}
+              on:pick={onMentionPick}
+              on:cancel={closeMention}
+            />
+          </div>
+        {/if}
+      </div>
     {/if}
     <!-- Footer-row of ancillary edit actions. Move-to / Copy-to live
          here (rather than the header toolbar) so the textarea — the
@@ -1110,6 +1319,7 @@
       tabindex="0"
       aria-readonly="true"
       title="Double-click to edit"
+      on:click={onBodyClick}
     >{@html rendered(note.body)}</div>
   {/if}
 
