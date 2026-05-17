@@ -80,6 +80,12 @@
     align-items: center;
     gap: 0.3rem;
     line-height: 1;
+    outline: 1px solid transparent;
+    outline-offset: -1px;
+    transition: outline-color 0.15s;
+  }
+  .open-in-btn:hover:not(:disabled) {
+    outline-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   }
   .open-in-icon {
     flex: 0 0 auto;
