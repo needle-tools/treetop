@@ -605,6 +605,18 @@
   .dock-dot.dock-dot-repo-first {
     margin-top: 0.5rem;
   }
+  /* Shell sessions render as a small terminal-styled square instead
+     of the agent's round dot: dark center + repo-coloured border,
+     2px rounded corners. Reads as "this is a literal terminal, not
+     a conversational agent" at a glance, and `working` / `awaiting`
+     are forced off in the host so log-stream output doesn't trigger
+     the spinner. */
+  .dock-dot.agent-shell .dock-dot-inner {
+    background: var(--surface-0, #1a1a1a);
+    border: 2px solid var(--dot-fill);
+    border-radius: 2px;
+    box-sizing: border-box;
+  }
   /* Focused row: small triangle pointing right at the dot, painted in
      the button's left padding area so it doesn't push the dot
      horizontally. CSS border-trick triangle — no extra DOM. The

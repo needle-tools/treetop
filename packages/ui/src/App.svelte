@@ -2952,8 +2952,16 @@
             lastActive: meta?.lastActive,
             transcriptSource:
               meta?.source && !meta.source.startsWith("__") ? meta.source : undefined,
-            working: !!transientWorking[s.source],
-            awaiting: !!transientAwaiting[s.source],
+            // Shells emit output continuously (log tails, dev-server
+            // streams, REPLs) — none of that is "thinking", so we
+            // never surface a working/awaiting state for them in the
+            // dock. The shell dot stays static; its live-PTY state
+            // is conveyed by its dedicated terminal-style square
+            // (vs. the round agent dot) and the `exited` shrink.
+            working:
+              s.agent === "shell" ? false : !!transientWorking[s.source],
+            awaiting:
+              s.agent === "shell" ? false : !!transientAwaiting[s.source],
             // "Small dot" mode covers everything that isn't a live
             // TUI right now: PTYs that exited, plus read-mode chat
             // columns (SessionView in mode !== "terminal").
