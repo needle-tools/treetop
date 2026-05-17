@@ -1001,7 +1001,7 @@
        30%-alpha text-muted outline gives the edge enough definition
        to read against either dark TUI content or empty terminal
        space. Backdrop blur further softens the text behind. */
-    background: rgba(26, 26, 27, 0.6);
+    background: rgba(26, 26, 27, 0.85);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
