@@ -277,11 +277,35 @@
   /** Hard ceiling on how long we wait for `DELETE /api/terminals/:id` to
    *  return before flipping the column back to read mode anyway. The
    *  daemon's grace timer will reap the PTY regardless, so a hung
-   *  request shouldn't strand the user with a "Disposing…" button. */
+   *  request shouldn't strand the user with a "Stopping…" button. */
   const DISPOSE_TIMEOUT_MS = 5_000;
-  async function disposeTerminal() {
-    if (disposing) return;
+  /** Minimum visible "Stopping…" feedback window. The fetch itself is
+   *  typically <10ms (the daemon just sends SIGTERM and returns) so
+   *  without this floor the spinner would flicker by too fast to read.
+   *  Doubles as a cancel-window: a second click on the button during
+   *  this gap aborts the dispose, keeping the TUI alive. */
+  const DISPOSE_MIN_FEEDBACK_MS = 1000;
+  /** Timer for the cancellable grace window. Non-null ⇒ we're in the
+   *  1s "click again to cancel" phase; the SIGTERM hasn't fired yet. */
+  let disposeGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  function disposeTerminal() {
+    if (disposeGraceTimer !== null) {
+      // Second click inside the grace window — abort. The PTY is
+      // untouched; we just clear the visible "Stopping…" state and
+      // stay in TUI mode.
+      clearTimeout(disposeGraceTimer);
+      disposeGraceTimer = null;
+      disposing = false;
+      return;
+    }
+    if (disposing) return; // SIGTERM already in flight, ignore
     disposing = true;
+    disposeGraceTimer = setTimeout(() => {
+      disposeGraceTimer = null;
+      void runActualDispose();
+    }, DISPOSE_MIN_FEEDBACK_MS);
+  }
+  async function runActualDispose() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DISPOSE_TIMEOUT_MS);
     let timedOut = false;
@@ -774,6 +798,7 @@
   onDestroy(() => {
     if (pollTimer !== null) window.clearInterval(pollTimer);
     if (pendingTimer) clearTimeout(pendingTimer);
+    if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     cancelPinHide();
     if (msgSettleTimer) clearTimeout(msgSettleTimer);
   });

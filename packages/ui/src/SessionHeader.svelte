@@ -316,11 +316,18 @@
       {#if canEnd}
         <button
           class="resume-btn dispose-btn"
+          class:is-stopping={disposing}
           on:click={onEndSession}
-          disabled={disposing}
-          title={endSessionTitle}
+          title={disposing
+            ? "Click again to cancel — the agent is still running"
+            : endSessionTitle}
         >
-          {disposing ? "Stopping…" : "Stop Session"}
+          {#if disposing}
+            <span class="stop-spinner" aria-hidden="true"></span>
+            <span>Stopping…</span>
+          {:else}
+            Stop Session
+          {/if}
         </button>
       {/if}
     {/if}
@@ -416,6 +423,25 @@
   .resume-btn.dispose-btn:hover:not(:disabled) {
     color: #ffcaca;
     border-color: color-mix(in srgb, #efaaaa 55%, transparent);
+  }
+  /* "Stopping…" state: stays clickable (a second click cancels during
+     the 1s grace window) but signals progress with a spinner and a
+     slight desaturation so it reads as "in-flight, not destructive
+     finality." */
+  .resume-btn.dispose-btn.is-stopping {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    opacity: 0.85;
+  }
+  .stop-spinner {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
+    border-top-color: currentColor;
+    animation: spin 0.8s linear infinite;
+    flex: 0 0 auto;
   }
   .resume-btn:disabled {
     opacity: 0.55;
