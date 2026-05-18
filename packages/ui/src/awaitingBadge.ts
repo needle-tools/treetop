@@ -66,6 +66,10 @@ const NAME_LIMIT_PER_CATEGORY = 3;
 
 let lastStateKey = "";
 let currentState: TabState = { awaiting: 0, working: 0, unread: 0, idle: 0 };
+/** Dev-only override. When non-null, {@link updateTabIndicator} ignores
+ *  the sessions it's called with and uses these instead. Set via the
+ *  `window.__supergitFavicon` helper exposed below. */
+let forcedSessions: TabSession[] | null = null;
 let animationTimer: ReturnType<typeof setInterval> | null = null;
 let animationStart = 0;
 
@@ -199,7 +203,12 @@ function ensureBaseImage(onReady?: () => void): void {
   }
   if (typeof Image === "undefined") return;
   const img = new Image();
-  img.crossOrigin = "anonymous";
+  // Don't set crossOrigin: we always load /needle-logo.svg from the
+  // same origin that serves this page, so CORS doesn't apply — and
+  // setting it would actually break things, because the dev server
+  // doesn't send an Access-Control-Allow-Origin header, which would
+  // taint the canvas and make toDataURL throw SecurityError silently
+  // (the favicon would simply never update).
   img.onload = () => {
     baseImageReady = true;
     if (onReady) onReady();
@@ -236,7 +245,7 @@ function drawBadge(count: number): void {
   } catch {
     return;
   }
-  const r = 8;
+  const r = 11;
   const cx = size - r - 0.5;
   const cy = r + 0.5;
   ctx.beginPath();
@@ -248,7 +257,7 @@ function drawBadge(count: number): void {
   ctx.stroke();
   if (count >= 1 && count <= 9) {
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
+    ctx.font = "bold 14px system-ui, -apple-system, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(count), cx, cy + 0.5);
@@ -290,7 +299,7 @@ function drawIndicator(state: TabState, tMs: number): void {
     // ~0.5 Hz pulse: alpha drifts 0.75 → 1.0.
     const pulse = (Math.sin(t * Math.PI) + 1) / 2;
     const alpha = 0.75 + 0.25 * pulse;
-    const r = 8;
+    const r = 13;
     const cx = size - r - 0.5;
     const cy = r + 0.5;
     ctx.save();
@@ -305,7 +314,7 @@ function drawIndicator(state: TabState, tMs: number): void {
     ctx.stroke();
     if (state.awaiting >= 1 && state.awaiting <= 9) {
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
+      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(String(state.awaiting), cx, cy + 0.5);
@@ -347,40 +356,43 @@ function drawIndicator(state: TabState, tMs: number): void {
       ctx.stroke();
     }
   } else if (state.unread > 0) {
-    // Idle but with unread sessions: base logo + brand-green badge
-    // with the count in the top-right corner. Gentle pulse (0.5 Hz)
-    // so it reads as "you have new messages" without nagging like
-    // the red awaiting dot.
+    // Idle but with unread sessions ("done, waiting for review" —
+    // matches the dock's pulsating dot). Logo always visible. The
+    // red badge stays on the whole time and "pulsates": 0.5 Hz scale
+    // toggle between two sizes — a subtle heartbeat that pulls the
+    // eye from another tab without the harshness of a full on/off
+    // blink. The badge is anchored at a fixed center so the digit
+    // inside doesn't jiggle.
     if (!baseImage || !baseImageReady) return;
     try {
       ctx.drawImage(baseImage, 0, 0, size, size);
     } catch {
       return;
     }
-    const pulse = (Math.sin(t * Math.PI) + 1) / 2;
-    const alpha = 0.8 + 0.2 * pulse;
-    const r = 8;
-    const cx = size - r - 0.5;
-    const cy = r + 0.5;
-    ctx.save();
-    ctx.globalAlpha = alpha;
+    const smallR = 12;
+    const bigR = 14;
+    const pulsed = Math.floor(t) % 2 === 0;
+    const r = pulsed ? bigR : smallR;
+    // Anchor the badge center so the bigR state just touches the
+    // top + right edges (1px breathing room for the stroke).
+    const cx = size - bigR - 0.5;
+    const cy = bigR + 0.5;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#60b74c"; // --brand
+    ctx.fillStyle = "#e34c3c";
     ctx.fill();
-    ctx.restore();
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
     ctx.stroke();
     if (state.unread >= 1 && state.unread <= 9) {
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
+      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(String(state.unread), cx, cy + 0.5);
     } else if (state.unread > 9) {
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 9px system-ui, -apple-system, sans-serif";
+      ctx.font = "bold 13px system-ui, -apple-system, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("9+", cx, cy + 0.5);
@@ -462,8 +474,13 @@ export function updateAwaitingBadge(count: number): void {
  *  Safe to call on every reactive tick — short-circuits when nothing
  *  has changed since the last call. */
 export function updateTabIndicator(sessions: TabSession[]): void {
+  if (forcedSessions !== null) sessions = forcedSessions;
   const safe = sessions.filter(
-    (s) => s.state === "awaiting" || s.state === "working" || s.state === "idle",
+    (s) =>
+      s.state === "awaiting" ||
+      s.state === "working" ||
+      s.state === "unread" ||
+      s.state === "idle",
   );
   const counts = summarize(safe);
   // The cache key needs to invalidate on any change that affects the
@@ -499,4 +516,47 @@ export function updateTabIndicator(sessions: TabSession[]): void {
   if (baseImageReady)
     drawIndicator(currentState, performance.now() - animationStart);
   startAnimation();
+}
+
+/** Dev-only console helper. From the page console:
+ *    __supergitFavicon.force({ unread: 2 })       // red blinking dot, "2"
+ *    __supergitFavicon.force({ working: 1 })      // stitching ring
+ *    __supergitFavicon.force({ awaiting: 3 })     // red pulsing dot, "3"
+ *    __supergitFavicon.force({ unread: 1, working: 2 }) // priority demo
+ *    __supergitFavicon.clear()                    // resume real session state
+ *    __supergitFavicon.peek()                     // see what the indicator is using
+ *  Lets you eyeball each favicon state without having to wait for a
+ *  matching real session. */
+if (typeof window !== "undefined") {
+  const w = window as unknown as Record<string, unknown>;
+  w.__supergitFavicon = {
+    force(partial: Partial<TabState>): TabSession[] {
+      const counts: TabState = {
+        awaiting: Math.max(0, (partial.awaiting ?? 0) | 0),
+        working: Math.max(0, (partial.working ?? 0) | 0),
+        unread: Math.max(0, (partial.unread ?? 0) | 0),
+        idle: Math.max(0, (partial.idle ?? 0) | 0),
+      };
+      const mock: TabSession[] = [];
+      for (const state of ["awaiting", "working", "unread", "idle"] as const) {
+        for (let i = 0; i < counts[state]; i++) {
+          mock.push({ state, name: `mock-${state}-${i + 1}`, agent: "mock" });
+        }
+      }
+      forcedSessions = mock;
+      lastStateKey = ""; // bust the short-circuit so the next call repaints
+      updateTabIndicator([]);
+      return mock;
+    },
+    clear(): void {
+      forcedSessions = null;
+      lastStateKey = "";
+      // Force a reactive recompute by setting the title to something
+      // mid-call; the App's `$:` block will then push the real state.
+      currentState = { awaiting: 0, working: 0, unread: 0, idle: 0 };
+    },
+    peek(): { forced: TabSession[] | null; state: TabState } {
+      return { forced: forcedSessions, state: { ...currentState } };
+    },
+  };
 }
