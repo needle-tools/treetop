@@ -230,12 +230,13 @@
   color: inherit;
 }
 .attach-row-label {
-  /* Shrinkable, not growable — so the row packs left and any
-     leftover width stays empty on the right. min-width:20ch is the
-     readable floor; flex-shrink:1 lets the label ellipsis when the
-     row IS constrained (lots of subtitle / meta content). */
-  flex: 0 1 auto;
-  min-width: 20ch;
+  /* Flex variant (saved chip): grow to fill the row, ellipsis when
+     the row is constrained. Grid variant (picker row): the column
+     track is minmax(0, 1fr), so this `min-width: 0` is what lets
+     the label actually shrink past its content's intrinsic size
+     and ellipsize within the cell instead of blowing the grid out. */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -359,11 +360,12 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /* Wide enough to fit a readable session title or commit subject
-     plus the subtitle/meta columns. The parent (`.sticky.sticky-link`
-     in edit mode) max-widths 540px, so 360px here gives the chip
-     room to flex up to the cap. */
-  min-width: 360px;
+  /* Fill whatever wrapper hosts us (link chip in edit mode, or the
+     inline @-mention popover anchored to a note's textarea). The
+     wrapper imposes the width budget so the picker doesn't blow out
+     narrow surfaces with a hard min-width. */
+  width: 100%;
+  min-width: 0;
 }
 .mention-picker-input-wrap {
   position: relative;
@@ -418,14 +420,18 @@
   overflow-y: auto;
   /* Picker is a single grid so each row's columns line up with
      every other row's columns — the user can scan a vertical
-     stripe of "authors" and "times" without their eye chasing a
-     ragged left edge. Rows opt into these tracks via subgrid (see
-     .mention-picker-row below). The label column floors at 20ch
-     and grows to its content, but max-content keeps a single
-     ultra-long subject from blowing the picker wider than its
-     container. */
+     stripe of "meta" entries without their eye chasing a ragged
+     left edge. Rows opt into these tracks via subgrid (see
+     .mention-picker-row below).
+
+     Three columns now (was four): icon · label · meta. The picker
+     row template combines subtitle + meta into one trailing span
+     so the label gets the rest of the row width. `minmax(0, 1fr)`
+     means the label can shrink to zero (ellipsis kicks in) but
+     greedily takes every spare pixel — long session titles read
+     much further before truncating. */
   display: grid;
-  grid-template-columns: auto minmax(20ch, max-content) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: stretch;
 }
 .mention-picker-empty {
@@ -727,8 +733,16 @@
 .sticky-mention-popover {
   position: absolute;
   left: 0;
-  right: 0;
+  /* Anchored to the textarea's left edge; floored at the textarea
+     width via `min-width: 100%` so the popover never reads narrower
+     than the input it's anchored to. Allowed to grow up to a
+     readable cap (clamped to the viewport so it can't escape the
+     screen on a tiny window). Auto-content `width` keeps short
+     rows compact while long titles let the popover stretch out. */
   top: calc(100% + 4px);
+  min-width: 100%;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 16px));
   z-index: 50;
   background: var(--surface-1);
   color: var(--text-1);
@@ -801,7 +815,17 @@
   align-items: stretch;
   flex-shrink: 0;
 }
-.note-add-stack > .row-note-count {
+/* Wrapper that hosts the popover anchored off the count badge. Acts
+   as the positioned containing block for the absolutely-positioned
+   Popover; otherwise stays out of the way of the existing fused-tag
+   flex layout. */
+.note-add-stack > .row-note-count-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+.note-add-stack .row-note-count {
   display: inline-flex;
   align-items: center;
   background: var(--surface-2);
@@ -812,9 +836,17 @@
   padding: 0 0.45rem;
   border: 1px dashed var(--surface-2);
   border-right: 0;
-  border-top-left-radius: var(--radius-sm);
-  border-bottom-left-radius: var(--radius-sm);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   flex: 0 0 auto;
+  cursor: pointer;
+  /* The wrapper sits as a flex item next to .notes-toggle. Make sure
+     no UA button reset leaves a 1px gap that would expose a slit. */
+  margin: 0;
+}
+.note-add-stack .row-note-count:hover,
+.note-add-stack .row-note-count.open {
+  background: var(--surface-3, var(--surface-2));
+  color: var(--text-1);
 }
 .note-add-stack > .notes-toggle,
 .note-add-stack > .notes-add {
@@ -1049,4 +1081,93 @@
 .orphan-actions {
   display: flex;
   gap: 0.3rem;
+}
+
+/* Per-row notes-list popover (opens off the count badge). Two stacked
+   sections: pinned-here + recently-deleted-here. Reuses the agents
+   popover shell. */
+.notes-list-popover .notes-list-section + .notes-list-section {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--surface-2);
+}
+.notes-list-popover .notes-list-section-head {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
+.notes-list-popover .notes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.notes-list-popover .notes-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  min-width: 0;
+}
+.notes-list-popover .notes-list-row + .notes-list-row {
+  border-top: 1px dashed var(--surface-2);
+}
+.notes-list-popover .notes-list-body {
+  flex: 1 1 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.notes-list-popover .notes-list-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 0.4rem;
+  vertical-align: -2px;
+  color: var(--text-muted);
+  width: 14px;
+  height: 14px;
+}
+.notes-list-popover .notes-list-kind svg {
+  display: block;
+}
+.notes-list-popover .notes-list-row.deleted .notes-list-body {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+.notes-list-popover .notes-list-row .ev-time {
+  flex: 0 0 auto;
+}
+.notes-list-popover .notes-list-row .undo {
+  flex: 0 0 auto;
+}
+
+/* One-shot pop-in for a restored note. Applied to `.sticky-host` (the
+   layer's positioned wrapper) so the sticky's own tilt/rotation
+   inside stays intact — we only scale + fade the wrapper. The class
+   is added by `scrollAndPopNote()` in App.svelte after the note's
+   DOM materialises post-undo, and removed on `animationend`. */
+@keyframes sticky-restore-pop {
+  0% {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.sticky-host.restored {
+  animation: sticky-restore-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: center center;
 }

@@ -307,11 +307,16 @@
                 />
               </span>
               <span class="attach-row-label">{it.label}</span>
-              {#if it.subtitle}
-                <span class="attach-row-subtitle">{it.subtitle}</span>
-              {/if}
-              {#if it.meta}
-                <span class="attach-row-meta">{it.meta}</span>
+              {#if it.meta || it.subtitle}
+                <!-- Trailing meta slot — collapses subtitle + meta into
+                     one span so the title column gets the rest of the
+                     row width. Matches the saved chip's .attach-card
+                     layout so picker rows + saved chips read the same. -->
+                <span class="attach-row-meta">
+                  {#if it.meta}{it.meta}{/if}
+                  {#if it.meta && it.subtitle} · {/if}
+                  {#if it.subtitle}{it.subtitle}{/if}
+                </span>
               {/if}
             </button>
           {/if}
