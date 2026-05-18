@@ -82,6 +82,39 @@
   export function _unregisterLayer(): void {
     registered = null;
   }
+
+  /** Imperative fly-in for a freshly-restored note (Undo on a
+   *  `remove_note` event). Mirrors `spawnNote`'s shape but takes an
+   *  existing note id — the daemon writes it back to disk during the
+   *  undo round-trip, the layer's existing `refresh()` re-fetches
+   *  `/api/notes`, and *this* call just registers the intended
+   *  origin rect so refresh can stage the note at that rect in the
+   *  same render pass as it lands in `notes`. Synchronous on
+   *  purpose: the caller invokes it *before* `await toggleEvent`, so
+   *  the intent is on file before the SSE→refresh fires, otherwise
+   *  the note pops in at its pin slot and only flies after the
+   *  await chain unblocks. */
+  type FlyRestoreArgs = { id: string; originRect: DOMRect };
+  let registeredFlyRestore: ((args: FlyRestoreArgs) => void) | null = null;
+  const pendingFlyRestore: FlyRestoreArgs[] = [];
+  export function flyRestoreNote(args: FlyRestoreArgs): void {
+    if (registeredFlyRestore) {
+      registeredFlyRestore(args);
+      return;
+    }
+    pendingFlyRestore.push(args);
+  }
+  export function _registerFlyRestore(
+    fn: (args: FlyRestoreArgs) => void,
+  ): void {
+    registeredFlyRestore = fn;
+    while (pendingFlyRestore.length > 0) {
+      fn(pendingFlyRestore.shift()!);
+    }
+  }
+  export function _unregisterFlyRestore(): void {
+    registeredFlyRestore = null;
+  }
 </script>
 
 <script lang="ts">
@@ -398,7 +431,46 @@
     try {
       const res = await fetch("/api/notes");
       if (!res.ok) return;
-      notes = (await res.json()) as NoteShape[];
+      const fetched = (await res.json()) as NoteShape[];
+      // Drain any pending fly-restores whose note just arrived. Done
+      // BEFORE we assign `notes` so the staging entries land in the
+      // same synchronous block — Svelte batches `notes` and
+      // `staging` writes into one render pass, and `screenPosFor`
+      // reads `staging` first, so the very first paint of the
+      // restored note happens at the trigger rect rather than the
+      // pin slot. Skipping this ordering is the bug that made the
+      // note "appear, pause, then fly".
+      const prevIds = new Set(notes.map((n) => n.id));
+      const flyAfter: string[] = [];
+      if (Object.keys(pendingRestoresByNoteId).length > 0) {
+        const nextStaging = { ...staging };
+        let stagingChanged = false;
+        for (const n of fetched) {
+          const rect = pendingRestoresByNoteId[n.id];
+          if (!rect) continue;
+          if (prevIds.has(n.id)) {
+            // Already present — pending intent is stale; drop it
+            // without animating to avoid a jarring teleport.
+            delete pendingRestoresByNoteId[n.id];
+            continue;
+          }
+          const anchor = n.anchors[0];
+          if (!anchor) {
+            delete pendingRestoresByNoteId[n.id];
+            continue;
+          }
+          const w = n.kind === "link" ? LINK_W : NOTE_W;
+          const docX =
+            rect.left + rect.width / 2 - w / 2 + window.scrollX;
+          const docY = rect.bottom + 8 + window.scrollY;
+          nextStaging[n.id] = { docX, docY, anchor };
+          stagingChanged = true;
+          flyAfter.push(n.id);
+          delete pendingRestoresByNoteId[n.id];
+        }
+        if (stagingChanged) staging = nextStaging;
+      }
+      notes = fetched;
       // Trim z-order entries for notes that no longer exist so the
       // list stays bounded. We deliberately do NOT trim `offsets`:
       // keeping the offset record for deleted notes means an undo
@@ -426,6 +498,15 @@
       notesAll.set(notes);
       // Kick a re-derive so freshly-fetched notes pick up positions.
       tick++;
+      // Now that the staged render has landed, hand the restored
+      // notes off to the same fly loop the spawn path uses.
+      if (flyAfter.length > 0) {
+        await svelteTick();
+        for (const id of flyAfter) {
+          bringToFront(id);
+          void flyStagedToPin(id);
+        }
+      }
     } catch {
       // Network errors are non-fatal — the layer just stays empty.
     }
@@ -1074,9 +1155,22 @@
     applyRowMargins();
   });
 
+  /** Pending fly-restore registrations keyed by note id. App.svelte
+   *  records an intent here *before* it issues the undo POST, then
+   *  `refresh()` (triggered by the resulting SSE) drains the
+   *  matching entries the moment the new note lands in `notes` — so
+   *  staging is set in the same synchronous block as `notes = ...`,
+   *  and the very first render of the restored note already places
+   *  it at the trigger rect rather than the pin slot. */
+  let pendingRestoresByNoteId: Record<string, DOMRect> = {};
+  function handleFlyRestore(args: { id: string; originRect: DOMRect }): void {
+    pendingRestoresByNoteId[args.id] = args.originRect;
+  }
+
   onMount(() => {
     loadOffsets();
     _registerLayer(handleSpawn);
+    _registerFlyRestore(handleFlyRestore);
     void refresh();
 
     // No scroll listener — the layer is `position: absolute` at the
@@ -1117,6 +1211,7 @@
 
   onDestroy(() => {
     _unregisterLayer();
+    _unregisterFlyRestore();
     window.removeEventListener("resize", scheduleTick);
     mutationObs?.disconnect();
     resizeObs?.disconnect();

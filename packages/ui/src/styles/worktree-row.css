@@ -1205,6 +1205,9 @@ button.branch-button:hover {
   min-width: 60ch;
   max-width: 90ch;
   box-sizing: border-box;
+  /* Anchor the drag-drop preview pseudos (::before / ::after) so the
+     dashed insertion line lines up with the column edges. */
+  position: relative;
   /* Smooth fade of the flash outline + smooth flex/width transitions
      so the read-mode shrink (15% narrower) glides into place. */
   transition:
@@ -1224,6 +1227,28 @@ button.branch-button:hover {
   flex-basis: 59.5ch;
   min-width: 51ch;
   max-width: 76.5ch;
+}
+/* Drag-drop insertion preview: a brand-coloured dashed vertical line
+   in the inter-column gap on the side the cursor is on. Anchored via
+   ::before (left) / ::after (right) pseudos on the hovered column, so
+   no extra DOM is needed. The 0.3rem inset matches half the strip's
+   0.6rem flex gap so the line sits visually centred between columns. */
+.session-col.drop-before::before,
+.session-col.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 0;
+  border-left: 2px dashed var(--brand);
+  pointer-events: none;
+  z-index: 3;
+}
+.session-col.drop-before::before {
+  left: -0.3rem;
+}
+.session-col.drop-after::after {
+  right: -0.3rem;
 }
 /* Transient highlight applied for ~2s when the user reveals a session
    from a folded row, so the eye can find the column they just asked

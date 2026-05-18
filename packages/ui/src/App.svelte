@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { flip } from "svelte/animate";
   import { DismissedSessionsStore, ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
@@ -13,7 +14,9 @@
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { planReveal, type RevealMode } from "./reveal-session";
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
-  import { spawnNote } from "./StickyNotesLayer.svelte";
+  import AttachmentIcon from "./AttachmentIcon.svelte";
+  import NoteIcon from "./NoteIcon.svelte";
+  import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
   import AnchorPicker from "./AnchorPicker.svelte";
@@ -278,6 +281,13 @@
   function toggleNotesHidden(key: string): void {
     notesHiddenByRow = { ...notesHiddenByRow, [key]: !notesHiddenByRow[key] };
   }
+  /** Per-row "notes list" popover. Keyed by the same row.key the rest
+   *  of the row state uses. Opens off the small count badge sitting to
+   *  the left of the `notes` toggle and lists everything pinned to
+   *  this anchor plus recently-deleted notes (from events.jsonl) so
+   *  the user can undo a delete without hunting the global Undo
+   *  tray. */
+  let notesListOpen: Record<string, boolean> = {};
   /** Per-row "zen" focus — one worktree row takes over the viewport,
    *  hiding the top bar and all other rows. `null` = no row focused.
    *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
@@ -1483,6 +1493,11 @@
   // Drag-to-reorder for sessions inside one worktree's strip. We don't
   // (yet) move sessions between worktrees — that's a bigger UX choice.
   let dragSource: { wtPath: string; index: number } | null = null;
+  /** Live drop preview — drives the dashed insertion-line on the
+   *  hovered column. `side: "left"` means the dragged column will
+   *  land BEFORE this column; `"right"` means AFTER. Cleared on
+   *  drop, dragend, and dragleave-from-strip. */
+  let dragOverTarget: { wtPath: string; index: number; side: "left" | "right" } | null = null;
 
   function handleSessionDragStart(
     e: DragEvent,
@@ -1497,10 +1512,48 @@
     }
   }
 
-  function handleSessionDragOver(e: DragEvent): void {
-    if (!dragSource) return;
+  /** Called on dragover of a `.session-col`. Computes which side of
+   *  the hovered column the cursor sits on so the dashed preview
+   *  line lands on that edge — and so the drop math knows whether
+   *  the user is aiming BEFORE or AFTER the target column. */
+  function handleSessionDragOver(
+    e: DragEvent,
+    wtPath: string,
+    index: number,
+  ): void {
+    if (!dragSource || dragSource.wtPath !== wtPath) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const el = e.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const side: "left" | "right" =
+      e.clientX < r.left + r.width / 2 ? "left" : "right";
+    if (
+      !dragOverTarget ||
+      dragOverTarget.wtPath !== wtPath ||
+      dragOverTarget.index !== index ||
+      dragOverTarget.side !== side
+    ) {
+      dragOverTarget = { wtPath, index, side };
+    }
+  }
+
+  /** Strip-level dragleave so the dashed preview disappears only
+   *  when the cursor leaves the whole strip, not on per-column
+   *  dragleaves (which fire as the cursor crosses between
+   *  neighbouring columns). */
+  function handleStripDragLeave(e: DragEvent, wtPath: string): void {
+    if (!dragOverTarget || dragOverTarget.wtPath !== wtPath) return;
+    const strip = e.currentTarget as HTMLElement | null;
+    const rel = e.relatedTarget as Node | null;
+    if (strip && rel && strip.contains(rel)) return;
+    dragOverTarget = null;
+  }
+
+  function handleSessionDragEnd(): void {
+    dragSource = null;
+    dragOverTarget = null;
   }
 
   function handleSessionDrop(
@@ -1510,15 +1563,28 @@
   ): void {
     e.preventDefault();
     const src = dragSource;
+    const hover = dragOverTarget;
     dragSource = null;
+    dragOverTarget = null;
     if (!src || src.wtPath !== wtPath) return;
-    if (src.index === targetIndex) return;
+    // Translate "drop on column N, left/right half" into an
+    // insertion index. Without this the drop always lands AT the
+    // target column's index — surprising when the user aimed for
+    // the gap on the other side.
+    let insertAt = targetIndex;
+    if (hover && hover.wtPath === wtPath && hover.index === targetIndex) {
+      insertAt = hover.side === "right" ? targetIndex + 1 : targetIndex;
+    }
+    // Splicing the source out shifts everything after src.index down
+    // by one, so adjust the post-source insertion index accordingly.
+    if (insertAt > src.index) insertAt--;
+    if (insertAt === src.index) return;
     const list = openSessionsByWt[wtPath] ?? [];
     const item = list[src.index];
     if (!item) return;
     const next = [...list];
     next.splice(src.index, 1);
-    next.splice(targetIndex, 0, item);
+    next.splice(insertAt, 0, item);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
   }
 
@@ -2005,6 +2071,25 @@
     visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
   }
 
+  /** Refetch only `/api/events` and republish. Same effect on the
+   *  reactive `events` array as a full `load()`, but skips the
+   *  `/api/repos` git-status scan that dominates `load()`'s wall
+   *  time (especially on workspaces with many worktrees or slow
+   *  drives). Called from the SSE handler when a `change` event
+   *  arrives so the per-row notes-list popover ("Recently deleted"
+   *  + reactive undo) and the global Undo tray pick up the new
+   *  event within one network round-trip instead of waiting on the
+   *  full repos refresh. */
+  async function refreshEvents(): Promise<void> {
+    try {
+      const e = await fetch("/api/events");
+      if (!e.ok) return;
+      events = await e.json();
+    } catch {
+      // Network errors are non-fatal — the next load() catches up.
+    }
+  }
+
   async function load() {
     loading = true;
     error = "";
@@ -2265,10 +2350,69 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      await load();
+      // Fast path: refresh just the events array (the "Recently
+      // deleted" filter + Undo tray both read from it). Then kick
+      // the full `load()` for repos/shells/titles in the
+      // background — no need to await it before returning to the
+      // caller, the SSE handler does the same thing redundantly.
+      await refreshEvents();
+      void load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  /** Restore a deleted note from a `remove_note` event and fly it
+   *  back into its pin slot. Two cooperating moves: this function
+   *  prepares App-level state (un-hide the destination row, capture
+   *  the trigger button's rect), then hands off to the layer's
+   *  `flyRestoreNote` so the same staging→pinned animation that
+   *  powers `+ note` / `+ link` plays in reverse-of-delete. The
+   *  origin rect is the Undo button itself, so the user's eye
+   *  follows the chip from the popover row down to its pin. */
+  async function undoNoteDelete(ev: Event, triggerEl: HTMLElement): Promise<void> {
+    const note = ev.inverse?.note as
+      | { id?: string; anchors?: string[] }
+      | undefined;
+    const noteId = note?.id;
+    const anchor = note?.anchors?.[0];
+    if (anchor) {
+      const wtPath = anchor.startsWith("worktree:")
+        ? anchor.slice("worktree:".length)
+        : null;
+      const repoPath = anchor.startsWith("repo:")
+        ? anchor.slice("repo:".length)
+        : null;
+      for (const r of rows) {
+        const matches = wtPath
+          ? r.wt?.path === wtPath
+          : repoPath
+            ? !r.wt && r.repo.path === repoPath
+            : false;
+        if (!matches) continue;
+        if (notesHiddenByRow[r.key]) {
+          notesHiddenByRow = { ...notesHiddenByRow, [r.key]: false };
+        }
+        if (zenRowKey === r.key && !notesShownInZen) {
+          notesShownInZen = true;
+        }
+        break;
+      }
+    }
+    // Snapshot the trigger's rect *before* the await — the popover
+    // may close (or reflow) by the time toggleEvent + the SSE
+    // refetch resolve, at which point the live element's rect would
+    // be wrong or zero. Then register the fly-in intent *before*
+    // toggleEvent so the layer's refresh (driven by the same SSE
+    // round-trip we're about to kick off) can stage the note at
+    // this rect in the first render pass — otherwise the note
+    // renders at its pin slot, the await chain unblocks 1-2s later,
+    // and the fly teleports back to origin before animating.
+    const originRect = triggerEl.getBoundingClientRect();
+    if (noteId) {
+      flyRestoreNote({ id: noteId, originRect });
+    }
+    await toggleEvent(ev.id, "undo");
   }
 
   /** Apps that count as a "git client" — when the user clicks one,
@@ -2372,6 +2516,13 @@
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
     es.addEventListener("change", (rawEvt: MessageEvent) => {
+      // Fire the cheap events-only refetch first so the per-row
+      // notes-list popover ("Recently deleted" + Undo) and the Undo
+      // tray pick up the new event within ~one network round-trip.
+      // `load()` bundles `/api/repos` (slow on big workspaces) into
+      // the same Promise.all that reassigns `events`, which is what
+      // made the popover lag 1-2s behind a delete/undo.
+      void refreshEvents();
       // Always refresh /api/repos so worktree-row counters (unstaged /
       // staged / untracked) reflect the change.
       void load();
@@ -2503,6 +2654,64 @@
       return where ? `${head} · ${where}` : head;
     }
     return ev.type;
+  }
+
+  /** Type → glyph mapping for the per-row notes-list popover. Mirrors
+   *  the same monochrome unicode set StickyNote uses for the link
+   *  chip so the two surfaces stay visually consistent. */
+  function targetGlyph(type: string | undefined): string {
+    switch (type) {
+      case "url":
+        return "↗";
+      case "commit":
+        return "◆";
+      case "session":
+        return "▶";
+      case "file":
+        return "▤";
+      default:
+        return "";
+    }
+  }
+
+  /** Display info for the per-row notes-list popover. Returns `text`
+   *  empty when the row has nothing meaningful to show — link kind
+   *  with no usable target *and* no body — so the caller can drop
+   *  the row entirely instead of rendering a confusing "(empty)". */
+  function notesListDisplay(n: {
+    body: string;
+    kind?: "note" | "link";
+    target?: {
+      type?: string;
+      value?: string;
+      label?: string;
+      agent?: string;
+      provider?: string;
+    };
+  }): {
+    kind: "note" | "link";
+    text: string;
+    title: string;
+    agent: string;
+    provider: string;
+    glyph: string;
+  } {
+    const kind = n.kind === "link" ? "link" : "note";
+    const excerpt = noteExcerpt(n.body);
+    if (kind === "link") {
+      const t = n.target ?? {};
+      const text = (excerpt || t.label || t.value || "").trim();
+      const title = [t.label, t.value, n.body].filter((s) => !!s).join("\n");
+      return {
+        kind,
+        text,
+        title,
+        agent: t.agent ?? "",
+        provider: t.provider ?? "",
+        glyph: targetGlyph(t.type),
+      };
+    }
+    return { kind, text: excerpt, title: n.body, agent: "", provider: "", glyph: "" };
   }
 
   /** First non-empty line of a note's body, trimmed to a length that
@@ -2772,6 +2981,25 @@
   $: visibleEvents = events.filter(
     (e) => e.type !== "undo" && e.type !== "redo",
   );
+
+  /** Reactive index of pending (not-yet-undone) `remove_note` events
+   *  bucketed by their first anchor. Drives the per-row notes-list
+   *  popover's "Recently deleted" section. Computed at script scope
+   *  rather than inline `{@const}` inside the popover so Svelte's
+   *  dep tracking on `events` is unambiguous — the inline version
+   *  was losing reactivity on certain SSE round-trips. */
+  $: removeNoteEventsByAnchor = (() => {
+    const out: Record<string, Event[]> = {};
+    for (const e of events) {
+      if (e.type !== "remove_note") continue;
+      if (e.undone) continue;
+      if (!e.reversible) continue;
+      const anchor = (e.inverse?.note?.anchors as string[] | undefined)?.[0];
+      if (!anchor) continue;
+      (out[anchor] ??= []).push(e);
+    }
+    return out;
+  })();
 
   /** Map shell records into the same shape as AgentSession so the picker
    *  can iterate one merged list. The `source` is the synthetic
@@ -3051,6 +3279,20 @@
       const anchor = target?.closest(`[data-wt-picker-anchor="${key}"]`);
       if (!anchor) {
         wtPickerOpen = { ...wtPickerOpen, [key]: false };
+      }
+    }
+    // Per-row notes-list popover — close on outside click. Treat
+    // clicks on any sticky note (including its delete X button) as
+    // "in flow" so the popover stays open while the user is acting on
+    // notes; otherwise the 3-second delete grace + SSE round-trip
+    // races the popover close and the deleted entry never appears
+    // until the user re-opens.
+    for (const key of Object.keys(notesListOpen)) {
+      if (!notesListOpen[key]) continue;
+      const anchor = target?.closest(`[data-notes-list-anchor="${key}"]`);
+      const inSticky = target?.closest(".sticky");
+      if (!anchor && !inSticky) {
+        notesListOpen = { ...notesListOpen, [key]: false };
       }
     }
     // Any open agents popovers that the click landed outside of: close them.
@@ -4142,9 +4384,151 @@
             <span class="note-add-stack">
               {#if noteCount > 0}
                 <span
-                  class="row-note-count"
-                  title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"}`}
-                >{noteCount}</span>
+                  class="row-note-count-anchor"
+                  data-notes-list-anchor={row.key}
+                >
+                  <button
+                    type="button"
+                    class="row-note-count"
+                    class:open={!!notesListOpen[row.key]}
+                    title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"} — click to list / undo deletes`}
+                    on:click|stopPropagation={() => {
+                      notesListOpen = {
+                        ...notesListOpen,
+                        [row.key]: !notesListOpen[row.key],
+                      };
+                    }}
+                  >{noteCount}</button>
+                  {#if notesListOpen[row.key]}
+                    {@const anchorStr = noteAnchor}
+                    {@const rowNotes = $notesAll.filter((n) =>
+                      n.anchors.some((a) => a === anchorStr),
+                    )}
+                    {@const rowDeletes = removeNoteEventsByAnchor[anchorStr] ?? []}
+                    {@const visibleNotes = rowNotes
+                      .map((n) => ({ n, display: notesListDisplay(n) }))
+                      .filter((row) => row.display.text.length > 0)}
+                    {@const visibleDeletes = rowDeletes
+                      .slice(0, 20)
+                      .map((ev) => ({
+                        ev,
+                        display: notesListDisplay({
+                          body: (ev.inverse?.note?.body as string | undefined) ?? "",
+                          kind: ev.inverse?.note?.kind,
+                          target: ev.inverse?.note?.target,
+                        }),
+                      }))
+                      .filter((r) => r.display.text.length > 0)}
+                    <Popover variant="agents" extraClass="notes-list-popover">
+                      <svelte:fragment slot="head">
+                        Notes on {wt ? `${repo.name ?? repoName(repo)} · ${wt.branch ?? "?"}` : (repo.name ?? repoName(repo))}
+                      </svelte:fragment>
+                      <div class="notes-list-section">
+                        {#if visibleNotes.length === 0}
+                          <p class="muted small nopad">No notes with content.</p>
+                        {:else}
+                          <ul class="notes-list">
+                            {#each visibleNotes as row (row.n.id)}
+                              {@const n = row.n}
+                              <li class="notes-list-row" class:is-link={row.display.kind === "link"}>
+                                <span class="notes-list-body" title={row.display.title}>
+                                  <span class="notes-list-kind" aria-hidden="true">
+                                    {#if row.display.kind === "link"}
+                                      {#if row.display.agent || row.display.provider || row.display.glyph}
+                                        <AttachmentIcon
+                                          agent={row.display.agent}
+                                          provider={row.display.provider}
+                                          glyph={row.display.glyph}
+                                          size={14}
+                                        />
+                                      {:else}
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          width="12"
+                                          height="12"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          stroke-width="2.2"
+                                          stroke-linecap="round"
+                                          stroke-linejoin="round"
+                                          aria-hidden="true"
+                                        >
+                                          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                        </svg>
+                                      {/if}
+                                    {:else}
+                                      <NoteIcon size={13} />
+                                    {/if}
+                                  </span>
+                                  {row.display.text}
+                                </span>
+                                <span class="muted ev-time">{relTime(n.updatedAt)}</span>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </div>
+                      <div class="notes-list-section">
+                        <div class="notes-list-section-head">
+                          Recently deleted ({visibleDeletes.length})
+                        </div>
+                        {#if visibleDeletes.length === 0}
+                          <p class="muted small nopad">None.</p>
+                        {:else}
+                          <ul class="notes-list">
+                            {#each visibleDeletes as r (r.ev.id)}
+                              <li class="notes-list-row deleted" class:is-link={r.display.kind === "link"}>
+                                <span class="notes-list-body" title={r.display.title}>
+                                  <span class="notes-list-kind" aria-hidden="true">
+                                    {#if r.display.kind === "link"}
+                                      {#if r.display.agent || r.display.provider || r.display.glyph}
+                                        <AttachmentIcon
+                                          agent={r.display.agent}
+                                          provider={r.display.provider}
+                                          glyph={r.display.glyph}
+                                          size={14}
+                                        />
+                                      {:else}
+                                        <svg
+                                          viewBox="0 0 24 24"
+                                          width="12"
+                                          height="12"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          stroke-width="2.2"
+                                          stroke-linecap="round"
+                                          stroke-linejoin="round"
+                                          aria-hidden="true"
+                                        >
+                                          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                        </svg>
+                                      {/if}
+                                    {:else}
+                                      <NoteIcon size={13} />
+                                    {/if}
+                                  </span>
+                                  {r.display.text}
+                                </span>
+                                <span class="muted ev-time">{relTime(r.ev.timestamp)}</span>
+                                <button
+                                  class="undo"
+                                  on:click={(e) =>
+                                    void undoNoteDelete(
+                                      r.ev,
+                                      e.currentTarget as HTMLElement,
+                                    )}
+                                  title="Restore this deleted note"
+                                >Undo</button>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </div>
+                    </Popover>
+                  {/if}
+                </span>
               {/if}
               <button
                 class="new-wt notes-toggle"
@@ -4534,7 +4918,11 @@
                   existingSources,
                 )}
                 {#if visibleSessions.length > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
-                  <div class="sessions-strip" data-wt-strip={wt.path}>
+                  <div
+                    class="sessions-strip"
+                    data-wt-strip={wt.path}
+                    on:dragleave={(e) => handleStripDragLeave(e, wt.path)}
+                  >
                     <!-- Leading + trailing spacers: invisible flex items
                          that give the first/last column a constant gap
                          from the strip edge and let the user over-scroll
@@ -4546,10 +4934,20 @@
                         class="session-col"
                         class:session-col-filtered={stripFilter && !stripFilter.matched.has(s.source)}
                         class:session-col-pickable={!!stripFilter && stripFilter.matched.has(s.source)}
+                        class:drop-before={dragOverTarget?.wtPath === wt.path
+                          && dragOverTarget.index === i
+                          && dragOverTarget.side === "left"
+                          && dragSource?.index !== i}
+                        class:drop-after={dragOverTarget?.wtPath === wt.path
+                          && dragOverTarget.index === i
+                          && dragOverTarget.side === "right"
+                          && dragSource?.index !== i}
                         data-session-source={s.source}
-                        on:dragover={handleSessionDragOver}
+                        animate:flip={{ duration: 220 }}
+                        on:dragover={(e) => handleSessionDragOver(e, wt.path, i)}
                         on:drop={(e) =>
                           handleSessionDrop(e, wt.path, i)}
+                        on:dragend={handleSessionDragEnd}
                         on:click={() => {
                           commitStripSearch(row.key, wt.path, s.source);
                           // Bubbles from any click inside the column — a
@@ -4753,6 +5151,8 @@
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}
+                            onDragStart={(e) =>
+                              handleSessionDragStart(e, wt.path, i)}
                           />
                         {:else}
                           {@const agentMeta = (wt.agents ?? []).find(

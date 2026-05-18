@@ -568,13 +568,104 @@
     opacity: 0.85;
   }
 
-  /* In this popover the row grid grows by one trailing cell so the
-     dismiss/restore icon always lives in its own column at the far
-     right — instead of overflowing into a new grid row when the
-     parent .agent-row template only reserves 7 cells. Scoped via the
-     popover root so other consumers of .agent-row are untouched. */
+  /* Stack the session-search popover above the sticky-notes layer
+     (`.sticky-host` ≈ z 900, dragged-note ≈ 1500) so notes pinned to
+     a row never paint over the picker. The hover-preview panel sits
+     at 2200 already; bumping the popover root past that means the
+     picker also covers it correctly when both are visible. */
+  :global(.session-search-popover.agents-popover) {
+    z-index: 2300;
+  }
+
+  /* In this popover we want columns that align ACROSS rows — not
+     just within each row — so a long title in one row doesn't push
+     "msgs · time · hash" of OTHER rows around. Pattern:
+       1. `.agents-list` is the actual grid (8 columns).
+       2. Each `<li>` is a subgrid that spans every column.
+       3. Each `.agent-row` is itself a subgrid so the button's
+          children can pin to those same columns.
+     Scoped to `.session-search-popover` so other `.agents-list`
+     consumers (worktree picker, branch picker, etc.) are untouched.
+
+     Columns:
+       1  logo / agent dot       fixed 16px
+       2  provider name          auto
+       3  title / last-msg       1fr (the flexible cell)
+       4  message / cmd count    auto
+       5  time passed            auto
+       6  short sid hash         auto
+       7  close × (open only)    fixed 18px
+       8  dismiss / restore      fixed 18px */
+  :global(.session-search-popover .agents-list) {
+    display: grid;
+    grid-template-columns:
+      16px
+      auto
+      minmax(0, 1fr)
+      auto
+      auto
+      auto
+      18px
+      18px;
+    column-gap: 0.5rem;
+    row-gap: 0.1rem;
+  }
+  /* Each <li> is one row of the parent grid. Subgrid lets the row's
+     button (and its children) participate in the SAME column tracks
+     the outer grid defined, so widths align across rows. */
+  :global(.session-search-popover .agents-list > li) {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    align-items: center;
+    padding: 0;
+    margin: 0;
+  }
+  /* The Dismissed-group header is a single label across all columns.
+     Override the subgrid with a plain flex layout. */
+  :global(.session-search-popover .agents-list > li.dismissed-header) {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  /* The agent-row button itself is also a subgrid so its children
+     (icon · name · title · …) pin to columns 1–8. Override the
+     default per-row grid-template-columns from agent-row.css. */
   :global(.session-search-popover .agent-row) {
-    grid-template-columns: 16px auto minmax(0, 1fr) auto auto auto 18px 18px;
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+  }
+  /* Pin each .agent-row child to its column so optional cells (no
+     title, no sid, no manualTitle) don't shift their neighbours. */
+  :global(.session-search-popover .agent-row > .agent-row-icon),
+  :global(.session-search-popover .agent-row > .agent-dot) {
+    grid-column: 1;
+  }
+  :global(.session-search-popover .agent-row > .agent-row-name) {
+    grid-column: 2;
+  }
+  :global(.session-search-popover .agent-row > .agent-title) {
+    grid-column: 3;
+  }
+  /* Orphan tag (rare) shares the title column, pinned to the right
+     edge of that cell. Inline rendering would otherwise push the
+     msgs / time columns rightward and break the alignment. */
+  :global(.session-search-popover .agent-row > .orphan-tag) {
+    grid-column: 3;
+    justify-self: end;
+  }
+  :global(.session-search-popover .agent-row > .agent-msgs) {
+    grid-column: 4;
+  }
+  :global(.session-search-popover .agent-row > .agent-time) {
+    grid-column: 5;
+  }
+  :global(.session-search-popover .agent-row > .agent-sid) {
+    grid-column: 6;
+  }
+  :global(.session-search-popover .agent-row > .row-close) {
+    grid-column: 7;
   }
   :global(.session-search-popover .agent-row > .row-action) {
     grid-column: 8;
@@ -669,7 +760,9 @@
     overflow-y: auto;
     padding: 0.55rem 0.7rem;
     background: transparent;
-    z-index: 2200;
+    /* One above the popover root (2300) so the hover preview always
+       paints on top of the picker rows it's anchored to. */
+    z-index: 2400;
     transition: top 120ms ease, left 120ms ease;
   }
 </style>

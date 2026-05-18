@@ -1,5 +1,15 @@
 import { writable } from "svelte/store";
 
+export interface NoteLinkTargetShape {
+  type: "url" | "commit" | "session" | "file";
+  value: string;
+  label?: string;
+  subtitle?: string;
+  meta?: string;
+  agent?: string;
+  provider?: string;
+}
+
 export interface NoteShape {
   id: string;
   anchors: string[];
@@ -7,6 +17,13 @@ export interface NoteShape {
   body: string;
   createdAt: string;
   updatedAt: string;
+  /** Discriminator that mirrors the daemon's `AttachmentKind`. Absent on
+   *  pre-existing note files; treat `undefined` as `"note"`. */
+  kind?: "note" | "link";
+  /** Only set when `kind === "link"`. Lets list consumers (the per-row
+   *  notes popover) render a useful chip-style line for link kinds
+   *  whose `body` is empty. */
+  target?: NoteLinkTargetShape;
 }
 
 /** Count of notes pinned to each anchor string (e.g.

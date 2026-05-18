@@ -74,6 +74,11 @@
    *  tooltip can show it. App.svelte derives this from the daemon's
    *  AgentSession index (same source as `lastActivityIso`). */
   export let lastUserMessage: string | undefined = undefined;
+  /** Forwarded to SessionHeader so dragging the live-TUI column's
+   *  header registers a drag source with the parent strip — without
+   *  this the drop handler in App.svelte never sees a source and the
+   *  column snaps back instead of reordering. */
+  export let onDragStart: (e: DragEvent) => void = () => {};
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -164,6 +169,7 @@
     lastActivityFallback="new session"
     messageCountFallback={agent === "shell" ? "starting…" : "no messages yet"}
     {menuItems}
+    {onDragStart}
     onTitleSaved={(next) => dispatch("titleSave", { title: next })}
     onEndSession={() => dispatch("dispose")}
     onClose={() => dispatch("close")}
