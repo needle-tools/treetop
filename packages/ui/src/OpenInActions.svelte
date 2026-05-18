@@ -53,6 +53,16 @@
   /** Remove-link handler. Same contract — the parent owns the fetch. */
   export let onRemoveCustomLink: ((linkId: string) => Promise<void>) | null =
     null;
+  /** Edit-link handler. Called from the per-link edit popover when the
+   *  user submits a new URL and/or label. Resolves true on success so
+   *  the popover can close; false on validation/network error so the
+   *  inline error message stays visible. */
+  export let onEditCustomLink:
+    | ((
+        linkId: string,
+        input: { url?: string; name?: string },
+      ) => Promise<boolean>)
+    | null = null;
   /** Reorder-links handler. Receives the new ordered list of link ids
    *  after a drag-and-drop completes; parent updates state + persists
    *  to the daemon. Drag is disabled when this is null. */
@@ -125,6 +135,107 @@
   let urlInput: HTMLInputElement | undefined;
   let anchorEl: HTMLSpanElement | undefined;
 
+  /** Per-link edit popover. Only one link can be in edit mode at a
+   *  time — opening one closes any other. Anchor refs live in a map
+   *  so the outside-click handler can scope its `contains()` check to
+   *  the active editor without touching the other chips' wraps. */
+  let editingLinkId: string | null = null;
+  let editUrl = "";
+  let editName = "";
+  let editing = false;
+  let editError = "";
+  let editUrlInput: HTMLInputElement | undefined;
+  const editAnchorEls = new Map<string, HTMLElement>();
+
+  /** Svelte action: registers the chip-wrap element in
+   *  `editAnchorEls` under its link id so the outside-click handler
+   *  can scope its `contains()` check to whichever chip is currently
+   *  in edit mode. Unregisters automatically when the row is removed
+   *  (drag-reorder unmounts shouldn't drop the registration since
+   *  animate:flip preserves the same node, but defensive cleanup is
+   *  cheap). */
+  function bindEditAnchor(
+    node: HTMLElement,
+    id: string,
+  ): { update(newId: string): void; destroy(): void } {
+    editAnchorEls.set(id, node);
+    let registeredId = id;
+    return {
+      update(newId: string) {
+        if (newId === registeredId) return;
+        editAnchorEls.delete(registeredId);
+        editAnchorEls.set(newId, node);
+        registeredId = newId;
+      },
+      destroy() {
+        if (editAnchorEls.get(registeredId) === node) {
+          editAnchorEls.delete(registeredId);
+        }
+      },
+    };
+  }
+
+  function openEdit(link: CustomLink) {
+    if (!onEditCustomLink) return;
+    addOpen = false;
+    editingLinkId = link.id;
+    editUrl = link.url;
+    editName = link.name ?? "";
+    editError = "";
+    setTimeout(() => editUrlInput?.focus(), 0);
+  }
+
+  function closeEdit() {
+    editingLinkId = null;
+    editError = "";
+  }
+
+  async function submitEdit() {
+    if (!onEditCustomLink || !editingLinkId) return;
+    const url = editUrl.trim();
+    if (url.length === 0) {
+      editError = "URL required.";
+      return;
+    }
+    editing = true;
+    editError = "";
+    const id = editingLinkId;
+    try {
+      const ok = await onEditCustomLink(id, {
+        url,
+        // Send name (possibly blank) so the daemon clears it when the
+        // user wiped the label. Undefined would mean "don't touch".
+        name: editName,
+      });
+      if (ok) closeEdit();
+      else editError = "Couldn't save — server rejected the change.";
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e);
+    } finally {
+      editing = false;
+    }
+  }
+
+  async function deleteFromEdit() {
+    if (!editingLinkId || !onRemoveCustomLink) return;
+    const link = customLinks.find((l) => l.id === editingLinkId);
+    if (!link) {
+      closeEdit();
+      return;
+    }
+    const label = linkLabel(link);
+    const ok = await confirmDialog({
+      title: `Remove the “${label}” link?`,
+      message: link.url,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    const id = editingLinkId;
+    closeEdit();
+    await onRemoveCustomLink(id);
+  }
+
   function toggleAdd() {
     addOpen = !addOpen;
     if (addOpen) {
@@ -168,7 +279,10 @@
     window.open(link.url, "_blank", "noopener,noreferrer");
   }
 
-  async function removeLink(link: CustomLink, ev: MouseEvent) {
+  /** Quick-delete path used by shift-click and right-click on a chip
+   *  — same destructive confirm dialog the edit popover's Delete
+   *  button uses, just skipping the form. */
+  async function quickRemoveLink(link: CustomLink, ev: MouseEvent) {
     ev.preventDefault();
     ev.stopPropagation();
     if (!onRemoveCustomLink) return;
@@ -247,22 +361,39 @@
     await onReorderCustomLinks(next);
   }
 
-  function onPopoverKeydown(ev: KeyboardEvent) {
+  function onAddPopoverKeydown(ev: KeyboardEvent) {
     if (ev.key === "Escape") {
       ev.preventDefault();
       addOpen = false;
     }
   }
 
-  /** Dismiss on outside-click. Same pattern used by App.svelte for its
-   *  other popovers — check whether the click landed on the anchor span
-   *  (the `+` button + popover sit inside it). Using `mousedown` so the
-   *  popover closes before any click-handler inside competing UI fires. */
+  function onEditPopoverKeydown(ev: KeyboardEvent) {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeEdit();
+    }
+  }
+
+  /** Dismiss on outside-click. Each popover's anchor span owns the
+   *  trigger + the popover element, so we check `contains()` against
+   *  whichever anchor is currently active. `mousedown` so the popover
+   *  closes before any competing handler inside the target node fires.
+   *
+   *  Skip while the confirm-dialog is open — its overlay sits over the
+   *  popover, and treating the overlay click as "outside" would close
+   *  the popover behind the dialog and dump the user's edits. */
   function onWindowMouseDown(ev: MouseEvent) {
-    if (!addOpen || !anchorEl) return;
     const target = ev.target;
-    if (target instanceof Node && anchorEl.contains(target)) return;
-    addOpen = false;
+    if (!(target instanceof Node)) return;
+    if (target instanceof Element && target.closest(".confirm-overlay")) return;
+    if (addOpen && anchorEl && !anchorEl.contains(target)) {
+      addOpen = false;
+    }
+    if (editingLinkId) {
+      const anchor = editAnchorEls.get(editingLinkId);
+      if (anchor && !anchor.contains(target)) closeEdit();
+    }
   }
 </script>
 
@@ -288,7 +419,7 @@
       {#if addOpen}
         <Popover variant="agents" extraClass="custom-link-popover">
           <svelte:fragment slot="head">Add a custom link</svelte:fragment>
-          <div class="custom-link-form" on:keydown={onPopoverKeydown} role="group">
+          <div class="custom-link-form" on:keydown={onAddPopoverKeydown} role="group">
             <label class="custom-link-field">
               <span class="custom-link-label">URL</span>
               <input
@@ -346,6 +477,8 @@
       class:icon-only={iconOnly}
       class:draggable={canReorder()}
       class:dragging={dragId === link.id}
+      class:editing={editingLinkId === link.id}
+      use:bindEditAnchor={link.id}
       draggable={canReorder()}
       animate:flip={{ duration: 220 }}
       on:dragstart={(ev) => startDrag(link, ev)}
@@ -359,10 +492,10 @@
         class:icon-only={iconOnly}
         title={`Open ${link.url} in browser`}
         on:click={(ev) => {
-          if (ev.shiftKey) return removeLink(link, ev);
+          if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);
         }}
-        on:contextmenu={(ev) => removeLink(link, ev)}
+        on:contextmenu={(ev) => quickRemoveLink(link, ev)}
       >
         {#if !failed}
           <img
@@ -390,18 +523,93 @@
           <span>{label}</span>
         {/if}
       </button>
-      {#if onRemoveCustomLink && !iconOnly}
-        <!-- Remove `x` — hover-revealed on the wrap. Skipped in
-             iconOnly mode (folded row-head) since the chip's already a
-             22px circle and there's no room for a kebab; users
-             shift-click or right-click there instead. -->
+      {#if onEditCustomLink && !iconOnly}
+        <!-- Edit pencil — hover-revealed on the wrap. Opens a popover
+             with URL + Label fields and a Delete button (confirmed via
+             the app-wide ConfirmDialog). Skipped in iconOnly mode
+             (folded row-head) since the chip's already a 22px circle
+             with no kebab room — users shift-click / right-click for
+             quick removal, or expand the row to edit. -->
         <button
           type="button"
-          class="custom-link-x"
-          title={`Remove this link`}
-          aria-label={`Remove ${label}`}
-          on:click={(ev) => removeLink(link, ev)}
-        >×</button>
+          class="custom-link-edit"
+          title={`Edit this link`}
+          aria-label={`Edit ${label}`}
+          on:click|stopPropagation={() => openEdit(link)}
+        >
+          <!-- Solid pencil — single filled path so the glyph stays
+               legible at 10px without stroke artifacts. -->
+          <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+            <path
+              d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+            />
+          </svg>
+        </button>
+      {/if}
+      {#if editingLinkId === link.id}
+        <Popover variant="agents" extraClass="custom-link-popover">
+          <svelte:fragment slot="head">Edit link</svelte:fragment>
+          <div
+            class="custom-link-form"
+            on:keydown={onEditPopoverKeydown}
+            role="group"
+          >
+            <label class="custom-link-field">
+              <span class="custom-link-label">URL</span>
+              <input
+                bind:this={editUrlInput}
+                class="custom-link-input"
+                type="url"
+                bind:value={editUrl}
+                disabled={editing}
+                on:keydown={(e) => {
+                  if (e.key === "Enter") submitEdit();
+                }}
+              />
+            </label>
+            <label class="custom-link-field">
+              <span class="custom-link-label"
+                >Label <span class="muted">(optional)</span></span
+              >
+              <input
+                class="custom-link-input"
+                type="text"
+                bind:value={editName}
+                disabled={editing}
+                on:keydown={(e) => {
+                  if (e.key === "Enter") submitEdit();
+                }}
+              />
+            </label>
+            {#if editError}
+              <div class="custom-link-error">{editError}</div>
+            {/if}
+            <div class="custom-link-buttons">
+              {#if onRemoveCustomLink}
+                <button
+                  type="button"
+                  class="tiny custom-link-delete"
+                  on:click={deleteFromEdit}
+                  disabled={editing}
+                  title="Delete this link"
+                >Delete</button>
+              {/if}
+              <span class="custom-link-buttons-spacer"></span>
+              <button
+                type="button"
+                class="tiny custom-link-cancel"
+                on:click={closeEdit}
+                disabled={editing}
+              >Cancel</button>
+              <button
+                type="button"
+                class="tiny custom-link-go"
+                on:click={submitEdit}
+                disabled={editing || editUrl.trim().length === 0}
+              >{editing ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </Popover>
       {/if}
     </span>
   {/each}
@@ -513,34 +721,47 @@
   .custom-link-wrap.dragging :global(.open-in-icon) {
     cursor: grabbing;
   }
-  .custom-link-x {
+  /* Edit pencil — hover-revealed at the chip's top-right. No border
+     and no chip background; just the filled glyph sitting against
+     the row. The visible glyph stays at 10px, but the button itself
+     carries enough padding to make a comfortable ~22px click target
+     (negative inset keeps the visual top-right corner aligned with
+     the chip). Reads as "tweak" rather than "remove now" — the
+     destructive delete lives inside the edit popover. */
+  .custom-link-edit {
     position: absolute;
-    top: -4px;
-    right: -4px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
+    top: -8px;
+    right: -8px;
+    width: 22px;
+    height: 22px;
     border: none;
-    padding: 0;
-    background: color-mix(in srgb, #c0392b 78%, transparent);
-    color: #fff;
-    font-size: 11px;
-    line-height: 1;
+    padding: 6px;
+    background: transparent;
+    color: var(--text-muted);
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.12s;
+    transition: opacity 0.12s, color 0.12s;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
   }
-  .custom-link-wrap:hover .custom-link-x,
-  .custom-link-wrap:focus-within .custom-link-x,
-  .custom-link-x:hover,
-  .custom-link-x:focus-visible {
+  .custom-link-wrap:hover .custom-link-edit,
+  .custom-link-wrap:focus-within .custom-link-edit,
+  .custom-link-wrap.editing .custom-link-edit,
+  .custom-link-edit:hover,
+  .custom-link-edit:focus-visible {
     opacity: 1;
   }
-  .custom-link-x:hover {
-    background: #c0392b;
+  .custom-link-edit:hover,
+  .custom-link-edit:focus-visible {
+    color: var(--text, inherit);
+    outline: none;
+  }
+  .custom-link-edit svg {
+    fill: currentColor;
+    stroke: none;
+    display: block;
   }
 
   .custom-link-btn {
@@ -637,19 +858,43 @@
   }
   .custom-link-buttons {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
     gap: 0.3rem;
     margin-top: 0.15rem;
   }
+  .custom-link-buttons-spacer {
+    flex: 1 1 auto;
+  }
+  .custom-link-delete {
+    color: #c0392b;
+    border: 1px solid color-mix(in srgb, #c0392b 50%, transparent);
+    background: transparent;
+  }
+  .custom-link-delete:hover:not(:disabled) {
+    background: color-mix(in srgb, #c0392b 75%, transparent);
+    color: #fff;
+  }
 
   /* Override the agents-popover defaults: the shared shell ships with
-     min-width 380px for the wide picker lists, way too wide for our
-     compact URL+label form. Constrain to ~240px so the popover hugs
-     its contents. `:global()` is required because the popover root
-     lives outside this component's scope hash. */
+     min-width 380px for the wide picker lists, more than this two-
+     field form needs. Inputs don't naturally push their parent wider
+     (they pin to whatever explicit width the container hands them),
+     so `width: max-content` against the agents-popover root just
+     settled at min-width. Pin the popover to a comfortable URL-
+     friendly width (~340px ≈ 1.5× the old 240px baseline) so longer
+     URLs are legible without scrolling. `:global()` is required
+     because the popover root lives outside this component's scope
+     hash. */
   :global(.custom-link-popover) {
-    min-width: 240px;
-    width: 240px;
+    min-width: 340px;
+    width: 340px;
+    max-width: 90vw;
     padding: 0.45rem 0.55rem;
+  }
+  /* Inputs fill the popover. `min-width: 0` overrides the flex
+     default that would otherwise prevent shrinking on narrow
+     viewports. */
+  .custom-link-input {
+    min-width: 0;
   }
 </style>

@@ -335,4 +335,70 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await expect(ws.reorderCustomLinks("nope", [])).rejects.toThrow(/not found/);
   });
+
+  test("updateCustomLink rewrites the URL", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      url: "https://a.test/",
+      name: "Alpha",
+    });
+    const updated = await ws.updateCustomLink(repo.id, link.id, {
+      url: "https://b.test/",
+    });
+    expect(updated).toEqual({ id: link.id, url: "https://b.test/", name: "Alpha" });
+    expect((await ws.listRepos())[0]!.customLinks?.[0]).toEqual(updated!);
+  });
+
+  test("updateCustomLink rewrites the name", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const updated = await ws.updateCustomLink(repo.id, link.id, {
+      name: "Production",
+    });
+    expect(updated?.name).toBe("Production");
+  });
+
+  test("updateCustomLink clears the name when set to blank", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      url: "https://a.test/",
+      name: "Alpha",
+    });
+    const updated = await ws.updateCustomLink(repo.id, link.id, { name: "  " });
+    expect(updated?.name).toBeUndefined();
+    expect((await ws.listRepos())[0]!.customLinks?.[0]).toEqual({
+      id: link.id,
+      url: "https://a.test/",
+    });
+  });
+
+  test("updateCustomLink rejects bad URLs", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    await expect(
+      ws.updateCustomLink(repo.id, link.id, { url: "not a url" }),
+    ).rejects.toThrow(/url/i);
+    await expect(
+      ws.updateCustomLink(repo.id, link.id, { url: "ftp://x" }),
+    ).rejects.toThrow(/http/i);
+  });
+
+  test("updateCustomLink returns null for unknown link id", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    expect(
+      await ws.updateCustomLink(repo.id, "missing", { name: "x" }),
+    ).toBeNull();
+  });
+
+  test("updateCustomLink throws when the repo id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(
+      ws.updateCustomLink("nope", "x", { name: "y" }),
+    ).rejects.toThrow(/not found/);
+  });
 });

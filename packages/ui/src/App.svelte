@@ -2484,6 +2484,43 @@
     }
   }
 
+  /** Edit an existing custom link's URL and/or label. Same optimistic
+   *  pattern as add/remove — we splice the updated link into the
+   *  local repo immediately so the chip's favicon + label update
+   *  without waiting for the SSE round-trip. */
+  async function updateCustomLink(
+    repoId: string,
+    linkId: string,
+    input: { url?: string; name?: string },
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/custom-links/${linkId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as { link: CustomLink };
+      const repo = repos.find((r) => r.id === repoId);
+      if (repo && repo.customLinks) {
+        repo.customLinks = repo.customLinks.map((l) =>
+          l.id === linkId ? body.link : l,
+        );
+        repos = repos;
+      }
+      return true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
   async function removeCustomLink(repoId: string, linkId: string): Promise<void> {
     try {
       const res = await fetch(
@@ -4973,6 +5010,7 @@
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
                 onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
                 onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
+                onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
                 iconOnly
               />
             {/if}
@@ -5156,6 +5194,7 @@
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
                 onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
                 onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
+                onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
               />
             </div>
 

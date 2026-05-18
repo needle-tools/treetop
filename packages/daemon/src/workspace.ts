@@ -264,6 +264,57 @@ export class Workspace {
   }
 
   /**
+   * Update a previously-added custom link in place. Pass `url` to
+   * change the target URL (validated the same way as addCustomLink),
+   * `name` to set a new label, or `name: ""` to clear an existing
+   * label. Returns the updated link, or `null` if no link with that
+   * id exists on the repo. Throws if the repo itself is unknown or
+   * the new URL is invalid.
+   */
+  async updateCustomLink(
+    id: string,
+    linkId: string,
+    input: { url?: string; name?: string },
+  ): Promise<CustomLink | null> {
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const links = repos[idx]!.customLinks ?? [];
+    const linkIdx = links.findIndex((l) => l.id === linkId);
+    if (linkIdx < 0) return null;
+    const current = links[linkIdx]!;
+    const next: CustomLink = { id: current.id, url: current.url };
+    if (current.name !== undefined) next.name = current.name;
+    if (input.url !== undefined) {
+      const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
+      if (rawUrl.length === 0) {
+        throw new Error("url must be a non-empty string");
+      }
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        throw new Error("url must be a valid URL");
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("url must be http(s)");
+      }
+      next.url = rawUrl;
+    }
+    if (input.name !== undefined) {
+      const trimmed = typeof input.name === "string" ? input.name.trim() : "";
+      if (trimmed.length === 0) delete next.name;
+      else next.name = trimmed;
+    }
+    const newLinks = [...links];
+    newLinks[linkIdx] = next;
+    const repo: Repo = { ...repos[idx]!, customLinks: newLinks };
+    repos[idx] = repo;
+    await this.writeRepos(repos);
+    return next;
+  }
+
+  /**
    * Reorder the repo's custom links to match the provided id list.
    * `orderedIds` must be a permutation of the repo's existing link
    * ids — same length, same set, just rearranged. Returns the

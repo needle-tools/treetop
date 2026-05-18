@@ -921,6 +921,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/repos/:id/custom-links", body: { url: "http(s) URL", name: "string?" }, description: "append a user-defined 'open in' link to the repo (Coolify dashboards, staging URLs, etc.). Returns the persisted link with its generated id." },
           { method: "POST", path: "/api/repos/:id/custom-links/order", body: { order: "string[] of link ids" }, description: "rewrite the repo's custom-links order to match the provided id list (must be a permutation of the existing ids). Used by the drag-to-reorder action in the dashboard's worktree row." },
           { method: "DELETE", path: "/api/repos/:id/custom-links/:linkId", description: "remove a previously-added custom link from the repo." },
+          { method: "PATCH", path: "/api/repos/:id/custom-links/:linkId", body: { url: "string?", name: "string?" }, description: "edit a custom link in place. Pass `url` to change the target, `name` to change the label (empty string clears the label)." },
           { method: "GET", path: "/api/favicon", description: "?url=<page-url> — proxy that fetches and caches the favicon for the given page (tries /favicon.ico and then parses <link rel='icon'> from the page HTML). Used so the UI can show a brand mark next to each custom link without CORS or third-party leaks." },
           { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
           { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
@@ -1733,6 +1734,25 @@ const server = Bun.serve<TermWsData, never>({
         if (!removed) return json({ error: "link not found" }, { status: 404 });
         broadcast("change", { kind: "custom_link_remove", id, linkId });
         return json({ id, removed });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
+      }
+    }
+    if (customLinkOneMatch && req.method === "PATCH") {
+      const id = customLinkOneMatch[1]!;
+      const linkId = customLinkOneMatch[2]!;
+      const body = (await req.json().catch(() => null)) as
+        | { url?: unknown; name?: unknown }
+        | null;
+      const input: { url?: string; name?: string } = {};
+      if (typeof body?.url === "string") input.url = body.url;
+      if (typeof body?.name === "string") input.name = body.name;
+      try {
+        const updated = await workspace.updateCustomLink(id, linkId, input);
+        if (!updated) return json({ error: "link not found" }, { status: 404 });
+        broadcast("change", { kind: "custom_link_update", id, linkId });
+        return json({ id, link: updated });
       } catch (e) {
         const msg = String(e instanceof Error ? e.message : e);
         return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
