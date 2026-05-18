@@ -319,8 +319,53 @@ function drawIndicator(state: TabState, tMs: number): void {
       ctx.textBaseline = "middle";
       ctx.fillText(String(state.awaiting), cx, cy + 0.5);
     }
+  } else if (state.unread > 0) {
+    // Idle but with unread sessions ("done, waiting for review" —
+    // matches the dock's pulsating dot). Logo always visible. The
+    // red badge stays on the whole time and "pulsates": 0.5 Hz scale
+    // toggle between two sizes — a subtle heartbeat that pulls the
+    // eye from another tab without the harshness of a full on/off
+    // blink. The badge is anchored at a fixed center so the digit
+    // inside doesn't jiggle.
+    //
+    // Priority intentionally beats the "working" branch below: when
+    // an agent is done and waiting for review *and* another is mid-
+    // turn, the "review me" signal is more important than the
+    // "still working" one, so show the badge instead of the ring.
+    if (!baseImage || !baseImageReady) return;
+    try {
+      ctx.drawImage(baseImage, 0, 0, size, size);
+    } catch {
+      return;
+    }
+    const smallR = 12;
+    const bigR = 14;
+    const pulsed = Math.floor(t) % 2 === 0;
+    const r = pulsed ? bigR : smallR;
+    const cx = size - bigR - 0.5;
+    const cy = bigR + 0.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#e34c3c";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.stroke();
+    if (state.unread >= 1 && state.unread <= 9) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(state.unread), cx, cy + 0.5);
+    } else if (state.unread > 9) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 13px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("9+", cx, cy + 0.5);
+    }
   } else if (state.working > 0) {
-    // Working-only: needle logo dimmed slightly with a brand-green
+    // Working only: needle logo dimmed slightly with a brand-green
     // "stitching" ring rotating around it. Dashes (rather than a
     // continuous arc) read as sewing stitches → on-brand for Needle
     // and visually distinct from a generic page-loading spinner.
@@ -354,48 +399,6 @@ function drawIndicator(state: TabState, tMs: number): void {
       ctx.beginPath();
       ctx.arc(cx, cy, r, a0, a0 + dashSweep);
       ctx.stroke();
-    }
-  } else if (state.unread > 0) {
-    // Idle but with unread sessions ("done, waiting for review" —
-    // matches the dock's pulsating dot). Logo always visible. The
-    // red badge stays on the whole time and "pulsates": 0.5 Hz scale
-    // toggle between two sizes — a subtle heartbeat that pulls the
-    // eye from another tab without the harshness of a full on/off
-    // blink. The badge is anchored at a fixed center so the digit
-    // inside doesn't jiggle.
-    if (!baseImage || !baseImageReady) return;
-    try {
-      ctx.drawImage(baseImage, 0, 0, size, size);
-    } catch {
-      return;
-    }
-    const smallR = 12;
-    const bigR = 14;
-    const pulsed = Math.floor(t) % 2 === 0;
-    const r = pulsed ? bigR : smallR;
-    // Anchor the badge center so the bigR state just touches the
-    // top + right edges (1px breathing room for the stroke).
-    const cx = size - bigR - 0.5;
-    const cy = bigR + 0.5;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#e34c3c";
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-    ctx.stroke();
-    if (state.unread >= 1 && state.unread <= 9) {
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(state.unread), cx, cy + 0.5);
-    } else if (state.unread > 9) {
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 13px system-ui, -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("9+", cx, cy + 0.5);
     }
   }
 
