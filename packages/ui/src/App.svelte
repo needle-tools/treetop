@@ -2170,11 +2170,17 @@
       // them inside the stream pump.
       const reposStream = fetchReposNDJSON({
         onManifest: (skel) => {
-          repos = skel;
-          // Skeleton rows are useful information — drop the global
-          // loading overlay now so the user sees their workspace
-          // structure immediately. Individual rows still get filled
-          // in as their `repo` lines arrive.
+          // First load: paint skeletons so the user sees structure
+          // immediately. Subsequent reloads: keep already-rendered
+          // rows in place and just sync add/remove from the manifest
+          // — replacing with skeletons would collapse worktrees to
+          // empty for a frame and flicker the whole dashboard.
+          if (repos.length === 0) {
+            repos = skel;
+          } else {
+            const existingById = new Map(repos.map((r) => [r.id, r]));
+            repos = skel.map((s) => existingById.get(s.id) ?? s);
+          }
           loading = false;
         },
         onRepo: (full) => {
@@ -2194,10 +2200,13 @@
         fetch("/api/session-titles"),
       ]);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
-      // Wait for the stream to finish so repos ends up in the canonical
-      // server-side order (the stream's onRepo callback fills in as
-      // completion order, which is non-deterministic).
-      repos = await reposStream;
+      // Wait for the stream to finish before reading sibling responses,
+      // but DON'T reassign `repos` from the stream's return value — that
+      // array is in completion order, while `repos` is already in
+      // canonical workspace order (manifest seeds order, `onRepo` does
+      // in-place updates by id). Reassigning would reorder the dashboard
+      // on every refresh.
+      await reposStream;
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.

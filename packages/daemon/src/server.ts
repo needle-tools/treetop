@@ -299,8 +299,18 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
     rejectInflight = rej;
   });
 
+  // Client may abort mid-stream (fast page reload, navigating away).
+  // Once that happens the underlying controller is closed and any
+  // further enqueue/close/error throws `ERR_INVALID_STATE`. We still
+  // want the git fan-out to run to completion so concurrent waiters
+  // get the cached result — just stop touching the controller.
+  let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const safeEnqueue = (chunk: Uint8Array): void => {
+        if (cancelled) return;
+        try { controller.enqueue(chunk); } catch { cancelled = true; }
+      };
       try {
         const [repos, agents, titles] = await Promise.all([
           workspace.listRepos(),
@@ -310,7 +320,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const titled = agents.map((s) =>
           titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
         );
-        controller.enqueue(enc.encode(manifestLineFor(repos)));
+        safeEnqueue(enc.encode(manifestLineFor(repos)));
 
         const enriched: EnrichedRepo[] = [];
         // Each repo enriches in parallel; we flush its line the moment
@@ -340,7 +350,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
               result = { ...repo, worktrees: [], remotes: [] } as EnrichedRepo;
             }
             enriched.push(result);
-            controller.enqueue(enc.encode(repoLineFor(result)));
+            safeEnqueue(enc.encode(repoLineFor(result)));
           }),
         );
 
@@ -353,13 +363,20 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
           .filter((r): r is EnrichedRepo => r !== undefined);
         reposCache = { at: Date.now(), value: ordered };
         resolveInflight(ordered);
-        controller.close();
+        if (!cancelled) {
+          try { controller.close(); } catch { /* already closed */ }
+        }
       } catch (err) {
         rejectInflight(err);
-        controller.error(err);
+        if (!cancelled) {
+          try { controller.error(err); } catch { /* already closed */ }
+        }
       } finally {
         reposInflight = null;
       }
+    },
+    cancel() {
+      cancelled = true;
     },
   });
   return new Response(stream, { headers: ndjsonHeaders(cors) });
