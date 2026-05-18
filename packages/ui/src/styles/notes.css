@@ -750,16 +750,15 @@
      position within it. Vertical clamp via max-height + auto-scroll
      so long result lists stay on screen. */
   position: fixed;
-  /* Above .sticky-layer (z-index: 900) so the popover sits over the
-     sticky notes themselves. Portaling to <body> would otherwise let
-     the layer cover the popover since both share the same containing
-     block now. */
-  z-index: 1500;
+  /* Has to clear .sticky-layer (z 900) AND any .sticky-host instances
+     bumped to 1015+ by bringToFront. Portaled to <body> means we share
+     a containing block with #app, so the highest z-index inside #app
+     determines what we have to beat. 2500 gives plenty of headroom. */
+  z-index: 2500;
   width: max-content;
   max-height: calc(100vh - 32px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  z-index: 50;
   background: var(--surface-1);
   color: var(--text-1);
   border: 1px solid var(--surface-2);

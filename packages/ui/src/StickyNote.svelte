@@ -572,6 +572,7 @@
   let popoverLeft = 0;
   let popoverMaxWidth = 840;
   let popoverMinWidth = 0;
+  let popoverEl: HTMLDivElement | null = null;
   const POPOVER_MARGIN = 32;
   const POPOVER_MAX = 840;
 
@@ -604,6 +605,7 @@
     if (!mentionOpen || !textareaEl) return;
     const r = textareaEl.getBoundingClientRect();
     const vw = window.innerWidth;
+    const vh = window.innerHeight;
     // Cap horizontal space against the viewport edges, with a small
     // safety margin. The popover floors at the textarea width below
     // so a long search query still has typing room.
@@ -616,7 +618,23 @@
     if (left + maxW > vw - POPOVER_MARGIN) {
       left = Math.max(POPOVER_MARGIN, vw - POPOVER_MARGIN - maxW);
     }
-    popoverTop = r.bottom + 4;
+    // Vertical: prefer below the textarea, but flip above when the
+    // popover wouldn't fit between textarea-bottom and the viewport
+    // bottom (e.g. a sticky in the middle of the screen with the
+    // page scrolled up — below would overrun the fold). Uses the
+    // popover's measured height when available, else a conservative
+    // estimate so the first paint doesn't pop in below the fold.
+    const measuredH = popoverEl?.offsetHeight ?? 0;
+    const estH = measuredH > 0 ? measuredH : Math.min(vh - 64, 320);
+    const spaceBelow = vh - r.bottom - POPOVER_MARGIN;
+    const spaceAbove = r.top - POPOVER_MARGIN;
+    let top: number;
+    if (spaceBelow >= estH || spaceBelow >= spaceAbove) {
+      top = r.bottom + 4;
+    } else {
+      top = Math.max(POPOVER_MARGIN, r.top - estH - 4);
+    }
+    popoverTop = top;
     popoverLeft = left;
     popoverMaxWidth = maxW;
     popoverMinWidth = r.width;
@@ -636,6 +654,11 @@
   $: if (mentionOpen) {
     void mentionQuery;
     void draft;
+    // popoverEl in the dep list so the reposition re-runs once the
+    // popover element has actually been mounted — first call uses
+    // the height estimate, the follow-up uses the real measurement
+    // (so the above/below flip can correct itself if needed).
+    void popoverEl;
     queueMicrotask(repositionMentionPopover);
   }
 
@@ -1341,6 +1364,7 @@
                keystrokes, so the textarea stays focused while the
                user keeps typing. -->
           <div
+            bind:this={popoverEl}
             use:portal
             class="sticky-mention-popover"
             style:top="{popoverTop}px"
