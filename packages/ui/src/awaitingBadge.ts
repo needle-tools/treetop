@@ -361,31 +361,32 @@ function drawIndicator(state: TabState, tMs: number): void {
     } catch {
       return;
     }
-    const smallR = 12;
-    const bigR = 16;
-    const pulsed = Math.floor(t) % 2 === 0;
-    const r = pulsed ? bigR : smallR;
-    // Color swaps per pulse — bright Needle green/yellow on the big
-    // beat, plain white on the small beat — the size + colour shift
-    // makes the badge read as actively beating, and the digit stays
-    // black so it's legible against both fills.
-    const fill = pulsed ? "#a4d843" : "#ffffff";
-    // Centered: the badge covers most of the favicon anyway, so let
-    // it sit in the middle instead of clinging to a corner.
+    // Same size on both beats — the "pulse" is pure colour swap now,
+    // alternating between Needle's brand green/yellow and a bright
+    // logo-yellow at 0.5 Hz. Both fills are saturated enough that the
+    // black digit stays legible.
+    const r = 15; // 1px breathing room each side for the 2px outline
+    const fill =
+      Math.floor(t) % 2 === 0
+        ? "#a4d843" // --brand-hover (green-yellow)
+        : "#ffff00"; // pure bright yellow — max attention at tab-strip size
     const cx = size / 2;
     const cy = size / 2;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fillStyle = fill;
     ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#333333"; // dark grey outline carries the eye
+    ctx.stroke();
     ctx.fillStyle = "#000000";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     if (state.unread >= 1 && state.unread <= 9) {
-      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
+      ctx.font = "bold 20px system-ui, -apple-system, sans-serif";
       ctx.fillText(String(state.unread), cx, cy + 0.5);
     } else if (state.unread > 9) {
-      ctx.font = "bold 13px system-ui, -apple-system, sans-serif";
+      ctx.font = "bold 15px system-ui, -apple-system, sans-serif";
       ctx.fillText("9+", cx, cy + 0.5);
     }
   } else if (state.working > 0) {
