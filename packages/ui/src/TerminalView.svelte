@@ -5,6 +5,7 @@
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
+  import { shrinkImageBlob } from "./image-shrink";
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
   export let cmd: string[];
@@ -438,10 +439,15 @@
   async function uploadAndInsert(blob: Blob, filename?: string): Promise<void> {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     try {
+      // Downscale oversized screenshots before upload so the receiving
+      // agent doesn't waste vision tokens on pixels Claude would have
+      // resized away internally. Non-images, SVGs, GIFs and already-
+      // small images pass through untouched.
+      const shrunk = await shrinkImageBlob(blob);
       const form = new FormData();
       form.append(
         "file",
-        filename ? new File([blob], filename, { type: blob.type }) : blob,
+        filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
       const res = await fetch("/api/attach", { method: "POST", body: form });
       if (!res.ok) return;
