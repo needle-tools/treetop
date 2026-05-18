@@ -1013,6 +1013,54 @@
     }
   }
 
+  /** Find the array index, in the worktree's current open-sessions list,
+   *  that lines up with the *leftmost column visible in the strip right
+   *  now*. The new session is inserted at this index so it lands just
+   *  to the left of what the user is looking at, instead of at position
+   *  0 (which is often scrolled off-screen). Falls back to 0 when the
+   *  strip isn't laid out yet (e.g. row currently folded). */
+  function visibleLeftInsertIndex(
+    wtPath: string,
+    list: OpenSession[],
+  ): number {
+    const strip = document.querySelector(
+      `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+    ) as HTMLElement | null;
+    if (!strip) return 0;
+    const scrollLeft = strip.scrollLeft;
+    const cols = strip.querySelectorAll<HTMLElement>(".session-col");
+    for (const col of cols) {
+      const colRight = col.offsetLeft + col.offsetWidth;
+      // First column whose right edge is at least 50px past the current
+      // scroll offset is the leftmost meaningfully-visible column.
+      if (colRight - scrollLeft >= 50) {
+        const targetSource = col.dataset.sessionSource;
+        if (targetSource) {
+          const u = list.findIndex((x) => x.source === targetSource);
+          if (u >= 0) return u;
+        }
+        break;
+      }
+    }
+    return 0;
+  }
+
+  /** After inserting `source` into the strip, smooth-scroll the strip so
+   *  the new column sits at the viewport's left edge. */
+  function scrollNewColIntoView(wtPath: string, source: string): void {
+    requestAnimationFrame(() => {
+      const strip = document.querySelector(
+        `[data-wt-strip="${CSS.escape(wtPath)}"]`,
+      ) as HTMLElement | null;
+      if (!strip) return;
+      const newCol = strip.querySelector<HTMLElement>(
+        `.session-col[data-session-source="${CSS.escape(source)}"]`,
+      );
+      if (!newCol) return;
+      strip.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
+    });
+  }
+
   /** Open a brand-new agent session in this worktree. Adds a transient
    *  open-session entry whose source is sentinel-prefixed with
    *  `__new__:` — the column rendering branches on that to render
@@ -1031,10 +1079,11 @@
     if (agent === "claude") {
       entry.preassignedSessionId = crypto.randomUUID();
     }
-    openSessionsByWt = {
-      ...openSessionsByWt,
-      [wtPath]: [entry, ...existing],
-    };
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
   }
 
   /** Open a brand-new "Terminal" column in this worktree — a plain PTY
@@ -1044,10 +1093,12 @@
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:shell:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
-    openSessionsByWt = {
-      ...openSessionsByWt,
-      [wtPath]: [{ agent: "shell", source: synthetic }, ...existing],
-    };
+    const entry: OpenSession = { agent: "shell", source: synthetic };
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
   }
 
   async function loadDefaultShell() {
@@ -1425,44 +1476,11 @@
     // currently looking at, so it appears on the left of their *visible*
     // strip (not just the array order). Then smooth-scroll so the new
     // column sits at the viewport's left edge.
-    const strip = document.querySelector(
-      `[data-wt-strip="${CSS.escape(wtPath)}"]`,
-    ) as HTMLElement | null;
-
-    let underlyingInsertAt = 0;
-    if (strip) {
-      const scrollLeft = strip.scrollLeft;
-      const cols = strip.querySelectorAll<HTMLElement>(".session-col");
-      for (const col of cols) {
-        const colRight = col.offsetLeft + col.offsetWidth;
-        // The first column whose right edge is at least 50px past the
-        // current scroll offset is the leftmost "visible" column.
-        if (colRight - scrollLeft >= 50) {
-          const targetSource = col.dataset.sessionSource;
-          if (targetSource) {
-            const u = list.findIndex((x) => x.source === targetSource);
-            if (u >= 0) underlyingInsertAt = u;
-          }
-          break;
-        }
-      }
-    }
-
+    const insertAt = visibleLeftInsertIndex(wtPath, list);
     const next = [...list];
-    next.splice(underlyingInsertAt, 0, s);
+    next.splice(insertAt, 0, s);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
-
-    requestAnimationFrame(() => {
-      const strip2 = document.querySelector(
-        `[data-wt-strip="${CSS.escape(wtPath)}"]`,
-      ) as HTMLElement | null;
-      if (!strip2) return;
-      const newCol = strip2.querySelector<HTMLElement>(
-        `.session-col[data-session-source="${CSS.escape(s.source)}"]`,
-      );
-      if (!newCol) return;
-      strip2.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
-    });
+    scrollNewColIntoView(wtPath, s.source);
   }
   /** Mark a shell column as user-dismissed so `restoreLiveShells` won't
    *  re-add it on the next page load. Handles both the synthetic
