@@ -212,4 +212,78 @@ describe("Workspace", () => {
     await expect(ws.migrateSessionTitle("", "/x")).rejects.toThrow();
     await expect(ws.migrateSessionTitle("/x", "")).rejects.toThrow();
   });
+
+  test("addCustomLink persists a link on the repo and returns it", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      url: "https://coolify.example.com/app/123",
+      name: "Coolify",
+    });
+    expect(link.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(link.url).toBe("https://coolify.example.com/app/123");
+    expect(link.name).toBe("Coolify");
+    const persisted = (await ws.listRepos())[0]!;
+    expect(persisted.customLinks).toEqual([link]);
+  });
+
+  test("addCustomLink trims fields and treats blank name as absent", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      url: "  https://example.com/  ",
+      name: "   ",
+    });
+    expect(link.url).toBe("https://example.com/");
+    expect(link.name).toBeUndefined();
+  });
+
+  test("addCustomLink rejects bad URLs", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(
+      ws.addCustomLink(repo.id, { url: "not a url" }),
+    ).rejects.toThrow(/url/i);
+    await expect(
+      ws.addCustomLink(repo.id, { url: "" }),
+    ).rejects.toThrow(/url/i);
+    await expect(
+      ws.addCustomLink(repo.id, { url: "ftp://example.com/x" }),
+    ).rejects.toThrow(/http/i);
+  });
+
+  test("addCustomLink throws when the repo id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(
+      ws.addCustomLink("nope", { url: "https://x" }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  test("addCustomLink appends in order", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const a = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const b = await ws.addCustomLink(repo.id, { url: "https://b.test/" });
+    expect((await ws.listRepos())[0]!.customLinks).toEqual([a, b]);
+  });
+
+  test("removeCustomLink deletes the link and returns the removed entry", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, { url: "https://x.test/" });
+    const removed = await ws.removeCustomLink(repo.id, link.id);
+    expect(removed).toEqual(link);
+    expect((await ws.listRepos())[0]!.customLinks ?? []).toEqual([]);
+  });
+
+  test("removeCustomLink returns null when the link id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    expect(await ws.removeCustomLink(repo.id, "missing-id")).toBeNull();
+  });
+
+  test("removeCustomLink throws when the repo id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(ws.removeCustomLink("nope", "x")).rejects.toThrow(/not found/);
+  });
 });

@@ -22,6 +22,7 @@
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
@@ -143,6 +144,11 @@
     provider: string | null;
     host: string | null;
   }
+  interface CustomLink {
+    id: string;
+    url: string;
+    name?: string;
+  }
   interface Repo {
     id: string;
     path: string;
@@ -154,6 +160,11 @@
     worktrees: Worktree[];
     /** Git remotes for this repo (empty for non-git folders). */
     remotes?: RemoteRef[];
+    /** User-defined "open in <X>" links (Coolify dashboards, staging
+     *  URLs, anything web). Render as extra chips alongside the
+     *  editor / Fork / remote buttons in the worktree row's action
+     *  strip. */
+    customLinks?: CustomLink[];
   }
   interface Event {
     id: string;
@@ -2402,6 +2413,57 @@
       // second setRepoColor for the same id ran while we were awaiting,
       // its entry is the one that should outlive ours — leave it alone.
       if (pendingRepoColor.get(id) === color) pendingRepoColor.delete(id);
+    }
+  }
+
+  /** Append a user-defined "open in" link to a repo. The daemon
+   *  validates the URL and assigns the link id; on success we splice
+   *  the returned link into the local repo so the UI updates without
+   *  waiting for the SSE-triggered refresh. */
+  async function addCustomLink(
+    repoId: string,
+    input: { url: string; name?: string },
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/repos/${repoId}/custom-links`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as { link: CustomLink };
+      const repo = repos.find((r) => r.id === repoId);
+      if (repo) {
+        repo.customLinks = [...(repo.customLinks ?? []), body.link];
+        repos = repos;
+      }
+      return true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
+  async function removeCustomLink(repoId: string, linkId: string): Promise<void> {
+    try {
+      const res = await fetch(
+        `/api/repos/${repoId}/custom-links/${linkId}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const repo = repos.find((r) => r.id === repoId);
+      if (repo && repo.customLinks) {
+        repo.customLinks = repo.customLinks.filter((l) => l.id !== linkId);
+        repos = repos;
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -4868,8 +4930,11 @@
                 path={wt.path}
                 {editors}
                 remotes={repo.remotes ?? []}
+                customLinks={repo.customLinks ?? []}
                 {openIn}
                 {openRemote}
+                onAddCustomLink={(input) => addCustomLink(repo.id, input)}
+                onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
                 iconOnly
               />
             {/if}
@@ -5047,8 +5112,11 @@
                 path={wt.path}
                 {editors}
                 remotes={repo.remotes ?? []}
+                customLinks={repo.customLinks ?? []}
                 {openIn}
                 {openRemote}
+                onAddCustomLink={(input) => addCustomLink(repo.id, input)}
+                onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
               />
             </div>
 
@@ -5455,6 +5523,8 @@
 />
 
 <StickyNotesLayer changeKey={notesChangeKey} {repos} />
+
+<ConfirmDialog />
 
 {#if dirtyCheckout}
   <div

@@ -416,6 +416,162 @@ function invalidateReposCache(): void {
   reposCache = null;
 }
 
+// In-memory favicon cache. Keyed by request URL; entries hold the bytes
+// + content-type + an expiry timestamp. We don't persist to disk — the
+// daemon restart will refetch, which is cheap (one HTTP round-trip per
+// custom link the user has configured). TTL is generous: 24h hits
+// browser cache anyway, but we still want to survive a few SSE-driven
+// re-renders in a row without re-hitting the origin.
+const FAVICON_TTL_MS = 24 * 60 * 60 * 1000;
+const FAVICON_MAX_BYTES = 2 * 1024 * 1024;
+const faviconCache = new Map<
+  string,
+  { at: number; bytes: Uint8Array; type: string }
+>();
+
+async function handleFavicon(
+  url: URL,
+  cors: Record<string, string>,
+): Promise<Response> {
+  const target = url.searchParams.get("url");
+  if (!target) {
+    return new Response(JSON.stringify({ error: "?url= is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...cors },
+    });
+  }
+  let origin: URL;
+  try {
+    origin = new URL(target);
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid url" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...cors },
+    });
+  }
+  if (origin.protocol !== "http:" && origin.protocol !== "https:") {
+    return new Response(JSON.stringify({ error: "http(s) only" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...cors },
+    });
+  }
+  const cacheKey = `${origin.origin}/`;
+  const cached = faviconCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.at < FAVICON_TTL_MS) {
+    return new Response(cached.bytes, {
+      headers: faviconHeaders(cached.type, cors),
+    });
+  }
+  const found = await resolveFavicon(origin);
+  if (!found) {
+    return new Response(JSON.stringify({ error: "no favicon" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json", ...cors },
+    });
+  }
+  faviconCache.set(cacheKey, { at: now, bytes: found.bytes, type: found.type });
+  return new Response(found.bytes, {
+    headers: faviconHeaders(found.type, cors),
+  });
+}
+
+function faviconHeaders(
+  type: string,
+  cors: Record<string, string>,
+): Record<string, string> {
+  return {
+    "Content-Type": type,
+    // Let the browser cache aggressively — favicons don't change often
+    // and the daemon's own in-memory cache covers SSE-driven re-renders
+    // within the daemon's lifetime.
+    "Cache-Control": "public, max-age=86400",
+    ...cors,
+  };
+}
+
+/** Try the canonical `/favicon.ico` first, then parse the origin's HTML
+ *  for `<link rel="icon">` / `apple-touch-icon` and follow the first
+ *  one we find. Returns null when none of the candidates resolves to a
+ *  reasonably-sized image response. */
+async function resolveFavicon(
+  origin: URL,
+): Promise<{ bytes: Uint8Array; type: string } | null> {
+  const candidates: string[] = [`${origin.origin}/favicon.ico`];
+  try {
+    const html = await fetchText(origin.toString());
+    if (html) {
+      for (const href of extractIconHrefs(html)) {
+        try {
+          candidates.push(new URL(href, origin.toString()).toString());
+        } catch {
+          // bad href in <link> tag — skip
+        }
+      }
+    }
+  } catch {
+    // origin unreachable / non-HTML — fall through to /favicon.ico only
+  }
+  for (const candidate of candidates) {
+    const result = await fetchImage(candidate);
+    if (result) return result;
+  }
+  return null;
+}
+
+async function fetchText(target: string): Promise<string | null> {
+  try {
+    const res = await fetch(target, {
+      method: "GET",
+      headers: { Accept: "text/html,*/*;q=0.5" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get("Content-Type") ?? "";
+    if (!/text\/html|application\/xhtml/i.test(ct)) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchImage(
+  target: string,
+): Promise<{ bytes: Uint8Array; type: string } | null> {
+  try {
+    const res = await fetch(target, {
+      method: "GET",
+      headers: { Accept: "image/*" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get("Content-Type") ?? "application/octet-stream";
+    if (!/^image\//i.test(ct) && !/icon/i.test(ct)) return null;
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0) return null;
+    if (buf.byteLength > FAVICON_MAX_BYTES) return null;
+    return { bytes: new Uint8Array(buf), type: ct };
+  } catch {
+    return null;
+  }
+}
+
+function extractIconHrefs(html: string): string[] {
+  const out: string[] = [];
+  // <link rel="icon" ...>, <link rel="shortcut icon" ...>, apple-touch-icon
+  const linkRe = /<link\b([^>]*)>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) !== null) {
+    const attrs = m[1] ?? "";
+    if (!/rel\s*=\s*["']?[^"'>]*icon/i.test(attrs)) continue;
+    const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+    if (hrefMatch?.[1]) out.push(hrefMatch[1]);
+  }
+  return out;
+}
+
 // FS watcher registry. One watcher per worktree path; events from the
 // watcher debounce to a single broadcast("change", ...) so the UI
 // re-fetches /api/repos and the affected row refreshes its status +
@@ -762,6 +918,9 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
           { method: "POST", path: "/api/repos/:id/color", body: { color: "#rrggbb hex string or null" }, description: "set or clear a repo's accent color (used wherever the name renders)" },
+          { method: "POST", path: "/api/repos/:id/custom-links", body: { url: "http(s) URL", name: "string?" }, description: "append a user-defined 'open in' link to the repo (Coolify dashboards, staging URLs, etc.). Returns the persisted link with its generated id." },
+          { method: "DELETE", path: "/api/repos/:id/custom-links/:linkId", description: "remove a previously-added custom link from the repo." },
+          { method: "GET", path: "/api/favicon", description: "?url=<page-url> — proxy that fetches and caches the favicon for the given page (tries /favicon.ico and then parses <link rel='icon'> from the page HTML). Used so the UI can show a brand mark next to each custom link without CORS or third-party leaks." },
           { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
           { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
           { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
@@ -1507,6 +1666,50 @@ const server = Bun.serve<TermWsData, never>({
         const msg = String(e instanceof Error ? e.message : e);
         return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
       }
+    }
+
+    const customLinksMatch = url.pathname.match(
+      /^\/api\/repos\/([^/]+)\/custom-links$/,
+    );
+    if (customLinksMatch && req.method === "POST") {
+      const id = customLinksMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { url?: unknown; name?: unknown }
+        | null;
+      const rawUrl = typeof body?.url === "string" ? body.url : "";
+      const rawName = typeof body?.name === "string" ? body.name : undefined;
+      try {
+        const link = await workspace.addCustomLink(id, {
+          url: rawUrl,
+          name: rawName,
+        });
+        broadcast("change", { kind: "custom_link_add", id, linkId: link.id });
+        return json({ id, link });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
+      }
+    }
+
+    const customLinkOneMatch = url.pathname.match(
+      /^\/api\/repos\/([^/]+)\/custom-links\/([^/]+)$/,
+    );
+    if (customLinkOneMatch && req.method === "DELETE") {
+      const id = customLinkOneMatch[1]!;
+      const linkId = customLinkOneMatch[2]!;
+      try {
+        const removed = await workspace.removeCustomLink(id, linkId);
+        if (!removed) return json({ error: "link not found" }, { status: 404 });
+        broadcast("change", { kind: "custom_link_remove", id, linkId });
+        return json({ id, removed });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
+      }
+    }
+
+    if (url.pathname === "/api/favicon" && req.method === "GET") {
+      return await handleFavicon(url, CORS);
     }
 
     const renameMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/rename$/);

@@ -190,6 +190,15 @@ export const ICONS: Record<string, IconDef> = {
             stroke-width="1.4" fill="none" stroke-linecap="round"/>
     `,
   },
+  // Generic web-link glyph — feather-style chain. Used as the fallback
+  // icon for user-defined "open in" links when the favicon proxy can't
+  // resolve a brand mark for the target URL.
+  link: {
+    paths: [
+      "M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5",
+      "M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5",
+    ],
+  },
   // Windows File Explorer — yellow folder with the cyan house tab.
   explorer: {
     paths: [

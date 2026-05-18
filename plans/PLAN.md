@@ -519,6 +519,22 @@ other.
   line appended to the shell's JSONL with cwd at the moment of
   Enter). See commits in the `ccf5200..01b6fac` range.
 
+- **Custom "open in" links on the worktree action row.** **Shipped.**
+  Per-repo user-defined URLs that render as extra chips next to the
+  editor / Fork / remote buttons. Favicons are fetched via a daemon
+  proxy (`/api/favicon?url=…`) so we don't leak custom URLs to a
+  third-party favicon service; fallback is the generic chain glyph.
+  Stored on `Repo.customLinks` in `repos.json`; managed via
+  `POST/DELETE /api/repos/:id/custom-links[/:linkId]`. *Future:* the
+  same `+` button should also let the user pick from a registry of
+  "apps that know how to open this worktree" (think `cursor`, `nvim
+  --remote`, custom scripts, Coolify "deploy this branch" actions),
+  not just plain external URLs. That probably wants a new
+  `Repo.customApps` shape with a typed `action` discriminator plus a
+  daemon-side dispatch table, modelled the same way `/api/open`
+  already routes editors. Defer until we have at least one concrete
+  app beyond "external URL" to design against.
+
 **v2 — second skins, multi-user, presence**
 - TUI client (second skin on the same daemon API).
 - Multi-user workspace: invite collaborators via member list; presence

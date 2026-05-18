@@ -2,6 +2,12 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
+export interface CustomLink {
+  id: string;
+  url: string;
+  name?: string;
+}
+
 export interface Repo {
   id: string;
   path: string;
@@ -12,6 +18,10 @@ export interface Repo {
    *  the user can tell repos apart at a glance. `#rrggbb` lowercase
    *  hex when set; absent means "use the default text colour". */
   color?: string;
+  /** User-defined "open in <X>" links (e.g. Coolify dashboards, staging
+   *  URLs). Render as extra chips in the worktree row's actions strip,
+   *  with the target site's favicon as their icon. */
+  customLinks?: CustomLink[];
 }
 
 interface ReposFile {
@@ -214,6 +224,68 @@ export class Workspace {
     repos[idx] = { ...repos[idx]!, name: trimmed };
     await this.writeRepos(repos);
     return { oldName, newName: trimmed };
+  }
+
+  /**
+   * Append a user-defined "open in" link to a repo. Returns the newly
+   * minted entry (with its generated id) so the caller can echo it back
+   * to the client.
+   */
+  async addCustomLink(
+    id: string,
+    input: { url: string; name?: string },
+  ): Promise<CustomLink> {
+    const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
+    if (rawUrl.length === 0) {
+      throw new Error("url must be a non-empty string");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error("url must be a valid URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("url must be http(s)");
+    }
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const link: CustomLink = { id: randomUUID(), url: rawUrl };
+    if (typeof input.name === "string") {
+      const trimmed = input.name.trim();
+      if (trimmed.length > 0) link.name = trimmed;
+    }
+    const next: Repo = { ...repos[idx]! };
+    next.customLinks = [...(next.customLinks ?? []), link];
+    repos[idx] = next;
+    await this.writeRepos(repos);
+    return link;
+  }
+
+  /**
+   * Remove a custom link by its id. Returns the removed entry so the
+   * caller can record an inverse, or `null` if no such link exists on
+   * the repo. Throws if the repo itself is unknown.
+   */
+  async removeCustomLink(
+    id: string,
+    linkId: string,
+  ): Promise<CustomLink | null> {
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const links = repos[idx]!.customLinks ?? [];
+    const linkIdx = links.findIndex((l) => l.id === linkId);
+    if (linkIdx < 0) return null;
+    const removed = links[linkIdx]!;
+    const next: Repo = { ...repos[idx]! };
+    const remaining = links.filter((_, i) => i !== linkIdx);
+    if (remaining.length === 0) delete next.customLinks;
+    else next.customLinks = remaining;
+    repos[idx] = next;
+    await this.writeRepos(repos);
+    return removed;
   }
 
   private async writeRepos(repos: Repo[]): Promise<void> {
