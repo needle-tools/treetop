@@ -119,16 +119,31 @@
   function hrefToLinkTarget(href: string): LinkTarget | null {
     if (!href.startsWith("supergit://")) return null;
     try {
-      const u = new URL(href);
-      const type = u.host as LinkTarget["type"];
+      // Manual parse: split on the first `/` after the scheme rather
+      // than relying on `new URL()`. WHATWG's URL parser doesn't
+      // populate `host`/`pathname` for "special-scheme" lookalikes the
+      // same way across runtimes, and our shape is fixed:
+      // supergit://<type>/<value>
+      const rest = href.slice("supergit://".length);
+      const slash = rest.indexOf("/");
+      if (slash < 0) return null;
+      const type = rest.slice(0, slash) as LinkTarget["type"];
       if (!["url", "commit", "session", "file"].includes(type)) return null;
-      let value = decodeURIComponent(u.pathname.replace(/^\//, ""));
+      let value = decodeURIComponent(rest.slice(slash + 1));
       if (type === "session") {
         const id = value;
+        const suffix = `/${id}.jsonl`;
         outer: for (const r of repos) {
           for (const wt of r.worktrees ?? []) {
             const agents = (wt as { agents?: Array<{ source: string; sessionId?: string }> }).agents;
-            const a = agents?.find((x) => x.sessionId === id);
+            if (!agents) continue;
+            // Match by sessionId first (the daemon's authoritative id),
+            // then fall back to the source path ending in `<id>.jsonl`
+            // for sessions whose AgentSession.sessionId isn't populated
+            // (older indexed records, or the brief window after spawn
+            // before the JSONL is parsed).
+            const a = agents.find((x) => x.sessionId === id) ??
+              agents.find((x) => x.source.endsWith(suffix));
             if (a) {
               value = a.source;
               break outer;

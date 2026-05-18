@@ -111,13 +111,19 @@ describe("sessionsProvider.search", () => {
     expect(noScope.map((it) => it.value).sort()).toEqual(["s1", "s2"]);
   });
 
-  test("falls back to all sessions when in-scope filter would return empty", async () => {
+  test("scopes strictly to currentWorktreePath when provided — no global fallthrough", async () => {
     setRouteJson((u) => u === "/api/agents", [
-      { agent: "claude", cwd: "/elsewhere", lastActive: "2026-05-16T10:00:00Z", source: "s1", title: "Elsewhere" },
+      { agent: "claude", cwd: "/wt/a", lastActive: "2026-05-16T10:00:00Z", source: "sa", title: "A" },
+      { agent: "claude", cwd: "/wt/b", lastActive: "2026-05-16T11:00:00Z", source: "sb", title: "B" },
+      { agent: "claude", cwd: "/wt/b/sub", lastActive: "2026-05-16T12:00:00Z", source: "sb-sub", title: "B/sub" },
     ]);
-    const out = await sessionsProvider.search("", { currentRepoPath: "/repo/no-sessions" }, 5);
-    // Better to show the user a cross-repo session than nothing.
-    expect(out.map((it) => it.value)).toEqual(["s1"]);
+    const inWt = await sessionsProvider.search("", { currentWorktreePath: "/wt/b" }, 5);
+    // Includes the worktree itself + any nested cwd.
+    expect(inWt.map((it) => it.value).sort()).toEqual(["sb", "sb-sub"]);
+    // Empty result when no session matches: must not silently surface
+    // sister-worktree sessions whose titles look like the user's.
+    const empty = await sessionsProvider.search("", { currentWorktreePath: "/wt/none" }, 5);
+    expect(empty).toEqual([]);
   });
 
   test("returns [] when the endpoint errors", async () => {

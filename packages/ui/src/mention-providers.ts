@@ -220,20 +220,25 @@ export const sessionsProvider: Provider = {
     } catch {
       return [];
     }
-    // Scope: prefer sessions whose cwd lives under the current repo;
-    // widen to the full workspace if none match (so a never-touched
-    // repo's note can still reach a sister-repo session). The bound
-    // here matches what notes.ts considers a repo anchor.
-    const inScope = scope.currentRepoPath
+    // Strict worktree scope when provided — same scope the rest of
+    // the picker is anchored to (commits already require it). Falls
+    // back to repo scope, then global, only when no worktree was
+    // passed. NO empty-set fallthrough to global: a Downloads-folder
+    // note whose worktree has no sessions should show an empty list
+    // rather than silently surfacing sister-repo sessions whose
+    // titles look misleadingly similar to the user's current work
+    // (one click → wrong focus → "this link doesn't work").
+    const pool = scope.currentWorktreePath
       ? all.filter((s) =>
-          typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
+          typeof s.cwd === "string" &&
+          (s.cwd === scope.currentWorktreePath ||
+            s.cwd.startsWith(scope.currentWorktreePath! + "/")),
         )
-      : all;
-    // Fall through to the full pool if the repo filter produces
-    // nothing — better to show the user a cross-repo session they
-    // half-remember than an empty list when their scope happens to
-    // be narrow.
-    const pool = inScope.length > 0 ? inScope : all;
+      : scope.currentRepoPath
+        ? all.filter((s) =>
+            typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
+          )
+        : all;
     const ranked = pool
       .map((s) => ({ s, r: fuzzyScore(sessionHaystack(s), query) }))
       .filter((x) => x.r > 0)
