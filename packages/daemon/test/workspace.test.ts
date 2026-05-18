@@ -346,7 +346,12 @@ describe("Workspace", () => {
     const updated = await ws.updateCustomLink(repo.id, link.id, {
       url: "https://b.test/",
     });
-    expect(updated).toEqual({ id: link.id, url: "https://b.test/", name: "Alpha" });
+    expect(updated).toEqual({
+      id: link.id,
+      kind: "url",
+      url: "https://b.test/",
+      name: "Alpha",
+    });
     expect((await ws.listRepos())[0]!.customLinks?.[0]).toEqual(updated!);
   });
 
@@ -371,6 +376,7 @@ describe("Workspace", () => {
     expect(updated?.name).toBeUndefined();
     expect((await ws.listRepos())[0]!.customLinks?.[0]).toEqual({
       id: link.id,
+      kind: "url",
       url: "https://a.test/",
     });
   });
@@ -400,5 +406,62 @@ describe("Workspace", () => {
     await expect(
       ws.updateCustomLink("nope", "x", { name: "y" }),
     ).rejects.toThrow(/not found/);
+  });
+
+  test("addCustomLink stores a file link with an absolute path", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "file",
+      path: "/abs/some/file.txt",
+      name: "Spec",
+    });
+    expect(link).toEqual({
+      id: link.id,
+      kind: "file",
+      path: "/abs/some/file.txt",
+      name: "Spec",
+    });
+  });
+
+  test("addCustomLink rejects relative file paths", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(
+      ws.addCustomLink(repo.id, { kind: "file", path: "relative/x" }),
+    ).rejects.toThrow(/absolute/i);
+    await expect(
+      ws.addCustomLink(repo.id, { kind: "file", path: "   " }),
+    ).rejects.toThrow(/non-empty/i);
+  });
+
+  test("updateCustomLink can flip a URL link into a file link", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      url: "https://a.test/",
+      name: "Old",
+    });
+    const updated = await ws.updateCustomLink(repo.id, link.id, {
+      path: "/abs/spec.md",
+    });
+    expect(updated).toEqual({
+      id: link.id,
+      kind: "file",
+      path: "/abs/spec.md",
+      name: "Old",
+    });
+  });
+
+  test("updateCustomLink rejects passing both url and path", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    await expect(
+      ws.updateCustomLink(repo.id, link.id, {
+        url: "https://b.test/",
+        path: "/x",
+      }),
+    ).rejects.toThrow(/either url or path/);
   });
 });

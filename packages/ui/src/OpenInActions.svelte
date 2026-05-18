@@ -10,10 +10,24 @@
     provider: string | null;
     host: string | null;
   }
-  export interface CustomLink {
-    id: string;
-    url: string;
-    name?: string;
+  /** User-defined "open in" link. Two flavours:
+   *   - `kind: "url"` (or absent for legacy entries) — a web URL,
+   *     opened in a new browser tab.
+   *   - `kind: "file"` — an absolute local path, opened with the OS
+   *     default app via `/api/open-default`. */
+  export type CustomLink =
+    | { id: string; kind?: "url"; url: string; name?: string }
+    | { id: string; kind: "file"; path: string; name?: string };
+
+  /** Discriminator-safe getters so callers don't have to narrow at
+   *  every reference. */
+  export function customLinkKind(link: CustomLink): "url" | "file" {
+    return link.kind === "file" ? "file" : "url";
+  }
+  export function customLinkTarget(link: CustomLink): string {
+    return customLinkKind(link) === "file"
+      ? (link as { path: string }).path
+      : (link as { url: string }).url;
   }
 </script>
 
@@ -44,23 +58,27 @@
   export let customLinks: CustomLink[] = [];
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
-  /** Add-link handler, supplied by the parent which owns the fetch. The
-   *  popover collects (url, name?) and calls this; resolves true on
-   *  success so we can close the popover. */
+  /** Add-link handler, supplied by the parent which owns the fetch.
+   *  The popover collects a discriminated-union payload (URL or file)
+   *  and calls this; resolves true on success so we can close the
+   *  popover. */
   export let onAddCustomLink:
-    | ((input: { url: string; name?: string }) => Promise<boolean>)
+    | ((
+        input:
+          | { kind: "url"; url: string; name?: string }
+          | { kind: "file"; path: string; name?: string },
+      ) => Promise<boolean>)
     | null = null;
   /** Remove-link handler. Same contract — the parent owns the fetch. */
   export let onRemoveCustomLink: ((linkId: string) => Promise<void>) | null =
     null;
   /** Edit-link handler. Called from the per-link edit popover when the
-   *  user submits a new URL and/or label. Resolves true on success so
-   *  the popover can close; false on validation/network error so the
-   *  inline error message stays visible. */
+   *  user submits a new URL/path and/or label. Pass `url` OR `path`,
+   *  not both — the daemon flips the link's kind accordingly. */
   export let onEditCustomLink:
     | ((
         linkId: string,
-        input: { url?: string; name?: string },
+        input: { url?: string; path?: string; name?: string },
       ) => Promise<boolean>)
     | null = null;
   /** Reorder-links handler. Receives the new ordered list of link ids
@@ -107,11 +125,23 @@
 
   function linkLabel(link: CustomLink): string {
     if (link.name && link.name.trim().length > 0) return link.name;
-    try {
-      return new URL(link.url).host;
-    } catch {
-      return link.url;
+    if (customLinkKind(link) === "file") {
+      const p = (link as { path: string }).path;
+      const segs = p.split(/[\\/]/).filter(Boolean);
+      return segs[segs.length - 1] ?? p;
     }
+    try {
+      return new URL((link as { url: string }).url).host;
+    } catch {
+      return (link as { url: string }).url;
+    }
+  }
+
+  function linkTooltip(link: CustomLink): string {
+    const target = customLinkTarget(link);
+    return customLinkKind(link) === "file"
+      ? `Open ${target} with the default app`
+      : `Open ${target} in browser`;
   }
 
   /** Favicons sometimes fail to load — corporate auth pages, captive
@@ -128,7 +158,9 @@
   $: linkIconDef = iconFor("link");
 
   let addOpen = false;
+  let newKind: "url" | "file" = "url";
   let newUrl = "";
+  let newPath = "";
   let newName = "";
   let adding = false;
   let addError = "";
@@ -140,7 +172,9 @@
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
   let editingLinkId: string | null = null;
+  let editKind: "url" | "file" = "url";
   let editUrl = "";
+  let editPath = "";
   let editName = "";
   let editing = false;
   let editError = "";
@@ -179,7 +213,9 @@
     if (!onEditCustomLink) return;
     addOpen = false;
     editingLinkId = link.id;
-    editUrl = link.url;
+    editKind = customLinkKind(link);
+    editUrl = editKind === "url" ? (link as { url: string }).url : "";
+    editPath = editKind === "file" ? (link as { path: string }).path : "";
     editName = link.name ?? "";
     editError = "";
     setTimeout(() => editUrlInput?.focus(), 0);
@@ -192,27 +228,53 @@
 
   async function submitEdit() {
     if (!onEditCustomLink || !editingLinkId) return;
-    const url = editUrl.trim();
-    if (url.length === 0) {
+    const id = editingLinkId;
+    if (editKind === "file") {
+      const p = editPath.trim();
+      if (p.length === 0) {
+        editError = "Path required.";
+        return;
+      }
+      editing = true;
+      editError = "";
+      try {
+        const ok = await onEditCustomLink(id, { path: p, name: editName });
+        if (ok) closeEdit();
+        else editError = "Couldn't save — server rejected the change.";
+      } catch (e) {
+        editError = e instanceof Error ? e.message : String(e);
+      } finally {
+        editing = false;
+      }
+      return;
+    }
+    const u = editUrl.trim();
+    if (u.length === 0) {
       editError = "URL required.";
       return;
     }
     editing = true;
     editError = "";
-    const id = editingLinkId;
     try {
-      const ok = await onEditCustomLink(id, {
-        url,
-        // Send name (possibly blank) so the daemon clears it when the
-        // user wiped the label. Undefined would mean "don't touch".
-        name: editName,
-      });
+      const ok = await onEditCustomLink(id, { url: u, name: editName });
       if (ok) closeEdit();
       else editError = "Couldn't save — server rejected the change.";
     } catch (e) {
       editError = e instanceof Error ? e.message : String(e);
     } finally {
       editing = false;
+    }
+  }
+
+  async function pickEditFile() {
+    try {
+      const picked = await runFilePicker();
+      if (picked) {
+        editPath = picked;
+        editKind = "file";
+      }
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -239,32 +301,78 @@
   function toggleAdd() {
     addOpen = !addOpen;
     if (addOpen) {
-      newUrl = "";
-      newName = "";
+      // Restore the user's last tab choice + any in-progress draft
+      // for this worktree so the popover lands where they left off,
+      // even across reloads / accidental dismissals. Drafted values
+      // win over the empty defaults; missing fields default to "".
+      const draft = readDraft();
+      newKind = draft.kind ?? readLastKind();
+      newUrl = draft.url ?? "";
+      newPath = draft.path ?? "";
+      newName = draft.name ?? "";
       addError = "";
-      // Focus the URL input after Svelte commits the conditional.
       setTimeout(() => urlInput?.focus(), 0);
     }
   }
 
   async function submitAdd() {
     if (!onAddCustomLink) return;
-    const url = newUrl.trim();
-    if (url.length === 0) {
+    const trimmedName = newName.trim() || undefined;
+    if (newKind === "file") {
+      const p = newPath.trim();
+      if (p.length === 0) {
+        addError = "Pick a file first.";
+        return;
+      }
+      adding = true;
+      addError = "";
+      try {
+        const ok = await onAddCustomLink({
+          kind: "file",
+          path: p,
+          name: trimmedName,
+        });
+        if (ok) {
+          addOpen = false;
+          newUrl = "";
+          newPath = "";
+          newName = "";
+          clearDraft();
+        } else {
+          addError = "Couldn't add — server rejected the path.";
+        }
+      } catch (e) {
+        addError = e instanceof Error ? e.message : String(e);
+      } finally {
+        adding = false;
+      }
+      return;
+    }
+    const u = newUrl.trim();
+    if (u.length === 0) {
       addError = "URL required.";
       return;
     }
     adding = true;
     addError = "";
     try {
+      // Auto-fill the label from the page <title> when the user
+      // didn't pick one. Best-effort: failure (timeout, no title,
+      // non-HTML response) falls back to letting the daemon store
+      // the link with no name; the chip then shows the host.
+      let resolvedName = trimmedName;
+      if (!resolvedName) resolvedName = (await fetchPageTitle(u)) ?? undefined;
       const ok = await onAddCustomLink({
-        url,
-        name: newName.trim() || undefined,
+        kind: "url",
+        url: u,
+        name: resolvedName,
       });
       if (ok) {
         addOpen = false;
         newUrl = "";
+        newPath = "";
         newName = "";
+        clearDraft();
       } else {
         addError = "Couldn't add — server rejected the URL.";
       }
@@ -275,8 +383,182 @@
     }
   }
 
+  /** Best-effort `<title>` fetch via the daemon. Used to auto-fill
+   *  the chip label when the user didn't supply one. Bounded by a
+   *  short timeout so add-link doesn't stall when the origin is slow
+   *  or unreachable. Returns null on any failure — caller falls back
+   *  to the host-derived label. */
+  async function fetchPageTitle(url: string): Promise<string | null> {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 4500);
+      const res = await fetch(
+        `/api/page-title?url=${encodeURIComponent(url)}`,
+        { signal: ctl.signal },
+      );
+      clearTimeout(t);
+      if (!res.ok) return null;
+      const body = (await res.json()) as { title?: string | null };
+      if (typeof body.title === "string" && body.title.length > 0) {
+        // Clip aggressively — page titles routinely run to 80+ chars,
+        // way too wide for a chip. The user can edit it down via the
+        // pencil if the truncation lost meaning.
+        return body.title.length > 40
+          ? body.title.slice(0, 38).trimEnd() + "…"
+          : body.title;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** localStorage keys for per-worktree custom-link UI state. Scoping
+   *  by the worktree path means each row remembers its own
+   *  preferences — switching repos doesn't drag you to an unrelated
+   *  start dir or flip the tab back. */
+  function lastPickKey(): string {
+    return `supergit.customLinks.lastPick.${path}`;
+  }
+  function lastKindKey(): string {
+    return `supergit.customLinks.lastKind.${path}`;
+  }
+  function readLastPick(): string | null {
+    try {
+      return localStorage.getItem(lastPickKey());
+    } catch {
+      return null;
+    }
+  }
+  function writeLastPick(p: string): void {
+    try {
+      localStorage.setItem(lastPickKey(), p);
+    } catch {
+      // localStorage unavailable / quota — non-fatal, picker still
+      // works, the start dir just won't carry over next time.
+    }
+  }
+  function readLastKind(): "url" | "file" {
+    try {
+      const v = localStorage.getItem(lastKindKey());
+      return v === "file" ? "file" : "url";
+    } catch {
+      return "url";
+    }
+  }
+  function writeLastKind(k: "url" | "file"): void {
+    try {
+      localStorage.setItem(lastKindKey(), k);
+    } catch {
+      // ignore — sticky preference is a nice-to-have, not load-bearing
+    }
+  }
+
+  /** Per-worktree draft of the in-progress add form. Persists across
+   *  popover close + page reload so the user doesn't lose what they
+   *  typed if they accidentally clicked outside or navigated away.
+   *  Cleared on successful submit. */
+  function draftKey(): string {
+    return `supergit.customLinks.draft.${path}`;
+  }
+  function readDraft(): {
+    kind?: "url" | "file";
+    url?: string;
+    path?: string;
+    name?: string;
+  } {
+    try {
+      const raw = localStorage.getItem(draftKey());
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null) return {};
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+  function writeDraft(): void {
+    try {
+      const draft = {
+        kind: newKind,
+        url: newUrl,
+        path: newPath,
+        name: newName,
+      };
+      // No empty-state pruning — keep the JSON shape stable so the
+      // shape lookup on read stays trivial.
+      localStorage.setItem(draftKey(), JSON.stringify(draft));
+    } catch {
+      // ignore — draft persistence is a nice-to-have, not load-bearing
+    }
+  }
+  function clearDraft(): void {
+    try {
+      localStorage.removeItem(draftKey());
+    } catch {
+      // ignore
+    }
+  }
+
+  // Persist the user's URL/File tab choice + in-progress field values
+  // whenever they change, but only while the popover is open. This
+  // guards against the "form fields just got reset to empty"
+  // reactive blip clobbering the saved draft.
+  $: if (typeof window !== "undefined" && addOpen) {
+    writeLastKind(newKind);
+    writeDraft();
+  }
+
+  async function runFilePicker(): Promise<string | null> {
+    const startAt = readLastPick() ?? undefined;
+    const res = await fetch("/api/pick-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Pick a file to link",
+        // Start at last-picked file if it still exists, else the
+        // worktree directory. The daemon stat()s both and uses
+        // whichever is real.
+        startAt,
+        fallback: path,
+      }),
+    });
+    if (res.status === 204) return null; // cancelled
+    if (!res.ok) throw new Error("Picker failed.");
+    const body = (await res.json()) as { path?: string };
+    if (!body.path) return null;
+    writeLastPick(body.path);
+    return body.path;
+  }
+
+  async function pickAddFile() {
+    try {
+      const picked = await runFilePicker();
+      if (picked) newPath = picked;
+    } catch (e) {
+      addError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   function openLink(link: CustomLink) {
-    window.open(link.url, "_blank", "noopener,noreferrer");
+    if (customLinkKind(link) === "file") {
+      const p = (link as { path: string }).path;
+      // Hand off to the daemon — the browser can't shell out to the
+      // OS default-app handler itself. Fire-and-forget; if the open
+      // fails the daemon logs but we don't surface here (the chip's
+      // tooltip already told the user what to expect).
+      void fetch("/api/open-default", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: p }),
+      });
+      return;
+    }
+    window.open(
+      (link as { url: string }).url,
+      "_blank",
+      "noopener,noreferrer",
+    );
   }
 
   /** Quick-delete path used by shift-click and right-click on a chip
@@ -418,24 +700,77 @@
       </button>
       {#if addOpen}
         <Popover variant="agents" extraClass="custom-link-popover">
-          <svelte:fragment slot="head">Add a custom link</svelte:fragment>
           <div class="custom-link-form" on:keydown={onAddPopoverKeydown} role="group">
+            <div class="custom-link-kinds" role="tablist">
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={newKind === "url"}
+                role="tab"
+                aria-selected={newKind === "url"}
+                on:click={() => (newKind = "url")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                  <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5" />
+                  <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5" />
+                </svg>
+                URL
+              </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={newKind === "file"}
+                role="tab"
+                aria-selected={newKind === "file"}
+                on:click={() => (newKind = "file")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                </svg>
+                File
+              </button>
+            </div>
+            {#if newKind === "url"}
+              <label class="custom-link-field">
+                <span class="custom-link-label">URL</span>
+                <input
+                  bind:this={urlInput}
+                  class="custom-link-input"
+                  type="url"
+                  placeholder="https://…"
+                  bind:value={newUrl}
+                  disabled={adding}
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") submitAdd();
+                  }}
+                />
+              </label>
+            {:else}
+              <label class="custom-link-field">
+                <span class="custom-link-label">File path</span>
+                <div class="custom-link-fileinput">
+                  <input
+                    class="custom-link-input"
+                    type="text"
+                    placeholder="/abs/path/to/file"
+                    bind:value={newPath}
+                    disabled={adding}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") submitAdd();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="tiny custom-link-browse"
+                    on:click={pickAddFile}
+                    disabled={adding}
+                  >Browse…</button>
+                </div>
+              </label>
+            {/if}
             <label class="custom-link-field">
-              <span class="custom-link-label">URL</span>
-              <input
-                bind:this={urlInput}
-                class="custom-link-input"
-                type="url"
-                placeholder="https://…"
-                bind:value={newUrl}
-                disabled={adding}
-                on:keydown={(e) => {
-                  if (e.key === "Enter") submitAdd();
-                }}
-              />
-            </label>
-            <label class="custom-link-field">
-              <span class="custom-link-label">Label <span class="muted">(optional)</span></span>
+              <span class="custom-link-label">Label <span class="muted">(optional — auto-fills from page title for URLs)</span></span>
               <input
                 class="custom-link-input"
                 type="text"
@@ -461,7 +796,9 @@
                 type="button"
                 class="tiny custom-link-go"
                 on:click={submitAdd}
-                disabled={adding || newUrl.trim().length === 0}
+                disabled={adding
+                  || (newKind === "url" && newUrl.trim().length === 0)
+                  || (newKind === "file" && newPath.trim().length === 0)}
               >{adding ? "Adding…" : "Add link"}</button>
             </div>
           </div>
@@ -472,6 +809,8 @@
   {#each displayLinks as link (link.id)}
     {@const label = linkLabel(link)}
     {@const failed = failedFavicons.has(link.id)}
+    {@const kind = customLinkKind(link)}
+    {@const target = customLinkTarget(link)}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -490,22 +829,36 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        title={`Open ${link.url} in browser`}
+        title={linkTooltip(link)}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);
         }}
         on:contextmenu={(ev) => quickRemoveLink(link, ev)}
       >
-        {#if !failed}
+        {#if kind === "url" && !failed}
           <img
             class="custom-link-favicon"
-            src={`/api/favicon?url=${encodeURIComponent(link.url)}`}
+            src={`/api/favicon?url=${encodeURIComponent(target)}`}
             alt=""
             width="14"
             height="14"
             on:error={() => markFaviconFailed(link.id)}
           />
+        {:else if kind === "file"}
+          <!-- Generic file glyph for file-flavoured links. No favicon
+               to fetch; the platform's default-app handler does the
+               real work when clicked. -->
+          <svg
+            class="open-in-icon filled"
+            viewBox="0 0 24 24"
+            width="13"
+            height="13"
+            aria-hidden="true"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
         {:else if linkIconDef}
           <svg
             class="open-in-icon"
@@ -548,25 +901,77 @@
       {/if}
       {#if editingLinkId === link.id}
         <Popover variant="agents" extraClass="custom-link-popover">
-          <svelte:fragment slot="head">Edit link</svelte:fragment>
           <div
             class="custom-link-form"
             on:keydown={onEditPopoverKeydown}
             role="group"
           >
-            <label class="custom-link-field">
-              <span class="custom-link-label">URL</span>
-              <input
-                bind:this={editUrlInput}
-                class="custom-link-input"
-                type="url"
-                bind:value={editUrl}
-                disabled={editing}
-                on:keydown={(e) => {
-                  if (e.key === "Enter") submitEdit();
-                }}
-              />
-            </label>
+            <div class="custom-link-kinds" role="tablist">
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={editKind === "url"}
+                role="tab"
+                aria-selected={editKind === "url"}
+                on:click={() => (editKind = "url")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                  <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5" />
+                  <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5" />
+                </svg>
+                URL
+              </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={editKind === "file"}
+                role="tab"
+                aria-selected={editKind === "file"}
+                on:click={() => (editKind = "file")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                </svg>
+                File
+              </button>
+            </div>
+            {#if editKind === "url"}
+              <label class="custom-link-field">
+                <span class="custom-link-label">URL</span>
+                <input
+                  bind:this={editUrlInput}
+                  class="custom-link-input"
+                  type="url"
+                  bind:value={editUrl}
+                  disabled={editing}
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") submitEdit();
+                  }}
+                />
+              </label>
+            {:else}
+              <label class="custom-link-field">
+                <span class="custom-link-label">File path</span>
+                <div class="custom-link-fileinput">
+                  <input
+                    class="custom-link-input"
+                    type="text"
+                    bind:value={editPath}
+                    disabled={editing}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") submitEdit();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="tiny custom-link-browse"
+                    on:click={pickEditFile}
+                    disabled={editing}
+                  >Browse…</button>
+                </div>
+              </label>
+            {/if}
             <label class="custom-link-field">
               <span class="custom-link-label"
                 >Label <span class="muted">(optional)</span></span
@@ -605,7 +1010,9 @@
                 type="button"
                 class="tiny custom-link-go"
                 on:click={submitEdit}
-                disabled={editing || editUrl.trim().length === 0}
+                disabled={editing
+                  || (editKind === "url" && editUrl.trim().length === 0)
+                  || (editKind === "file" && editPath.trim().length === 0)}
               >{editing ? "Saving…" : "Save"}</button>
             </div>
           </div>
@@ -855,6 +1262,70 @@
   .custom-link-error {
     color: var(--err, #d05050);
     font-size: 0.8em;
+  }
+  /* Tab-style toggle between URL / File at the top of the form. The
+     selected tab carries a thin underline-style accent so it reads as
+     "you're editing this kind right now". */
+  .custom-link-kinds {
+    display: inline-flex;
+    gap: 0.15rem;
+    align-self: flex-start;
+    padding: 2px;
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+    border-radius: 4px;
+  }
+  .custom-link-kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.55rem;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .custom-link-kind:hover {
+    color: var(--text, inherit);
+  }
+  .custom-link-kind.active {
+    background: var(--surface-1);
+    color: var(--text, inherit);
+  }
+  .kind-icon {
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .kind-icon.kind-icon-filled {
+    fill: currentColor;
+    stroke: none;
+  }
+  /* File path input + Browse button live on one row. Input flexes,
+     the button hugs its label. */
+  .custom-link-fileinput {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+  }
+  .custom-link-fileinput .custom-link-input {
+    flex: 1 1 auto;
+  }
+  .custom-link-browse {
+    flex: 0 0 auto;
+  }
+  /* The file glyph (rendered via `<svg class="open-in-icon filled">`)
+     fills with currentColor instead of stroking. Otherwise the
+     stroked variant defined a few rules up would draw a hollow
+     icon — wrong silhouette for a file. */
+  .open-in-icon.filled {
+    fill: currentColor;
+    stroke: none;
   }
   .custom-link-buttons {
     display: flex;

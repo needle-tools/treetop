@@ -144,11 +144,12 @@
     provider: string | null;
     host: string | null;
   }
-  interface CustomLink {
-    id: string;
-    url: string;
-    name?: string;
-  }
+  /** A user-defined "open in" link. URL links open in a new browser
+   *  tab; file links go through `/api/open-default` which hands the
+   *  path to the platform's default app (Finder/Explorer/xdg-open). */
+  type CustomLink =
+    | { id: string; kind?: "url"; url: string; name?: string }
+    | { id: string; kind: "file"; path: string; name?: string };
   interface Repo {
     id: string;
     path: string;
@@ -2422,7 +2423,10 @@
    *  waiting for the SSE-triggered refresh. */
   async function addCustomLink(
     repoId: string,
-    input: { url: string; name?: string },
+    input:
+      | { url: string; name?: string }
+      | { kind: "url"; url: string; name?: string }
+      | { kind: "file"; path: string; name?: string },
   ): Promise<boolean> {
     try {
       const res = await fetch(`/api/repos/${repoId}/custom-links`, {
@@ -2491,7 +2495,7 @@
   async function updateCustomLink(
     repoId: string,
     linkId: string,
-    input: { url?: string; name?: string },
+    input: { url?: string; path?: string; name?: string },
   ): Promise<boolean> {
     try {
       const res = await fetch(

@@ -119,6 +119,51 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
   return value;
 }
 
+/**
+ * Open a file (or any other path) with the operating system's default
+ * application — the same handler a double-click in Finder/Explorer
+ * would route to. Used by the dashboard's custom-link feature when
+ * the user registers a "file" link instead of a URL.
+ *
+ * macOS  → `open <path>`
+ * Linux  → `xdg-open <path>`
+ * Win32  → `cmd /c start "" <path>` (the empty "" is the window title
+ *          argument, not a real argument — `start` swallows the first
+ *          quoted string).
+ *
+ * Returns the same `{ via }` shape `openIn()` uses so the route
+ * handler can include it in the response.
+ */
+export async function openDefault(path: string): Promise<{ via: string }> {
+  console.log(`openDefault: path=${path}`);
+  if (process.platform === "darwin") {
+    const proc = Bun.spawn(["open", path], { stdout: "pipe", stderr: "pipe" });
+    const exit = await proc.exited;
+    if (exit !== 0) throw new Error(`open exited ${exit}`);
+    return { via: "default app" };
+  }
+  if (process.platform === "linux") {
+    if (!(await which("xdg-open"))) {
+      throw new Error("xdg-open not available — cannot open default app");
+    }
+    Bun.spawn(["xdg-open", path], { stdout: "ignore", stderr: "ignore" });
+    return { via: "xdg-open" };
+  }
+  if (process.platform === "win32") {
+    // `start` is a cmd builtin, not a binary on PATH. Wrap it in
+    // `cmd /c`. The leading empty `""` is a quoted window title that
+    // start eats so the rest of the line is treated as the target.
+    Bun.spawn(["cmd", "/c", "start", "", path], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return { via: "start" };
+  }
+  throw new Error(
+    `default-app open not implemented for platform ${process.platform}`,
+  );
+}
+
 /** Single-quote `s` for safe substitution into a `bash -c '…'` snippet.
  *  Closes the surrounding quotes around any embedded `'`, escapes the
  *  quote with `\'`, then reopens. Same trick `find -print0 | xargs -0`

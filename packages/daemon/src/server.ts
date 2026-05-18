@@ -25,8 +25,8 @@ import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats } from "./sessions";
 import { serveImage } from "./images";
-import { pickFolder } from "./picker";
-import { openIn, detectEditors } from "./open";
+import { pickFolder, pickFile } from "./picker";
+import { openIn, openDefault, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { ShellsLog } from "./shells";
@@ -558,6 +558,80 @@ async function fetchImage(
   }
 }
 
+/** Try `startAt` first, then `fallback`; return whichever exists (file
+ *  or directory) so the picker can open in it. Picker.ts also stat()s
+ *  but having the choice happen here lets us prefer the more
+ *  specific hint over the broader fallback in one place. */
+async function pickStartCandidate(
+  startAt?: string,
+  fallback?: string,
+): Promise<string | undefined> {
+  for (const cand of [startAt, fallback]) {
+    if (!cand) continue;
+    try {
+      await fsStat(cand);
+      return cand;
+    } catch {
+      // not present; try the next candidate
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort `<title>` extractor for a remote URL. Used by the
+ * custom-link "auto-fetch label" path so the chip can show something
+ * better than the bare host when the user didn't pick a label. Same
+ * 4s timeout + HTML-only content-type guard the favicon proxy uses;
+ * returns null on any failure so the caller falls back to the host
+ * name. Cached in-memory for the daemon's lifetime so repeated calls
+ * during a session don't re-hit the origin.
+ */
+const PAGE_TITLE_TTL_MS = 24 * 60 * 60 * 1000;
+const pageTitleCache = new Map<
+  string,
+  { at: number; title: string | null }
+>();
+
+async function fetchPageTitle(target: string): Promise<string | null> {
+  const cached = pageTitleCache.get(target);
+  const now = Date.now();
+  if (cached && now - cached.at < PAGE_TITLE_TTL_MS) return cached.title;
+  let html: string | null = null;
+  try {
+    html = await fetchText(target);
+  } catch {
+    html = null;
+  }
+  let title: string | null = null;
+  if (html) {
+    const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (match?.[1]) {
+      title = decodeHtmlEntities(match[1].trim());
+      if (title.length === 0) title = null;
+    }
+  }
+  pageTitleCache.set(target, { at: now, title });
+  return title;
+}
+
+/** Minimal HTML-entity decoder for &amp; / &lt; / &gt; / &quot; /
+ *  &#NN; / &#xNN; — enough to make `<title>` text human-readable
+ *  without pulling in a full HTML parser. Unknown named entities are
+ *  left untouched. */
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) =>
+      String.fromCodePoint(parseInt(h, 16)),
+    )
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
 function extractIconHrefs(html: string): string[] {
   const out: string[] = [];
   // <link rel="icon" ...>, <link rel="shortcut icon" ...>, apple-touch-icon
@@ -928,6 +1002,9 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
           { method: "POST", path: "/api/repos/:id/checkout", body: { path: "string", branch: "string", force: "boolean?" }, description: "run `git checkout <branch>` in the given worktree. Refuses on dirty state unless force=true. Remote-style branches (origin/foo) get an implicit `-t` to create a tracking local branch." },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
+          { method: "POST", path: "/api/pick-file", body: { prompt: "string?", startAt: "string? (file or dir to open the picker in)", fallback: "string? (used when startAt doesn't exist)" }, description: "open OS-native file picker, returns chosen path or 204 if cancelled" },
+          { method: "POST", path: "/api/open-default", body: { path: "string" }, description: "open a file with the OS default application (same handler a Finder/Explorer double-click would route to). Used by file-flavoured custom links." },
+          { method: "GET", path: "/api/page-title", description: "?url= — best-effort `<title>` extractor for a remote URL. Used by the custom-link 'auto-fill label' path so chips get a friendlier name than the bare host. Returns { url, title } where title may be null." },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
           { method: "GET", path: "/api/diff", description: "git diff text for a worktree: ?path=<wt>&kind=workdir|staged" },
@@ -2052,6 +2129,73 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/pick-file" && req.method === "POST") {
+      try {
+        const body = (await req.json().catch(() => null)) as
+          | { prompt?: unknown; startAt?: unknown; fallback?: unknown }
+          | null;
+        const prompt =
+          typeof body?.prompt === "string" ? body.prompt : undefined;
+        // Prefer `startAt` (e.g. last-pick) but if that's stale fall
+        // through to `fallback` (e.g. the worktree directory). The
+        // picker itself is tolerant of missing paths, but this lets
+        // the caller hand us a second-choice without an extra
+        // round-trip.
+        const startAt =
+          typeof body?.startAt === "string" ? body.startAt : undefined;
+        const fallback =
+          typeof body?.fallback === "string" ? body.fallback : undefined;
+        const startResolved = await pickStartCandidate(startAt, fallback);
+        const result = await pickFile(prompt, startResolved);
+        if ("cancelled" in result) {
+          return new Response(null, { status: 204, headers: CORS });
+        }
+        return json(result);
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (url.pathname === "/api/open-default" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { path?: unknown }
+        | null;
+      const targetPath = typeof body?.path === "string" ? body.path : null;
+      if (!targetPath || targetPath.length === 0) {
+        return json({ error: "body.path is required" }, { status: 400 });
+      }
+      try {
+        const result = await openDefault(targetPath);
+        return json(result);
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (url.pathname === "/api/page-title" && req.method === "GET") {
+      const target = url.searchParams.get("url");
+      if (!target) {
+        return json({ error: "?url= is required" }, { status: 400 });
+      }
+      let origin: URL;
+      try {
+        origin = new URL(target);
+      } catch {
+        return json({ error: "invalid url" }, { status: 400 });
+      }
+      if (origin.protocol !== "http:" && origin.protocol !== "https:") {
+        return json({ error: "http(s) only" }, { status: 400 });
+      }
+      const title = await fetchPageTitle(origin.toString());
+      return json({ url: origin.toString(), title });
     }
 
     if (url.pathname === "/api/events" && req.method === "GET") {

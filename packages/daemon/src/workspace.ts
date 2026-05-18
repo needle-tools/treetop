@@ -2,10 +2,92 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-export interface CustomLink {
-  id: string;
-  url: string;
-  name?: string;
+/**
+ * User-defined "open in" link. Two flavours:
+ *  - `kind: "url"` — a plain web URL (Coolify dashboards, staging
+ *    deploys). Opened in a new browser tab by the UI.
+ *  - `kind: "file"` — a local filesystem path opened with the
+ *    operating system's default app (the same handler a Finder /
+ *    Explorer double-click would route to).
+ *
+ * The `kind` field is optional on read to keep older repos.json
+ * files (written before file links existed) interpretable — entries
+ * without a kind default to "url" and carry their target in `url`.
+ * New writes always include the explicit `kind`.
+ */
+export type CustomLink =
+  | { id: string; kind?: "url"; url: string; name?: string }
+  | { id: string; kind: "file"; path: string; name?: string };
+
+/** Resolve a CustomLink's effective kind, treating a missing field as
+ *  "url" for backward-compat with pre-file-link repos.json entries. */
+export function customLinkKind(link: CustomLink): "url" | "file" {
+  return link.kind === "file" ? "file" : "url";
+}
+
+/** Resolve a CustomLink's open target — URL for `url` links, absolute
+ *  filesystem path for `file` links. The two share no field name, so
+ *  callers reach for this helper instead of `link.url ?? link.path`. */
+export function customLinkTarget(link: CustomLink): string {
+  return customLinkKind(link) === "file"
+    ? (link as { path: string }).path
+    : (link as { url: string }).url;
+}
+
+/** Validate raw user input and assemble a CustomLink with the given
+ *  id. Shared by `addCustomLink` (which generates a fresh uuid) and
+ *  `updateCustomLink` (which preserves the existing id while swapping
+ *  the target). Throws on bad URLs / non-absolute file paths /
+ *  unknown kinds. */
+function buildCustomLink(
+  id: string,
+  input:
+    | { url: string; name?: string }
+    | { kind: "url"; url: string; name?: string }
+    | { kind: "file"; path: string; name?: string },
+): CustomLink {
+  const isFile = "kind" in input && input.kind === "file";
+  if (isFile) {
+    const rawPath =
+      typeof (input as { path: string }).path === "string"
+        ? (input as { path: string }).path.trim()
+        : "";
+    if (rawPath.length === 0) {
+      throw new Error("path must be a non-empty string");
+    }
+    if (!rawPath.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(rawPath)) {
+      throw new Error("path must be absolute");
+    }
+    const link: CustomLink = { id, kind: "file", path: rawPath };
+    if (typeof input.name === "string") {
+      const trimmed = input.name.trim();
+      if (trimmed.length > 0) link.name = trimmed;
+    }
+    return link;
+  }
+  // URL — either explicit `kind: "url"` or the legacy `{ url }` shape.
+  const rawUrl =
+    typeof (input as { url: string }).url === "string"
+      ? (input as { url: string }).url.trim()
+      : "";
+  if (rawUrl.length === 0) {
+    throw new Error("url must be a non-empty string");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("url must be a valid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("url must be http(s)");
+  }
+  const link: CustomLink = { id, kind: "url", url: rawUrl };
+  if (typeof input.name === "string") {
+    const trimmed = input.name.trim();
+    if (trimmed.length > 0) link.name = trimmed;
+  }
+  return link;
 }
 
 export interface Repo {
@@ -228,34 +310,24 @@ export class Workspace {
 
   /**
    * Append a user-defined "open in" link to a repo. Returns the newly
-   * minted entry (with its generated id) so the caller can echo it back
-   * to the client.
+   * minted entry (with its generated id) so the caller can echo it
+   * back to the client.
+   *
+   * Input shape is a discriminated union: pass `{ url: "https://…" }`
+   * for a web link or `{ path: "/abs/path" }` for a file link. URLs
+   * are validated as http(s); file paths must be absolute.
    */
   async addCustomLink(
     id: string,
-    input: { url: string; name?: string },
+    input:
+      | { url: string; name?: string }
+      | { kind: "url"; url: string; name?: string }
+      | { kind: "file"; path: string; name?: string },
   ): Promise<CustomLink> {
-    const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
-    if (rawUrl.length === 0) {
-      throw new Error("url must be a non-empty string");
-    }
-    let parsed: URL;
-    try {
-      parsed = new URL(rawUrl);
-    } catch {
-      throw new Error("url must be a valid URL");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("url must be http(s)");
-    }
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
     if (idx < 0) throw new Error(`Repo not found: ${id}`);
-    const link: CustomLink = { id: randomUUID(), url: rawUrl };
-    if (typeof input.name === "string") {
-      const trimmed = input.name.trim();
-      if (trimmed.length > 0) link.name = trimmed;
-    }
+    const link = buildCustomLink(randomUUID(), input);
     const next: Repo = { ...repos[idx]! };
     next.customLinks = [...(next.customLinks ?? []), link];
     repos[idx] = next;
@@ -265,16 +337,16 @@ export class Workspace {
 
   /**
    * Update a previously-added custom link in place. Pass `url` to
-   * change the target URL (validated the same way as addCustomLink),
-   * `name` to set a new label, or `name: ""` to clear an existing
-   * label. Returns the updated link, or `null` if no link with that
-   * id exists on the repo. Throws if the repo itself is unknown or
-   * the new URL is invalid.
+   * change a URL link's target (also implicitly converts a file link
+   * to a URL one), `path` to set a file path, `name` to set or clear
+   * (`""`) the label. Returns the updated link, or `null` if no link
+   * with that id exists on the repo. Throws if the repo itself is
+   * unknown or the new value fails validation.
    */
   async updateCustomLink(
     id: string,
     linkId: string,
-    input: { url?: string; name?: string },
+    input: { url?: string; path?: string; name?: string },
   ): Promise<CustomLink | null> {
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
@@ -283,29 +355,48 @@ export class Workspace {
     const linkIdx = links.findIndex((l) => l.id === linkId);
     if (linkIdx < 0) return null;
     const current = links[linkIdx]!;
-    const next: CustomLink = { id: current.id, url: current.url };
-    if (current.name !== undefined) next.name = current.name;
+
+    // Start from the current link, then apply only the fields the
+    // caller passed. If they pass `url` we flip to kind=url; if they
+    // pass `path` we flip to kind=file. Passing both is rejected as
+    // ambiguous.
+    if (input.url !== undefined && input.path !== undefined) {
+      throw new Error("pass either url or path, not both");
+    }
+
+    const currentKind = customLinkKind(current);
+    const currentName = current.name;
+
+    let merged:
+      | { url: string; name?: string }
+      | { kind: "url"; url: string; name?: string }
+      | { kind: "file"; path: string; name?: string };
     if (input.url !== undefined) {
-      const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
-      if (rawUrl.length === 0) {
-        throw new Error("url must be a non-empty string");
-      }
-      let parsed: URL;
-      try {
-        parsed = new URL(rawUrl);
-      } catch {
-        throw new Error("url must be a valid URL");
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        throw new Error("url must be http(s)");
-      }
-      next.url = rawUrl;
+      merged = { kind: "url", url: input.url };
+    } else if (input.path !== undefined) {
+      merged = { kind: "file", path: input.path };
+    } else if (currentKind === "file") {
+      merged = {
+        kind: "file",
+        path: (current as { path: string }).path,
+      };
+    } else {
+      merged = {
+        kind: "url",
+        url: (current as { url: string }).url,
+      };
     }
+
+    // Name: explicit blank clears, explicit value sets, undefined
+    // preserves whatever was there before.
     if (input.name !== undefined) {
-      const trimmed = typeof input.name === "string" ? input.name.trim() : "";
-      if (trimmed.length === 0) delete next.name;
-      else next.name = trimmed;
+      const trimmedName = input.name.trim();
+      if (trimmedName.length > 0) merged.name = trimmedName;
+    } else if (currentName !== undefined) {
+      merged.name = currentName;
     }
+
+    const next = buildCustomLink(current.id, merged);
     const newLinks = [...links];
     newLinks[linkIdx] = next;
     const repo: Repo = { ...repos[idx]!, customLinks: newLinks };
