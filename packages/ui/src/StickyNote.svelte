@@ -61,6 +61,7 @@
   import { pushRecent } from "./mention-recents";
   import type { PickItem } from "./mention-types";
   import { requestSessionFocus } from "./session-focus-store";
+  import { sessionDisplayTitle, type AgentSession } from "./sessionSearch";
 
   /** localStorage key for the user's preferred git client. Written
    *  by App.svelte's openIn funnel whenever a git-client app is
@@ -318,24 +319,10 @@
     const src = note.target.value;
     for (const r of repos) {
       for (const wt of r.worktrees ?? []) {
-        const found = (wt as { agents?: Array<{
-          source: string;
-          manualTitle?: string;
-          title?: string;
-          firstUserMessage?: string;
-          sessionId?: string;
-        }> }).agents?.find((a) => a.source === src);
-        if (found) {
-          return (
-            (found.manualTitle && found.manualTitle.trim()) ||
-            (found.title && found.title.trim()) ||
-            (found.firstUserMessage && found.firstUserMessage.trim()) ||
-            (found.sessionId
-              ? `session ${found.sessionId.slice(0, 8)}`
-              : null) ||
-            null
-          );
-        }
+        const found = (wt as { agents?: AgentSession[] }).agents?.find(
+          (a) => a.source === src,
+        );
+        if (found) return sessionDisplayTitle(found);
       }
     }
     return null;
@@ -1055,10 +1042,83 @@
     }
   }
 
-  function rendered(body: string): string {
-    if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
-    return marked.parse(body, { async: false }) as string;
+  /** Hard cap on inline supergit-mention label width. Past this the
+   *  text gets truncated with an ellipsis so a long commit subject /
+   *  renamed session title can't make the note balloon horizontally. */
+  const MAX_INLINE_LABEL_CH = 30;
+
+  function clampLabel(s: string): string {
+    return s.length <= MAX_INLINE_LABEL_CH
+      ? s
+      : s.slice(0, MAX_INLINE_LABEL_CH - 1) + "…";
   }
+
+  function escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /** Resolve a session UUID → live display label from the current
+   *  repos snapshot. Uses the shared `sessionDisplayTitle` so inline
+   *  mentions, the session-search popover, and the @-mention picker
+   *  all agree on what a session is called. Returns null when no
+   *  agent matches — caller falls back to the markdown's saved label. */
+  function resolveSessionLiveLabel(id: string): string | null {
+    const suffix = `/${id}.jsonl`;
+    for (const r of repos) {
+      for (const wt of r.worktrees ?? []) {
+        const agents = (wt as { agents?: AgentSession[] }).agents;
+        if (!agents) continue;
+        const found = agents.find((x) => x.sessionId === id) ??
+          agents.find((x) => x.source.endsWith(suffix));
+        if (found) return sessionDisplayTitle(found);
+      }
+    }
+    return null;
+  }
+
+  /** Render the note body to HTML with two post-processing passes
+   *  that make inline supergit-mentions feel live:
+   *    1. Session links get their displayed text re-resolved from
+   *       the current `repos` snapshot so renaming a session updates
+   *       every note that mentions it without an edit.
+   *    2. All inline-mention labels get clamped to MAX_INLINE_LABEL_CH
+   *       characters with an ellipsis — the markdown source keeps the
+   *       full label so the user can copy it verbatim, but the
+   *       rendered chip stays a single readable token. */
+  function renderBody(body: string, _reposToken: AnchorableRepo[]): string {
+    if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
+    const raw = marked.parse(body, { async: false }) as string;
+    return raw.replace(
+      /<a href="(supergit:\/\/(session|commit|file|url)\/([^"]*))">([^<]*)<\/a>/g,
+      (_full, fullHref, kind, valEnc, savedLabel) => {
+        const stripped = savedLabel.replace(/^@/, "");
+        let label = stripped;
+        if (kind === "session") {
+          const id = (() => {
+            try {
+              return decodeURIComponent(valEnc);
+            } catch {
+              return valEnc;
+            }
+          })();
+          const live = resolveSessionLiveLabel(id);
+          if (live) label = live;
+        }
+        const clamped = clampLabel(label.trim() || stripped);
+        return `<a href="${fullHref}" title="${escapeHtml(label)}">@${escapeHtml(clamped)}</a>`;
+      },
+    );
+  }
+
+  /** Reactive HTML used by the body. Re-derives whenever the note's
+   *  body changes OR the live `repos` snapshot updates — so renaming
+   *  a session via its SessionView header automatically flows into
+   *  every inline mention pointing at it. */
+  $: bodyHtml = renderBody(note.body, repos);
 
   /** Svelte action: keep a textarea's height in lockstep with its
    *  content so the user never sees a scrollbar or has to grab the
@@ -1335,7 +1395,7 @@
       aria-readonly="true"
       title="Double-click to edit"
       on:click={onBodyClick}
-    >{@html rendered(note.body)}</div>
+    >{@html bodyHtml}</div>
   {/if}
 
   {#if isSessionLink && previewOpen}

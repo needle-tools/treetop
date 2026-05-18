@@ -81,6 +81,33 @@ export function scoreSession(s: AgentSession, rawQuery: string): number {
   return score;
 }
 
+/** What to show for a session anywhere the UI surfaces "this chat" —
+ *  the session-search popover, the @-mention picker, inline sticky-link
+ *  chips, inline @-mentions inside notes. One precedence for all of
+ *  them so the picker never shows a label that disagrees with what the
+ *  sessions list right below it shows. Matches the visible logic in
+ *  `SessionSearchList.svelte` exactly. */
+export function sessionDisplayTitle(s: AgentSession): string {
+  const manual = (s.manualTitle ?? "").trim();
+  if (manual) return manual;
+  // Shell sessions don't get an agent-side title; the captured
+  // command is the natural "what is this" stand-in.
+  if (s.agent === "shell") {
+    const cmd = (s.lastUserMessage ?? "").trim();
+    if (cmd) return cmd;
+  }
+  // Chat sessions: prefer the user's most recent message over the
+  // agent's auto-summary — what the user actually said reads more
+  // immediately than the auto-summary.
+  const lum = (s.lastUserMessage ?? "").trim();
+  if (lum) return lum;
+  const t = (s.title ?? "").trim();
+  if (t) return t;
+  const fum = (s.firstUserMessage ?? "").trim();
+  if (fum) return fum;
+  return s.sessionId ? `session ${s.sessionId.slice(0, 8)}` : "(untitled)";
+}
+
 /** Filter + rank a session list against a query string. Empty/whitespace
  *  query short-circuits to the original list (no copy, no sort). */
 export function filterSessions(

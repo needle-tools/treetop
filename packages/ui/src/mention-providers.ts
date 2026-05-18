@@ -2,12 +2,13 @@
  * Concrete picker providers — sessions and commits. Each provider
  * owns its data fetch + filter; the popover never touches /api/*.
  *
- * Fuzzy matching is intentionally simple (case-insensitive substring
- * for the primary fields, ordered-subsequence fallback). We already
- * have a heavier scorer in sessionSearch.ts; using it here would
- * couple the picker to that file's exact field weights, which the
- * dock has tuned for a different surface. Cheap re-implementation
- * keeps the picker independent.
+ * Sessions reuse the search dock's ranker (`scoreSession` in
+ * sessionSearch.ts) and its display-title function so the @-mention
+ * picker and the sessions list never disagree on what a row is
+ * called or how relevant it is to the current query.
+ *
+ * Commits keep their own lightweight scorer (substring + ordered-
+ * subsequence) — there's no shared dock for commits to align with.
  */
 
 import type {
@@ -15,6 +16,7 @@ import type {
   Provider,
   SearchScope,
 } from "./mention-types";
+import { scoreSession, sessionDisplayTitle, type AgentSession } from "./sessionSearch";
 
 /** Per-URL in-flight + resolved cache. Picker re-renders are
  *  reactive on `scope` and `$recents`, which can flicker by identity
@@ -136,55 +138,7 @@ export function relativeAge(iso: string, now: number = Date.now()): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-interface AgentSessionShape {
-  agent: string;
-  cwd: string;
-  lastActive: string;
-  sessionId?: string;
-  source: string;
-  title?: string;
-  manualTitle?: string;
-  firstUserMessage?: string;
-  lastUserMessage?: string;
-  lastUserMessages?: string[];
-  /** Total messages (both user + assistant). Surfaced in the chip
-   *  as the tertiary "{N} msg" hint. Daemon may omit on sessions
-   *  it couldn't size up. */
-  messageCount?: number;
-}
-
-/** Concatenated searchable text for a session. Includes everything
- *  the user might plausibly remember when looking for a session —
- *  the title they wrote OR the auto-summary OR the first thing they
- *  asked OR the most recent message OR the working directory's
- *  trailing path segment. Joined with spaces so the fuzzy scorer
- *  treats each field as its own word-boundary chunk. */
-function sessionHaystack(s: AgentSessionShape): string {
-  const cwdTail = s.cwd ? s.cwd.split("/").slice(-2).join("/") : "";
-  return [
-    s.manualTitle,
-    s.title,
-    s.firstUserMessage,
-    s.lastUserMessage,
-    ...(s.lastUserMessages ?? []),
-    s.sessionId,
-    s.agent,
-    cwdTail,
-  ]
-    .filter((x): x is string => typeof x === "string" && x.length > 0)
-    .join(" ");
-}
-
-function sessionDisplayTitle(s: AgentSessionShape): string {
-  return (
-    (s.manualTitle && s.manualTitle.trim()) ||
-    (s.title && s.title.trim()) ||
-    (s.firstUserMessage && s.firstUserMessage.trim()) ||
-    (s.sessionId ? `session ${s.sessionId.slice(0, 8)}` : "(untitled)")
-  );
-}
-
-function sessionToPickItem(s: AgentSessionShape): PickItem {
+function sessionToPickItem(s: AgentSession): PickItem {
   // Display layout (per user spec):
   //   icon     → agent brand mark (resolved from `agent`)
   //   label    → session title
@@ -214,9 +168,9 @@ export const sessionsProvider: Provider = {
     scope: SearchScope,
     limit: number = 8,
   ): Promise<PickItem[]> {
-    let all: AgentSessionShape[];
+    let all: AgentSession[];
     try {
-      all = await fetchJsonCached<AgentSessionShape[]>("/api/agents");
+      all = await fetchJsonCached<AgentSession[]>("/api/agents");
     } catch {
       return [];
     }
@@ -239,15 +193,22 @@ export const sessionsProvider: Provider = {
             typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
           )
         : all;
-    const ranked = pool
-      .map((s) => ({ s, r: fuzzyScore(sessionHaystack(s), query) }))
-      .filter((x) => x.r > 0)
-      .sort((a, b) => {
-        if (b.r !== a.r) return b.r - a.r;
-        return Date.parse(b.s.lastActive) - Date.parse(a.s.lastActive);
-      })
-      .slice(0, limit);
-    return ranked.map((x) => sessionToPickItem(x.s));
+    // Empty query: rank by recency. Non-empty: defer to scoreSession
+    // (same fuzzy ranker the session-search popover uses) so the two
+    // surfaces produce identical orderings for identical queries.
+    const q = query.trim();
+    const ranked = q
+      ? pool
+          .map((s) => ({ s, r: scoreSession(s, q) }))
+          .filter((x) => x.r > 0)
+          .sort((a, b) => {
+            if (b.r !== a.r) return b.r - a.r;
+            return Date.parse(b.s.lastActive) - Date.parse(a.s.lastActive);
+          })
+      : pool
+          .map((s) => ({ s, r: 1 }))
+          .sort((a, b) => Date.parse(b.s.lastActive) - Date.parse(a.s.lastActive));
+    return ranked.slice(0, limit).map((x) => sessionToPickItem(x.s));
   },
 };
 
