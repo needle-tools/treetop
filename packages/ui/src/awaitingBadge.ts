@@ -73,6 +73,26 @@ let forcedSessions: TabSession[] | null = null;
 let animationTimer: ReturnType<typeof setInterval> | null = null;
 let animationStart = 0;
 
+/** When on, every state change, image load, and draw routes through
+ *  `console.log` so you can watch the indicator's decisions in the
+ *  browser devtools. Opt in by visiting the page with
+ *  `?favicon-debug=1`. */
+const debugEnabled =
+  typeof window !== "undefined" &&
+  !!window.location?.search?.includes("favicon-debug=1");
+if (debugEnabled && typeof console !== "undefined") {
+  console.log("[favicon] debug ON");
+}
+
+function dbg(...args: unknown[]): void {
+  if (!debugEnabled) return;
+  // console.log (not .debug) so it shows up at the default devtools
+  // filter level — .debug is hidden unless the user flips Console
+  // > Verbose, which is too much friction for "I turned it on, I
+  // expect to see logs".
+  console.log("[favicon]", ...args);
+}
+
 /** Pure helper: produce the title string for a given awaiting count. */
 export function titleForCount(base: string, count: number): string {
   if (count <= 0) return base;
@@ -211,13 +231,16 @@ function ensureBaseImage(onReady?: () => void): void {
   // (the favicon would simply never update).
   img.onload = () => {
     baseImageReady = true;
+    dbg("baseImage loaded", BASE_FAVICON_HREF, {
+      naturalWidth: img.naturalWidth,
+      naturalHeight: img.naturalHeight,
+    });
     if (onReady) onReady();
-    // Legacy path: a count-driven call came in while loading.
     if (lastCount > 0) drawBadge(lastCount);
     else if (lastCount === 0) clearBadge();
   };
-  img.onerror = () => {
-    // Couldn't load the base — fall back to "title only" badge mode.
+  img.onerror = (e) => {
+    dbg("baseImage failed to load", BASE_FAVICON_HREF, e);
     baseImage = null;
   };
   img.src = BASE_FAVICON_HREF;
@@ -339,29 +362,30 @@ function drawIndicator(state: TabState, tMs: number): void {
       return;
     }
     const smallR = 12;
-    const bigR = 14;
+    const bigR = 16;
     const pulsed = Math.floor(t) % 2 === 0;
     const r = pulsed ? bigR : smallR;
-    const cx = size - bigR - 0.5;
-    const cy = bigR + 0.5;
+    // Color swaps per pulse — bright Needle green/yellow on the big
+    // beat, plain white on the small beat — the size + colour shift
+    // makes the badge read as actively beating, and the digit stays
+    // black so it's legible against both fills.
+    const fill = pulsed ? "#a4d843" : "#ffffff";
+    // Centered: the badge covers most of the favicon anyway, so let
+    // it sit in the middle instead of clinging to a corner.
+    const cx = size / 2;
+    const cy = size / 2;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#e34c3c";
+    ctx.fillStyle = fill;
     ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-    ctx.stroke();
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
     if (state.unread >= 1 && state.unread <= 9) {
-      ctx.fillStyle = "#ffffff";
       ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
       ctx.fillText(String(state.unread), cx, cy + 0.5);
     } else if (state.unread > 9) {
-      ctx.fillStyle = "#ffffff";
       ctx.font = "bold 13px system-ui, -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
       ctx.fillText("9+", cx, cy + 0.5);
     }
   } else if (state.working > 0) {
@@ -407,7 +431,9 @@ function drawIndicator(state: TabState, tMs: number): void {
   try {
     link.type = "image/png";
     link.href = sharedCanvas.toDataURL("image/png");
-  } catch {}
+  } catch (e) {
+    dbg("toDataURL failed (canvas tainted?)", e);
+  }
 }
 
 function stopAnimation(): void {
@@ -494,7 +520,15 @@ export function updateTabIndicator(sessions: TabSession[]): void {
     .map((s) => `${s.state}:${s.agent}:${s.name}`)
     .sort()
     .join("|");
-  if (key === lastStateKey) return;
+  if (key === lastStateKey) {
+    dbg("updateTabIndicator (skipped, unchanged)", { counts });
+    return;
+  }
+  dbg("updateTabIndicator", {
+    counts,
+    forced: forcedSessions !== null,
+    sessions: safe,
+  });
   lastStateKey = key;
   currentState = counts;
 
