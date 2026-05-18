@@ -62,6 +62,7 @@
   import type { PickItem } from "./mention-types";
   import { requestSessionFocus } from "./session-focus-store";
   import { sessionDisplayTitle, type AgentSession } from "./sessionSearch";
+  import { iconFor } from "./icons";
 
   /** localStorage key for the user's preferred git client. Written
    *  by App.svelte's openIn funnel whenever a git-client app is
@@ -1180,12 +1181,12 @@
       .replace(/"/g, "&quot;");
   }
 
-  /** Resolve a session UUID → live display label from the current
-   *  repos snapshot. Uses the shared `sessionDisplayTitle` so inline
-   *  mentions, the session-search popover, and the @-mention picker
-   *  all agree on what a session is called. Returns null when no
-   *  agent matches — caller falls back to the markdown's saved label. */
-  function resolveSessionLiveLabel(id: string): string | null {
+  /** Resolve a session UUID → live `AgentSession` record from the
+   *  current repos snapshot. Renderer uses this to pull both the
+   *  display label (via `sessionDisplayTitle`) AND the agent name
+   *  (for the inline-mention icon) in one pass. Returns null when
+   *  nothing matches — caller falls back to the saved label. */
+  function findSessionAgent(id: string): AgentSession | null {
     const suffix = `/${id}.jsonl`;
     for (const r of repos) {
       for (const wt of r.worktrees ?? []) {
@@ -1193,10 +1194,56 @@
         if (!agents) continue;
         const found = agents.find((x) => x.sessionId === id) ??
           agents.find((x) => x.source.endsWith(suffix));
-        if (found) return sessionDisplayTitle(found);
+        if (found) return found;
       }
     }
     return null;
+  }
+
+  /** Codex's wordmark path — copied from AgentIcon.svelte. Kept here
+   *  rather than imported because the inline-mention render is a
+   *  string-concat / `@html` flow that can't mount Svelte components
+   *  per anchor. If the canonical path ever changes in AgentIcon,
+   *  both spots need the same update. */
+  const CODEX_PATH = "M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z";
+
+  /** Inline-icon HTML for the rendered note body's @-mention chips.
+   *  Mirrors AgentIcon / AttachmentIcon's resolution so chips that
+   *  appear in note text use the same brand marks as the standalone
+   *  link-chip and the @-mention picker rows. Returns "" when no
+   *  recognizable agent/provider — caller renders the link without
+   *  an icon prefix. */
+  function inlineMentionIconHtml(opts: { agent?: string; provider?: string }): string {
+    // Bumped from 12 → 16 so the brand marks read at a glance inside
+    // the note body's handwriting-font text. The container's flexbox
+    // centring (.inline-mention-icon CSS) keeps them aligned with the
+    // surrounding line regardless of size.
+    const size = 16;
+    if (opts.agent === "claude") {
+      return `<img class="inline-mention-icon" src="/agents/claude.svg" alt="" aria-hidden="true" width="${size}" height="${size}" />`;
+    }
+    if (opts.agent === "codex") {
+      return `<svg class="inline-mention-icon" viewBox="0 0 24 24" fill="currentColor" width="${size}" height="${size}" aria-hidden="true"><path d="${CODEX_PATH}"/></svg>`;
+    }
+    if (opts.agent) {
+      return `<span class="inline-mention-icon agent-icon-dot agent-${escapeHtml(opts.agent)}" aria-hidden="true"></span>`;
+    }
+    if (opts.provider) {
+      const def = iconFor(opts.provider);
+      if (!def) return "";
+      const paths = (def.paths ?? []).map((d) => `<path d="${d}" />`).join("");
+      const circles = (def.circles ?? [])
+        .map((c) => `<circle cx="${c.cx}" cy="${c.cy}" r="${c.r}" />`)
+        .join("");
+      if (def.filled) {
+        return `<svg class="inline-mention-icon" viewBox="0 0 24 24" width="${size}" height="${size}" fill="currentColor" stroke="none" aria-hidden="true">${paths}${circles}</svg>`;
+      }
+      // stroke-width bumped from 1.8 → 2.2 so the GitHub/GitLab brand
+      // outlines read as solid at the inline-mention size; thinner
+      // strokes faded into the surrounding text.
+      return `<svg class="inline-mention-icon" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}${circles}</svg>`;
+    }
+    return "";
   }
 
   /** Render the note body to HTML with two post-processing passes
@@ -1208,14 +1255,25 @@
    *       characters with an ellipsis — the markdown source keeps the
    *       full label so the user can copy it verbatim, but the
    *       rendered chip stays a single readable token. */
-  function renderBody(body: string, _reposToken: AnchorableRepo[]): string {
+  function renderBody(
+    body: string,
+    _reposToken: AnchorableRepo[],
+    _scopeToken: typeof pickerScope,
+  ): string {
     if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
     const raw = marked.parse(body, { async: false }) as string;
+    // `[^>]*` between the closing-quote of href and the `>` lets
+    // marked-added attributes (target="_blank", rel="noopener ...")
+    // pass through. Without this the regex matched only the bare
+    // `<a href="...">` form that marked happened to emit on early
+    // calls; once marked started adding the safety attributes,
+    // matching dropped to zero and the inline icons stopped rendering.
     return raw.replace(
-      /<a href="(supergit:\/\/(session|commit|file|url)\/([^"]*))">([^<]*)<\/a>/g,
+      /<a href="(supergit:\/\/(session|commit|file|url)\/([^"]*))"[^>]*>([^<]*)<\/a>/g,
       (_full, fullHref, kind, valEnc, savedLabel) => {
         const stripped = savedLabel.replace(/^@/, "");
         let label = stripped;
+        let iconHtml = "";
         if (kind === "session") {
           const id = (() => {
             try {
@@ -1224,20 +1282,37 @@
               return valEnc;
             }
           })();
-          const live = resolveSessionLiveLabel(id);
-          if (live) label = live;
+          const found = findSessionAgent(id);
+          if (found) {
+            label = sessionDisplayTitle(found);
+            iconHtml = inlineMentionIconHtml({ agent: found.agent });
+          }
+        } else if (kind === "commit") {
+          // Use the note's worktree-anchored repo provider (resolved
+          // into `pickerScope`) so the inline chip shows the same
+          // brand mark — GitHub / GitLab / Bitbucket / ... — that the
+          // standalone link chip and the picker rows use.
+          const provider = pickerScope.currentRepoProvider;
+          if (provider) iconHtml = inlineMentionIconHtml({ provider });
         }
         const clamped = clampLabel(label.trim() || stripped);
-        return `<a href="${fullHref}" title="${escapeHtml(label)}">@${escapeHtml(clamped)}</a>`;
+        return `<a href="${fullHref}" title="${escapeHtml(label)}">${iconHtml}@${escapeHtml(clamped)}</a>`;
       },
     );
   }
 
   /** Reactive HTML used by the body. Re-derives whenever the note's
-   *  body changes OR the live `repos` snapshot updates — so renaming
-   *  a session via its SessionView header automatically flows into
-   *  every inline mention pointing at it. */
-  $: bodyHtml = renderBody(note.body, repos);
+   *  body changes, the live `repos` snapshot updates (so renaming a
+   *  session flows into every inline mention pointing at it), or
+   *  `pickerScope` changes (so a commit chip in a new note picks up
+   *  the right provider brand mark on its first render). */
+  let bodyHtml = "";
+  $: {
+    void note;
+    void repos;
+    void pickerScope;
+    bodyHtml = renderBody(note.body, repos, pickerScope);
+  }
 
   /** Svelte action: keep a textarea's height in lockstep with its
    *  content so the user never sees a scrollbar or has to grab the

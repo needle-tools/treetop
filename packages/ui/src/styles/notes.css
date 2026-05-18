@@ -770,34 +770,53 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: var(--fs-sm);
 }
-/* Inline mention chip inside rendered note bodies. Markdown like
-   `[@label](supergit://session/...)` renders as a real <a>; this
-   restyles it as a compact pill so it reads as a clickable link
-   attachment rather than a plain underlined link. The chip click is
-   intercepted by onBodyClick and routed through openTarget — same
-   open behaviour as the standalone link card. */
+/* Inline mention link inside rendered note bodies. Markdown like
+   `[@label](supergit://session/...)` renders as a real <a>; the
+   renderer prefixes it with the same brand icon (Claude / Codex /
+   GitHub / GitLab / ...) the standalone link chip and the @-mention
+   picker rows use. inline-flex on the anchor centres the icon
+   vertically with the label text without needing a per-icon-kind
+   vertical-align nudge — the alternative (display: inline + img
+   with vertical-align: middle) baselines differently for img/svg/
+   span and looked uneven. */
 .sticky-body a[href^="supergit:"] {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 6px;
-  margin: 0 1px;
-  background: rgba(0, 0, 0, 0.08);
-  border-radius: 4px;
+  /* `display: inline` keeps the chip in the text flow with all
+     surrounding words on the same line. inline-flex pushed each
+     anchor to its own implicit line in the user's note. The icon
+     centres with the line via `vertical-align: middle` below
+     instead of via flex's align-items. */
+  display: inline;
   color: inherit;
-  text-decoration: none;
-  font-weight: 500;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 0.92em;
-  line-height: 1.4;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 .sticky-body a[href^="supergit:"]:hover {
-  background: rgba(0, 0, 0, 0.16);
-  text-decoration: none;
+  text-decoration-style: solid;
 }
-.sticky-body a[href^="supergit://session"]::before { content: "▶"; opacity: 0.6; margin-right: 2px; }
-.sticky-body a[href^="supergit://commit"]::before { content: "◆"; opacity: 0.6; margin-right: 2px; }
-.sticky-body a[href^="supergit://file"]::before { content: "▤"; opacity: 0.6; margin-right: 2px; }
+.sticky-body .inline-mention-icon {
+  /* `vertical-align: middle` aligns the icon's vertical centre with
+     the x-height midline of surrounding text — close enough to
+     "looks centred" for img / svg / span variants without per-kind
+     vertical-align tuning. Margin gives the same gap inline-flex
+     was providing via `gap`. */
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
+  object-fit: contain;
+}
+.sticky-body .inline-mention-icon.agent-icon-dot {
+  /* Non-claude/non-codex agent fallback: a small coloured dot.
+     Bigger than 8px because the anchor's font-size is the note's
+     handwriting-font size — a 10px dot reads as a real glyph
+     against that, while 8px disappeared. */
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
 
 .sticky-meta {
   margin-top: 0.4rem;
