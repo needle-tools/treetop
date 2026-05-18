@@ -2184,6 +2184,15 @@
           loading = false;
         },
         onRepo: (full) => {
+          // If a color save is still in flight for this repo, the
+          // daemon's snapshot of `color` is stale (the POST hasn't
+          // persisted yet). Preserve the optimistic local value so the
+          // UI doesn't flicker back to the old color.
+          if (pendingRepoColor.has(full.id)) {
+            const pending = pendingRepoColor.get(full.id);
+            if (pending === null) delete (full as { color?: string }).color;
+            else full.color = pending;
+          }
           const idx = repos.findIndex((x) => x.id === full.id);
           if (idx >= 0) {
             const next = repos.slice();
@@ -2338,6 +2347,14 @@
     return L >= 0.6 ? "#1a1a1a" : "#ffffff";
   }
 
+  /** Per-repo "color save in flight" guard. Any SSE-triggered
+   *  /api/repos refresh that lands while a POST /color is still in
+   *  flight (or before the daemon has persisted + rebroadcast) would
+   *  otherwise overwrite the user's just-picked color with the stale
+   *  on-disk value. `fetchReposNDJSON.onRepo` checks this set and
+   *  preserves the local optimistic color for repos it contains. */
+  const pendingRepoColor = new Map<string, string | null>();
+
   /** Push a new accent colour for the given repo to the daemon. The
    *  optimistic local mutation here is just for snappy UI; the SSE
    *  `change → repo_color` broadcast triggers a full /api/repos
@@ -2349,6 +2366,7 @@
       else repo.color = color;
       repos = repos;
     }
+    pendingRepoColor.set(id, color);
     try {
       const res = await fetch(`/api/repos/${id}/color`, {
         method: "POST",
@@ -2361,6 +2379,11 @@
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      // Clear the guard only if no newer save has superseded it. If a
+      // second setRepoColor for the same id ran while we were awaiting,
+      // its entry is the one that should outlive ours — leave it alone.
+      if (pendingRepoColor.get(id) === color) pendingRepoColor.delete(id);
     }
   }
 
