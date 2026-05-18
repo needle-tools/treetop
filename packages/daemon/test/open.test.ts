@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findWorkspaceFile } from "../src/open";
+import { detectEditors, findWorkspaceFile, resetDetectEditorsCache } from "../src/open";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-open-"));
@@ -33,5 +33,28 @@ describe("findWorkspaceFile", () => {
     expect(await findWorkspaceFile(d)).toBe(
       join(d, `${base}.code-workspace`),
     );
+  });
+});
+
+describe("detectEditors caching", () => {
+  test("returns the same array reference on rapid repeat calls (cache hit)", async () => {
+    resetDetectEditorsCache();
+    const a = await detectEditors();
+    const b = await detectEditors();
+    // Same reference means the second call short-circuited and didn't
+    // re-spawn `which` / re-probe /Applications. If this ever fails, the
+    // cache has been bypassed and /api/editors is paying full cost again.
+    expect(b).toBe(a);
+  });
+
+  test("resetDetectEditorsCache forces a fresh probe", async () => {
+    resetDetectEditorsCache();
+    const a = await detectEditors();
+    resetDetectEditorsCache();
+    const b = await detectEditors();
+    expect(b).not.toBe(a);
+    // …but the detected editors themselves should be identical
+    // (the host's filesystem didn't change between calls).
+    expect(b).toEqual(a);
   });
 });

@@ -86,7 +86,25 @@ async function macAppExists(appName: string): Promise<boolean> {
   return false;
 }
 
+/** Result cache for detectEditors(). The detection runs 8 `which`
+ *  subprocess spawns + macOS .app probes; on a slow disk that's
+ *  hundreds of milliseconds of event-loop time per call. The dashboard
+ *  calls /api/editors on every mount and column open. Editors don't
+ *  appear/disappear during a session, so caching for 30s eliminates
+ *  the cost without making the UI feel stale if the user installs a
+ *  new editor mid-session. */
+const EDITOR_DETECT_TTL_MS = 30_000;
+let editorCache: { at: number; value: EditorDescriptor[] } | null = null;
+
+export function resetDetectEditorsCache(): void {
+  editorCache = null;
+}
+
 export async function detectEditors(): Promise<EditorDescriptor[]> {
+  const now = Date.now();
+  if (editorCache && now - editorCache.at < EDITOR_DETECT_TTL_MS) {
+    return editorCache.value;
+  }
   const present = await Promise.all(
     KNOWN_EDITORS.map(async (e) => {
       if (await which(e.cmd)) return e;
@@ -94,9 +112,11 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
       return null;
     }),
   );
-  return present
+  const value = present
     .filter((e): e is EditorSpec => e !== null)
     .map(({ name, cmd }) => ({ name, cmd }));
+  editorCache = { at: now, value };
+  return value;
 }
 
 export async function openIn(

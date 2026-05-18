@@ -1899,28 +1899,28 @@
     let daemonReachable = false;
     let stillExists = false;
     try {
-      const r = await fetch("/api/repos", { cache: "no-cache" });
-      if (r.ok) {
-        daemonReachable = true;
-        const fresh = (await r.json()) as typeof repos;
-        const isSynthetic = SYNTHETIC_SOURCE_PREFIXES.some((p) =>
-          entry.source.startsWith(p),
+      // Drain the NDJSON stream into a full array — we don't need
+      // progressive rendering for this verification path, just the
+      // final list.
+      const fresh = await fetchReposNDJSON();
+      daemonReachable = true;
+      const isSynthetic = SYNTHETIC_SOURCE_PREFIXES.some((p) =>
+        entry.source.startsWith(p),
+      );
+      if (isSynthetic) {
+        // Synthetic sources (__new__:, __attached__:, __transcript__:)
+        // are managed client-side — they "exist" so long as their
+        // owning worktree still exists on disk. The agents list
+        // wouldn't carry them.
+        stillExists = fresh.some((rr) =>
+          (rr.worktrees ?? []).some((w) => w.path === entry.wtPath),
         );
-        if (isSynthetic) {
-          // Synthetic sources (__new__:, __attached__:, __transcript__:)
-          // are managed client-side — they "exist" so long as their
-          // owning worktree still exists on disk. The agents list
-          // wouldn't carry them.
-          stillExists = fresh.some((rr) =>
-            (rr.worktrees ?? []).some((w) => w.path === entry.wtPath),
-          );
-        } else {
-          stillExists = fresh.some((rr) =>
-            (rr.worktrees ?? []).some((w) =>
-              (w.agents ?? []).some((a) => a.source === entry.source),
-            ),
-          );
-        }
+      } else {
+        stillExists = fresh.some((rr) =>
+          (rr.worktrees ?? []).some((w) =>
+            (w.agents ?? []).some((a) => a.source === entry.source),
+          ),
+        );
       }
     } catch {
       daemonReachable = false;
@@ -2090,19 +2090,114 @@
     }
   }
 
+  /** Stream /api/repos as NDJSON: one manifest line listing repo
+   *  skeletons (id + name + path + color, no worktrees yet) followed
+   *  by one full enriched-repo line as each repo's git fan-out
+   *  completes on the server. Callers usually use `onManifest` to
+   *  paint placeholder rows and `onRepo` to fill them in as each
+   *  arrives — that way the dashboard stops blocking on the slowest
+   *  worktree before showing anything. The returned promise resolves
+   *  with the full final array, in the original workspace order. */
+  async function fetchReposNDJSON(opts?: {
+    onManifest?: (skeletons: Repo[]) => void;
+    onRepo?: (repo: Repo) => void;
+  }): Promise<Repo[]> {
+    const r = await fetch("/api/repos", { cache: "no-cache" });
+    if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
+    if (!r.body) throw new Error("/api/repos: response had no body");
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const out: Repo[] = [];
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.length > 0) {
+          // Per-line parse failures shouldn't kill the whole stream
+          // — drop the bad line and keep going so a single corrupt
+          // entry can't blank the dashboard.
+          try {
+            const msg = JSON.parse(line) as
+              | {
+                  type: "manifest";
+                  repos: {
+                    id: string;
+                    path: string;
+                    name: string;
+                    addedAt: string;
+                    color?: string;
+                  }[];
+                }
+              | { type: "repo"; repo: Repo };
+            if (msg.type === "manifest" && Array.isArray(msg.repos)) {
+              const skeletons: Repo[] = msg.repos.map((m) => ({
+                id: m.id,
+                path: m.path,
+                name: m.name,
+                addedAt: m.addedAt,
+                color: m.color,
+                worktrees: [],
+                remotes: [],
+              }));
+              opts?.onManifest?.(skeletons);
+            } else if (msg.type === "repo" && msg.repo) {
+              out.push(msg.repo);
+              opts?.onRepo?.(msg.repo);
+            }
+          } catch {
+            // skip malformed line
+          }
+        }
+        nl = buf.indexOf("\n");
+      }
+    }
+    return out;
+  }
+
   async function load() {
     loading = true;
     error = "";
     try {
-      const [r, e, s, t] = await Promise.all([
-        fetch("/api/repos"),
+      // Kick off /api/repos NDJSON first so its manifest lands and
+      // paints skeleton rows before the other fetches resolve. The
+      // sibling fetches still run in parallel — we just don't await
+      // them inside the stream pump.
+      const reposStream = fetchReposNDJSON({
+        onManifest: (skel) => {
+          repos = skel;
+          // Skeleton rows are useful information — drop the global
+          // loading overlay now so the user sees their workspace
+          // structure immediately. Individual rows still get filled
+          // in as their `repo` lines arrive.
+          loading = false;
+        },
+        onRepo: (full) => {
+          const idx = repos.findIndex((x) => x.id === full.id);
+          if (idx >= 0) {
+            const next = repos.slice();
+            next[idx] = full;
+            repos = next;
+          } else {
+            repos = [...repos, full];
+          }
+        },
+      });
+      const [e, s, t] = await Promise.all([
         fetch("/api/events"),
         fetch("/api/shells"),
         fetch("/api/session-titles"),
       ]);
-      if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
-      repos = await r.json();
+      // Wait for the stream to finish so repos ends up in the canonical
+      // server-side order (the stream's onRepo callback fills in as
+      // completion order, which is non-deterministic).
+      repos = await reposStream;
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.

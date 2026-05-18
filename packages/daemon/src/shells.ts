@@ -25,6 +25,7 @@ import {
   readdir,
   mkdir,
   access,
+  stat,
 } from "node:fs/promises";
 
 const SHELLS_DIR = "shells";
@@ -86,7 +87,22 @@ export interface ShellRecord extends ShellHeader {
   currentCwd?: string;
 }
 
+/** In-memory cache for cmdSummary() results, keyed by termId. We hit
+ *  this on every GET /api/shells (once per shell file) and the dashboard
+ *  refreshes it whenever anything mutates — re-parsing each JSONL line
+ *  was the dominant cost when a workspace accumulated dozens of past
+ *  shells × hundreds of cmd entries each. Invalidation key is
+ *  `${mtimeMs}:${size}`: any append to the file bumps both, and a full
+ *  rewrite would too. The stat call itself is cheap (~microseconds) vs.
+ *  reading and JSON.parse-ing the whole file. */
+interface CmdSummaryCacheEntry {
+  key: string;
+  value: { count: number; lastLine?: string; lastTs?: string };
+}
+
 export class ShellsLog {
+  private cmdSummaryCache = new Map<string, CmdSummaryCacheEntry>();
+
   private constructor(public readonly dir: string) {}
 
   /** Open (and lazily create) `<workspace>/shells/`. Idempotent — call on
@@ -244,10 +260,23 @@ export class ShellsLog {
     lastLine?: string;
     lastTs?: string;
   }> {
+    const path = this.pathFor(termId);
+    let key: string | null = null;
+    try {
+      const st = await stat(path);
+      key = `${st.mtimeMs}:${st.size}`;
+      const cached = this.cmdSummaryCache.get(termId);
+      if (cached && cached.key === key) return cached.value;
+    } catch {
+      // file missing — drop any stale cache entry and return empty.
+      this.cmdSummaryCache.delete(termId);
+      return { count: 0 };
+    }
     let text: string;
     try {
-      text = await readFile(this.pathFor(termId), "utf-8");
+      text = await readFile(path, "utf-8");
     } catch {
+      this.cmdSummaryCache.delete(termId);
       return { count: 0 };
     }
     let count = 0;
@@ -269,7 +298,9 @@ export class ShellsLog {
         // skip malformed
       }
     }
-    return { count, lastLine, lastTs };
+    const value = { count, lastLine, lastTs };
+    if (key !== null) this.cmdSummaryCache.set(termId, { key, value });
+    return value;
   }
 
   /** Read the full transcript of a shell: header, every command, and the

@@ -203,6 +203,37 @@ describe("ShellsLog", () => {
     expect(await log.cmdSummary("nope")).toEqual({ count: 0 });
   });
 
+  test("cmdSummary reflects newly-appended cmd entries (cache invalidates on file change)", async () => {
+    const ws = await tempWorkspace();
+    const log = await ShellsLog.open(ws);
+    await log.writeHeader({
+      kind: "header",
+      termId: "t",
+      wt: "/wt",
+      spawnCwd: "/wt",
+      createdAt: "t0",
+    });
+    expect(await log.cmdSummary("t")).toEqual({ count: 0 });
+    // Same termId is requested again after an append — the cached
+    // result MUST NOT be returned (we'd miss the new cmd line otherwise).
+    // Filesystem mtime resolution can be coarse (1s on some filesystems),
+    // so we wait a tick to guarantee the new mtime differs.
+    await new Promise((r) => setTimeout(r, 10));
+    await log.append("t", { kind: "cmd", ts: "t1", line: "ls", cwd: "/wt" });
+    expect(await log.cmdSummary("t")).toEqual({
+      count: 1,
+      lastLine: "ls",
+      lastTs: "t1",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    await log.append("t", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/wt" });
+    expect(await log.cmdSummary("t")).toEqual({
+      count: 2,
+      lastLine: "pwd",
+      lastTs: "t2",
+    });
+  });
+
   describe("Resume carry-over (writeHeader with previousTermId)", () => {
     test("new file contains prior cmd lines + a resume marker + new header", async () => {
       const ws = await tempWorkspace();

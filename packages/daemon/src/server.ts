@@ -191,6 +191,14 @@ const sseSubscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
 
 function broadcast(event: string, data: unknown): void {
+  // Mutations expire the /api/repos cache so the UI's follow-up GET
+  // sees the change immediately. fs_change events are the bursty
+  // file-watcher signal the cache is specifically designed to coalesce,
+  // so we leave those.
+  if (event === "change") {
+    const kind = (data as { kind?: unknown } | null)?.kind;
+    if (kind !== "fs_change") invalidateReposCache();
+  }
   const payload = sseEncoder.encode(
     `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
   );
@@ -201,6 +209,194 @@ function broadcast(event: string, data: unknown): void {
       sseSubscribers.delete(ctrl);
     }
   }
+}
+
+// Single-flight + 500ms freshness window for /api/repos. The route
+// fans out to many `git` subprocesses per worktree (status, ahead/behind,
+// numstats, untracked diffs); a single call can block the event loop
+// for hundreds of ms on a large workspace. Without this, the dashboard
+// auto-refresh + a coincident `fs_change` SSE event easily doubles or
+// triples the fan-out within the same tick, starving terminal WS
+// upgrades and "Open in <editor>" clicks behind it.
+//
+// Coalescing strategy:
+//   - If a build is currently in flight, every caller awaits the SAME
+//     promise. No duplicate git work.
+//   - If the most recent build finished < REPOS_CACHE_MS ago, return
+//     that cached payload directly. Mutations broadcast a `change`
+//     event over SSE; the UI re-fetches, but if a burst of fs_change
+//     events arrives we collapse them. The watcher itself already
+//     debounces filesystem events to ~300ms (worktree-watcher.ts), so
+//     500ms here just rounds up to the next debounce boundary.
+//
+// Wire format: the route returns NDJSON so the UI can render rows
+// progressively. First line is a manifest of repo skeletons (id,
+// path, name, color) so the dashboard can paint placeholder rows
+// immediately; each subsequent line is a full enriched repo as the
+// per-worktree git fan-out completes. The stream closes when all
+// repos have flushed — there's no explicit "done" marker; EOF is
+// sufficient. Cache hits stream the same shape from memory.
+const REPOS_CACHE_MS = 500;
+type EnrichedRepo = Record<string, unknown> & { id: string };
+let reposInflight: Promise<EnrichedRepo[]> | null = null;
+let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
+
+function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
+  return {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...cors,
+  };
+}
+
+function manifestLineFor(repos: { id: string; path: string; name: string; addedAt: string; color?: string }[]): string {
+  return JSON.stringify({
+    type: "manifest",
+    repos: repos.map(({ id, path, name, addedAt, color }) => ({
+      id, path, name, addedAt, color,
+    })),
+  }) + "\n";
+}
+
+function repoLineFor(repo: EnrichedRepo): string {
+  return JSON.stringify({ type: "repo", repo }) + "\n";
+}
+
+/** Response for the cache-hit / wait-for-inflight paths: flush the
+ *  whole array in one go. Same shape as the streaming response so the
+ *  client only needs one parser. */
+function reposNDJSONFromCache(value: EnrichedRepo[], cors: Record<string, string>): Response {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // Manifest first so the client can mount skeleton rows even from
+      // a cache hit — keeps the render shape identical to the fresh
+      // streaming path.
+      const manifestRepos = value.map((r) => ({
+        id: r.id as string,
+        path: r.path as string,
+        name: r.name as string,
+        addedAt: r.addedAt as string,
+        color: r.color as string | undefined,
+      }));
+      controller.enqueue(enc.encode(manifestLineFor(manifestRepos)));
+      for (const r of value) controller.enqueue(enc.encode(repoLineFor(r)));
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: ndjsonHeaders(cors) });
+}
+
+/** Fresh build that yields each repo as soon as its worktrees finish
+ *  enriching. Also populates the cache + resolves `reposInflight` so
+ *  concurrent callers can share the work. */
+function reposNDJSONFresh(cors: Record<string, string>): Response {
+  const enc = new TextEncoder();
+  let resolveInflight: (v: EnrichedRepo[]) => void;
+  let rejectInflight: (e: unknown) => void;
+  reposInflight = new Promise<EnrichedRepo[]>((res, rej) => {
+    resolveInflight = res;
+    rejectInflight = rej;
+  });
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        const [repos, agents, titles] = await Promise.all([
+          workspace.listRepos(),
+          detectAgents(),
+          workspace.listSessionTitles(),
+        ]);
+        const titled = agents.map((s) =>
+          titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+        );
+        controller.enqueue(enc.encode(manifestLineFor(repos)));
+
+        const enriched: EnrichedRepo[] = [];
+        // Each repo enriches in parallel; we flush its line the moment
+        // it resolves rather than waiting for the slowest one. Failed
+        // repos still emit an entry so the UI's skeleton doesn't dangle
+        // forever — they just carry an empty worktrees array.
+        await Promise.all(
+          repos.map(async (repo) => {
+            let result: EnrichedRepo;
+            try {
+              const [worktrees, remotes] = await Promise.all([
+                listWorktrees(repo.path),
+                listRemotes(repo.path),
+              ]);
+              const withDetails = await Promise.all(
+                worktrees.map(async (wt) => ({
+                  ...wt,
+                  ...(await getWorktreeDetails(wt.path)),
+                  agents: agentsForWorktree(wt.path, titled),
+                })),
+              );
+              result = { ...repo, worktrees: withDetails, remotes } as EnrichedRepo;
+            } catch {
+              // Repo path is gone, permissions broken, etc. Emit a
+              // shell record so the row still renders (the user can
+              // remove or recover it from the UI).
+              result = { ...repo, worktrees: [], remotes: [] } as EnrichedRepo;
+            }
+            enriched.push(result);
+            controller.enqueue(enc.encode(repoLineFor(result)));
+          }),
+        );
+
+        // Stable ordering for the cached array so cache-hit replays
+        // match the workspace.listRepos() order. The streaming path
+        // already flushed in completion-order, which is fine.
+        const byId = new Map(enriched.map((r) => [r.id, r]));
+        const ordered = repos
+          .map((r) => byId.get(r.id))
+          .filter((r): r is EnrichedRepo => r !== undefined);
+        reposCache = { at: Date.now(), value: ordered };
+        resolveInflight(ordered);
+        controller.close();
+      } catch (err) {
+        rejectInflight(err);
+        controller.error(err);
+      } finally {
+        reposInflight = null;
+      }
+    },
+  });
+  return new Response(stream, { headers: ndjsonHeaders(cors) });
+}
+
+async function reposNDJSONResponse(
+  cors: Record<string, string>,
+  jsonErr: (body: unknown, init?: ResponseInit) => Response,
+): Promise<Response> {
+  const now = Date.now();
+  if (reposCache && now - reposCache.at < REPOS_CACHE_MS) {
+    return reposNDJSONFromCache(reposCache.value, cors);
+  }
+  if (reposInflight) {
+    // Concurrent caller during a fresh build — wait for it, then
+    // replay the cached array. We could splice ourselves into the
+    // live stream, but a wait+replay is simpler and the cost is
+    // bounded by the in-flight build's own latency.
+    try {
+      const value = await reposInflight;
+      return reposNDJSONFromCache(value, cors);
+    } catch (err) {
+      return jsonErr(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 500 },
+      );
+    }
+  }
+  return reposNDJSONFresh(cors);
+}
+
+/** Invalidate the /api/repos result cache. Call from mutating routes so
+ *  the next GET sees the user's change immediately instead of waiting
+ *  out the 500ms window. The inflight promise can keep running — it's
+ *  just no longer eligible to satisfy a later request from the cache. */
+function invalidateReposCache(): void {
+  reposCache = null;
 }
 
 // FS watcher registry. One watcher per worktree path; events from the
@@ -528,7 +724,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
           { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },
-          { method: "GET", path: "/api/repos", description: "list registered repos with their worktrees, each enriched with detected agents" },
+          { method: "GET", path: "/api/repos", description: "NDJSON stream of registered repos with their worktrees + detected agents. First line is {type:'manifest',repos:[{id,path,name,addedAt,color}]} for skeleton rows; each subsequent line is {type:'repo',repo:{...full enriched repo...}} flushed as that repo's git fan-out completes. Stream ends with EOF (no explicit done marker)." },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
@@ -578,31 +774,7 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/repos" && req.method === "GET") {
-      const [repos, agents, titles] = await Promise.all([
-        workspace.listRepos(),
-        detectAgents(),
-        workspace.listSessionTitles(),
-      ]);
-      const titled = agents.map((s) =>
-        titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-      );
-      const enriched = await Promise.all(
-        repos.map(async (repo) => {
-          const [worktrees, remotes] = await Promise.all([
-            listWorktrees(repo.path),
-            listRemotes(repo.path),
-          ]);
-          const withDetails = await Promise.all(
-            worktrees.map(async (wt) => ({
-              ...wt,
-              ...(await getWorktreeDetails(wt.path)),
-              agents: agentsForWorktree(wt.path, titled),
-            })),
-          );
-          return { ...repo, worktrees: withDetails, remotes };
-        }),
-      );
-      return json(enriched);
+      return reposNDJSONResponse(CORS, json);
     }
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
@@ -2115,6 +2287,14 @@ if (FETCH_INTERVAL_MS > 0) {
 // and its interval live here because they only run after module init,
 // so they don't share that hazard.
 async function sampleShellCwds(): Promise<void> {
+  // Skip the lsof shell-out when no UI client is connected. The cwd
+  // map is only consumed by /api/shells and /api/shell-transcript,
+  // both of which fall back to spawnCwd when an entry is missing — so
+  // a brief lag on first reconnect (next 5s tick) is the only cost,
+  // and we stop burning event-loop time on lsof while the dashboard
+  // is closed. Headless / agent-driven daemons (no SSE clients ever)
+  // pay zero overhead.
+  if (sseSubscribers.size === 0) return;
   // Filter terminalBackend's full list to shell PTYs only — no point
   // running lsof on a Claude/Codex agent process.
   const shellRecords = terminalBackend
