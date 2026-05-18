@@ -23,6 +23,12 @@
          *  vocabulary the rest of the header uses (⛶, ↻, ⎘, …) so the
          *  popover reads as part of the same visual system. */
         icon?: string;
+        /** Alternate icon: array of inline SVG `path` d-strings for
+         *  glyphs that don't have a clean monochrome Unicode
+         *  equivalent (e.g. lucide's `external-link`). Renders inside
+         *  a 24×24 viewBox at 14×14 with `currentColor`. Wins over
+         *  `icon` when both are set. */
+        iconSvg?: string[];
       }
     | {
         kind: "copy";
@@ -34,6 +40,7 @@
         disabled?: boolean;
         title?: string;
         icon?: string;
+        iconSvg?: string[];
       };
 </script>
 
@@ -127,7 +134,15 @@
                 <span class="check" aria-hidden="true">✓</span>
                 <span class="label">Copied to clipboard</span>
               {:else}
-                {#if item.icon}
+                {#if item.iconSvg && item.iconSvg.length > 0}
+                  <span class="icon icon-svg" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="14" height="14">
+                      {#each item.iconSvg as d}
+                        <path {d} />
+                      {/each}
+                    </svg>
+                  </span>
+                {:else if item.icon}
                   <span class="icon" aria-hidden="true">{item.icon}</span>
                 {:else}
                   <span class="icon icon-empty" aria-hidden="true"></span>
@@ -209,6 +224,14 @@
   }
   .menu-item:hover:not(:disabled) .icon {
     color: var(--text-1);
+  }
+  .menu-item .icon.icon-svg svg {
+    display: block;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .menu-item .label {
     flex: 1 1 auto;

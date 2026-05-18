@@ -405,12 +405,68 @@
     return collected.join("\n");
   })();
 
+  /** Build the shell command we'd hand to an external terminal to
+   *  resume this session. Mirrors the argv the inline TerminalView
+   *  uses (so a "Resume in external terminal" lands the user in the
+   *  same place a click on Resume would), but as a single quoted
+   *  string that survives an AppleScript `do script` round-trip. */
+  function resumeShellCommand(sid: string): string {
+    if (agent === "codex") {
+      return `codex resume ${sid}`;
+    }
+    return `claude --resume ${sid} --allow-dangerously-skip-permissions`;
+  }
+
+  /** POST /api/open with `command` set so the daemon spawns the user's
+   *  OS terminal in `session.cwd` AND runs `<resume cmd>` in the new
+   *  window. The /api/open extension is honoured only for app=terminal;
+   *  other apps ignore `command`. */
+  async function resumeInExternalTerminal(): Promise<void> {
+    const sid = session?.sessionId;
+    const cwd = session?.cwd;
+    if (!sid || !cwd) return;
+    try {
+      const res = await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: cwd,
+          app: "terminal",
+          command: resumeShellCommand(sid),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   /** Burger-menu items for the per-session header. SessionMenu owns the
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
   $: menuItems = ((): SessionMenuItem[] => {
     const sid = session?.sessionId;
     return [
+      {
+        kind: "action",
+        label: "Resume in external terminal",
+        iconSvg: [
+          // Lucide "external-link": a window with an arrow leaving its
+          // top-right corner. Reads as "open elsewhere" universally —
+          // matches how the OpenIn chips style their open-in icons.
+          "M5 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7",
+          "M15 3h6v6",
+          "M10 14 21 3",
+        ],
+        disabled: !sid,
+        title: sid
+          ? `Open your OS terminal at the session's cwd and run \`${agent === "codex" ? `codex resume ${sid.slice(0, 8)}…` : `claude --resume ${sid.slice(0, 8)}…`}\``
+          : "No session id yet",
+        onSelect: () => void resumeInExternalTerminal(),
+      },
       {
         kind: "copy",
         label: "Copy session ID + path",

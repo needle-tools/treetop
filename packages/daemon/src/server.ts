@@ -771,7 +771,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
           { method: "GET", path: "/api/diff", description: "git diff text for a worktree: ?path=<wt>&kind=workdir|staged" },
           { method: "GET", path: "/api/commit", description: "git show output for one commit: ?path=<wt>&sha=<sha>" },
-          { method: "POST", path: "/api/open", body: { path: "string", app: "fork | terminal | <editor cmd>" }, description: "open a path in Fork / terminal / a detected editor via OS shell-out" },
+          { method: "POST", path: "/api/open", body: { path: "string", app: "fork | terminal | <editor cmd>", command: "string?" }, description: "open a path in Fork / terminal / a detected editor via OS shell-out. `command` is honoured for app=terminal — runs the given shell command in the new window at the given cwd (drives e.g. `claude --resume <sid>` in macOS Terminal / Linux's preferred terminal)" },
           { method: "GET", path: "/api/stream", description: "Server-Sent Events stream; emits 'change' on every mutation so clients can refresh" },
           { method: "GET", path: "/api/events", description: "list recent events (mutations + observations) with undone/reversible flags" },
           { method: "POST", path: "/api/events/:id/undo", description: "reverse a reversible event" },
@@ -1735,7 +1735,7 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/open" && req.method === "POST") {
       const body = (await req.json().catch(() => null)) as
-        | { path?: unknown; app?: unknown }
+        | { path?: unknown; app?: unknown; command?: unknown }
         | null;
       if (typeof body?.path !== "string" || typeof body?.app !== "string") {
         return json(
@@ -1743,8 +1743,9 @@ const server = Bun.serve<TermWsData, never>({
           { status: 400 },
         );
       }
+      const command = typeof body.command === "string" ? body.command : undefined;
       try {
-        const result = await openIn(body.path, body.app);
+        const result = await openIn(body.path, body.app, command);
         return json(result);
       } catch (e) {
         return json(

@@ -119,15 +119,28 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
   return value;
 }
 
+/** Single-quote `s` for safe substitution into a `bash -c '…'` snippet.
+ *  Closes the surrounding quotes around any embedded `'`, escapes the
+ *  quote with `\'`, then reopens. Same trick `find -print0 | xargs -0`
+ *  scripts use; doesn't depend on any shell beyond POSIX. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 export async function openIn(
   path: string,
   app: string,
+  /** Optional shell command to run after opening the terminal. Only
+   *  honoured when `app === "terminal"`. Used by the "Resume in external
+   *  terminal" affordances to spawn `claude --resume <sid>` / similar
+   *  in the user's preferred terminal at the session's cwd. */
+  command?: string,
 ): Promise<{ via: string }> {
   // Trace the actual path we received so we can diagnose "VSCode opens
   // the wrong dir" / "Finder opens some git path" reports — almost
   // always a misunderstanding about which path supergit sent vs which
   // path the OS expanded it to.
-  console.log(`openIn: app=${app} path=${path}`);
+  console.log(`openIn: app=${app} path=${path}${command ? ` command=${command}` : ""}`);
   if (app === "fork") {
     if (process.platform !== "darwin") {
       throw new Error("Fork integration is currently macOS-only");
@@ -165,10 +178,33 @@ export async function openIn(
 
   if (app === "terminal") {
     if (process.platform === "darwin") {
-      Bun.spawn(["open", "-a", "Terminal", path], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      if (command) {
+        // macOS Terminal.app: drive it via AppleScript so we can launch
+        // a fresh window AND run a command in it. `open -a Terminal`
+        // alone has no way to pass a command, only a cwd.
+        //
+        // The script we hand `do script` is the user's shell init plus
+        // `cd <cwd> && <command>`. Single-quoting the cwd makes paths
+        // with spaces / dollars safe; the AppleScript double-quote layer
+        // gets `\"` escaping for the inner `"`, plus `\\` for `\`.
+        const inner = `cd ${shellQuote(path)} && ${command}`;
+        const asEscaped = inner.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        Bun.spawn(
+          [
+            "osascript",
+            "-e",
+            `tell application "Terminal" to do script "${asEscaped}"`,
+            "-e",
+            `tell application "Terminal" to activate`,
+          ],
+          { stdout: "ignore", stderr: "ignore" },
+        );
+      } else {
+        Bun.spawn(["open", "-a", "Terminal", path], {
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      }
       return { via: "Terminal" };
     }
     if (process.platform === "linux") {
@@ -182,11 +218,24 @@ export async function openIn(
       ];
       for (const t of terminals) {
         if (await which(t)) {
-          Bun.spawn([t], {
-            cwd: path,
-            stdout: "ignore",
-            stderr: "ignore",
-          });
+          if (command) {
+            // `bash -c '…; exec bash'` runs the command and then drops
+            // the user into an interactive shell so the window doesn't
+            // vanish on exit. cwd is set via shell `cd` rather than the
+            // terminal-specific --working-directory flag so this works
+            // across the whole detection list.
+            const inner = `cd ${shellQuote(path)} && ${command}; exec bash`;
+            Bun.spawn([t, "-e", "bash", "-c", inner], {
+              stdout: "ignore",
+              stderr: "ignore",
+            });
+          } else {
+            Bun.spawn([t], {
+              cwd: path,
+              stdout: "ignore",
+              stderr: "ignore",
+            });
+          }
           return { via: t };
         }
       }
