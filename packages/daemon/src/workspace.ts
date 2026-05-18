@@ -264,6 +264,54 @@ export class Workspace {
   }
 
   /**
+   * Reorder the repo's custom links to match the provided id list.
+   * `orderedIds` must be a permutation of the repo's existing link
+   * ids — same length, same set, just rearranged. Returns the
+   * previous order (id list) so the caller can record an inverse for
+   * undo. Throws if the repo is unknown or the ids don't match.
+   */
+  async reorderCustomLinks(
+    id: string,
+    orderedIds: string[],
+  ): Promise<{ oldOrder: string[]; newOrder: string[] }> {
+    if (!Array.isArray(orderedIds)) {
+      throw new Error("orderedIds must be an array of link ids");
+    }
+    const repos = await this.listRepos();
+    const idx = repos.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error(`Repo not found: ${id}`);
+    const links = repos[idx]!.customLinks ?? [];
+    const oldOrder = links.map((l) => l.id);
+    if (orderedIds.length !== oldOrder.length) {
+      throw new Error("orderedIds length must match existing links");
+    }
+    const seen = new Set<string>();
+    for (const lid of orderedIds) {
+      if (typeof lid !== "string" || lid.length === 0) {
+        throw new Error("orderedIds must contain non-empty strings");
+      }
+      if (seen.has(lid)) {
+        throw new Error("orderedIds must be unique");
+      }
+      seen.add(lid);
+    }
+    const byId = new Map(links.map((l) => [l.id, l]));
+    const reordered: CustomLink[] = [];
+    for (const lid of orderedIds) {
+      const link = byId.get(lid);
+      if (!link) throw new Error(`Unknown link id: ${lid}`);
+      reordered.push(link);
+    }
+    if (oldOrder.every((lid, i) => lid === orderedIds[i])) {
+      return { oldOrder, newOrder: [...orderedIds] };
+    }
+    const next: Repo = { ...repos[idx]!, customLinks: reordered };
+    repos[idx] = next;
+    await this.writeRepos(repos);
+    return { oldOrder, newOrder: [...orderedIds] };
+  }
+
+  /**
    * Remove a custom link by its id. Returns the removed entry so the
    * caller can record an inverse, or `null` if no such link exists on
    * the repo. Throws if the repo itself is unknown.

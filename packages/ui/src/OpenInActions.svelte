@@ -36,6 +36,7 @@
   import Popover from "./Popover.svelte";
   import { iconFor } from "./icons";
   import { confirmDialog } from "./confirm-dialog";
+  import { flip } from "svelte/animate";
 
   export let path: string;
   export let editors: EditorDescriptor[] = [];
@@ -52,6 +53,12 @@
   /** Remove-link handler. Same contract — the parent owns the fetch. */
   export let onRemoveCustomLink: ((linkId: string) => Promise<void>) | null =
     null;
+  /** Reorder-links handler. Receives the new ordered list of link ids
+   *  after a drag-and-drop completes; parent updates state + persists
+   *  to the daemon. Drag is disabled when this is null. */
+  export let onReorderCustomLinks:
+    | ((orderedIds: string[]) => Promise<void>)
+    | null = null;
   export let iconOnly: boolean = false;
 
   const PROVIDER_LABELS: Record<string, string> = {
@@ -176,6 +183,70 @@
     await onRemoveCustomLink(link.id);
   }
 
+  /** Drag-reorder state. `dragId` is the id of the chip the user is
+   *  currently dragging; `localOrder` is the live, optimistically
+   *  reordered view that drives the `{#each}` block during the drag so
+   *  `animate:flip` can transition the other chips out of the way.
+   *  Both reset on dragend (committed or not). */
+  let dragId: string | null = null;
+  let localOrder: CustomLink[] | null = null;
+
+  $: displayLinks = localOrder ?? customLinks;
+
+  function canReorder(): boolean {
+    return onReorderCustomLinks !== null && !iconOnly && customLinks.length > 1;
+  }
+
+  function startDrag(link: CustomLink, ev: DragEvent) {
+    if (!canReorder() || !ev.dataTransfer) return;
+    dragId = link.id;
+    localOrder = [...customLinks];
+    ev.dataTransfer.effectAllowed = "move";
+    // Safari refuses to fire `dragover` unless dataTransfer carries
+    // at least one payload — set a noop text/plain so cross-browser
+    // drop targets activate.
+    try { ev.dataTransfer.setData("text/plain", link.id); } catch { /* IE-only quirk */ }
+  }
+
+  function onDragOverLink(target: CustomLink, ev: DragEvent) {
+    if (!dragId || dragId === target.id || !localOrder) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    const el = ev.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const before = ev.clientX < rect.left + rect.width / 2;
+    const draggedIdx = localOrder.findIndex((l) => l.id === dragId);
+    const targetIdx = localOrder.findIndex((l) => l.id === target.id);
+    if (draggedIdx < 0 || targetIdx < 0) return;
+    let insertIdx = before ? targetIdx : targetIdx + 1;
+    if (draggedIdx < insertIdx) insertIdx--;
+    if (insertIdx === draggedIdx) return;
+    const next = [...localOrder];
+    const [item] = next.splice(draggedIdx, 1);
+    next.splice(insertIdx, 0, item!);
+    localOrder = next;
+  }
+
+  function onDragOverStrip(ev: DragEvent) {
+    // Allow drop anywhere in the strip so the browser shows the move
+    // cursor instead of the no-drop one when the user hovers gaps
+    // between chips.
+    if (dragId) ev.preventDefault();
+  }
+
+  async function onDragEnd() {
+    const id = dragId;
+    const order = localOrder;
+    dragId = null;
+    localOrder = null;
+    if (!id || !order || !onReorderCustomLinks) return;
+    const next = order.map((l) => l.id);
+    const original = customLinks.map((l) => l.id);
+    if (next.join() === original.join()) return;
+    await onReorderCustomLinks(next);
+  }
+
   function onPopoverKeydown(ev: KeyboardEvent) {
     if (ev.key === "Escape") {
       ev.preventDefault();
@@ -197,7 +268,11 @@
 
 <svelte:window on:mousedown={onWindowMouseDown} />
 
-<div class="row-actions" class:icon-only={iconOnly}>
+<div
+  class="row-actions"
+  class:icon-only={iconOnly}
+  on:dragover={onDragOverStrip}
+>
   {#if onAddCustomLink}
     <span class="add-link-anchor" bind:this={anchorEl}>
       <button
@@ -263,10 +338,21 @@
       {/if}
     </span>
   {/if}
-  {#each customLinks as link (link.id)}
+  {#each displayLinks as link (link.id)}
     {@const label = linkLabel(link)}
     {@const failed = failedFavicons.has(link.id)}
-    <span class="custom-link-wrap" class:icon-only={iconOnly}>
+    <span
+      class="custom-link-wrap"
+      class:icon-only={iconOnly}
+      class:draggable={canReorder()}
+      class:dragging={dragId === link.id}
+      draggable={canReorder()}
+      animate:flip={{ duration: 220 }}
+      on:dragstart={(ev) => startDrag(link, ev)}
+      on:dragover={(ev) => onDragOverLink(link, ev)}
+      on:dragend={onDragEnd}
+      on:drop|preventDefault={onDragEnd}
+    >
       <button
         type="button"
         class="tiny open-in-btn custom-link-btn"
@@ -412,6 +498,20 @@
     position: relative;
     display: inline-flex;
     align-items: center;
+  }
+  /* Drag affordance — the favicon doubles as the drag handle, so the
+     `grab` cursor is anchored to it rather than the whole chip. The
+     wrap itself stays normal-cursor so the label feels click-only. */
+  .custom-link-wrap.draggable :global(.custom-link-favicon),
+  .custom-link-wrap.draggable :global(.open-in-icon) {
+    cursor: grab;
+  }
+  .custom-link-wrap.dragging {
+    opacity: 0.35;
+  }
+  .custom-link-wrap.dragging :global(.custom-link-favicon),
+  .custom-link-wrap.dragging :global(.open-in-icon) {
+    cursor: grabbing;
   }
   .custom-link-x {
     position: absolute;

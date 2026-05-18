@@ -2447,6 +2447,43 @@
     }
   }
 
+  /** Rewrite the repo's custom-link order to match `orderedIds`.
+   *  Optimistic: we splice the local array immediately so animate:flip
+   *  in OpenInActions can run its transition without waiting for the
+   *  SSE round-trip. The daemon validates the permutation and emits a
+   *  `change` broadcast on success. */
+  async function reorderCustomLinks(
+    repoId: string,
+    orderedIds: string[],
+  ): Promise<void> {
+    const repo = repos.find((r) => r.id === repoId);
+    if (repo && repo.customLinks) {
+      const byId = new Map(repo.customLinks.map((l) => [l.id, l]));
+      const reordered: CustomLink[] = [];
+      for (const lid of orderedIds) {
+        const link = byId.get(lid);
+        if (link) reordered.push(link);
+      }
+      if (reordered.length === repo.customLinks.length) {
+        repo.customLinks = reordered;
+        repos = repos;
+      }
+    }
+    try {
+      const res = await fetch(`/api/repos/${repoId}/custom-links/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: orderedIds }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function removeCustomLink(repoId: string, linkId: string): Promise<void> {
     try {
       const res = await fetch(
@@ -4935,6 +4972,7 @@
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
                 onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
+                onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
                 iconOnly
               />
             {/if}
@@ -5117,6 +5155,7 @@
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
                 onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
+                onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
               />
             </div>
 

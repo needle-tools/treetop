@@ -286,4 +286,53 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await expect(ws.removeCustomLink("nope", "x")).rejects.toThrow(/not found/);
   });
+
+  test("reorderCustomLinks rewrites the order to match the id list", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const a = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const b = await ws.addCustomLink(repo.id, { url: "https://b.test/" });
+    const c = await ws.addCustomLink(repo.id, { url: "https://c.test/" });
+    const result = await ws.reorderCustomLinks(repo.id, [c.id, a.id, b.id]);
+    expect(result.oldOrder).toEqual([a.id, b.id, c.id]);
+    expect(result.newOrder).toEqual([c.id, a.id, b.id]);
+    expect((await ws.listRepos())[0]!.customLinks?.map((l) => l.id)).toEqual([
+      c.id,
+      a.id,
+      b.id,
+    ]);
+  });
+
+  test("reorderCustomLinks is a no-op when the order is unchanged", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const a = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const b = await ws.addCustomLink(repo.id, { url: "https://b.test/" });
+    const result = await ws.reorderCustomLinks(repo.id, [a.id, b.id]);
+    expect(result.oldOrder).toEqual([a.id, b.id]);
+    expect(result.newOrder).toEqual([a.id, b.id]);
+  });
+
+  test("reorderCustomLinks rejects mismatched id sets", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const a = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const b = await ws.addCustomLink(repo.id, { url: "https://b.test/" });
+    // wrong length
+    await expect(ws.reorderCustomLinks(repo.id, [a.id])).rejects.toThrow(/length/);
+    // unknown id
+    await expect(
+      ws.reorderCustomLinks(repo.id, [a.id, "ghost"]),
+    ).rejects.toThrow(/Unknown link id/);
+    // duplicates
+    await expect(
+      ws.reorderCustomLinks(repo.id, [a.id, a.id]),
+    ).rejects.toThrow(/unique/);
+    void b;
+  });
+
+  test("reorderCustomLinks throws when the repo id is unknown", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await expect(ws.reorderCustomLinks("nope", [])).rejects.toThrow(/not found/);
+  });
 });

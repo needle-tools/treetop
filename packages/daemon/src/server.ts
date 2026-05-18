@@ -919,6 +919,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
           { method: "POST", path: "/api/repos/:id/color", body: { color: "#rrggbb hex string or null" }, description: "set or clear a repo's accent color (used wherever the name renders)" },
           { method: "POST", path: "/api/repos/:id/custom-links", body: { url: "http(s) URL", name: "string?" }, description: "append a user-defined 'open in' link to the repo (Coolify dashboards, staging URLs, etc.). Returns the persisted link with its generated id." },
+          { method: "POST", path: "/api/repos/:id/custom-links/order", body: { order: "string[] of link ids" }, description: "rewrite the repo's custom-links order to match the provided id list (must be a permutation of the existing ids). Used by the drag-to-reorder action in the dashboard's worktree row." },
           { method: "DELETE", path: "/api/repos/:id/custom-links/:linkId", description: "remove a previously-added custom link from the repo." },
           { method: "GET", path: "/api/favicon", description: "?url=<page-url> — proxy that fetches and caches the favicon for the given page (tries /favicon.ico and then parses <link rel='icon'> from the page HTML). Used so the UI can show a brand mark next to each custom link without CORS or third-party leaks." },
           { method: "POST", path: "/api/repos/:id/worktrees", body: { branch: "string", base: "string?" }, description: "create a new worktree for the repo on a new branch (at ~/wt/<repo>/<branch>)" },
@@ -1685,6 +1686,36 @@ const server = Bun.serve<TermWsData, never>({
         });
         broadcast("change", { kind: "custom_link_add", id, linkId: link.id });
         return json({ id, link });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
+      }
+    }
+
+    const customLinksOrderMatch = url.pathname.match(
+      /^\/api\/repos\/([^/]+)\/custom-links\/order$/,
+    );
+    if (customLinksOrderMatch && req.method === "POST") {
+      const id = customLinksOrderMatch[1]!;
+      const body = (await req.json().catch(() => null)) as
+        | { order?: unknown }
+        | null;
+      const order = Array.isArray(body?.order) ? body.order : null;
+      if (!order) {
+        return json(
+          { error: "body.order must be an array of link ids" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { oldOrder, newOrder } = await workspace.reorderCustomLinks(
+          id,
+          order as string[],
+        );
+        if (oldOrder.join() !== newOrder.join()) {
+          broadcast("change", { kind: "custom_link_reorder", id });
+        }
+        return json({ id, oldOrder, newOrder });
       } catch (e) {
         const msg = String(e instanceof Error ? e.message : e);
         return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
