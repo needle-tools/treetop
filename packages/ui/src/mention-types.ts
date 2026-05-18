@@ -33,6 +33,29 @@ export interface SearchScope {
    *  origin's brand mark instead of a generic glyph. Resolved by the
    *  caller (today: StickyNote reads it from repos[].remotes[0]). */
   currentRepoProvider?: string;
+  /** Pre-bucketed session list for the current worktree, sourced from
+   *  the daemon's `repos[].worktrees[].agents` association. When set,
+   *  sessionsProvider uses this exact list (skipping /api/agents and
+   *  client-side cwd filtering) so the @-mention picker shows the
+   *  same set as the "+N sessions in this worktree" popover.
+   *
+   *  Typed loosely so the caller doesn't have to import AgentSession
+   *  from sessionSearch.ts (and so future shapes — shells, codex,
+   *  copilot — drop in without churn). The provider casts to its
+   *  own internal shape on use. */
+  sessionsInScope?: ReadonlyArray<{
+    agent: string;
+    cwd?: string;
+    lastActive: string;
+    source: string;
+    sessionId?: string;
+    title?: string;
+    manualTitle?: string;
+    lastUserMessage?: string;
+    firstUserMessage?: string;
+    lastUserMessages?: string[];
+    messageCount?: number;
+  }>;
 }
 
 /** Single result in the picker. `value` is what ends up in the
@@ -71,4 +94,11 @@ export interface Provider {
     scope: SearchScope,
     limit?: number,
   ): Promise<PickItem[]>;
+  /** Filter a recents-store item against the current scope. The
+   *  recents store is global (carries picks across notes / worktrees),
+   *  so without this filter the picker's "Recent sessions" section
+   *  surfaces sessions from other worktrees as if they belonged in
+   *  the current scope — which then inserts a link that doesn't open
+   *  where the user expects. Default (omitted) = every recent passes. */
+  inScope?(item: PickItem, scope: SearchScope): boolean;
 }

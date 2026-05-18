@@ -108,12 +108,11 @@
 .sticky.sticky-link {
   width: auto;
   /* Wider envelope so commit subjects + session titles stay readable
-     before the ellipsis bites. The label column's own `min-width:
-     20ch` is what guarantees the readable minimum; min-width here
-     just sets a comfortable starting size for chips with very short
-     labels. */
+     before the ellipsis bites — and so the picker hosted in the chip
+     when it's in edit mode has room to grow (was 540px, doubled to
+     840px to match the inline popover's cap). */
   min-width: 260px;
-  max-width: 540px;
+  max-width: 840px;
   min-height: 0;
   background: var(--surface-1);
   background-image: none;
@@ -230,13 +229,15 @@
   color: inherit;
 }
 .attach-row-label {
-  /* Flex variant (saved chip): grow to fill the row, ellipsis when
-     the row is constrained. Grid variant (picker row): the column
-     track is minmax(0, 1fr), so this `min-width: 0` is what lets
-     the label actually shrink past its content's intrinsic size
-     and ellipsize within the cell instead of blowing the grid out. */
-  flex: 1 1 auto;
+  /* Single-line with ellipsis, hard-capped at 50ch so the picker's
+     max-content (and therefore the popover) can't blow out past a
+     readable width no matter how long a session title is. min-width
+     0 still lets the label shrink past its content's intrinsic size
+     when the row's grid track is narrower than 50ch.
+     No flex props here — the parent uses grid (subgrid), so flex
+     would be silently ignored (Svelte's CSS linter warns). */
   min-width: 0;
+  max-width: 50ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -360,12 +361,19 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /* Fill whatever wrapper hosts us (link chip in edit mode, or the
-     inline @-mention popover anchored to a note's textarea). The
-     wrapper imposes the width budget so the picker doesn't blow out
-     narrow surfaces with a hard min-width. */
-  width: 100%;
-  min-width: 0;
+  /* Content-sized: the picker reports its natural max-content width
+     so an absolute-positioned wrapper (.sticky-mention-popover) sized
+     with `width: max-content` can grow to fit the widest row. A
+     `width: 100%` here was breaking that propagation — the popover
+     stayed at min-width and the grid columns shrunk, ellipsizing
+     labels even when there was plenty of horizontal room.
+     `min-width: 100%` + `max-width: 100%` clamp the picker to the
+     wrapper's width once that wrapper has decided how wide to be,
+     so short content doesn't leave dead space on the right and long
+     content doesn't overflow the wrapper. */
+  width: max-content;
+  min-width: 100%;
+  max-width: 100%;
 }
 .mention-picker-input-wrap {
   position: relative;
@@ -424,14 +432,16 @@
      left edge. Rows opt into these tracks via subgrid (see
      .mention-picker-row below).
 
-     Three columns now (was four): icon · label · meta. The picker
-     row template combines subtitle + meta into one trailing span
-     so the label gets the rest of the row width. `minmax(0, 1fr)`
-     means the label can shrink to zero (ellipsis kicks in) but
-     greedily takes every spare pixel — long session titles read
-     much further before truncating. */
+     All `auto` tracks (was `auto minmax(0, 1fr) auto`): each column
+     reports its content's max-content size, which propagates up
+     through subgrid → grid → mention-picker → popover. A `1fr`
+     track is treated as `auto` during max-content sizing in spec
+     but in practice browsers swallow the propagation and the
+     popover stays at min-width. `auto` everywhere keeps the
+     propagation intact so the popover auto-sizes to the widest
+     row, capped by its own max-width. */
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto auto;
   align-items: stretch;
 }
 .mention-picker-empty {
@@ -731,18 +741,24 @@
    palette so it reads as a UI overlay against the warm paper body
    rather than inheriting the sticky's handwriting font / tan tone. */
 .sticky-mention-popover {
-  position: absolute;
-  left: 0;
-  /* Anchored to the textarea's left edge; floored at the textarea
-     width via `min-width: 100%` so the popover never reads narrower
-     than the input it's anchored to. Allowed to grow up to a
-     readable cap (clamped to the viewport so it can't escape the
-     screen on a tiny window). Auto-content `width` keeps short
-     rows compact while long titles let the popover stretch out. */
-  top: calc(100% + 4px);
-  min-width: 100%;
+  /* Portaled to <body> with viewport-fixed positioning, driven by
+     inline `top`, `left`, `min-width`, and `max-width` set by
+     StickyNote.svelte's repositionMentionPopover. The component
+     measures the textarea's bounding rect and clamps the popover
+     into the viewport so it can't overflow off the right edge —
+     CSS alone can't do that because `100vw` doesn't know our
+     position within it. Vertical clamp via max-height + auto-scroll
+     so long result lists stay on screen. */
+  position: fixed;
+  /* Above .sticky-layer (z-index: 900) so the popover sits over the
+     sticky notes themselves. Portaling to <body> would otherwise let
+     the layer cover the popover since both share the same containing
+     block now. */
+  z-index: 1500;
   width: max-content;
-  max-width: min(420px, calc(100vw - 16px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 50;
   background: var(--surface-1);
   color: var(--text-1);
@@ -1148,26 +1164,3 @@
   flex: 0 0 auto;
 }
 
-/* One-shot pop-in for a restored note. Applied to `.sticky-host` (the
-   layer's positioned wrapper) so the sticky's own tilt/rotation
-   inside stays intact — we only scale + fade the wrapper. The class
-   is added by `scrollAndPopNote()` in App.svelte after the note's
-   DOM materialises post-undo, and removed on `animationend`. */
-@keyframes sticky-restore-pop {
-  0% {
-    transform: scale(0.2);
-    opacity: 0;
-  }
-  60% {
-    transform: scale(1.12);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-.sticky-host.restored {
-  animation: sticky-restore-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  transform-origin: center center;
-}

@@ -163,36 +163,57 @@ function sessionToPickItem(s: AgentSession): PickItem {
 export const sessionsProvider: Provider = {
   id: "sessions",
   label: "Sessions",
+  /** Recents-store filter: a globally-saved pick is "in scope" only if
+   *  it appears in the worktree's live agents list. Without this the
+   *  picker happily surfaces last week's pick from /Users/.../webitor
+   *  in a /Users/.../supergit note. */
+  inScope(item, scope) {
+    if (!scope.sessionsInScope) {
+      // No per-worktree list — fall back to a cwd prefix check via
+      // the provider's own knowledge. We don't have the session's
+      // cwd in a PickItem (only `value` = source path), so trust the
+      // recent pick when there's nothing to filter against.
+      return true;
+    }
+    return scope.sessionsInScope.some((s) => s.source === item.value);
+  },
   async search(
     query: string,
     scope: SearchScope,
     limit: number = 8,
   ): Promise<PickItem[]> {
-    let all: AgentSession[];
-    try {
-      all = await fetchJsonCached<AgentSession[]>("/api/agents");
-    } catch {
-      return [];
-    }
-    // Strict worktree scope when provided — same scope the rest of
-    // the picker is anchored to (commits already require it). Falls
-    // back to repo scope, then global, only when no worktree was
-    // passed. NO empty-set fallthrough to global: a Downloads-folder
-    // note whose worktree has no sessions should show an empty list
-    // rather than silently surfacing sister-repo sessions whose
-    // titles look misleadingly similar to the user's current work
-    // (one click → wrong focus → "this link doesn't work").
-    const pool = scope.currentWorktreePath
-      ? all.filter((s) =>
-          typeof s.cwd === "string" &&
-          (s.cwd === scope.currentWorktreePath ||
-            s.cwd.startsWith(scope.currentWorktreePath! + "/")),
-        )
-      : scope.currentRepoPath
+    // Preferred path: caller passed the same `wt.agents` array the
+    // "+N sessions in this worktree" popover reads from — daemon-side
+    // bucketing, already filtered. We use that exact list so the
+    // @-mention picker can't disagree with the worktree's session
+    // list about which sessions belong here.
+    let pool: AgentSession[];
+    if (scope.sessionsInScope) {
+      pool = scope.sessionsInScope as unknown as AgentSession[];
+    } else {
+      // Fallback: no per-worktree list passed (orphan note, picker
+      // call site that doesn't have the data). Hit /api/agents and
+      // narrow by cwd — strictest available filter wins, with NO
+      // empty-set fallthrough to global since a wrong session a
+      // user picks insertes a link that doesn't open where they expect.
+      let all: AgentSession[];
+      try {
+        all = await fetchJsonCached<AgentSession[]>("/api/agents");
+      } catch {
+        return [];
+      }
+      pool = scope.currentWorktreePath
         ? all.filter((s) =>
-            typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
+            typeof s.cwd === "string" &&
+            (s.cwd === scope.currentWorktreePath ||
+              s.cwd.startsWith(scope.currentWorktreePath! + "/")),
           )
-        : all;
+        : scope.currentRepoPath
+          ? all.filter((s) =>
+              typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
+            )
+          : all;
+    }
     // Empty query: rank by recency. Non-empty: defer to scoreSession
     // (same fuzzy ranker the session-search popover uses) so the two
     // surfaces produce identical orderings for identical queries.

@@ -509,12 +509,16 @@
     currentWorktreePath?: string;
     currentRepoPath?: string;
     currentRepoProvider?: string;
+    sessionsInScope?: AgentSession[];
   } = {};
   $: {
     const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
     const wtPath = wtAnchor ? wtAnchor.slice("worktree:".length) : undefined;
     const repo = wtPath
       ? repos.find((r) => r.worktrees?.some((w) => w.path === wtPath))
+      : undefined;
+    const wt = wtPath
+      ? repo?.worktrees?.find((w) => w.path === wtPath)
       : undefined;
     const nextRepoPath = repo?.path;
     // Pull the provider off the repo's primary remote — `origin` if
@@ -524,15 +528,22 @@
     const remoteRefs = (repo as { remotes?: Array<{ name: string; provider?: string | null }> } | undefined)?.remotes ?? [];
     const origin = remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
     const nextProvider = origin?.provider ?? undefined;
+    // The daemon's per-worktree session bucketing — same list that
+    // powers the "+N sessions in this worktree" popover. Passing it
+    // here makes the @-mention picker show that exact set, instead
+    // of re-deriving it from /api/agents + cwd guessing.
+    const nextSessions = (wt as { agents?: AgentSession[] } | undefined)?.agents;
     if (
       pickerScope.currentWorktreePath !== wtPath ||
       pickerScope.currentRepoPath !== nextRepoPath ||
-      pickerScope.currentRepoProvider !== nextProvider
+      pickerScope.currentRepoProvider !== nextProvider ||
+      pickerScope.sessionsInScope !== nextSessions
     ) {
       pickerScope = {
         currentWorktreePath: wtPath,
         currentRepoPath: nextRepoPath,
         currentRepoProvider: nextProvider,
+        sessionsInScope: nextSessions,
       };
     }
   }
@@ -551,10 +562,81 @@
     hasResults: () => boolean;
   } | null = null;
 
+  /** Popover position in viewport coords. The popover lives in
+   *  document.body via the `portal` action so its CSS uses
+   *  `position: fixed` and reads these as top/left, with max-width
+   *  clamped so it never spills off the right edge of the viewport.
+   *  Recomputed whenever the textarea moves (input → autosize,
+   *  scroll, resize, drag) and whenever the popover opens. */
+  let popoverTop = 0;
+  let popoverLeft = 0;
+  let popoverMaxWidth = 840;
+  let popoverMinWidth = 0;
+  const POPOVER_MARGIN = 32;
+  const POPOVER_MAX = 840;
+
+  /** Viewport-clamped max-width for the LINK CHIP (.sticky-link)
+   *  while it's in edit mode. The chip is positioned in document
+   *  coords via `x`, so when it sits near the right edge of the
+   *  viewport its auto-sized width (driven by the picker's
+   *  max-content propagation) can extend past the viewport.
+   *  Same idea as the inline popover, only on the chip itself. */
+  let chipMaxWidth = POPOVER_MAX;
+  function recomputeChipMaxWidth(): void {
+    if (typeof window === "undefined") {
+      chipMaxWidth = POPOVER_MAX;
+      return;
+    }
+    // x is doc-relative; viewport right edge in doc coords is
+    // scrollX + innerWidth. The chip lives between `x` and the
+    // viewport right, minus a safety margin.
+    const room = window.scrollX + window.innerWidth - x - POPOVER_MARGIN;
+    chipMaxWidth = Math.max(260, Math.min(POPOVER_MAX, room));
+  }
+  // Reactive on x (drag/scroll repositions) and editing/isLink so
+  // the math only runs while the chip is showing a picker.
+  $: if (editing && isLink) {
+    void x;
+    recomputeChipMaxWidth();
+  }
+
+  function repositionMentionPopover(): void {
+    if (!mentionOpen || !textareaEl) return;
+    const r = textareaEl.getBoundingClientRect();
+    const vw = window.innerWidth;
+    // Cap horizontal space against the viewport edges, with a small
+    // safety margin. The popover floors at the textarea width below
+    // so a long search query still has typing room.
+    let maxW = Math.min(POPOVER_MAX, vw - POPOVER_MARGIN * 2);
+    if (maxW < r.width) maxW = r.width;
+    // Default: align with the textarea's left edge. If extending
+    // rightward by maxW would cross the viewport, slide the popover
+    // left until it fits (clamped to the left edge).
+    let left = r.left;
+    if (left + maxW > vw - POPOVER_MARGIN) {
+      left = Math.max(POPOVER_MARGIN, vw - POPOVER_MARGIN - maxW);
+    }
+    popoverTop = r.bottom + 4;
+    popoverLeft = left;
+    popoverMaxWidth = maxW;
+    popoverMinWidth = r.width;
+  }
+
   function closeMention(): void {
     mentionOpen = false;
     mentionStart = -1;
     mentionQuery = "";
+  }
+
+  // Reposition the popover whenever:
+  //  - it opens (textarea position picked up for the first time)
+  //  - the user types (textarea autosizes → bottom moves)
+  //  - the query changes (picker list height changes)
+  // The void-references force Svelte to keep these in the dep set.
+  $: if (mentionOpen) {
+    void mentionQuery;
+    void draft;
+    queueMicrotask(repositionMentionPopover);
   }
 
   function onTextareaInput(): void {
@@ -782,9 +864,21 @@
       }
     };
     window.addEventListener("keydown", onWindowKey);
+    // Reposition the @-mention popover when the page scrolls or the
+    // viewport resizes — the popover is portaled to <body> with fixed
+    // coords, so anything moving the textarea relative to the
+    // viewport needs to retrigger the clamp-to-viewport math.
+    const onWindowReflow = () => {
+      if (mentionOpen) repositionMentionPopover();
+      if (editing && isLink) recomputeChipMaxWidth();
+    };
+    window.addEventListener("scroll", onWindowReflow, true);
+    window.addEventListener("resize", onWindowReflow);
     return () => {
       window.removeEventListener("mousedown", onWindowDown);
       window.removeEventListener("keydown", onWindowKey);
+      window.removeEventListener("scroll", onWindowReflow, true);
+      window.removeEventListener("resize", onWindowReflow);
       stopPendulum();
       cancelPendingDelete();
     };
@@ -1042,10 +1136,12 @@
     }
   }
 
-  /** Hard cap on inline supergit-mention label width. Past this the
-   *  text gets truncated with an ellipsis so a long commit subject /
-   *  renamed session title can't make the note balloon horizontally. */
-  const MAX_INLINE_LABEL_CH = 30;
+  /** Hard cap on inline supergit-mention label width. Doubled from
+   *  the original 30 so a session title / commit subject reads in
+   *  full before the ellipsis bites — long labels still wrap inside
+   *  the chip rather than ballooning the note horizontally because
+   *  the chip is an inline-flex element. */
+  const MAX_INLINE_LABEL_CH = 60;
 
   function clampLabel(s: string): string {
     return s.length <= MAX_INLINE_LABEL_CH
@@ -1152,7 +1248,7 @@
   class:sticky-link={isLink}
   data-note-id={note.id}
   data-kind={isLink ? "link" : "note"}
-  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;"
+  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
   role="dialog"
   aria-label={isLink ? "Sticky link" : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
@@ -1234,11 +1330,24 @@
           use:autosize
         ></textarea>
         {#if mentionOpen}
-          <!-- Inline @-mention popover. Embedded mode: the picker
-               hides its own input and is driven by `externalQuery` +
-               our forwarded arrow/enter keystrokes, so the textarea
-               stays focused while the user keeps typing. -->
-          <div class="sticky-mention-popover">
+          <!-- Inline @-mention popover. Portaled to <body> so we
+               can position it with viewport-fixed coords clamped to
+               the screen — the sticky's `transform: rotate(...)`
+               would otherwise make it the containing block for
+               `position: fixed` descendants and the popover would
+               inherit the rotation and clipping. Embedded mode:
+               the picker hides its own input and is driven by
+               `externalQuery` + our forwarded arrow/enter
+               keystrokes, so the textarea stays focused while the
+               user keeps typing. -->
+          <div
+            use:portal
+            class="sticky-mention-popover"
+            style:top="{popoverTop}px"
+            style:left="{popoverLeft}px"
+            style:max-width="{popoverMaxWidth}px"
+            style:min-width="{popoverMinWidth}px"
+          >
             <MentionPicker
               bind:this={mentionPickerRef}
               providers={defaultProviders}

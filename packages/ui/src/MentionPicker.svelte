@@ -95,7 +95,15 @@
     const flat: PickItem[] = [];
     const grp: Group[] = [];
     providers.forEach((p, i) => {
-      const recentsForP = $recents[p.id] ?? [];
+      // Filter the recents-store entries through the provider's
+      // `inScope` predicate (when present). The store is global, so
+      // without this a session pick from another worktree would
+      // surface here as if it belonged — which then renders a link
+      // that doesn't open in the current strip.
+      const rawRecents = $recents[p.id] ?? [];
+      const recentsForP = p.inScope
+        ? rawRecents.filter((r) => p.inScope!(r, scope))
+        : rawRecents;
       const fresh = results[i] ?? [];
       // Recents first (capped to half the slot), then fresh items
       // filling the rest. Dedup so a recently-picked item never
