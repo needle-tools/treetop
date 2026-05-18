@@ -86,7 +86,7 @@
     return out;
   })();
 
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { flip } from "svelte/animate";
   const dispatch = createEventDispatcher<{
     pick: AgentSession;
@@ -239,10 +239,16 @@
     return `${days}d ago`;
   }
 
-  // No autofocus on mount: the popover doubles as a browse view, and
-  // popping it open shouldn't steal the caret. The user clicks the
-  // heading text when they want to filter — that's also when the
-  // placeholder hides (`:focus::placeholder`).
+  // Autofocus on mount so the user can just start typing to filter.
+  // The placeholder stays visible while focused-but-empty (no
+  // `:focus::placeholder` rule below) so the input still reads as a
+  // section heading until the first keystroke. The browser's default
+  // behaviour drops the placeholder once a character is typed, which
+  // is exactly the transition we want.
+  let inputEl: HTMLInputElement | null = null;
+  onMount(() => {
+    inputEl?.focus({ preventScroll: true });
+  });
 </script>
 
 <Popover variant="agents" extraClass={`session-search-popover ${extraClass}`.trim()}>
@@ -256,6 +262,7 @@
       <input
         type="search"
         class="session-search-headline"
+        bind:this={inputEl}
         bind:value={query}
         placeholder={headText}
         aria-label={headText}
@@ -514,13 +521,19 @@
     color: inherit;
     opacity: 1;
   }
-  /* On focus drop the placeholder out of sight so the user sees a
-     blank field. Browsers normally only hide the placeholder once a
-     character is typed; we want that "empty and ready" feeling the
-     moment the field gains focus. */
-  .session-search-headline:focus::placeholder {
-    opacity: 0;
+  /* While the placeholder is showing (i.e. the user hasn't typed
+     anything yet) hide the blinking caret so it doesn't strobe over
+     the heading text. `:placeholder-shown` flips off the moment a
+     character lands and the caret comes back. */
+  .session-search-headline:placeholder-shown {
+    caret-color: transparent;
   }
+  /* No `:focus::placeholder { opacity: 0 }` here on purpose. We
+     autofocus the input on mount but want the placeholder (which
+     doubles as the section heading, e.g. "66 sessions in this
+     worktree") to stay visible until the user actually starts
+     typing. The browser hides the placeholder once a character is
+     entered, which is exactly the transition we want. */
   .session-search-count {
     flex: 0 0 auto;
     font-size: 0.7rem;
