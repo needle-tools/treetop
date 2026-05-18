@@ -622,8 +622,26 @@
     white-space: nowrap;
     pointer-events: none;
     font-size: 0.68rem;
+    /* Reserve the stacking context + padding at rest so the only thing
+       that changes on hover is the background — that way the "now"
+       text doesn't shift right by 4px when the cap-and-% slice fades
+       in. Background stays transparent at rest so the chip blends
+       into the header surface. */
+    position: relative;
+    z-index: 1;
+    padding: 0 0.25rem;
+    background: transparent;
+    transition: background 120ms ease;
     /* The "now" span sits at full opacity; the "rest" span (cap + %)
        fades in on hover so the resting state is just the current size. */
+  }
+  /* Paint-over only on hover. Matches the header surface so the
+     hover-expanded "/ 200k ctx (21%)" slice covers col-meta's "x of
+     y messages" / last-activity text underneath when the inline-grid
+     grows past col-name's allotted width. */
+  .ctx-bar:hover .ctx-bar-text,
+  .ctx-bar:focus-within .ctx-bar-text {
+    background: var(--surface-2);
   }
   .ctx-bar-rest {
     opacity: 0;
