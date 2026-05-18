@@ -774,6 +774,68 @@ describe("stampDiscoveredSessionIdWithDetail", () => {
     expect(result.stampedSource).toBeNull();
     expect(result.byWt).toBe(before);
   });
+
+  test("does NOT stamp a __new__: column with a sid already claimed by a sibling column in the same worktree", () => {
+    // Bug scenario: an existing column resumed against sid-X is actively
+    // chatting (440 messages, the user is typing). Each user/assistant
+    // turn fires an activity event whose sessionId === sid-X. If a
+    // separate brand-new `__new__:claude:` column also exists in the
+    // same worktree (user clicked "New Claude" to open a fresh chat),
+    // the old behaviour was to greedily stamp sid-X onto the new
+    // column — because it's the "first unstamped __new__: column for
+    // this (cwd, agent)". That mis-stamping causes:
+    //   1. resolveTitleSource(new column) → resolves to sid-X's JSONL
+    //      path, the same as the existing column. Both columns share
+    //      one title.
+    //   2. The new column's cmdForOpenSession picks up `--resume sid-X`
+    //      on the next reload, so it boots into the EXISTING chat
+    //      instead of starting fresh.
+    // The fix: an activity event whose sid is already claimed (either
+    // as another entry's resumeSessionId, or as the sid embedded in
+    // an existing JSONL source path) must NOT be re-attributed to a
+    // fresh `__new__:` column. The activity belongs to the column that
+    // already owns that sid.
+    const EXISTING_JSONL =
+      "/Users/me/.claude/projects/-Users-me-wt/sid-X.jsonl";
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        { agent: "claude", source: EXISTING_JSONL },
+        { agent: "claude", source: "__new__:claude:t_fresh" },
+      ],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: "sid-X",
+      source: EXISTING_JSONL,
+    });
+    expect(result.stampedSource).toBeNull();
+    expect(result.byWt).toBe(before);
+  });
+
+  test("does NOT stamp when another __new__: column already carries this sid as its resumeSessionId", () => {
+    // Same invariant via the other identity channel: a previously
+    // stamped synthetic column owns sid-X. A late activity event for
+    // sid-X must not attribute to a still-unstamped sibling.
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:t_owner",
+          resumeSessionId: "sid-X",
+        },
+        { agent: "claude", source: "__new__:claude:t_fresh" },
+      ],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: "sid-X",
+      source: "/Users/me/.claude/projects/-Users-me-wt/sid-X.jsonl",
+    });
+    expect(result.stampedSource).toBeNull();
+    expect(result.byWt).toBe(before);
+  });
 });
 
 describe("resolveTitleSource", () => {

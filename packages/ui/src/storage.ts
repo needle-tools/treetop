@@ -360,7 +360,7 @@ export function setSessionMode(
 
 export function stampDiscoveredSessionId(
   byWt: Record<string, PersistedSession[]>,
-  ev: { agent: PersistedAgent; cwd: string; sessionId: string },
+  ev: { agent: PersistedAgent; cwd: string; sessionId: string; source?: string },
 ): Record<string, PersistedSession[]> {
   const res = stampDiscoveredSessionIdWithDetail(byWt, ev);
   return res.byWt;
@@ -375,14 +375,30 @@ export function stampDiscoveredSessionId(
  *  JSONL takes over).
  *
  *  `stampedSource` is `null` when nothing matched (no churn), so the
- *  caller can short-circuit the migrate POST. */
+ *  caller can short-circuit the migrate POST.
+ *
+ *  Skips stamping when the sid is already claimed by another column in
+ *  the same worktree — either as a sibling's `resumeSessionId` or as
+ *  the JSONL path (`ev.source`) of an already-listed entry. Without
+ *  that guard, an activity event from an existing live conversation
+ *  greedily mis-stamps a newly opened `__new__:` column, causing two
+ *  columns to point at the same JSONL (shared title, shared resume
+ *  cmdline). See the "does NOT stamp a __new__: column with a sid
+ *  already claimed by a sibling column" test for the scenario. */
 export function stampDiscoveredSessionIdWithDetail(
   byWt: Record<string, PersistedSession[]>,
-  ev: { agent: PersistedAgent; cwd: string; sessionId: string },
+  ev: { agent: PersistedAgent; cwd: string; sessionId: string; source?: string },
 ): { byWt: Record<string, PersistedSession[]>; stampedSource: string | null } {
   if (!ev.sessionId) return { byWt, stampedSource: null };
   const list = byWt[ev.cwd];
   if (!list || list.length === 0) return { byWt, stampedSource: null };
+  const alreadyClaimed = list.some(
+    (s) =>
+      s.agent === ev.agent &&
+      (s.resumeSessionId === ev.sessionId ||
+        (ev.source !== undefined && s.source === ev.source)),
+  );
+  if (alreadyClaimed) return { byWt, stampedSource: null };
   const prefix = `__new__:${ev.agent}:`;
   const idx = list.findIndex(
     (s) =>
