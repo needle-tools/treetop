@@ -143,6 +143,39 @@ describe("parseClaudeJsonl", () => {
     expect(session.messages.map((m) => m.role)).toEqual(["user", "tool"]);
   });
 
+  test("drops Claude Code's `isMeta` records (skill instructions, resume nudges, local-command-caveats)", () => {
+    // Claude Code writes several flavours of system-injected records
+    // into the JSONL with type=user + role=user. They are flagged
+    // with `isMeta: true` so consumers can recognise them. The chat
+    // preview was rendering one of these — a skill's full prose
+    // ("# Needle Engine\nYou are an expert…") — as if the user had
+    // typed it, because the parser only checked `type` / `role`.
+    const skillInjection = JSON.stringify({
+      type: "user",
+      isMeta: true,
+      sourceToolUseID: "toolu_skill_load_1",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "# Needle Engine\n\nYou are an expert in Needle Engine — a web-first 3D engine…" },
+        ],
+      },
+    });
+    const resumeNudge = JSON.stringify({
+      type: "user",
+      isMeta: true,
+      message: { role: "user", content: "Continue from where you left off." },
+    });
+    const realUser = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "do the thing" },
+    });
+    const s = parseClaudeJsonl([skillInjection, resumeNudge, realUser].join("\n"));
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]?.role).toBe("user");
+    expect(s.messages[0]?.blocks[0]).toMatchObject({ type: "text", text: "do the thing" });
+  });
+
   test("a user message that mixes real text with a tool_result stays 'user'", () => {
     // We only flip to "tool" when *every* block is a tool_result. A mixed
     // message (real user text plus an attached tool_result, rare but

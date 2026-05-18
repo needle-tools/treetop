@@ -159,6 +159,14 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
 
   const type = obj.type;
   if (type !== "user" && type !== "assistant") return;
+  // `isMeta: true` is Claude Code's flag for system-injected records
+  // written under `type: "user"`: the resume nudge ("Continue from
+  // where you left off."), `<local-command-caveat>` wrappers around
+  // slash-command output, skill-listing instructions piped in via
+  // `sourceToolUseID`. None of these are user-typed turns, so they
+  // must not surface as user bubbles in either the chat preview or
+  // the read-mode session view.
+  if (obj.isMeta === true) return;
 
   const msg = obj.message as Record<string, unknown> | undefined;
   if (!msg) return;
