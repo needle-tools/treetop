@@ -60,6 +60,9 @@
     staged: number;
     unstaged: number;
     untracked: number;
+    /** Submodule-internal dirt (parent's recorded SHA unchanged). Shown
+     *  as a muted "N submodule" trailer; never counted as parent dirty. */
+    submodules?: number;
   }
   interface BranchStatus {
     branch: string;
@@ -3417,14 +3420,20 @@
     return lines.join("\n");
   }
 
-  function statusSummary(s: FileStatus): { clean: boolean; text: string } {
+  function statusSummary(s: FileStatus): {
+    clean: boolean;
+    text: string;
+    submoduleText: string;
+  } {
+    const subs = s.submodules ?? 0;
+    const submoduleText = subs > 0 ? `${subs} submodule${subs === 1 ? "" : "s"} changed` : "";
     const total = s.staged + s.unstaged + s.untracked;
-    if (total === 0) return { clean: true, text: "clean" };
+    if (total === 0) return { clean: true, text: "clean", submoduleText };
     const parts: string[] = [];
     if (s.staged) parts.push(`${s.staged} staged`);
     if (s.unstaged) parts.push(`${s.unstaged} unstaged`);
     if (s.untracked) parts.push(`${s.untracked} untracked`);
-    return { clean: false, text: parts.join(", ") };
+    return { clean: false, text: parts.join(", "), submoduleText };
   }
 
   // Flat list of rendered rows. Each repo contributes ONE row per
@@ -5358,9 +5367,9 @@
                 class:clean={summary.clean}
                 title={summary.text}
               ></span>
-              {#if summary.clean}
+              {#if summary.clean && !summary.submoduleText}
                 <span class="muted small">{summary.text}</span>
-              {:else}
+              {:else if !summary.clean}
                 <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                   <span
                     slot="trigger"
@@ -5445,6 +5454,12 @@
                 {/if}
               {:else if !wt.detached && !wt.bare && wt.branchStatus}
                 <span class="muted small">no upstream</span>
+              {/if}
+              {#if summary.submoduleText}
+                <span
+                  class="muted small"
+                  title="Submodule(s) have uncommitted edits inside, but this repo's recorded submodule SHA hasn't moved."
+                >+ {summary.submoduleText}</span>
               {/if}
               {/if}
 

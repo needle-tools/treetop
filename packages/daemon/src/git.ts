@@ -28,6 +28,13 @@ export interface FileStatus {
   staged: number;
   unstaged: number;
   untracked: number;
+  /** Submodule entries whose only "dirt" is *inside* the submodule —
+   *  the parent's recorded SHA hasn't moved. Reported separately so
+   *  the parent doesn't look dirty just because a registered child
+   *  has its own uncommitted edits. When the parent's recorded SHA
+   *  HAS moved (sub field's commit-changed flag is 'C'), the entry
+   *  counts toward staged/unstaged like any other file. */
+  submodules: number;
 }
 
 export interface BranchStatus {
@@ -543,7 +550,7 @@ export async function getWorktreeDetails(
     };
   } catch {
     return {
-      fileStatus: { staged: 0, unstaged: 0, untracked: 0 },
+      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0 },
       branchStatus: null,
       lastCommit: null,
     };
@@ -554,14 +561,25 @@ export function parseFileStatus(porcelain: string): FileStatus {
   let staged = 0;
   let unstaged = 0;
   let untracked = 0;
+  let submodules = 0;
   for (const line of porcelain.split("\n")) {
     if (line.length === 0 || line.startsWith("#")) continue;
     if (line.startsWith("? ")) {
       untracked++;
       continue;
     }
-    // Tracked entries: "1 XY ..." (ordinary) or "2 XY ..." (renamed/copied)
+    // Tracked entries: "1 XY ..." (ordinary) or "2 XY ..." (renamed/copied).
+    // Porcelain v2 layout: `1 <XY> <sub> ...` — sub starts at offset 5 and
+    // is 4 chars wide. `N...` for non-submodules; `S<c><m><u>` for
+    // submodules where <c> = 'C' means the parent's recorded SHA moved.
+    // When the only difference is *inside* the submodule (<c> = '.'),
+    // bucket as "submodules" so the parent doesn't get tagged as dirty
+    // for a child repo's own uncommitted work.
     if (line.startsWith("1 ") || line.startsWith("2 ")) {
+      if (line.charAt(5) === "S" && line.charAt(6) === ".") {
+        submodules++;
+        continue;
+      }
       const x = line.charAt(2);
       const y = line.charAt(3);
       if (x !== "." && x !== " ") staged++;
@@ -574,7 +592,7 @@ export function parseFileStatus(porcelain: string): FileStatus {
       unstaged++;
     }
   }
-  return { staged, unstaged, untracked };
+  return { staged, unstaged, untracked, submodules };
 }
 
 export function parseBranchStatus(porcelain: string): BranchStatus | null {
