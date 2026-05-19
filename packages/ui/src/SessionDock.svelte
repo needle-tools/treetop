@@ -307,7 +307,16 @@
     cancelShowPreview();
     const btn = ev.currentTarget as HTMLElement | null;
     if (btn) {
-      hoveredTop = btn.offsetTop + btn.offsetHeight / 2;
+      // Compute hoveredTop in dock-local coords from viewport rects
+      // rather than `btn.offsetTop`. The button now lives inside
+      // `.dock-scroller` (whose offsetParent semantics + scroll
+      // position would skew offsetTop), and viewport rects are
+      // immune to either. The preview aside is positioned relative
+      // to `.session-dock`, so we subtract the dock's viewport top.
+      const btnRect = btn.getBoundingClientRect();
+      const dockRect = dockEl?.getBoundingClientRect();
+      const dockTop = dockRect ? dockRect.top : 0;
+      hoveredTop = btnRect.top + btnRect.height / 2 - dockTop;
     }
     showLabels = true;
     // First-open is delayed so a quick brush across rows doesn't
@@ -439,6 +448,11 @@
     on:mouseleave={onDockLeave}
     on:focusin={onDockEnter}
   >
+    <!-- Scrollable list of dots. The scroller sits inside the
+         positioned `.session-dock` shell so the preview aside below
+         can sit at `left: 100%` without being clipped by the
+         scroller's overflow rule. -->
+    <div class="dock-scroller">
     {#each entries as e, i (e.source)}
       <button
         type="button"
@@ -495,6 +509,7 @@
         </span>
       </button>
     {/each}
+    </div>
     {#if hoveredEntry?.transcriptSource}
       <aside
         bind:this={previewEl}
@@ -537,14 +552,12 @@
     top: 50%;
     transform: translateY(-50%);
     z-index: 1600;
-    display: inline-flex;
-    flex-direction: column;
-    /* Stretch so each row fills the dock's column width — when
-       labels expand the dock auto-sizes to the widest one, and
-       every button (and label inside) spans that same width. */
-    align-items: stretch;
-    gap: 0.15rem;
-    padding: 0.35rem 0.5rem;
+    /* The shell itself doesn't lay out the dot list — the inner
+       .dock-scroller does. The shell stays as a fixed-position
+       wrapper so the side preview aside (position: absolute,
+       left: 100%) anchors to it without being clipped by the
+       scroller's overflow rule. */
+    display: inline-block;
     border-radius: var(--radius-md, 8px);
     background: transparent;
     /* Always-on transparent border so the dock's bounds don't
@@ -553,6 +566,40 @@
     transition:
       background-color 160ms ease,
       border-color 160ms ease;
+  }
+  /* Scrollable inner column holding the dot list. Caps at the
+     viewport height so a long dock (lots of open sessions) can't
+     run off the top/bottom edge — `overflow-y: auto` only paints
+     a scrollbar when actually needed; short docks stay chrome-free.
+     The outer .session-dock keeps its `top: 50%` + translateY(-50%)
+     centering, so when this scroller is shorter than 100vh the
+     whole dock floats vertically centered. */
+  .dock-scroller {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.15rem;
+    padding: 0.35rem 0.5rem;
+    max-height: 100vh;
+    overflow-y: auto;
+    /* Hide the dedicated scrollbar; reveal it only when the user is
+       actually interacting with the dock. Keeps the resting strip
+       chrome-free. */
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .session-dock.show-labels .dock-scroller {
+    scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent) transparent;
+  }
+  .dock-scroller::-webkit-scrollbar {
+    width: 6px;
+  }
+  .dock-scroller::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+  }
+  .session-dock.show-labels .dock-scroller::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
   }
   /* Faint 20%-text outline on hover so the dock's frame is
      perceptible alongside the page-bg card and revealed labels.
