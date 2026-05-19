@@ -35,7 +35,7 @@
      *  groups. Repo names aren't safe (two repos can share a name);
      *  the id is. */
     repoId: string;
-    agent: "claude" | "codex" | "copilot" | "shell";
+    agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
     /** Hex (e.g. "#ff8800"). Undefined → default neutral fill. */
     repoColor?: string;
     repoName: string;

@@ -5,6 +5,7 @@
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
+  import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
   import SourceControlPane from "./SourceControlPane.svelte";
   import Tooltip from "./Tooltip.svelte";
@@ -77,9 +78,10 @@
   interface AgentSession {
     /** "shell" is synthetic — produced client-side from `/api/shells`
      *  so we can render Terminal sessions in the same worktree picker
-     *  alongside Claude/Codex/Copilot. The daemon only ever returns
-     *  "claude" / "codex" / "copilot" here. */
-    agent: "claude" | "codex" | "copilot" | "shell";
+     *  alongside Claude/Codex/Copilot. "ollama" is also synthetic —
+     *  live PTYs only, no on-disk JSONL scan. The daemon only ever
+     *  returns "claude" / "codex" / "copilot" here. */
+    agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
     cwd: string;
     lastActive: string;
     sessionId?: string;
@@ -145,11 +147,13 @@
     host: string | null;
   }
   /** A user-defined "open in" link. URL links open in a new browser
-   *  tab; file links go through `/api/open-default` which hands the
-   *  path to the platform's default app (Finder/Explorer/xdg-open). */
+   *  tab; file / folder links go through `/api/open-default` which
+   *  hands the path to the platform's default app (Finder, Explorer,
+   *  xdg-open). */
   type CustomLink =
     | { id: string; kind?: "url"; url: string; name?: string }
-    | { id: string; kind: "file"; path: string; name?: string };
+    | { id: string; kind: "file"; path: string; name?: string }
+    | { id: string; kind: "folder"; path: string; name?: string };
   interface Repo {
     id: string;
     path: string;
@@ -547,6 +551,7 @@
     if (p.agent === "claude") return "Claude";
     if (p.agent === "codex") return "Codex";
     if (p.agent === "copilot") return "Copilot";
+    if (p.agent === "ollama") return "Ollama";
     // Fall through: show the actual executable basename (e.g. "bash",
     // "zsh") for shell sessions, or whatever cmd[0] resolves to.
     const head = p.cmd[0]?.split(/[\\/]/).pop();
@@ -682,6 +687,40 @@
   let installedAgents: { name: string; path: string }[] = [];
   // Per-worktree: is the "+ new agent" popover open?
   let newAgentPopoverOpen: Record<string, boolean> = {};
+  // Per-worktree: is the Ollama models submenu inside the picker expanded?
+  // Reset when the picker closes so the next open starts collapsed.
+  let ollamaSubmenuOpen: Record<string, boolean> = {};
+  // Cached list of installed Ollama models for the picker submenu.
+  // Lazy-loaded the first time the user expands the Ollama row.
+  let ollamaModels: { name: string; size?: number; parameterSize?: string }[] = [];
+  let ollamaModelsLoaded = false;
+  let ollamaModelsLoading = false;
+  let ollamaModelsError: string | null = null;
+
+  async function ensureOllamaModelsLoaded(force = false) {
+    if (ollamaModelsLoading) return;
+    if (ollamaModelsLoaded && !force) return;
+    ollamaModelsLoading = true;
+    ollamaModelsError = null;
+    try {
+      const res = await fetch("/api/ollama/models");
+      if (!res.ok) {
+        ollamaModelsError = `daemon returned ${res.status}`;
+        ollamaModels = [];
+      } else {
+        const body = (await res.json()) as {
+          models?: { name: string; size?: number; parameterSize?: string }[];
+        };
+        ollamaModels = body.models ?? [];
+      }
+      ollamaModelsLoaded = true;
+    } catch (e) {
+      ollamaModelsError = e instanceof Error ? e.message : String(e);
+      ollamaModels = [];
+    } finally {
+      ollamaModelsLoading = false;
+    }
+  }
 
   // Per transient session source: is the agent paused on a prompt
   // waiting for user input? Surfaced as an outlined column + a small
@@ -815,7 +854,23 @@
       const next = { ...newTermIds };
       delete next[s.source];
       newTermIds = next;
-      if (s.agent === "shell") {
+      if (s.agent === "ollama") {
+        // Ollama: replace the source in place so the column survives
+        // and flips to OllamaTranscriptView (header metadata + Resume).
+        // Ollama has no on-disk chat to render — the read-only view
+        // just keeps the column visible with the model + Resume
+        // button instead of vanishing on stop.
+        const transcriptSource = `__transcript__:ollama:${termId}`;
+        openSessionsByWt = {
+          ...openSessionsByWt,
+          [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
+            x.source === s.source
+              ? { agent: "ollama", source: transcriptSource, ollamaModel: s.ollamaModel }
+              : x,
+          ),
+        };
+        void migrateSessionTitleOnServer(s.source, transcriptSource);
+      } else if (s.agent === "shell") {
         // Shell: replace the source in place so the column survives
         // and flips to ShellView (command history + Resume).
         const transcriptSource = `__transcript__:shell:${termId}`;
@@ -1077,7 +1132,11 @@
    *  open-session entry whose source is sentinel-prefixed with
    *  `__new__:` — the column rendering branches on that to render
    *  TerminalView directly instead of the read-mode SessionView. */
-  function openNewAgentSession(wtPath: string, agent: "claude" | "codex") {
+  function openNewAgentSession(
+    wtPath: string,
+    agent: "claude" | "codex" | "ollama",
+    opts?: { ollamaModel?: string },
+  ) {
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:${agent}:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
@@ -1086,10 +1145,17 @@
     // most-recent conversation when invoked as bare `claude`, which
     // makes "+ new session" silently resume the wrong thing. Codex has
     // no equivalent flag and isn't affected.
-    const entry: { agent: "claude" | "codex"; source: string; preassignedSessionId?: string } =
-      { agent, source: synthetic };
+    const entry: {
+      agent: "claude" | "codex" | "ollama";
+      source: string;
+      preassignedSessionId?: string;
+      ollamaModel?: string;
+    } = { agent, source: synthetic };
     if (agent === "claude") {
       entry.preassignedSessionId = crypto.randomUUID();
+    }
+    if (agent === "ollama" && opts?.ollamaModel) {
+      entry.ollamaModel = opts.ollamaModel;
     }
     const insertAt = visibleLeftInsertIndex(wtPath, existing);
     const next = [...existing];
@@ -1264,6 +1330,28 @@
    *  `disposeNewSessionColumn` when the column finally closes. */
   let shellResumeFromTermId: Record<string, string> = {};
 
+  /** Resume a stopped Ollama session: replace the transcript column
+   *  in place with a fresh `__new__:ollama:` column carrying the same
+   *  model. Ollama has no on-disk conversation to restore, so this is
+   *  just "spawn `ollama run <model>` again in the same worktree". */
+  function resumePastOllama(
+    wtPath: string,
+    transcriptSource: string,
+    model: string,
+  ) {
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const newSource = `__new__:ollama:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((x) =>
+        x.source === transcriptSource
+          ? { agent: "ollama", source: newSource, ollamaModel: model }
+          : x,
+      ),
+    };
+  }
+
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
    *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
    *  key change unmounts the old TerminalView (closing its WS, which
@@ -1271,15 +1359,16 @@
    *  mounts a new one with the same cmd[]. Used when an agent
    *  self-updates and exits — codex prints "restart Codex" and we
    *  want a one-click rerun without losing the user's column slot. */
-  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string }) {
+  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string; ollamaModel?: string }) {
     const existing = openSessionsByWt[wtPath] ?? [];
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const replacement: {
-      agent: "claude" | "codex" | "copilot";
+      agent: "claude" | "codex" | "copilot" | "ollama";
       source: string;
       preassignedSessionId?: string;
+      ollamaModel?: string;
     } = {
-      agent: current.agent as "claude" | "codex" | "copilot",
+      agent: current.agent as "claude" | "codex" | "copilot" | "ollama",
       source: `__new__:${current.agent}:${id}`,
     };
     // Restart means a fresh conversation, not a continuation — mint a
@@ -1287,6 +1376,12 @@
     // than colliding with the dying PTY's id.
     if (current.agent === "claude") {
       replacement.preassignedSessionId = crypto.randomUUID();
+    }
+    // Carry the Ollama model picked at first-spawn through Restart so
+    // the user doesn't have to re-pick from the submenu after an
+    // `ollama run` exits.
+    if (current.agent === "ollama" && current.ollamaModel) {
+      replacement.ollamaModel = current.ollamaModel;
     }
     openSessionsByWt = {
       ...openSessionsByWt,
@@ -1456,6 +1551,10 @@
      *  terminal mode on remount (i.e. immediately spawn the resume PTY
      *  instead of showing the read-only chat view). Absent ⇒ read. */
     mode?: "terminal";
+    /** Optional. For ollama columns: the model tag picked at spawn
+     *  time (e.g. `qwen3-coder:30b`). Persisted so a reload re-spawns
+     *  `ollama run <model>`, and surfaced in the agent pill. */
+    ollamaModel?: string;
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -1468,7 +1567,46 @@
   function isOpenInWt(wtPath: string, source: string): boolean {
     return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
   }
+  /** Rewrite a picker-supplied OpenSession when needed. Ollama sessions
+   *  surface from `/api/agents` with `source` set to the JSONL header
+   *  path under `<workspace>/ollama/`; opening one directly would land
+   *  it in the SessionView render branch (which only parses Claude/
+   *  Codex JSONLs and would render blank). Translate to a
+   *  `__transcript__:ollama:<termId>` source — that's the shape
+   *  OllamaTranscriptView mounts on — and stash the model from the
+   *  matching AgentSession so the read-only view knows what to label
+   *  the pill and what to Resume into. */
+  function normalizeSessionForOpen(
+    wtPath: string,
+    s: OpenSession,
+  ): OpenSession {
+    if (
+      s.agent !== "ollama" ||
+      s.source.startsWith("__transcript__:") ||
+      s.source.startsWith("__new__:") ||
+      s.source.startsWith("__attached__:")
+    ) {
+      return s;
+    }
+    // Header path is `<workspace>/ollama/<termId>.jsonl`. The termId is
+    // the basename without the extension.
+    const base = s.source.split(/[\\/]/).pop() ?? "";
+    const termId = base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
+    if (!termId) return s;
+    const wt = repos.flatMap((r) => r.worktrees ?? []).find((w) => w.path === wtPath);
+    const agents = wt?.agents ?? [];
+    const match = agents.find(
+      (a) => a.agent === "ollama" && (a.sessionId === termId || a.source === s.source),
+    );
+    return {
+      agent: "ollama",
+      source: `__transcript__:ollama:${termId}`,
+      ollamaModel: match?.model ?? match?.title,
+    };
+  }
+
   function toggleOpenSessionInWt(wtPath: string, s: OpenSession): void {
+    s = normalizeSessionForOpen(wtPath, s);
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
     if (i >= 0) {
@@ -1856,7 +1994,7 @@
     wtPath: string,
     s: OpenSession,
   ): void {
-    applyRevealPlan(rowKey, wtPath, s, "reveal");
+    applyRevealPlan(rowKey, wtPath, normalizeSessionForOpen(wtPath, s), "reveal");
   }
 
   /** Dock click handler. The scroll-and-flash path silently returns
@@ -2426,7 +2564,8 @@
     input:
       | { url: string; name?: string }
       | { kind: "url"; url: string; name?: string }
-      | { kind: "file"; path: string; name?: string },
+      | { kind: "file"; path: string; name?: string }
+      | { kind: "folder"; path: string; name?: string },
   ): Promise<boolean> {
     try {
       const res = await fetch(`/api/repos/${repoId}/custom-links`, {
@@ -2495,7 +2634,12 @@
   async function updateCustomLink(
     repoId: string,
     linkId: string,
-    input: { url?: string; path?: string; name?: string },
+    input: {
+      url?: string;
+      path?: string;
+      kind?: "url" | "file" | "folder";
+      name?: string;
+    },
   ): Promise<boolean> {
     try {
       const res = await fetch(
@@ -3892,6 +4036,8 @@
                         <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
                       {:else if p.agent === "codex"}
                         <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                      {:else if p.agent === "ollama"}
+                        <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
                       {:else}
                         <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
                       {/if}
@@ -4414,29 +4560,91 @@
                       <ul class="agents-list">
                         {#each installedAgents as ag (ag.name)}
                           <li>
-                            <button
-                              class="agent-row new-agent-row"
-                              on:click={() => {
-                                newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                                unfoldRowIfFolded(row.key);
-                                openNewAgentSession(wt.path, ag.name as "claude" | "codex");
-                              }}
-                              title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
-                            >
-                              {#if ag.name === "claude"}
-                                <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                              {:else if ag.name === "codex"}
-                                <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                              {:else}
-                                <span class="agent-dot agent-shell"></span>
+                            {#if ag.name === "ollama"}
+                              <button
+                                class="agent-row new-agent-row"
+                                on:click={() => {
+                                  ollamaSubmenuOpen = {
+                                    ...ollamaSubmenuOpen,
+                                    [wt.path]: !ollamaSubmenuOpen[wt.path],
+                                  };
+                                  if (ollamaSubmenuOpen[wt.path]) {
+                                    void ensureOllamaModelsLoaded();
+                                  }
+                                }}
+                                title={`Pick an Ollama model to spawn \`ollama run <model>\` in ${wt.path}`}
+                              >
+                                <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
+                                <span class="agent-row-name">Ollama</span>
+                                <span class="agent-title muted">
+                                  {ollamaSubmenuOpen[wt.path] ? "▾" : "▸"} pick model
+                                </span>
+                              </button>
+                              {#if ollamaSubmenuOpen[wt.path]}
+                                <ul class="agents-list ollama-models-list">
+                                  {#if ollamaModelsLoading}
+                                    <li class="muted ollama-models-info">loading models…</li>
+                                  {:else if ollamaModelsError}
+                                    <li class="muted ollama-models-info">
+                                      couldn't load models ({ollamaModelsError}).
+                                      <button
+                                        class="link-btn"
+                                        on:click={() => void ensureOllamaModelsLoaded(true)}
+                                      >retry</button>
+                                    </li>
+                                  {:else if ollamaModels.length === 0}
+                                    <li class="muted ollama-models-info">
+                                      no models found. Run <code>ollama pull &lt;model&gt;</code> first.
+                                    </li>
+                                  {:else}
+                                    {#each ollamaModels as m (m.name)}
+                                      <li>
+                                        <button
+                                          class="agent-row new-agent-row ollama-model-row"
+                                          on:click={() => {
+                                            newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                                            ollamaSubmenuOpen = { ...ollamaSubmenuOpen, [wt.path]: false };
+                                            unfoldRowIfFolded(row.key);
+                                            openNewAgentSession(wt.path, "ollama", { ollamaModel: m.name });
+                                          }}
+                                          title={`Spawn \`ollama run ${m.name}\` in ${wt.path}`}
+                                        >
+                                          <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
+                                          <span class="agent-row-name">{m.name}</span>
+                                          <span class="agent-title muted">
+                                            {m.parameterSize ?? ""}
+                                          </span>
+                                        </button>
+                                      </li>
+                                    {/each}
+                                  {/if}
+                                </ul>
                               {/if}
-                              <span class="agent-row-name">
-                                {ag.name === "claude" ? "Claude"
-                                  : ag.name === "codex" ? "Codex"
-                                  : ag.name}
-                              </span>
-                              <span class="agent-title muted">{ag.path}</span>
-                            </button>
+                            {:else}
+                              <button
+                                class="agent-row new-agent-row"
+                                on:click={() => {
+                                  newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                                  unfoldRowIfFolded(row.key);
+                                  openNewAgentSession(wt.path, ag.name as "claude" | "codex");
+                                }}
+                                title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
+                              >
+                                {#if ag.name === "claude"}
+                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                                {:else if ag.name === "codex"}
+                                  <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                                {:else}
+                                  <span class="agent-dot agent-shell"></span>
+                                {/if}
+                                <span class="agent-row-name">
+                                  {ag.name === "claude" ? "Claude"
+                                    : ag.name === "codex" ? "Codex"
+                                    : ag.name}
+                                </span>
+                                <span class="agent-title muted">{ag.path}</span>
+                              </button>
+                            {/if}
                           </li>
                         {/each}
                         <!-- Always-present Terminal entry. Spawns the user's
@@ -5256,7 +5464,28 @@
                         }}
                         out:closeColumn
                       >
-                        {#if s.source.startsWith("__transcript__:")}
+                        {#if s.source.startsWith("__transcript__:ollama:")}
+                          <!-- Read-mode column for a stopped Ollama
+                               session. Renders header metadata + a
+                               Resume button; there's no on-disk chat
+                               to display because Ollama doesn't write
+                               one. -->
+                          {@const ollamaTermId = s.source.slice("__transcript__:ollama:".length)}
+                          {@const ollamaMeta = (wt.agents ?? []).find(
+                            (a) => a.agent === "ollama" && a.sessionId === ollamaTermId,
+                          )}
+                          {@const ollamaModelLabel = s.ollamaModel ?? ollamaMeta?.model ?? ollamaMeta?.title ?? "ollama"}
+                          <OllamaTranscriptView
+                            termId={ollamaTermId}
+                            wt={wt.path}
+                            model={ollamaModelLabel}
+                            manualTitle={ollamaMeta?.manualTitle}
+                            lastActive={ollamaMeta?.lastActive}
+                            on:resume={(e) =>
+                              resumePastOllama(wt.path, s.source, e.detail.model)}
+                            on:close={() => closeSessionInWt(wt.path, s)}
+                          />
+                        {:else if s.source.startsWith("__transcript__:")}
                           <!-- Read-mode column for a past shell session.
                                Renders the captured commands from the
                                JSONL and exposes a Resume button that
@@ -5291,6 +5520,7 @@
                             agent={s.agent}
                             source={titleSource}
                             wtPath={wt.path}
+                            ollamaModel={s.ollamaModel}
                             cmd={cmdForOpenSession(s, defaultShell)}
                             cwd={shellResumeCwd[s.source] ?? wt.path}
                             procName={`supergit-tui-new-${s.agent}`}

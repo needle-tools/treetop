@@ -73,6 +73,9 @@
 .agent-row.brand-codex {
   color: var(--chip-codex-text);
 }
+.agent-row.brand-ollama {
+  color: var(--chip-ollama-text);
+}
 .agent-row.brand-copilot {
   color: var(--chip-default-text);
 }
@@ -93,6 +96,21 @@
 .agent-row .agent-title.manual {
   color: var(--text-1);
   font-weight: 600;
+}
+
+/* Ollama "+ new session" submenu: nested list of installed models
+   under the Ollama row. Indent the whole list so the model rows
+   visually nest under the parent row, and shrink the gap before the
+   icon so the model name aligns with the Ollama row's name (not its
+   icon) — makes the parent-child relationship read at a glance. */
+.ollama-models-list {
+  margin: 0;
+  padding-left: 1.5rem;
+  list-style: none;
+}
+.ollama-models-info {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
 }
 
 /* Manual title shown inline in the worktree row's single-agent badge.

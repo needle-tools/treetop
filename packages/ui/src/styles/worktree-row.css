@@ -324,6 +324,10 @@ button.branch-button:hover {
   background: var(--chip-codex-bg);
   color: var(--chip-codex-text);
 }
+.agent-badge.agent-ollama {
+  background: var(--chip-ollama-bg);
+  color: var(--chip-ollama-text);
+}
 .agent-badge.agent-copilot {
   background: var(--chip-default-bg);
   color: var(--chip-default-text);
@@ -457,6 +461,10 @@ button.branch-button:hover {
   background: var(--chip-codex-bg);
   color: var(--chip-codex-text);
 }
+.agent-more.agent-ollama {
+  background: var(--chip-ollama-bg);
+  color: var(--chip-ollama-text);
+}
 .agent-more.agent-copilot {
   background: var(--chip-default-bg);
   color: var(--chip-default-text);
@@ -490,6 +498,10 @@ button.branch-button:hover {
 .agent-add.agent-codex {
   background: var(--chip-codex-bg);
   color: var(--chip-codex-text);
+}
+.agent-add.agent-ollama {
+  background: var(--chip-ollama-bg);
+  color: var(--chip-ollama-text);
 }
 .agent-add.agent-copilot {
   background: var(--chip-default-bg);
@@ -771,6 +783,10 @@ button.branch-button:hover {
   background: var(--chip-codex-bg);
   color: var(--chip-codex-text);
 }
+.agent-pill.agent-ollama {
+  background: var(--chip-ollama-bg);
+  color: var(--chip-ollama-text);
+}
 .agent-pill.agent-copilot {
   background: var(--chip-default-bg);
   color: var(--chip-default-text);
@@ -819,6 +835,9 @@ button.branch-button:hover {
 }
 .row-activity .agent-dot.agent-codex {
   background: var(--chip-codex-text);
+}
+.row-activity .agent-dot.agent-ollama {
+  background: var(--chip-ollama-text);
 }
 .row-activity .agent-dot.agent-copilot {
   background: var(--chip-default-text);

@@ -25,6 +25,14 @@
     aria-hidden="true"
     style="width: {size}px; height: {size}px;"
   />
+{:else if agent === "ollama"}
+  <img
+    class="agent-icon-inline"
+    src="/agents/ollama.svg"
+    alt=""
+    aria-hidden="true"
+    style="width: {size}px; height: {size}px;"
+  />
 {:else if agent === "codex"}
   <svg
     class="agent-icon-inline"

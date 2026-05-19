@@ -67,6 +67,11 @@
      green elsewhere in the UI. */
   --chip-codex-bg: rgba(255, 255, 255, 0.1);
   --chip-codex-text: #ffffff;
+  /* Ollama brand mark is the soft pastel "llama" — pick a calm teal so
+     the chip reads distinct from Claude (orange) and Codex (white)
+     without competing with the git-clean green. */
+  --chip-ollama-bg: #1a2a3a;
+  --chip-ollama-text: #aae0ef;
   --chip-indigo-bg: #2a2a3a;
   --chip-indigo-text: #d8d8ff;
   --chip-grey-text: #aaaacc;

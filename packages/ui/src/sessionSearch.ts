@@ -16,7 +16,7 @@
  */
 
 export interface AgentSession {
-  agent: "claude" | "codex" | "copilot" | "shell";
+  agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
   cwd: string;
   lastActive: string;
   source: string;

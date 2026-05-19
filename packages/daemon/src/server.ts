@@ -30,6 +30,7 @@ import { openIn, openDefault, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { ShellsLog } from "./shells";
+import { OllamaSessionsLog } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
@@ -38,6 +39,7 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
+import { listOllamaModels } from "./ollama";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 
 const WORKSPACE_PATH =
@@ -89,6 +91,7 @@ const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
 const shells = await ShellsLog.open(WORKSPACE_PATH);
+const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
 const notes = await NotesStore.open(WORKSPACE_PATH);
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
@@ -314,7 +317,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
       try {
         const [repos, agents, titles] = await Promise.all([
           workspace.listRepos(),
-          detectAgents(),
+          detectAgents(WORKSPACE_PATH),
           workspace.listSessionTitles(),
         ]);
         const titled = agents.map((s) =>
@@ -1034,7 +1037,7 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
       const [agents, titles] = await Promise.all([
-        detectAgents(),
+        detectAgents(WORKSPACE_PATH),
         workspace.listSessionTitles(),
       ]);
       return json(
@@ -1279,6 +1282,7 @@ const server = Bun.serve<TermWsData, never>({
         if (!head0) return undefined;
         if (head0 === "claude") return "claude";
         if (head0 === "codex") return "codex";
+        if (head0 === "ollama") return "ollama";
         if (head0 === "bash" || head0 === "zsh" || head0 === "sh" || head0 === "fish") return "shell";
         return undefined;
       })();
@@ -1290,7 +1294,7 @@ const server = Bun.serve<TermWsData, never>({
       // shadows it on PATH. resolveAgentBinary returns the newest
       // mtime, so a freshly-bun-installed codex wins.
       let resolvedCmd = body.cmd.slice();
-      if (head0 && !body.cmd[0]!.includes("/") && (head0 === "claude" || head0 === "codex")) {
+      if (head0 && !body.cmd[0]!.includes("/") && (head0 === "claude" || head0 === "codex" || head0 === "ollama")) {
         const abs = await resolveAgentBinary(head0);
         if (abs) resolvedCmd[0] = abs;
       }
@@ -1388,6 +1392,91 @@ const server = Bun.serve<TermWsData, never>({
                   signal: info.signal,
                 })
                 .catch(() => {});
+              cleanup();
+            },
+          });
+        }
+        // Per-Ollama-session header. Ollama itself doesn't write any
+        // transcript to disk (the conversation lives in PTY scrollback
+        // only), so the workspace records the metadata it can — the
+        // picked model, the worktree and the timestamp — so the picker
+        // can list past Ollama sessions and a stopped column can flip
+        // to a read-only view that knows what was running.
+        if (agentHint === "ollama") {
+          // Extract the model tag from `ollama run <model>`. After
+          // binary-resolution cmd[0] may be the absolute path to ollama,
+          // so we look at resolvedCmd, not the post-rename `cmd` array.
+          // Layout: [<ollama-bin>, "run", "<model>"]. If the user
+          // somehow spawned a bare `ollama` we record an empty model
+          // string rather than skipping the header — the column should
+          // still be enumerable from disk.
+          const model =
+            resolvedCmd[1] === "run" && typeof resolvedCmd[2] === "string"
+              ? resolvedCmd[2]
+              : "";
+          await ollamaSessions
+            .writeHeader({
+              kind: "header",
+              termId: handle.id,
+              wt: body.cwd,
+              spawnCwd: body.cwd,
+              model,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((err) => {
+              console.error(
+                `supergit daemon: ollamaSessions.writeHeader failed for ${handle.id}: ${err}`,
+              );
+            });
+          // Buffer PTY output between periodic flushes so the JSONL
+          // captures the running conversation, not just metadata.
+          // Decoded into a UTF-8 string at receive time (PTY chunks
+          // are Uint8Array of utf-8 bytes); we cap the in-memory
+          // buffer at OLLAMA_FLUSH_MAX bytes so a chatty model can't
+          // pile up unbounded between flushes — anything past the cap
+          // forces an immediate flush.
+          const OLLAMA_FLUSH_MS = 3000;
+          const OLLAMA_FLUSH_MAX = 64 * 1024;
+          let buf = "";
+          const decoder = new TextDecoder("utf-8");
+          const flush = async (): Promise<void> => {
+            if (buf.length === 0) return;
+            const data = buf;
+            buf = "";
+            await ollamaSessions
+              .appendOutput(handle.id, {
+                kind: "output",
+                ts: new Date().toISOString(),
+                data,
+              })
+              .catch(() => {});
+          };
+          const interval = setInterval(() => {
+            void flush();
+          }, OLLAMA_FLUSH_MS);
+          // Keep the daemon shutdown clean — unref so a still-running
+          // flush timer doesn't block process exit when the PTY's gone.
+          (interval as { unref?: () => void }).unref?.();
+          const cleanup = handle.subscribe({
+            onData(chunk: Uint8Array) {
+              buf += decoder.decode(chunk, { stream: true });
+              if (buf.length >= OLLAMA_FLUSH_MAX) void flush();
+            },
+            onExit(info) {
+              clearInterval(interval);
+              // Drain the decoder + buffer before writing exit so the
+              // last chunk of model output isn't lost.
+              buf += decoder.decode();
+              void flush().then(() =>
+                ollamaSessions
+                  .appendExit(handle.id, {
+                    kind: "exit",
+                    ts: new Date().toISOString(),
+                    code: info.code,
+                    signal: info.signal,
+                  })
+                  .catch(() => {}),
+              );
               cleanup();
             },
           });
@@ -1509,13 +1598,53 @@ const server = Bun.serve<TermWsData, never>({
       // `resolveAgentBinary` so multi-install setups (e.g. homebrew
       // codex + bun-installed codex from a self-update) report the
       // newest binary, not whatever PATH order happens to pick.
-      const candidates = ["claude", "codex"];
+      const candidates = ["claude", "codex", "ollama"];
       const installed: { name: string; path: string }[] = [];
       for (const name of candidates) {
         const path = await resolveAgentBinary(name);
         if (path) installed.push({ name, path });
       }
       return json({ installed });
+    }
+
+    if (url.pathname.startsWith("/api/ollama/sessions/") && req.method === "GET") {
+      // Read-only transcript for a stopped (or still-running) Ollama
+      // session. Returns the joined PTY output captured periodically
+      // by the spawn handler, plus header + exit metadata so the
+      // read-only view can label the column. URL shape:
+      //   /api/ollama/sessions/<termId>/transcript
+      // The `alive` flag is true when the PTY is still subscribed —
+      // lets the UI know whether the transcript is final or still
+      // growing.
+      const rest = url.pathname.slice("/api/ollama/sessions/".length);
+      const [termId, sub] = rest.split("/");
+      if (!termId || sub !== "transcript") {
+        return json({ error: "not found" }, { status: 404 });
+      }
+      const transcript = await ollamaSessions.readTranscript(termId);
+      if (!transcript) {
+        return json({ error: "ollama session not found" }, { status: 404 });
+      }
+      return json({
+        ...transcript,
+        alive: terminalBackend.get(termId) !== undefined,
+      });
+    }
+
+    if (url.pathname === "/api/ollama/models" && req.method === "GET") {
+      // Lists installed Ollama models for the new-session picker
+      // submenu. Hits the local HTTP API first (fast, structured),
+      // falls back to `ollama list` if the server isn't running. The
+      // picker calls this lazily when the user expands the Ollama row.
+      try {
+        const models = await listOllamaModels();
+        return json({ models });
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e), models: [] },
+          { status: 500 },
+        );
+      }
     }
 
     if (url.pathname === "/api/active-sends" && req.method === "GET") {
@@ -1753,15 +1882,32 @@ const server = Bun.serve<TermWsData, never>({
     if (customLinksMatch && req.method === "POST") {
       const id = customLinksMatch[1]!;
       const body = (await req.json().catch(() => null)) as
-        | { url?: unknown; name?: unknown }
+        | {
+            kind?: unknown;
+            url?: unknown;
+            path?: unknown;
+            name?: unknown;
+          }
         | null;
-      const rawUrl = typeof body?.url === "string" ? body.url : "";
       const rawName = typeof body?.name === "string" ? body.name : undefined;
+      // The workspace input type is a discriminated union; pick the
+      // arm based on `kind` so file/folder paths actually reach the
+      // validator instead of getting silently stripped down to
+      // `{ url: "" }`.
+      let input:
+        | { url: string; name?: string }
+        | { kind: "url"; url: string; name?: string }
+        | { kind: "file"; path: string; name?: string }
+        | { kind: "folder"; path: string; name?: string };
+      if (body?.kind === "file" || body?.kind === "folder") {
+        const rawPath = typeof body?.path === "string" ? body.path : "";
+        input = { kind: body.kind, path: rawPath, name: rawName };
+      } else {
+        const rawUrl = typeof body?.url === "string" ? body.url : "";
+        input = { kind: "url", url: rawUrl, name: rawName };
+      }
       try {
-        const link = await workspace.addCustomLink(id, {
-          url: rawUrl,
-          name: rawName,
-        });
+        const link = await workspace.addCustomLink(id, input);
         broadcast("change", { kind: "custom_link_add", id, linkId: link.id });
         return json({ id, link });
       } catch (e) {
@@ -1820,10 +1966,11 @@ const server = Bun.serve<TermWsData, never>({
       const id = customLinkOneMatch[1]!;
       const linkId = customLinkOneMatch[2]!;
       const body = (await req.json().catch(() => null)) as
-        | { url?: unknown; name?: unknown }
+        | { url?: unknown; path?: unknown; name?: unknown; kind?: unknown }
         | null;
-      const input: { url?: string; name?: string } = {};
+      const input: { url?: string; path?: string; name?: string } = {};
       if (typeof body?.url === "string") input.url = body.url;
+      if (typeof body?.path === "string") input.path = body.path;
       if (typeof body?.name === "string") input.name = body.name;
       try {
         const updated = await workspace.updateCustomLink(id, linkId, input);
@@ -2118,7 +2265,17 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/pick-folder" && req.method === "POST") {
       try {
-        const result = await pickFolder();
+        const body = (await req.json().catch(() => null)) as
+          | { prompt?: unknown; startAt?: unknown; fallback?: unknown }
+          | null;
+        const prompt =
+          typeof body?.prompt === "string" ? body.prompt : undefined;
+        const startAt =
+          typeof body?.startAt === "string" ? body.startAt : undefined;
+        const fallback =
+          typeof body?.fallback === "string" ? body.fallback : undefined;
+        const startResolved = await pickStartCandidate(startAt, fallback);
+        const result = await pickFolder(prompt, startResolved);
         if ("cancelled" in result) {
           return new Response(null, { status: 204, headers: CORS });
         }

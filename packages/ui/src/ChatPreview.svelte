@@ -26,7 +26,7 @@
    *  array means "loaded, but no messages" → the empty state. */
   export let items: PreviewItem[] | undefined = undefined;
   /** Drives the agent icon next to assistant role captions. */
-  export let agent: "claude" | "codex" | "copilot" | "shell" | undefined = undefined;
+  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell" | undefined = undefined;
   /** Surfaces a spinner row when items are not yet cached. */
   export let loading: boolean = false;
 

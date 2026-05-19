@@ -11,7 +11,7 @@ import { readdir, stat, readFile, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
-export type AgentKind = "claude" | "codex" | "copilot";
+export type AgentKind = "claude" | "codex" | "copilot" | "ollama";
 
 export interface AgentSession {
   agent: AgentKind;
@@ -881,13 +881,73 @@ export async function scanCopilot(
   return sessions;
 }
 
-export async function detectAgents(): Promise<AgentSession[]> {
-  const [claude, codex, copilot] = await Promise.all([
+/** Read the workspace's `ollama/` directory of session headers and lift
+ *  them into the AgentSession shape. Ollama doesn't write transcripts
+ *  to disk, so the entries carry only what the daemon recorded at spawn:
+ *  the picked model (used as the title), worktree, cwd, and the file's
+ *  mtime as lastActive. `sessionId` is the termId — unique per spawn —
+ *  so the UI's per-worktree picker can deduplicate against live PTYs. */
+export async function scanOllama(workspacePath: string): Promise<AgentSession[]> {
+  const dir = join(workspacePath, "ollama");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const sessions: AgentSession[] = [];
+  for (const name of entries) {
+    if (!name.endsWith(".jsonl")) continue;
+    const path = join(dir, name);
+    try {
+      const text = await readFile(path, "utf-8");
+      const firstLine = text.split("\n", 1)[0];
+      if (!firstLine) continue;
+      const obj = JSON.parse(firstLine) as {
+        kind?: string;
+        termId?: string;
+        wt?: string;
+        spawnCwd?: string;
+        model?: string;
+        createdAt?: string;
+      };
+      if (
+        obj.kind !== "header" ||
+        typeof obj.termId !== "string" ||
+        typeof obj.spawnCwd !== "string" ||
+        typeof obj.model !== "string"
+      ) {
+        continue;
+      }
+      const st = await stat(path);
+      sessions.push({
+        agent: "ollama",
+        cwd: resolve(obj.spawnCwd),
+        lastActive: st.mtime.toISOString(),
+        sessionId: obj.termId,
+        source: path,
+        // Use the model tag as the title — every UI surface that
+        // displays an Ollama session row keys identification off it.
+        title: obj.model,
+        model: obj.model,
+      });
+    } catch {
+      // skip malformed entries
+    }
+  }
+  return sessions;
+}
+
+export async function detectAgents(workspacePath?: string): Promise<AgentSession[]> {
+  const [claude, codex, copilot, ollama] = await Promise.all([
     scanClaude().catch(() => []),
     scanCodex().catch(() => []),
     scanCopilot().catch(() => []),
+    workspacePath
+      ? scanOllama(workspacePath).catch(() => [])
+      : Promise.resolve([] as AgentSession[]),
   ]);
-  return [...claude, ...codex, ...copilot];
+  return [...claude, ...codex, ...copilot, ...ollama];
 }
 
 /**

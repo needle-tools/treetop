@@ -735,6 +735,7 @@
     if (agent === "claude") return "Claude";
     if (agent === "codex") return "Codex";
     if (agent === "copilot") return "Copilot";
+    if (agent === "ollama") return "Ollama";
     return "assistant";
   }
 

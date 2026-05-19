@@ -1225,6 +1225,9 @@
     if (opts.agent === "codex") {
       return `<svg class="inline-mention-icon" viewBox="0 0 24 24" fill="currentColor" width="${size}" height="${size}" aria-hidden="true"><path d="${CODEX_PATH}"/></svg>`;
     }
+    if (opts.agent === "ollama") {
+      return `<img class="inline-mention-icon" src="/agents/ollama.svg" alt="" aria-hidden="true" width="${size}" height="${size}" />`;
+    }
     if (opts.agent) {
       return `<span class="inline-mention-icon agent-icon-dot agent-${escapeHtml(opts.agent)}" aria-hidden="true"></span>`;
     }

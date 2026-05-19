@@ -93,11 +93,15 @@ export class DismissedSessionsStore {
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.
  */
-export type PersistedAgent = "claude" | "codex" | "copilot" | "shell";
+export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
 
 export interface PersistedSession {
   agent: PersistedAgent;
   source: string;
+  /** Optional. For `agent === "ollama"` sessions, the model tag to run
+   *  (e.g. `"llama3.2:3b"`). Persisted so a reload re-spawns
+   *  `ollama run <model>` instead of a bare `ollama` prompt. */
+  ollamaModel?: string;
   /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
    *  the first time the daemon's activity-tail surfaces a real agent-side
    *  session id for that (cwd, agent). On a subsequent mount (notably
@@ -128,6 +132,7 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "claude",
   "codex",
   "copilot",
+  "ollama",
   // Terminal columns (plain `$SHELL` PTYs) live in `openSessionsByWt`
   // alongside agents. Without "shell" here, `sanitizeSession` strips
   // every persisted shell entry on `OpenSessionsStore.load()` — the
@@ -156,6 +161,9 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   }
   if (o.mode === "terminal") {
     out.mode = "terminal";
+  }
+  if (typeof o.ollamaModel === "string" && o.ollamaModel.length > 0) {
+    out.ollamaModel = o.ollamaModel;
   }
   return out;
 }
@@ -279,6 +287,7 @@ export function cmdForOpenSession(
     agent: PersistedAgent | "shell";
     resumeSessionId?: string;
     preassignedSessionId?: string;
+    ollamaModel?: string;
   },
   defaultShell: string,
 ): string[] {
@@ -314,6 +323,13 @@ export function cmdForOpenSession(
   if (s.agent === "codex") {
     if (sid) return ["codex", "resume", sid];
     return ["codex"];
+  }
+  if (s.agent === "ollama") {
+    // Ollama doesn't persist conversation history on disk, so there's
+    // no resume semantics — the model tag picked at spawn time fully
+    // determines what `ollama run` boots into.
+    if (s.ollamaModel) return ["ollama", "run", s.ollamaModel];
+    return ["ollama"];
   }
   // copilot has no resume semantics in v0
   return [s.agent];

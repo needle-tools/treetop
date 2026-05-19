@@ -27,7 +27,14 @@
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { contextChip } from "./context-tokens";
 
-  export let agent: "claude" | "codex" | "copilot" | "shell";
+  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
+  /** Overrides the lowercase agent name in the agent-pill. Used by
+   *  Ollama columns to show the model tag (e.g. `qwen3-coder:30b`)
+   *  instead of the generic "ollama" — for an Ollama column the
+   *  picked model is what the user actually identifies the session
+   *  by; "ollama" is redundant when every Ollama column would carry
+   *  the same label. Undefined ⇒ render the agent name. */
+  export let agentLabel: string | undefined = undefined;
   export let source: string;
   export let manualTitle: string = "";
   /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
@@ -101,7 +108,7 @@
     tokens: contextTokens,
     exact: contextTokensExact,
     model,
-    agent: agent === "shell" ? undefined : agent,
+    agent: agent === "shell" || agent === "ollama" ? undefined : agent,
     cap: contextWindow,
   });
 
@@ -160,7 +167,7 @@
       class="agent-pill agent-{agent}"
       class:working={mode === "terminal" && working}
       class:idle={mode === "terminal" && !working}
-    >{agent}{#if mode === "terminal"}<span
+    >{agentLabel ?? agent}{#if mode === "terminal"}<span
         class="sleep-slot"
         title={!working ? "Idle — waiting for input" : ""}
       ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
@@ -471,6 +478,11 @@
     background: var(--chip-codex-bg);
     color: var(--chip-codex-text);
     --agent-color: var(--chip-codex-text);
+  }
+  .agent-pill.agent-ollama {
+    background: var(--chip-ollama-bg);
+    color: var(--chip-ollama-text);
+    --agent-color: var(--chip-ollama-text);
   }
   .agent-pill.agent-copilot {
     background: var(--chip-default-bg);

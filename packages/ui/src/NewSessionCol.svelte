@@ -25,7 +25,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
 
-  type AgentKind = "claude" | "codex" | "copilot" | "shell";
+  type AgentKind = "claude" | "codex" | "copilot" | "ollama" | "shell";
 
   export let agent: AgentKind;
   export let source: string;
@@ -79,6 +79,12 @@
    *  this the drop handler in App.svelte never sees a source and the
    *  column snaps back instead of reordering. */
   export let onDragStart: (e: DragEvent) => void = () => {};
+  /** For Ollama columns: the model tag chosen at spawn time (e.g.
+   *  `qwen3-coder:30b`). Forwarded to SessionHeader as `agentLabel`
+   *  so the pill shows the model the user picked instead of the
+   *  generic "ollama" — every Ollama column would otherwise carry
+   *  the same label. */
+  export let ollamaModel: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -152,6 +158,7 @@
 >
   <SessionHeader
     {agent}
+    agentLabel={agent === "ollama" ? ollamaModel : undefined}
     {source}
     manualTitle={manualTitle ?? ""}
     mode="terminal"
