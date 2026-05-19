@@ -3441,6 +3441,15 @@
       visibleWorktreesByRepo,
     );
     if (visiblePaths.length === 0) {
+      // Non-git folders only ever have a single synthetic worktree — the
+      // folder itself. Hiding it via the picker would leave the user with
+      // no row to start a terminal/agent from (and no way to un-hide it
+      // since the picker lives on a worktree row). Always render the
+      // synthetic so the row stays interactive.
+      const synthetic = repo.worktrees.find((w) => w.nonGit);
+      if (synthetic) {
+        return [{ repo, wt: synthetic, key: `${repo.id}|${synthetic.path}` }];
+      }
       return [{ repo, wt: null as Worktree | null, key: `${repo.id}|none` }];
     }
     return visiblePaths.map((path) => {
@@ -5280,11 +5289,11 @@
             >{zenRowKey === row.key ? "◱" : "▣"}</button>
             <button
               class="row-remove"
-              title={wt
+              title={wt && !wt.nonGit
                 ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
-                : "Remove this repo from supergit's workspace."}
+                : "Remove this folder from supergit's workspace. The folder on disk is NOT deleted."}
               on:click={() => {
-                if (wt) {
+                if (wt && !wt.nonGit) {
                   hideWorktreeRow(
                     repo.id,
                     wt.path,
