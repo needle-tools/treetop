@@ -28,7 +28,14 @@
 
   const dispatch = createEventDispatcher<{
     close: void;
-    resume: { model: string };
+    /** `priorText` carries the captured (ANSI-stripped) transcript
+     *  wrapped in a continuation primer. When undefined, Resume opens
+     *  a fresh `ollama run <model>` with no context — the original
+     *  behavior. When supplied, the daemon feeds the primer as
+     *  initial input so the model can pick up from where it left off
+     *  (best-effort: Ollama has no real session state, the model
+     *  sees the transcript and treats it as user text). */
+    resume: { model: string; priorText?: string };
   }>();
 
   let text: string = "";
@@ -99,6 +106,38 @@
   }
 
   $: rendered = decode(text);
+
+  /** Build the continuation primer sent to a fresh `ollama run <model>`
+   *  when the user picks "Resume with context". The captured transcript
+   *  has been ANSI-stripped already; we wrap it in a brief instruction
+   *  so the model treats it as context rather than something to repeat.
+   *  Ends with two newlines + an empty prompt line so `ollama run`'s
+   *  readline submits the primer immediately (an Enter is implied) and
+   *  the model's response is the first visible turn — the user can
+   *  then type their next message as usual.
+   *
+   *  Trimmed at 16 KB. Models with smaller context windows will still
+   *  truncate; a hard cap here keeps the WS write cheap and avoids
+   *  pasting megabytes of prior spinner output (which we already strip
+   *  on the daemon side but defense in depth doesn't hurt). */
+  function buildPrimer(): string | undefined {
+    const body = rendered.trim();
+    if (body.length === 0) return undefined;
+    const MAX = 16 * 1024;
+    const clipped = body.length > MAX ? body.slice(-MAX) : body;
+    return (
+      "Below is our previous conversation. Please continue from where it left off; do not repeat it back.\n\n" +
+      clipped +
+      "\n\n"
+    );
+  }
+
+  function onResumeFresh(): void {
+    dispatch("resume", { model });
+  }
+  function onResumeWithContext(): void {
+    dispatch("resume", { model, priorText: buildPrimer() });
+  }
 </script>
 
 <div class="session ollama-transcript-col">
@@ -110,13 +149,27 @@
     manualTitle={manualTitle ?? ""}
     canResume={true}
     canEnd={false}
-    onResume={() => dispatch("resume", { model })}
+    onResume={onResumeFresh}
     onClose={() => dispatch("close")}
     lastActivityIso={lastActive}
     lastActivityFallback={alive ? "live" : "ended"}
     resumeTitle={`Spawn a fresh \`ollama run ${model}\` PTY at the same cwd`}
   />
   <div class="ollama-transcript-body">
+    {#if !alive && rendered.length > 0}
+      <!-- Secondary Resume that pipes the prior transcript into the
+           fresh PTY as initial input, so the model has at least the
+           captured context to continue from. The plain Resume button
+           in the header still spawns a clean session. -->
+      <div class="ollama-transcript-actions">
+        <button
+          class="resume-with-context-btn"
+          on:click={onResumeWithContext}
+          title={`Spawn \`ollama run ${model}\` and replay the captured transcript as initial input so the model can continue the conversation`}
+        >Resume with context</button>
+        <span class="muted small">replays the captured transcript as initial input — best-effort, not perfect memory</span>
+      </div>
+    {/if}
     {#if loading}
       <p class="muted">loading transcript…</p>
     {:else if error}
@@ -162,6 +215,29 @@
     font-size: 0.85rem;
     line-height: 1.4;
     color: var(--text-2);
+  }
+  .ollama-transcript-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.6rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px dotted color-mix(in srgb, var(--surface-2) 60%, transparent);
+  }
+  .resume-with-context-btn {
+    background: transparent;
+    color: var(--chip-ollama-text);
+    border: 1px solid var(--chip-ollama-bg);
+    padding: 0.25rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .resume-with-context-btn:hover {
+    background: var(--chip-ollama-bg);
+  }
+  .small {
+    font-size: 0.7rem;
   }
   .ollama-transcript-text {
     white-space: pre-wrap;

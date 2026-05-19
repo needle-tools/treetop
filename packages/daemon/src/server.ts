@@ -1269,6 +1269,15 @@ const server = Bun.serve<TermWsData, never>({
              *  prior cmd history so the user's command transcript
              *  carries over across Resume. */
             previousTermId?: string;
+            /** Optional bytes to write to the PTY shortly after spawn.
+             *  Used by "Resume with context" for Ollama: the daemon
+             *  spawns `ollama run <model>`, waits long enough for the
+             *  TUI to draw its first prompt, then writes the prior
+             *  conversation transcript so the model sees it as
+             *  initial user input and can continue the chat. The wait
+             *  is fixed at 1.5s — empirically enough for `ollama run`
+             *  to print `>>> ` even on a fresh model load. */
+            initialInput?: string;
           }
         | null;
       if (!body || !Array.isArray(body.cmd) || body.cmd.length === 0 || !body.cwd) {
@@ -1489,6 +1498,22 @@ const server = Bun.serve<TermWsData, never>({
               cleanup();
             },
           });
+        }
+        // Optional primer write — used by "Resume with context" for
+        // Ollama to feed the prior conversation back into a fresh
+        // `ollama run`. We delay 1.5s to give the TUI time to draw
+        // its `>>> ` prompt; writing before the prompt is ready makes
+        // the bytes vanish (Ollama's readline isn't listening yet).
+        // Fire-and-forget: a flaky write shouldn't break the spawn.
+        if (typeof body.initialInput === "string" && body.initialInput.length > 0) {
+          const bytes = new TextEncoder().encode(body.initialInput);
+          setTimeout(() => {
+            try {
+              handle.write(bytes);
+            } catch {
+              // PTY may have exited between scheduling and firing; ignore.
+            }
+          }, 1500);
         }
         return json({ id: handle.id, pid: handle.pid });
       } catch (e) {

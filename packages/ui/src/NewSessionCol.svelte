@@ -85,6 +85,10 @@
    *  generic "ollama" — every Ollama column would otherwise carry
    *  the same label. */
   export let ollamaModel: string | undefined = undefined;
+  /** Optional primer to feed the PTY after spawn. Used by Resume-with-
+   *  context for Ollama to replay the prior conversation as initial
+   *  input. Forwarded verbatim to TerminalView. */
+  export let initialInput: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -228,6 +232,7 @@
     {procName}
     {attachTermId}
     {resumeFromTermId}
+    {initialInput}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}

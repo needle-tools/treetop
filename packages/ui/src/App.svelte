@@ -854,6 +854,14 @@
       const next = { ...newTermIds };
       delete next[s.source];
       newTermIds = next;
+      // The primer has already been written by the daemon at this
+      // point — keep the map clean so a long-running browser session
+      // doesn't accumulate stale entries.
+      if (ollamaInitialInput[s.source] !== undefined) {
+        const nextPrimer = { ...ollamaInitialInput };
+        delete nextPrimer[s.source];
+        ollamaInitialInput = nextPrimer;
+      }
       if (s.agent === "ollama") {
         // Ollama: replace the source in place so the column survives
         // and flips to OllamaTranscriptView (header metadata + Resume).
@@ -1330,17 +1338,32 @@
    *  `disposeNewSessionColumn` when the column finally closes. */
   let shellResumeFromTermId: Record<string, string> = {};
 
+  /** Per-source primer map. Populated by `resumePastOllama` when the
+   *  user picks "Resume with context"; consumed by NewSessionCol via
+   *  the `initialInput` prop (which forwards to TerminalView's spawn
+   *  POST). The daemon writes the bytes to the PTY ~1.5s after spawn,
+   *  giving the model the prior conversation as initial input. Pruned
+   *  in `disposeNewSessionColumn` along with newTermIds. */
+  let ollamaInitialInput: Record<string, string> = {};
+
   /** Resume a stopped Ollama session: replace the transcript column
    *  in place with a fresh `__new__:ollama:` column carrying the same
-   *  model. Ollama has no on-disk conversation to restore, so this is
-   *  just "spawn `ollama run <model>` again in the same worktree". */
+   *  model. Ollama has no on-disk conversation to restore, so without
+   *  `priorText` this is just "spawn `ollama run <model>` again in
+   *  the same worktree". When `priorText` is supplied, that text is
+   *  fed to the new PTY as initial input — the model sees the prior
+   *  conversation and can continue from there. */
   function resumePastOllama(
     wtPath: string,
     transcriptSource: string,
     model: string,
+    priorText?: string,
   ) {
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const newSource = `__new__:ollama:${id}`;
+    if (priorText && priorText.length > 0) {
+      ollamaInitialInput = { ...ollamaInitialInput, [newSource]: priorText };
+    }
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
       ...openSessionsByWt,
@@ -5482,7 +5505,7 @@
                             manualTitle={ollamaMeta?.manualTitle}
                             lastActive={ollamaMeta?.lastActive}
                             on:resume={(e) =>
-                              resumePastOllama(wt.path, s.source, e.detail.model)}
+                              resumePastOllama(wt.path, s.source, e.detail.model, e.detail.priorText)}
                             on:close={() => closeSessionInWt(wt.path, s)}
                           />
                         {:else if s.source.startsWith("__transcript__:")}
@@ -5521,6 +5544,7 @@
                             source={titleSource}
                             wtPath={wt.path}
                             ollamaModel={s.ollamaModel}
+                            initialInput={ollamaInitialInput[s.source]}
                             cmd={cmdForOpenSession(s, defaultShell)}
                             cwd={shellResumeCwd[s.source] ?? wt.path}
                             procName={`supergit-tui-new-${s.agent}`}
