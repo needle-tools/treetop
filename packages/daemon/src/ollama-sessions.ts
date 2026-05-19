@@ -65,7 +65,23 @@ export interface OllamaOutputEntry {
   data: string;
 }
 
-export type OllamaEntry = OllamaHeader | OllamaExitEntry | OllamaOutputEntry;
+/** Marker entry written when the session's active model changes
+ *  mid-stream. Not emitted today (the spawn path only ever runs one
+ *  model per PTY), but the on-disk format reserves it so a future
+ *  "switch model and continue" action can mark the cut-over point.
+ *  The parser respects it: assistant turns after this marker get
+ *  attributed to the new model, earlier turns keep the prior one. */
+export interface OllamaModelChangeEntry {
+  kind: "model";
+  ts: string;
+  model: string;
+}
+
+export type OllamaEntry =
+  | OllamaHeader
+  | OllamaExitEntry
+  | OllamaOutputEntry
+  | OllamaModelChangeEntry;
 
 export class OllamaSessionsLog {
   private constructor(public readonly dir: string) {}

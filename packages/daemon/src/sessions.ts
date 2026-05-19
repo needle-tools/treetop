@@ -91,6 +91,14 @@ export interface NormalizedMessage {
   timestamp?: string;
   /** Per-agent event id (uuid for Claude, free-form elsewhere). */
   id?: string;
+  /** Optional override for the assistant's display name on this turn.
+   *  Used by Ollama where the model that produced a given response is
+   *  the meaningful author (e.g. `gemma4:latest`, `qwen3-coder:30b`),
+   *  not the generic "Ollama" label — and forward-looking so a session
+   *  that continues with a *different* model can still attribute each
+   *  turn correctly. Other agents leave this unset and fall back to
+   *  the agent-name label. */
+  author?: string;
 }
 
 export interface NormalizedSession {
@@ -410,9 +418,26 @@ export function parseCodexJsonl(text: string): NormalizedSession {
  */
 export function parseOllamaJsonl(text: string): NormalizedSession {
   const out = emptySession("ollama");
-  let combined = "";
   let startedAt: string | undefined;
   let endedAt: string | undefined;
+  // Track current model across the timeline so a future
+  // `kind: "model"` cut-over point attributes later assistant turns
+  // to the new model and earlier ones keep the prior. Today every
+  // session is single-model, but the structure is here.
+  //
+  // We walk entries in order, building segments of "output ranges
+  // captured under a given model" and parse each segment's turns
+  // independently. Joining at segment boundaries would lose the
+  // model-change cut, so we keep them separate.
+  let currentModel: string | undefined;
+  const segments: { model: string | undefined; data: string }[] = [];
+  function ensureSegment(model: string | undefined): { model: string | undefined; data: string } {
+    const last = segments[segments.length - 1];
+    if (last && last.model === model) return last;
+    const seg = { model, data: "" };
+    segments.push(seg);
+    return seg;
+  }
   for (const line of text.split("\n")) {
     if (!line) continue;
     let obj: Record<string, unknown>;
@@ -427,8 +452,11 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       if (typeof obj.termId === "string" && !out.sessionId)
         out.sessionId = obj.termId;
       if (typeof obj.createdAt === "string") startedAt = obj.createdAt;
+      if (typeof obj.model === "string") currentModel = obj.model;
+    } else if (kind === "model" && typeof obj.model === "string") {
+      currentModel = obj.model;
     } else if (kind === "output" && typeof obj.data === "string") {
-      combined += obj.data;
+      ensureSegment(currentModel).data += obj.data;
     } else if (kind === "exit" && typeof obj.ts === "string") {
       endedAt = obj.ts;
     }
@@ -436,9 +464,19 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
   if (startedAt) out.startedAt = startedAt;
   if (endedAt) out.endedAt = endedAt;
 
-  const stripped = stripAnsi(combined);
-  for (const msg of splitOllamaTurns(stripped)) {
-    out.messages.push(msg);
+  for (const seg of segments) {
+    const stripped = stripAnsi(seg.data);
+    for (const msg of splitOllamaTurns(stripped)) {
+      // Stamp assistant turns with the model that produced them so
+      // the UI can render the model name as the bubble's author —
+      // makes multi-model sessions (future) attributable per turn
+      // and single-model sessions read "Gemma" / "Qwen" instead of
+      // a generic "Ollama".
+      if (msg.role === "assistant" && seg.model) {
+        msg.author = seg.model;
+      }
+      out.messages.push(msg);
+    }
   }
   return out;
 }

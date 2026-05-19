@@ -148,6 +148,10 @@
     blocks: NormalizedBlock[];
     timestamp?: string;
     id?: string;
+    /** Optional per-turn assistant label override. Set by the
+     *  daemon's Ollama parser to the model that produced the turn
+     *  (e.g. `gemma4:latest`). */
+    author?: string;
   }
   interface NormalizedSession {
     agent: string;
@@ -744,8 +748,13 @@
     return `${Math.floor(s / 86400)} days ago`;
   }
 
-  function roleLabel(role: string): string {
+  function roleLabel(role: string, author?: string): string {
     if (role !== "assistant") return role;
+    // Per-turn author wins when present — used by Ollama to label
+    // each assistant bubble with the model that produced it. Future
+    // multi-model sessions will attribute each turn correctly via
+    // the same field.
+    if (author) return author;
     if (agent === "claude") return "Claude";
     if (agent === "codex") return "Codex";
     if (agent === "copilot") return "Copilot";
@@ -968,7 +977,7 @@
               {:else if m.role === "assistant" && agent === "ollama"}
                 <img class="agent-icon" src="/agents/ollama.svg" alt="" />
               {/if}
-              {roleLabel(m.role)}
+              {roleLabel(m.role, m.author)}
             </span>
             {#if m.timestamp}
               <span

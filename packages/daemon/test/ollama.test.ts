@@ -111,7 +111,11 @@ describe("parseOllamaJsonl", () => {
     const out = parseOllamaJsonl(text);
     expect(out.messages).toEqual([
       { role: "user", blocks: [{ type: "text", text: "who are you?" }] },
-      { role: "assistant", blocks: [{ type: "text", text: "I am a helper." }] },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "I am a helper." }],
+        author: "m",
+      },
     ]);
   });
 
@@ -135,6 +139,64 @@ describe("parseOllamaJsonl", () => {
     expect(out.messages.length).toBe(2);
     expect(out.messages[0]?.role).toBe("user");
     expect(out.messages[0]?.blocks[0]?.text).toBe("hi");
+  });
+
+  test("attributes each assistant turn to the active model", () => {
+    // Default case: one model for the whole session. Every assistant
+    // message gets the model from the header as its `author`.
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "gemma4:latest",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "output",
+        ts: "2026-01-01T00:00:01Z",
+        data: ">>> Send a message (/? for help)hi\nhello there\n",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    expect(out.messages[0]?.role).toBe("user");
+    expect(out.messages[0]?.author).toBeUndefined();
+    expect(out.messages[1]?.role).toBe("assistant");
+    expect(out.messages[1]?.author).toBe("gemma4:latest");
+  });
+
+  test("re-attributes turns after a `kind: \"model\"` marker", () => {
+    // Forward-looking: the on-disk format reserves a `kind: "model"`
+    // entry for "the user switched models and kept going." The
+    // parser walks segments — output before the marker is gemma,
+    // after is qwen.
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "gemma4:latest",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "output",
+        ts: "2026-01-01T00:00:01Z",
+        data: ">>> Send a message (/? for help)hi\ngemma says hi\n",
+      },
+      { kind: "model", ts: "2026-01-01T00:00:05Z", model: "qwen3-coder:30b" },
+      {
+        kind: "output",
+        ts: "2026-01-01T00:00:06Z",
+        data: ">>> Send a message (/? for help)now you\nqwen takes over\n",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    const assistants = out.messages.filter((m) => m.role === "assistant");
+    expect(assistants.length).toBe(2);
+    expect(assistants[0]?.author).toBe("gemma4:latest");
+    expect(assistants[1]?.author).toBe("qwen3-coder:30b");
   });
 
   test("returns an empty session on garbage input", () => {
