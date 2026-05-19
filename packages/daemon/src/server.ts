@@ -1138,9 +1138,15 @@ const server = Bun.serve<TermWsData, never>({
         `${home}/.codex/sessions/`,
         `${home}/.config/openai-codex/sessions/`,
       ];
-      let agentKind: "claude" | "codex" | null = null;
+      // Ollama transcripts live under <workspace>/ollama/ — written
+      // by the daemon itself on spawn, so the allowlist anchors on
+      // the active workspace path. Restricting to one directory
+      // matches the claude/codex root checks (no traversal escape).
+      const ollamaRoot = `${WORKSPACE_PATH}/ollama/`;
+      let agentKind: "claude" | "codex" | "ollama" | null = null;
       if (source.startsWith(claudeRoot)) agentKind = "claude";
       else if (codexRoots.some((r) => source.startsWith(r))) agentKind = "codex";
+      else if (source.startsWith(ollamaRoot)) agentKind = "ollama";
       if (!agentKind) {
         return json(
           { error: "source is outside any known agent root" },

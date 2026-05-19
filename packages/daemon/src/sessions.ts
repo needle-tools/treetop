@@ -384,6 +384,129 @@ export function parseCodexJsonl(text: string): NormalizedSession {
   return out;
 }
 
+/**
+ * Parse the daemon's per-Ollama-session JSONL into a normalized chat.
+ *
+ * The on-disk file holds `kind: "header"`, `kind: "output"` chunks
+ * (raw PTY bytes captured every ~3s while the session is live), and
+ * `kind: "exit"`. Ollama itself never writes structured turns — we
+ * have to recover them from the captured PTY transcript.
+ *
+ * The TUI's prompt is `>>> Send a message (/? for help)` on its own
+ * line; user-typed text appears appended to that same line (echoed
+ * by the readline). The model's reply follows on subsequent lines
+ * until the next `>>> ` prompt. We:
+ *   1. Strip ANSI escapes so the text is plain.
+ *   2. Strip the placeholder prompt fragments TUI repaints emit.
+ *   3. Walk lines, treating each `>>> ` as a turn boundary: the rest
+ *      of the line is the user message, anything until the next
+ *      prompt is the assistant message.
+ *
+ * Best-effort: a model that emits `>>> ` inside its own response
+ * would confuse the splitter, and multi-line user input pasted into
+ * the TUI may not round-trip perfectly. Good enough for the read
+ * view; if it bites, the alternative is to drive `/api/chat` from
+ * supergit directly (see plans/ollama.md).
+ */
+export function parseOllamaJsonl(text: string): NormalizedSession {
+  const out = emptySession("ollama");
+  let combined = "";
+  let startedAt: string | undefined;
+  let endedAt: string | undefined;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const kind = obj.kind;
+    if (kind === "header") {
+      if (typeof obj.spawnCwd === "string" && !out.cwd) out.cwd = obj.spawnCwd;
+      if (typeof obj.termId === "string" && !out.sessionId)
+        out.sessionId = obj.termId;
+      if (typeof obj.createdAt === "string") startedAt = obj.createdAt;
+    } else if (kind === "output" && typeof obj.data === "string") {
+      combined += obj.data;
+    } else if (kind === "exit" && typeof obj.ts === "string") {
+      endedAt = obj.ts;
+    }
+  }
+  if (startedAt) out.startedAt = startedAt;
+  if (endedAt) out.endedAt = endedAt;
+
+  const stripped = stripAnsi(combined);
+  for (const msg of splitOllamaTurns(stripped)) {
+    out.messages.push(msg);
+  }
+  return out;
+}
+
+/** Strip ANSI CSI / OSC / single-char ESC sequences and collapse lone
+ *  carriage returns. Same cleanup OllamaTranscriptView used to do
+ *  client-side; centralizing it here lets the read view share
+ *  SessionView's renderer instead of inventing its own. */
+function stripAnsi(s: string): string {
+  if (!s) return "";
+  let t = s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+  t = t.replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
+  t = t.replace(/\x1B[@-Z\\-_]/g, "");
+  t = t.replace(/\r(?!\n)/g, "");
+  return t;
+}
+
+/** The Ollama TUI repaints its placeholder prompt multiple times per
+ *  line; collapse every "Send a message (/? for help)" fragment into
+ *  nothing so the user-typed text on each `>>> ` line is what's left. */
+const OLLAMA_PROMPT_PLACEHOLDER = /Send a message \(\/\? for help\)\s*/g;
+
+/** Split a cleaned Ollama transcript into alternating user/assistant
+ *  turns. A `>>> ` line marks a user turn; the user message is the
+ *  rest of that line, the assistant message is everything up to the
+ *  next `>>> ` line. Whitespace-only turns on either side are skipped
+ *  (an empty user input followed by a model response wouldn't render
+ *  meaningfully anyway). */
+function splitOllamaTurns(text: string): NormalizedMessage[] {
+  const out: NormalizedMessage[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+  // Skip leading non-prompt lines (the TUI's banner / model load
+  // notice) — there's no user turn before the first `>>> `.
+  while (i < lines.length && !lines[i]!.startsWith(">>> ")) i++;
+  while (i < lines.length) {
+    const promptLine = lines[i]!;
+    i++;
+    // User input is whatever comes after `>>> `, minus any TUI
+    // placeholder repaints. Trim because the placeholder can leave
+    // trailing whitespace.
+    const userText = promptLine
+      .slice(">>> ".length)
+      .replace(OLLAMA_PROMPT_PLACEHOLDER, "")
+      .trim();
+    // Collect assistant lines until the next `>>> ` (or EOF).
+    const assistantLines: string[] = [];
+    while (i < lines.length && !lines[i]!.startsWith(">>> ")) {
+      assistantLines.push(lines[i]!);
+      i++;
+    }
+    const assistantText = assistantLines.join("\n").trim();
+    if (userText.length > 0) {
+      out.push({
+        role: "user",
+        blocks: [{ type: "text", text: userText }],
+      });
+    }
+    if (assistantText.length > 0) {
+      out.push({
+        role: "assistant",
+        blocks: [{ type: "text", text: assistantText }],
+      });
+    }
+  }
+  return out;
+}
+
 export async function parseSessionFile(
   agent: AgentKind,
   path: string,
@@ -396,6 +519,7 @@ export async function parseSessionFile(
   }
   if (agent === "claude") return parseClaudeJsonl(text);
   if (agent === "codex") return parseCodexJsonl(text);
+  if (agent === "ollama") return parseOllamaJsonl(text);
   // No reader for copilot yet — its data isn't a tail-friendly JSONL.
   return emptySession(agent);
 }
@@ -679,6 +803,20 @@ export async function getSessionResponseJson(
   const st = await stat(path).catch(() => null);
   if (!st) {
     return injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
+  }
+
+  // Ollama: bypass the tail-cache. The captured PTY transcripts are
+  // small (spinner braille is stripped at capture, conversations
+  // rarely exceed a few MB) and the parser needs to walk every
+  // `output` chunk to recover turn boundaries — there's no useful
+  // tail-window trick because the model's response can span dozens
+  // of chunks. Full parse on each request is fine; trim still
+  // applies so callers see a bounded message count.
+  if (agent === "ollama") {
+    const text = await readFile(path, "utf-8").catch(() => "");
+    const parsed = parseOllamaJsonl(text);
+    trimMessages(parsed);
+    return injectManualTitle(JSON.stringify(parsed), manualTitle);
   }
 
   const cached = sessionCache.get(path);

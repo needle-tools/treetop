@@ -5517,26 +5517,38 @@
                         out:closeColumn
                       >
                         {#if s.source.startsWith("__transcript__:ollama:")}
-                          <!-- Read-mode column for a stopped Ollama
-                               session. Renders header metadata + a
-                               Resume button; there's no on-disk chat
-                               to display because Ollama doesn't write
-                               one. -->
+                          <!-- Read-mode column for a stopped (or live)
+                               Ollama session. OllamaTranscriptView is a
+                               thin wrapper around SessionView so the
+                               read view looks identical to Claude /
+                               Codex; the wrapper only adds Ollama-
+                               specific Resume actions. Needs the
+                               on-disk JSONL path so SessionView's
+                               /api/session fetch can parse it. -->
                           {@const ollamaTermId = s.source.slice("__transcript__:ollama:".length)}
                           {@const ollamaMeta = (wt.agents ?? []).find(
                             (a) => a.agent === "ollama" && a.sessionId === ollamaTermId,
                           )}
                           {@const ollamaModelLabel = s.ollamaModel ?? ollamaMeta?.model ?? ollamaMeta?.title ?? "ollama"}
-                          <OllamaTranscriptView
-                            termId={ollamaTermId}
-                            wt={wt.path}
-                            model={ollamaModelLabel}
-                            manualTitle={ollamaMeta?.manualTitle}
-                            lastActive={ollamaMeta?.lastActive}
-                            on:resume={(e) =>
-                              resumePastOllama(wt.path, s.source, e.detail.model, e.detail.priorText)}
-                            on:close={() => closeSessionInWt(wt.path, s)}
-                          />
+                          {#if ollamaMeta?.source}
+                            <OllamaTranscriptView
+                              termId={ollamaTermId}
+                              wt={wt.path}
+                              model={ollamaModelLabel}
+                              sourcePath={ollamaMeta.source}
+                              on:resume={(e) =>
+                                resumePastOllama(wt.path, s.source, e.detail.model, e.detail.priorText)}
+                              on:close={() => closeSessionInWt(wt.path, s)}
+                            />
+                          {:else}
+                            <!-- No matching AgentSession (still mid-
+                                 spawn or the daemon hasn't written
+                                 the header yet). Skip render rather
+                                 than show a broken-looking column. -->
+                            <div class="session muted small" style="padding: 0.75rem 1rem;">
+                              starting…
+                            </div>
+                          {/if}
                         {:else if s.source.startsWith("__transcript__:")}
                           <!-- Read-mode column for a past shell session.
                                Renders the captured commands from the
