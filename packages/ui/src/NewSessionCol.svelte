@@ -97,6 +97,39 @@
     titleSave: { title: string };
   }>();
 
+  /** Mirrors the Stop Session UX from SessionView's resume-in-terminal
+   *  mode (commit 290cef3): clicking End Session enters a 1-second
+   *  cancellable grace window — the button shows a "Stopping…" spinner
+   *  via SessionHeader's `disposing` prop, and a second click during
+   *  the window aborts without touching the PTY. If the window elapses,
+   *  the actual `dispose` event fires and the parent issues the SIGTERM.
+   *
+   *  Without this, brand-new agent columns (Claude, Codex, Ollama)
+   *  killed the PTY synchronously with no visible feedback — the user
+   *  couldn't tell whether their click registered. */
+  const DISPOSE_GRACE_MS = 1000;
+  let disposing = false;
+  let disposeGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  function handleEndSession(): void {
+    if (disposeGraceTimer !== null) {
+      // Second click inside the grace window → cancel.
+      clearTimeout(disposeGraceTimer);
+      disposeGraceTimer = null;
+      disposing = false;
+      return;
+    }
+    if (disposing) return;
+    disposing = true;
+    disposeGraceTimer = setTimeout(() => {
+      disposeGraceTimer = null;
+      // Fire the dispose event; the parent will DELETE the terminal.
+      // Leave `disposing` true so the spinner stays visible until the
+      // column either flips to a transcript view (which unmounts this
+      // component) or the user × closes it.
+      dispatch("dispose");
+    }, DISPOSE_GRACE_MS);
+  }
+
   /** Burger-menu items. Hosts the Restart action (was the inline ↻
    *  button), a Copy command-line option (handy when grabbing the
    *  exact `claude --resume <id>` line for an external terminal),
@@ -178,7 +211,8 @@
     {menuItems}
     {onDragStart}
     onTitleSaved={(next) => dispatch("titleSave", { title: next })}
-    onEndSession={() => dispatch("dispose")}
+    onEndSession={handleEndSession}
+    {disposing}
     onClose={() => dispatch("close")}
     endSessionTitle={agent === "shell"
       ? "Dispose the PTY and keep this column in past-shell view (Resume reopens it later)"

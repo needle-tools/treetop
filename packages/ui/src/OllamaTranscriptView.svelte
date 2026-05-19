@@ -136,14 +136,27 @@
 </div>
 
 <style>
+  /* Same height anchoring as SessionView: fill the column the parent
+     strip stretches us into, clip overflow at the column edge, and
+     let the body's `flex: 1; min-height: 0` consume the leftover
+     space so the inner <pre> becomes the scroll container instead of
+     pushing the column taller than its siblings. Without `min-height:
+     0` the flex child would grow to its content's natural height and
+     `overflow: auto` would never engage. */
   .ollama-transcript-col {
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    background: var(--surface-1);
+    overflow: hidden;
+    height: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    height: 100%;
   }
   .ollama-transcript-body {
     flex: 1;
+    min-height: 0;
     overflow: auto;
     padding: 0.75rem 1rem;
     font-size: 0.85rem;

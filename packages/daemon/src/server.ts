@@ -1439,10 +1439,19 @@ const server = Bun.serve<TermWsData, never>({
           const OLLAMA_FLUSH_MAX = 64 * 1024;
           let buf = "";
           const decoder = new TextDecoder("utf-8");
+          /** Strip Ollama's loading-spinner braille glyphs (U+2800–
+           *  U+28FF) before persisting. Ollama redraws the spinner
+           *  many times per second while a model is thinking — a few
+           *  seconds of "waiting" turns into kilobytes of `⠋ ⠹ ⠸ …`
+           *  in the JSONL that nobody ever reads. Drop them and the
+           *  single trailing space the TUI prints between frames. */
+          const stripSpinner = (s: string): string =>
+            s.replace(/[⠀-⣿](?: |$)/g, "");
           const flush = async (): Promise<void> => {
             if (buf.length === 0) return;
-            const data = buf;
+            const data = stripSpinner(buf);
             buf = "";
+            if (data.length === 0) return;
             await ollamaSessions
               .appendOutput(handle.id, {
                 kind: "output",
