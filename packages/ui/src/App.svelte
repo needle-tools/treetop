@@ -3012,6 +3012,13 @@
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
       fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
+      // Refresh the tooltip cache in place if we have data for this
+      // worktree. Without this the row badge updates (load() refetches
+      // /api/repos) but the tooltip body keeps showing the file list
+      // from whenever the user first hovered.
+      if (wtSummaryByPath[wtPath] && wtSummaryByPath[wtPath] !== "loading") {
+        void loadWtSummary(wtPath, { force: true });
+      }
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
       try {
@@ -3332,29 +3339,42 @@
   }
   let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
 
-  async function loadWtSummary(path: string): Promise<void> {
-    // Skip if already in flight or fetched; the tooltip always shows
-    // the freshest cached value. The next fs_change SSE would normally
-    // invalidate this, but tooltips are ephemeral enough that we can
-    // wait for the user to re-hover.
-    if (wtSummaryByPath[path]) return;
-    wtSummaryByPath = { ...wtSummaryByPath, [path]: "loading" };
+  async function loadWtSummary(
+    path: string,
+    opts: { force?: boolean } = {},
+  ): Promise<void> {
+    // Without `force`, skip if we already have data (or a fetch in
+    // flight). With `force`, refetch in place: keep the existing data
+    // visible — don't flip to "loading" — so an open tooltip refreshes
+    // contents without flickering through an empty state. The
+    // fs_change SSE handler is what passes `force`; first-hover paths
+    // go through the cached fast path.
+    if (!opts.force && wtSummaryByPath[path]) return;
+    if (!wtSummaryByPath[path]) {
+      wtSummaryByPath = { ...wtSummaryByPath, [path]: "loading" };
+    }
     try {
       const qs = new URLSearchParams({ path });
       const res = await fetch(`/api/wt-summary?${qs.toString()}`);
       if (!res.ok) {
-        // Drop the loading sentinel so a next hover retries.
-        const next = { ...wtSummaryByPath };
-        delete next[path];
-        wtSummaryByPath = next;
+        // Drop the "loading" sentinel so the next hover retries. Don't
+        // wipe real cached data on a transient failure — better to
+        // show slightly-stale numbers than nothing.
+        if (wtSummaryByPath[path] === "loading") {
+          const next = { ...wtSummaryByPath };
+          delete next[path];
+          wtSummaryByPath = next;
+        }
         return;
       }
       const data = (await res.json()) as WtSummary;
       wtSummaryByPath = { ...wtSummaryByPath, [path]: data };
     } catch {
-      const next = { ...wtSummaryByPath };
-      delete next[path];
-      wtSummaryByPath = next;
+      if (wtSummaryByPath[path] === "loading") {
+        const next = { ...wtSummaryByPath };
+        delete next[path];
+        wtSummaryByPath = next;
+      }
     }
   }
 
