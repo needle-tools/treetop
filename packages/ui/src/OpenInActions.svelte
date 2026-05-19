@@ -10,22 +10,31 @@
     provider: string | null;
     host: string | null;
   }
-  /** User-defined "open in" link. Two flavours:
+  /** User-defined "open in" link. Three flavours:
    *   - `kind: "url"` (or absent for legacy entries) — a web URL,
    *     opened in a new browser tab.
-   *   - `kind: "file"` — an absolute local path, opened with the OS
-   *     default app via `/api/open-default`. */
+   *   - `kind: "file"` — an absolute file path opened with the OS
+   *     default app via `/api/open-default`.
+   *   - `kind: "folder"` — an absolute directory opened in the OS
+   *     file manager (same endpoint; OS handlers route folders to
+   *     Finder / Explorer / the default file-manager). */
   export type CustomLink =
     | { id: string; kind?: "url"; url: string; name?: string }
-    | { id: string; kind: "file"; path: string; name?: string };
+    | { id: string; kind: "file"; path: string; name?: string }
+    | { id: string; kind: "folder"; path: string; name?: string };
 
   /** Discriminator-safe getters so callers don't have to narrow at
    *  every reference. */
-  export function customLinkKind(link: CustomLink): "url" | "file" {
-    return link.kind === "file" ? "file" : "url";
+  export function customLinkKind(
+    link: CustomLink,
+  ): "url" | "file" | "folder" {
+    if (link.kind === "file") return "file";
+    if (link.kind === "folder") return "folder";
+    return "url";
   }
   export function customLinkTarget(link: CustomLink): string {
-    return customLinkKind(link) === "file"
+    const k = customLinkKind(link);
+    return k === "file" || k === "folder"
       ? (link as { path: string }).path
       : (link as { url: string }).url;
   }
@@ -59,14 +68,15 @@
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
   /** Add-link handler, supplied by the parent which owns the fetch.
-   *  The popover collects a discriminated-union payload (URL or file)
-   *  and calls this; resolves true on success so we can close the
-   *  popover. */
+   *  The popover collects a discriminated-union payload (URL, file,
+   *  or folder) and calls this; resolves true on success so we can
+   *  close the popover. */
   export let onAddCustomLink:
     | ((
         input:
           | { kind: "url"; url: string; name?: string }
-          | { kind: "file"; path: string; name?: string },
+          | { kind: "file"; path: string; name?: string }
+          | { kind: "folder"; path: string; name?: string },
       ) => Promise<boolean>)
     | null = null;
   /** Remove-link handler. Same contract — the parent owns the fetch. */
@@ -74,11 +84,17 @@
     null;
   /** Edit-link handler. Called from the per-link edit popover when the
    *  user submits a new URL/path and/or label. Pass `url` OR `path`,
-   *  not both — the daemon flips the link's kind accordingly. */
+   *  not both — the daemon flips the link's kind based on `kind` (or
+   *  preserves the existing kind when `kind` is omitted). */
   export let onEditCustomLink:
     | ((
         linkId: string,
-        input: { url?: string; path?: string; name?: string },
+        input: {
+          url?: string;
+          path?: string;
+          kind?: "url" | "file" | "folder";
+          name?: string;
+        },
       ) => Promise<boolean>)
     | null = null;
   /** Reorder-links handler. Receives the new ordered list of link ids
@@ -125,7 +141,8 @@
 
   function linkLabel(link: CustomLink): string {
     if (link.name && link.name.trim().length > 0) return link.name;
-    if (customLinkKind(link) === "file") {
+    const k = customLinkKind(link);
+    if (k === "file" || k === "folder") {
       const p = (link as { path: string }).path;
       const segs = p.split(/[\\/]/).filter(Boolean);
       return segs[segs.length - 1] ?? p;
@@ -139,9 +156,10 @@
 
   function linkTooltip(link: CustomLink): string {
     const target = customLinkTarget(link);
-    return customLinkKind(link) === "file"
-      ? `Open ${target} with the default app`
-      : `Open ${target} in browser`;
+    const k = customLinkKind(link);
+    if (k === "file") return `Open ${target} with the default app`;
+    if (k === "folder") return `Open ${target} in the file manager`;
+    return `Open ${target} in browser`;
   }
 
   /** Favicons sometimes fail to load — corporate auth pages, captive
@@ -158,7 +176,7 @@
   $: linkIconDef = iconFor("link");
 
   let addOpen = false;
-  let newKind: "url" | "file" = "url";
+  let newKind: "url" | "file" | "folder" = "url";
   let newUrl = "";
   let newPath = "";
   let newName = "";
@@ -172,7 +190,7 @@
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
   let editingLinkId: string | null = null;
-  let editKind: "url" | "file" = "url";
+  let editKind: "url" | "file" | "folder" = "url";
   let editUrl = "";
   let editPath = "";
   let editName = "";
@@ -215,7 +233,10 @@
     editingLinkId = link.id;
     editKind = customLinkKind(link);
     editUrl = editKind === "url" ? (link as { url: string }).url : "";
-    editPath = editKind === "file" ? (link as { path: string }).path : "";
+    editPath =
+      editKind === "file" || editKind === "folder"
+        ? (link as { path: string }).path
+        : "";
     editName = link.name ?? "";
     editError = "";
     setTimeout(() => editUrlInput?.focus(), 0);
@@ -229,7 +250,7 @@
   async function submitEdit() {
     if (!onEditCustomLink || !editingLinkId) return;
     const id = editingLinkId;
-    if (editKind === "file") {
+    if (editKind === "file" || editKind === "folder") {
       const p = editPath.trim();
       if (p.length === 0) {
         editError = "Path required.";
@@ -238,7 +259,11 @@
       editing = true;
       editError = "";
       try {
-        const ok = await onEditCustomLink(id, { path: p, name: editName });
+        const ok = await onEditCustomLink(id, {
+          path: p,
+          kind: editKind,
+          name: editName,
+        });
         if (ok) closeEdit();
         else editError = "Couldn't save — server rejected the change.";
       } catch (e) {
@@ -266,12 +291,14 @@
     }
   }
 
-  async function pickEditFile() {
+  async function pickEditPath() {
+    const want: "file" | "folder" =
+      editKind === "folder" ? "folder" : "file";
     try {
-      const picked = await runFilePicker();
+      const picked = await runPathPicker(want);
       if (picked) {
         editPath = picked;
-        editKind = "file";
+        editKind = want;
       }
     } catch (e) {
       editError = e instanceof Error ? e.message : String(e);
@@ -318,17 +345,18 @@
   async function submitAdd() {
     if (!onAddCustomLink) return;
     const trimmedName = newName.trim() || undefined;
-    if (newKind === "file") {
+    if (newKind === "file" || newKind === "folder") {
       const p = newPath.trim();
       if (p.length === 0) {
-        addError = "Pick a file first.";
+        addError =
+          newKind === "folder" ? "Pick a folder first." : "Pick a file first.";
         return;
       }
       adding = true;
       addError = "";
       try {
         const ok = await onAddCustomLink({
-          kind: "file",
+          kind: newKind,
           path: p,
           name: trimmedName,
         });
@@ -438,15 +466,16 @@
       // works, the start dir just won't carry over next time.
     }
   }
-  function readLastKind(): "url" | "file" {
+  function readLastKind(): "url" | "file" | "folder" {
     try {
       const v = localStorage.getItem(lastKindKey());
-      return v === "file" ? "file" : "url";
+      if (v === "file" || v === "folder") return v;
+      return "url";
     } catch {
       return "url";
     }
   }
-  function writeLastKind(k: "url" | "file"): void {
+  function writeLastKind(k: "url" | "file" | "folder"): void {
     try {
       localStorage.setItem(lastKindKey(), k);
     } catch {
@@ -462,7 +491,7 @@
     return `supergit.customLinks.draft.${path}`;
   }
   function readDraft(): {
-    kind?: "url" | "file";
+    kind?: "url" | "file" | "folder";
     url?: string;
     path?: string;
     name?: string;
@@ -509,14 +538,18 @@
     writeDraft();
   }
 
-  async function runFilePicker(): Promise<string | null> {
+  async function runPathPicker(
+    kind: "file" | "folder",
+  ): Promise<string | null> {
     const startAt = readLastPick() ?? undefined;
-    const res = await fetch("/api/pick-file", {
+    const endpoint = kind === "folder" ? "/api/pick-folder" : "/api/pick-file";
+    const prompt = kind === "folder" ? "Pick a folder to link" : "Pick a file to link";
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: "Pick a file to link",
-        // Start at last-picked file if it still exists, else the
+        prompt,
+        // Start at last-picked path if it still exists, else the
         // worktree directory. The daemon stat()s both and uses
         // whichever is real.
         startAt,
@@ -531,9 +564,10 @@
     return body.path;
   }
 
-  async function pickAddFile() {
+  async function pickAddPath() {
+    if (newKind !== "file" && newKind !== "folder") return;
     try {
-      const picked = await runFilePicker();
+      const picked = await runPathPicker(newKind);
       if (picked) newPath = picked;
     } catch (e) {
       addError = e instanceof Error ? e.message : String(e);
@@ -541,12 +575,14 @@
   }
 
   function openLink(link: CustomLink) {
-    if (customLinkKind(link) === "file") {
+    const k = customLinkKind(link);
+    if (k === "file" || k === "folder") {
       const p = (link as { path: string }).path;
       // Hand off to the daemon — the browser can't shell out to the
-      // OS default-app handler itself. Fire-and-forget; if the open
-      // fails the daemon logs but we don't surface here (the chip's
-      // tooltip already told the user what to expect).
+      // OS default-app handler itself. Fire-and-forget; same
+      // endpoint works for files (default app) and folders (file
+      // manager) because `open`/`xdg-open`/`start` route them based
+      // on the path's type.
       void fetch("/api/open-default", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -730,6 +766,19 @@
                 </svg>
                 File
               </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={newKind === "folder"}
+                role="tab"
+                aria-selected={newKind === "folder"}
+                on:click={() => (newKind = "folder")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                Folder
+              </button>
             </div>
             {#if newKind === "url"}
               <label class="custom-link-field">
@@ -748,12 +797,16 @@
               </label>
             {:else}
               <label class="custom-link-field">
-                <span class="custom-link-label">File path</span>
+                <span class="custom-link-label"
+                  >{newKind === "folder" ? "Folder path" : "File path"}</span
+                >
                 <div class="custom-link-fileinput">
                   <input
                     class="custom-link-input"
                     type="text"
-                    placeholder="/abs/path/to/file"
+                    placeholder={newKind === "folder"
+                      ? "/abs/path/to/folder"
+                      : "/abs/path/to/file"}
                     bind:value={newPath}
                     disabled={adding}
                     on:keydown={(e) => {
@@ -763,7 +816,7 @@
                   <button
                     type="button"
                     class="tiny custom-link-browse"
-                    on:click={pickAddFile}
+                    on:click={pickAddPath}
                     disabled={adding}
                   >Browse…</button>
                 </div>
@@ -798,7 +851,8 @@
                 on:click={submitAdd}
                 disabled={adding
                   || (newKind === "url" && newUrl.trim().length === 0)
-                  || (newKind === "file" && newPath.trim().length === 0)}
+                  || ((newKind === "file" || newKind === "folder")
+                    && newPath.trim().length === 0)}
               >{adding ? "Adding…" : "Add link"}</button>
             </div>
           </div>
@@ -858,6 +912,19 @@
           >
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <path d="M14 2v6h6" />
+          </svg>
+        {:else if kind === "folder"}
+          <!-- Folder glyph — opens the path in Finder / Explorer / the
+               default file manager via the same /api/open-default
+               endpoint files use. -->
+          <svg
+            class="open-in-icon filled"
+            viewBox="0 0 24 24"
+            width="13"
+            height="13"
+            aria-hidden="true"
+          >
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
           </svg>
         {:else if linkIconDef}
           <svg
@@ -935,6 +1002,19 @@
                 </svg>
                 File
               </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={editKind === "folder"}
+                role="tab"
+                aria-selected={editKind === "folder"}
+                on:click={() => (editKind = "folder")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                Folder
+              </button>
             </div>
             {#if editKind === "url"}
               <label class="custom-link-field">
@@ -952,7 +1032,9 @@
               </label>
             {:else}
               <label class="custom-link-field">
-                <span class="custom-link-label">File path</span>
+                <span class="custom-link-label"
+                  >{editKind === "folder" ? "Folder path" : "File path"}</span
+                >
                 <div class="custom-link-fileinput">
                   <input
                     class="custom-link-input"
@@ -966,7 +1048,7 @@
                   <button
                     type="button"
                     class="tiny custom-link-browse"
-                    on:click={pickEditFile}
+                    on:click={pickEditPath}
                     disabled={editing}
                   >Browse…</button>
                 </div>
@@ -1012,7 +1094,8 @@
                 on:click={submitEdit}
                 disabled={editing
                   || (editKind === "url" && editUrl.trim().length === 0)
-                  || (editKind === "file" && editPath.trim().length === 0)}
+                  || ((editKind === "file" || editKind === "folder")
+                    && editPath.trim().length === 0)}
               >{editing ? "Saving…" : "Save"}</button>
             </div>
           </div>

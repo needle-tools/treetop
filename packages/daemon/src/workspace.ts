@@ -3,33 +3,41 @@ import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 /**
- * User-defined "open in" link. Two flavours:
+ * User-defined "open in" link. Three flavours:
  *  - `kind: "url"` — a plain web URL (Coolify dashboards, staging
  *    deploys). Opened in a new browser tab by the UI.
- *  - `kind: "file"` — a local filesystem path opened with the
- *    operating system's default app (the same handler a Finder /
- *    Explorer double-click would route to).
+ *  - `kind: "file"` — a local file path opened with the operating
+ *    system's default app (the same handler a Finder / Explorer
+ *    double-click would route to).
+ *  - `kind: "folder"` — a local directory opened in the OS file
+ *    manager (Finder reveals the folder; Explorer opens it; xdg-open
+ *    routes to the user's default file manager).
  *
  * The `kind` field is optional on read to keep older repos.json
- * files (written before file links existed) interpretable — entries
- * without a kind default to "url" and carry their target in `url`.
- * New writes always include the explicit `kind`.
+ * files (written before file/folder links existed) interpretable —
+ * entries without a kind default to "url" and carry their target in
+ * `url`. New writes always include the explicit `kind`.
  */
 export type CustomLink =
   | { id: string; kind?: "url"; url: string; name?: string }
-  | { id: string; kind: "file"; path: string; name?: string };
+  | { id: string; kind: "file"; path: string; name?: string }
+  | { id: string; kind: "folder"; path: string; name?: string };
 
 /** Resolve a CustomLink's effective kind, treating a missing field as
  *  "url" for backward-compat with pre-file-link repos.json entries. */
-export function customLinkKind(link: CustomLink): "url" | "file" {
-  return link.kind === "file" ? "file" : "url";
+export function customLinkKind(link: CustomLink): "url" | "file" | "folder" {
+  if (link.kind === "file") return "file";
+  if (link.kind === "folder") return "folder";
+  return "url";
 }
 
 /** Resolve a CustomLink's open target — URL for `url` links, absolute
- *  filesystem path for `file` links. The two share no field name, so
- *  callers reach for this helper instead of `link.url ?? link.path`. */
+ *  filesystem path for `file` / `folder` links. The shapes share no
+ *  field name, so callers reach for this helper instead of
+ *  `link.url ?? link.path`. */
 export function customLinkTarget(link: CustomLink): string {
-  return customLinkKind(link) === "file"
+  const k = customLinkKind(link);
+  return k === "file" || k === "folder"
     ? (link as { path: string }).path
     : (link as { url: string }).url;
 }
@@ -44,10 +52,14 @@ function buildCustomLink(
   input:
     | { url: string; name?: string }
     | { kind: "url"; url: string; name?: string }
-    | { kind: "file"; path: string; name?: string },
+    | { kind: "file"; path: string; name?: string }
+    | { kind: "folder"; path: string; name?: string },
 ): CustomLink {
-  const isFile = "kind" in input && input.kind === "file";
-  if (isFile) {
+  const pathKind =
+    "kind" in input && (input.kind === "file" || input.kind === "folder")
+      ? input.kind
+      : null;
+  if (pathKind) {
     const rawPath =
       typeof (input as { path: string }).path === "string"
         ? (input as { path: string }).path.trim()
@@ -58,7 +70,7 @@ function buildCustomLink(
     if (!rawPath.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(rawPath)) {
       throw new Error("path must be absolute");
     }
-    const link: CustomLink = { id, kind: "file", path: rawPath };
+    const link: CustomLink = { id, kind: pathKind, path: rawPath };
     if (typeof input.name === "string") {
       const trimmed = input.name.trim();
       if (trimmed.length > 0) link.name = trimmed;
@@ -322,7 +334,8 @@ export class Workspace {
     input:
       | { url: string; name?: string }
       | { kind: "url"; url: string; name?: string }
-      | { kind: "file"; path: string; name?: string },
+      | { kind: "file"; path: string; name?: string }
+      | { kind: "folder"; path: string; name?: string },
   ): Promise<CustomLink> {
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
@@ -346,7 +359,16 @@ export class Workspace {
   async updateCustomLink(
     id: string,
     linkId: string,
-    input: { url?: string; path?: string; name?: string },
+    input: {
+      url?: string;
+      path?: string;
+      /** Discriminator override — needed when `path` could mean either
+       *  a file or a folder. If omitted with `path`, the existing
+       *  link's kind is preserved (or "file" as the default for new
+       *  paths replacing a URL). */
+      kind?: "url" | "file" | "folder";
+      name?: string;
+    },
   ): Promise<CustomLink | null> {
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
@@ -358,8 +380,9 @@ export class Workspace {
 
     // Start from the current link, then apply only the fields the
     // caller passed. If they pass `url` we flip to kind=url; if they
-    // pass `path` we flip to kind=file. Passing both is rejected as
-    // ambiguous.
+    // pass `path` we flip to file or folder (using the explicit
+    // `kind` override when given, otherwise preserving the current
+    // kind, falling back to "file"). Passing both is ambiguous.
     if (input.url !== undefined && input.path !== undefined) {
       throw new Error("pass either url or path, not both");
     }
@@ -370,14 +393,23 @@ export class Workspace {
     let merged:
       | { url: string; name?: string }
       | { kind: "url"; url: string; name?: string }
-      | { kind: "file"; path: string; name?: string };
+      | { kind: "file"; path: string; name?: string }
+      | { kind: "folder"; path: string; name?: string };
     if (input.url !== undefined) {
       merged = { kind: "url", url: input.url };
     } else if (input.path !== undefined) {
-      merged = { kind: "file", path: input.path };
+      const explicit = input.kind === "folder" ? "folder" : input.kind === "file" ? "file" : null;
+      const inherited = currentKind === "folder" ? "folder" : currentKind === "file" ? "file" : "file";
+      const newKind = explicit ?? inherited;
+      merged = { kind: newKind, path: input.path };
     } else if (currentKind === "file") {
       merged = {
         kind: "file",
+        path: (current as { path: string }).path,
+      };
+    } else if (currentKind === "folder") {
+      merged = {
+        kind: "folder",
         path: (current as { path: string }).path,
       };
     } else {

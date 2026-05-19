@@ -10,12 +10,19 @@ export type PickResult = { path: string } | { cancelled: true };
  * paths (security). Since the daemon runs on the same machine as the user, it
  * can shell out to the OS picker and return the real path the UI needs.
  */
-export async function pickFolder(): Promise<PickResult> {
+export async function pickFolder(
+  prompt = "Add repo to supergit",
+  startAt?: string,
+): Promise<PickResult> {
   const platform = process.platform;
+  const startDir = await resolveStartDir(startAt);
 
   if (platform === "darwin") {
-    const script =
-      'POSIX path of (choose folder with prompt "Add repo to supergit")';
+    const escapedPrompt = prompt.replace(/"/g, '\\"');
+    const defaultLoc = startDir
+      ? ` default location POSIX file "${startDir.replace(/"/g, '\\"')}"`
+      : "";
+    const script = `POSIX path of (choose folder with prompt "${escapedPrompt}"${defaultLoc})`;
     const proc = Bun.spawn(["osascript", "-e", script], {
       stdout: "pipe",
       stderr: "pipe",
@@ -27,15 +34,16 @@ export async function pickFolder(): Promise<PickResult> {
   }
 
   if (platform === "linux") {
-    const proc = Bun.spawn(
-      [
-        "zenity",
-        "--file-selection",
-        "--directory",
-        "--title=Add repo to supergit",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const args = [
+      "--file-selection",
+      "--directory",
+      `--title=${prompt}`,
+    ];
+    if (startDir) args.push(`--filename=${startDir}/`);
+    const proc = Bun.spawn(["zenity", ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const stdout = await new Response(proc.stdout).text();
     const exit = await proc.exited;
     if (exit !== 0) return { cancelled: true };
@@ -43,10 +51,14 @@ export async function pickFolder(): Promise<PickResult> {
   }
 
   if (platform === "win32") {
+    const initDir = startDir
+      ? `$f.SelectedPath = '${startDir.replace(/'/g, "''")}';`
+      : "";
     const ps = [
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$f = New-Object System.Windows.Forms.FolderBrowserDialog;",
-      "$f.Description = 'Add repo to supergit';",
+      `$f.Description = '${prompt.replace(/'/g, "''")}';`,
+      initDir,
       "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }",
     ].join(" ");
     const proc = Bun.spawn(
