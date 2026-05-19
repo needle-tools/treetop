@@ -900,11 +900,12 @@
             on:error={() => markFaviconFailed(link.id)}
           />
         {:else if kind === "file"}
-          <!-- Generic file glyph for file-flavoured links. No favicon
-               to fetch; the platform's default-app handler does the
-               real work when clicked. -->
+          <!-- Generic file glyph for file-flavoured links. Outline +
+               muted so it reads as a quiet "platform default app"
+               affordance rather than competing with the brand
+               favicons / agent icons next to it. -->
           <svg
-            class="open-in-icon filled"
+            class="open-in-icon muted"
             viewBox="0 0 24 24"
             width="13"
             height="13"
@@ -915,10 +916,10 @@
           </svg>
         {:else if kind === "folder"}
           <!-- Folder glyph — opens the path in Finder / Explorer / the
-               default file manager via the same /api/open-default
-               endpoint files use. -->
+               default file manager. Outline + muted to match the file
+               glyph treatment. -->
           <svg
-            class="open-in-icon filled"
+            class="open-in-icon muted"
             viewBox="0 0 24 24"
             width="13"
             height="13"
