@@ -494,10 +494,6 @@
     color: var(--text-2);
     --agent-color: var(--text-2);
   }
-  /* Stacking context for the idle pulse pseudo below. */
-  .agent-pill.idle {
-    isolation: isolate;
-  }
   /* Working: comet-trail conic-gradient ring. The @property-animated
      `from` angle sweeps the bright arc smoothly around the pill's
      border outline — keeping the gradient ANGLE in motion (rather
@@ -542,40 +538,18 @@
   @keyframes pill-sweep {
     to { --pill-sweep-angle: 360deg; }
   }
-  /* Idle / waiting: a static dim border (always-visible signal) with a
-     bright overlay border whose opacity pulses. Animating opacity on a
-     positioned overlay is composited; previously this animated
-     `border-color` directly, which is paint-time and showed up as the
-     single biggest paint cost in the trace. */
+  /* Idle / waiting: a static border in a dim variant of the agent's
+     colour. Previously this also rendered an opacity-pulsing overlay
+     pseudo to draw the eye; killed because every visible idle pill
+     was forcing its own compositor layer, and the constant layer-tree
+     walk dominated Layerize cost in the perf trace. The zzz trail
+     next to the agent name already says "idle" without the pulse. */
   .agent-pill.idle {
-    border-color: color-mix(in srgb, var(--agent-color) 30%, transparent);
-  }
-  .agent-pill.idle::before {
-    content: "";
-    position: absolute;
-    /* Sit on top of the parent's 1px border so the overlay's brighter
-       border lines up with it visually. */
-    inset: -1px;
-    border: 1px solid var(--agent-color);
-    border-radius: inherit;
-    pointer-events: none;
-    animation: pill-idle-fade 1.6s ease-in-out infinite alternate;
-    z-index: -1;
-  }
-  @keyframes pill-idle-fade {
-    from { opacity: 0; }
-    to   { opacity: 1; }
+    border-color: color-mix(in srgb, var(--agent-color) 55%, transparent);
   }
   @media (prefers-reduced-motion: reduce) {
-    .agent-pill.working::before,
-    .agent-pill.idle::before {
+    .agent-pill.working::before {
       animation: none;
-    }
-    .agent-pill.idle {
-      border-color: color-mix(in srgb, var(--agent-color) 70%, transparent);
-    }
-    .agent-pill.idle::before {
-      opacity: 1;
     }
   }
   /* Thin wrapper around <SleepIndicationAnimation>. The component owns

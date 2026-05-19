@@ -64,7 +64,11 @@
     line-height: 1;
     opacity: 0;
     transform-origin: 0% 50%;
-    will-change: transform, opacity;
+    /* No `will-change`: modern Chrome auto-promotes a transform/opacity
+       animation to its own compositor layer when it's actively running.
+       Multiplying explicit `will-change` hints across N idle pills × 2 z
+       spans bloats the layer tree and is what shows up as Layerize cost
+       in the perf trace (same lesson as the status-badge edge strips). */
   }
   /* Two z's share the keyframe at phase offsets 0% / 50% (via a
      negative animation-delay), so the second z is always half a
