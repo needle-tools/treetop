@@ -126,3 +126,16 @@ button.tiny {
 .nopad {
   margin: 0.5rem 0 0 0;
 }
+
+/* When the browser tab isn't visible, pause every CSS animation app-
+   wide. The class is toggled from main.ts on `visibilitychange`.
+   Chrome already throttles requestAnimationFrame in hidden tabs but
+   keeps CSS animations running, which means the compositor still has
+   to Layerize/Paint the always-on idle pulses, badge sweeps and
+   conic rings — work nobody can see. Pausing them at the CSS level
+   stops the compositor entirely, dropping background-tab CPU to ~0. */
+body.tab-hidden *,
+body.tab-hidden *::before,
+body.tab-hidden *::after {
+  animation-play-state: paused !important;
+}

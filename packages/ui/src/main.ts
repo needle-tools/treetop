@@ -31,6 +31,19 @@ window.addEventListener("popstate", () => {
   history.pushState(null, "", location.href);
 });
 
+// Pause all CSS animations when the tab is backgrounded. Chrome
+// already throttles JS timers / RAFs in hidden tabs but keeps CSS
+// animations running, so the compositor still pays for the always-on
+// idle pulses, badge sweeps and conic rings while you're not looking.
+// Toggling a body class drives the `body.tab-hidden *` rule in
+// base.css to stop them at the source. Read once at startup so a tab
+// opened in the background starts paused.
+function syncTabVisibilityClass() {
+  document.body.classList.toggle("tab-hidden", document.hidden);
+}
+syncTabVisibilityClass();
+document.addEventListener("visibilitychange", syncTabVisibilityClass);
+
 const target = document.getElementById("app");
 if (!target) throw new Error("#app element missing in index.html");
 

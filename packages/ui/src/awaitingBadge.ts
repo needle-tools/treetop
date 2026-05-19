@@ -300,7 +300,204 @@ function clearBadge(): void {
   if (!link) return;
   link.type = "image/x-icon";
   link.href = "/favicon.ico";
+  lastFaviconHref = null;
 }
+
+/** Active-frame cache. Each animation cycle has a finite number of
+ *  meaningful frames (awaiting/unread = 2s periods, working = 2.5s
+ *  period); at 20 fps that's ≤50 frames per state. `toDataURL("image/png")`
+ *  is the dominant per-tick cost (PNG encoder runs on the JS thread,
+ *  ~5–15 ms per call even at 32×32). Pre-encoding once per state key
+ *  and cycling through cached data URLs drops the steady-state per-tick
+ *  cost to a single `link.href = …` assignment.
+ *
+ *  Keyed by the state branch + the integer that affects what's drawn
+ *  (the digit). Working has no count dependency, so a single entry. */
+const SIZE = 32;
+const AWAITING_PERIOD_MS = 2000;
+const AWAITING_FRAMES = 40;
+const UNREAD_PERIOD_MS = 2000;
+const UNREAD_FRAMES = 2; // discrete color-swap every 1s — only 2 distinct frames
+const WORKING_PERIOD_MS = 2500;
+const WORKING_FRAMES = 50;
+
+interface FrameSet {
+  frames: string[];
+  durationMs: number;
+}
+const frameCache = new Map<string, FrameSet>();
+
+/** The state branch that drives drawing, plus the digit (or 0 for
+ *  no-digit). Returns null when no indicator should be drawn. */
+function frameKeyFor(state: TabState): string | null {
+  // Awaiting > unread > working — matches drawIndicator's priority below.
+  if (state.awaiting > 0) {
+    // 1..9 are distinct (different digits drawn); 10+ all render the
+    // same frames (no digit), so collapse to one cache entry.
+    return `awaiting:${state.awaiting >= 10 ? 10 : state.awaiting}`;
+  }
+  if (state.unread > 0) {
+    // 1..9 distinct; 10+ all render "9+" — same cache entry.
+    return `unread:${state.unread >= 10 ? 10 : state.unread}`;
+  }
+  if (state.working > 0) return "working";
+  return null;
+}
+
+function renderAwaitingFrame(count: number, tMs: number): boolean {
+  if (!baseImage || !baseImageReady) return false;
+  const ctx = getCanvas(SIZE);
+  if (!ctx) return false;
+  const t = tMs / 1000;
+  try {
+    ctx.drawImage(baseImage, 0, 0, SIZE, SIZE);
+  } catch {
+    return false;
+  }
+  const pulse = (Math.sin(t * Math.PI) + 1) / 2;
+  const alpha = 0.75 + 0.25 * pulse;
+  const r = 13;
+  const cx = SIZE - r - 0.5;
+  const cy = r + 0.5;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#e34c3c";
+  ctx.fill();
+  ctx.restore();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+  ctx.stroke();
+  if (count >= 1 && count <= 9) {
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(count), cx, cy + 0.5);
+  }
+  return true;
+}
+
+function renderUnreadFrame(count: number, tMs: number): boolean {
+  if (!baseImage || !baseImageReady) return false;
+  const ctx = getCanvas(SIZE);
+  if (!ctx) return false;
+  const t = tMs / 1000;
+  try {
+    ctx.drawImage(baseImage, 0, 0, SIZE, SIZE);
+  } catch {
+    return false;
+  }
+  const r = 15;
+  const fill = Math.floor(t) % 2 === 0 ? "#a4d843" : "#ffff00";
+  const cx = SIZE / 2;
+  const cy = SIZE / 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#333333";
+  ctx.stroke();
+  ctx.fillStyle = "#000000";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (count >= 1 && count <= 9) {
+    ctx.font = "bold 20px system-ui, -apple-system, sans-serif";
+    ctx.fillText(String(count), cx, cy + 0.5);
+  } else if (count >= 10) {
+    ctx.font = "bold 15px system-ui, -apple-system, sans-serif";
+    ctx.fillText("9+", cx, cy + 0.5);
+  }
+  return true;
+}
+
+function renderWorkingFrame(tMs: number): boolean {
+  if (!baseImage || !baseImageReady) return false;
+  const ctx = getCanvas(SIZE);
+  if (!ctx) return false;
+  const t = tMs / 1000;
+  const inset = 3;
+  ctx.save();
+  ctx.globalAlpha = 0.78;
+  try {
+    ctx.drawImage(baseImage, inset, inset, SIZE - inset * 2, SIZE - inset * 2);
+  } catch {
+    ctx.restore();
+    return false;
+  }
+  ctx.restore();
+  const cx = SIZE / 2;
+  const cy = SIZE / 2;
+  const r = (SIZE - 2) / 2;
+  const angle = t * 0.8 * Math.PI;
+  const segments = 8;
+  const arcPer = (Math.PI * 2) / segments;
+  const dashSweep = arcPer * 0.45;
+  ctx.lineWidth = 2.25;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#60b74c";
+  for (let i = 0; i < segments; i++) {
+    const a0 = angle + i * arcPer;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, a0, a0 + dashSweep);
+    ctx.stroke();
+  }
+  return true;
+}
+
+/** Build (and cache) the data-URL frame array for `key`. Returns null
+ *  on encoding failure (base image not loaded, canvas tainted). */
+function encodeFrames(key: string): FrameSet | null {
+  if (!baseImageReady || !sharedCanvas) return null;
+  const [kind, countStr] = key.split(":") as [string, string | undefined];
+  const count = countStr ? parseInt(countStr, 10) : 0;
+  let durationMs: number;
+  let nFrames: number;
+  let render: (tMs: number) => boolean;
+  if (kind === "awaiting") {
+    durationMs = AWAITING_PERIOD_MS;
+    nFrames = AWAITING_FRAMES;
+    render = (tMs) => renderAwaitingFrame(count, tMs);
+  } else if (kind === "unread") {
+    durationMs = UNREAD_PERIOD_MS;
+    nFrames = UNREAD_FRAMES;
+    render = (tMs) => renderUnreadFrame(count, tMs);
+  } else {
+    durationMs = WORKING_PERIOD_MS;
+    nFrames = WORKING_FRAMES;
+    render = (tMs) => renderWorkingFrame(tMs);
+  }
+  const frames: string[] = [];
+  for (let i = 0; i < nFrames; i++) {
+    const tMs = (i / nFrames) * durationMs;
+    if (!render(tMs)) return null;
+    try {
+      frames.push(sharedCanvas.toDataURL("image/png"));
+    } catch {
+      return null;
+    }
+  }
+  return { frames, durationMs };
+}
+
+function pickFrame(key: string, tMs: number): string | null {
+  let set = frameCache.get(key);
+  if (!set) {
+    const encoded = encodeFrames(key);
+    if (!encoded) return null;
+    frameCache.set(key, encoded);
+    set = encoded;
+  }
+  const phase = (tMs % set.durationMs) / set.durationMs;
+  const idx = Math.floor(phase * set.frames.length) % set.frames.length;
+  return set.frames[idx];
+}
+
+/** Last `link.href` we wrote, so the animation tick can skip the DOM
+ *  write when the cached frame hasn't changed (cheap but not free). */
+let lastFaviconHref: string | null = null;
 
 function drawIndicator(state: TabState, tMs: number): void {
   const size = 32;
@@ -432,6 +629,7 @@ function drawIndicator(state: TabState, tMs: number): void {
   try {
     link.type = "image/png";
     link.href = sharedCanvas.toDataURL("image/png");
+    lastFaviconHref = link.href;
   } catch (e) {
     dbg("toDataURL failed (canvas tainted?)", e);
   }
@@ -448,13 +646,25 @@ function startAnimation(): void {
   if (animationTimer !== null) return;
   if (typeof setInterval === "undefined") return;
   // 20 fps is smooth enough that the arc rotation reads as continuous
-  // motion (the previous 6 fps was visibly steppy) while still keeping
-  // the per-frame canvas → data-url → favicon swap cheap. Browsers
-  // throttle this to ~1 Hz when the tab is hidden, which is exactly
-  // what we want — the indicator still moves where the user can see it.
+  // motion (the previous 6 fps was visibly steppy). Per-tick cost is
+  // now just `frameCache lookup → link.href = …` because frames are
+  // pre-encoded once per state (see {@link encodeFrames}); the PNG
+  // encoder used to dominate this loop's CPU. Browsers throttle the
+  // interval to ~1 Hz when the tab is hidden, and the body.tab-hidden
+  // class pauses CSS animations app-wide — the indicator still moves
+  // where the user can see it.
   animationStart = performance.now();
   animationTimer = setInterval(() => {
-    drawIndicator(currentState, performance.now() - animationStart);
+    const key = frameKeyFor(currentState);
+    if (!key) return;
+    const url = pickFrame(key, performance.now() - animationStart);
+    if (!url) return;
+    if (url === lastFaviconHref) return;
+    const link = getFaviconLink();
+    if (!link) return;
+    link.type = "image/png";
+    link.href = url;
+    lastFaviconHref = url;
   }, 1000 / 20);
 }
 
