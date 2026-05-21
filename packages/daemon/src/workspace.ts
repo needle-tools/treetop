@@ -230,7 +230,7 @@ export class Workspace {
     if (repos.some((r) => r.path === repoPath)) {
       throw new Error(`Repo already registered: ${repoPath}`);
     }
-    const segments = repoPath.split("/").filter(Boolean);
+    const segments = repoPath.split(/[/\\]/).filter(Boolean);
     const name = segments[segments.length - 1] ?? repoPath;
     const repo: Repo = {
       id: randomUUID(),

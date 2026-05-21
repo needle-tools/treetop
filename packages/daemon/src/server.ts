@@ -1329,7 +1329,7 @@ const server = Bun.serve<TermWsData, never>({
       // "zsh" out of the renamed argv[0]. The ps-readable suffix
       // (and the rename-for-Activity-Monitor benefit) is preserved.
       let effectiveProcName = body.procName;
-      const innerCmd0Base = (resolvedCmd[0] ?? "").split("/").pop() ?? "";
+      const innerCmd0Base = (resolvedCmd[0] ?? "").split(/[/\\]/).pop() ?? "";
       if (
         effectiveProcName &&
         process.platform !== "win32" &&

@@ -96,7 +96,8 @@ export async function resolveSubmoduleWorktreePaths(
   repoPath: string,
   worktrees: Worktree[],
 ): Promise<Worktree[]> {
-  const needsFix = worktrees.some((w) => w.path.includes("/.git/"));
+  const gitDirPattern = /[/\\]\.git[/\\]/;
+  const needsFix = worktrees.some((w) => gitDirPattern.test(w.path));
   if (!needsFix) return worktrees;
   let toplevel: string | null = null;
   try {
@@ -112,7 +113,7 @@ export async function resolveSubmoduleWorktreePaths(
   }
   if (!toplevel) return worktrees;
   return worktrees.map((w) =>
-    w.path.includes("/.git/") ? { ...w, path: toplevel! } : w,
+    gitDirPattern.test(w.path) ? { ...w, path: toplevel! } : w,
   );
 }
 

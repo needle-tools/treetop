@@ -822,7 +822,7 @@ export async function scanCodex(
           // Prefer the in-file id (what `codex resume <id>` expects)
           // over the filename basename, since the filename includes a
           // `rollout-<iso>-` prefix that's not a valid id.
-          sessionId: meta.id ?? sessionPath.split("/").pop()!.replace(/\.(jsonl|json)$/, ""),
+          sessionId: meta.id ?? sessionPath.split(/[/\\]/).pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
           messageCount: messageCount > 0 ? messageCount : undefined,
           contextTokens,
