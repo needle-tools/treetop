@@ -45,6 +45,10 @@
   let generating: boolean = false;
   let queued: boolean = false;
   let errorMsg: string = "";
+  /** The model the picker chose for the in-flight (or just-finished)
+   *  generation. Surfaced in the "summarising with …" status so the
+   *  user can see at a glance which local model is doing the work. */
+  let currentModel: string = "";
   /** True once we've heard back from the GET, so we don't flash
    *  "no summary yet" while the probe is still in flight. */
   let probed: boolean = false;
@@ -103,10 +107,23 @@
     });
   }
 
-  /** Pick a model that's actually installed locally. Same logic the
-   *  session chip uses: last-used → llama3.2:3b → smallest non-embed.
-   *  Returns null when nothing is installed so the caller can surface
-   *  a "install a model first" notice instead of firing a 404. */
+  /** A repo summary fires automatically every few hours per repo on
+   *  dashboard load. It MUST stay local — cloud models would silently
+   *  ship the user's commit messages and dirty-worktree paths to a
+   *  third party. The picker therefore rejects anything that looks
+   *  like a cloud model. Ollama tags cloud models with a `:cloud`
+   *  tag or a `-cloud` model-name suffix (e.g. `glm-4.6:cloud`,
+   *  `qwen3-coder:480b-cloud`, `gpt-oss:120b-cloud`). */
+  function isCloudModel(name: string): boolean {
+    const n = name.toLowerCase();
+    return /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n);
+  }
+
+  /** Pick a LOCAL model: last-used → llama3.2:3b → smallest non-embed.
+   *  Cloud models are filtered out before any preference check, so a
+   *  remembered cloud pick from elsewhere in the app never leaks in.
+   *  Returns null when nothing local is installed so the caller can
+   *  surface a "install a local model first" notice. */
   async function pickInstalledModel(): Promise<string | null> {
     let list: { name: string; size?: number }[] = [];
     try {
@@ -117,11 +134,18 @@
     } catch {
       return null;
     }
-    if (list.length === 0) return null;
+    const local = list.filter((m) => !isCloudModel(m.name));
+    if (local.length === 0) return null;
     const remembered = localStorage.getItem("supergit:summarize:lastModel");
-    if (remembered && list.some((m) => m.name === remembered)) return remembered;
-    if (list.some((m) => m.name === "llama3.2:3b")) return "llama3.2:3b";
-    const usable = list.filter((m) => {
+    if (
+      remembered &&
+      !isCloudModel(remembered) &&
+      local.some((m) => m.name === remembered)
+    ) {
+      return remembered;
+    }
+    if (local.some((m) => m.name === "llama3.2:3b")) return "llama3.2:3b";
+    const usable = local.filter((m) => {
       const n = m.name.toLowerCase();
       return !n.endsWith("-embed") && !n.endsWith(":embed");
     });
@@ -130,7 +154,7 @@
         (a.size ?? Number.MAX_SAFE_INTEGER) -
         (b.size ?? Number.MAX_SAFE_INTEGER),
     );
-    return usable[0]?.name ?? list[0]?.name ?? null;
+    return usable[0]?.name ?? local[0]?.name ?? null;
   }
 
   /** Local aborter so onDestroy can cancel an in-flight fetch. The
@@ -147,11 +171,12 @@
     queueSignal?.addEventListener("abort", onQueueAbort);
     const pick = await pickInstalledModel();
     if (!pick) {
-      errorMsg = "No Ollama model installed";
+      errorMsg = "No local Ollama model installed";
       generating = false;
       queueSignal?.removeEventListener("abort", onQueueAbort);
       return;
     }
+    currentModel = pick;
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summarize`, {
         method: "POST",
@@ -312,7 +337,15 @@
     {#if generating || queued}
       <span class="status">
         <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
-        <span class="dim">{queued && !generating ? "queued…" : "summarising…"}</span>
+        <span class="dim">
+          {#if queued && !generating}
+            queued…
+          {:else if currentModel}
+            summarising with <span class="model">{currentModel}</span>…
+          {:else}
+            summarising…
+          {/if}
+        </span>
       </span>
     {:else if errorMsg}
       <span class="err">{errorMsg}</span>
@@ -320,7 +353,7 @@
       {#if frontmatter}
         <span
           class="meta"
-          title={`Generated ${relTimeFromIso(frontmatter.generatedAt)} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`}
+          title={`Generated ${relTimeFromIso(frontmatter.generatedAt)} with ${frontmatter.model} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`}
         >{rangeLabel(frontmatter.sinceHours)}:</span>
       {/if}
       <Tooltip variant="wide" escapeClip>
@@ -455,6 +488,14 @@
     font-size: 0.7rem;
   }
   .dim { color: var(--text-muted); }
+  /* Model name inside "summarising with …" — slightly brighter than
+     the surrounding muted text so the eye picks it up, but still
+     in the muted family so the status stays peripheral. */
+  .model {
+    color: var(--text-3);
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+  }
   .err { color: #e74c3c; }
   .refresh {
     flex: 0 0 auto;
