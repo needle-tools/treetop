@@ -44,7 +44,9 @@ export function watchWorktree(
   try {
     watcher = watch(path, { recursive: true }, (_event, filename) => {
       if (stopped) return;
-      if (filename && shouldIgnore(filename)) return;
+      if (filename && shouldIgnore(filename)) {
+        return;
+      }
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
