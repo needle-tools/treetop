@@ -15,9 +15,11 @@ import { NodePtyBackend } from "../src/terminals/node-pty-backend";
 import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
 import { mkdtemp, writeFile, readFile, mkdir, chmod, utimes, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
-describe("NodePtyBackend integration", () => {
+const isWin = process.platform === "win32";
+
+describe.skipIf(isWin)("NodePtyBackend integration", () => {
   const backend = new NodePtyBackend();
 
   afterAll(async () => {
@@ -550,11 +552,12 @@ describe("resolveAgentBinary", () => {
     expect(r).toBeNull();
   });
 
-  test("returns SOMETHING for `bash` (universally installed)", async () => {
-    // Doesn't matter where — just that we found *some* absolute path.
-    const r = await resolveAgentBinary("bash");
+  test("returns SOMETHING for a universally installed binary", async () => {
+    // bash on Unix, cmd on Windows — just verify we find *some* absolute path.
+    const name = isWin ? "cmd" : "bash";
+    const r = await resolveAgentBinary(name);
     expect(r).not.toBeNull();
-    expect(r!.startsWith("/")).toBe(true);
+    expect(r!.includes(sep)).toBe(true);
   });
 
   test(
@@ -638,7 +641,7 @@ describe("sampleProcs", () => {
   });
 });
 
-describe("/api/processes report shape (integration)", () => {
+describe.skipIf(isWin)("/api/processes report shape (integration)", () => {
   // Exercises the same chain the /api/processes route uses end to end:
   // spawn a real PTY → list backend records → sample procs → combine.
   // The actual HTTP route is a 5-line wrapper around this; if the

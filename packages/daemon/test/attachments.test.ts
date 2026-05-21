@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { saveAttachment } from "../src/attachments";
 
 async function tempAttachmentsDir(): Promise<string> {
@@ -45,8 +45,8 @@ describe("saveAttachment", () => {
     expect((await readFile(first.path)).toString()).toBe("a");
     expect((await readFile(second.path)).toString()).toBe("b");
     // Both live in the same folder.
-    expect(first.path.startsWith(dir + "/")).toBe(true);
-    expect(second.path.startsWith(dir + "/")).toBe(true);
+    expect(first.path.startsWith(dir + sep)).toBe(true);
+    expect(second.path.startsWith(dir + sep)).toBe(true);
   });
 
   test("strips path separators from the filename (no escape from the folder)", async () => {
@@ -55,7 +55,7 @@ describe("saveAttachment", () => {
       filename: "../../../etc/passwd",
     });
     // Whatever name we pick, it MUST sit inside the given dir.
-    expect(path.startsWith(dir + "/")).toBe(true);
+    expect(path.startsWith(dir + sep)).toBe(true);
     expect(path).not.toContain("..");
   });
 
@@ -69,6 +69,6 @@ describe("saveAttachment", () => {
       filename: "first.bin",
     });
     expect((await stat(path)).isFile()).toBe(true);
-    expect(path.startsWith(nested + "/")).toBe(true);
+    expect(path.startsWith(nested + sep)).toBe(true);
   });
 });

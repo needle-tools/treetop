@@ -55,21 +55,19 @@ const uiEnv = {
 // argv[0] rewrite so `ps` shows "supergit dev" instead of
 // "bun --watch run src/server.ts" (Bun's process.title doesn't
 // propagate to the kernel on macOS, so we use `exec -a` instead).
-const daemon = Bun.spawn(
-  [
-    "bash",
-    "-c",
-    "exec -a 'supergit dev' bun --watch run src/server.ts",
-  ],
-  {
-    cwd: "packages/daemon",
-    stdout: "inherit",
-    stderr: "inherit",
-    env: daemonEnv,
-  },
-);
+// On Windows bash isn't available, so skip the exec -a wrapper.
+const daemonCmd =
+  process.platform === "win32"
+    ? [process.execPath, "--watch", "run", "src/server.ts"]
+    : ["bash", "-c", "exec -a 'supergit dev' bun --watch run src/server.ts"];
+const daemon = Bun.spawn(daemonCmd, {
+  cwd: "packages/daemon",
+  stdout: "inherit",
+  stderr: "inherit",
+  env: daemonEnv,
+});
 
-const ui = Bun.spawn(["bun", "run", "dev"], {
+const ui = Bun.spawn([process.execPath, "run", "dev"], {
   cwd: "packages/ui",
   stdout: "inherit",
   stderr: "inherit",

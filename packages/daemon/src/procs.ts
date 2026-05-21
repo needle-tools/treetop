@@ -11,6 +11,7 @@
 import { $ } from "bun";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Find the best on-disk binary for an agent CLI name.
@@ -34,12 +35,13 @@ import { homedir } from "node:os";
 export async function resolveAgentBinary(name: string): Promise<string | null> {
   const seen = new Set<string>();
   const candidates: string[] = [];
+  const home = homedir();
   const wellKnown = [
-    `${homedir()}/.bun/bin/${name}`,
-    `${homedir()}/.local/bin/${name}`,
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    `/usr/bin/${name}`,
+    join(home, ".bun", "bin", name),
+    join(home, ".local", "bin", name),
+    "/opt/homebrew/bin/" + name,
+    "/usr/local/bin/" + name,
+    "/usr/bin/" + name,
   ];
   const all = [...wellKnown];
   // Scan PATH manually — Bun's built-in `which` doesn't support `-a`,
@@ -49,16 +51,22 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
   const pathSep = process.platform === "win32" ? ";" : ":";
   const pathDirs = (process.env.PATH ?? "").split(pathSep).filter(Boolean);
   for (const dir of pathDirs) {
-    all.push(`${dir}/${name}`);
+    all.push(join(dir, name));
   }
+  // On Windows, CLI tools are often installed as .exe or .cmd — probe
+  // those suffixes in addition to the bare name.
+  const exts = process.platform === "win32" ? ["", ".exe", ".cmd"] : [""];
   for (const p of all) {
-    if (seen.has(p)) continue;
-    seen.add(p);
-    try {
-      await stat(p);
-      candidates.push(p);
-    } catch {
-      // not present
+    for (const ext of exts) {
+      const full = p + ext;
+      if (seen.has(full)) continue;
+      seen.add(full);
+      try {
+        await stat(full);
+        candidates.push(full);
+      } catch {
+        // not present
+      }
     }
   }
   if (candidates.length === 0) return null;
@@ -102,7 +110,38 @@ export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage
   const out = new Map<number, ProcUsage>();
   if (pids.length === 0) return out;
   if (process.platform === "win32") {
-    for (const pid of pids) out.set(pid, { pid, cpuPercent: 0, memBytes: 0 });
+    try {
+      // Use PowerShell's Get-Process — available on all modern Windows.
+      // CPU: Get-Process returns TotalProcessorTime (TimeSpan); computing a
+      // delta over a sample interval is expensive. Instead, use Get-CimInstance
+      // Win32_PerfFormattedData_PerfProc_Process which gives an instant %.
+      // But matching by PID there is tricky. Simpler: just grab WorkingSet64
+      // (private bytes) from Get-Process and skip CPU (leave 0). The UI already
+      // handles 0% gracefully — it just hides the CPU badge.
+      const pidFilter = pids.map((p) => `$_.Id -eq ${p}`).join(" -or ");
+      const ps = `Get-Process | Where-Object { ${pidFilter} } | ForEach-Object { "$($_.Id) $($_.WorkingSet64)" }`;
+      const result = await $`powershell -NoProfile -Command ${ps}`.quiet().nothrow();
+      const text = result.stdout.toString();
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split(/\s+/);
+        if (parts.length < 2) continue;
+        const pid = Number(parts[0]);
+        const memBytes = Number(parts[1]);
+        if (!Number.isFinite(pid)) continue;
+        out.set(pid, {
+          pid,
+          cpuPercent: 0, // not cheaply available; UI degrades to hidden badge
+          memBytes: Number.isFinite(memBytes) ? memBytes : 0,
+        });
+      }
+    } catch {
+      // best-effort
+    }
+    for (const pid of pids) {
+      if (!out.has(pid)) out.set(pid, { pid, cpuPercent: 0, memBytes: 0 });
+    }
     return out;
   }
   const list = pids.join(",");
@@ -151,8 +190,10 @@ export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage
  *
  * Each `pN` line names a pid, the next `nPATH` line is that pid's cwd.
  * Pids we can't read (race with exit, permission denied on someone
- * else's process) are silently absent from the result map. Windows is
- * unsupported — returns an empty map. */
+ * else's process) are silently absent from the result map. Windows:
+ * the OS doesn't expose per-process CWD without native API calls
+ * (NtQueryInformationProcess); returns an empty map — the UI falls
+ * back to the spawnCwd. */
 export async function sampleCwds(pids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   if (pids.length === 0) return out;

@@ -641,6 +641,76 @@ export async function scanCodexContextTokens(path: string): Promise<number> {
   return Math.floor(chars / 4);
 }
 
+/** UUID pattern — Claude uses v4 UUIDs for session directories. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** For a directory-based session (`<project>/<uuid>/`), find the most
+ *  recently modified `.jsonl` inside `<uuid>/subagents/` and return its
+ *  path + mtime. Returns null if nothing usable is found. */
+async function bestSubagentFile(
+  sessionDir: string,
+): Promise<{ path: string; mtimeMs: number; mtime: Date } | null> {
+  const subDir = join(sessionDir, "subagents");
+  let entries: string[];
+  try {
+    entries = await readdir(subDir);
+  } catch {
+    return null;
+  }
+  let best: { path: string; mtimeMs: number; mtime: Date } | null = null;
+  for (const e of entries) {
+    if (!e.endsWith(".jsonl")) continue;
+    const full = join(subDir, e);
+    try {
+      const st = await stat(full);
+      if (!best || st.mtimeMs > best.mtimeMs) {
+        best = { path: full, mtimeMs: st.mtimeMs, mtime: st.mtime };
+      }
+    } catch {
+      // skip unreadable
+    }
+  }
+  return best;
+}
+
+/** Build an AgentSession from a Claude JSONL file. Shared by both the
+ *  flat-file and directory-based code paths. */
+async function claudeSessionFromFile(
+  sessionPath: string,
+  sessionId: string,
+  fileStat: { mtimeMs: number; mtime: Date },
+): Promise<AgentSession | null> {
+  const meta = await readClaudeSessionMeta(sessionPath);
+  if (!meta.cwd) return null;
+  const userStats = await scanClaudeUserMessages(
+    sessionPath,
+    fileStat.mtimeMs,
+  );
+  return {
+    agent: "claude",
+    cwd: resolve(meta.cwd),
+    lastActive: fileStat.mtime.toISOString(),
+    sessionId,
+    source: sessionPath,
+    title: meta.title,
+    lastUserMessage: meta.lastUserMessage,
+    firstUserMessage: userStats.firstUserMessage,
+    lastUserMessages: userStats.lastUserMessages.length > 0
+      ? userStats.lastUserMessages
+      : undefined,
+    userMessageCount: userStats.userMessageCount > 0
+      ? userStats.userMessageCount
+      : undefined,
+    messageCount: userStats.totalMessageCount > 0
+      ? userStats.totalMessageCount
+      : undefined,
+    contextTokens: userStats.lastContextTokens,
+    contextTokensExact:
+      userStats.lastContextTokens !== undefined ? true : undefined,
+    model: userStats.model,
+  };
+}
+
 export async function scanClaude(
   root: string = CLAUDE_ROOT(),
 ): Promise<AgentSession[]> {
@@ -653,52 +723,53 @@ export async function scanClaude(
   const sessions: AgentSession[] = [];
   for (const proj of projDirs) {
     const projPath = join(root, proj);
-    let files: string[];
+    let entries: import("node:fs").Dirent[];
     try {
-      files = await readdir(projPath);
+      entries = await readdir(projPath, { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const file of files) {
-      if (!file.endsWith(".jsonl")) continue;
-      const sessionPath = join(projPath, file);
+    // Track session IDs we've seen via flat .jsonl files so we don't
+    // double-count sessions that have both a .jsonl AND a directory.
+    const seenIds = new Set<string>();
+    // Pass 1: flat .jsonl files (original format).
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      const sessionPath = join(projPath, entry.name);
+      const sessionId = entry.name.replace(/\.jsonl$/, "");
       try {
         const stats = await stat(sessionPath);
-        const meta = await readClaudeSessionMeta(sessionPath);
-        if (!meta.cwd) continue;
-        // Full user-message scan: accurate count + last 3 even when the
-        // head/tail snippets readClaudeSessionMeta uses don't overlap.
-        // The scan caches by (path, mtimeMs) so unchanged files don't
-        // re-read multi-MB JSONLs on every /api/repos call.
-        const userStats = await scanClaudeUserMessages(
+        const session = await claudeSessionFromFile(
           sessionPath,
-          stats.mtimeMs,
+          sessionId,
+          stats,
         );
-        sessions.push({
-          agent: "claude",
-          cwd: resolve(meta.cwd),
-          lastActive: stats.mtime.toISOString(),
-          sessionId: file.replace(/\.jsonl$/, ""),
-          source: sessionPath,
-          title: meta.title,
-          lastUserMessage: meta.lastUserMessage,
-          firstUserMessage: userStats.firstUserMessage,
-          lastUserMessages: userStats.lastUserMessages.length > 0
-            ? userStats.lastUserMessages
-            : undefined,
-          userMessageCount: userStats.userMessageCount > 0
-            ? userStats.userMessageCount
-            : undefined,
-          messageCount: userStats.totalMessageCount > 0
-            ? userStats.totalMessageCount
-            : undefined,
-          contextTokens: userStats.lastContextTokens,
-          contextTokensExact:
-            userStats.lastContextTokens !== undefined ? true : undefined,
-          model: userStats.model,
-        });
+        if (session) {
+          sessions.push(session);
+          seenIds.add(sessionId);
+        }
       } catch {
         // unreadable session, skip
+      }
+    }
+    // Pass 2: directory-based sessions (newer Claude format).
+    // Each UUID directory may contain subagents/*.jsonl. Pick the most
+    // recently modified subagent file as the session representative.
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !UUID_RE.test(entry.name)) continue;
+      if (seenIds.has(entry.name)) continue; // already found via .jsonl
+      const sessionDir = join(projPath, entry.name);
+      try {
+        const best = await bestSubagentFile(sessionDir);
+        if (!best) continue;
+        const session = await claudeSessionFromFile(
+          best.path,
+          entry.name,
+          best,
+        );
+        if (session) sessions.push(session);
+      } catch {
+        // skip
       }
     }
   }
@@ -954,13 +1025,23 @@ export async function detectAgents(workspacePath?: string): Promise<AgentSession
  * Filter agents whose cwd equals or sits under `worktreePath`. Returned
  * sorted newest-first so callers can show the most recent at the top.
  */
+// On Windows, drive letters can differ in case (c:\ vs C:\) and the
+// filesystem is case-insensitive, so all path comparisons must be
+// case-insensitive. On Unix, paths are case-sensitive.
+const normCase = process.platform === "win32"
+  ? (s: string) => s.toLowerCase()
+  : (s: string) => s;
+
 export function agentsForWorktree(
   worktreePath: string,
   sessions: AgentSession[],
 ): AgentSession[] {
-  const wt = resolve(worktreePath);
+  const wt = normCase(resolve(worktreePath));
   const wtWithSep = wt.endsWith(sep) ? wt : wt + sep;
   return sessions
-    .filter((s) => s.cwd === wt || s.cwd.startsWith(wtWithSep))
+    .filter((s) => {
+      const c = normCase(s.cwd);
+      return c === wt || c.startsWith(wtWithSep);
+    })
     .sort((a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive));
 }

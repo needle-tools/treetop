@@ -52,10 +52,10 @@
    stand out at full brightness); in the anchor picker it marks the
    current anchor. */
 .agent-row.dimmed {
-  opacity: 0.45;
+  opacity: 0.55;
 }
 .agent-row.dimmed:hover {
-  opacity: 0.7;
+  opacity: 0.8;
 }
 
 .agent-row-icon {

@@ -41,13 +41,16 @@
   max-width: 90vw;
   max-height: 520px;
   padding: 0.6rem 0.7rem;
-  z-index: 100;
+  z-index: 1100;
 }
 
 .agents-popover {
   top: calc(100% + 0.3rem);
   left: 0;
-  z-index: 50;
+  /* Must clear .sticky-layer (z-index 900) + individual sticky-host
+     instances (1000+) so popovers in worktree rows aren't hidden
+     behind sticky notes. */
+  z-index: 1100;
   /* Wide enough to show real titles; capped at 250ch on huge displays
      and 90vw on small ones so it never overflows the viewport. */
   width: max-content;

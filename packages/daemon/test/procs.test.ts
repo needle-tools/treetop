@@ -1,14 +1,21 @@
 import { test, expect, describe } from "bun:test";
 import { sampleCwds } from "../src/procs";
 
+const isWin = process.platform === "win32";
+
 describe("sampleCwds", () => {
   test("returns this process's own cwd when given its pid", async () => {
     // process.pid is guaranteed alive while the test runs — no race with
     // exit. Bun runs tests in this very process, so process.cwd() must
     // match what lsof reports for the same pid.
+    // On Windows sampleCwds is unimplemented and returns an empty map.
     const cwds = await sampleCwds([process.pid]);
-    expect(cwds.has(process.pid)).toBe(true);
-    expect(cwds.get(process.pid)).toBe(process.cwd());
+    if (isWin) {
+      expect(cwds.size).toBe(0);
+    } else {
+      expect(cwds.has(process.pid)).toBe(true);
+      expect(cwds.get(process.pid)).toBe(process.cwd());
+    }
   });
 
   test("returns an empty map when given an empty pid list", async () => {
@@ -25,7 +32,11 @@ describe("sampleCwds", () => {
 
   test("handles a mix of live + dead pids without crashing", async () => {
     const cwds = await sampleCwds([process.pid, 99999999]);
-    expect(cwds.get(process.pid)).toBe(process.cwd());
-    expect(cwds.has(99999999)).toBe(false);
+    if (isWin) {
+      expect(cwds.size).toBe(0);
+    } else {
+      expect(cwds.get(process.pid)).toBe(process.cwd());
+      expect(cwds.has(99999999)).toBe(false);
+    }
   });
 });

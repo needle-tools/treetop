@@ -2,6 +2,7 @@ import { test, expect, describe, beforeEach } from "bun:test";
 import { mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseClaudeJsonl,
   parseCodexJsonl,
@@ -481,7 +482,7 @@ describe("parseCodexJsonl", () => {
 describe("parseCodexJsonl with a real sanitized fixture", () => {
   test("0.130 layout: extracts metadata, user prompt, and assistant reply", async () => {
     const text = await Bun.file(
-      new URL("./fixtures/codex-real-sample.jsonl", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/codex-real-sample.jsonl", import.meta.url)),
     ).text();
     const s = parseCodexJsonl(text);
     expect(s.cwd).toBe("/Users/sanitized/proj");

@@ -7,7 +7,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   agentsForWorktree,
   readJsonlField,
@@ -577,7 +577,7 @@ describe("scanClaude", () => {
     const sessions = await scanClaude(root);
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.agent).toBe("claude");
-    expect(sessions[0]?.cwd).toBe("/Users/marcel/git/supergit");
+    expect(sessions[0]?.cwd).toBe(resolve("/Users/marcel/git/supergit"));
     expect(sessions[0]?.sessionId).toBe("abc-123");
   });
 
@@ -888,7 +888,7 @@ describe("scanCodex", () => {
     const sessions2 = await scanCodex([b]);
     expect(sessions2).toHaveLength(1);
     expect(sessions2[0]?.agent).toBe("codex");
-    expect(sessions2[0]?.cwd).toBe("/Users/marcel/codex/proj");
+    expect(sessions2[0]?.cwd).toBe(resolve("/Users/marcel/codex/proj"));
   });
 
   test("recurses into date-partitioned subdirs (codex 0.130+ layout)", async () => {
@@ -914,7 +914,7 @@ describe("scanCodex", () => {
     );
     const sessions = await scanCodex([root]);
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.cwd).toBe("/Users/marcel/needle-engine");
+    expect(sessions[0]?.cwd).toBe(resolve("/Users/marcel/needle-engine"));
     // Prefer the payload.id (what `codex resume <id>` accepts) over
     // the filename, which is "rollout-<iso>-<id>" — calling resume
     // with that would fail.
@@ -948,7 +948,7 @@ describe("scanCodex", () => {
     );
     const sessions = await scanCodex([root]);
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.cwd).toBe("/proj");
+    expect(sessions[0]?.cwd).toBe(resolve("/proj"));
     expect(sessions[0]?.sessionId).toBe("flat");
   });
 });
@@ -977,7 +977,7 @@ describe("scanCopilot", () => {
     const sessions = await scanCopilot(root);
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.agent).toBe("copilot");
-    expect(sessions[0]?.cwd).toBe("/Users/marcel/with-copilot");
+    expect(sessions[0]?.cwd).toBe(resolve("/Users/marcel/with-copilot"));
   });
 
   test("decodes percent-encoded file:// URIs", async () => {
@@ -990,7 +990,7 @@ describe("scanCopilot", () => {
     );
     await mkdir(join(ws, "github.copilot-chat"), { recursive: true });
     const sessions = await scanCopilot(root);
-    expect(sessions[0]?.cwd).toBe("/Users/marcel/has space");
+    expect(sessions[0]?.cwd).toBe(resolve("/Users/marcel/has space"));
   });
 });
 
@@ -1000,7 +1000,8 @@ describe("agentsForWorktree", () => {
     agent: AgentSession["agent"] = "claude",
     lastActive = "2026-05-12T01:00:00Z",
   ): AgentSession {
-    return { agent, cwd, lastActive, source: "" };
+    // Real scanners resolve() the cwd, so mirror that here.
+    return { agent, cwd: resolve(cwd), lastActive, source: "" };
   }
 
   test("returns empty when no agent matches", () => {

@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { detectEditors, findWorkspaceFile, resetDetectEditorsCache } from "../src/open";
 
 async function tempDir(): Promise<string> {
@@ -28,7 +28,7 @@ describe("findWorkspaceFile", () => {
   test("prefers the file matching the directory basename", async () => {
     const d = await tempDir();
     await writeFile(join(d, "zzz.code-workspace"), "{}");
-    const base = d.split("/").filter(Boolean).pop()!;
+    const base = basename(d);
     await writeFile(join(d, `${base}.code-workspace`), "{}");
     expect(await findWorkspaceFile(d)).toBe(
       join(d, `${base}.code-workspace`),

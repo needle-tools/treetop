@@ -62,7 +62,7 @@ describe("clampCols / clampRows", () => {
   });
 });
 
-describe("PTY round-trip with clamped dimensions", () => {
+describe.skipIf(process.platform === "win32")("PTY round-trip with clamped dimensions", () => {
   const backend = new NodePtyBackend();
 
   afterAll(async () => {

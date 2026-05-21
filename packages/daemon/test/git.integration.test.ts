@@ -5,9 +5,9 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { $ } from "bun";
 import {
   listWorktrees,
@@ -331,7 +331,7 @@ describe("getDiff against real git", () => {
     // knows the fix is `git submodule add` or `.gitignore`, not `git add`.
     const repo = await tempRepo();
     const inner = join(repo, "modules", "lib");
-    await $`mkdir -p ${inner}`.quiet();
+    await mkdir(inner, { recursive: true });
     await $`git -C ${inner} init -q -b main`.quiet();
     await $`git -C ${inner} config user.email t@example.com`.quiet();
     await $`git -C ${inner} config user.name T`.quiet();
@@ -355,7 +355,7 @@ describe("resolveSubmoduleWorktreePaths", () => {
     const repo = await tempRepo();
     const fake: Worktree[] = [
       {
-        path: `${repo}/.git/modules/some-submodule`,
+        path: join(repo, ".git", "modules", "some-submodule"),
         branch: "main",
         head: "deadbeef",
         bare: false,
@@ -400,13 +400,13 @@ describe("resolveSubmoduleWorktreePaths", () => {
     await $`git -C ${parent} -c protocol.file.allow=always submodule add ${sub} sub`
       .quiet();
     await $`git -C ${parent} commit -q -m add-sub`.quiet();
-    const submoduleWorkdir = `${parent}/sub`;
+    const submoduleWorkdir = join(parent, "sub");
     const list = await listWorktrees(submoduleWorkdir);
     // The reported path must NOT contain `.git/modules` — our resolver
     // should have flipped it to the real working tree.
     expect(list.length).toBeGreaterThan(0);
     for (const wt of list) {
-      expect(wt.path).not.toContain("/.git/modules/");
+      expect(wt.path).not.toMatch(/[/\\]\.git[/\\]modules[/\\]/);
     }
   });
 });

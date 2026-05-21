@@ -850,12 +850,15 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
-    // The user's default login shell — populated from $SHELL with a
-    // /bin/zsh fallback (macOS default). The frontend hits this once
-    // on mount so the "Terminal" entry in the new-session picker can
-    // spawn the right shell without hardcoding bash/zsh in the UI.
+    // The user's default login shell — populated from $SHELL (Unix) or
+    // COMSPEC (Windows) with platform-aware fallbacks. The frontend hits
+    // this once on mount so the "Terminal" entry in the new-session
+    // picker can spawn the right shell without hardcoding bash/zsh.
     if (url.pathname === "/api/shell-default") {
-      return json({ shell: process.env.SHELL || "/bin/zsh" });
+      const shell = process.env.SHELL
+        || process.env.COMSPEC
+        || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
+      return json({ shell });
     }
 
     // Diagnostics: snapshot of the /api/session cache. Shows entries,
@@ -1132,21 +1135,30 @@ const server = Bun.serve<TermWsData, never>({
       // how to parse. Keeps this endpoint from becoming an arbitrary file
       // read, without depending on detectAgents() to currently re-find
       // the same file (which races with file-system updates).
-      const home = process.env.HOME ?? "";
-      const claudeRoot = `${home}/.claude/projects/`;
+      // Use homedir() + join() (not process.env.HOME + "/") so paths
+      // use native separators and work on Windows.
+      const home = homedir();
+      const claudeRoot = join(home, ".claude", "projects") + sep;
       const codexRoots = [
-        `${home}/.codex/sessions/`,
-        `${home}/.config/openai-codex/sessions/`,
+        join(home, ".codex", "sessions") + sep,
+        join(home, ".config", "openai-codex", "sessions") + sep,
       ];
       // Ollama transcripts live under <workspace>/ollama/ — written
       // by the daemon itself on spawn, so the allowlist anchors on
       // the active workspace path. Restricting to one directory
       // matches the claude/codex root checks (no traversal escape).
-      const ollamaRoot = `${WORKSPACE_PATH}/ollama/`;
+      const ollamaRoot = join(WORKSPACE_PATH, "ollama") + sep;
+      // Normalize the source path so separator style matches the roots.
+      const normSource = resolve(source);
+      // On Windows the filesystem is case-insensitive; drive letter case
+      // can differ between what the agent wrote and what homedir() returns.
+      const ci = process.platform === "win32";
+      const cmp = (s: string, prefix: string) =>
+        ci ? s.toLowerCase().startsWith(prefix.toLowerCase()) : s.startsWith(prefix);
       let agentKind: "claude" | "codex" | "ollama" | null = null;
-      if (source.startsWith(claudeRoot)) agentKind = "claude";
-      else if (codexRoots.some((r) => source.startsWith(r))) agentKind = "codex";
-      else if (source.startsWith(ollamaRoot)) agentKind = "ollama";
+      if (cmp(normSource, claudeRoot)) agentKind = "claude";
+      else if (codexRoots.some((r) => cmp(normSource, r))) agentKind = "codex";
+      else if (cmp(normSource, ollamaRoot)) agentKind = "ollama";
       if (!agentKind) {
         return json(
           { error: "source is outside any known agent root" },

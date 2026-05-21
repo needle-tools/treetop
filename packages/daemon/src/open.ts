@@ -188,16 +188,40 @@ export async function openIn(
   // path the OS expanded it to.
   console.log(`openIn: app=${app} path=${path}${command ? ` command=${command}` : ""}`);
   if (app === "fork") {
-    if (process.platform !== "darwin") {
-      throw new Error("Fork integration is currently macOS-only");
+    if (process.platform === "darwin") {
+      const proc = Bun.spawn(["open", "-a", "Fork", path], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const exit = await proc.exited;
+      if (exit !== 0) throw new Error("could not open Fork (is it installed?)");
+      return { via: "Fork" };
     }
-    const proc = Bun.spawn(["open", "-a", "Fork", path], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exit = await proc.exited;
-    if (exit !== 0) throw new Error("could not open Fork (is it installed?)");
-    return { via: "Fork" };
+    if (process.platform === "win32") {
+      // Fork on Windows: the updater stub at %LOCALAPPDATA%\Fork\Fork.exe
+      // launches current\Fork.exe with remaining args. Just pass the repo
+      // path — no subcommand needed.
+      const forkExe = join(
+        process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
+        "Fork",
+        "Fork.exe",
+      );
+      try {
+        await access(forkExe);
+      } catch {
+        throw new Error(
+          "Fork not found at " + forkExe,
+        );
+      }
+      Bun.spawn([forkExe, path], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      return { via: "Fork" };
+    }
+    throw new Error(
+      `Fork integration is not implemented for ${process.platform}`,
+    );
   }
 
   if (app === "files") {
@@ -288,6 +312,44 @@ export async function openIn(
       throw new Error(
         "no terminal detected on PATH (tried: " + terminals.join(", ") + ")",
       );
+    }
+    if (process.platform === "win32") {
+      // Prefer Windows Terminal (wt.exe) if available, fall back to
+      // powershell.exe in a new window via `start`.
+      // `wt.exe` is an AppX reparse point that Bun.spawn can't resolve
+      // directly, so launch it through `cmd /c` which handles these.
+      if (await which("wt")) {
+        if (command) {
+          Bun.spawn(
+            ["cmd", "/c", "wt", "-d", path, "powershell", "-NoExit", "-Command", command],
+            { stdout: "ignore", stderr: "ignore" },
+          );
+        } else {
+          Bun.spawn(["cmd", "/c", "wt", "-d", path], {
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+        }
+        return { via: "Windows Terminal" };
+      }
+      // Fallback: spawn PowerShell in a new window.
+      const psPath = path.replace(/'/g, "''");
+      if (command) {
+        Bun.spawn(
+          [
+            "cmd", "/c", "start", "powershell", "-NoExit",
+            "-Command", `Set-Location '${psPath}'; ${command}`,
+          ],
+          { stdout: "ignore", stderr: "ignore" },
+        );
+      } else {
+        Bun.spawn(
+          ["cmd", "/c", "start", "powershell", "-NoExit", "-Command",
+            `Set-Location '${psPath}'`],
+          { stdout: "ignore", stderr: "ignore" },
+        );
+      }
+      return { via: "PowerShell" };
     }
     throw new Error(
       `terminal open not implemented for platform ${process.platform}`,

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
@@ -230,8 +230,7 @@ export class Workspace {
     if (repos.some((r) => r.path === repoPath)) {
       throw new Error(`Repo already registered: ${repoPath}`);
     }
-    const segments = repoPath.split(/[/\\]/).filter(Boolean);
-    const name = segments[segments.length - 1] ?? repoPath;
+    const name = basename(repoPath) || repoPath;
     const repo: Repo = {
       id: randomUUID(),
       path: repoPath,

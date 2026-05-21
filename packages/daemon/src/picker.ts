@@ -51,25 +51,97 @@ export async function pickFolder(
   }
 
   if (platform === "win32") {
-    const initDir = startDir
-      ? `$f.SelectedPath = '${startDir.replace(/'/g, "''")}';`
-      : "";
-    const ps = [
-      "Add-Type -AssemblyName System.Windows.Forms;",
-      "$f = New-Object System.Windows.Forms.FolderBrowserDialog;",
-      `$f.Description = '${prompt.replace(/'/g, "''")}';`,
-      initDir,
-      "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }",
-    ].join(" ");
-    const proc = Bun.spawn(
-      ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const stdout = await new Response(proc.stdout).text();
-    const exit = await proc.exited;
-    const trimmed = stdout.trim();
-    if (exit !== 0 || trimmed.length === 0) return { cancelled: true };
-    return { path: trimmed };
+    // Use the modern Vista+ IFileOpenDialog in folder-picking mode via
+    // COM interop. This gives the full Explorer-style dialog with
+    // navigation pane, breadcrumb bar, and search — instead of the
+    // ancient SHBrowseForFolder tree from FolderBrowserDialog.
+    // The C# source is written to a temp file to avoid PowerShell
+    // quoting issues with inline code.
+    const { writeFile, unlink } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join: pjoin } = await import("node:path");
+    const csPath = pjoin(tmpdir(), `supergit-picker-${Date.now()}.cs`);
+    const escapedTitle = prompt.replace(/"/g, '""');
+    const escapedDir = (startDir ?? "").replace(/"/g, '""');
+    // C# 5 compatible (PowerShell's Add-Type uses an older compiler).
+    const cs = `
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+class FileOpenDialogClass {}
+
+[ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IFileDialog {
+    [PreserveSig] int Show(IntPtr hwnd);
+    void SetFileTypes(); void SetFileTypeIndex(); void GetFileTypeIndex();
+    void Advise(); void Unadvise();
+    void SetOptions(uint fos);
+    void GetOptions(out uint fos);
+    void SetDefaultFolder(IShellItem psi);
+    void SetFolder(IShellItem psi);
+    void GetFolder(out IShellItem ppsi);
+    void GetCurrentSelection();
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    void GetFileName();
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    void SetOkButtonLabel(); void SetFileNameLabel();
+    void GetResult(out IShellItem ppsi);
+    void AddPlace(); void SetDefaultExtension();
+    void Close(); void SetClientGuid(); void ClearClientData(); void SetFilter();
+}
+
+[ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IShellItem {
+    void BindToHandler(); void GetParent();
+    void GetDisplayName(uint sigdnName,
+        [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+    void GetAttributes(); void Compare();
+}
+
+public class FolderPicker {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    static extern int SHCreateItemFromParsingName(
+        string pszPath, IntPtr pbc, [In] ref Guid riid, out IShellItem ppv);
+
+    public static string Pick(string title, string initDir) {
+        IFileDialog fd = (IFileDialog)new FileOpenDialogClass();
+        uint opts;
+        fd.GetOptions(out opts);
+        fd.SetOptions(opts | 0x20); // FOS_PICKFOLDERS
+        if (!string.IsNullOrEmpty(title)) fd.SetTitle(title);
+        if (!string.IsNullOrEmpty(initDir)) {
+            Guid iid = typeof(IShellItem).GUID;
+            IShellItem si;
+            if (SHCreateItemFromParsingName(initDir, IntPtr.Zero, ref iid, out si) == 0)
+                fd.SetFolder(si);
+        }
+        if (fd.Show(IntPtr.Zero) != 0) return null;
+        IShellItem item;
+        fd.GetResult(out item);
+        string path;
+        item.GetDisplayName(0x80058000u, out path);
+        return path;
+    }
+}
+`;
+    await writeFile(csPath, cs, "utf-8");
+    try {
+      const ps = `Add-Type -Path '${csPath.replace(/'/g, "''")}'; $r = [FolderPicker]::Pick('${escapedTitle}', '${escapedDir}'); if ($r) { Write-Output $r }`;
+      const proc = Bun.spawn(
+        ["powershell", "-NoProfile", "-STA", "-Command", ps],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+      const trimmed = stdout.trim();
+      if (trimmed.length === 0) return { cancelled: true };
+      return { path: trimmed };
+    } finally {
+      unlink(csPath).catch(() => {});
+    }
   }
 
   throw new Error(`No folder picker implementation for platform ${platform}`);

@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import { access } from "node:fs/promises";
-import { join as joinPath } from "node:path";
+import { join as joinPath, resolve as resolvePath } from "node:path";
 
 /** Best-effort filesystem existence check. Returns false on any error so
  *  callers can use it as a pure boolean test. */
@@ -64,17 +64,27 @@ export interface WorktreeDetails {
 }
 
 export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
+  const normalRepo = resolvePath(repoPath);
   try {
     const result = await $`git -C ${repoPath} worktree list --porcelain`
       .quiet()
       .text();
     const worktrees = parseWorktreeList(result);
+    // Guard: git -C walks upward, so a plain dir inside a parent repo
+    // succeeds but returns the PARENT's worktree. Reject when the
+    // returned root isn't the path we asked about.
+    if (worktrees.length > 0 && worktrees[0]!.path !== normalRepo) {
+      if (await fileExists(repoPath)) {
+        return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+      }
+      return [];
+    }
     return resolveSubmoduleWorktreePaths(repoPath, worktrees);
   } catch {
     // Path exists on disk but isn't a git repo — return a synthetic entry so
     // the UI can still open terminals/agents there.
     if (await fileExists(repoPath)) {
-      return [{ path: repoPath, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+      return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
     }
     return [];
   }
@@ -106,7 +116,7 @@ export async function resolveSubmoduleWorktreePaths(
       .nothrow();
     if (r.exitCode === 0) {
       const out = r.stdout.toString().trim();
-      if (out.length > 0) toplevel = out;
+      if (out.length > 0) toplevel = resolvePath(out);
     }
   } catch {
     // best effort — leave paths as-is if rev-parse fails
@@ -498,7 +508,9 @@ export function parseWorktreeList(porcelain: string): Worktree[] {
       flush();
     } else if (line.startsWith("worktree ")) {
       flush();
-      current.path = line.slice("worktree ".length);
+      // normalize(): git on Windows returns forward-slash paths (C:/...),
+      // but Node's path APIs use backslashes. resolve() normalizes both.
+      current.path = resolvePath(line.slice("worktree ".length));
     } else if (line.startsWith("HEAD ")) {
       current.head = line.slice("HEAD ".length);
     } else if (line.startsWith("branch ")) {
