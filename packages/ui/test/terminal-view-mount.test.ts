@@ -83,3 +83,40 @@ describe("TerminalView ws.onopen post-mount fixups", () => {
     expect(rafIdx).toBeGreaterThan(phaseIdx);
   });
 });
+
+describe("TerminalView clipboard paste", () => {
+  /** xterm.js's default keydown for Ctrl+V (Win/Linux) sends a literal
+   *  0x16 SYN byte AND calls preventDefault on the keydown, which kills
+   *  the browser's native paste event before it can fire. Result on
+   *  Windows: pressing Ctrl+V in the TUI silently does nothing — neither
+   *  text nor image pastes round-trip. The fix routes Ctrl/Cmd+V through
+   *  attachCustomKeyEventHandler + the async Clipboard API instead. If a
+   *  future refactor drops either piece this test fails loudly so paste
+   *  doesn't break on Windows again. */
+  test("intercepts Ctrl/Cmd+V via attachCustomKeyEventHandler", () => {
+    expect(SOURCE).toContain("attachCustomKeyEventHandler");
+    // The handler must look at KeyV specifically, not the broader keydown
+    // stream (otherwise we'd swallow unrelated shortcuts).
+    expect(SOURCE).toMatch(/code\s*===\s*["']KeyV["']/);
+    // And it must route to our own clipboard reader rather than letting
+    // xterm send the 0x16 SYN byte.
+    expect(SOURCE).toContain("doClipboardPaste");
+  });
+
+  test("doClipboardPaste reads images + text via async Clipboard API", () => {
+    // Images route through the same /api/attach + path-insertion as
+    // drag-drop (uploadAndInsert); text routes through xterm.paste()
+    // so bracketed-paste mode keeps working.
+    expect(SOURCE).toContain("navigator.clipboard.read");
+    expect(SOURCE).toMatch(/uploadAndInsert\(blob\)/);
+    expect(SOURCE).toMatch(/xterm\??\.paste\(text\)/);
+  });
+
+  test("paste event listener stays in capture phase", () => {
+    // xterm.js's bubble-phase paste listener on its helper textarea
+    // calls stopPropagation, so a bubble-phase on:paste here would
+    // never fire. Capture phase runs first; without it the image-paste
+    // fallback (right-click → Paste, touch paste menus) is dead.
+    expect(SOURCE).toContain("on:paste|capture={onPaste}");
+  });
+});

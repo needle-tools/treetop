@@ -353,6 +353,37 @@
     xterm.open(containerEl);
     fit.fit();
 
+    // Intercept the paste shortcut (Ctrl+V on Win/Linux, Cmd+V on Mac).
+    // xterm.js's built-in keydown maps Ctrl+V to a literal 0x16 SYN byte
+    // and then calls `event.preventDefault()` on the keydown — which
+    // suppresses the browser's native paste event entirely, so pressing
+    // Ctrl+V in the TUI silently does nothing on Windows/Linux. On Mac,
+    // Cmd+V is left alone by xterm's keydown but its paste handler then
+    // `stopPropagation()`s, so the image-paste branch in `onPaste` never
+    // fires either. We bypass both by reading the clipboard ourselves
+    // via the async Clipboard API — images route through /api/attach +
+    // path-insertion (same as drag-drop), text goes through `xterm.paste()`
+    // which still picks up bracketed-paste mode + line-ending normalization.
+    xterm.attachCustomKeyEventHandler((ev) => {
+      if (
+        ev.type === "keydown" &&
+        ev.code === "KeyV" &&
+        !ev.altKey &&
+        !ev.shiftKey
+      ) {
+        const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+        const wantPaste = isMac
+          ? ev.metaKey && !ev.ctrlKey
+          : ev.ctrlKey && !ev.metaKey;
+        if (wantPaste) {
+          ev.preventDefault();
+          void doClipboardPaste();
+          return false;
+        }
+      }
+      return true;
+    });
+
     xterm.onData((data) => {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
@@ -467,14 +498,77 @@
     }
   }
 
+  /** Read the clipboard via the async Clipboard API and paste into the
+   *  PTY. Images route through /api/attach + path insertion (the same
+   *  shape as drag-drop); plain text goes through `xterm.paste()` which
+   *  picks up bracketed-paste mode + line-ending normalization. Driven
+   *  by the custom keydown handler so paste reliably fires on Windows,
+   *  where xterm.js's default Ctrl+V keydown calls preventDefault and
+   *  the browser then never dispatches a `paste` event for our capture-
+   *  phase listener to catch. */
+  async function doClipboardPaste(): Promise<void> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Prefer clipboard.read() — yields ClipboardItem[] with both image
+    // and text payloads in a single round-trip. Falls back to readText()
+    // if unsupported or denied (Firefox without permission, older
+    // browsers without ClipboardItem).
+    if (navigator.clipboard?.read) {
+      try {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          for (const type of item.types) {
+            if (type.startsWith("image/")) {
+              const blob = await item.getType(type);
+              await uploadAndInsert(blob);
+              return;
+            }
+          }
+        }
+        // No image — pull plain text out of the same items rather than
+        // making a second clipboard fetch.
+        for (const item of items) {
+          if (item.types.includes("text/plain")) {
+            const blob = await item.getType("text/plain");
+            const text = await blob.text();
+            if (text) xterm?.paste(text);
+            return;
+          }
+        }
+      } catch {
+        // Permission denied / unsupported — fall through to readText.
+      }
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) xterm?.paste(text);
+    } catch {
+      // Older browser / no permission. Silent — nothing we can do here.
+    }
+  }
+
+  // Runs in CAPTURE phase on `.xterm-host` so we see the event before
+  // xterm.js's own paste listener fires on its helper textarea / inner
+  // element. xterm calls `ev.stopPropagation()` in handlePasteEvent,
+  // which used to swallow image pastes entirely (the bubble-phase
+  // handler we registered here never ran), and on Windows it also
+  // appears to drop normal text pastes when focus isn't where xterm
+  // expects. So we own paste end-to-end:
+  //   - image clipboard item → upload to /api/attach and write the
+  //     absolute path into the PTY (same dance as drag-and-drop).
+  //   - text/plain → hand off to xterm.paste(), the public API that
+  //     applies bracketed-paste wrapping and triggers the onData event
+  //     we already pipe to the daemon via ws.send. This bypasses
+  //     xterm's internal `paste` event listener so the Windows focus
+  //     quirk can't matter.
   function onPaste(e: ClipboardEvent): void {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const it of items) {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    for (const it of cd.items) {
       if (it.kind === "file" && it.type.startsWith("image/")) {
         const blob = it.getAsFile();
         if (blob) {
           e.preventDefault();
+          e.stopPropagation();
           void uploadAndInsert(blob);
           // Only handle the first image item; otherwise multiple PNGs
           // in the same clipboard event would race to land in the PTY.
@@ -482,7 +576,12 @@
         }
       }
     }
-    // No image → let xterm's normal text-paste handling run.
+    const text = cd.getData("text/plain");
+    if (text && xterm) {
+      e.preventDefault();
+      e.stopPropagation();
+      xterm.paste(text);
+    }
   }
 
   function onDragOver(e: DragEvent): void {
@@ -532,7 +631,7 @@
     class="xterm-host"
     bind:this={containerEl}
     on:click={focusTerminal}
-    on:paste={onPaste}
+    on:paste|capture={onPaste}
     on:dragover={onDragOver}
     on:drop={onDrop}
     on:focusin={() => (focused = true)}

@@ -84,11 +84,15 @@ Tracking cross-platform issues found while porting supergit to Windows.
       `z-index: 50`, sticky notes layer at 900. Bumped both popover variants
       to `z-index: 1100` so they render above sticky notes.
 
-## Not yet addressed (UI / UX bugs on Windows)
+## Fixed (UI / UX bugs on Windows — continued)
 
-- [ ] **"Add folder" picker** — doesn't remember the last picked directory.
-      Should persist and re-open at the same location.
-- [ ] **Ollama "pick model" dropdown** — popover closes on click, requiring
-      a second open to see the expanded list.
+- [x] **"Add folder" picker** — modern IFileOpenDialog COM interop replaces
+      the ancient FolderBrowserDialog. Remembers last directory natively.
+- [x] **Ollama "pick model" dropdown** — popover closed on click because
+      CSS attribute selectors broke on Windows backslash paths. Fixed by
+      CSS.escape() on all six popover click-outside handlers.
+
+## Not yet addressed (UI / UX bugs)
+
 - [ ] **`supergit://commit/` links** — resolve to GitHub URLs that 404 on
       private repos. May need auth or a different resolution strategy.
