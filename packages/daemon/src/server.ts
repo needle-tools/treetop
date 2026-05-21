@@ -54,6 +54,20 @@ import {
   DEFAULT_MAX_AGE_HOURS as REPO_MAX_AGE_HOURS,
 } from "./repo-summary";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
+import {
+  normalizeRemote,
+  prepareOutgoingJsonl,
+  validateManifest,
+  type SessionShareManifest,
+} from "./session-share";
+import {
+  acceptOffer,
+  declineOffer,
+  gcStaleOffers,
+  listPendingOffers,
+  storePendingOffer,
+  type RepoLookup,
+} from "./session-share-store";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -2074,6 +2088,340 @@ const server = Bun.serve<TermWsData, never>({
           "X-Accel-Buffering": "no",
         },
       });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Session-sharing routes — receive an offer from a peer, list
+    // pending offers, accept / decline. See plans/PLAN-SESSION-SHARE.md.
+    // Sender-side helpers live further down; storage + path rewrites
+    // are in session-share-store.ts (tested separately).
+    //
+    // Best-effort sender callback. v1 skips this — the manifest
+    // doesn't yet carry a return URL, so we can't post back without
+    // additional wiring. Receiver-side acceptance still works; the
+    // sender's UI just won't auto-flip the badge until the user
+    // refreshes. Tracked in PLAN-SESSION-SHARE.md → rollout step 3
+    // (peers panel adds peer URLs, at which point this can call
+    // POST <peer>/api/sessions/offer-status).
+    async function notifyOfferStatus(
+      _manifest: SessionShareManifest,
+      _status: "accepted" | "declined",
+    ): Promise<void> {
+      return;
+    }
+    // ──────────────────────────────────────────────────────────────
+
+    /** Resolve an origin remote against the receiver's repos.json by
+     *  running `git remote -v` for each repo and matching on the
+     *  normalised URL. Worktree lookup is best-effort: if the origin
+     *  manifest carries a worktree path, return the receiver's
+     *  worktree with the matching branch name (last path segment)
+     *  when present; otherwise leave undefined. */
+    const repoLookup: RepoLookup = async (originRemote, originWorktreePath) => {
+      const target = normalizeRemote(originRemote);
+      if (!target) return null;
+      const repos = await workspace.listRepos();
+      for (const repo of repos) {
+        const remotes = await listRemotes(repo.path);
+        const hit = remotes.find((r) => normalizeRemote(r.url) === target);
+        if (!hit) continue;
+        let localWorktreePath: string | undefined;
+        if (originWorktreePath) {
+          const wantedName = originWorktreePath.split(/[\\/]/).pop() ?? "";
+          if (wantedName) {
+            const wts = await listWorktrees(repo.path);
+            const m = wts.find((w) => w.path.endsWith(`/${wantedName}`));
+            if (m) localWorktreePath = m.path;
+          }
+        }
+        return { localRepoPath: repo.path, localWorktreePath };
+      }
+      return null;
+    };
+
+    if (url.pathname === "/api/sessions/offer" && req.method === "POST") {
+      // Incoming offer from a peer daemon. Validate, store as pending,
+      // fire the receiver-side event, respond 202.
+      const body = (await req.json().catch(() => null)) as
+        | { manifest?: unknown; jsonl?: unknown }
+        | null;
+      if (!body || typeof body !== "object") {
+        return json({ error: "body required" }, { status: 400 });
+      }
+      const v = validateManifest(body.manifest);
+      if (!v.ok) {
+        return json({ error: v.error }, { status: 400 });
+      }
+      if (typeof body.jsonl !== "string") {
+        return json({ error: "jsonl must be a string" }, { status: 400 });
+      }
+      const manifest = body.manifest as SessionShareManifest;
+      await storePendingOffer(workspace.path, manifest, body.jsonl);
+      await events.append({
+        type: "session_invite_received",
+        actor: "supergit",
+        payload: {
+          offerId: manifest.offerId,
+          sid: manifest.sid,
+          originMachine: manifest.originMachine,
+          originRepoRemote: manifest.originRepoRemote,
+          toolOutputs: manifest.toolOutputs,
+        },
+      });
+      broadcast("change", { kind: "session_invite_received", offerId: manifest.offerId });
+      return json({ offerId: manifest.offerId, status: "pending" }, { status: 202 });
+    }
+
+    if (url.pathname === "/api/sessions/invites" && req.method === "GET") {
+      // Inbox listing for the receiver-side UI. Also surfaces
+      // needsClone so the card can offer "Clone repo first" without
+      // a second round-trip to the daemon.
+      const offers = await listPendingOffers(workspace.path);
+      const enriched = await Promise.all(
+        offers.map(async (o) => {
+          const lookup = await repoLookup(
+            o.manifest.originRepoRemote,
+            o.manifest.originWorktreePath,
+          );
+          return {
+            manifest: o.manifest,
+            receivedAt: o.receivedAt,
+            needsClone: lookup === null,
+          };
+        }),
+      );
+      return json({ invites: enriched });
+    }
+
+    const inviteAcceptMatch = url.pathname.match(
+      /^\/api\/sessions\/invites\/([^/]+)\/accept$/,
+    );
+    if (inviteAcceptMatch && req.method === "POST") {
+      const offerId = inviteAcceptMatch[1]!;
+      const result = await acceptOffer({
+        workspaceDir: workspace.path,
+        offerId,
+        repoLookup,
+      });
+      if (!result.ok) {
+        if (result.error === "not_found") {
+          return json({ error: "not_found" }, { status: 404 });
+        }
+        // needs_clone — receiver needs to add the repo before accepting.
+        // Re-load the manifest so the UI can surface the missing remote.
+        const offers = await listPendingOffers(workspace.path);
+        const pending = offers.find((o) => o.manifest.offerId === offerId);
+        return json(
+          {
+            error: "needs_clone",
+            remote: pending?.manifest.originRepoRemote,
+          },
+          { status: 409 },
+        );
+      }
+      await events.append({
+        type: "session_imported",
+        actor: "user",
+        payload: {
+          offerId,
+          sid: result.manifest.sid,
+          originMachine: result.manifest.originMachine,
+          repoRemote: result.manifest.originRepoRemote,
+          importedPath: result.importedPath,
+        },
+      });
+      broadcast("change", { kind: "session_imported", sid: result.manifest.sid });
+      // Best-effort notify the sender. We swallow failures — the
+      // import has already happened locally and the user can see it.
+      void notifyOfferStatus(result.manifest, "accepted");
+      return json({ sid: result.manifest.sid, importedAs: result.importedPath });
+    }
+
+    const inviteDeclineMatch = url.pathname.match(
+      /^\/api\/sessions\/invites\/([^/]+)\/decline$/,
+    );
+    if (inviteDeclineMatch && req.method === "POST") {
+      const offerId = inviteDeclineMatch[1]!;
+      // Look up the manifest before deleting so we can notify the sender.
+      const offers = await listPendingOffers(workspace.path);
+      const pending = offers.find((o) => o.manifest.offerId === offerId);
+      const removed = await declineOffer(workspace.path, offerId);
+      if (!removed) return json({ error: "not_found" }, { status: 404 });
+      await events.append({
+        type: "session_invite_declined",
+        actor: "user",
+        payload: { offerId, sid: pending?.manifest.sid },
+      });
+      broadcast("change", { kind: "session_invite_declined", offerId });
+      if (pending) void notifyOfferStatus(pending.manifest, "declined");
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/sessions/offer-status" && req.method === "POST") {
+      // Sender side — receiver tells us "accepted" or "declined" for
+      // an offer we sent. We broadcast so the session row badge can
+      // flip from "awaiting" to "accepted"/"declined".
+      const body = (await req.json().catch(() => null)) as
+        | { offerId?: unknown; status?: unknown }
+        | null;
+      if (!body || typeof body.offerId !== "string") {
+        return json({ error: "offerId required" }, { status: 400 });
+      }
+      if (body.status !== "accepted" && body.status !== "declined") {
+        return json({ error: "status must be accepted|declined" }, { status: 400 });
+      }
+      broadcast("change", {
+        kind: "session_offer_status",
+        offerId: body.offerId,
+        status: body.status,
+      });
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/sessions/send" && req.method === "POST") {
+      // Sender side — build an offer manifest from a session we host,
+      // run the strip + redact pipeline, POST to the peer's
+      // /api/sessions/offer. Body:
+      //   { source, peerHost, peerPort, machineLabel?, includeToolOutputs? }
+      const body = (await req.json().catch(() => null)) as
+        | {
+            source?: unknown;
+            peerHost?: unknown;
+            peerPort?: unknown;
+            machineLabel?: unknown;
+            includeToolOutputs?: unknown;
+          }
+        | null;
+      const source = typeof body?.source === "string" ? body.source : "";
+      const peerHost = typeof body?.peerHost === "string" ? body.peerHost : "";
+      const peerPort = typeof body?.peerPort === "number" ? body.peerPort : 0;
+      if (!source || !peerHost || !peerPort) {
+        return json(
+          { error: "source, peerHost, peerPort required" },
+          { status: 400 },
+        );
+      }
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json({ error: "unknown session source" }, { status: 404 });
+      }
+      let jsonl: string;
+      try {
+        jsonl = await Bun.file(source).text();
+      } catch (e) {
+        return json(
+          { error: "could not read session: " + (e instanceof Error ? e.message : String(e)) },
+          { status: 500 },
+        );
+      }
+      const parsed = await parseSessionFile(resolved.agent, source);
+      const cwd = parsed.cwd ?? "";
+      // Find the matching repo so we can identify the origin remote +
+      // repo root. Without that, the receiver has no way to apply the
+      // session to its local clone.
+      const repos = await workspace.listRepos();
+      const repo = repos.find(
+        (r) => cwd === r.path || cwd.startsWith(`${r.path}/`) || cwd.startsWith(`${r.path}\\`),
+      );
+      if (!repo) {
+        return json(
+          { error: "session cwd is not inside any known repo — add the repo first" },
+          { status: 400 },
+        );
+      }
+      const remotes = await listRemotes(repo.path);
+      const originRemote = remotes[0]?.url ?? "";
+      if (!originRemote) {
+        return json(
+          { error: "repo has no git remote — cannot identify across machines" },
+          { status: 400 },
+        );
+      }
+      // Worktree detection: the cwd is the worktree path if it's
+      // inside .worktrees, otherwise undefined (cwd == repo root).
+      const wts = await listWorktrees(repo.path);
+      const originWorktreePath = wts.find((w) => w.path === cwd)?.path;
+
+      // Strip + redact unless the sender explicitly opted into full
+      // transcript. The UI surfaces the choice.
+      const include = body?.includeToolOutputs === true;
+      const prepared = include
+        ? { jsonl, strippedCount: 0, redactions: [] as Array<{ kind: string; count: number }> }
+        : prepareOutgoingJsonl(jsonl);
+
+      const manifest: SessionShareManifest = {
+        offerId: crypto.randomUUID(),
+        sid: parsed.sessionId ?? source.split("/").pop()?.replace(/\.jsonl$/, "") ?? "unknown",
+        title:
+          (await workspace.listSessionTitles())[source] ??
+          parsed.messages[0]?.blocks[0]?.text?.slice(0, 60) ??
+          "Untitled session",
+        agent: resolved.agent === "claude" ? "claude" : "codex",
+        turnCount: parsed.messages.length,
+        originMachine: process.env.HOSTNAME ?? "unknown",
+        originMachineLabel:
+          (typeof body?.machineLabel === "string" && body.machineLabel) ||
+          process.env.HOSTNAME ||
+          "unknown",
+        originPlatform:
+          process.platform === "win32"
+            ? "win32"
+            : process.platform === "darwin"
+              ? "darwin"
+              : "linux",
+        originRepoRemote: originRemote,
+        originRepoName: repo.name,
+        originRepoPath: repo.path,
+        originWorktreePath,
+        createdAt: parsed.startedAt ?? new Date().toISOString(),
+        sentAt: new Date().toISOString(),
+        bytes: prepared.jsonl.length,
+        toolOutputs: include ? "included" : "stripped",
+        strippedCount: prepared.strippedCount,
+      };
+
+      const peerUrl = `http://${peerHost}:${peerPort}/api/sessions/offer`;
+      let peerRes: Response;
+      try {
+        peerRes = await fetch(peerUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manifest, jsonl: prepared.jsonl }),
+        });
+      } catch (e) {
+        return json(
+          { error: "could not reach peer: " + (e instanceof Error ? e.message : String(e)) },
+          { status: 502 },
+        );
+      }
+      if (peerRes.status !== 202) {
+        const text = await peerRes.text().catch(() => "");
+        return json(
+          { error: `peer rejected offer (${peerRes.status}): ${text}` },
+          { status: 502 },
+        );
+      }
+      await events.append({
+        type: "session_invite_sent",
+        actor: "user",
+        payload: {
+          offerId: manifest.offerId,
+          sid: manifest.sid,
+          peer: `${peerHost}:${peerPort}`,
+          toolOutputs: manifest.toolOutputs,
+          strippedCount: manifest.strippedCount,
+          redactions: prepared.redactions,
+        },
+      });
+      return json(
+        {
+          offerId: manifest.offerId,
+          status: "pending",
+          strippedCount: manifest.strippedCount,
+          redactions: prepared.redactions,
+        },
+        { status: 202 },
+      );
     }
 
     if (url.pathname === "/api/ollama/pull" && req.method === "POST") {

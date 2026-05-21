@@ -78,19 +78,19 @@ export function normalizeRemote(url: string): string {
 
   // git@host:owner/repo(.git)
   const sshShort = trimmed.match(/^git@([^:]+):(.+?)(\.git)?$/);
-  if (sshShort) {
+  if (sshShort && sshShort[1] && sshShort[2]) {
     return `https://${sshShort[1].toLowerCase()}/${sshShort[2]}`;
   }
 
   // ssh://git@host[:port]/owner/repo(.git)
   const sshLong = trimmed.match(/^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(\.git)?$/);
-  if (sshLong) {
+  if (sshLong && sshLong[1] && sshLong[2]) {
     return `https://${sshLong[1].toLowerCase()}/${sshLong[2]}`;
   }
 
   // https://host/owner/repo(.git) or http://...
   const https = trimmed.match(/^(https?):\/\/([^/]+)\/(.+?)(\.git)?$/);
-  if (https) {
+  if (https && https[1] && https[2] && https[3]) {
     return `${https[1]}://${https[2].toLowerCase()}/${https[3]}`;
   }
 
