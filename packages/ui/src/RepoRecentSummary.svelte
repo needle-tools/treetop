@@ -28,6 +28,7 @@
     sinceHours: number;
     commitCount: number;
     dirtyWorktreeCount: number;
+    estimatedTokens?: number;
     elapsedMs: number;
   }
   type StaleReason = "missing" | "new-commits" | "stale-age";
@@ -49,6 +50,14 @@
    *  generation. Surfaced in the "summarising with …" status so the
    *  user can see at a glance which local model is doing the work. */
   let currentModel: string = "";
+  /** Live metadata from the server's SSE `meta` + `prompt` events.
+   *  Lets us show "last 24h · 12 commits · context ~5.2k" while the
+   *  generation is in flight, so the user can see *what* is being
+   *  summarised, not just *that* something is. Reset on each run. */
+  let liveSinceHours: number | null = null;
+  let liveCommitCount: number | null = null;
+  let liveDirtyCount: number | null = null;
+  let liveEstimatedTokens: number | null = null;
   /** True once we've heard back from the GET, so we don't flash
    *  "no summary yet" while the probe is still in flight. */
   let probed: boolean = false;
@@ -166,6 +175,10 @@
     if (generating) return;
     generating = true;
     errorMsg = "";
+    liveSinceHours = null;
+    liveCommitCount = null;
+    liveDirtyCount = null;
+    liveEstimatedTokens = null;
     aborter = new AbortController();
     const onQueueAbort = () => aborter?.abort();
     queueSignal?.addEventListener("abort", onQueueAbort);
@@ -217,6 +230,26 @@
             } catch {
               errorMsg = "error";
             }
+          } else if (event === "meta") {
+            try {
+              const m = JSON.parse(data) as {
+                sinceHours?: number;
+                commitCount?: number;
+                dirtyWorktreeCount?: number;
+              };
+              if (typeof m.sinceHours === "number") liveSinceHours = m.sinceHours;
+              if (typeof m.commitCount === "number") liveCommitCount = m.commitCount;
+              if (typeof m.dirtyWorktreeCount === "number") liveDirtyCount = m.dirtyWorktreeCount;
+            } catch {
+              // ignore malformed meta
+            }
+          } else if (event === "prompt") {
+            try {
+              const p = JSON.parse(data) as { estimatedTokens?: number };
+              if (typeof p.estimatedTokens === "number") liveEstimatedTokens = p.estimatedTokens;
+            } catch {
+              // ignore malformed prompt event
+            }
           } else if (event === "done") {
             finished = true;
           }
@@ -260,6 +293,16 @@
     if (h < 24) return `${h}h ago`;
     const d = Math.floor(h / 24);
     return `${d}d ago`;
+  }
+
+  /** Compact "5.2k" / "880" style for the prompt's estimated token
+   *  count. Same shape Ollama users see in their own UIs so the
+   *  number reads at a glance without unit explanation. */
+  function fmtTokens(n: number | null): string {
+    if (n == null || !Number.isFinite(n) || n <= 0) return "";
+    if (n < 1000) return `${n}`;
+    const k = n / 1000;
+    return `${k >= 10 ? k.toFixed(0) : k.toFixed(1)}k`;
   }
 
   /** Split the LLM body on whatever separator it picked (we ask for
@@ -346,6 +389,22 @@
             summarising…
           {/if}
         </span>
+        {#if generating && (liveSinceHours != null || liveCommitCount != null || liveEstimatedTokens != null)}
+          <span class="live-meta">
+            {#if liveSinceHours != null}
+              <span class="sep">–</span>{rangeLabel(liveSinceHours)}
+            {/if}
+            {#if liveCommitCount != null}
+              <span class="sep">–</span>{liveCommitCount} commit{liveCommitCount === 1 ? "" : "s"}
+            {/if}
+            {#if liveDirtyCount != null && liveDirtyCount > 0}
+              <span class="sep">–</span>{liveDirtyCount} dirty
+            {/if}
+            {#if liveEstimatedTokens != null}
+              <span class="sep">–</span>context ~{fmtTokens(liveEstimatedTokens)} tok
+            {/if}
+          </span>
+        {/if}
       </span>
     {:else if errorMsg}
       <span class="err">{errorMsg}</span>
@@ -353,7 +412,13 @@
       {#if frontmatter}
         <span
           class="meta"
-          title={`Generated ${relTimeFromIso(frontmatter.generatedAt)} with ${frontmatter.model} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`}
+          title={[
+            `Generated ${relTimeFromIso(frontmatter.generatedAt)} with ${frontmatter.model}`,
+            `${rangeLabel(frontmatter.sinceHours)} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`,
+            frontmatter.estimatedTokens
+              ? `context ~${fmtTokens(frontmatter.estimatedTokens)} tokens, took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`
+              : `took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`,
+          ].join(" · ")}
         >{rangeLabel(frontmatter.sinceHours)}:</span>
       {/if}
       <Tooltip variant="wide" escapeClip>
@@ -495,6 +560,15 @@
     color: var(--text-3);
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
+  }
+  /* Live metadata strip shown while generating ("– last 24h – 12
+     commits – context ~5.2k"). Same muted tier as the rest of the
+     status so it reads as one peripheral line, but the .sep dashes
+     keep their slightly bolder weight from the body separator. */
+  .live-meta {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    white-space: nowrap;
   }
   .err { color: #e74c3c; }
   .refresh {

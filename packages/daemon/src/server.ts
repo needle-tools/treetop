@@ -2683,6 +2683,7 @@ const server = Bun.serve<TermWsData, never>({
               repoName: repo.name,
               commitCount: activity.commits.length,
               dirtyWorktreeCount: activity.dirtyWorktrees.length,
+              sinceHours,
               currentSha,
             });
 
@@ -2736,6 +2737,9 @@ const server = Bun.serve<TermWsData, never>({
 
             let collected = "";
             const estimatedTokens = Math.ceil(prompt.length / 4);
+            // Surface prompt-side budget to the client so the status
+            // strip can show "context ~5.2k" alongside the model name.
+            send("prompt", { estimatedTokens, promptChars: prompt.length });
             const res = await fetch("http://127.0.0.1:11434/api/chat", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
