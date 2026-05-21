@@ -4773,6 +4773,9 @@
                     {#if a.manualTitle}
                       <span class="agent-manual-title">{a.manualTitle}</span>
                       <span class="muted small">{relTime(a.lastActive)}</span>
+                    {:else if a.title}
+                      <span class="agent-manual-title">{a.title}</span>
+                      <span class="muted small">{relTime(a.lastActive)}</span>
                     {:else}
                       {a.agent} {relTime(a.lastActive)}
                     {/if}
