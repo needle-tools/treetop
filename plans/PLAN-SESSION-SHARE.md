@@ -7,10 +7,12 @@ JSONL session from one machine's supergit to another's.
 
 ## What we're adding, in one line
 
-A "Send to peer" / "Receive" action on a session row that ships its
-JSONL transcript to another supergit daemon on the same LAN, with
-the receiver rewriting absolute paths so the session opens against
-the local clone of the same git repo.
+A "Send to peer" action on a session row that offers a JSONL
+transcript to another supergit daemon on the same LAN. The
+receiver sees an inbox card with the session's title, repo,
+origin machine, and a short summary, and explicitly accepts or
+declines. On accept, the receiver rewrites absolute paths so the
+session opens against the local clone of the same git repo.
 
 ## Why this is worth building
 
@@ -33,12 +35,20 @@ problem; one-shot handoff covers ~90% of the actual workflow:
 
 In (v1):
 - mDNS discovery on the local network: each supergit daemon
-  advertises `_supergit._tcp.local` with its port + machine name.
-- A "Send to…" menu on a session row → picks a peer, POSTs the
-  JSONL + a small manifest to the peer's daemon.
-- Receiver: looks up the repo by normalised git remote URL, rewrites
-  absolute paths (repo root + worktree root) in the JSONL, stores
-  the result as an *imported session* under the workspace.
+  advertises `_supergit._tcp.local` with its port + machine name +
+  friendly label (defaults to hostname; user-editable in
+  settings).
+- A "Send to…" menu on a session row → picks a peer from the
+  discovered list (or a manual `host:port`) and sends an *offer*.
+- **Receiver explicit accept**: the offer lands in a "Session
+  invites" inbox on the receiver's dashboard with a card showing
+  title, repo (name + remote), origin machine label, agent kind,
+  turn count, transcript size, and a short summary. The receiver
+  clicks **Accept** or **Decline**.
+- On accept: receiver looks up the repo by normalised git remote
+  URL, rewrites absolute paths (repo root + worktree root) in the
+  JSONL, stores the result as an *imported session* under the
+  workspace.
 - Path-separator normalisation so Windows ↔ macOS/Linux works.
 - Manual `host:port` fallback when mDNS is unavailable (Windows
   without Bonjour, hostile networks).
@@ -53,9 +63,11 @@ Out (v1, defer):
 - Internet / WAN delivery. Same-LAN only. WAN handoff would need a
   relay or NAT traversal; out of scope for v1.
 - Auth / pairing. v1 trusts the LAN — anyone who can reach the
-  daemon port can already drive supergit. This matches the
-  current threat model and is consistent with how the dashboard's
-  HTTP surface already works.
+  daemon port can already drive supergit. The explicit-accept
+  step on the receiver is UX (informed consent), not security;
+  see [Security](#security) for the threat model. This matches
+  the current trust assumptions and is consistent with how the
+  dashboard's HTTP surface already works.
 - Encryption in transit. Same reasoning — LAN-only, trusted
   network. If we ever expose this to WAN, TLS + a pairing token
   becomes mandatory; flagged in [Security](#security) below.
@@ -110,18 +122,24 @@ config file. When mDNS isn't available (e.g. Windows without
 Bonjour, hardened networks), the panel exposes a "Add peer
 manually" input that takes `host:port`.
 
-### Send
+### Send (offer)
 
-`POST http://<peer>/api/sessions/import` with a JSON body:
+`POST http://<peer>/api/sessions/offer` with a JSON body:
 
 ```json
 {
   "manifest": {
+    "offerId": "<receiver-scoped uuid>",
     "sid": "abc123",
+    "title": "Refactor PTY env scrub",
     "agent": "claude" | "codex" | ...,
+    "turnCount": 42,
+    "summary": "Short 1–2 sentence prose summary, if available.",
     "originMachine": "marcels-laptop",
+    "originMachineLabel": "Marcel's MBP",
     "originPlatform": "darwin",
     "originRepoRemote": "https://github.com/foo/bar",
+    "originRepoName": "bar",
     "originRepoPath": "/Users/marcel/git/bar",
     "originWorktreePath": "/Users/marcel/git/bar/.worktrees/feat-x",
     "createdAt": "2026-05-21T10:14:00Z",
@@ -132,58 +150,127 @@ manually" input that takes `host:port`.
 }
 ```
 
-JSONL is sent inline as a string in v1. Sessions are typically
-sub-megabyte; if/when we see multi-megabyte transcripts we switch
-to streaming `application/x-ndjson`. Don't optimise prematurely.
+Notes:
+- `title` comes from supergit's existing session-title resolver
+  (synthetic or real); receiver uses it verbatim in the inbox card.
+- `summary` is best-effort: if a cached Ollama summary exists
+  ([PLAN-SUMMARIZE.md](./PLAN-SUMMARIZE.md)), include it; otherwise
+  fall back to the first user message truncated to ~200 chars, or
+  omit. Receiver renders whichever is present.
+- JSONL is sent inline as a string in v1. Sessions are typically
+  sub-megabyte; the offer payload includes the full transcript so
+  acceptance is a local-only commit (no second round-trip needed
+  on accept). If/when we see multi-megabyte transcripts, split the
+  protocol into `offer` (metadata only) + `pull` (jsonl) so the
+  receiver only downloads on accept.
 
-### Receive
+### Receive (pending → accept)
 
-The receiver:
+The receiver, on receiving an offer:
 
-1. Looks up `originRepoRemote` in `repos.json` (normalised match).
-   No match → `409 { error: "needs_clone", remote }`.
-2. Computes the path-rewrite map:
+1. Validates manifest shape + size cap (reject `413` if oversized).
+2. Looks up `originRepoRemote` in `repos.json` (normalised match).
+   No match → store the offer anyway in the inbox but flag it
+   `needsClone: true`; the inbox card surfaces "Clone
+   `<remote>` first" with a one-click "Add repo…" affordance,
+   and **Accept** is disabled until the repo is present.
+3. Persists the offer to
+   `<workspace>/session-invites/<offerId>.json` (manifest + jsonl
+   together, pending state). Appends an event:
+   `{ kind: "session_invite_received", offerId, sid, originMachine, at }`.
+4. Responds `202 { offerId, status: "pending" }` to the sender.
+5. Surfaces the inbox card in the UI (see [UI](#ui)).
+
+When the receiver clicks **Accept** on the inbox card:
+
+1. Computes the path-rewrite map:
    - `originRepoPath` → `localRepoPath`
    - `originWorktreePath` → `localWorktreePath` if present *and*
      that worktree exists locally; otherwise leave the worktree
      ref alone and mark the import `worktreeMissing: true` (the
      session is viewable but cannot be resumed against that
      worktree).
-3. Normalises path separators if `originPlatform !== process.platform`:
+2. Normalises path separators if `originPlatform !== process.platform`:
    - Windows → POSIX: `C:\foo\bar` → `/c/foo/bar` (or the user's
      local repo root, since we're rewriting anyway).
    - POSIX → Windows: the inverse.
    Done as a single regex pass per longest-prefix match, so we
    don't accidentally rewrite paths inside string literals that
    happen to share a prefix.
-4. Writes the rewritten JSONL to
+3. Writes the rewritten JSONL to
    `<workspace>/imported-sessions/<originMachine>/<sid>.jsonl`
    along with a sidecar `<sid>.manifest.json`. Crucially, *not*
    into `~/.claude/projects/...` — those dirs are owned by the
    agent CLI, and dropping foreign files there would confuse it.
+4. Deletes the pending offer file from `session-invites/`.
 5. Appends an `event` to `events.jsonl`:
-   `{ kind: "session_imported", sid, originMachine, repoId, at }`.
-6. Responds `200 { sid, importedAs }`.
+   `{ kind: "session_imported", sid, originMachine, repoId, offerId, at }`.
+6. (Best-effort) `POST <sender>/api/sessions/offer-status` with
+   `{ offerId, status: "accepted" }` so the sender's UI can flip
+   the row from "sent" to "accepted." Failure is non-fatal — the
+   receiver has the data either way.
+
+When the receiver clicks **Decline**:
+
+1. Deletes the pending offer file from `session-invites/`.
+2. Appends `{ kind: "session_invite_declined", offerId, ... }`.
+3. (Best-effort) notifies the sender via the same status endpoint
+   with `status: "declined"`.
+
+Offers left untouched for >30 days are garbage-collected on
+daemon start.
 
 ### Conflict handling
 
-If the receiver already has a session with this `(originMachine,
-sid)` pair, default behaviour is **replace** with a one-line event
-log entry. The UI surfaces a quiet "updated from <machine> at
-<time>" badge; no modal. Rationale: the dominant case is "I sent
-the same session again to pick up the latest turns" — silent
-replace is what the user wants. If we discover a real
-divergence-loss case we add an explicit "keep both" toggle in v2.
+If the receiver already has an *imported* session with this
+`(originMachine, sid)` pair, the inbox card surfaces "Update
+existing import (last received <time ago>)" instead of "Accept,"
+and on click replaces the stored copy. The accept step is still
+explicit; we just relabel the button so the user knows what
+they're confirming. Rationale: the dominant case is "I sent the
+same session again to pick up the latest turns" — but at the cost
+of one extra click we get a clear audit trail and no surprise
+overwrites. If we discover a real divergence-loss case we add an
+explicit "keep both" toggle in v2.
 
 ## UI
 
-### Session row
+### Sender — session row
 
 A new overflow-menu item: **Send to peer →** (submenu lists
-discovered peers + "Other host…"). Clicking sends in the
-background; toast on success with the receiver's machine name and
-"Open on <machine>" link (which deep-links to the receiver's UI if
-both are reachable from the user's browser).
+discovered peers + "Other host…"). Clicking sends the offer in
+the background. The session row gets a small "sent to
+`<machine>` — awaiting accept" badge until the receiver responds
+(via the `offer-status` callback) or 30 minutes elapse, at which
+point the badge becomes "pending" without further escalation.
+Receiver's accept / decline flips the badge to "accepted at
+`<time>`" or "declined." Decline never blocks resending.
+
+### Receiver — session-invites inbox
+
+A new pill in the dashboard header: **Invites (N)** appears
+whenever there is at least one pending offer. Clicking opens a
+panel with one card per offer:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ "Refactor PTY env scrub"                  from Marcel's MBP │
+│ repo: foo/bar  ·  agent: claude  ·  42 turns  ·  180 KB │
+│ ─────────────────────────────────────────────────────── │
+│ Short summary if available, else first user message     │
+│ truncated, else nothing.                                │
+│ ─────────────────────────────────────────────────────── │
+│                            [ Decline ]   [ Accept ]     │
+└─────────────────────────────────────────────────────────┘
+```
+
+When `needsClone`, the Accept button is replaced with **Clone
+repo first** which opens the existing add-repo dialog pre-filled
+with the remote URL. Once the clone completes, the card re-renders
+with Accept enabled.
+
+Inbox is also accessible via a toast notification when a fresh
+offer arrives while the dashboard is open.
 
 ### Peers panel
 
@@ -254,14 +341,22 @@ Unit:
 Integration (spawn two real daemons on two random ports in a temp
 workspace each):
 - Discovery: both advertise, both see each other.
-- Send happy path: daemon A sends a real JSONL to daemon B,
-  daemon B writes it under `imported-sessions/`, event log
-  records the import, UI list reflects it.
-- Send to missing repo: B has no matching remote → A gets
-  `needs_clone`, nothing is written on B.
-- Replace: send the same sid twice with extra lines → B's stored
-  copy is the newer one, event log has two `session_imported`
-  entries.
+- Offer happy path: daemon A sends an offer to daemon B → B
+  stores it in `session-invites/` with `pending` status, fires
+  the `session_invite_received` event, A gets `202`.
+- Accept: simulating the receiver's Accept click on B writes the
+  rewritten JSONL under `imported-sessions/`, deletes the pending
+  offer, fires `session_imported`, and B calls back to A's
+  `offer-status` endpoint with `accepted`.
+- Decline: Decline click deletes the offer file and notifies the
+  sender with `declined`.
+- Offer to missing repo: B has no matching remote → offer is
+  still stored with `needsClone: true`, Accept stays disabled
+  until the repo is added.
+- Re-offer (update existing): A sends the same sid twice with
+  extra lines → B's inbox card shows "Update existing import"
+  copy, accepting replaces the stored JSONL with the newer one,
+  events log has two `session_imported` entries.
 - Round-trip cross-platform: simulate Windows-origin manifest
   delivered to a POSIX receiver — verify every path in the output
   JSONL is POSIX and points at the local repo root.
@@ -276,13 +371,16 @@ release that touches this code.
 
 1. Land the rewriter + manifest validator + tests (no network, no
    UI). Pure functions; easiest to land first.
-2. Add `POST /api/sessions/import` + `imported-sessions/` storage
-   + event log entry. Integration test with two in-process
-   daemons.
-3. Add mDNS advert + discovery + peers panel. Manual `host:port`
+2. Add `POST /api/sessions/offer`, `session-invites/` storage,
+   pending → accept/decline state machine, `imported-sessions/`
+   on accept, and the `offer-status` callback. Integration test
+   with two in-process daemons.
+3. Add the receiver-side inbox UI (invites pill + card).
+4. Add mDNS advert + discovery + peers panel. Manual `host:port`
    fallback first; mDNS layered on top.
-4. Add the session-row "Send to peer" action.
-5. Manual cross-machine test on real hardware (mac↔mac, mac↔linux,
+5. Add the sender-side session-row "Send to peer" action +
+   awaiting/accepted/declined badges.
+6. Manual cross-machine test on real hardware (mac↔mac, mac↔linux,
    mac↔windows). Document any firewall steps in
    [TODO-windows.md](./TODO-windows.md).
 
@@ -292,10 +390,6 @@ better than the status quo.
 
 ## Open questions
 
-- Does "Send to peer" need a confirmation step on the receiver
-  ("accept session from `<machine>`?"), or is silent accept fine
-  for v1? Leaning silent-accept on trusted LAN; revisit if we
-  ever ship pairing.
 - Resume-on-receiver (v2): does Claude's `--resume <sid>` accept a
   JSONL at an arbitrary path, or only ones under
   `~/.claude/projects/...`? If the latter, we'd need to either
