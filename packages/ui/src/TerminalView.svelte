@@ -353,33 +353,50 @@
     xterm.open(containerEl);
     fit.fit();
 
-    // Intercept the paste shortcut (Ctrl+V on Win/Linux, Cmd+V on Mac).
-    // xterm.js's built-in keydown maps Ctrl+V to a literal 0x16 SYN byte
-    // and then calls `event.preventDefault()` on the keydown — which
-    // suppresses the browser's native paste event entirely, so pressing
-    // Ctrl+V in the TUI silently does nothing on Windows/Linux. On Mac,
-    // Cmd+V is left alone by xterm's keydown but its paste handler then
-    // `stopPropagation()`s, so the image-paste branch in `onPaste` never
-    // fires either. We bypass both by reading the clipboard ourselves
-    // via the async Clipboard API — images route through /api/attach +
-    // path-insertion (same as drag-drop), text goes through `xterm.paste()`
-    // which still picks up bracketed-paste mode + line-ending normalization.
+    // Intercept the copy + paste shortcuts. xterm.js's built-in keydown
+    // maps Ctrl+V → 0x16 SYN and Ctrl+C → 0x03 ETX, then calls
+    // `event.preventDefault()` on the keydown — which suppresses the
+    // browser's native `paste` / `copy` events entirely, so neither
+    // pasting nor copying selected TUI text works via Ctrl+V/Ctrl+C on
+    // Windows/Linux. On Mac, Cmd+V's paste handler also `stopPropagation`s
+    // before our image-paste branch on `.xterm-host` can see it. We own
+    // both shortcuts via attachCustomKeyEventHandler so they work
+    // uniformly across platforms:
+    //   - Ctrl/Cmd+V → read clipboard via async Clipboard API. Images
+    //     route through /api/attach + path insertion (same as drag-drop);
+    //     text routes through `xterm.paste()` which preserves bracketed-
+    //     paste mode + line-ending normalization.
+    //   - Ctrl/Cmd+C with a TUI selection → write `xterm.getSelection()`
+    //     to the clipboard. With no selection, fall through to xterm's
+    //     default (Ctrl+C → ETX interrupt; Cmd+C → no-op).
     xterm.attachCustomKeyEventHandler((ev) => {
-      if (
-        ev.type === "keydown" &&
-        ev.code === "KeyV" &&
-        !ev.altKey &&
-        !ev.shiftKey
-      ) {
-        const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-        const wantPaste = isMac
-          ? ev.metaKey && !ev.ctrlKey
-          : ev.ctrlKey && !ev.metaKey;
-        if (wantPaste) {
-          ev.preventDefault();
-          void doClipboardPaste();
-          return false;
+      if (ev.type !== "keydown" || ev.altKey) return true;
+      const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      const modOnly = isMac
+        ? ev.metaKey && !ev.ctrlKey
+        : ev.ctrlKey && !ev.metaKey;
+      if (!modOnly) return true;
+      // Both Ctrl+V (Windows Terminal-style) and Ctrl+Shift+V (Linux
+      // terminal convention) trigger paste; xterm has no other binding
+      // for Ctrl+Shift+V so swallowing it is safe.
+      if (ev.code === "KeyV") {
+        ev.preventDefault();
+        void doClipboardPaste();
+        return false;
+      }
+      // Ctrl/Cmd+C (with or without Shift) — copy selection if present.
+      // Without a selection, return true so xterm sends ETX (interrupt)
+      // for plain Ctrl+C on Win/Linux. Shift+C reaches us here only on
+      // platforms where it's bound to copy by convention (Linux
+      // terminals); we still gate on selection so we don't quietly
+      // intercept a user's Ctrl+Shift+C that meant something else.
+      if (ev.code === "KeyC" && xterm?.hasSelection()) {
+        ev.preventDefault();
+        const sel = xterm.getSelection();
+        if (sel) {
+          void navigator.clipboard?.writeText(sel).catch(() => {});
         }
+        return false;
       }
       return true;
     });

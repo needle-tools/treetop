@@ -84,15 +84,16 @@ describe("TerminalView ws.onopen post-mount fixups", () => {
   });
 });
 
-describe("TerminalView clipboard paste", () => {
+describe("TerminalView clipboard copy + paste", () => {
   /** xterm.js's default keydown for Ctrl+V (Win/Linux) sends a literal
    *  0x16 SYN byte AND calls preventDefault on the keydown, which kills
-   *  the browser's native paste event before it can fire. Result on
-   *  Windows: pressing Ctrl+V in the TUI silently does nothing — neither
-   *  text nor image pastes round-trip. The fix routes Ctrl/Cmd+V through
-   *  attachCustomKeyEventHandler + the async Clipboard API instead. If a
-   *  future refactor drops either piece this test fails loudly so paste
-   *  doesn't break on Windows again. */
+   *  the browser's native paste event before it can fire. Ctrl+C has the
+   *  symmetric bug — maps to 0x03 ETX + preventDefault, so the browser's
+   *  copy event never runs and selected TUI text can't reach the system
+   *  clipboard. Both shortcuts now route through attachCustomKeyEventHandler
+   *  + the async Clipboard API; if a future refactor drops either piece
+   *  this test fails loudly so copy/paste don't silently break on Windows
+   *  again. */
   test("intercepts Ctrl/Cmd+V via attachCustomKeyEventHandler", () => {
     expect(SOURCE).toContain("attachCustomKeyEventHandler");
     // The handler must look at KeyV specifically, not the broader keydown
@@ -110,6 +111,16 @@ describe("TerminalView clipboard paste", () => {
     expect(SOURCE).toContain("navigator.clipboard.read");
     expect(SOURCE).toMatch(/uploadAndInsert\(blob\)/);
     expect(SOURCE).toMatch(/xterm\??\.paste\(text\)/);
+  });
+
+  test("intercepts Ctrl/Cmd+C and copies the TUI selection", () => {
+    // Selection-gated copy: must check hasSelection() before swallowing
+    // the keystroke so plain Ctrl+C with no selection still sends ETX
+    // (interrupt) — otherwise we'd silently break SIGINT in the TUI.
+    expect(SOURCE).toMatch(/code\s*===\s*["']KeyC["']/);
+    expect(SOURCE).toMatch(/xterm\??\.hasSelection\(\)/);
+    expect(SOURCE).toMatch(/xterm\.getSelection\(\)/);
+    expect(SOURCE).toContain("navigator.clipboard?.writeText");
   });
 
   test("paste event listener stays in capture phase", () => {
