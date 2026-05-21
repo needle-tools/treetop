@@ -42,7 +42,8 @@ const SPECIAL_APPS = new Set(["fork", "terminal", "files"]);
 const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 
 async function which(cmd: string): Promise<boolean> {
-  const proc = Bun.spawn(["which", cmd], { stdout: "pipe", stderr: "pipe" });
+  const bin = process.platform === "win32" ? "where" : "which";
+  const proc = Bun.spawn([bin, cmd], { stdout: "pipe", stderr: "pipe" });
   return (await proc.exited) === 0;
 }
 

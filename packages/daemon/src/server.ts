@@ -1,4 +1,4 @@
-import { join, resolve, normalize } from "node:path";
+import { join, resolve, normalize, sep } from "node:path";
 import { homedir, totalmem } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -2715,7 +2715,7 @@ const server = Bun.serve<TermWsData, never>({
       // Resolve safely — normalize and reject anything escaping UI_DIR.
       const reqPath = url.pathname === "/" ? "/index.html" : url.pathname;
       const candidate = resolve(UI_DIR, "." + normalize(reqPath));
-      if (candidate === UI_DIR || candidate.startsWith(UI_DIR + "/")) {
+      if (candidate === UI_DIR || candidate.startsWith(UI_DIR + sep)) {
         const file = Bun.file(candidate);
         if (await file.exists()) {
           // Same-origin response, no CORS headers needed.
