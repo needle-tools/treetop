@@ -4,6 +4,7 @@ import {
   stripToolOutputs,
   rewritePaths,
   validateManifest,
+  prepareOutgoingJsonl,
   type SessionShareManifest,
 } from "../src/session-share";
 
@@ -250,6 +251,42 @@ describe("rewritePaths", () => {
         toPlatform: "darwin",
       }),
     ).toBe("");
+  });
+});
+
+describe("prepareOutgoingJsonl — strip + redact composed", () => {
+  test("strips tool_result AND redacts a secret in a sibling text block", () => {
+    const ghToken = "ghp_" + "x".repeat(36);
+    const stripSecret = "OPENAI_API_KEY=sk-proj-" + "y".repeat(60);
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: `let me use ${ghToken}` },
+            { type: "tool_use", id: "u1", name: "bash", input: { cmd: "env" } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "u1", content: stripSecret },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const out = prepareOutgoingJsonl(lines);
+
+    expect(out.strippedCount).toBe(1);
+    expect(out.jsonl.includes(stripSecret)).toBe(false);
+    expect(out.jsonl.includes(ghToken)).toBe(false);
+    expect(out.jsonl.includes("[REDACTED:github_token]")).toBe(true);
+    expect(out.redactions.find((r) => r.kind === "github_token")?.count).toBe(1);
   });
 });
 

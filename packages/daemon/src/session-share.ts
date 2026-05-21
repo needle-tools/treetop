@@ -8,6 +8,8 @@
  * testable.
  */
 
+import { redactLikelySecrets, type Redaction } from "./secret-redactor";
+
 export type SharePlatform = "darwin" | "linux" | "win32";
 export type ShareAgent = "claude" | "codex";
 export type ToolOutputMode = "stripped" | "included";
@@ -36,6 +38,28 @@ export interface SessionShareManifest {
 export type ValidateResult =
   | { ok: true }
   | { ok: false; error: string };
+
+/** Result of `prepareOutgoingJsonl` — what to ship + a side-report
+ *  the UI can render so the sender knows exactly what got scrubbed. */
+export interface PreparedJsonl {
+  jsonl: string;
+  strippedCount: number;
+  redactions: Redaction[];
+}
+
+/** The full send-side scrub: strip tool_results, then redact common
+ *  secret formats. Two independent layers; either may fire on the
+ *  same byte range. Tests live with the underlying functions; this
+ *  is just a thin compose so callers don't forget step two. */
+export function prepareOutgoingJsonl(jsonl: string): PreparedJsonl {
+  const stripped = stripToolOutputs(jsonl);
+  const redacted = redactLikelySecrets(stripped.jsonl);
+  return {
+    jsonl: redacted.text,
+    strippedCount: stripped.strippedCount,
+    redactions: redacted.redactions,
+  };
+}
 
 /** Hard cap on a single offer payload. Anything larger is almost
  *  certainly a bug (an entire repo serialised into a tool_result, etc.)
