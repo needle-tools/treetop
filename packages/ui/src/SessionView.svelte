@@ -348,22 +348,100 @@
       }
     }
   }
-  /** Re-run the summary using the last-recorded model, streaming
-   *  the result back into `summarySnippet` so the pill updates
-   *  live. No dialog — chip-only flow. Falls back to opening the
-   *  dialog when we don't know which model to reuse. */
-  async function refreshSummaryInPlace(): Promise<void> {
+  /** Tiny ephemeral notice that floats next to the Summarize chip.
+   *  Used to tell the user "install a model first" without popping
+   *  the full dialog — the chip is supposed to stay one-click. */
+  let summarizeNotice: string = "";
+  let noticeAction: "install" | null = null;
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  function showSummarizeNotice(msg: string, action: "install" | null = null): void {
+    summarizeNotice = msg;
+    noticeAction = action;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      summarizeNotice = "";
+      noticeAction = null;
+      noticeTimer = null;
+    }, 6000);
+  }
+  function dismissSummarizeNotice(): void {
+    summarizeNotice = "";
+    noticeAction = null;
+    if (noticeTimer) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
+  }
+
+  /** Chip-triggered entry point. Picks the best model on the user's
+   *  behalf (last-used → llama3.2:3b → smallest non-embed) and
+   *  kicks off an in-place summary stream. The dialog never opens
+   *  from here — when no model is installed, we surface a small
+   *  notice with a click path into the dialog's install flow. */
+  async function summarizeFromChip(): Promise<void> {
     if (summaryRefreshing) return;
     if (!source) return;
-    if (!summaryModel) {
-      // Nothing on disk to know which model to retry with — punt
-      // to the full dialog so the user can pick.
-      openSummarize(source);
+    dismissSummarizeNotice();
+    // Refresh path: we already know which model the cached summary
+    // used. Reuse it without probing.
+    if (summaryModel) {
+      void runSummaryStream(summaryModel);
       return;
     }
+    // First-run path: probe installed models.
+    let list: { name: string; size?: number }[] = [];
+    try {
+      const res = await fetch("/api/ollama/models");
+      if (!res.ok) {
+        showSummarizeNotice("Couldn't reach Ollama — try the menu's Summarize for details.");
+        return;
+      }
+      const body = (await res.json()) as { models?: typeof list };
+      list = body.models ?? [];
+    } catch {
+      showSummarizeNotice("Couldn't reach Ollama — try the menu's Summarize for details.");
+      return;
+    }
+    if (list.length === 0) {
+      showSummarizeNotice("No Ollama model installed — click to install one.", "install");
+      return;
+    }
+    const remembered = localStorage.getItem("supergit:summarize:lastModel");
+    let pick = "";
+    if (remembered && list.some((m) => m.name === remembered)) {
+      pick = remembered;
+    } else if (list.some((m) => m.name === "llama3.2:3b")) {
+      pick = "llama3.2:3b";
+    } else {
+      const usable = list.filter((m) => {
+        const n = m.name.toLowerCase();
+        return !n.endsWith("-embed") && !n.endsWith(":embed");
+      });
+      usable.sort(
+        (a, b) =>
+          (a.size ?? Number.MAX_SAFE_INTEGER) -
+          (b.size ?? Number.MAX_SAFE_INTEGER),
+      );
+      pick = usable[0]?.name ?? list[0].name;
+    }
+    if (!pick) {
+      showSummarizeNotice("No suitable Ollama model found.");
+      return;
+    }
+    localStorage.setItem("supergit:summarize:lastModel", pick);
+    void runSummaryStream(pick);
+  }
+
+  /** Stream a summary against `targetModel` and persist it. Shared
+   *  by the Refresh chip (model = cached frontmatter's model) and
+   *  the first-run chip flow (model auto-picked). `summarySnippet`
+   *  only updates after the daemon writes the final body to disk —
+   *  during the stream the chip spins, the old snippet stays. */
+  async function runSummaryStream(targetModel: string): Promise<void> {
+    if (summaryRefreshing) return;
+    if (!source || !targetModel) return;
     summaryRefreshing = true;
     const targetSource = source;
-    const targetModel = summaryModel;
     let collected = "";
     try {
       const res = await fetch("/api/sessions/summarize", {
@@ -779,6 +857,14 @@
 
   async function load() {
     if (loading) return;
+    // Don't overwrite session.messages while an Ollama stream is in
+    // flight. The disk-parsed view doesn't include the in-progress
+    // assistant bubble (the daemon only writes the turn entry on
+    // stream completion), so a poll mid-stream would wipe the
+    // optimistic bubble and make the chunks "vanish" until the
+    // generation finishes. sendOllamaMessage calls load() itself in
+    // its finally block to re-sync after the stream ends.
+    if (ollamaStreamingIdx !== null) return;
     loading = true;
     error = "";
     try {
@@ -1201,19 +1287,32 @@
            user for a re-run that won't change much. -->
       {#if !summarySnippet || shouldShowRefresh || summaryRefreshing}
         <div class="summary-chip-wrap">
+          {#if summarizeNotice}
+            <button
+              type="button"
+              class="summary-notice"
+              class:clickable={noticeAction === "install"}
+              on:click={() => {
+                if (noticeAction === "install") {
+                  dismissSummarizeNotice();
+                  openSummarize(source);
+                } else {
+                  dismissSummarizeNotice();
+                }
+              }}
+              title={noticeAction === "install" ? "Open the install dialog" : "Dismiss"}
+            >{summarizeNotice}</button>
+          {/if}
           <button
             type="button"
             class="summary-chip"
             disabled={summaryRefreshing}
-            on:click={() => {
-              if (summarySnippet) void refreshSummaryInPlace();
-              else openSummarize(source);
-            }}
+            on:click={() => void summarizeFromChip()}
             title={summaryRefreshing
               ? "Refreshing summary…"
               : summarySnippet
                 ? `Refresh summary (${messagesSinceSummary} new messages since last) with ${summaryModel || "Ollama"}`
-                : "Summarize this session with a local Ollama model"}
+                : "Summarize this session with a local Ollama model (uses last-picked model)"}
           >
             {#if summaryRefreshing}
               <LoadingSpinner size="0.7rem" thickness="2px" label="Refreshing summary" />
@@ -1311,7 +1410,7 @@
       on:mouseleave={onMessagesLeave}
       on:wheel={onMessagesWheel}
     >
-      {#each session.messages as m}
+      {#each session.messages as m, i}
         <li class="msg role-{m.role}">
           <div class="msg-head">
             <span
@@ -1352,7 +1451,17 @@
           </div>
           {#each m.blocks as b}
             {#if b.type === "text"}
-              <div class="block text md">{@html md(b.text)}</div>
+              {#if i === ollamaStreamingIdx && !(b.text ?? "").length}
+                <!-- Streaming bubble with no chunks yet — Ollama is
+                     still loading the model / generating its first
+                     token. Show a spinner inside the bubble so the
+                     user knows the request is alive, not stuck. -->
+                <div class="block text md ollama-waiting">
+                  <LoadingSpinner size="0.9rem" label="Waiting for response" />
+                </div>
+              {:else}
+                <div class="block text md">{@html md(b.text)}</div>
+              {/if}
             {:else if b.type === "thinking"}
               <div class="block thinking">
                 <span class="tag-label">thinking</span>
@@ -1547,9 +1656,39 @@
     right: 0;
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+    gap: 0.4rem;
     padding: 0.3rem 0.5rem 0 0;
     z-index: 3;
     pointer-events: none;
+  }
+  /* Ephemeral notice next to the Summarize chip — e.g. "No Ollama
+     model installed". Clickable when the notice carries an
+     action (install path); otherwise reads as a flat toast that
+     dismisses on click. */
+  .summary-notice {
+    pointer-events: auto;
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, #d9822b 35%, transparent);
+    background: color-mix(in srgb, #d9822b 18%, rgba(26, 26, 27, 0.85));
+    color: var(--text-1);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
+  }
+  .summary-notice.clickable {
+    cursor: pointer;
+  }
+  .summary-notice.clickable:hover {
+    background: color-mix(in srgb, #d9822b 28%, rgba(26, 26, 27, 0.95));
   }
   .summary-chip {
     pointer-events: auto;
@@ -1697,6 +1836,16 @@
   }
   .composer-input::placeholder {
     color: var(--text-muted);
+  }
+  /* Empty assistant bubble while waiting for the first SSE chunk.
+     Muted color so the spinner reads as "thinking" rather than as
+     a primary UI element; min-height so the bubble doesn't snap
+     from spinner-sized to multi-line when the first chunk lands. */
+  .ollama-waiting {
+    color: var(--text-muted);
+    min-height: 1.2rem;
+    display: flex;
+    align-items: center;
   }
   .composer-error {
     color: var(--error-text);
