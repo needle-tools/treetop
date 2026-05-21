@@ -3755,7 +3755,7 @@
     // Close any open "new agent" picker the click landed outside of.
     for (const key of Object.keys(newAgentPopoverOpen)) {
       if (!newAgentPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-new-agent-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-new-agent-anchor="${CSS.escape(key)}"]`);
       if (!anchor) {
         newAgentPopoverOpen = { ...newAgentPopoverOpen, [key]: false };
       }
@@ -3763,7 +3763,7 @@
     // Close any open branch picker the click landed outside of.
     for (const key of Object.keys(branchPickerOpen)) {
       if (!branchPickerOpen[key]) continue;
-      const anchor = target?.closest(`[data-branch-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-branch-anchor="${CSS.escape(key)}"]`);
       if (!anchor) {
         branchPickerOpen = { ...branchPickerOpen, [key]: false };
       }
@@ -3771,7 +3771,7 @@
     // Close any open worktree-picker popover the click landed outside of.
     for (const key of Object.keys(wtPickerOpen)) {
       if (!wtPickerOpen[key]) continue;
-      const anchor = target?.closest(`[data-wt-picker-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-wt-picker-anchor="${CSS.escape(key)}"]`);
       if (!anchor) {
         wtPickerOpen = { ...wtPickerOpen, [key]: false };
       }
@@ -3784,7 +3784,7 @@
     // until the user re-opens.
     for (const key of Object.keys(notesListOpen)) {
       if (!notesListOpen[key]) continue;
-      const anchor = target?.closest(`[data-notes-list-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-notes-list-anchor="${CSS.escape(key)}"]`);
       const inSticky = target?.closest(".sticky");
       if (!anchor && !inSticky) {
         notesListOpen = { ...notesListOpen, [key]: false };
@@ -3793,7 +3793,7 @@
     // Any open agents popovers that the click landed outside of: close them.
     for (const key of Object.keys(agentsPopoverOpen)) {
       if (!agentsPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-agents-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-agents-anchor="${CSS.escape(key)}"]`);
       if (!anchor) {
         agentsPopoverOpen = { ...agentsPopoverOpen, [key]: false };
       }
@@ -3801,7 +3801,7 @@
     // Same dance for the badge's active-TUIs jump popover.
     for (const key of Object.keys(activeTuisPopoverOpen)) {
       if (!activeTuisPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-active-tuis-anchor="${key}"]`);
+      const anchor = target?.closest(`[data-active-tuis-anchor="${CSS.escape(key)}"]`);
       if (!anchor) {
         activeTuisPopoverOpen = { ...activeTuisPopoverOpen, [key]: false };
       }
