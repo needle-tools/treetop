@@ -23,6 +23,12 @@
   /** Compact = ShellView's smaller, lighter variant; default = the bold
    *  inline-title variant SessionView / NewSessionCol use. */
   export let compact: boolean = false;
+  /** Optional extra line appended to the rest-state hover tooltip after
+   *  "Click to rename · <name>". Used by SessionView to surface the
+   *  cached Ollama summary, so the user can glance the session's gist
+   *  from the title without opening the column. Plain text — newlines
+   *  in `title` render as actual line breaks in native tooltips. */
+  export let extraTooltip: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{ saved: { title: string } }>();
 
@@ -99,7 +105,7 @@
     class="manual-title"
     class:compact
     class:placeholder={!current}
-    title={current ? `Click to rename · ${current}` : placeholder}
+    title={(current ? `Click to rename · ${current}` : placeholder) + (extraTooltip ? `\n${extraTooltip}` : "")}
     on:click={startEdit}
   >
     {current || placeholder}

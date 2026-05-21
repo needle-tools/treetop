@@ -23,7 +23,7 @@ import {
 import { $ } from "bun";
 import { detectAgents, agentsForWorktree } from "./agents";
 import { startActivityTail, onActivity } from "./activity";
-import { getSessionResponseJson, sessionCacheStats } from "./sessions";
+import { getSessionResponseJson, sessionCacheStats, parseSessionFile } from "./sessions";
 import { serveImage } from "./images";
 import { pickFolder, pickFile } from "./picker";
 import { openIn, openDefault, detectEditors } from "./open";
@@ -39,7 +39,9 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
-import { listOllamaModels } from "./ollama";
+import { listOllamaModels, OLLAMA_HOST } from "./ollama";
+import { SummariesStore } from "./summaries";
+import { sampleSessionForSummary } from "./ollama-summarize";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 
 const WORKSPACE_PATH =
@@ -92,7 +94,40 @@ const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
 const shells = await ShellsLog.open(WORKSPACE_PATH);
 const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
+
+/** Active /api/ollama/chat streams keyed by termId. Lets a second
+ *  request (DELETE /api/ollama/chat/:termId, or a fresh POST while
+ *  one is already running) abort the in-flight upstream fetch so the
+ *  user's Stop button has bite. One generation per termId at a time
+ *  — a POST while another is running cancels the prior. */
+const ollamaChatAborts = new Map<string, AbortController>();
+const summaries = await SummariesStore.open(WORKSPACE_PATH);
 const notes = await NotesStore.open(WORKSPACE_PATH);
+
+/** Reused by every /api/session* route to keep ?source= from being
+ *  an arbitrary file-read. Returns the agent kind (claude/codex/
+ *  ollama) when the path lives under a known agent root, null
+ *  otherwise. Centralised so the summarize endpoints use the same
+ *  allowlist as /api/session. */
+function resolveSessionAgent(
+  source: string,
+): { agent: "claude" | "codex" | "ollama"; normalised: string } | null {
+  const home = homedir();
+  const claudeRoot = join(home, ".claude", "projects") + sep;
+  const codexRoots = [
+    join(home, ".codex", "sessions") + sep,
+    join(home, ".config", "openai-codex", "sessions") + sep,
+  ];
+  const ollamaRoot = join(WORKSPACE_PATH, "ollama") + sep;
+  const normalised = resolve(source);
+  const ci = process.platform === "win32";
+  const cmp = (s: string, prefix: string) =>
+    ci ? s.toLowerCase().startsWith(prefix.toLowerCase()) : s.startsWith(prefix);
+  if (cmp(normalised, claudeRoot)) return { agent: "claude", normalised };
+  if (codexRoots.some((r) => cmp(normalised, r))) return { agent: "codex", normalised };
+  if (cmp(normalised, ollamaRoot)) return { agent: "ollama", normalised };
+  return null;
+}
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 console.log(`supergit daemon: listening on http://localhost:${PORT}`);
@@ -1142,36 +1177,14 @@ const server = Bun.serve<TermWsData, never>({
       // how to parse. Keeps this endpoint from becoming an arbitrary file
       // read, without depending on detectAgents() to currently re-find
       // the same file (which races with file-system updates).
-      // Use homedir() + join() (not process.env.HOME + "/") so paths
-      // use native separators and work on Windows.
-      const home = homedir();
-      const claudeRoot = join(home, ".claude", "projects") + sep;
-      const codexRoots = [
-        join(home, ".codex", "sessions") + sep,
-        join(home, ".config", "openai-codex", "sessions") + sep,
-      ];
-      // Ollama transcripts live under <workspace>/ollama/ — written
-      // by the daemon itself on spawn, so the allowlist anchors on
-      // the active workspace path. Restricting to one directory
-      // matches the claude/codex root checks (no traversal escape).
-      const ollamaRoot = join(WORKSPACE_PATH, "ollama") + sep;
-      // Normalize the source path so separator style matches the roots.
-      const normSource = resolve(source);
-      // On Windows the filesystem is case-insensitive; drive letter case
-      // can differ between what the agent wrote and what homedir() returns.
-      const ci = process.platform === "win32";
-      const cmp = (s: string, prefix: string) =>
-        ci ? s.toLowerCase().startsWith(prefix.toLowerCase()) : s.startsWith(prefix);
-      let agentKind: "claude" | "codex" | "ollama" | null = null;
-      if (cmp(normSource, claudeRoot)) agentKind = "claude";
-      else if (codexRoots.some((r) => cmp(normSource, r))) agentKind = "codex";
-      else if (cmp(normSource, ollamaRoot)) agentKind = "ollama";
-      if (!agentKind) {
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
         return json(
           { error: "source is outside any known agent root" },
           { status: 403 },
         );
       }
+      const agentKind = resolved.agent;
       // Use the JSON-string cache: on a cache hit this skips readFile,
       // parsing, *and* JSON.stringify, which were the three large allocations
       // that ballooned RSS for big (30k-message) Claude sessions.
@@ -1690,6 +1703,241 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
+    if (url.pathname === "/api/ollama/sessions" && req.method === "POST") {
+      // Create an empty API-driven Ollama session: a JSONL with just
+      // the header (no PTY, no upstream call yet). Returns the new
+      // termId so the UI can open it as a SessionView column and
+      // start sending /api/ollama/chat requests against it. See
+      // plans/ollama.md "Plan: API-driven chat mode".
+      const body = (await req.json().catch(() => null)) as
+        | { model?: unknown; wt?: unknown; cwd?: unknown }
+        | null;
+      const model = typeof body?.model === "string" ? body.model.trim() : "";
+      const wt = typeof body?.wt === "string" ? body.wt : "";
+      const cwd = typeof body?.cwd === "string" && body.cwd ? body.cwd : wt;
+      if (!model) return json({ error: "model required" }, { status: 400 });
+      if (!wt) return json({ error: "wt required" }, { status: 400 });
+      // Generate a short, picker-friendly termId — same shape as the
+      // PTY backend's ids so picker rows and dock dots use the same
+      // 8-char prefix. We don't share the PTY backend's id generator
+      // because no PTY is being spawned.
+      const termId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      try {
+        await ollamaSessions.writeHeader({
+          kind: "header",
+          termId,
+          wt,
+          spawnCwd: cwd,
+          model,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e) },
+          { status: 500 },
+        );
+      }
+      const sourcePath = join(WORKSPACE_PATH, "ollama", `${termId}.jsonl`);
+      return json({ termId, model, wt, source: sourcePath });
+    }
+
+    if (url.pathname === "/api/ollama/chat" && req.method === "POST") {
+      // Stream a chat completion against the Ollama HTTP API. The
+      // daemon owns the messages[] array — reconstructs it from the
+      // session's JSONL, appends the new user turn, proxies the
+      // streamed response back to the client, and writes both turns
+      // when the stream completes (or `partial: true` on abort).
+      //
+      // Cancel semantics: if a stream is already running for this
+      // termId, the new POST aborts the prior one. Client disconnect
+      // also aborts via the ReadableStream's `cancel` callback.
+      const body = (await req.json().catch(() => null)) as
+        | { termId?: unknown; content?: unknown }
+        | null;
+      const termId = typeof body?.termId === "string" ? body.termId : "";
+      const content = typeof body?.content === "string" ? body.content : "";
+      if (!termId) return json({ error: "termId required" }, { status: 400 });
+      if (!content.trim()) {
+        return json({ error: "content required" }, { status: 400 });
+      }
+      // Read the prior conversation up front so we can fail fast on a
+      // missing/invalid session before opening the SSE stream. The
+      // model from this read is the source of truth for the upstream
+      // call.
+      const prior = await ollamaSessions.readMessagesForChat(termId);
+      if (!prior) {
+        return json({ error: "ollama session not found" }, { status: 404 });
+      }
+      // Persist the user turn immediately so it survives an abort
+      // before any assistant chunks arrive (and so a refresh during
+      // a long generation shows the prompt in the transcript).
+      const userTs = new Date().toISOString();
+      try {
+        await ollamaSessions.appendTurn(termId, {
+          kind: "turn",
+          ts: userTs,
+          role: "user",
+          content,
+          model: prior.model,
+        });
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e) },
+          { status: 500 },
+        );
+      }
+      // Cancel any prior in-flight stream for this termId.
+      const existing = ollamaChatAborts.get(termId);
+      if (existing) existing.abort();
+      const abort = new AbortController();
+      ollamaChatAborts.set(termId, abort);
+
+      const messagesForUpstream = [
+        ...prior.messages,
+        { role: "user" as const, content },
+      ];
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown): void => {
+            try {
+              controller.enqueue(
+                sseEncoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch {
+              // controller closed — client disconnected
+            }
+          };
+          send("meta", { termId, model: prior.model, userTs });
+          const collected = { text: "" };
+          let partial = false;
+          try {
+            const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: prior.model,
+                stream: true,
+                messages: messagesForUpstream,
+              }),
+              signal: abort.signal,
+            });
+            if (!res.ok || !res.body) {
+              send("error", {
+                kind: "ollama_http",
+                message: `Ollama responded ${res.status} ${res.statusText}`,
+              });
+              try { controller.close(); } catch {}
+              return;
+            }
+            const reader = res.body.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let nl: number;
+              while ((nl = buf.indexOf("\n")) !== -1) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (!line) continue;
+                try {
+                  const obj = JSON.parse(line) as {
+                    message?: { content?: string };
+                    done?: boolean;
+                    error?: string;
+                  };
+                  if (obj.error) {
+                    send("error", { kind: "ollama_payload", message: obj.error });
+                    try { controller.close(); } catch {}
+                    return;
+                  }
+                  const chunk = obj.message?.content ?? "";
+                  if (chunk) {
+                    collected.text += chunk;
+                    send("chunk", { delta: chunk });
+                  }
+                  if (obj.done) break;
+                } catch {
+                  // ignore malformed NDJSON line
+                }
+              }
+            }
+          } catch (e) {
+            // AbortError is the expected path when the user cancels.
+            // We persist whatever we got as a partial assistant turn
+            // rather than throwing it away.
+            if ((e as { name?: string })?.name === "AbortError") {
+              partial = true;
+            } else {
+              const msg = e instanceof Error ? e.message : String(e);
+              send("error", { kind: "ollama_unreachable", message: msg });
+              try { controller.close(); } catch {}
+              if (ollamaChatAborts.get(termId) === abort) {
+                ollamaChatAborts.delete(termId);
+              }
+              return;
+            }
+          }
+          // Write the assistant turn (partial or complete). Skip if
+          // nothing was received AND we weren't aborted — that's the
+          // upstream-error path which already closed the stream.
+          if (collected.text.length > 0 || partial) {
+            try {
+              await ollamaSessions.appendTurn(termId, {
+                kind: "turn",
+                ts: new Date().toISOString(),
+                role: "assistant",
+                content: collected.text,
+                model: prior.model,
+                ...(partial ? { partial: true } : {}),
+              });
+            } catch {
+              // Best-effort. The user already saw the response; if
+              // disk write fails the next reload will be lossy but
+              // the stream itself was fine.
+            }
+          }
+          send("done", { partial });
+          try { controller.close(); } catch {}
+          if (ollamaChatAborts.get(termId) === abort) {
+            ollamaChatAborts.delete(termId);
+          }
+        },
+        cancel() {
+          // Client closed the SSE stream (Stop button, tab closed,
+          // page nav). Abort the upstream fetch; the catch above
+          // persists the partial turn.
+          abort.abort();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    if (
+      url.pathname.startsWith("/api/ollama/chat/") &&
+      req.method === "DELETE"
+    ) {
+      // Explicit cancel for an in-flight stream. The client could
+      // also just close its EventSource, but a DELETE lets a separate
+      // request (e.g. from a different tab) abort the run.
+      const termId = url.pathname.slice("/api/ollama/chat/".length);
+      const ac = ollamaChatAborts.get(termId);
+      if (!ac) return new Response(null, { status: 404, headers: CORS });
+      ac.abort();
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
     if (url.pathname === "/api/ollama/models" && req.method === "GET") {
       // Lists installed Ollama models for the new-session picker
       // submenu. Hits the local HTTP API first (fast, structured),
@@ -1704,6 +1952,313 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/sessions/summarize" && req.method === "GET") {
+      // Cached-summary lookup. Returns the stored markdown + frontmatter
+      // when a summary exists for this session, plus a staleness flag
+      // the UI uses to decide between "Cached" and "Stale" badges.
+      const source = url.searchParams.get("source");
+      if (!source) return json({ error: "?source= required" }, { status: 400 });
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
+      }
+      const { summary, stale } = await summaries.staleness(source);
+      if (!summary) return json({ summary: null });
+      return json({
+        summary: { frontmatter: summary.frontmatter, body: summary.body },
+        stale,
+      });
+    }
+
+    if (url.pathname === "/api/sessions/summarize" && req.method === "DELETE") {
+      const source = url.searchParams.get("source");
+      if (!source) return json({ error: "?source= required" }, { status: 400 });
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
+      }
+      const removed = await summaries.delete(source);
+      if (!removed) {
+        return new Response(null, { status: 404, headers: CORS });
+      }
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/sessions/summarize" && req.method === "POST") {
+      // Stream a fresh summary from a local Ollama model. Two phases:
+      //   1. sample the session into a compact prompt (pure, fast),
+      //   2. open a stream to Ollama's /api/chat and forward each
+      //      content delta to the SPA as an SSE `chunk` event.
+      // On `done` we persist the joined body to <workspace>/summaries.
+      const body = (await req.json().catch(() => null)) as
+        | { source?: unknown; model?: unknown }
+        | null;
+      const source = typeof body?.source === "string" ? body.source : "";
+      const model = typeof body?.model === "string" ? body.model : "";
+      if (!source || !model) {
+        return json({ error: "source and model required" }, { status: 400 });
+      }
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
+      }
+      const parsed = await parseSessionFile(resolved.agent, source);
+      const sampled = sampleSessionForSummary(parsed.messages);
+      // Stat the source so we can record its mtime alongside the
+      // summary — that's what the staleness check compares later.
+      let sourceMtimeMs = 0;
+      try {
+        sourceMtimeMs = (await fsStat(source)).mtimeMs;
+      } catch {
+        // Source missing — proceed but record 0; the next staleness
+        // check will surface it as stale, which is correct.
+      }
+
+      const startedAt = Date.now();
+      const abort = new AbortController();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown) => {
+            try {
+              controller.enqueue(
+                sseEncoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch {
+              // controller already closed — caller cancelled
+            }
+          };
+
+          send("meta", {
+            model,
+            agent: resolved.agent,
+            sessionId: parsed.sessionId || undefined,
+            totalMessages: sampled.totalMessages,
+            includedMessages: sampled.includedMessages,
+            truncatedMessages: sampled.truncatedMessages,
+            estimatedTokens: sampled.estimatedTokens,
+          });
+
+          if (sampled.includedMessages === 0) {
+            send("error", {
+              kind: "empty",
+              message: "Nothing to summarise: no user / assistant text in this session.",
+            });
+            try { controller.close(); } catch {}
+            return;
+          }
+
+          const agentLabel =
+            resolved.agent === "claude"
+              ? "Claude Code"
+              : resolved.agent === "codex"
+                ? "Codex"
+                : "a local Ollama model";
+          const systemPrompt =
+            `You are a precise technical summariser. The excerpt below is a chat between you (the developer) and ${agentLabel}. ` +
+            "Write a single brief paragraph — ideally under 300 characters — describing what you were trying to do and what was decided or built. " +
+            "Address the developer as \"you\", not \"the user\". " +
+            "Plain text only: no markdown, no bullets, no headings, no backticks. " +
+            "Do not echo the transcript.";
+
+          const fullBody: { collected: string } = { collected: "" };
+          try {
+            const res = await fetch("http://127.0.0.1:11434/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model,
+                stream: true,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: sampled.prompt },
+                  { role: "user", content: "Now summarise the conversation above." },
+                ],
+                options: {
+                  // Size the KV cache so the prompt fits; bump above
+                  // the model's default 2K to avoid silent truncation.
+                  num_ctx: Math.max(8192, Math.ceil(sampled.estimatedTokens * 1.5) + 2048),
+                },
+              }),
+              signal: abort.signal,
+            });
+            if (!res.ok || !res.body) {
+              send("error", {
+                kind: "ollama_http",
+                message: `Ollama responded ${res.status} ${res.statusText}`,
+              });
+              try { controller.close(); } catch {}
+              return;
+            }
+            const reader = res.body.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let nl: number;
+              while ((nl = buf.indexOf("\n")) !== -1) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (!line) continue;
+                try {
+                  const obj = JSON.parse(line) as {
+                    message?: { content?: string };
+                    done?: boolean;
+                    error?: string;
+                  };
+                  if (obj.error) {
+                    send("error", { kind: "ollama_payload", message: obj.error });
+                    try { controller.close(); } catch {}
+                    return;
+                  }
+                  const chunk = obj.message?.content ?? "";
+                  if (chunk) {
+                    fullBody.collected += chunk;
+                    send("chunk", { delta: chunk });
+                  }
+                  if (obj.done) break;
+                } catch {
+                  // ignore malformed line
+                }
+              }
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            send("error", { kind: "ollama_unreachable", message: msg });
+            try { controller.close(); } catch {}
+            return;
+          }
+
+          const elapsedMs = Date.now() - startedAt;
+          try {
+            await summaries.write(source, {
+              agent: resolved.agent,
+              sessionId: parsed.sessionId || undefined,
+              model,
+              sourceMtimeMs,
+              generatedAt: new Date(startedAt).toISOString(),
+              includedMessages: sampled.includedMessages,
+              totalMessages: sampled.totalMessages,
+              truncatedMessages: sampled.truncatedMessages,
+              estimatedTokens: sampled.estimatedTokens,
+              elapsedMs,
+              body: fullBody.collected,
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            send("error", { kind: "write_failed", message: msg });
+            try { controller.close(); } catch {}
+            return;
+          }
+          send("done", { elapsedMs });
+          try { controller.close(); } catch {}
+        },
+        cancel() {
+          abort.abort();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    if (url.pathname === "/api/ollama/pull" && req.method === "POST") {
+      // Stream `ollama pull <model>` progress lines as SSE so the
+      // SPA can show a download spinner. We forward the CLI's
+      // human-readable stderr lines verbatim — the structured
+      // /api/pull HTTP endpoint would be cleaner but requires us to
+      // handle the "Ollama server isn't running" case, which the CLI
+      // already covers by talking to the local store directly.
+      const body = (await req.json().catch(() => null)) as
+        | { model?: unknown }
+        | null;
+      const model = typeof body?.model === "string" ? body.model.trim() : "";
+      if (!model) return json({ error: "model required" }, { status: 400 });
+      // Refuse anything that looks like a flag or shell trick; the
+      // CLI argument is constrained to a tag like "name:tag".
+      if (!/^[A-Za-z0-9_./:\-]+$/.test(model)) {
+        return json({ error: "invalid model name" }, { status: 400 });
+      }
+      const ollamaBin = await resolveAgentBinary("ollama");
+      if (!ollamaBin) {
+        return json({ error: "ollama not installed" }, { status: 503 });
+      }
+      const proc = Bun.spawn([ollamaBin, "pull", model], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown) => {
+            try {
+              controller.enqueue(
+                sseEncoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch {}
+          };
+          const pump = async (s: ReadableStream<Uint8Array> | null) => {
+            if (!s) return;
+            const reader = s.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              // Ollama uses CR for live progress repaints; split on
+              // both so the client sees incremental updates.
+              const parts = buf.split(/[\r\n]/);
+              buf = parts.pop() ?? "";
+              for (const p of parts) {
+                const line = p.trim();
+                if (line) send("progress", { line });
+              }
+            }
+            if (buf.trim()) send("progress", { line: buf.trim() });
+          };
+          await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+          const code = await proc.exited;
+          if (code === 0) send("done", { code });
+          else send("error", { kind: "pull_failed", code });
+          try { controller.close(); } catch {}
+        },
+        cancel() {
+          try {
+            proc.kill();
+          } catch {}
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
     }
 
     if (url.pathname === "/api/active-sends" && req.method === "GET") {

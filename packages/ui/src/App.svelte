@@ -24,6 +24,7 @@
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import SummarizeDialog from "./SummarizeDialog.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
@@ -1175,6 +1176,69 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  /** Source-path fallback for freshly-created Ollama chat sessions,
+   *  keyed by `__transcript__:ollama:<termId>` source. Set in
+   *  `openNewOllamaChat` from the POST response so OllamaTranscriptView
+   *  has a sourcePath before the next /api/repos rescan picks the new
+   *  file up into `wt.agents`. Cleared on close. */
+  let ollamaSourcePathOverride: Record<string, string> = {};
+
+  /** Open a fresh API-driven Ollama chat column. POSTs to
+   *  /api/ollama/sessions to create the JSONL with header, then routes
+   *  through the same `__transcript__:ollama:<termId>` rendering path
+   *  the picker already uses for past sessions — except now there's a
+   *  composer at the bottom of SessionView and the conversation is
+   *  driven via /api/ollama/chat instead of a PTY. See
+   *  plans/ollama.md "Plan: API-driven chat mode". */
+  async function openNewOllamaChat(wtPath: string, model: string): Promise<void> {
+    try {
+      const res = await fetch("/api/ollama/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, wt: wtPath, cwd: wtPath }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        console.error(
+          `openNewOllamaChat: daemon returned ${res.status} ${body?.error ?? ""}`,
+        );
+        return;
+      }
+      const body = (await res.json()) as {
+        termId?: string;
+        source?: string;
+        model?: string;
+      };
+      const termId = body.termId;
+      const sourcePath = body.source;
+      if (!termId) return;
+      const transcriptSource = `__transcript__:ollama:${termId}`;
+      if (sourcePath) {
+        ollamaSourcePathOverride = {
+          ...ollamaSourcePathOverride,
+          [transcriptSource]: sourcePath,
+        };
+      }
+      const existing = openSessionsByWt[wtPath] ?? [];
+      const insertAt = visibleLeftInsertIndex(wtPath, existing);
+      const next = [...existing];
+      next.splice(insertAt, 0, {
+        agent: "ollama",
+        source: transcriptSource,
+        ollamaModel: model,
+      });
+      openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+      scrollNewColIntoView(wtPath, transcriptSource);
+      // Refresh /api/repos so wt.agents picks up the new JSONL — needed
+      // by the OllamaTranscriptView render branch's ollamaMeta lookup
+      // on a subsequent reload (the immediate render uses the override
+      // above).
+      void load();
+    } catch (e) {
+      console.error("openNewOllamaChat:", e);
+    }
+  }
+
   /** Open a brand-new "Terminal" column in this worktree — a plain PTY
    *  running the user's $SHELL. Mirrors `openNewAgentSession` but uses
    *  agent="shell"; the render branch picks `defaultShell` as the cmd. */
@@ -1682,6 +1746,11 @@
       ),
     };
     if (focusedSource === s.source) focusedSource = null;
+    if (ollamaSourcePathOverride[s.source]) {
+      const next = { ...ollamaSourcePathOverride };
+      delete next[s.source];
+      ollamaSourcePathOverride = next;
+    }
   }
 
   // Drag-to-reorder for sessions inside one worktree's strip. We don't
@@ -4671,9 +4740,9 @@
                                             newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
                                             ollamaSubmenuOpen = { ...ollamaSubmenuOpen, [wt.path]: false };
                                             unfoldRowIfFolded(row.key);
-                                            openNewAgentSession(wt.path, "ollama", { ollamaModel: m.name });
+                                            void openNewOllamaChat(wt.path, m.name);
                                           }}
-                                          title={`Spawn \`ollama run ${m.name}\` in ${wt.path}`}
+                                          title={`Open a chat with ${m.name} in ${wt.path} (API-driven, full memory)`}
                                         >
                                           <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
                                           <span class="agent-row-name">{m.name}</span>
@@ -5553,21 +5622,22 @@
                             (a) => a.agent === "ollama" && a.sessionId === ollamaTermId,
                           )}
                           {@const ollamaModelLabel = s.ollamaModel ?? ollamaMeta?.model ?? ollamaMeta?.title ?? "ollama"}
-                          {#if ollamaMeta?.source}
+                          {@const ollamaSourcePath = ollamaMeta?.source ?? ollamaSourcePathOverride[s.source]}
+                          {#if ollamaSourcePath}
                             <OllamaTranscriptView
                               termId={ollamaTermId}
                               wt={wt.path}
                               model={ollamaModelLabel}
-                              sourcePath={ollamaMeta.source}
+                              sourcePath={ollamaSourcePath}
                               on:resume={(e) =>
                                 resumePastOllama(wt.path, s.source, e.detail.model, e.detail.priorText)}
                               on:close={() => closeSessionInWt(wt.path, s)}
                             />
                           {:else}
-                            <!-- No matching AgentSession (still mid-
-                                 spawn or the daemon hasn't written
-                                 the header yet). Skip render rather
-                                 than show a broken-looking column. -->
+                            <!-- No matching AgentSession yet (still
+                                 mid-spawn or /api/repos hasn't
+                                 rescanned). Show a brief placeholder
+                                 instead of an empty frame. -->
                             <div class="session muted small" style="padding: 0.75rem 1rem;">
                               starting…
                             </div>
@@ -5925,6 +5995,7 @@
 <StickyNotesLayer changeKey={notesChangeKey} {repos} />
 
 <ConfirmDialog />
+<SummarizeDialog />
 
 {#if dirtyCheckout}
   <div

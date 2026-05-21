@@ -203,6 +203,201 @@ describe("parseOllamaJsonl", () => {
     expect(parseOllamaJsonl("").messages).toEqual([]);
     expect(parseOllamaJsonl("not json\nalso garbage").messages).toEqual([]);
   });
+
+  test("builds messages from structured `turn` entries", () => {
+    // API-driven sessions write one `turn` entry per user/assistant
+    // turn. The parser should take them verbatim — no PTY parsing,
+    // no ANSI stripping, no placeholder repaint dance.
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "qwen3-coder:30b",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:01Z",
+        role: "user",
+        content: "hello qwen",
+        model: "qwen3-coder:30b",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:03Z",
+        role: "assistant",
+        content: "Hi! What can I help with?",
+        model: "qwen3-coder:30b",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    expect(out.messages).toEqual([
+      {
+        role: "user",
+        blocks: [{ type: "text", text: "hello qwen" }],
+        timestamp: "2026-01-01T00:00:01Z",
+      },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Hi! What can I help with?" }],
+        author: "qwen3-coder:30b",
+        timestamp: "2026-01-01T00:00:03Z",
+      },
+    ]);
+  });
+
+  test("turn entries beat output entries in the same file", () => {
+    // Mixed file: an old session captured via PTY (output entries)
+    // that was later continued via the chat API (turn entries). We
+    // pick the turn entries and ignore the PTY chunks to avoid
+    // double-rendering the same conversation through two parsers.
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "m",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "output",
+        ts: "2026-01-01T00:00:01Z",
+        data: ">>> Send a message (/? for help)pty hello\npty world\n",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:02Z",
+        role: "user",
+        content: "api hello",
+        model: "m",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:03Z",
+        role: "assistant",
+        content: "api world",
+        model: "m",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    expect(out.messages.map((m) => [m.role, m.blocks[0]?.text])).toEqual([
+      ["user", "api hello"],
+      ["assistant", "api world"],
+    ]);
+  });
+
+  test("per-turn model attribution from turn entries", () => {
+    // turn entries carry their own model — overrides whatever the
+    // header said. Lets a multi-model conversation (user switched
+    // models mid-chat) attribute each assistant bubble correctly.
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "gemma4:latest",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:01Z",
+        role: "user",
+        content: "q1",
+        model: "gemma4:latest",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:02Z",
+        role: "assistant",
+        content: "gemma reply",
+        model: "gemma4:latest",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:03Z",
+        role: "user",
+        content: "q2",
+        model: "qwen3-coder:30b",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:04Z",
+        role: "assistant",
+        content: "qwen reply",
+        model: "qwen3-coder:30b",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    const assistants = out.messages.filter((m) => m.role === "assistant");
+    expect(assistants.map((m) => m.author)).toEqual([
+      "gemma4:latest",
+      "qwen3-coder:30b",
+    ]);
+  });
+
+  test("turn entries with no model fall back to header model", () => {
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "fallback:latest",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:01Z",
+        role: "user",
+        content: "hi",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:02Z",
+        role: "assistant",
+        content: "hello",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(assistant?.author).toBe("fallback:latest");
+  });
+
+  test("skips malformed turn entries without crashing", () => {
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-1",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "m",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      { kind: "turn", role: "user" }, // missing content
+      { kind: "turn", role: "weird", content: "x" }, // bad role
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:02Z",
+        role: "user",
+        content: "real",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:03Z",
+        role: "assistant",
+        content: "ok",
+      },
+    ]);
+    const out = parseOllamaJsonl(text);
+    expect(out.messages.map((m) => [m.role, m.blocks[0]?.text])).toEqual([
+      ["user", "real"],
+      ["assistant", "ok"],
+    ]);
+  });
 });
 
 describe("parseOllamaListOutput", () => {

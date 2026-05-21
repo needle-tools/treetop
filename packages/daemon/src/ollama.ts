@@ -25,7 +25,8 @@ export interface OllamaModel {
   parameterSize?: string;
 }
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
+export const OLLAMA_HOST =
+  process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
 
 /**
  * Fetch installed Ollama models via the HTTP API.

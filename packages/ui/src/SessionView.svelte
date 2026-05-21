@@ -4,9 +4,11 @@
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
   import LoadingOverlay from "./LoadingOverlay.svelte";
+  import LoadingSpinner from "./LoadingSpinner.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
+  import { openSummarize, activeSummarize } from "./summarize-dialog";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -126,6 +128,11 @@
   export let contextWindow: number | undefined = undefined;
   /** Model id so the chip can pick a context-window cap (200k vs 1M). */
   export let model: string | undefined = undefined;
+  /** Resting-state line cap for the read-mode summary snippet pill.
+   *  The pill hover-expands to 50vh same as the TUI pin; this prop
+   *  controls the at-rest cap. Default 6 so a ~300-char one-paragraph
+   *  summary fits without truncation. */
+  export let summaryMaxLines: number = 6;
 
   interface NormalizedBlock {
     type:
@@ -261,6 +268,170 @@
   let inputText = "";
   let sending = false;
   let sendError = "";
+  /** Cached summary body for this session, fetched lazily from
+   *  `<workspace>/summaries/<key>.md` via /api/sessions/summarize.
+   *  Empty string when none exists. Drives both the always-visible
+   *  Summarize / Refresh button (in read mode) and the hover-reveal
+   *  snippet pill that mirrors the TUI's last-user-message pin. */
+  let summarySnippet: string = "";
+  let summaryModel: string = "";
+  let summarySource: string = "";
+  /** Total user+assistant text turns at the moment the cached
+   *  summary was generated. The Refresh chip is hidden when the
+   *  current count is within 2 of this — a fresh summary stays
+   *  useful for a few more turns, so we don't badger the user. */
+  let summaryTotalMessages: number = 0;
+  /** "Show Refresh" gate: hide the chip when a summary exists and
+   *  fewer than 2 messages have been added since. Counts only
+   *  user/assistant turns with non-empty text (same shape the
+   *  sampler stores under `totalMessages`). */
+  $: currentSampledCount = ((): number => {
+    const msgs = session?.messages;
+    if (!msgs) return 0;
+    let n = 0;
+    for (const m of msgs) {
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      const text = (m.blocks ?? [])
+        .filter((b) => b?.type === "text" || b?.type === "marker")
+        .map((b) => b?.text ?? "")
+        .join("")
+        .trim();
+      if (text) n++;
+    }
+    return n;
+  })();
+  $: messagesSinceSummary = summarySnippet
+    ? Math.max(0, currentSampledCount - summaryTotalMessages)
+    : 0;
+  $: shouldShowRefresh = !!summarySnippet && messagesSinceSummary >= 2;
+  /** True while a Refresh summary stream is running in-place
+   *  (chip-driven, no dialog). Drives the chip label/disabled
+   *  state and the snippet's live-update mode. */
+  let summaryRefreshing = false;
+  async function refreshSummary(): Promise<void> {
+    if (!source) {
+      summarySnippet = "";
+      summaryModel = "";
+      summaryTotalMessages = 0;
+      summarySource = "";
+      return;
+    }
+    const targetSource = source;
+    try {
+      const qs = new URLSearchParams({ source: targetSource });
+      const res = await fetch(`/api/sessions/summarize?${qs.toString()}`);
+      if (!res.ok) {
+        // Race: `source` could have changed while in flight.
+        if (targetSource === source) {
+          summarySnippet = "";
+          summaryModel = "";
+          summaryTotalMessages = 0;
+        }
+        return;
+      }
+      const body = (await res.json()) as {
+        summary?: {
+          body?: string;
+          frontmatter?: { model?: string; totalMessages?: number };
+        } | null;
+      };
+      if (targetSource !== source) return;
+      summarySnippet = body.summary?.body?.trim() ?? "";
+      summaryModel = body.summary?.frontmatter?.model ?? "";
+      summaryTotalMessages = body.summary?.frontmatter?.totalMessages ?? 0;
+      summarySource = targetSource;
+    } catch {
+      if (targetSource === source) {
+        summarySnippet = "";
+        summaryModel = "";
+        summaryTotalMessages = 0;
+      }
+    }
+  }
+  /** Re-run the summary using the last-recorded model, streaming
+   *  the result back into `summarySnippet` so the pill updates
+   *  live. No dialog — chip-only flow. Falls back to opening the
+   *  dialog when we don't know which model to reuse. */
+  async function refreshSummaryInPlace(): Promise<void> {
+    if (summaryRefreshing) return;
+    if (!source) return;
+    if (!summaryModel) {
+      // Nothing on disk to know which model to retry with — punt
+      // to the full dialog so the user can pick.
+      openSummarize(source);
+      return;
+    }
+    summaryRefreshing = true;
+    const targetSource = source;
+    const targetModel = summaryModel;
+    let collected = "";
+    try {
+      const res = await fetch("/api/sessions/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: targetSource, model: targetModel }),
+      });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          let event = "message";
+          let data = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          try {
+            const payload = JSON.parse(data) as {
+              delta?: string;
+              message?: string;
+            };
+            if (event === "chunk") {
+              // Buffer only — the pill renders a spinner while
+              // `summaryRefreshing` is true, so we don't show the
+              // partial text mid-stream. The final body lands on
+              // disk and refreshSummary() pulls it in one shot.
+              collected += payload.delta ?? "";
+            } else if (event === "error") {
+              // Re-pull the canonical (possibly unchanged) cache so the
+              // snippet doesn't end stuck on a partial body.
+              await refreshSummary();
+              return;
+            }
+          } catch {
+            // ignore malformed line
+          }
+        }
+      }
+      await refreshSummary();
+    } catch {
+      await refreshSummary();
+    } finally {
+      summaryRefreshing = false;
+    }
+  }
+  // Re-fetch on mount + whenever `source` changes.
+  $: { void source; void refreshSummary(); }
+  // Re-fetch whenever the global summarize dialog *closes* against
+  // this source — picks up newly-generated or just-deleted summaries
+  // without polling.
+  let prevDialogSource: string | null = null;
+  $: {
+    const cur = $activeSummarize;
+    if (!cur && prevDialogSource === source) {
+      void refreshSummary();
+    }
+    prevDialogSource = cur?.source ?? null;
+  }
   /** Render mode for this column. "read" is the markdown-rendered chat
    *  view (default). "terminal" flips the panel to an xterm.js TUI
    *  running `claude --resume <sid>` against the same session id. The
@@ -518,6 +689,16 @@
       },
       {
         kind: "action",
+        label: "Summarize with Ollama",
+        icon: "✦",
+        disabled: !(session && session.messages.length > 0),
+        title: session && session.messages.length > 0
+          ? "Summarize this session with a local Ollama model"
+          : "Session is empty — nothing to summarize",
+        onSelect: () => openSummarize(source),
+      },
+      {
+        kind: "action",
         label: "Save as link",
         icon: "⤴",
         // Anchor is the current worktree — same data the saved-link
@@ -677,7 +858,132 @@
     void refreshInflight();
   }
 
+  /** Active AbortController for an in-flight /api/ollama/chat stream.
+   *  Set in sendOllamaMessage on POST start, cleared on completion or
+   *  abort. The Stop button calls `.abort()`. */
+  let ollamaAbort: AbortController | null = null;
+  /** Streaming assistant bubble's index in session.messages while a
+   *  response is arriving. Lets each SSE chunk append to the right
+   *  bubble. Cleared on `done` or abort. */
+  let ollamaStreamingIdx: number | null = null;
+
+  async function sendOllamaMessage(): Promise<void> {
+    const text = inputText.trim();
+    if (!text || sending || !session?.sessionId) return;
+    sending = true;
+    sendError = "";
+    // Optimistic local update: drop the user turn + an empty
+    // assistant bubble into the rendered list immediately so the
+    // chat feels responsive while the daemon's first byte is still
+    // in flight.
+    const optimisticUser: NormalizedMessage = {
+      role: "user",
+      blocks: [{ type: "text", text }],
+      timestamp: new Date().toISOString(),
+    };
+    const optimisticAssistant: NormalizedMessage = {
+      role: "assistant",
+      blocks: [{ type: "text", text: "" }],
+      timestamp: new Date().toISOString(),
+      author: model,
+    };
+    if (session) {
+      session.messages = [...session.messages, optimisticUser, optimisticAssistant];
+      ollamaStreamingIdx = session.messages.length - 1;
+    }
+    inputText = "";
+    const ac = new AbortController();
+    ollamaAbort = ac;
+    try {
+      const res = await fetch("/api/ollama/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ termId: session.sessionId, content: text }),
+        signal: ac.signal,
+      });
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      // SSE-frame parser: events look like
+      //   event: chunk\ndata: {...}\n\n
+      // Frames are delimited by a blank line. We buffer until we have
+      // a complete frame, parse, then continue.
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let frameEnd: number;
+        while ((frameEnd = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, frameEnd);
+          buf = buf.slice(frameEnd + 2);
+          let event = "message";
+          let dataLine = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(dataLine) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (event === "chunk" && typeof payload.delta === "string") {
+            applyOllamaChunk(payload.delta);
+          } else if (event === "error") {
+            const msg =
+              typeof payload.message === "string" ? payload.message : "stream error";
+            sendError = msg;
+          } else if (event === "done") {
+            // Stream finished cleanly. Stop here; the outer reader
+            // loop sees `done` on the next read.
+          }
+        }
+      }
+    } catch (e) {
+      if ((e as { name?: string })?.name === "AbortError") {
+        // Stopped by user — leave the partial bubble in place; the
+        // daemon will have persisted it with `partial: true`.
+      } else {
+        sendError = e instanceof Error ? e.message : String(e);
+      }
+    } finally {
+      sending = false;
+      ollamaAbort = null;
+      ollamaStreamingIdx = null;
+      // Re-sync from disk so timestamps and any daemon-side
+      // normalization replace the optimistic local entries.
+      void load();
+    }
+  }
+
+  function applyOllamaChunk(delta: string): void {
+    if (ollamaStreamingIdx === null || !session) return;
+    const idx = ollamaStreamingIdx;
+    const msg = session.messages[idx];
+    if (!msg) return;
+    const block = msg.blocks[0];
+    if (!block || block.type !== "text") return;
+    block.text = (block.text ?? "") + delta;
+    // Force reactivity — Svelte 4 needs a new identity for the
+    // messages array to re-render the bubble.
+    session = { ...session, messages: [...session.messages] };
+  }
+
+  function stopOllamaStream(): void {
+    ollamaAbort?.abort();
+  }
+
   async function sendMessage() {
+    if (agent === "ollama") {
+      await sendOllamaMessage();
+      return;
+    }
     const text = inputText.trim();
     if (!text || sending || !session?.sessionId || !session.cwd) return;
     sending = true;
@@ -865,6 +1171,7 @@
       {lastLoadedAt}
       {inflight}
       {menuItems}
+      titleTooltipExtra={summarySnippet || undefined}
       onTitleSaved={(next) => onManualTitleSaved(next)}
       onResume={() => {
         if (onCustomResume) onCustomResume();
@@ -884,6 +1191,54 @@
           {lastUserMessage}
         </div>
       </div>
+    {/if}
+    {#if mode === "read" && session && session.messages.length > 0}
+      <!-- Always-visible Summarize / Refresh chip. The hover-reveal
+           snippet pill mirrors the TUI's last-user-message pin so
+           the read view picks up the same affordance. Refresh is
+           hidden when the cached summary is still close enough to
+           the current tail (< 2 new turns) — no need to badger the
+           user for a re-run that won't change much. -->
+      {#if !summarySnippet || shouldShowRefresh || summaryRefreshing}
+        <div class="summary-chip-wrap">
+          <button
+            type="button"
+            class="summary-chip"
+            disabled={summaryRefreshing}
+            on:click={() => {
+              if (summarySnippet) void refreshSummaryInPlace();
+              else openSummarize(source);
+            }}
+            title={summaryRefreshing
+              ? "Refreshing summary…"
+              : summarySnippet
+                ? `Refresh summary (${messagesSinceSummary} new messages since last) with ${summaryModel || "Ollama"}`
+                : "Summarize this session with a local Ollama model"}
+          >
+            {#if summaryRefreshing}
+              <LoadingSpinner size="0.7rem" thickness="2px" label="Refreshing summary" />
+              <span>Refreshing…</span>
+            {:else if summarySnippet}
+              ↻ Refresh summary
+            {:else}
+              ✦ Summarize
+            {/if}
+          </button>
+        </div>
+      {/if}
+      {#if summarySnippet}
+        <!-- The old snippet stays visible during a refresh — only
+             the chip spins. Two spinners felt redundant. -->
+        <div class="pinned-last-msg-wrap summary-stack" class:revealed={pinnedRevealed}>
+          <button
+            type="button"
+            class="pinned-last-msg pinned-summary"
+            aria-label="Open summary"
+            style="--summary-max-lines: {summaryMaxLines}"
+            on:click={() => openSummarize(source)}
+          >{summarySnippet}</button>
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -1045,6 +1400,50 @@
     </ul>
   {/if}
 
+  {#if agent === "ollama" && mode === "read"}
+    <!-- API-driven Ollama chat composer. Lives at the bottom of the
+         session column. Lets the user keep talking to the same
+         /api/ollama/chat session — full memory, no TUI involved.
+         See plans/ollama.md "Plan: API-driven chat mode". -->
+    <div class="composer">
+      <div class="composer-box">
+        <textarea
+          class="composer-input"
+          bind:value={inputText}
+          placeholder="Message {model || 'Ollama'}…"
+          rows="2"
+          on:keydown={onComposerKey}
+          disabled={sending && !ollamaAbort}
+        ></textarea>
+        {#if sending}
+          <button
+            type="button"
+            class="composer-send is-sending"
+            on:click={stopOllamaStream}
+            title="Stop generating"
+            aria-label="Stop"
+          >
+            ◼
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="composer-send"
+            on:click={() => void sendMessage()}
+            disabled={!inputText.trim()}
+            title="Send (Enter). Shift+Enter for newline."
+            aria-label="Send"
+          >
+            ↑
+          </button>
+        {/if}
+      </div>
+      {#if sendError}
+        <div class="composer-error" title={sendError}>{sendError}</div>
+      {/if}
+    </div>
+  {/if}
+
 </div>
 
 <style>
@@ -1130,6 +1529,73 @@
   }
   .pinned-last-msg-wrap.revealed {
     opacity: 1;
+  }
+  /* Always-visible Summarize / Refresh chip in read mode — sits in
+     the same below-header zone as the pinned-last-msg pill, so the
+     read view picks up the TUI's pin affordance. Reset button
+     styles so it reads as a small ghost chip, not a form button. */
+  .summary-chip-wrap {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.3rem 0.5rem 0 0;
+    z-index: 3;
+    pointer-events: none;
+  }
+  .summary-chip {
+    pointer-events: auto;
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    background: rgba(26, 26, 27, 0.65);
+    color: var(--text-2);
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .summary-chip:hover:not(:disabled) {
+    background: rgba(26, 26, 27, 0.95);
+    color: var(--text-1);
+    border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  }
+  .summary-chip:disabled {
+    cursor: progress;
+    opacity: 0.9;
+  }
+  /* When both the chip and the snippet pill are visible (read mode +
+     summary present), the snippet pill needs to clear the chip's
+     row. We shift its wrap downwards by ~1.7rem (chip height + gap)
+     so the two stack cleanly instead of overlapping. */
+  .pinned-last-msg-wrap.summary-stack {
+    padding-top: 1.9rem;
+  }
+  /* The snippet pill is rendered as a <button> for accessibility (click
+     opens the dialog). Reset the inherited button chrome so it reads
+     identical to the existing pinned-last-msg div. The line cap is
+     controlled by --summary-max-lines (set inline via the
+     `summaryMaxLines` prop) so callers can tune it per mount.
+     Unlike the TUI's last-message pin (which uses small monospace
+     to mirror terminal output), the summary is prose — read it in
+     the normal app font + normal text colour. */
+  .pinned-summary {
+    font: inherit;
+    font-family: inherit;
+    font-size: 0.78rem;
+    color: var(--text-1);
+    text-align: left;
+    cursor: pointer;
+    max-height: calc(var(--summary-max-lines, 6) * 1lh + 0.5rem);
+  }
+  .pinned-summary:hover {
+    background: rgba(26, 26, 27, 0.95);
   }
   .pinned-last-msg {
     /* Intrinsic text width, capped so a long message stays compact

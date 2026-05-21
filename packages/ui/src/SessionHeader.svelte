@@ -82,6 +82,11 @@
   export let messageCountFallback: string | undefined = undefined;
 
   export let menuItems: SessionMenuItem[] = [];
+  /** Extra line appended to ManualTitle's rest-state tooltip. The
+   *  SessionView passes the cached Ollama summary here so a hover
+   *  over the title surfaces the session's gist without expanding
+   *  the column. */
+  export let titleTooltipExtra: string | undefined = undefined;
 
   // Callbacks
   export let onTitleSaved: (next: string) => void = () => {};
@@ -176,6 +181,7 @@
     <ManualTitle
       {source}
       value={manualTitle}
+      extraTooltip={titleTooltipExtra}
       on:saved={(e) => onTitleSaved(e.detail.title)}
     />
     {#if ctxChip}

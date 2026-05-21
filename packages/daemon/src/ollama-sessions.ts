@@ -77,14 +77,46 @@ export interface OllamaModelChangeEntry {
   model: string;
 }
 
+/** Structured user/assistant turn written by the daemon's
+ *  `/api/ollama/chat` endpoint — the canonical record for
+ *  API-driven sessions. One entry per turn, not per chunk; the
+ *  endpoint buffers the streamed response and writes the complete
+ *  assistant turn on stream completion (or `partial: true` if the
+ *  client cancelled mid-stream).
+ *
+ *  When any `turn` entries exist in a file, the parser uses only
+ *  those and ignores `output` chunks (see `parseOllamaJsonl`). */
+export interface OllamaTurnEntry {
+  kind: "turn";
+  ts: string;
+  role: "user" | "assistant";
+  /** The user's input or the model's reply, verbatim. No markdown
+   *  processing — the renderer handles that. */
+  content: string;
+  /** Model that produced this turn. Overrides the header's model on
+   *  a per-turn basis so multi-model conversations attribute each
+   *  assistant bubble correctly. */
+  model?: string;
+  /** Set when the client disconnected before the model finished
+   *  streaming. The content is whatever was received up to that
+   *  point — better than losing it. */
+  partial?: boolean;
+}
+
 export type OllamaEntry =
   | OllamaHeader
   | OllamaExitEntry
   | OllamaOutputEntry
-  | OllamaModelChangeEntry;
+  | OllamaModelChangeEntry
+  | OllamaTurnEntry;
 
 export class OllamaSessionsLog {
   private constructor(public readonly dir: string) {}
+
+  /** Per-termId write chain so concurrent appends serialize through
+   *  the same Promise. Prevents interleaved JSONL lines when a
+   *  streaming-response writer races with an abort-write. */
+  private writeChains = new Map<string, Promise<void>>();
 
   /** Open (and lazily create) `<workspace>/ollama/`. Idempotent — call
    *  on daemon start. */
@@ -105,21 +137,132 @@ export class OllamaSessionsLog {
     return join(this.dir, `${termId}.jsonl`);
   }
 
+  /** Serialize an append-to-this-termId through a per-termId promise
+   *  chain. Ensures two callers writing to the same file end up with
+   *  whole lines in order, not interleaved bytes. */
+  private async serialize(termId: string, op: () => Promise<void>): Promise<void> {
+    const prev = this.writeChains.get(termId) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    this.writeChains.set(termId, next);
+    try {
+      await next;
+    } finally {
+      // Clean up if we're the tail of the chain.
+      if (this.writeChains.get(termId) === next) {
+        this.writeChains.delete(termId);
+      }
+    }
+  }
+
   /** Write the header line. Called once per ollama session, on spawn. */
   async writeHeader(header: OllamaHeader): Promise<void> {
-    await appendFile(this.pathFor(header.termId), JSON.stringify(header) + "\n");
+    await this.serialize(header.termId, () =>
+      appendFile(this.pathFor(header.termId), JSON.stringify(header) + "\n"),
+    );
   }
 
   /** Append an exit record when the PTY ends. */
   async appendExit(termId: string, entry: OllamaExitEntry): Promise<void> {
-    await appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n");
+    await this.serialize(termId, () =>
+      appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
+    );
   }
 
   /** Append a chunk of captured PTY output. Called by the periodic
    *  flush in the spawn handler; not in the hot path of every PTY
    *  byte. The caller is responsible for buffering between flushes. */
   async appendOutput(termId: string, entry: OllamaOutputEntry): Promise<void> {
-    await appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n");
+    await this.serialize(termId, () =>
+      appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
+    );
+  }
+
+  /** Append a structured user/assistant turn. Used by `/api/ollama/chat`
+   *  for API-driven sessions — one entry per turn (not per chunk),
+   *  written on stream completion or abort. */
+  async appendTurn(termId: string, entry: OllamaTurnEntry): Promise<void> {
+    await this.serialize(termId, () =>
+      appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
+    );
+  }
+
+  /** Reconstruct the messages[] array for an /api/chat request from
+   *  the on-disk transcript. Handles both formats:
+   *   - Pure API-driven (turn entries only) — direct mapping.
+   *   - Legacy PTY-capture (output entries only) — defers to
+   *     `parseOllamaJsonl` to recover turns from the PTY transcript.
+   *   - Mixed file — turn entries win (same rule the parser uses),
+   *     output chunks are silently dropped.
+   *
+   *  Returns the model the session is bound to as well, so callers
+   *  don't have to read the header separately. Model precedence:
+   *  latest turn entry's `model` → most recent `kind: "model"`
+   *  marker → header model.
+   */
+  async readMessagesForChat(
+    termId: string,
+  ): Promise<{
+    model: string;
+    messages: { role: "user" | "assistant"; content: string }[];
+  } | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.pathFor(termId), "utf-8");
+    } catch {
+      return null;
+    }
+    let header: OllamaHeader | null = null;
+    let activeModel: string | undefined;
+    const turns: { role: "user" | "assistant"; content: string }[] = [];
+    let sawTurn = false;
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const kind = obj.kind;
+      if (kind === "header") {
+        const h = parseHeader(line);
+        if (h) {
+          header = h;
+          activeModel = h.model;
+        }
+      } else if (kind === "model" && typeof obj.model === "string") {
+        activeModel = obj.model;
+      } else if (kind === "turn") {
+        const role = obj.role;
+        const content = obj.content;
+        if ((role === "user" || role === "assistant") && typeof content === "string") {
+          sawTurn = true;
+          turns.push({ role, content });
+          if (typeof obj.model === "string") activeModel = obj.model;
+        }
+      }
+    }
+    if (!header) return null;
+    if (sawTurn) {
+      return { model: activeModel ?? header.model, messages: turns };
+    }
+    // No structured turns — fall back to the PTY-capture parser.
+    // Import lazily to avoid pulling sessions.ts at module load (it
+    // has its own dependency surface). Top-level `import` would
+    // create a cycle since sessions.ts may import from us in future.
+    const { parseOllamaJsonl } = await import("./sessions");
+    const parsed = parseOllamaJsonl(raw);
+    const ptyTurns: { role: "user" | "assistant"; content: string }[] = [];
+    for (const m of parsed.messages) {
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      const text = m.blocks
+        .map((b) => (typeof b.text === "string" ? b.text : ""))
+        .join("\n")
+        .trim();
+      if (!text) continue;
+      ptyTurns.push({ role: m.role, content: text });
+    }
+    return { model: activeModel ?? header.model, messages: ptyTurns };
   }
 
   /** Read the full transcript: header + every `output` chunk in order,

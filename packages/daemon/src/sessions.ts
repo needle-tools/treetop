@@ -395,41 +395,35 @@ export function parseCodexJsonl(text: string): NormalizedSession {
 /**
  * Parse the daemon's per-Ollama-session JSONL into a normalized chat.
  *
- * The on-disk file holds `kind: "header"`, `kind: "output"` chunks
- * (raw PTY bytes captured every ~3s while the session is live), and
- * `kind: "exit"`. Ollama itself never writes structured turns — we
- * have to recover them from the captured PTY transcript.
+ * Two on-disk formats coexist (see plans/ollama.md):
  *
- * The TUI's prompt is `>>> Send a message (/? for help)` on its own
- * line; user-typed text appears appended to that same line (echoed
- * by the readline). The model's reply follows on subsequent lines
- * until the next `>>> ` prompt. We:
- *   1. Strip ANSI escapes so the text is plain.
- *   2. Strip the placeholder prompt fragments TUI repaints emit.
- *   3. Walk lines, treating each `>>> ` as a turn boundary: the rest
- *      of the line is the user message, anything until the next
- *      prompt is the assistant message.
+ *  1. **PTY-capture** (legacy): `kind: "output"` chunks of raw PTY
+ *     bytes captured while `ollama run <model>` was the live shell.
+ *     We have to recover turns from the captured transcript — strip
+ *     ANSI, strip the TUI's placeholder repaints, split on `>>> `.
+ *     Best-effort: a model that emits `>>> ` inside its own response
+ *     confuses the splitter, and multi-line input may not round-trip
+ *     perfectly.
+ *  2. **API-driven** (current): `kind: "turn"` entries written one
+ *     per user/assistant turn by the daemon's `/api/ollama/chat`
+ *     endpoint. Taken verbatim — no parsing dance needed.
  *
- * Best-effort: a model that emits `>>> ` inside its own response
- * would confuse the splitter, and multi-line user input pasted into
- * the TUI may not round-trip perfectly. Good enough for the read
- * view; if it bites, the alternative is to drive `/api/chat` from
- * supergit directly (see plans/ollama.md).
+ * When **any** `turn` entries exist in the file, we use only those
+ * and drop the `output` chunks. Mixing the two would double-render
+ * the same conversation through both parsers — the API-driven path
+ * is canonical when present.
  */
 export function parseOllamaJsonl(text: string): NormalizedSession {
   const out = emptySession("ollama");
   let startedAt: string | undefined;
   let endedAt: string | undefined;
-  // Track current model across the timeline so a future
-  // `kind: "model"` cut-over point attributes later assistant turns
-  // to the new model and earlier ones keep the prior. Today every
-  // session is single-model, but the structure is here.
-  //
-  // We walk entries in order, building segments of "output ranges
-  // captured under a given model" and parse each segment's turns
-  // independently. Joining at segment boundaries would lose the
-  // model-change cut, so we keep them separate.
+  // Track current model across the timeline so a `kind: "model"`
+  // cut-over point attributes later assistant turns to the new model
+  // and earlier ones keep the prior. Header sets the initial model.
+  let headerModel: string | undefined;
   let currentModel: string | undefined;
+  // Segments accumulate `output` chunks under their active model so
+  // joining at a model-change cut isn't lossy.
   const segments: { model: string | undefined; data: string }[] = [];
   function ensureSegment(model: string | undefined): { model: string | undefined; data: string } {
     const last = segments[segments.length - 1];
@@ -438,6 +432,9 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
     segments.push(seg);
     return seg;
   }
+  // Structured turns from `kind: "turn"` entries. When this is
+  // non-empty after the walk, it wins over `segments`.
+  const turns: NormalizedMessage[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
     let obj: Record<string, unknown>;
@@ -452,11 +449,32 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       if (typeof obj.termId === "string" && !out.sessionId)
         out.sessionId = obj.termId;
       if (typeof obj.createdAt === "string") startedAt = obj.createdAt;
-      if (typeof obj.model === "string") currentModel = obj.model;
+      if (typeof obj.model === "string") {
+        headerModel = obj.model;
+        currentModel = obj.model;
+      }
     } else if (kind === "model" && typeof obj.model === "string") {
       currentModel = obj.model;
     } else if (kind === "output" && typeof obj.data === "string") {
       ensureSegment(currentModel).data += obj.data;
+    } else if (kind === "turn") {
+      // Skip malformed entries rather than crashing the whole parse.
+      // A garbled turn shouldn't lose the rest of the conversation.
+      const role = obj.role;
+      const content = obj.content;
+      if ((role !== "user" && role !== "assistant") || typeof content !== "string") {
+        continue;
+      }
+      const msg: NormalizedMessage = {
+        role,
+        blocks: [{ type: "text", text: content }],
+      };
+      if (typeof obj.ts === "string") msg.timestamp = obj.ts;
+      if (role === "assistant") {
+        const turnModel = typeof obj.model === "string" ? obj.model : headerModel;
+        if (turnModel) msg.author = turnModel;
+      }
+      turns.push(msg);
     } else if (kind === "exit" && typeof obj.ts === "string") {
       endedAt = obj.ts;
     }
@@ -464,14 +482,21 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
   if (startedAt) out.startedAt = startedAt;
   if (endedAt) out.endedAt = endedAt;
 
+  // API-driven format wins when present.
+  if (turns.length > 0) {
+    out.messages.push(...turns);
+    return out;
+  }
+
+  // PTY-capture fallback.
   for (const seg of segments) {
     const stripped = stripAnsi(seg.data);
     for (const msg of splitOllamaTurns(stripped)) {
       // Stamp assistant turns with the model that produced them so
       // the UI can render the model name as the bubble's author —
-      // makes multi-model sessions (future) attributable per turn
-      // and single-model sessions read "Gemma" / "Qwen" instead of
-      // a generic "Ollama".
+      // makes multi-model sessions attributable per turn and
+      // single-model sessions read "Gemma" / "Qwen" instead of a
+      // generic "Ollama".
       if (msg.role === "assistant" && seg.model) {
         msg.author = seg.model;
       }
