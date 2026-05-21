@@ -51,7 +51,7 @@ describe("parseOllamaJsonl", () => {
     return entries.map((e) => JSON.stringify(e)).join("\n");
   }
 
-  test("recovers user/assistant turns from captured PTY output", () => {
+  test("reads header metadata and exit timestamp", () => {
     const text = build([
       {
         kind: "header",
@@ -61,16 +61,6 @@ describe("parseOllamaJsonl", () => {
         model: "gemma4:latest",
         createdAt: "2026-01-01T00:00:00Z",
       },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:01Z",
-        data: ">>> Send a message (/? for help)hello gemma\nHello! How can I help you today?\n\n",
-      },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:05Z",
-        data: ">>> Send a message (/? for help)what's 2+2?\n2+2 = 4\n",
-      },
       { kind: "exit", ts: "2026-01-01T00:00:10Z", code: 0 },
     ]);
     const out = parseOllamaJsonl(text);
@@ -79,18 +69,13 @@ describe("parseOllamaJsonl", () => {
     expect(out.sessionId).toBe("t-1");
     expect(out.startedAt).toBe("2026-01-01T00:00:00Z");
     expect(out.endedAt).toBe("2026-01-01T00:00:10Z");
-    expect(out.messages.map((m) => [m.role, m.blocks[0]?.text ?? ""])).toEqual([
-      ["user", "hello gemma"],
-      ["assistant", "Hello! How can I help you today?"],
-      ["user", "what's 2+2?"],
-      ["assistant", "2+2 = 4"],
-    ]);
+    expect(out.messages).toEqual([]);
   });
 
-  test("ignores TUI placeholder repaints and ANSI escapes", () => {
-    // The Ollama TUI repaints `Send a message (/? for help)` multiple
-    // times on the prompt line, often with ANSI cursor moves between.
-    // Both should be stripped so the user input survives clean.
+  test("ignores legacy PTY output entries", () => {
+    // Pre-cleanup sessions contained `kind: "output"` chunks of raw
+    // PTY bytes. The new parser doesn't try to recover turns from
+    // them — they render as header-only.
     const text = build([
       {
         kind: "header",
@@ -103,100 +88,11 @@ describe("parseOllamaJsonl", () => {
       {
         kind: "output",
         ts: "2026-01-01T00:00:01Z",
-        data:
-          ">>> Send a message (/? for help)\x1B[KSend a message (/? for help)who are you?\n" +
-          "\x1B[1mI am a helper.\x1B[0m\n\n",
+        data: ">>> Send a message (/? for help)hi\nhello\n",
       },
     ]);
     const out = parseOllamaJsonl(text);
-    expect(out.messages).toEqual([
-      { role: "user", blocks: [{ type: "text", text: "who are you?" }] },
-      {
-        role: "assistant",
-        blocks: [{ type: "text", text: "I am a helper." }],
-        author: "m",
-      },
-    ]);
-  });
-
-  test("skips banners before the first prompt", () => {
-    const text = build([
-      {
-        kind: "header",
-        termId: "t-1",
-        wt: "/p",
-        spawnCwd: "/p",
-        model: "m",
-        createdAt: "2026-01-01T00:00:00Z",
-      },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:01Z",
-        data: "Loading model m...\nReady.\n>>> Send a message (/? for help)hi\nhello\n",
-      },
-    ]);
-    const out = parseOllamaJsonl(text);
-    expect(out.messages.length).toBe(2);
-    expect(out.messages[0]?.role).toBe("user");
-    expect(out.messages[0]?.blocks[0]?.text).toBe("hi");
-  });
-
-  test("attributes each assistant turn to the active model", () => {
-    // Default case: one model for the whole session. Every assistant
-    // message gets the model from the header as its `author`.
-    const text = build([
-      {
-        kind: "header",
-        termId: "t-1",
-        wt: "/p",
-        spawnCwd: "/p",
-        model: "gemma4:latest",
-        createdAt: "2026-01-01T00:00:00Z",
-      },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:01Z",
-        data: ">>> Send a message (/? for help)hi\nhello there\n",
-      },
-    ]);
-    const out = parseOllamaJsonl(text);
-    expect(out.messages[0]?.role).toBe("user");
-    expect(out.messages[0]?.author).toBeUndefined();
-    expect(out.messages[1]?.role).toBe("assistant");
-    expect(out.messages[1]?.author).toBe("gemma4:latest");
-  });
-
-  test("re-attributes turns after a `kind: \"model\"` marker", () => {
-    // Forward-looking: the on-disk format reserves a `kind: "model"`
-    // entry for "the user switched models and kept going." The
-    // parser walks segments — output before the marker is gemma,
-    // after is qwen.
-    const text = build([
-      {
-        kind: "header",
-        termId: "t-1",
-        wt: "/p",
-        spawnCwd: "/p",
-        model: "gemma4:latest",
-        createdAt: "2026-01-01T00:00:00Z",
-      },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:01Z",
-        data: ">>> Send a message (/? for help)hi\ngemma says hi\n",
-      },
-      { kind: "model", ts: "2026-01-01T00:00:05Z", model: "qwen3-coder:30b" },
-      {
-        kind: "output",
-        ts: "2026-01-01T00:00:06Z",
-        data: ">>> Send a message (/? for help)now you\nqwen takes over\n",
-      },
-    ]);
-    const out = parseOllamaJsonl(text);
-    const assistants = out.messages.filter((m) => m.role === "assistant");
-    expect(assistants.length).toBe(2);
-    expect(assistants[0]?.author).toBe("gemma4:latest");
-    expect(assistants[1]?.author).toBe("qwen3-coder:30b");
+    expect(out.messages).toEqual([]);
   });
 
   test("returns an empty session on garbage input", () => {
@@ -249,10 +145,10 @@ describe("parseOllamaJsonl", () => {
   });
 
   test("turn entries beat output entries in the same file", () => {
-    // Mixed file: an old session captured via PTY (output entries)
-    // that was later continued via the chat API (turn entries). We
-    // pick the turn entries and ignore the PTY chunks to avoid
-    // double-rendering the same conversation through two parsers.
+    // Mixed file: a pre-cleanup session captured via PTY (output
+    // entries) that was later continued via the chat API (turn
+    // entries). Output entries are ignored entirely; only turns
+    // contribute to the rendered conversation.
     const text = build([
       {
         kind: "header",

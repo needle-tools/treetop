@@ -40,8 +40,15 @@ import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
 import { listOllamaModels, OLLAMA_HOST } from "./ollama";
-import { SummariesStore } from "./summaries";
+import { SummariesStore, RepoSummariesStore } from "./summaries";
 import { sampleSessionForSummary } from "./ollama-summarize";
+import {
+  collectRepoActivity,
+  formatActivityPrompt,
+  shouldGenerate as shouldGenerateRepoSummary,
+  DEFAULT_SINCE_HOURS as REPO_SINCE_HOURS,
+  DEFAULT_MAX_AGE_HOURS as REPO_MAX_AGE_HOURS,
+} from "./repo-summary";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 
 const WORKSPACE_PATH =
@@ -102,6 +109,11 @@ const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
  *  — a POST while another is running cancels the prior. */
 const ollamaChatAborts = new Map<string, AbortController>();
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
+const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
+/** Single-flight per `repoId` for /api/repos/:id/summarize. Joins
+ *  concurrent triggers (the dashboard paints rows in parallel) so
+ *  one Ollama call covers the whole burst. */
+const repoSummaryInflight = new Map<string, Promise<void>>();
 const notes = await NotesStore.open(WORKSPACE_PATH);
 
 /** Reused by every /api/session* route to keep ?source= from being
@@ -1307,15 +1319,6 @@ const server = Bun.serve<TermWsData, never>({
              *  prior cmd history so the user's command transcript
              *  carries over across Resume. */
             previousTermId?: string;
-            /** Optional bytes to write to the PTY shortly after spawn.
-             *  Used by "Resume with context" for Ollama: the daemon
-             *  spawns `ollama run <model>`, waits long enough for the
-             *  TUI to draw its first prompt, then writes the prior
-             *  conversation transcript so the model sees it as
-             *  initial user input and can continue the chat. The wait
-             *  is fixed at 1.5s — empirically enough for `ollama run`
-             *  to print `>>> ` even on a fresh model load. */
-            initialInput?: string;
           }
         | null;
       if (!body || !Array.isArray(body.cmd) || body.cmd.length === 0 || !body.cwd) {
@@ -1443,116 +1446,6 @@ const server = Bun.serve<TermWsData, never>({
             },
           });
         }
-        // Per-Ollama-session header. Ollama itself doesn't write any
-        // transcript to disk (the conversation lives in PTY scrollback
-        // only), so the workspace records the metadata it can — the
-        // picked model, the worktree and the timestamp — so the picker
-        // can list past Ollama sessions and a stopped column can flip
-        // to a read-only view that knows what was running.
-        if (agentHint === "ollama") {
-          // Extract the model tag from `ollama run <model>`. After
-          // binary-resolution cmd[0] may be the absolute path to ollama,
-          // so we look at resolvedCmd, not the post-rename `cmd` array.
-          // Layout: [<ollama-bin>, "run", "<model>"]. If the user
-          // somehow spawned a bare `ollama` we record an empty model
-          // string rather than skipping the header — the column should
-          // still be enumerable from disk.
-          const model =
-            resolvedCmd[1] === "run" && typeof resolvedCmd[2] === "string"
-              ? resolvedCmd[2]
-              : "";
-          await ollamaSessions
-            .writeHeader({
-              kind: "header",
-              termId: handle.id,
-              wt: body.cwd,
-              spawnCwd: body.cwd,
-              model,
-              createdAt: new Date().toISOString(),
-            })
-            .catch((err) => {
-              console.error(
-                `supergit daemon: ollamaSessions.writeHeader failed for ${handle.id}: ${err}`,
-              );
-            });
-          // Buffer PTY output between periodic flushes so the JSONL
-          // captures the running conversation, not just metadata.
-          // Decoded into a UTF-8 string at receive time (PTY chunks
-          // are Uint8Array of utf-8 bytes); we cap the in-memory
-          // buffer at OLLAMA_FLUSH_MAX bytes so a chatty model can't
-          // pile up unbounded between flushes — anything past the cap
-          // forces an immediate flush.
-          const OLLAMA_FLUSH_MS = 3000;
-          const OLLAMA_FLUSH_MAX = 64 * 1024;
-          let buf = "";
-          const decoder = new TextDecoder("utf-8");
-          /** Strip Ollama's loading-spinner braille glyphs (U+2800–
-           *  U+28FF) before persisting. Ollama redraws the spinner
-           *  many times per second while a model is thinking — a few
-           *  seconds of "waiting" turns into kilobytes of `⠋ ⠹ ⠸ …`
-           *  in the JSONL that nobody ever reads. Drop them and the
-           *  single trailing space the TUI prints between frames. */
-          const stripSpinner = (s: string): string =>
-            s.replace(/[⠀-⣿](?: |$)/g, "");
-          const flush = async (): Promise<void> => {
-            if (buf.length === 0) return;
-            const data = stripSpinner(buf);
-            buf = "";
-            if (data.length === 0) return;
-            await ollamaSessions
-              .appendOutput(handle.id, {
-                kind: "output",
-                ts: new Date().toISOString(),
-                data,
-              })
-              .catch(() => {});
-          };
-          const interval = setInterval(() => {
-            void flush();
-          }, OLLAMA_FLUSH_MS);
-          // Keep the daemon shutdown clean — unref so a still-running
-          // flush timer doesn't block process exit when the PTY's gone.
-          (interval as { unref?: () => void }).unref?.();
-          const cleanup = handle.subscribe({
-            onData(chunk: Uint8Array) {
-              buf += decoder.decode(chunk, { stream: true });
-              if (buf.length >= OLLAMA_FLUSH_MAX) void flush();
-            },
-            onExit(info) {
-              clearInterval(interval);
-              // Drain the decoder + buffer before writing exit so the
-              // last chunk of model output isn't lost.
-              buf += decoder.decode();
-              void flush().then(() =>
-                ollamaSessions
-                  .appendExit(handle.id, {
-                    kind: "exit",
-                    ts: new Date().toISOString(),
-                    code: info.code,
-                    signal: info.signal,
-                  })
-                  .catch(() => {}),
-              );
-              cleanup();
-            },
-          });
-        }
-        // Optional primer write — used by "Resume with context" for
-        // Ollama to feed the prior conversation back into a fresh
-        // `ollama run`. We delay 1.5s to give the TUI time to draw
-        // its `>>> ` prompt; writing before the prompt is ready makes
-        // the bytes vanish (Ollama's readline isn't listening yet).
-        // Fire-and-forget: a flaky write shouldn't break the spawn.
-        if (typeof body.initialInput === "string" && body.initialInput.length > 0) {
-          const bytes = new TextEncoder().encode(body.initialInput);
-          setTimeout(() => {
-            try {
-              handle.write(bytes);
-            } catch {
-              // PTY may have exited between scheduling and firing; ignore.
-            }
-          }, 1500);
-        }
         return json({ id: handle.id, pid: handle.pid });
       } catch (e) {
         return json(
@@ -1677,30 +1570,6 @@ const server = Bun.serve<TermWsData, never>({
         if (path) installed.push({ name, path });
       }
       return json({ installed });
-    }
-
-    if (url.pathname.startsWith("/api/ollama/sessions/") && req.method === "GET") {
-      // Read-only transcript for a stopped (or still-running) Ollama
-      // session. Returns the joined PTY output captured periodically
-      // by the spawn handler, plus header + exit metadata so the
-      // read-only view can label the column. URL shape:
-      //   /api/ollama/sessions/<termId>/transcript
-      // The `alive` flag is true when the PTY is still subscribed —
-      // lets the UI know whether the transcript is final or still
-      // growing.
-      const rest = url.pathname.slice("/api/ollama/sessions/".length);
-      const [termId, sub] = rest.split("/");
-      if (!termId || sub !== "transcript") {
-        return json({ error: "not found" }, { status: 404 });
-      }
-      const transcript = await ollamaSessions.readTranscript(termId);
-      if (!transcript) {
-        return json({ error: "ollama session not found" }, { status: 404 });
-      }
-      return json({
-        ...transcript,
-        alive: terminalBackend.get(termId) !== undefined,
-      });
     }
 
     if (url.pathname === "/api/ollama/sessions" && req.method === "POST") {
@@ -2599,6 +2468,267 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/favicon" && req.method === "GET") {
       return await handleFavicon(url, CORS);
+    }
+
+    // GET /api/repos/:id/summary — return the cached "what happened
+    // recently" + a staleness flag so the row can paint immediately
+    // and the UI decides whether to fire a refresh.
+    const repoSummaryGet = url.pathname.match(/^\/api\/repos\/([^/]+)\/summary$/);
+    if (repoSummaryGet && req.method === "GET") {
+      const id = repoSummaryGet[1]!;
+      const repo = (await workspace.listRepos()).find((r) => r.id === id);
+      if (!repo) return json({ error: "repo not found" }, { status: 404 });
+      const cached = await repoSummaries.read(id);
+      // Current HEAD sha — `git rev-parse HEAD` against the canonical
+      // repo path. If the repo dir is gone we degrade to "no summary",
+      // not a 500.
+      let currentSha = "";
+      try {
+        currentSha = (await $`git -C ${repo.path} rev-parse HEAD`.quiet().text()).trim();
+      } catch {
+        // ignore
+      }
+      const reason = shouldGenerateRepoSummary(
+        cached
+          ? {
+              lastSha: cached.frontmatter.lastSha,
+              generatedAt: cached.frontmatter.generatedAt,
+              commitCount: cached.frontmatter.commitCount,
+            }
+          : null,
+        currentSha,
+        REPO_MAX_AGE_HOURS,
+      );
+      return json({
+        summary: cached
+          ? { frontmatter: cached.frontmatter, body: cached.body }
+          : null,
+        stale: reason !== null,
+        reason: reason ?? undefined,
+        currentSha,
+      });
+    }
+
+    // POST /api/repos/:id/summarize — stream a fresh repo summary
+    // via SSE and persist it. Single-flight per repoId.
+    const repoSummaryPost = url.pathname.match(/^\/api\/repos\/([^/]+)\/summarize$/);
+    if (repoSummaryPost && req.method === "POST") {
+      const id = repoSummaryPost[1]!;
+      const repo = (await workspace.listRepos()).find((r) => r.id === id);
+      if (!repo) return json({ error: "repo not found" }, { status: 404 });
+      const body = (await req.json().catch(() => null)) as
+        | { model?: unknown; force?: unknown }
+        | null;
+      const model = typeof body?.model === "string" ? body.model.trim() : "";
+      if (!model) return json({ error: "model required" }, { status: 400 });
+      const force = body?.force === true;
+
+      const startedAt = Date.now();
+      const abort = new AbortController();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown) => {
+            try {
+              controller.enqueue(
+                sseEncoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch {
+              // already closed
+            }
+          };
+
+          // Single-flight: if another caller is already generating
+          // for this repoId, just join their promise and emit a meta
+          // + done once they finish. We can't share the upstream
+          // stream cleanly across SSE clients, so the joiner waits
+          // and then reads the freshly-written cache.
+          const existing = repoSummaryInflight.get(id);
+          if (existing && !force) {
+            send("meta", { joined: true });
+            try { await existing; } catch {}
+            send("done", { elapsedMs: Date.now() - startedAt, joined: true });
+            try { controller.close(); } catch {}
+            return;
+          }
+
+          const work = (async () => {
+            let currentSha = "";
+            try {
+              currentSha = (
+                await $`git -C ${repo.path} rev-parse HEAD`.quiet().text()
+              ).trim();
+            } catch {
+              // ignore
+            }
+            const activity = await collectRepoActivity(
+              repo.path,
+              repo.name,
+              REPO_SINCE_HOURS,
+            );
+            send("meta", {
+              repoId: id,
+              repoName: repo.name,
+              commitCount: activity.commits.length,
+              dirtyWorktreeCount: activity.dirtyWorktrees.length,
+              currentSha,
+            });
+
+            const prompt = formatActivityPrompt(activity);
+            if (prompt === "EMPTY") {
+              // Persist an empty-marker entry so the freshness check
+              // doesn't re-fire until the sha actually changes.
+              await repoSummaries.write(id, {
+                repoName: repo.name,
+                repoPath: repo.path,
+                model,
+                lastSha: currentSha,
+                generatedAt: new Date(startedAt).toISOString(),
+                sinceHours: REPO_SINCE_HOURS,
+                commitCount: 0,
+                dirtyWorktreeCount: 0,
+                totalInsertions: 0,
+                totalDeletions: 0,
+                estimatedTokens: 0,
+                elapsedMs: Date.now() - startedAt,
+                body:
+                  "Nothing committed in the last " +
+                  REPO_SINCE_HOURS +
+                  " hours, no uncommitted work.",
+              });
+              send("chunk", {
+                delta:
+                  "Nothing committed in the last " +
+                  REPO_SINCE_HOURS +
+                  " hours, no uncommitted work.",
+              });
+              return;
+            }
+
+            const systemPrompt =
+              `You are a precise technical summariser. The user opens this repository each morning; below is what was committed and changed in the last ${REPO_SINCE_HOURS} hours. ` +
+              "Write a single brief paragraph — under 300 characters — describing what was worked on and where things stand. " +
+              "Address the developer as \"you\", not \"the user\". " +
+              "Plain text only: no markdown, no bullets, no headings, no backticks. " +
+              "Do not echo the commit list back.";
+
+            let collected = "";
+            const estimatedTokens = Math.ceil(prompt.length / 4);
+            const res = await fetch("http://127.0.0.1:11434/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model,
+                stream: true,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: prompt },
+                  { role: "user", content: "Now summarise this." },
+                ],
+                options: {
+                  num_ctx: Math.max(8192, estimatedTokens * 2 + 2048),
+                },
+              }),
+              signal: abort.signal,
+            });
+            if (!res.ok || !res.body) {
+              throw new Error(`Ollama responded ${res.status} ${res.statusText}`);
+            }
+            const reader = res.body.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let nl: number;
+              while ((nl = buf.indexOf("\n")) !== -1) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (!line) continue;
+                try {
+                  const obj = JSON.parse(line) as {
+                    message?: { content?: string };
+                    done?: boolean;
+                    error?: string;
+                  };
+                  if (obj.error) {
+                    throw new Error(obj.error);
+                  }
+                  const c = obj.message?.content ?? "";
+                  if (c) {
+                    collected += c;
+                    send("chunk", { delta: c });
+                  }
+                  if (obj.done) break;
+                } catch {
+                  // ignore malformed line
+                }
+              }
+            }
+
+            // Sum the insertions/deletions for the frontmatter
+            // diagnostics — used by future "delta since last" UIs.
+            let totalInsertions = 0;
+            let totalDeletions = 0;
+            for (const c of activity.commits) {
+              totalInsertions += c.insertions;
+              totalDeletions += c.deletions;
+            }
+            await repoSummaries.write(id, {
+              repoName: repo.name,
+              repoPath: repo.path,
+              model,
+              lastSha: currentSha,
+              generatedAt: new Date(startedAt).toISOString(),
+              sinceHours: REPO_SINCE_HOURS,
+              commitCount: activity.commits.length,
+              dirtyWorktreeCount: activity.dirtyWorktrees.length,
+              totalInsertions,
+              totalDeletions,
+              estimatedTokens,
+              elapsedMs: Date.now() - startedAt,
+              body: collected.trim(),
+            });
+            broadcast("change", { kind: "repo_summary", repoId: id });
+          })();
+
+          repoSummaryInflight.set(id, work);
+          try {
+            await work;
+            send("done", { elapsedMs: Date.now() - startedAt });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            send("error", { message: msg });
+          } finally {
+            repoSummaryInflight.delete(id);
+            try { controller.close(); } catch {}
+          }
+        },
+        cancel() {
+          abort.abort();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    // DELETE /api/repos/:id/summary — remove the cached repo summary.
+    const repoSummaryDel = url.pathname.match(/^\/api\/repos\/([^/]+)\/summary$/);
+    if (repoSummaryDel && req.method === "DELETE") {
+      const id = repoSummaryDel[1]!;
+      const removed = await repoSummaries.delete(id);
+      if (!removed) return new Response(null, { status: 404, headers: CORS });
+      broadcast("change", { kind: "repo_summary", repoId: id });
+      return new Response(null, { status: 204, headers: CORS });
     }
 
     const renameMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/rename$/);

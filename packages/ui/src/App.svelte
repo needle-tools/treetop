@@ -25,6 +25,7 @@
   import OpenInActions from "./OpenInActions.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import SummarizeDialog from "./SummarizeDialog.svelte";
+  import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
@@ -424,6 +425,12 @@
   const pulsateDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("pulsate") === "1";
+  /** Force-render the "no repos registered yet" empty state even when
+   *  repos are loaded — for previewing the onboarding CTA. Set
+   *  `?emptyrepos=1` in the URL. */
+  const emptyReposDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("emptyrepos") === "1";
   $: tuisHot =
     tuiHotDebug ||
     tuiProcs.some(
@@ -858,31 +865,7 @@
       const next = { ...newTermIds };
       delete next[s.source];
       newTermIds = next;
-      // The primer has already been written by the daemon at this
-      // point — keep the map clean so a long-running browser session
-      // doesn't accumulate stale entries.
-      if (ollamaInitialInput[s.source] !== undefined) {
-        const nextPrimer = { ...ollamaInitialInput };
-        delete nextPrimer[s.source];
-        ollamaInitialInput = nextPrimer;
-      }
-      if (s.agent === "ollama") {
-        // Ollama: replace the source in place so the column survives
-        // and flips to OllamaTranscriptView (header metadata + Resume).
-        // Ollama has no on-disk chat to render — the read-only view
-        // just keeps the column visible with the model + Resume
-        // button instead of vanishing on stop.
-        const transcriptSource = `__transcript__:ollama:${termId}`;
-        openSessionsByWt = {
-          ...openSessionsByWt,
-          [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
-            x.source === s.source
-              ? { agent: "ollama", source: transcriptSource, ollamaModel: s.ollamaModel }
-              : x,
-          ),
-        };
-        void migrateSessionTitleOnServer(s.source, transcriptSource);
-      } else if (s.agent === "shell") {
+      if (s.agent === "shell") {
         // Shell: replace the source in place so the column survives
         // and flips to ShellView (command history + Resume).
         const transcriptSource = `__transcript__:shell:${termId}`;
@@ -1146,8 +1129,7 @@
    *  TerminalView directly instead of the read-mode SessionView. */
   function openNewAgentSession(
     wtPath: string,
-    agent: "claude" | "codex" | "ollama",
-    opts?: { ollamaModel?: string },
+    agent: "claude" | "codex",
   ) {
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:${agent}:${id}`;
@@ -1158,16 +1140,12 @@
     // makes "+ new session" silently resume the wrong thing. Codex has
     // no equivalent flag and isn't affected.
     const entry: {
-      agent: "claude" | "codex" | "ollama";
+      agent: "claude" | "codex";
       source: string;
       preassignedSessionId?: string;
-      ollamaModel?: string;
     } = { agent, source: synthetic };
     if (agent === "claude") {
       entry.preassignedSessionId = crypto.randomUUID();
-    }
-    if (agent === "ollama" && opts?.ollamaModel) {
-      entry.ollamaModel = opts.ollamaModel;
     }
     const insertAt = visibleLeftInsertIndex(wtPath, existing);
     const next = [...existing];
@@ -1405,15 +1383,6 @@
    *  `disposeNewSessionColumn` when the column finally closes. */
   let shellResumeFromTermId: Record<string, string> = {};
 
-  /** Per-source primer map. Once used by the now-removed
-   *  `resumePastOllama` to seed a fresh `ollama run` PTY with the prior
-   *  conversation; kept as a no-op pass-through to NewSessionCol so
-   *  the legacy PTY-mode spawn path (still wired for the rare user
-   *  who triggers it via the debug flow) still receives `undefined`
-   *  cleanly instead of crashing on a missing prop. Currently nothing
-   *  populates this. Delete alongside the legacy PTY path. */
-  let ollamaInitialInput: Record<string, string> = {};
-
   /** Restart a transient `__new__:` session IN PLACE. Replaces its
    *  entry with a fresh synthetic source so Svelte's {#each (s.source)}
    *  key change unmounts the old TerminalView (closing its WS, which
@@ -1421,16 +1390,15 @@
    *  mounts a new one with the same cmd[]. Used when an agent
    *  self-updates and exits — codex prints "restart Codex" and we
    *  want a one-click rerun without losing the user's column slot. */
-  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string; ollamaModel?: string }) {
+  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string }) {
     const existing = openSessionsByWt[wtPath] ?? [];
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const replacement: {
-      agent: "claude" | "codex" | "copilot" | "ollama";
+      agent: "claude" | "codex" | "copilot";
       source: string;
       preassignedSessionId?: string;
-      ollamaModel?: string;
     } = {
-      agent: current.agent as "claude" | "codex" | "copilot" | "ollama",
+      agent: current.agent as "claude" | "codex" | "copilot",
       source: `__new__:${current.agent}:${id}`,
     };
     // Restart means a fresh conversation, not a continuation — mint a
@@ -1438,12 +1406,6 @@
     // than colliding with the dying PTY's id.
     if (current.agent === "claude") {
       replacement.preassignedSessionId = crypto.randomUUID();
-    }
-    // Carry the Ollama model picked at first-spawn through Restart so
-    // the user doesn't have to re-pick from the submenu after an
-    // `ollama run` exits.
-    if (current.agent === "ollama" && current.ollamaModel) {
-      replacement.ollamaModel = current.ollamaModel;
     }
     openSessionsByWt = {
       ...openSessionsByWt,
@@ -4097,12 +4059,6 @@
         {streamConnected ? "● live" : "○ offline"}
       </span>
 
-      <button
-        class="actions-btn add-folder-btn"
-        on:click={pickAndAdd}
-        title="Pick a folder to register as a repo"
-      >Add folder</button>
-
       <div class="actions-anchor tuis-anchor">
         <button
           class="actions-btn tuis-btn"
@@ -4375,15 +4331,44 @@
         <span>loading repos…</span>
       </div>
     </div>
-  {:else if rows.length === 0}
-    <p class="muted">No repos registered yet. Pick a folder above to start.</p>
+  {:else if rows.length === 0 || emptyReposDebug}
+    <div class="empty-repos">
+      <button
+        class="add-folder-cta"
+        on:click={pickAndAdd}
+        title="Pick a folder to register as a repo"
+      >
+        <svg
+          class="add-folder-icon"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          <path d="M12 11v6" />
+          <path d="M9 14h6" />
+        </svg>
+        <span>Add folder</span>
+      </button>
+      <p class="add-folder-sub muted small">
+        Pick any folder on disk — git repo or not — to start tracking it.
+      </p>
+    </div>
   {:else}
     <ul class="rows">
-      {#each rows as row (row.key)}
+      {#each rows as row, rowIdx (row.key)}
         {@const { repo, wt } = row}
         {@const summary = wt ? statusSummary(wt.fileStatus) : null}
         {@const noteAnchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`}
         {@const noteCount = $notesCountByAnchor[noteAnchor] ?? 0}
+        {@const isFirstOfRepo =
+          rowIdx === 0 || rows[rowIdx - 1].repo.id !== repo.id}
         <li
           class="row"
           class:row-folded={rowFolded[row.key]}
@@ -5395,6 +5380,14 @@
             </div>
           {/if}
 
+          {#if isFirstOfRepo}
+            <!-- "What happened recently" — repo-level cached
+                 summary, lives in the same vertical zone as the
+                 per-worktree activity strip below. Only renders
+                 on the first row of each repo. -->
+            <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
+          {/if}
+
           {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
             {@const latest = activityByCwd[wt.path][0]}
             <div class="row-activity" title={`source: ${latest.source}`}>
@@ -5647,8 +5640,6 @@
                             agent={s.agent}
                             source={titleSource}
                             wtPath={wt.path}
-                            ollamaModel={s.ollamaModel}
-                            initialInput={ollamaInitialInput[s.source]}
                             cmd={cmdForOpenSession(s, defaultShell)}
                             cwd={shellResumeCwd[s.source] ?? wt.path}
                             procName={`supergit-tui-new-${s.agent}`}
@@ -5953,6 +5944,34 @@
         </li>
       {/each}
     </ul>
+    <div class="add-folder-footer">
+      <button
+        class="add-folder-cta add-folder-cta-compact"
+        on:click={pickAndAdd}
+        title="Pick a folder to register as a repo"
+      >
+        <svg
+          class="add-folder-icon"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          <path d="M12 11v6" />
+          <path d="M9 14h6" />
+        </svg>
+        <span>Add folder</span>
+      </button>
+      <p class="add-folder-sub muted small">
+        Track another folder — git repo or plain directory.
+      </p>
+    </div>
   {/if}
 </main>
 

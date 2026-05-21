@@ -185,6 +185,203 @@ export class SummariesStore {
   }
 }
 
+// =========================================================================
+// Repo summaries — sibling store sharing the same `<workspace>/summaries/`
+// directory, keyed by `repo-<id>.md` so the two filename schemes never
+// collide. Different frontmatter shape (sha-based staleness, no `source`
+// path) lives in its own type to keep `SummaryFrontmatter` clean.
+// =========================================================================
+
+export interface RepoSummaryFrontmatter {
+  repoId: string;
+  repoName: string;
+  repoPath: string;
+  model: string;
+  /** HEAD sha of the canonical repo path at generation time. The
+   *  freshness check compares this to the current HEAD; mismatch
+   *  → re-summarise. */
+  lastSha: string;
+  generatedAt: string;
+  /** How many hours of activity the digest covered (24 by default). */
+  sinceHours: number;
+  /** Count of commits the digest included. Zero means "we summarised
+   *  an empty window" — keep the marker so we don't re-fire just
+   *  because a sha is the same. */
+  commitCount: number;
+  dirtyWorktreeCount: number;
+  totalInsertions: number;
+  totalDeletions: number;
+  estimatedTokens: number;
+  elapsedMs: number;
+}
+
+export interface RepoSummaryRecord {
+  frontmatter: RepoSummaryFrontmatter;
+  body: string;
+}
+
+export interface RepoSummaryWriteInput
+  extends Omit<RepoSummaryFrontmatter, "repoId"> {
+  body: string;
+}
+
+/** Filename key for a per-repo summary. `repoId` comes from
+ *  `repos.json` and is already URL-safe / filename-safe — no
+ *  hashing needed. The `repo-` prefix keeps it from colliding with
+ *  session-keyed files (16 hex chars). */
+export function keyForRepo(repoId: string): string {
+  return `repo-${repoId}`;
+}
+
+export class RepoSummariesStore {
+  private constructor(public readonly dir: string) {}
+
+  static async open(workspacePath: string): Promise<RepoSummariesStore> {
+    const dir = join(workspacePath, SUMMARIES_DIR);
+    try {
+      await access(dir);
+    } catch {
+      await mkdir(dir, { recursive: true });
+    }
+    return new RepoSummariesStore(dir);
+  }
+
+  private pathFor(repoId: string): string {
+    if (repoId.includes("/") || repoId.includes("\\") || repoId.includes("..")) {
+      throw new Error(`invalid repoId: ${repoId}`);
+    }
+    return join(this.dir, `${keyForRepo(repoId)}.md`);
+  }
+
+  async write(repoId: string, input: RepoSummaryWriteInput): Promise<void> {
+    const frontmatter: RepoSummaryFrontmatter = {
+      repoId,
+      repoName: input.repoName,
+      repoPath: input.repoPath,
+      model: input.model,
+      lastSha: input.lastSha,
+      generatedAt: input.generatedAt,
+      sinceHours: input.sinceHours,
+      commitCount: input.commitCount,
+      dirtyWorktreeCount: input.dirtyWorktreeCount,
+      totalInsertions: input.totalInsertions,
+      totalDeletions: input.totalDeletions,
+      estimatedTokens: input.estimatedTokens,
+      elapsedMs: input.elapsedMs,
+    };
+    const file = this.pathFor(repoId);
+    const tmp = file + ".tmp";
+    const content = renderRepoFile(frontmatter, input.body);
+    await writeFile(tmp, content, "utf-8");
+    await rename(tmp, file);
+  }
+
+  async read(repoId: string): Promise<RepoSummaryRecord | null> {
+    let text: string;
+    try {
+      text = await readFile(this.pathFor(repoId), "utf-8");
+    } catch {
+      return null;
+    }
+    return parseRepoFile(text);
+  }
+
+  async delete(repoId: string): Promise<boolean> {
+    try {
+      await unlink(this.pathFor(repoId));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function renderRepoFile(
+  fm: RepoSummaryFrontmatter,
+  body: string,
+): string {
+  const lines: string[] = ["---"];
+  lines.push(`kind: repo`);
+  lines.push(`repoId: ${quoteYaml(fm.repoId)}`);
+  lines.push(`repoName: ${quoteYaml(fm.repoName)}`);
+  lines.push(`repoPath: ${quoteYaml(fm.repoPath)}`);
+  lines.push(`model: ${quoteYaml(fm.model)}`);
+  lines.push(`lastSha: ${quoteYaml(fm.lastSha)}`);
+  lines.push(`generatedAt: ${quoteYaml(fm.generatedAt)}`);
+  lines.push(`sinceHours: ${fm.sinceHours}`);
+  lines.push(`commitCount: ${fm.commitCount}`);
+  lines.push(`dirtyWorktreeCount: ${fm.dirtyWorktreeCount}`);
+  lines.push(`totalInsertions: ${fm.totalInsertions}`);
+  lines.push(`totalDeletions: ${fm.totalDeletions}`);
+  lines.push(`estimatedTokens: ${fm.estimatedTokens}`);
+  lines.push(`elapsedMs: ${fm.elapsedMs}`);
+  lines.push("---");
+  lines.push("");
+  return lines.join("\n") + body;
+}
+
+export function parseRepoFile(text: string): RepoSummaryRecord | null {
+  if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return null;
+  const afterOpen = text.indexOf("\n") + 1;
+  const closeIdx = text.indexOf("\n---", afterOpen);
+  if (closeIdx === -1) return null;
+  const fmText = text.slice(afterOpen, closeIdx);
+  let bodyStart = closeIdx + "\n---".length;
+  if (text[bodyStart] === "\r") bodyStart++;
+  if (text[bodyStart] === "\n") bodyStart++;
+  if (text.startsWith("\n", bodyStart)) bodyStart++;
+  const body = text.slice(bodyStart);
+
+  const out: Record<string, unknown> = {};
+  for (const rawLine of fmText.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+    const colon = line.indexOf(":");
+    if (colon === -1) return null;
+    out[line.slice(0, colon).trim()] = parseYamlScalar(
+      line.slice(colon + 1).trim(),
+    );
+  }
+  const required = [
+    "repoId",
+    "repoName",
+    "repoPath",
+    "model",
+    "lastSha",
+    "generatedAt",
+    "sinceHours",
+    "commitCount",
+    "dirtyWorktreeCount",
+    "totalInsertions",
+    "totalDeletions",
+    "estimatedTokens",
+    "elapsedMs",
+  ];
+  for (const k of required) {
+    if (!(k in out)) return null;
+  }
+  return {
+    frontmatter: {
+      repoId: String(out.repoId),
+      repoName: String(out.repoName),
+      repoPath: String(out.repoPath),
+      model: String(out.model),
+      lastSha: String(out.lastSha),
+      generatedAt: String(out.generatedAt),
+      sinceHours: Number(out.sinceHours),
+      commitCount: Number(out.commitCount),
+      dirtyWorktreeCount: Number(out.dirtyWorktreeCount),
+      totalInsertions: Number(out.totalInsertions),
+      totalDeletions: Number(out.totalDeletions),
+      estimatedTokens: Number(out.estimatedTokens),
+      elapsedMs: Number(out.elapsedMs),
+    },
+    body,
+  };
+}
+
+// =========================================================================
+
 /** Render a SummaryRecord to its on-disk form. Exported for tests. */
 export function renderFile(fm: SummaryFrontmatter, body: string): string {
   const lines: string[] = ["---"];

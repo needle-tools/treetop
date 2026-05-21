@@ -562,23 +562,10 @@ describe("cmdForOpenSession", () => {
     ).toEqual(["copilot"]);
   });
 
-  test("ollama spawns `ollama run <model>` with the picked model", () => {
-    // The model is picked from the daemon's /api/ollama/models submenu
-    // and persisted on the OpenSession entry, so a reload re-spawns the
-    // same model — Ollama has no on-disk session id to resume from.
-    expect(
-      cmdForOpenSession(
-        { agent: "ollama", ollamaModel: "llama3.2:3b" },
-        "/bin/zsh",
-      ),
-    ).toEqual(["ollama", "run", "llama3.2:3b"]);
-  });
-
-  test("ollama without a model falls back to bare `ollama`", () => {
-    // Defensive — should never happen since the picker requires a
-    // model click, but a corrupted persisted entry shouldn't crash.
-    expect(cmdForOpenSession({ agent: "ollama" }, "/bin/zsh")).toEqual(["ollama"]);
-  });
+  // No ollama case — Ollama is API-driven (see plans/ollama.md "Plan:
+  // API-driven chat mode"), so cmdForOpenSession is never called for
+  // an Ollama OpenSession. The chat composer drives /api/ollama/chat
+  // directly; there's no PTY to spawn.
 });
 
 describe("stampDiscoveredSessionId", () => {

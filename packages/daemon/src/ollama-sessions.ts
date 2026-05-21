@@ -1,22 +1,27 @@
 /**
- * Per-Ollama-session JSONL headers.
+ * Per-Ollama-session JSONL files. Ollama is API-driven (see
+ * plans/ollama.md "Plan: API-driven chat mode") — the daemon's
+ * `/api/ollama/chat` endpoint owns the conversation, writing one
+ * `kind: "turn"` entry per user/assistant turn into
+ * `<workspace>/ollama/<termId>.jsonl`:
  *
- * Ollama doesn't write its own conversation transcripts to disk the way
- * Claude Code and Codex do — the chat lives only in the running PTY's
- * scrollback. To still expose "past Ollama sessions in this worktree"
- * in the dashboard picker (and to support a read-only column after
- * stopping a session), the daemon writes a minimal header file per
- * spawned Ollama PTY at `<workspace>/ollama/<termId>.jsonl`:
+ *   - `kind: "header"`  one per file, written by `POST /api/ollama/
+ *                       sessions` when the chat column is created.
+ *                       Carries the picked model, worktree path,
+ *                       spawn cwd, and a createdAt timestamp.
+ *   - `kind: "turn"`    one per user/assistant turn. Canonical
+ *                       record of the conversation — read back by
+ *                       `parseOllamaJsonl` and the next chat
+ *                       request's `messages[]` reconstruction.
+ *   - `kind: "exit"`    appended only by the now-legacy PTY-capture
+ *                       path. Newer API-driven sessions don't need
+ *                       it (there's no PTY to exit); kept in the
+ *                       type so old files still parse.
  *
- *   - `kind: "header"`  one per file, written on spawn. Carries the
- *                       picked model, the worktree path, the spawn cwd
- *                       and a createdAt timestamp.
- *   - `kind: "exit"`    appended when the PTY ends.
- *
- * The model picked at spawn is what every UI surface uses to identify
- * the session (the pill, the picker rows, the dock dot title). It's
- * essential metadata that nothing else on disk records, so we record
- * it ourselves.
+ * The model the session is bound to is what every UI surface uses
+ * for labelling (the pill, the picker rows, the dock dot title).
+ * It's pinned in the header at session creation and overridable
+ * per-turn via the `model` field on a `turn` entry.
  */
 
 import { join } from "node:path";
@@ -49,43 +54,12 @@ export interface OllamaExitEntry {
   signal?: string;
 }
 
-/** Raw PTY output captured while the session is live. Ollama's TUI
- *  emits both echoed user input and streaming model output as ANSI-
- *  formatted bytes; we record the raw bytes (base64-free, just stored
- *  as a string field) so a read-only view after the session ends can
- *  reconstruct the conversation. Periodic flush — every ~3s during
- *  active output — keeps the file growing instead of holding the
- *  whole transcript in RAM. */
-export interface OllamaOutputEntry {
-  kind: "output";
-  ts: string;
-  /** Concatenated raw PTY data covering everything emitted since the
-   *  last flush. Stored as a UTF-8 string; control sequences are kept
-   *  verbatim so the reader can decide whether to strip them. */
-  data: string;
-}
-
-/** Marker entry written when the session's active model changes
- *  mid-stream. Not emitted today (the spawn path only ever runs one
- *  model per PTY), but the on-disk format reserves it so a future
- *  "switch model and continue" action can mark the cut-over point.
- *  The parser respects it: assistant turns after this marker get
- *  attributed to the new model, earlier turns keep the prior one. */
-export interface OllamaModelChangeEntry {
-  kind: "model";
-  ts: string;
-  model: string;
-}
-
 /** Structured user/assistant turn written by the daemon's
- *  `/api/ollama/chat` endpoint — the canonical record for
- *  API-driven sessions. One entry per turn, not per chunk; the
- *  endpoint buffers the streamed response and writes the complete
- *  assistant turn on stream completion (or `partial: true` if the
- *  client cancelled mid-stream).
- *
- *  When any `turn` entries exist in a file, the parser uses only
- *  those and ignores `output` chunks (see `parseOllamaJsonl`). */
+ *  `/api/ollama/chat` endpoint — the canonical record for an
+ *  Ollama session. One entry per turn, not per chunk; the endpoint
+ *  buffers the streamed response and writes the complete assistant
+ *  turn on stream completion (or `partial: true` if the client
+ *  cancelled mid-stream). */
 export interface OllamaTurnEntry {
   kind: "turn";
   ts: string;
@@ -106,8 +80,6 @@ export interface OllamaTurnEntry {
 export type OllamaEntry =
   | OllamaHeader
   | OllamaExitEntry
-  | OllamaOutputEntry
-  | OllamaModelChangeEntry
   | OllamaTurnEntry;
 
 export class OllamaSessionsLog {
@@ -161,25 +133,19 @@ export class OllamaSessionsLog {
     );
   }
 
-  /** Append an exit record when the PTY ends. */
+  /** Append an exit record. Only legacy PTY-capture sessions emit
+   *  these; API-driven sessions never exit (the JSONL is open-ended
+   *  until the user explicitly drops the session). Kept for
+   *  back-compat with old files. */
   async appendExit(termId: string, entry: OllamaExitEntry): Promise<void> {
     await this.serialize(termId, () =>
       appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
     );
   }
 
-  /** Append a chunk of captured PTY output. Called by the periodic
-   *  flush in the spawn handler; not in the hot path of every PTY
-   *  byte. The caller is responsible for buffering between flushes. */
-  async appendOutput(termId: string, entry: OllamaOutputEntry): Promise<void> {
-    await this.serialize(termId, () =>
-      appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
-    );
-  }
-
   /** Append a structured user/assistant turn. Used by `/api/ollama/chat`
-   *  for API-driven sessions — one entry per turn (not per chunk),
-   *  written on stream completion or abort. */
+   *  — one entry per turn (not per chunk), written on stream
+   *  completion or abort. */
   async appendTurn(termId: string, entry: OllamaTurnEntry): Promise<void> {
     await this.serialize(termId, () =>
       appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n"),
@@ -187,18 +153,13 @@ export class OllamaSessionsLog {
   }
 
   /** Reconstruct the messages[] array for an /api/chat request from
-   *  the on-disk transcript. Handles both formats:
-   *   - Pure API-driven (turn entries only) — direct mapping.
-   *   - Legacy PTY-capture (output entries only) — defers to
-   *     `parseOllamaJsonl` to recover turns from the PTY transcript.
-   *   - Mixed file — turn entries win (same rule the parser uses),
-   *     output chunks are silently dropped.
+   *  the on-disk transcript. Walks the JSONL once, picking up
+   *  `header` (for the bound model) and `turn` entries (the user/
+   *  assistant log). Returns the active model alongside — latest
+   *  turn's `model` field wins, falling back to the header.
    *
-   *  Returns the model the session is bound to as well, so callers
-   *  don't have to read the header separately. Model precedence:
-   *  latest turn entry's `model` → most recent `kind: "model"`
-   *  marker → header model.
-   */
+   *  Returns `null` when the file is missing or has no header. A
+   *  header-only file (no turns yet) returns an empty messages[]. */
   async readMessagesForChat(
     termId: string,
   ): Promise<{
@@ -214,7 +175,6 @@ export class OllamaSessionsLog {
     let header: OllamaHeader | null = null;
     let activeModel: string | undefined;
     const turns: { role: "user" | "assistant"; content: string }[] = [];
-    let sawTurn = false;
     for (const line of raw.split("\n")) {
       if (!line) continue;
       let obj: Record<string, unknown>;
@@ -230,81 +190,17 @@ export class OllamaSessionsLog {
           header = h;
           activeModel = h.model;
         }
-      } else if (kind === "model" && typeof obj.model === "string") {
-        activeModel = obj.model;
       } else if (kind === "turn") {
         const role = obj.role;
         const content = obj.content;
         if ((role === "user" || role === "assistant") && typeof content === "string") {
-          sawTurn = true;
           turns.push({ role, content });
           if (typeof obj.model === "string") activeModel = obj.model;
         }
       }
     }
     if (!header) return null;
-    if (sawTurn) {
-      return { model: activeModel ?? header.model, messages: turns };
-    }
-    // No structured turns — fall back to the PTY-capture parser.
-    // Import lazily to avoid pulling sessions.ts at module load (it
-    // has its own dependency surface). Top-level `import` would
-    // create a cycle since sessions.ts may import from us in future.
-    const { parseOllamaJsonl } = await import("./sessions");
-    const parsed = parseOllamaJsonl(raw);
-    const ptyTurns: { role: "user" | "assistant"; content: string }[] = [];
-    for (const m of parsed.messages) {
-      if (m.role !== "user" && m.role !== "assistant") continue;
-      const text = m.blocks
-        .map((b) => (typeof b.text === "string" ? b.text : ""))
-        .join("\n")
-        .trim();
-      if (!text) continue;
-      ptyTurns.push({ role: m.role, content: text });
-    }
-    return { model: activeModel ?? header.model, messages: ptyTurns };
-  }
-
-  /** Read the full transcript: header + every `output` chunk in order,
-   *  joined into a single string. Used by the read-only view to
-   *  reconstruct the conversation after the session ends.
-   *
-   *  Returns `null` when the file is missing. Returns an empty `text`
-   *  string when no output was ever captured (e.g. the session ended
-   *  before the first flush). */
-  async readTranscript(termId: string): Promise<
-    | { header: OllamaHeader; text: string; exit?: OllamaExitEntry }
-    | null
-  > {
-    let raw: string;
-    try {
-      raw = await readFile(this.pathFor(termId), "utf-8");
-    } catch {
-      return null;
-    }
-    let header: OllamaHeader | null = null;
-    let exit: OllamaExitEntry | undefined;
-    const chunks: string[] = [];
-    for (const line of raw.split("\n")) {
-      if (!line) continue;
-      try {
-        const obj = JSON.parse(line) as OllamaEntry;
-        if (obj.kind === "header") {
-          // First header wins. Defensive: header validation already
-          // happens in `parseHeader`, but we accept here without
-          // re-validating since we wrote it ourselves.
-          if (!header) header = obj;
-        } else if (obj.kind === "output") {
-          chunks.push(obj.data);
-        } else if (obj.kind === "exit") {
-          exit = obj;
-        }
-      } catch {
-        // skip malformed lines
-      }
-    }
-    if (!header) return null;
-    return { header, text: chunks.join(""), exit };
+    return { model: activeModel ?? header.model, messages: turns };
   }
 
   /** Read the header line of a single file. Returns null if the file is

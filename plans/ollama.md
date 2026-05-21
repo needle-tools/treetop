@@ -6,87 +6,61 @@ are, and what we'd want to change if/when Ollama gets bigger usage.
 
 ## What we have
 
-- **Detection** — `/api/agents/installed` probes the `ollama` binary
-  via `resolveAgentBinary` (same well-known-prefix + PATH scan used
-  for Claude/Codex). Models come from `/api/ollama/models`, which
-  hits `http://127.0.0.1:11434/api/tags` first and falls back to
+Ollama is API-driven (no PTY). The "+" picker creates a chat
+session via `/api/ollama/sessions`, and the user talks to it
+through SessionView's in-bubble composer; the composer streams
+chunks from `/api/ollama/chat` and writes structured user/
+assistant turns to the JSONL.
+
+- **Detection** — `/api/agents/installed` probes the `ollama`
+  binary via `resolveAgentBinary` (same well-known-prefix + PATH
+  scan used for Claude/Codex). Models come from
+  `/api/ollama/models`, which hits
+  `http://127.0.0.1:11434/api/tags` first and falls back to
   parsing `ollama list` when the server isn't running.
-- **Spawn** — `"+"` picker → Ollama row → submenu of installed
-  models (lazy-loaded, with retry on error). Click a model →
-  `ollama run <model>` PTY in the worktree's cwd. Model tag flows
-  through `OpenSession.ollamaModel` → `SessionHeader.agentLabel` so
-  the pill reads `qwen3-coder:30b`, not `ollama` — every Ollama
-  column would otherwise carry the same label.
-- **Persistence** — Ollama writes no transcript itself, so the
-  daemon does it for us:
-  - `<workspace>/ollama/<termId>.jsonl` gets a header on spawn
-    (`model`, `wt`, `spawnCwd`, `createdAt`).
-  - PTY output is buffered and flushed every ~3 s as
-    `kind: "output"` entries (capped at 64 KB per flush).
-  - Loading-spinner braille glyphs (U+2800–U+28FF + the trailing
-    space `ollama run` prints between frames) are stripped at
-    capture time — a thinking phase used to bloat the JSONL with
-    thousands of `⠋ ⠹ …` frames nobody reads.
-  - `kind: "exit"` is appended when the PTY ends. The decoder is
-    flushed before the exit so the last chunk of model output
-    isn't lost.
-- **Read-only view on stop** — `OllamaTranscriptView` mounts on
-  `__transcript__:ollama:<termId>` sources. It fetches the joined
-  transcript from `/api/ollama/sessions/:termId/transcript`, strips
-  ANSI (CSI/OSC/single-char ESC, lone CRs) for readability, and
-  polls every 3.5 s while `alive`. Scrollable: same `height: 100%`
-  + `flex: 1; min-height: 0` pattern SessionView uses, so long
-  transcripts stay inside the column box instead of pushing it
-  taller than its siblings.
+- **Create chat** — `"+"` picker → Ollama row → submenu of
+  installed models (lazy-loaded, with retry on error). Click a
+  model → `POST /api/ollama/sessions { model, wt, cwd }` →
+  daemon writes the header file and returns a `termId`. The UI
+  opens a `__transcript__:ollama:<termId>` column directly
+  (OllamaTranscriptView is just a SessionView wrapper that sets
+  the model pill label). Model tag flows through
+  `OpenSession.ollamaModel` so the pill reads `qwen3-coder:30b`
+  even before the daemon's next `/api/repos` rescan picks the
+  file up into `wt.agents`.
+- **Chat** — SessionView renders a composer strip for `agent
+  === "ollama"`. Enter sends → `POST /api/ollama/chat` (SSE);
+  the daemon reads the JSONL, reconstructs `messages[]`, proxies
+  to Ollama's `/api/chat` stream, and writes one `kind: "turn"`
+  entry per user/assistant turn on completion. The Stop button
+  aborts the upstream fetch; the daemon persists the partial
+  assistant turn with `partial: true` rather than losing it.
+  SessionView's disk-sync `load()` skips its 2 s `/api/session`
+  re-read while a stream is in flight so chunks don't get
+  clobbered.
+- **Persistence** — `<workspace>/ollama/<termId>.jsonl` holds:
+  - One `kind: "header"` on session creation (`model`, `wt`,
+    `spawnCwd`, `createdAt`).
+  - One `kind: "turn"` per user/assistant turn
+    (`role`, `content`, `model`, optional `partial: true`).
+  - Per-`termId` write mutex so concurrent appends never
+    interleave bytes mid-line.
+- **Read view** — `OllamaTranscriptView` is a thin SessionView
+  wrapper (no Resume button, no extra menu items). It fetches
+  the canonical messages via `/api/session?source=<path>` and
+  renders them with the standard bubbles. The chat composer at
+  the bottom is the only continuation surface — there's no
+  read/edit mode distinction.
 - **Past sessions in the picker** — `scanOllama(workspacePath)`
-  reads the headers and emits `AgentSession` entries; `detectAgents`
-  takes a workspace path so it can include them. Clicking an Ollama
-  row in the picker hits `normalizeSessionForOpen`, which translates
-  the on-disk JSONL path into a `__transcript__:ollama:<termId>`
-  source so the read view mounts (rather than the SessionView branch,
-  which would try to parse the JSONL as Claude/Codex).
-- **Stop spinner** — NewSessionCol now owns the 1 s cancellable
-  grace window + `disposing` flag, mirroring the SessionView
-  resume-in-terminal flow (commit 290cef3). Claude, Codex, and
-  Ollama brand-new columns all behave the same on End Session.
-
-## Resume vs. resume-with-context
-
-Plain Resume spawns `ollama run <model>` clean — no memory of the
-prior chat. That's a hard limit of the CLI: `ollama run` has no
-notion of sessions on disk.
-
-`OllamaTranscriptView` exposes a second button — **Resume with
-context** — that:
-1. Builds a primer string: `"Below is our previous conversation,
-   please continue from where it left off; do not repeat it back."`
-   followed by the ANSI-stripped transcript, clipped to the last
-   16 KB.
-2. Spawns a fresh `ollama run <model>` with the primer in the new
-   `initialInput` field of POST `/api/terminals`.
-3. Daemon waits 1.5 s for the TUI to draw its `>>> ` prompt (writing
-   earlier loses the bytes — ollama's readline isn't yet listening),
-   then `handle.write`s the primer. Best-effort: if the PTY died
-   between scheduling and firing, we swallow.
-
-This is the pragmatic-now mechanism. The trade-offs are real and
-worth keeping in mind:
-
-- **Ollama has no real session state.** The model sees the transcript
-  as user text and continues from there. It's resume-shaped but not
-  resume-quality — the model might re-greet, summarise what it
-  thinks happened, or ignore parts of the primer.
-- **Long transcripts get clipped.** 16 KB tail-clip keeps the WS
-  write cheap and avoids overrunning small-context models, but the
-  earliest turns are lost.
-- **The PTY echoes the primer.** The user briefly sees the prior
-  conversation re-paste itself, then the model's response. Not a
-  bug — a consequence of feeding it through stdin — but worth
-  knowing if it surprises someone reviewing this code.
-- **No structured turns.** We dump the raw (stripped) transcript as
-  one big paste rather than parsing it into `user:` / `assistant:`
-  turns. The Ollama TUI's prompts (`>>> `) make this *possible*, but
-  the parsing isn't reliable enough yet to bake in.
+  reads headers and emits `AgentSession` entries; clicking one
+  hits `normalizeSessionForOpen`, which translates the on-disk
+  JSONL path into a `__transcript__:ollama:<termId>` source so
+  the same SessionView mount path runs.
+- **Cancel semantics** — one in-flight stream per `termId`. A
+  second `POST /api/ollama/chat` for the same termId aborts the
+  prior; `DELETE /api/ollama/chat/:termId` aborts from a
+  different tab; client disconnect (browser close, Stop) aborts
+  via the ReadableStream's `cancel` callback.
 
 ## Plan: API-driven chat mode
 
@@ -229,54 +203,65 @@ once we plumb the JSONL path through).
   entries" bug (see Open / nice-to-have below) gets *fixed by this
   change* — there's no separate PTY anymore, just the JSONL.
 
-### Order of work
+### Status: done
 
-1. Daemon: extend `parseOllamaJsonl` to read `turn` entries. Test
-   round-trip parsing of both old PTY format and new turn format.
-2. Daemon: `POST /api/ollama/sessions` (create empty session) +
-   `POST /api/ollama/chat` (stream). Test against a real local
-   model with a multi-turn conversation.
-3. UI: add the input strip to `SessionView`. Wire Send/Stop.
-4. UI: switch the "+" picker's Ollama path to the new
-   `/api/ollama/sessions` endpoint. Keep the old `ollama run` PTY
-   path behind a `?legacyOllama=1` toggle for one release.
-5. Remove `OllamaTranscriptView`'s Resume / Resume-with-context
-   buttons (the input strip replaces both). Keep the file as a
-   pure shim that sets `agent="ollama"` + the model pill.
-6. After one release of soak: delete the legacy PTY path + the
-   spinner-strip, `output`-flush, and primer code in `server.ts`.
+All six steps have shipped. The legacy PTY path is fully removed:
 
-### What stays / what goes
+1. ✓ `parseOllamaJsonl` reads `turn` entries; PTY-output fallback
+   gone (old files render as header-only).
+2. ✓ `POST /api/ollama/sessions` + `POST /api/ollama/chat` (SSE)
+   are live; `DELETE /api/ollama/chat/:termId` cancels mid-stream.
+3. ✓ SessionView renders a chat composer for `agent === "ollama"`
+   with streaming chunks, Stop, and a waiting-spinner. `load()`
+   skips its disk-sync while a stream is in flight so chunks
+   don't get clobbered by a mid-stream poll.
+4. ✓ The "+" picker calls `openNewOllamaChat` → `POST /api/ollama/
+   sessions` → `__transcript__:ollama:<termId>` column directly.
+   No PTY-toggle escape hatch — there's no reason to spawn
+   `ollama run` from supergit anymore.
+5. ✓ `OllamaTranscriptView` shrunk to a thin pill-labelling shim;
+   Resume button + Resume-with-context menu item gone.
+6. ✓ Legacy code deleted:
+   - `server.ts` PTY-capture flush loop, spinner-strip,
+     `OLLAMA_FLUSH_MS`/`OLLAMA_FLUSH_MAX`, `initialInput`
+     primer-write delay, and the `/api/ollama/sessions/:termId/
+     transcript` GET endpoint.
+   - `ollama-sessions.ts` `OllamaOutputEntry` /
+     `OllamaModelChangeEntry` types, `appendOutput`,
+     `readTranscript`, and the PTY-fallback path in
+     `readMessagesForChat`.
+   - `sessions.ts` `stripAnsi`, `splitOllamaTurns`, the
+     `segments` machinery in `parseOllamaJsonl`.
+   - UI: `resumePastOllama`, `ollamaInitialInput`, the
+     `s.agent === "ollama"` dispose branch, the `ollamaModel` /
+     `initialInput` props on NewSessionCol + TerminalView, and
+     the ollama branch in `cmdForOpenSession`.
 
-Stays:
+### What stays
+
 - `<workspace>/ollama/<termId>.jsonl` as the on-disk format and
   picker source.
-- Per-turn `model` attribution (already in NormalizedMessage.author).
+- Per-turn `model` attribution via `NormalizedMessage.author`.
 - Header pill, dock dot, worktree-row session count.
-
-Goes (eventually):
-- PTY-capture flush loop and spinner-strip (server.ts:1478-1531).
-- The 1.5 s primer-write delay (server.ts:1539-1547).
-- The PTY-transcript turn-splitter (`splitOllamaTurns`) — replaced by
-  reading structured `turn` entries.
-- Read-only-vs-interactive distinction for Ollama columns — there's
-  just one mode.
+- `OpenSession.ollamaModel` (persisted so the pill label survives
+  reloads before `wt.agents` rescans).
 
 ## Open / nice-to-have
 
-- Picker dedup: a live Ollama session shows up twice if the user
-  opens the worktree picker — once as the live PTY, once as the
-  on-disk header that `scanOllama` finds. Not a correctness bug, the
-  source strings differ, but cleaner would be to fold the two into
-  one entry that knows it's live.
-- Spinner-strip regex is conservative — it only catches braille +
-  trailing space. If Ollama swaps to a different spinner (dots,
-  ASCII art) we'd start storing them again. Probably fine since
-  they're already periodic-flushed, not hot-path.
+- Context-window overflow: as the conversation grows, eventually we
+  exceed the model's context. Current behaviour is "let Ollama
+  truncate" (it'll drop oldest turns from its KV cache silently).
+  Cleaner would be to auto-summarize older turns via the existing
+  `ollama-summarize.ts` once we cross some threshold.
 - `/api/ollama/models` doesn't cache. Each picker open re-hits the
   HTTP API. Fast enough today but if a user has dozens of cloud
   models the response can be 100 KB+.
-- Header file isn't touched after spawn except for `output`/`exit`
-  appends. If a user renames a model on Ollama's side, the captured
-  `model` field can go stale. Low impact — we use it as a label,
-  not a key.
+- Header file's `model` is pinned at creation. If a user renames a
+  model on Ollama's side, the label can go stale. Low impact — we
+  use it as a label, not a key — but per-turn `model` overrides
+  fix this automatically for new turns.
+- Pre-cleanup PTY-captured Ollama JSONLs (with `output` entries)
+  render as header-only. If you want to surface them as "this is
+  archived; can't be continued" rather than empty, that's a render
+  branch in OllamaTranscriptView — currently they look the same as
+  a brand-new session.

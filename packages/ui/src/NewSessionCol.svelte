@@ -79,16 +79,6 @@
    *  this the drop handler in App.svelte never sees a source and the
    *  column snaps back instead of reordering. */
   export let onDragStart: (e: DragEvent) => void = () => {};
-  /** For Ollama columns: the model tag chosen at spawn time (e.g.
-   *  `qwen3-coder:30b`). Forwarded to SessionHeader as `agentLabel`
-   *  so the pill shows the model the user picked instead of the
-   *  generic "ollama" — every Ollama column would otherwise carry
-   *  the same label. */
-  export let ollamaModel: string | undefined = undefined;
-  /** Optional primer to feed the PTY after spawn. Used by Resume-with-
-   *  context for Ollama to replay the prior conversation as initial
-   *  input. Forwarded verbatim to TerminalView. */
-  export let initialInput: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -195,7 +185,6 @@
 >
   <SessionHeader
     {agent}
-    agentLabel={agent === "ollama" ? ollamaModel : undefined}
     {source}
     manualTitle={manualTitle ?? ""}
     mode="terminal"
@@ -231,7 +220,6 @@
     {procName}
     {attachTermId}
     {resumeFromTermId}
-    {initialInput}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}

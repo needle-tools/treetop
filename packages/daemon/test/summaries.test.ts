@@ -2,7 +2,12 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SummariesStore, keyForSource } from "../src/summaries";
+import {
+  SummariesStore,
+  RepoSummariesStore,
+  keyForSource,
+  keyForRepo,
+} from "../src/summaries";
 
 async function tempWorkspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-summaries-"));
@@ -234,5 +239,92 @@ describe("SummariesStore", () => {
     const out = await store.staleness("/never/written.jsonl");
     expect(out.summary).toBeNull();
     expect(out.stale).toBe(false);
+  });
+});
+
+describe("keyForRepo", () => {
+  test("returns the repo-<id> filename slug", () => {
+    expect(keyForRepo("4f3a92ec")).toBe("repo-4f3a92ec");
+  });
+});
+
+describe("RepoSummariesStore", () => {
+  test("write → read round-trip preserves frontmatter and body", async () => {
+    const ws = await tempWorkspace();
+    const store = await RepoSummariesStore.open(ws);
+    const repoId = "abcd1234";
+    await store.write(repoId, {
+      repoName: "supergit",
+      repoPath: "/Users/me/git/supergit",
+      model: "llama3.2:3b",
+      lastSha: "2c7f8501a9b2e3f4",
+      generatedAt: "2026-05-21T08:15:42.000Z",
+      sinceHours: 24,
+      commitCount: 7,
+      dirtyWorktreeCount: 1,
+      totalInsertions: 540,
+      totalDeletions: 80,
+      estimatedTokens: 420,
+      elapsedMs: 3120,
+      body: "You spent yesterday landing the Ollama summary feature.",
+    });
+    const got = await store.read(repoId);
+    expect(got).not.toBeNull();
+    expect(got!.frontmatter.repoId).toBe(repoId);
+    expect(got!.frontmatter.repoName).toBe("supergit");
+    expect(got!.frontmatter.lastSha).toBe("2c7f8501a9b2e3f4");
+    expect(got!.frontmatter.commitCount).toBe(7);
+    expect(got!.body).toBe("You spent yesterday landing the Ollama summary feature.");
+  });
+
+  test("read returns null when no repo summary exists", async () => {
+    const ws = await tempWorkspace();
+    const store = await RepoSummariesStore.open(ws);
+    expect(await store.read("nope")).toBeNull();
+  });
+
+  test("delete removes the file and is idempotent", async () => {
+    const ws = await tempWorkspace();
+    const store = await RepoSummariesStore.open(ws);
+    await store.write("rid", {
+      repoName: "x",
+      repoPath: "/x",
+      model: "m",
+      lastSha: "s",
+      generatedAt: "2026-05-21T00:00:00Z",
+      sinceHours: 24,
+      commitCount: 1,
+      dirtyWorktreeCount: 0,
+      totalInsertions: 1,
+      totalDeletions: 0,
+      estimatedTokens: 10,
+      elapsedMs: 50,
+      body: "x",
+    });
+    expect(await store.delete("rid")).toBe(true);
+    expect(await store.read("rid")).toBeNull();
+    expect(await store.delete("rid")).toBe(false);
+  });
+
+  test("rejects path-traversal repoIds", async () => {
+    const ws = await tempWorkspace();
+    const store = await RepoSummariesStore.open(ws);
+    await expect(
+      store.write("../escape", {
+        repoName: "x",
+        repoPath: "/x",
+        model: "m",
+        lastSha: "s",
+        generatedAt: "2026-05-21T00:00:00Z",
+        sinceHours: 24,
+        commitCount: 1,
+        dirtyWorktreeCount: 0,
+        totalInsertions: 1,
+        totalDeletions: 0,
+        estimatedTokens: 10,
+        elapsedMs: 50,
+        body: "x",
+      }),
+    ).rejects.toThrow(/invalid repoId/);
   });
 });

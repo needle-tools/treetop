@@ -31,6 +31,12 @@
   --text-muted: #999;
   --text-faint: #777;
 
+  /* Muted 1px outlines for buttons/chips that sit on `--surface-2`.
+     Derived from --text-muted so it tracks text contrast, but knocked
+     back enough that it reads as a quiet edge, not a label. */
+  --border-muted: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  --border-muted-strong: color-mix(in srgb, var(--text-muted) 55%, transparent);
+
   /* brand */
   --brand: #60b74c;
   --brand-hover: #a4d843;

@@ -117,31 +117,6 @@ describe("OllamaSessionsLog", () => {
     ]);
   });
 
-  test("readMessagesForChat falls back to PTY parsing for legacy files", async () => {
-    // Older sessions only have output chunks. We should still be able
-    // to seed a continuation by recovering turns from them.
-    await log.writeHeader({
-      kind: "header",
-      termId: "pty1",
-      wt: "/p",
-      spawnCwd: "/p",
-      model: "gemma4:latest",
-      createdAt: "2026-01-01T00:00:00Z",
-    });
-    await log.appendOutput("pty1", {
-      kind: "output",
-      ts: "2026-01-01T00:00:01Z",
-      data: ">>> Send a message (/? for help)hi\nhello\n",
-    });
-    const out = await log.readMessagesForChat("pty1");
-    expect(out).not.toBeNull();
-    expect(out!.model).toBe("gemma4:latest");
-    expect(out!.messages).toEqual([
-      { role: "user", content: "hi" },
-      { role: "assistant", content: "hello" },
-    ]);
-  });
-
   test("readMessagesForChat returns null for missing files", async () => {
     expect(await log.readMessagesForChat("missing")).toBeNull();
   });

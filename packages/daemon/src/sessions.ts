@@ -395,46 +395,22 @@ export function parseCodexJsonl(text: string): NormalizedSession {
 /**
  * Parse the daemon's per-Ollama-session JSONL into a normalized chat.
  *
- * Two on-disk formats coexist (see plans/ollama.md):
+ * Ollama is API-driven (see plans/ollama.md "Plan: API-driven chat
+ * mode"): the daemon's `/api/ollama/chat` endpoint writes one
+ * `kind: "turn"` entry per user/assistant turn. The parser maps them
+ * one-to-one onto messages — no PTY parsing, no ANSI stripping, no
+ * `>>> ` splitter.
  *
- *  1. **PTY-capture** (legacy): `kind: "output"` chunks of raw PTY
- *     bytes captured while `ollama run <model>` was the live shell.
- *     We have to recover turns from the captured transcript — strip
- *     ANSI, strip the TUI's placeholder repaints, split on `>>> `.
- *     Best-effort: a model that emits `>>> ` inside its own response
- *     confuses the splitter, and multi-line input may not round-trip
- *     perfectly.
- *  2. **API-driven** (current): `kind: "turn"` entries written one
- *     per user/assistant turn by the daemon's `/api/ollama/chat`
- *     endpoint. Taken verbatim — no parsing dance needed.
- *
- * When **any** `turn` entries exist in the file, we use only those
- * and drop the `output` chunks. Mixing the two would double-render
- * the same conversation through both parsers — the API-driven path
- * is canonical when present.
+ * Legacy PTY-captured sessions (`kind: "output"` chunks from when
+ * Ollama ran as a TUI) are no longer parsed; pre-existing files of
+ * that shape render as header-only. See git history for the previous
+ * splitter if a recovery tool is ever needed.
  */
 export function parseOllamaJsonl(text: string): NormalizedSession {
   const out = emptySession("ollama");
   let startedAt: string | undefined;
   let endedAt: string | undefined;
-  // Track current model across the timeline so a `kind: "model"`
-  // cut-over point attributes later assistant turns to the new model
-  // and earlier ones keep the prior. Header sets the initial model.
   let headerModel: string | undefined;
-  let currentModel: string | undefined;
-  // Segments accumulate `output` chunks under their active model so
-  // joining at a model-change cut isn't lossy.
-  const segments: { model: string | undefined; data: string }[] = [];
-  function ensureSegment(model: string | undefined): { model: string | undefined; data: string } {
-    const last = segments[segments.length - 1];
-    if (last && last.model === model) return last;
-    const seg = { model, data: "" };
-    segments.push(seg);
-    return seg;
-  }
-  // Structured turns from `kind: "turn"` entries. When this is
-  // non-empty after the walk, it wins over `segments`.
-  const turns: NormalizedMessage[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
     let obj: Record<string, unknown>;
@@ -449,14 +425,7 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       if (typeof obj.termId === "string" && !out.sessionId)
         out.sessionId = obj.termId;
       if (typeof obj.createdAt === "string") startedAt = obj.createdAt;
-      if (typeof obj.model === "string") {
-        headerModel = obj.model;
-        currentModel = obj.model;
-      }
-    } else if (kind === "model" && typeof obj.model === "string") {
-      currentModel = obj.model;
-    } else if (kind === "output" && typeof obj.data === "string") {
-      ensureSegment(currentModel).data += obj.data;
+      if (typeof obj.model === "string") headerModel = obj.model;
     } else if (kind === "turn") {
       // Skip malformed entries rather than crashing the whole parse.
       // A garbled turn shouldn't lose the rest of the conversation.
@@ -474,99 +443,13 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
         const turnModel = typeof obj.model === "string" ? obj.model : headerModel;
         if (turnModel) msg.author = turnModel;
       }
-      turns.push(msg);
+      out.messages.push(msg);
     } else if (kind === "exit" && typeof obj.ts === "string") {
       endedAt = obj.ts;
     }
   }
   if (startedAt) out.startedAt = startedAt;
   if (endedAt) out.endedAt = endedAt;
-
-  // API-driven format wins when present.
-  if (turns.length > 0) {
-    out.messages.push(...turns);
-    return out;
-  }
-
-  // PTY-capture fallback.
-  for (const seg of segments) {
-    const stripped = stripAnsi(seg.data);
-    for (const msg of splitOllamaTurns(stripped)) {
-      // Stamp assistant turns with the model that produced them so
-      // the UI can render the model name as the bubble's author —
-      // makes multi-model sessions attributable per turn and
-      // single-model sessions read "Gemma" / "Qwen" instead of a
-      // generic "Ollama".
-      if (msg.role === "assistant" && seg.model) {
-        msg.author = seg.model;
-      }
-      out.messages.push(msg);
-    }
-  }
-  return out;
-}
-
-/** Strip ANSI CSI / OSC / single-char ESC sequences and collapse lone
- *  carriage returns. Same cleanup OllamaTranscriptView used to do
- *  client-side; centralizing it here lets the read view share
- *  SessionView's renderer instead of inventing its own. */
-function stripAnsi(s: string): string {
-  if (!s) return "";
-  let t = s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
-  t = t.replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
-  t = t.replace(/\x1B[@-Z\\-_]/g, "");
-  t = t.replace(/\r(?!\n)/g, "");
-  return t;
-}
-
-/** The Ollama TUI repaints its placeholder prompt multiple times per
- *  line; collapse every "Send a message (/? for help)" fragment into
- *  nothing so the user-typed text on each `>>> ` line is what's left. */
-const OLLAMA_PROMPT_PLACEHOLDER = /Send a message \(\/\? for help\)\s*/g;
-
-/** Split a cleaned Ollama transcript into alternating user/assistant
- *  turns. A `>>> ` line marks a user turn; the user message is the
- *  rest of that line, the assistant message is everything up to the
- *  next `>>> ` line. Whitespace-only turns on either side are skipped
- *  (an empty user input followed by a model response wouldn't render
- *  meaningfully anyway). */
-function splitOllamaTurns(text: string): NormalizedMessage[] {
-  const out: NormalizedMessage[] = [];
-  const lines = text.split("\n");
-  let i = 0;
-  // Skip leading non-prompt lines (the TUI's banner / model load
-  // notice) — there's no user turn before the first `>>> `.
-  while (i < lines.length && !lines[i]!.startsWith(">>> ")) i++;
-  while (i < lines.length) {
-    const promptLine = lines[i]!;
-    i++;
-    // User input is whatever comes after `>>> `, minus any TUI
-    // placeholder repaints. Trim because the placeholder can leave
-    // trailing whitespace.
-    const userText = promptLine
-      .slice(">>> ".length)
-      .replace(OLLAMA_PROMPT_PLACEHOLDER, "")
-      .trim();
-    // Collect assistant lines until the next `>>> ` (or EOF).
-    const assistantLines: string[] = [];
-    while (i < lines.length && !lines[i]!.startsWith(">>> ")) {
-      assistantLines.push(lines[i]!);
-      i++;
-    }
-    const assistantText = assistantLines.join("\n").trim();
-    if (userText.length > 0) {
-      out.push({
-        role: "user",
-        blocks: [{ type: "text", text: userText }],
-      });
-    }
-    if (assistantText.length > 0) {
-      out.push({
-        role: "assistant",
-        blocks: [{ type: "text", text: assistantText }],
-      });
-    }
-  }
   return out;
 }
 

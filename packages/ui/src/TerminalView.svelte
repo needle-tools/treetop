@@ -50,12 +50,6 @@
    *  prior cmd history (visible in ShellView next time the column is
    *  closed and reopened in read mode). */
   export let resumeFromTermId: string | undefined = undefined;
-  /** Optional bytes to feed to the PTY shortly after spawn. Used by
-   *  "Resume with context" for Ollama: the daemon waits ~1.5s for the
-   *  TUI to draw its prompt, then writes this string so the model
-   *  sees the prior conversation as initial user input. Ignored when
-   *  `attachTermId` is set (we're reattaching, not spawning). */
-  export let initialInput: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -219,7 +213,6 @@
             ownerId,
             procName,
             previousTermId: resumeFromTermId,
-            initialInput,
           }),
           signal: startupAbort.signal,
         });

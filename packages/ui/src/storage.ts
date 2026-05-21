@@ -287,7 +287,6 @@ export function cmdForOpenSession(
     agent: PersistedAgent | "shell";
     resumeSessionId?: string;
     preassignedSessionId?: string;
-    ollamaModel?: string;
   },
   defaultShell: string,
 ): string[] {
@@ -324,14 +323,8 @@ export function cmdForOpenSession(
     if (sid) return ["codex", "resume", sid];
     return ["codex"];
   }
-  if (s.agent === "ollama") {
-    // Ollama doesn't persist conversation history on disk, so there's
-    // no resume semantics — the model tag picked at spawn time fully
-    // determines what `ollama run` boots into.
-    if (s.ollamaModel) return ["ollama", "run", s.ollamaModel];
-    return ["ollama"];
-  }
-  // copilot has no resume semantics in v0
+  // copilot has no resume semantics in v0; ollama no longer spawns a
+  // PTY (chat goes through /api/ollama/chat — see plans/ollama.md).
   return [s.agent];
 }
 
