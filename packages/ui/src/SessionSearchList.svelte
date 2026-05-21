@@ -730,7 +730,7 @@
     font-size: 0.7rem;
     color: var(--text-muted);
     font-weight: 400;
-    max-width: 40ch;
+    max-width: 30ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -742,7 +742,7 @@
   :global(.agent-row .agent-title.agent-last-user-msg) {
     color: var(--text-muted);
     font-weight: 400;
-    max-width: 50ch;
+    max-width: 30ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
