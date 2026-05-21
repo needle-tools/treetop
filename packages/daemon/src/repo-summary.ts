@@ -156,6 +156,19 @@ export function shouldGenerate(
  *  and this morning"; the v2 path is "since the last cached
  *  summary" so weekends don't fall off. */
 export const DEFAULT_SINCE_HOURS = 24;
+
+/** Weekend-aware variant of `DEFAULT_SINCE_HOURS`. On Monday (local
+ *  time) we sweep 72h so Friday + weekend work is still in the
+ *  window; the rest of the week stays at 24h. The label the UI
+ *  renders (`rangeLabel(sinceHours)`) tracks this automatically.
+ *
+ *  Not aware of holidays — a holiday Monday means Tuesday's 24h
+ *  window still misses the long weekend. The v2 "since last
+ *  cached summary" path will fix that; this is the cheap-and-
+ *  correct-for-most-weeks heuristic. */
+export function pickRepoSinceHours(now: Date = new Date()): number {
+  return now.getDay() === 1 ? 72 : DEFAULT_SINCE_HOURS;
+}
 /** Default freshness window. A midday return to the dashboard
  *  shouldn't re-fire; an evening return after morning-only commits
  *  should. */

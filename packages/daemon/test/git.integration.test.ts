@@ -14,6 +14,7 @@ import {
   getWorktreeDetails,
   listCommits,
   getDiff,
+  getFileDiff,
   createWorktree,
   removeWorktree,
   listBranches,
@@ -344,6 +345,85 @@ describe("getDiff against real git", () => {
     expect(diff).toContain("new file mode 040000");
     expect(diff).toContain("untracked embedded git repo");
     expect(diff).toContain("git submodule add");
+  });
+});
+
+describe("getFileDiff against real git", () => {
+  test("workdir kind returns only the requested file's diff", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "v1\n");
+    await writeFile(join(repo, "b.txt"), "v1\n");
+    await $`git -C ${repo} add a.txt b.txt`.quiet();
+    await $`git -C ${repo} commit -m add -q`.quiet();
+    await writeFile(join(repo, "a.txt"), "v2\n");
+    await writeFile(join(repo, "b.txt"), "v2\n");
+
+    const diff = await getFileDiff(repo, "a.txt", "workdir");
+    expect(diff).toContain("a.txt");
+    expect(diff).toContain("-v1");
+    expect(diff).toContain("+v2");
+    // The other modified file must NOT leak into the per-file diff —
+    // that's the whole point of the pathspec filter.
+    expect(diff).not.toContain("b.txt");
+  });
+
+  test("staged kind returns the index diff for the requested file", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "hello\n");
+    await $`git -C ${repo} add a.txt`.quiet();
+    const diff = await getFileDiff(repo, "a.txt", "staged");
+    expect(diff).toContain("a.txt");
+    expect(diff).toContain("+hello");
+  });
+
+  test("staged kind ignores unstaged modifications on the same file", async () => {
+    // Stage v1, then edit the workdir to v2. The staged diff must show
+    // the v1 add (index vs HEAD) and *not* the v2 workdir change.
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "v1\n");
+    await $`git -C ${repo} add a.txt`.quiet();
+    await writeFile(join(repo, "a.txt"), "v2\n");
+    const diff = await getFileDiff(repo, "a.txt", "staged");
+    expect(diff).toContain("+v1");
+    expect(diff).not.toContain("+v2");
+  });
+
+  test("untracked kind synthesises a new-file diff via --no-index", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "fresh.txt"), "hello\nworld\n");
+    const diff = await getFileDiff(repo, "fresh.txt", "untracked");
+    expect(diff).toMatch(/diff --git .* b\/fresh\.txt/);
+    expect(diff).toContain("--- /dev/null");
+    expect(diff).toContain("+++ b/fresh.txt");
+    expect(diff).toContain("+hello");
+    expect(diff).toContain("+world");
+  });
+
+  test("context=0 omits surrounding lines, only +/- remain in the hunk", async () => {
+    // Default context for the per-file route is 0 — that's what the
+    // hover popup uses to keep its footprint small. Verify the hunk
+    // truly contains only the changed lines for a multi-line file.
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "line1\nline2\nline3\nline4\n");
+    await $`git -C ${repo} add a.txt`.quiet();
+    await $`git -C ${repo} commit -m add -q`.quiet();
+    await writeFile(join(repo, "a.txt"), "line1\nCHANGED\nline3\nline4\n");
+
+    const diff = await getFileDiff(repo, "a.txt", "workdir", 0);
+    // The hunk body (everything after the first `@@ … @@`) must
+    // contain only the -/+ pair for line 2 — no surrounding context.
+    const hunkBody = diff.split(/^@@.*@@.*$/m).slice(1).join("\n");
+    const bodyLines = hunkBody.split("\n").filter((l) => l.length > 0);
+    expect(bodyLines).toEqual(["-line2", "+CHANGED"]);
+  });
+
+  test("returns empty string for a path with no changes", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "v1\n");
+    await $`git -C ${repo} add a.txt`.quiet();
+    await $`git -C ${repo} commit -m add -q`.quiet();
+    // No edit — diff for this file should be empty.
+    expect(await getFileDiff(repo, "a.txt", "workdir")).toBe("");
   });
 });
 

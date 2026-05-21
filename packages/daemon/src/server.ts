@@ -8,6 +8,7 @@ import {
   getWorktreeDetails,
   listCommits,
   getDiff,
+  getFileDiff,
   getCommitDiff,
   fetchAll,
   createWorktree,
@@ -19,6 +20,7 @@ import {
   parseNumstat,
   parseUnpushedCommits,
   type DiffKind,
+  type FileDiffKind,
 } from "./git";
 import { $ } from "bun";
 import { detectAgents, agentsForWorktree } from "./agents";
@@ -46,7 +48,7 @@ import {
   collectRepoActivity,
   formatActivityPrompt,
   shouldGenerate as shouldGenerateRepoSummary,
-  DEFAULT_SINCE_HOURS as REPO_SINCE_HOURS,
+  pickRepoSinceHours,
   DEFAULT_MAX_AGE_HOURS as REPO_MAX_AGE_HOURS,
 } from "./repo-summary";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
@@ -1068,6 +1070,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
           { method: "GET", path: "/api/diff", description: "git diff text for a worktree: ?path=<wt>&kind=workdir|staged" },
+          { method: "GET", path: "/api/file-diff", description: "git diff text for a single file: ?path=<wt>&file=<rel-file>&kind=workdir|staged|untracked&context=<n> (default context=0). Used by the per-file hover popup in the worktree-row 'changed files' tooltip — fetches one path's hunks instead of the whole workdir diff." },
           { method: "GET", path: "/api/commit", description: "git show output for one commit: ?path=<wt>&sha=<sha>" },
           { method: "POST", path: "/api/open", body: { path: "string", app: "fork | terminal | <editor cmd>", command: "string?" }, description: "open a path in Fork / terminal / a detected editor via OS shell-out. `command` is honoured for app=terminal — runs the given shell command in the new window at the given cwd (drives e.g. `claude --resume <sid>` in macOS Terminal / Linux's preferred terminal)" },
           { method: "GET", path: "/api/stream", description: "Server-Sent Events stream; emits 'change' on every mutation so clients can refresh" },
@@ -2580,10 +2583,13 @@ const server = Bun.serve<TermWsData, never>({
             } catch {
               // ignore
             }
+            // Weekend-aware window: 72h on Monday so Friday + weekend
+            // commits stay in the digest; 24h on other weekdays.
+            const sinceHours = pickRepoSinceHours();
             const activity = await collectRepoActivity(
               repo.path,
               repo.name,
-              REPO_SINCE_HOURS,
+              sinceHours,
             );
             send("meta", {
               repoId: id,
@@ -2603,7 +2609,7 @@ const server = Bun.serve<TermWsData, never>({
                 model,
                 lastSha: currentSha,
                 generatedAt: new Date(startedAt).toISOString(),
-                sinceHours: REPO_SINCE_HOURS,
+                sinceHours,
                 commitCount: 0,
                 dirtyWorktreeCount: 0,
                 totalInsertions: 0,
@@ -2612,24 +2618,34 @@ const server = Bun.serve<TermWsData, never>({
                 elapsedMs: Date.now() - startedAt,
                 body:
                   "Nothing committed in the last " +
-                  REPO_SINCE_HOURS +
+                  sinceHours +
                   " hours, no uncommitted work.",
               });
               send("chunk", {
                 delta:
                   "Nothing committed in the last " +
-                  REPO_SINCE_HOURS +
+                  sinceHours +
                   " hours, no uncommitted work.",
               });
               return;
             }
 
+            // Prompt is intentionally terse and structural. Earlier
+            // versions asked for a "brief paragraph", which yielded
+            // narrative recaps ("You did X, you also did Y. Now things
+            // are clearer.") that aren't useful as a glance surface.
+            // The user wants a topic list they can scan in <1s.
             const systemPrompt =
-              `You are a precise technical summariser. The user opens this repository each morning; below is what was committed and changed in the last ${REPO_SINCE_HOURS} hours. ` +
-              "Write a single brief paragraph — under 300 characters — describing what was worked on and where things stand. " +
-              "Address the developer as \"you\", not \"the user\". " +
-              "Plain text only: no markdown, no bullets, no headings, no backticks. " +
-              "Do not echo the commit list back.";
+              "You are summarising recent git activity so the developer can recall at a glance what they worked on in this repository. " +
+              `The window is the last ${sinceHours} hours. ` +
+              "Output ONE single line, max 180 characters. " +
+              "List 2 to 4 distinct work themes separated by ' – ' (space, en-dash, space). " +
+              "Each theme is a short noun phrase, not a sentence (e.g. 'Ollama summarisation', 'Windows compat pass', 'sticky-notes drag-drop'). " +
+              "If a parenthetical detail clarifies a theme, keep it under 6 words: 'Ollama summarisation (sessions + composer)'. " +
+              "If there are dirty worktrees, append them as the final theme like '3 dirty worktrees'. " +
+              "DO NOT write narrative or sentences. DO NOT use 'you', 'we', or 'the user'. DO NOT echo commit messages verbatim. " +
+              "DO NOT use markdown, bullets, quotes, or backticks. " +
+              "If nothing substantial was done, output 'Chores only' or similar in under 10 words.";
 
             let collected = "";
             const estimatedTokens = Math.ceil(prompt.length / 4);
@@ -2715,7 +2731,7 @@ const server = Bun.serve<TermWsData, never>({
               model,
               lastSha: currentSha,
               generatedAt: new Date(startedAt).toISOString(),
-              sinceHours: REPO_SINCE_HOURS,
+              sinceHours,
               commitCount: activity.commits.length,
               dirtyWorktreeCount: activity.dirtyWorktrees.length,
               totalInsertions,
@@ -2968,6 +2984,29 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
       const diff = await getDiff(path, kind, context);
+      return new Response(diff, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          ...CORS,
+        },
+      });
+    }
+
+    if (url.pathname === "/api/file-diff" && req.method === "GET") {
+      const path = url.searchParams.get("path");
+      const file = url.searchParams.get("file");
+      const kindParam = url.searchParams.get("kind");
+      const kind: FileDiffKind =
+        kindParam === "staged" ? "staged" : kindParam === "untracked" ? "untracked" : "workdir";
+      const ctxParam = url.searchParams.get("context");
+      const context = ctxParam ? Number(ctxParam) : 0;
+      if (!path || !file) {
+        return json(
+          { error: "?path=<worktree-path>&file=<file> are required" },
+          { status: 400 },
+        );
+      }
+      const diff = await getFileDiff(path, file, kind, context);
       return new Response(diff, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",

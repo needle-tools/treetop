@@ -786,6 +786,52 @@ export function parseUnpushedCommits(logOut: string): UnpushedCommit[] {
 
 export type DiffKind = "workdir" | "staged";
 
+/** Kind for {@link getFileDiff}: same as {@link DiffKind} plus `untracked`,
+ *  which uses `git diff --no-index /dev/null <file>` because `git diff`
+ *  alone never mentions untracked paths. The /api/diff bulk route encodes
+ *  untracked diffs into the `workdir` payload (see {@link getDiff}), but
+ *  for per-file hover-popup fetches the caller already knows which bucket
+ *  a path lives in, so accepting `untracked` here avoids a wasteful full
+ *  workdir diff + post-filter on the client. */
+export type FileDiffKind = DiffKind | "untracked";
+
+/**
+ * Textual diff for a single file. Used by the per-row hover popup in the
+ * worktree-row "changed files" tooltip — the user already knows what
+ * file they're hovering, so we don't need to ship the whole workdir
+ * diff (which can be megabytes) just to render one file's hunks.
+ *
+ * Pathspec separator (`-- <file>`) is required so paths that look like
+ * git refs (e.g. a file literally named `HEAD`) aren't reinterpreted.
+ * Returns empty string on failure rather than throwing — the hover
+ * popup just renders "no diff" in that case, which is the right UX.
+ */
+export async function getFileDiff(
+  worktreePath: string,
+  file: string,
+  kind: FileDiffKind = "workdir",
+  context: number = 0,
+): Promise<string> {
+  const ctx = `--unified=${clampContext(context)}`;
+  try {
+    if (kind === "untracked") {
+      // --no-index exits 1 when the two paths differ (always true for
+      // /dev/null vs a real file); .nothrow() prevents Bun from
+      // promoting that into a thrown error.
+      const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
+        .quiet()
+        .nothrow();
+      return result.stdout.toString();
+    }
+    const cmd = kind === "staged"
+      ? $`git -C ${worktreePath} diff --staged --no-color ${ctx} -- ${file}`
+      : $`git -C ${worktreePath} diff --no-color ${ctx} -- ${file}`;
+    return await cmd.quiet().text();
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Diff for a single commit (vs its first parent). Used by the History panel
  * when the user clicks a commit to expand its content.

@@ -16,6 +16,7 @@
   import { onMount, onDestroy } from "svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { enqueueSummary } from "./summary-queue";
 
   export let repoId: string;
   export let repoName: string;
@@ -42,11 +43,20 @@
   let stale: boolean = false;
   let reason: StaleReason | null = null;
   let generating: boolean = false;
+  let queued: boolean = false;
   let errorMsg: string = "";
   /** True once we've heard back from the GET, so we don't flash
    *  "no summary yet" while the probe is still in flight. */
   let probed: boolean = false;
-  let aborter: AbortController | null = null;
+  /** Becomes true the first time the strip intersects the viewport.
+   *  Generation is deferred until then so off-screen repos don't
+   *  burn an Ollama slot on the user's first paint. */
+  let visible: boolean = false;
+  /** Cancel handle returned by `enqueueSummary`. Lets us drop a
+   *  job from the queue if the component unmounts before it runs. */
+  let cancelQueued: (() => void) | null = null;
+  let stripEl: HTMLDivElement | undefined;
+  let io: IntersectionObserver | null = null;
 
   async function fetchCached(): Promise<GetResponse | null> {
     try {
@@ -71,9 +81,26 @@
     }
     stale = data.stale;
     reason = data.reason ?? null;
-    if (data.stale && !generating) {
-      void generate();
-    }
+    maybeEnqueue();
+  }
+
+  /** Enqueue a generate run iff the cache is stale AND the strip is
+   *  on-screen AND we don't already have one in flight or queued.
+   *  Called from probe completion and from the IntersectionObserver
+   *  the first time the strip becomes visible. */
+  function maybeEnqueue(): void {
+    if (!stale) return;
+    if (!visible) return;
+    if (generating || queued) return;
+    queued = true;
+    cancelQueued = enqueueSummary(async (signal) => {
+      try {
+        await generate(signal);
+      } finally {
+        queued = false;
+        cancelQueued = null;
+      }
+    });
   }
 
   /** Pick a model that's actually installed locally. Same logic the
@@ -106,15 +133,23 @@
     return usable[0]?.name ?? list[0]?.name ?? null;
   }
 
-  async function generate(): Promise<void> {
+  /** Local aborter so onDestroy can cancel an in-flight fetch. The
+   *  queue passes its own AbortSignal (60s timeout); we listen to it
+   *  and forward into the local aborter so both teardown paths work. */
+  let aborter: AbortController | null = null;
+
+  async function generate(queueSignal?: AbortSignal): Promise<void> {
     if (generating) return;
     generating = true;
     errorMsg = "";
     aborter = new AbortController();
+    const onQueueAbort = () => aborter?.abort();
+    queueSignal?.addEventListener("abort", onQueueAbort);
     const pick = await pickInstalledModel();
     if (!pick) {
       errorMsg = "No Ollama model installed";
       generating = false;
+      queueSignal?.removeEventListener("abort", onQueueAbort);
       return;
     }
     try {
@@ -173,9 +208,18 @@
         }
       }
     } catch (e) {
-      if ((e as Error).name === "AbortError") return;
+      if ((e as Error).name === "AbortError") {
+        // The queue's 60s timeout fires its signal; distinguish it
+        // from a clean unmount-abort (we don't know which on its own).
+        // Show a short hint either way so a stuck summary is visible.
+        if (queueSignal?.aborted) {
+          errorMsg = "timed out";
+        }
+        return;
+      }
       errorMsg = e instanceof Error ? e.message : String(e);
     } finally {
+      queueSignal?.removeEventListener("abort", onQueueAbort);
       generating = false;
     }
   }
@@ -193,41 +237,131 @@
     return `${d}d ago`;
   }
 
+  /** Split the LLM body on whatever separator it picked (we ask for
+   *  en-dash, but small models also produce middle-dot, bullet, or
+   *  bar). Returned parts are trimmed so the rendered separator is
+   *  the only spacing between themes. */
+  function splitBody(s: string): string[] {
+    return s
+      .split(/\s+[–·•|-]\s+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+  }
+
+  /** Human label for the window of activity the summary covers, e.g.
+   *  "last 24h" or "last 7d". Reads `sinceHours` from the frontmatter
+   *  so it tracks whatever window the daemon actually summarised. */
+  function rangeLabel(hours: number): string {
+    if (!Number.isFinite(hours) || hours <= 0) return "";
+    if (hours < 24) return `last ${Math.round(hours)}h`;
+    const days = hours / 24;
+    if (days < 7) return `last ${Math.round(days)}d`;
+    const weeks = days / 7;
+    if (weeks < 5) return `last ${Math.round(weeks)}w`;
+    return `last ${Math.round(days / 30)}mo`;
+  }
+
   onMount(() => {
     void probe();
   });
   onDestroy(() => {
+    io?.disconnect();
+    cancelQueued?.();
     aborter?.abort();
   });
+
+  /** Svelte action: attach an IntersectionObserver to the strip and
+   *  flip `visible` true on the first intersection. Once visible
+   *  fires, we trigger maybeEnqueue (in case the probe already
+   *  finished and was waiting on us). No need to keep observing
+   *  past the first hit — generation is one-shot per mount. */
+  function observeVisible(node: HTMLElement): { destroy: () => void } {
+    io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            visible = true;
+            maybeEnqueue();
+            io?.disconnect();
+            io = null;
+            break;
+          }
+        }
+      },
+      { rootMargin: "200px 0px" }, // start early so it's ready by scroll
+    );
+    io.observe(node);
+    return {
+      destroy() {
+        io?.disconnect();
+        io = null;
+      },
+    };
+  }
 
   $: void repoId; // re-fetch if the bound repoId ever swaps
 </script>
 
-{#if probed && (body || generating || errorMsg)}
-  <div class="strip">
-    {#if !generating}
+{#if probed}
+  <div
+    class="strip repo-summary"
+    class:empty={!body && !generating && !errorMsg && !queued}
+    bind:this={stripEl}
+    use:observeVisible
+  >
+    {#if generating || queued}
+      <span class="status">
+        <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
+        <span class="dim">{queued && !generating ? "queued…" : "summarising…"}</span>
+      </span>
+    {:else if errorMsg}
+      <span class="err">{errorMsg}</span>
+    {:else if body}
+      {#if frontmatter}
+        <span
+          class="meta"
+          title={`Generated ${relTimeFromIso(frontmatter.generatedAt)} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`}
+        >{rangeLabel(frontmatter.sinceHours)}:</span>
+      {/if}
+      <Tooltip variant="wide" escapeClip>
+        <span slot="trigger" class="body"
+          >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</span>
+        <div slot="content" class="tooltip-body"
+          >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</div>
+      </Tooltip>
+    {/if}
+    {#if !generating && !queued && (body || errorMsg)}
       <button
         type="button"
         class="refresh"
         title={`Re-summarise ${repoName} now`}
-        on:click={() => void generate()}
-      >↻</button>
-    {/if}
-    {#if generating}
-      <span class="status">
-        <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
-        <span class="dim">summarising…</span>
-      </span>
-    {:else if errorMsg}
-      <span class="err">{errorMsg}</span>
-    {:else}
-      <Tooltip variant="wide" escapeClip>
-        <span slot="trigger" class="body">{body}</span>
-        <div slot="content" class="tooltip-body">{body}</div>
-      </Tooltip>
-    {/if}
-    {#if frontmatter && !generating}
-      <span class="meta">{relTimeFromIso(frontmatter.generatedAt)}</span>
+        on:click={() => {
+          // Manual refresh: mark stale + visible so maybeEnqueue
+          // picks it up regardless of cache freshness. Routes through
+          // the same shared queue so we never run two at once.
+          stale = true;
+          visible = true;
+          maybeEnqueue();
+        }}
+        aria-label="Re-summarise"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="10"
+          height="10"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="23 4 23 10 17 10" />
+          <polyline points="1 20 1 14 7 14" />
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+          <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
+        </svg>
+      </button>
     {/if}
   </div>
 {/if}
@@ -246,11 +380,13 @@
     flex-wrap: nowrap;
     gap: 0.5rem;
     margin-top: 0.4rem;
-    padding: 0.3rem 0.55rem;
-    background: var(--surface-2);
+    /* Leading inset matches `.sessions-strip` (same `--row-strip-pad`
+       token) so the summary text aligns with the first session column
+       below. Right side keeps the original chip padding. */
+    padding: 0.3rem 0.55rem 0.3rem var(--row-strip-pad);
     border-radius: var(--radius-sm);
     font-size: 0.74rem;
-    color: var(--text-3);
+    color: var(--text-muted);
     min-width: 0;
     box-sizing: border-box;
     white-space: nowrap;
@@ -263,16 +399,21 @@
   /* The Tooltip component wraps the trigger in its own `.tt-wrap`
      inline-flex element, so the strip's flex sizing has to land on
      THAT wrapper, not the inner .body span. `:global()` reaches
-     through the Svelte scoped-CSS boundary to do it. */
+     through the Svelte scoped-CSS boundary to do it.
+
+     `flex: 0 1 auto` lets the body sit at its natural width when the
+     summary is short (so the refresh button hugs the text instead of
+     being pushed to the far right) AND still shrink with ellipsis
+     when the summary overflows the row. */
   .strip :global(.tt-wrap) {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
   }
   .body {
     display: block;
     width: 100%;
-    color: var(--text-1);
+    color: var(--text-muted);
     line-height: 1.5;
     /* Single-line: extend to the available row width, then
        ellipsis. No JS truncation — the Tooltip shows the full
@@ -281,6 +422,25 @@
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: default;
+  }
+  /* Separator between themes. We render an en-dash (asked for by the
+     prompt; the splitter also catches middle-dot/bullet/bar in case
+     the model picked a different glyph) and bump weight + colour so
+     the visual rhythm of the line reads as a sequence of items, not
+     a stretched-out sentence. */
+  .sep {
+    display: inline-block;
+    margin: 0 0.4rem;
+    color: var(--text-3);
+    font-weight: 700;
+  }
+  /* Empty post-probe state: collapse the chip so an empty row doesn't
+     add visual weight. The element still occupies layout space so the
+     IntersectionObserver has something to watch. */
+  .strip.empty {
+    padding-block: 0;
+    margin-top: 0;
+    min-height: 1px;
   }
   .tooltip-body {
     max-width: 60ch;
@@ -298,12 +458,14 @@
   .err { color: #e74c3c; }
   .refresh {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
     border: 0;
     color: var(--text-muted);
-    font-size: 0.85rem;
     line-height: 1;
-    padding: 0.1rem 0.35rem;
+    padding: 0.1rem 0.2rem;
     border-radius: var(--radius-sm, 4px);
     cursor: pointer;
   }

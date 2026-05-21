@@ -2172,9 +2172,9 @@
       let target: number;
       if (colRect.width >= stripRect.width) {
         // Column is wider than the visible strip: keep its left edge
-        // just inside the leading pad so the user sees the beginning.
-        const padEl = strip.querySelector<HTMLElement>(".sessions-strip-pad");
-        const padW = padEl ? padEl.getBoundingClientRect().width : 0;
+        // just inside the strip's `padding-left` so the user sees the
+        // beginning with the same breathing room a normal column gets.
+        const padW = parseFloat(getComputedStyle(strip).paddingLeft) || 0;
         target = colOffsetInStrip - padW;
       } else {
         // Center horizontally in the visible strip.
@@ -4619,7 +4619,7 @@
                       {:else}
                         <!-- Mirror of the expanded summary.text tooltip:
                              staged / unstaged / untracked file lists. -->
-                        <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} />
+                        <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
                       {/if}
                     </span>
                   </Tooltip>
@@ -5380,23 +5380,6 @@
             </div>
           {/if}
 
-          {#if isFirstOfRepo}
-            <!-- "What happened recently" — repo-level cached
-                 summary, lives in the same vertical zone as the
-                 per-worktree activity strip below. Only renders
-                 on the first row of each repo. -->
-            <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
-          {/if}
-
-          {#if wt && activityByCwd[wt.path] && activityByCwd[wt.path].length > 0}
-            {@const latest = activityByCwd[wt.path][0]}
-            <div class="row-activity" title={`source: ${latest.source}`}>
-              <span class="agent-dot agent-{latest.agent}"></span>
-              <span class="activity-text">{latest.summary}</span>
-              <span class="activity-time muted">{relTime(latest.timestamp)}</span>
-            </div>
-          {/if}
-
           {#if wt && summary}
             {@const urgent =
               wt.fileStatus.unstaged > 0 ||
@@ -5420,7 +5403,7 @@
                     class:muted={!urgent}
                   >{summary.text}</span>
                   <span slot="content" class="wt-tt-content">
-                    <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} />
+                    <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
                   </span>
                 </Tooltip>
               {/if}
@@ -5518,7 +5501,16 @@
                 onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
               />
             </div>
+          {/if}
 
+          {#if isFirstOfRepo}
+            <!-- "What happened recently" — repo-level cached
+                 summary. Rendered below the row-status line. Only
+                 renders on the first row of each repo. -->
+            <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
+          {/if}
+
+          {#if wt && summary}
             {#if wt}
               {@const stripFilter = stripFilterByWt[wt.path]}
               {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
@@ -5535,12 +5527,11 @@
                     data-wt-strip={wt.path}
                     on:dragleave={(e) => handleStripDragLeave(e, wt.path)}
                   >
-                    <!-- Leading + trailing spacers: invisible flex items
-                         that give the first/last column a constant gap
-                         from the strip edge and let the user over-scroll
-                         a touch past either end. Sized via CSS so we can
-                         tune the gap in one place. -->
-                    <span class="sessions-strip-pad" aria-hidden="true"></span>
+                    <!-- Trailing spacer (the leading inset is handled by
+                         `.sessions-strip { padding-left }`). Can't use
+                         padding-right here — horizontally scrolling flex
+                         containers drop it — so a real flex item gives
+                         the last column the same breathing room. -->
                     {#each visibleSessions as s, i (s.source)}
                       <div
                         class="session-col"

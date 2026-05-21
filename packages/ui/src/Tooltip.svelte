@@ -1,4 +1,21 @@
+<script lang="ts" context="module">
+  /** Svelte-context key for the ancestor-tooltip hover controls.
+   *  A descendant component (e.g. a nested hover popup that gets
+   *  portal'd to <body>, so the outer tooltip can't see the cursor
+   *  enter it via DOM) calls `getContext(TOOLTIP_HOVER_CTX)` to get
+   *  `{ cancelHide, scheduleHide }` from the nearest enclosing
+   *  Tooltip and pin it open while the user interacts with the
+   *  nested popup. Exported (not just a private symbol) so consumers
+   *  can import the exact key without stringly-typed mismatch. */
+  export const TOOLTIP_HOVER_CTX = Symbol("tooltipHover");
+  export interface TooltipHoverCtx {
+    cancelHide(): void;
+    scheduleHide(): void;
+  }
+</script>
+
 <script lang="ts">
+  import { setContext } from "svelte";
   /** A lightweight hover tooltip: wraps a trigger and shows a popover
    *  with rich content (slot) after a brief mouseover delay. Doesn't
    *  attempt full positioning intelligence — anchored under the
@@ -10,6 +27,10 @@
    *  tooltip opens. Use it to lazy-fetch the content the parent will
    *  render in the `content` slot. */
   export let showDelayMs = 250;
+  /** Delay before the tooltip closes after the cursor leaves both the
+   *  trigger and the popup. Gives users time to slide onto the popup to
+   *  read/select its contents without it vanishing under the cursor. */
+  export let hideDelayMs = 200;
   export let placement: "top" | "bottom" = "bottom";
   export let onShow: () => void = () => {};
   /** `wide` raises the max-width so longer commit subjects (up to ~40ch
@@ -26,6 +47,7 @@
 
   let open = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
   /** Trigger wrapper — used by the portal action to anchor coords. */
   let wrapEl: HTMLDivElement | null = null;
 
@@ -62,6 +84,11 @@
   }
 
   function start() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    if (open) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       open = true;
@@ -82,8 +109,30 @@
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).has("ttkeep");
     if (keep) return;
-    open = false;
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      open = false;
+      hideTimer = null;
+    }, hideDelayMs);
   }
+
+  /** Cancel a pending hide when the cursor moves onto the popup. */
+  function cancelHide() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  // Expose hover control to descendants. A nested popup that
+  // portal's itself to <body> calls cancelHide() on its own
+  // mouseenter so this Tooltip doesn't auto-close while the user
+  // is interacting with the nested popup. scheduleHide on the
+  // nested mouseleave so this Tooltip closes at the same time.
+  setContext<TooltipHoverCtx>(TOOLTIP_HOVER_CTX, {
+    cancelHide,
+    scheduleHide: stop,
+  });
 </script>
 
 <!-- Both wrap and popup are `<div>`s so the content slot can carry
@@ -110,11 +159,18 @@
         class="tt tt-{placement} tt-{variant} tt-portal"
         role="tooltip"
         use:portal
+        on:mouseenter={cancelHide}
+        on:mouseleave={stop}
       >
         <slot name="content" />
       </div>
     {:else}
-      <div class="tt tt-{placement} tt-{variant}" role="tooltip">
+      <div
+        class="tt tt-{placement} tt-{variant}"
+        role="tooltip"
+        on:mouseenter={cancelHide}
+        on:mouseleave={stop}
+      >
         <slot name="content" />
       </div>
     {/if}
@@ -144,7 +200,10 @@
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
     font-size: 0.72rem;
     font-family: ui-monospace, monospace;
-    pointer-events: none;
+    /* Receive mouse events so the cursor can slide onto the popup and
+     * keep it open (the parent listens for mouseenter/mouseleave on the
+     * popup itself to cancel/start the hide timer). */
+    pointer-events: auto;
     /* Default to letting content wrap; consumers can override per-row.
      * Without this, the popup's `nowrap` clipped multi-line content to
      * a single ellipsis. */
