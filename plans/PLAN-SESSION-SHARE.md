@@ -14,6 +14,28 @@ origin machine, and a short summary, and explicitly accepts or
 declines. On accept, the receiver rewrites absolute paths so the
 session opens against the local clone of the same git repo.
 
+## Hard rules
+
+These are non-negotiable constraints — any v1 implementation that
+breaks them is wrong.
+
+1. **Local network only.** No central signaling service, no
+   relay, no public-IP rendezvous, no "fallback to cloud if mDNS
+   fails." Discovery is mDNS or manual `host:port`. Transport is
+   direct daemon-to-daemon HTTP on the LAN. If two machines can't
+   reach each other on the LAN, the feature is unavailable; we do
+   not bridge them via the internet. Rationale: session
+   transcripts contain code, file paths, occasionally secrets,
+   and an exact record of what an AI did on the user's machine —
+   that data must not leave the LAN, and the simplest way to
+   guarantee that is to not build a path off it. (Compare:
+   sharedrop.io's public-IP-room trick is clever but requires
+   pinging a hosted service on every connect. Not for us.)
+2. **Tool outputs are stripped by default before send.** See
+   [Privacy: tool-output stripping](#privacy-tool-output-stripping).
+   Defence-in-depth against accidental leaks even when the
+   receiver is the user's own other machine.
+
 ## Why this is worth building
 
 Multi-machine is the *normal* case for our users: a laptop for
@@ -55,13 +77,19 @@ In (v1):
 - A "Received sessions" surface in the UI — same affordances as
   native sessions (view, search, summarise) but flagged as
   imported.
+- **Sender-side scrub**: tool_result blocks are stripped from the
+  JSONL before send by default. See [Privacy](#privacy-tool-output-stripping)
+  for what stays and what goes.
 
 Out (v1, defer):
 - Live sync of an in-progress session. Send is a snapshot at the
   moment of the click. v2 may add "send + keep tailing" but that
   needs a streaming protocol and conflict story.
-- Internet / WAN delivery. Same-LAN only. WAN handoff would need a
-  relay or NAT traversal; out of scope for v1.
+- Internet / WAN delivery. Same-LAN only — see [Hard rules](#hard-rules).
+  Not just "out of scope for v1" but **explicitly rejected as a
+  direction**: the privacy properties of this feature depend on
+  bytes never leaving the LAN. A WAN version would be a different
+  feature with different trust assumptions.
 - Auth / pairing. v1 trusts the LAN — anyone who can reach the
   daemon port can already drive supergit. The explicit-accept
   step on the receiver is UX (informed consent), not security;
@@ -144,9 +172,11 @@ manually" input that takes `host:port`.
     "originWorktreePath": "/Users/marcel/git/bar/.worktrees/feat-x",
     "createdAt": "2026-05-21T10:14:00Z",
     "sentAt":    "2026-05-21T14:02:00Z",
-    "bytes": 184320
+    "bytes": 184320,
+    "toolOutputs": "stripped" | "included",
+    "strippedCount": 17
   },
-  "jsonl": "<entire transcript>"
+  "jsonl": "<scrubbed transcript by default; raw if toolOutputs=included>"
 }
 ```
 
@@ -311,6 +341,78 @@ If we ever expose this beyond the LAN, gate it behind: pairing
 (out-of-band code), TLS, and per-peer tokens stored in the
 workspace.
 
+## Privacy: tool-output stripping
+
+Even when the receiver is the user's own laptop, a raw session
+transcript leaks more than the user thinks. Tool-result blocks
+routinely contain:
+
+- Output of `env`, `printenv`, or any command that dumps shell
+  environment — including `OPENAI_API_KEY`, AWS creds, GitHub
+  tokens, `.env` file contents the agent read at some point.
+- Reads of files that aren't part of the shared repo: `~/.ssh/config`,
+  password manager exports, unrelated projects, `~/.aws/credentials`.
+- Output of commands like `gh auth status`, `git config --list`,
+  `ps -ef`, `ls ~` that describe the sender's machine.
+- Build/test output containing internal hostnames, IPs, file
+  paths that hint at the sender's directory structure outside
+  the repo.
+
+The session author rarely re-reads the full transcript before
+sending. So we strip by default and let them opt back in
+deliberately.
+
+### What gets stripped
+
+Default: **tool_result blocks are replaced** with a placeholder
+that preserves shape but drops content. Concretely, in the
+normalised block schema from `sessions.ts`:
+
+| Block kind        | Default behaviour              |
+|-------------------|--------------------------------|
+| `text` (user)     | kept                           |
+| `text` (assistant)| kept                           |
+| `thinking`        | kept (it's the user's own model output, not env data) |
+| `tool_use`        | **kept** — name + args preserved so the receiver still sees *what* the agent did |
+| `tool_result`     | **replaced** with `{ stripped: true, originalBytes: N, kind: "<tool name>" }` |
+| `ide_context`     | kept (these are sender-supplied refs, no env data) |
+| `system_reminder` | kept                           |
+| `command`         | kept                           |
+| `marker`          | kept                           |
+
+The receiver's UI renders stripped tool_results as a quiet pill —
+"tool output stripped before send (N bytes)" — so it's obvious
+which turns lost context.
+
+### Why not just regex out secrets?
+
+Considered and rejected. Regex-based secret scrubbing (looking
+for `sk-...`, `ghp_...`, JWT shapes, etc.) is a perpetual
+arms-race against new credential formats and gives a false sense
+of safety. Whole-block stripping is dumb, conservative, and
+correct by construction: if you didn't send the tool output, the
+tool output didn't leak. The arms-race version can be a v2
+opt-in for users who want richer transcripts at higher risk.
+
+### Sender override
+
+The Send dialog includes a single checkbox: **"Include tool
+outputs (full transcript)"** — default OFF. Ticking it skips the
+scrub and sends the raw JSONL. The receiver-side inbox card
+makes the choice visible: cards from full-transcript offers are
+badged `full transcript` so the receiver knows what they're
+accepting.
+
+A future "trust this peer" preference could remember the choice
+per peer, but v1 is one-decision-per-send.
+
+### Implementation note
+
+Stripping happens at send time on a clone of the JSONL — the
+on-disk session is never mutated. This is important: the sender
+still has their full transcript for their own resume / search /
+summarise flows.
+
 ## Cross-platform notes
 
 - Daemon is Bun, runs identically on macOS / Linux / Windows.
@@ -337,6 +439,12 @@ Unit:
   golden files for each platform pair.
 - `validateManifest(m)` — rejects missing fields, non-absolute
   paths, oversized payloads.
+- `stripToolOutputs(jsonl)` — golden file: input transcript with
+  N tool_result blocks → output where every tool_result is
+  replaced with the placeholder shape, every other block is
+  byte-identical, returned `strippedCount === N`. Includes a
+  property-style assertion: no substring of any original
+  tool_result appears anywhere in the output.
 
 Integration (spawn two real daemons on two random ports in a temp
 workspace each):
@@ -360,6 +468,14 @@ workspace each):
 - Round-trip cross-platform: simulate Windows-origin manifest
   delivered to a POSIX receiver — verify every path in the output
   JSONL is POSIX and points at the local repo root.
+- Tool-output stripping end-to-end: A sends a session containing
+  a known secret string in a tool_result. Default-send path: the
+  secret is **not** present in B's stored JSONL, manifest
+  reports `toolOutputs: "stripped"`, B's inbox card shows the
+  default badge. Override-send path: A ticks "Include tool
+  outputs," secret *is* present in B's JSONL, manifest reports
+  `toolOutputs: "included"`, B's inbox card shows the
+  `full transcript` warning badge.
 
 We don't need a literal second OS in CI for the cross-platform
 test; the rewriter is pure, and we drive it with manifests that
@@ -369,8 +485,9 @@ release that touches this code.
 
 ## Rollout
 
-1. Land the rewriter + manifest validator + tests (no network, no
-   UI). Pure functions; easiest to land first.
+1. Land the rewriter + tool-output stripper + manifest validator
+   + tests (no network, no UI). Pure functions; easiest to land
+   first.
 2. Add `POST /api/sessions/offer`, `session-invites/` storage,
    pending → accept/decline state machine, `imported-sessions/`
    on accept, and the `offer-status` callback. Integration test
