@@ -891,6 +891,12 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
+    if (url.pathname === "/api/shutdown" && req.method === "POST") {
+      console.log("supergit daemon: /api/shutdown requested");
+      setTimeout(() => shutdown("/api/shutdown"), 50);
+      return json({ ok: true, pid: process.pid });
+    }
+
     // Diagnostics: env snapshot of a spawned PTY. ?id=<termId> picks a
     // specific terminal; omitted = a list of every alive PTY with its
     // snapshot. Used to verify what env the helper actually handed to
@@ -975,6 +981,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/health", description: "liveness + workspace path" },
           { method: "GET", path: "/api/shell-default", description: "the user's default login shell ($SHELL, falling back to /bin/zsh). Used by the new-session picker's 'Terminal' entry." },
           { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
+          { method: "POST", path: "/api/shutdown", description: "graceful shutdown: flushes state, closes PTYs, stops the server. Used by start.ts to restart prod without manual kill." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
           { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },
           { method: "GET", path: "/api/repos", description: "NDJSON stream of registered repos with their worktrees + detected agents. First line is {type:'manifest',repos:[{id,path,name,addedAt,color}]} for skeleton rows; each subsequent line is {type:'repo',repo:{...full enriched repo...}} flushed as that repo's git fan-out completes. Stream ends with EOF (no explicit done marker)." },
