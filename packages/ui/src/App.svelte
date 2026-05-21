@@ -3073,6 +3073,11 @@
     });
     es.onopen = () => {
       streamConnected = true;
+      // After a daemon restart (bun --watch, crash, prod upgrade) the
+      // FS watchers were torn down and any git changes during the gap
+      // were missed. Re-fetch everything on reconnect so the UI always
+      // catches up to reality.
+      void load();
     };
     es.onerror = () => {
       streamConnected = false;
