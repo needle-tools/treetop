@@ -722,30 +722,31 @@
   :global(.agents-list .agent-row.dismissed-row) .row-restore {
     opacity: 0.55;
   }
+  /* Single clamp for ANY .agent-title cell in this popover — manual
+     title, chat last-user-message fallback, shell last-cmd fallback,
+     or plain agent-side title. 30ch + ellipsis keeps the row width
+     bounded so long titles don't blow out the grid's 1fr column. */
+  :global(.session-search-popover .agent-row .agent-title) {
+    max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   /* Shell rows: most recent captured command, shown in the title
-     slot as a muted monospace snippet. Inherits the title cell's
-     ellipsis/overflow rules; just retunes typography + colour. */
+     slot as a muted monospace snippet. Retunes typography + colour;
+     the max-width / ellipsis rules above already apply. */
   :global(.agent-row .agent-title.agent-last-cmd) {
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
     color: var(--text-muted);
     font-weight: 400;
-    max-width: 30ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   /* Chat row fallback when there's no manualTitle: render the last
-     user message in the title slot. Muted vs. a real title so the
-     reader can tell it's a stand-in. Clamped to 50ch and ellipsized
-     on one line, like the shell fallback. */
+     user message in the title slot. Use the same colour + weight as
+     a real title so the row reads consistently — only the truncation
+     rule above keeps it from running wide. */
   :global(.agent-row .agent-title.agent-last-user-msg) {
-    color: var(--text-muted);
     font-weight: 400;
-    max-width: 30ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .orphan-tag {
     font-size: 0.65rem;
