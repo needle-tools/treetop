@@ -1228,8 +1228,15 @@
       {/if}
       {#if summarySnippet}
         <!-- The old snippet stays visible during a refresh — only
-             the chip spins. Two spinners felt redundant. -->
-        <div class="pinned-last-msg-wrap summary-stack" class:revealed={pinnedRevealed}>
+             the chip spins. Two spinners felt redundant. The
+             `summary-stack` padding only applies when the Refresh
+             chip is also visible above; otherwise the pill sits
+             flush under the header and the chip slot is freed. -->
+        <div
+          class="pinned-last-msg-wrap"
+          class:summary-stack={shouldShowRefresh || summaryRefreshing}
+          class:revealed={pinnedRevealed}
+        >
           <button
             type="button"
             class="pinned-last-msg pinned-summary"
