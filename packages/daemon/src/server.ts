@@ -1693,9 +1693,18 @@ const server = Bun.serve<TermWsData, never>({
               signal: abort.signal,
             });
             if (!res.ok || !res.body) {
+              let detail = "";
+              try {
+                const errBody = await res.text();
+                const parsed = JSON.parse(errBody) as { error?: string };
+                if (parsed.error) detail = ` — ${parsed.error}`;
+                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+              } catch {
+                // body unreadable
+              }
               send("error", {
                 kind: "ollama_http",
-                message: `Ollama responded ${res.status} ${res.statusText}`,
+                message: `Ollama responded ${res.status} ${res.statusText}${detail}`,
               });
               try { controller.close(); } catch {}
               return;
@@ -1964,9 +1973,18 @@ const server = Bun.serve<TermWsData, never>({
               signal: abort.signal,
             });
             if (!res.ok || !res.body) {
+              let detail = "";
+              try {
+                const errBody = await res.text();
+                const parsed = JSON.parse(errBody) as { error?: string };
+                if (parsed.error) detail = ` — ${parsed.error}`;
+                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+              } catch {
+                // body unreadable
+              }
               send("error", {
                 kind: "ollama_http",
-                message: `Ollama responded ${res.status} ${res.statusText}`,
+                message: `Ollama responded ${res.status} ${res.statusText}${detail}`,
               });
               try { controller.close(); } catch {}
               return;
@@ -2633,7 +2651,22 @@ const server = Bun.serve<TermWsData, never>({
               signal: abort.signal,
             });
             if (!res.ok || !res.body) {
-              throw new Error(`Ollama responded ${res.status} ${res.statusText}`);
+              // Ollama returns 404 with a JSON `error` field when the
+              // model isn't installed (e.g. "model 'llama3.2:3b' not
+              // found, try pulling it first"). Surface that, not just
+              // the HTTP status — saved us from a mystery in prod.
+              let detail = "";
+              try {
+                const errBody = await res.text();
+                const parsed = JSON.parse(errBody) as { error?: string };
+                if (parsed.error) detail = ` — ${parsed.error}`;
+                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+              } catch {
+                // body unreadable or already consumed
+              }
+              throw new Error(
+                `Ollama responded ${res.status} ${res.statusText}${detail}`,
+              );
             }
             const reader = res.body.getReader();
             const dec = new TextDecoder();

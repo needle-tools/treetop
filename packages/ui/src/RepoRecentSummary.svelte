@@ -76,21 +76,52 @@
     }
   }
 
+  /** Pick a model that's actually installed locally. Same logic the
+   *  session chip uses: last-used → llama3.2:3b → smallest non-embed.
+   *  Returns null when nothing is installed so the caller can surface
+   *  a "install a model first" notice instead of firing a 404. */
+  async function pickInstalledModel(): Promise<string | null> {
+    let list: { name: string; size?: number }[] = [];
+    try {
+      const res = await fetch(`/api/ollama/models`);
+      if (!res.ok) return null;
+      const body = (await res.json()) as { models?: typeof list };
+      list = body.models ?? [];
+    } catch {
+      return null;
+    }
+    if (list.length === 0) return null;
+    const remembered = localStorage.getItem("supergit:summarize:lastModel");
+    if (remembered && list.some((m) => m.name === remembered)) return remembered;
+    if (list.some((m) => m.name === "llama3.2:3b")) return "llama3.2:3b";
+    const usable = list.filter((m) => {
+      const n = m.name.toLowerCase();
+      return !n.endsWith("-embed") && !n.endsWith(":embed");
+    });
+    usable.sort(
+      (a, b) =>
+        (a.size ?? Number.MAX_SAFE_INTEGER) -
+        (b.size ?? Number.MAX_SAFE_INTEGER),
+    );
+    return usable[0]?.name ?? list[0]?.name ?? null;
+  }
+
   async function generate(): Promise<void> {
     if (generating) return;
     generating = true;
     errorMsg = "";
     aborter = new AbortController();
-    // Use the last-picked summarize model if known; otherwise a
-    // sensible default. Same shape as the session summary chip's
-    // pick logic — kept inline here so we don't pull in the dialog.
-    const remembered =
-      localStorage.getItem("supergit:summarize:lastModel") || "llama3.2:3b";
+    const pick = await pickInstalledModel();
+    if (!pick) {
+      errorMsg = "No Ollama model installed";
+      generating = false;
+      return;
+    }
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: remembered }),
+        body: JSON.stringify({ model: pick }),
         signal: aborter.signal,
       });
       if (!res.ok || !res.body) {
