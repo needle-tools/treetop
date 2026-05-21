@@ -1062,6 +1062,197 @@
     }
   }
 
+  /** Per-worktree busy flags for the pull/push badges. Keyed by wt
+   *  path; presence means "request in flight" — used to disable the
+   *  badge buttons so a double-click can't queue a second pull. */
+  let pullBusy: Record<string, boolean> = {};
+  let pushBusy: Record<string, boolean> = {};
+
+  /** Dirty-pull dialog: surfaced when `git pull --ff-only` failed
+   *  because the worktree has local changes that overlap the incoming
+   *  commits. Same shape as `dirtyCheckout` — explicit Stash & pull /
+   *  Cancel choices. */
+  let dirtyPull:
+    | null
+    | { repoId: string; wtPath: string; message: string } = null;
+
+  async function doPull(
+    repoId: string,
+    wtPath: string,
+    options: { preStash?: boolean } = {},
+  ): Promise<
+    { ok: boolean; kind?: string; stashed?: boolean; error?: string }
+  > {
+    try {
+      const res = await fetch(`/api/repos/${repoId}/pull`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: wtPath, ...options }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        kind?: string;
+        stashed?: boolean;
+        error?: string;
+      };
+      if (res.ok && body.ok) {
+        return { ok: true, kind: body.kind, stashed: body.stashed };
+      }
+      return {
+        ok: false,
+        kind: body.kind,
+        error: body.error ?? `HTTP ${res.status}`,
+      };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Behind-badge click entrypoint. Tries a fast-forward pull; on
+   *  kind=dirty surfaces a Stash & pull dialog; on kind=diverged or
+   *  any other failure, surfaces an error toast (the user has to
+   *  resolve diverged branches in Fork / their editor — supergit
+   *  doesn't try to drive an interactive rebase/merge). */
+  async function tryPull(repoId: string, wtPath: string) {
+    if (pullBusy[wtPath]) return;
+    pullBusy = { ...pullBusy, [wtPath]: true };
+    try {
+      const result = await doPull(repoId, wtPath);
+      if (result.ok) {
+        if (result.kind === "up_to_date") {
+          addToast({
+            kind: "info",
+            message: "Already up to date.",
+            ttlMs: 4_000,
+          });
+        } else {
+          addToast({
+            kind: "success",
+            message: "Pulled latest from upstream.",
+            ttlMs: 6_000,
+          });
+        }
+        await load();
+        return;
+      }
+      if (result.kind === "dirty") {
+        dirtyPull = {
+          repoId,
+          wtPath,
+          message: result.error ?? "worktree has uncommitted changes",
+        };
+        return;
+      }
+      if (result.kind === "diverged") {
+        addToast({
+          kind: "error",
+          title: "Branch has diverged.",
+          message:
+            "Local commits aren't on upstream — resolve in Fork / your editor (rebase or merge), then try again.",
+          ttlMs: 12_000,
+        });
+        return;
+      }
+      if (result.kind === "no_upstream") {
+        addToast({
+          kind: "error",
+          title: "No upstream.",
+          message: "This branch has no remote tracking ref.",
+          ttlMs: 8_000,
+        });
+        return;
+      }
+      addToast({
+        kind: "error",
+        title: "Pull failed.",
+        message: result.error ?? "git pull failed",
+        ttlMs: 12_000,
+      });
+    } finally {
+      pullBusy = { ...pullBusy, [wtPath]: false };
+    }
+  }
+
+  async function resolveDirtyPull(action: "stash" | "cancel") {
+    if (!dirtyPull) return;
+    const ctx = dirtyPull;
+    dirtyPull = null;
+    if (action === "cancel") return;
+    pullBusy = { ...pullBusy, [ctx.wtPath]: true };
+    try {
+      const result = await doPull(ctx.repoId, ctx.wtPath, { preStash: true });
+      if (result.ok) {
+        if (result.stashed) {
+          showStashToast(
+            ctx.wtPath,
+            "Stashed your local changes before pulling. Run `git stash pop` to restore.",
+          );
+        } else {
+          addToast({
+            kind: "success",
+            message: "Pulled latest from upstream.",
+            ttlMs: 6_000,
+          });
+        }
+        await load();
+      } else {
+        addToast({
+          kind: "error",
+          title: "Pull failed.",
+          message: result.error ?? "git pull failed",
+          ttlMs: 12_000,
+        });
+      }
+    } finally {
+      pullBusy = { ...pullBusy, [ctx.wtPath]: false };
+    }
+  }
+
+  /** Ahead-badge click entrypoint. Plain `git push` to the tracked
+   *  upstream. Never forces; failures (non-fast-forward, hook abort,
+   *  auth) surface as an error toast with the git error verbatim so
+   *  the user can decide what to do (usually: pull first, then push). */
+  async function tryPush(repoId: string, wtPath: string) {
+    if (pushBusy[wtPath]) return;
+    pushBusy = { ...pushBusy, [wtPath]: true };
+    try {
+      const res = await fetch(`/api/repos/${repoId}/push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: wtPath }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      };
+      if (res.ok && body.ok) {
+        addToast({
+          kind: "success",
+          message: "Pushed to upstream.",
+          ttlMs: 6_000,
+        });
+        await load();
+        return;
+      }
+      addToast({
+        kind: "error",
+        title: "Push failed.",
+        message: body.error ?? `HTTP ${res.status}`,
+        ttlMs: 14_000,
+      });
+    } catch (e) {
+      addToast({
+        kind: "error",
+        title: "Push failed.",
+        message: e instanceof Error ? e.message : String(e),
+        ttlMs: 12_000,
+      });
+    } finally {
+      pushBusy = { ...pushBusy, [wtPath]: false };
+    }
+  }
+
   async function loadInstalledAgents() {
     try {
       const res = await fetch("/api/agents/installed");
@@ -3337,13 +3528,13 @@
    *  20; this trims further to keep the hover overlay glanceable. */
   const COMMIT_TOOLTIP_LIMIT = 10;
   /** Per-subject character clamp inside the unpushed / unfetched
-   *  commit tooltip. Pairs with `.tt-wide`'s `max-width: 92vw` so a
+   *  commit tooltip. Pairs with `.tt-wide`'s `max-width: 96vw` so a
    *  long subject can use whatever horizontal room the viewport has
-   *  before the trailing ellipsis kicks in. 200 ≈ 2× the prior
-   *  100-char limit so verbose conventional-commit subjects
-   *  ("refactor(area)!: long human-readable explanation …") still
-   *  render in full on a normal-width screen. */
-  const COMMIT_SUBJECT_MAX = 200;
+   *  before the CSS-side ellipsis on `.wt-tt-subject` kicks in.
+   *  400 ≈ 2× the prior 200 cap — verbose conventional-commit
+   *  subjects round-trip without getting cut short by the JS clamp
+   *  before CSS even gets a chance to lay them out. */
+  const COMMIT_SUBJECT_MAX = 400;
   function clampSubject(s: string): string {
     if (s.length <= COMMIT_SUBJECT_MAX) return s;
     return s.slice(0, COMMIT_SUBJECT_MAX - 1) + "…";
@@ -4559,11 +4750,32 @@
                        lists) depending on which signal is showing. -->
                   <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                     <span slot="trigger" class="status-badge-trigger">
+                      <!-- Folded row's single pill. The priority-picker
+                           (status-badge.ts) decides whether ahead, behind,
+                           or dirty wins. Push/pull get wired up to the
+                           click handlers; dirty stays decorative because
+                           the row already exposes Source Control on
+                           expand for resolving dirty state. -->
                       <StatusBadge
                         ahead={fAhead}
                         behind={fBehind}
                         dirty={fDirty}
                         pulsate={fAhead > 0 && wt.branchStatus ? aheadAged(wt.branchStatus) : false}
+                        onClick={fAhead > 0
+                          ? () => tryPush(repo.id, wt.path)
+                          : fBehind > 0
+                            ? () => tryPull(repo.id, wt.path)
+                            : null}
+                        busy={fAhead > 0
+                          ? !!pushBusy[wt.path]
+                          : fBehind > 0
+                            ? !!pullBusy[wt.path]
+                            : false}
+                        title={fAhead > 0
+                          ? `Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`
+                          : fBehind > 0
+                            ? `Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`
+                            : ""}
                       />
                     </span>
                     <span slot="content" class="wt-tt-content">
@@ -5415,6 +5627,9 @@
                         <StatusBadge
                           ahead={wt.branchStatus.ahead}
                           pulsate={aheadAged(wt.branchStatus)}
+                          onClick={() => tryPush(repo.id, wt.path)}
+                          busy={!!pushBusy[wt.path]}
+                          title={`Push ${wt.branchStatus.ahead} commit${wt.branchStatus.ahead === 1 ? "" : "s"} to ${wt.branchStatus.upstream}`}
                         />
                       </span>
                       <span slot="content" class="wt-tt-content">
@@ -5445,7 +5660,12 @@
                   {#if wt.branchStatus.behind > 0}
                     <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                       <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge behind={wt.branchStatus.behind} />
+                        <StatusBadge
+                          behind={wt.branchStatus.behind}
+                          onClick={() => tryPull(repo.id, wt.path)}
+                          busy={!!pullBusy[wt.path]}
+                          title={`Pull ${wt.branchStatus.behind} commit${wt.branchStatus.behind === 1 ? "" : "s"} from ${wt.branchStatus.upstream}`}
+                        />
                       </span>
                       <span slot="content" class="wt-tt-content">
                         <div class="wt-tt-section-head">
@@ -6017,6 +6237,47 @@
           <span class="modal-hint">discards uncommitted changes — cannot be undone</span>
         </button>
         <button class="modal-action modal-action-neutral" on:click={() => resolveDirty("cancel")}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if dirtyPull}
+  <div
+    class="modal-scrim"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="dirty-pull-title"
+    tabindex="-1"
+    on:click={(e) => {
+      if (e.target === e.currentTarget) resolveDirtyPull("cancel");
+    }}
+    on:keydown={(e) => {
+      if (e.key === "Escape") resolveDirtyPull("cancel");
+    }}
+  >
+    <div class="modal" on:click|stopPropagation>
+      <h3 id="dirty-pull-title">Pull would clobber uncommitted changes</h3>
+      <p class="modal-body">
+        Fast-forwarding
+        <code class="muted small">{dirtyPull.wtPath}</code>
+        is blocked because your local edits overlap the incoming commits.
+        How would you like to handle your local changes?
+      </p>
+      <p class="modal-meta muted small">
+        {dirtyPull.message}
+      </p>
+      <div class="modal-actions">
+        <button
+          class="modal-action modal-action-recommended"
+          on:click={() => resolveDirtyPull("stash")}
+        >
+          Stash &amp; pull
+          <span class="modal-hint">git stash push (recoverable with stash pop)</span>
+        </button>
+        <button class="modal-action modal-action-neutral" on:click={() => resolveDirtyPull("cancel")}>
           Cancel
         </button>
       </div>

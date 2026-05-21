@@ -339,6 +339,121 @@ export async function checkoutBranch(
   return { stashed };
 }
 
+/** Result of {@link pullFastForward}.
+ *
+ *  - `updated`: HEAD advanced; the worktree now matches `@{u}`.
+ *  - `up_to_date`: HEAD was already at upstream — no-op.
+ *  - `diverged`: local has commits not on upstream; `--ff-only` refused.
+ *  - `dirty`: local working tree has changes that would be clobbered by
+ *    the incoming commits (overlap), or `git pull` aborted because of
+ *    uncommitted changes.
+ *  - `no_upstream`: branch has no configured upstream.
+ *  - `error`: anything else (network failure, hook abort, etc.). */
+export type PullKind =
+  | "updated"
+  | "up_to_date"
+  | "diverged"
+  | "dirty"
+  | "no_upstream"
+  | "error";
+
+export interface PullResult {
+  ok: boolean;
+  kind: PullKind;
+  message: string;
+  /** True if we ran `git stash push --include-untracked` before retrying
+   *  the pull. The caller can surface this to the user so they know to
+   *  `git stash pop`. */
+  stashed?: boolean;
+}
+
+/** Run `git pull --ff-only` in `worktreePath`. Never falls back to
+ *  merge/rebase: anything other than a strict fast-forward is reported
+ *  to the caller so the UI can prompt the user.
+ *
+ *  Options:
+ *    - `preStash`: if the first attempt fails because of dirty state
+ *      (would-be-clobbered files), run `git stash push --include-untracked`
+ *      and retry once. Returns `{ stashed: true }` so the caller can
+ *      surface a "stashed your changes — `git stash pop` to restore"
+ *      hint. */
+export async function pullFastForward(
+  worktreePath: string,
+  options: { preStash?: boolean } = {},
+): Promise<PullResult> {
+  const run = async (): Promise<PullResult> => {
+    const r = await $`git -C ${worktreePath} pull --ff-only`
+      .quiet()
+      .nothrow();
+    const stdout = r.stdout.toString();
+    const stderr = r.stderr.toString();
+    const combined = `${stdout}\n${stderr}`;
+    if (r.exitCode === 0) {
+      if (/Already up to date/i.test(combined)) {
+        return { ok: true, kind: "up_to_date", message: combined.trim() };
+      }
+      return { ok: true, kind: "updated", message: combined.trim() };
+    }
+    // Classify the failure. Match against the most specific patterns
+    // first so a "non-fast-forward" verdict doesn't get swallowed by
+    // the dirty-state branch.
+    const msg = combined.trim();
+    if (/There is no tracking information|no upstream/i.test(combined)) {
+      return { ok: false, kind: "no_upstream", message: msg };
+    }
+    if (
+      /Not possible to fast-forward|diverg(ed|ent)|non-fast-forward/i.test(
+        combined,
+      )
+    ) {
+      return { ok: false, kind: "diverged", message: msg };
+    }
+    if (
+      /local changes.*would be overwritten|untracked working tree files.*would be overwritten|Please commit your changes or stash them/i
+        .test(combined)
+    ) {
+      return { ok: false, kind: "dirty", message: msg };
+    }
+    return { ok: false, kind: "error", message: msg };
+  };
+
+  let result = await run();
+  if (!result.ok && result.kind === "dirty" && options.preStash) {
+    const stashMsg = `supergit-auto ${new Date().toISOString()}`;
+    const stashRes =
+      await $`git -C ${worktreePath} stash push --include-untracked -m ${stashMsg}`
+        .quiet()
+        .nothrow();
+    if (stashRes.exitCode !== 0) {
+      return {
+        ok: false,
+        kind: "error",
+        message: `git stash failed: ${stashRes.stderr.toString().trim() ||
+          "exit " + stashRes.exitCode}`,
+      };
+    }
+    result = await run();
+    result.stashed = true;
+  }
+  return result;
+}
+
+export interface PushResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Run `git push` in `worktreePath`, using whatever upstream the branch
+ *  is configured to track. No `--force` — non-fast-forward failures
+ *  surface to the caller verbatim so the UI can show them in a toast. */
+export async function pushUpstream(worktreePath: string): Promise<PushResult> {
+  const r = await $`git -C ${worktreePath} push`.quiet().nothrow();
+  const stdout = r.stdout.toString();
+  const stderr = r.stderr.toString();
+  const message = `${stdout}${stderr}`.trim();
+  return { ok: r.exitCode === 0, message };
+}
+
 export interface RemoteRef {
   /** Remote name as git stores it (e.g. "origin", "upstream"). */
   name: string;

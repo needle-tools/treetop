@@ -21,6 +21,8 @@ import {
   checkoutBranch,
   listRemotes,
   resolveSubmoduleWorktreePaths,
+  pullFastForward,
+  pushUpstream,
   type Worktree,
 } from "../src/git";
 import { stat } from "node:fs/promises";
@@ -692,5 +694,160 @@ describe("checkoutBranch against real git", () => {
     await checkoutBranch(repo, "feat-z", { force: true });
     const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
     expect(head).toBe("feat-z");
+  });
+});
+
+/**
+ * Helper: spin up a bare "origin" + two clones (a, b). Both clones track
+ * main. Returns the bare path and the two clone paths.
+ */
+async function tempRepoTrio(): Promise<{ bare: string; a: string; b: string }> {
+  const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-bare-")));
+  await $`git -C ${bare} init -q --bare -b main`.quiet();
+  // Seed via a scratch repo so the bare has at least one commit on main.
+  const seed = await tempRepo();
+  await $`git -C ${seed} remote add origin ${bare}`.quiet();
+  await $`git -C ${seed} push -u origin main -q`.quiet();
+  // Clone twice so we have two independent worktrees pointing at the
+  // same upstream — lets us simulate "remote has new commits."
+  const aParent = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-a-")));
+  const bParent = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-b-")));
+  const a = join(aParent, "a");
+  const b = join(bParent, "b");
+  await $`git clone -q ${bare} ${a}`.quiet();
+  await $`git clone -q ${bare} ${b}`.quiet();
+  for (const p of [a, b]) {
+    await $`git -C ${p} config user.email test@example.com`.quiet();
+    await $`git -C ${p} config user.name TestUser`.quiet();
+  }
+  return { bare, a, b };
+}
+
+describe("pullFastForward against real git", () => {
+  test("kind=up_to_date when nothing to pull", async () => {
+    const { a } = await tempRepoTrio();
+    const r = await pullFastForward(a);
+    expect(r.kind).toBe("up_to_date");
+    expect(r.ok).toBe(true);
+  });
+
+  test("kind=updated when upstream is strictly ahead (fast-forward)", async () => {
+    const { a, b } = await tempRepoTrio();
+    // b adds a commit, pushes; a should be able to fast-forward.
+    await writeFile(join(b, "from-b.txt"), "hello\n");
+    await $`git -C ${b} add from-b.txt`.quiet();
+    await $`git -C ${b} commit -m from-b -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    // a needs to know about the new ref:
+    await $`git -C ${a} fetch -q`.quiet();
+
+    const r = await pullFastForward(a);
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe("updated");
+    // file should now exist in a
+    const exists = await stat(join(a, "from-b.txt")).then(() => true).catch(() => false);
+    expect(exists).toBe(true);
+  });
+
+  test("kind=diverged when local and remote both have unique commits", async () => {
+    const { a, b } = await tempRepoTrio();
+    // Both clones add commits without sharing.
+    await writeFile(join(b, "from-b.txt"), "b\n");
+    await $`git -C ${b} add from-b.txt`.quiet();
+    await $`git -C ${b} commit -m from-b -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+
+    await writeFile(join(a, "from-a.txt"), "a\n");
+    await $`git -C ${a} add from-a.txt`.quiet();
+    await $`git -C ${a} commit -m from-a -q`.quiet();
+    await $`git -C ${a} fetch -q`.quiet();
+
+    const r = await pullFastForward(a);
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe("diverged");
+  });
+
+  test("kind=dirty when local working tree has changes that would be clobbered", async () => {
+    const { a, b } = await tempRepoTrio();
+    // b modifies shared file
+    await writeFile(join(b, "shared.txt"), "v1\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v1 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    // a fetches but doesn't pull; then dirties the same file locally
+    await $`git -C ${a} fetch -q`.quiet();
+    await writeFile(join(a, "shared.txt"), "local-uncommitted\n");
+
+    const r = await pullFastForward(a);
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe("dirty");
+  });
+
+  test("preStash=true on a dirty pull stashes then fast-forwards", async () => {
+    const { a, b } = await tempRepoTrio();
+    // Seed shared.txt in the bare so both clones already track it.
+    await writeFile(join(b, "shared.txt"), "v0\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v0 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    await $`git -C ${a} pull -q --ff-only`.quiet();
+
+    // b updates shared.txt and pushes
+    await writeFile(join(b, "shared.txt"), "v1\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v1 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+
+    // a fetches, then dirties shared.txt locally
+    await $`git -C ${a} fetch -q`.quiet();
+    await writeFile(join(a, "shared.txt"), "uncommitted-local\n");
+
+    const r = await pullFastForward(a, { preStash: true });
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe("updated");
+    expect(r.stashed).toBe(true);
+    // Stash should exist with the recognizable supergit-auto tag.
+    const stashList = (await $`git -C ${a} stash list`.quiet()).stdout
+      .toString();
+    expect(stashList).toContain("supergit-auto");
+  });
+});
+
+describe("pushUpstream against real git", () => {
+  test("returns ok when there's nothing to push", async () => {
+    const { a } = await tempRepoTrio();
+    const r = await pushUpstream(a);
+    expect(r.ok).toBe(true);
+  });
+
+  test("pushes a new local commit to the upstream", async () => {
+    const { a, bare } = await tempRepoTrio();
+    await writeFile(join(a, "from-a.txt"), "a\n");
+    await $`git -C ${a} add from-a.txt`.quiet();
+    await $`git -C ${a} commit -m from-a -q`.quiet();
+
+    const r = await pushUpstream(a);
+    expect(r.ok).toBe(true);
+    // The bare's main ref should now resolve to the same SHA as a's HEAD.
+    const localHead = (await $`git -C ${a} rev-parse HEAD`.quiet()).stdout.toString().trim();
+    const remoteHead = (await $`git -C ${bare} rev-parse refs/heads/main`.quiet()).stdout.toString().trim();
+    expect(remoteHead).toBe(localHead);
+  });
+
+  test("fails (non-fast-forward) when remote has diverged", async () => {
+    const { a, b } = await tempRepoTrio();
+    // b moves origin/main forward
+    await writeFile(join(b, "from-b.txt"), "b\n");
+    await $`git -C ${b} add from-b.txt`.quiet();
+    await $`git -C ${b} commit -m from-b -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    // a makes a competing local commit (no fetch so a doesn't know)
+    await writeFile(join(a, "from-a.txt"), "a\n");
+    await $`git -C ${a} add from-a.txt`.quiet();
+    await $`git -C ${a} commit -m from-a -q`.quiet();
+
+    const r = await pushUpstream(a);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/rejected|non-fast-forward|fetch first/i);
   });
 });

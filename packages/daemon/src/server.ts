@@ -15,6 +15,8 @@ import {
   removeWorktree,
   listBranches,
   checkoutBranch,
+  pullFastForward,
+  pushUpstream,
   listRemotes,
   parseChangedFiles,
   parseNumstat,
@@ -1063,6 +1065,8 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
           { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
           { method: "POST", path: "/api/repos/:id/checkout", body: { path: "string", branch: "string", force: "boolean?" }, description: "run `git checkout <branch>` in the given worktree. Refuses on dirty state unless force=true. Remote-style branches (origin/foo) get an implicit `-t` to create a tracking local branch." },
+          { method: "POST", path: "/api/repos/:id/pull", body: { path: "string", preStash: "boolean?" }, description: "run `git pull --ff-only` in the given worktree. Returns { ok, kind } where kind ∈ updated|up_to_date|diverged|dirty|no_upstream|error. With preStash=true, retries once after `git stash push --include-untracked` if kind=dirty." },
+          { method: "POST", path: "/api/repos/:id/push", body: { path: "string" }, description: "run `git push` in the given worktree against its tracked upstream. Never forces; non-fast-forward failures return 409 with the git error verbatim." },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/pick-file", body: { prompt: "string?", startAt: "string? (file or dir to open the picker in)", fallback: "string? (used when startAt doesn't exist)" }, description: "open OS-native file picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/open-default", body: { path: "string" }, description: "open a file with the OS default application (same handler a Finder/Explorer double-click would route to). Used by file-flavoured custom links." },
@@ -2294,6 +2298,89 @@ const server = Bun.serve<TermWsData, never>({
             { status: 500 },
           );
         }
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/pull$/);
+      if (m && req.method === "POST") {
+        const id = m[1]!;
+        const body = (await req.json().catch(() => null)) as
+          | { path?: unknown; preStash?: unknown }
+          | null;
+        const wtPath = body?.path;
+        const preStash = body?.preStash === true;
+        if (typeof wtPath !== "string" || wtPath.trim().length === 0) {
+          return json(
+            { error: "body.path is required" },
+            { status: 400 },
+          );
+        }
+        const repos = await workspace.listRepos();
+        const repo = repos.find((r) => r.id === id);
+        if (!repo) return json({ error: "repo not found" }, { status: 404 });
+        const result = await pullFastForward(wtPath, { preStash });
+        if (result.ok) {
+          await events.append({
+            type: "pull",
+            actor: "user",
+            payload: {
+              repoId: id,
+              path: wtPath,
+              kind: result.kind,
+              stashed: result.stashed === true,
+            },
+          });
+          broadcast("change", { kind: "pull", path: wtPath });
+          return json({
+            ok: true,
+            kind: result.kind,
+            stashed: result.stashed === true,
+          });
+        }
+        // Non-ok: surface the kind so the UI can pick the right dialog.
+        return json(
+          {
+            ok: false,
+            kind: result.kind,
+            error: result.message,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    {
+      const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/push$/);
+      if (m && req.method === "POST") {
+        const id = m[1]!;
+        const body = (await req.json().catch(() => null)) as
+          | { path?: unknown }
+          | null;
+        const wtPath = body?.path;
+        if (typeof wtPath !== "string" || wtPath.trim().length === 0) {
+          return json(
+            { error: "body.path is required" },
+            { status: 400 },
+          );
+        }
+        const repos = await workspace.listRepos();
+        const repo = repos.find((r) => r.id === id);
+        if (!repo) return json({ error: "repo not found" }, { status: 404 });
+        const result = await pushUpstream(wtPath);
+        if (result.ok) {
+          await events.append({
+            type: "push",
+            actor: "user",
+            payload: { repoId: id, path: wtPath },
+          });
+          broadcast("change", { kind: "push", path: wtPath });
+          return json({ ok: true, message: result.message });
+        }
+        return json(
+          { ok: false, error: result.message },
+          { status: 409 },
+        );
       }
     }
 
@@ -3607,11 +3694,34 @@ const server = Bun.serve<TermWsData, never>({
 });
 
 // Release the port cleanly when --watch restarts us, or on Ctrl-C.
+// Two failure modes we have to defend against:
+//   1) Re-entry: SIGINT (from terminal) and SIGTERM (from parent
+//      start.ts calling server.kill()) arrive back-to-back. Without a
+//      guard we'd run the whole shutdown sequence twice in parallel,
+//      racing on server.stop() and printing "stopping" twice.
+//   2) server.stop(true) can hang indefinitely if Bun's accounting of
+//      active WS connections / pending handles doesn't drain (we've
+//      seen the daemon stuck after "SIGTERM -> stopping"). A hard
+//      deadline guarantees the process actually exits and releases the
+//      port — start.ts's lsof fallback would catch it otherwise, but
+//      that's slower and noisier than just exiting promptly here.
+let shuttingDown = false;
 const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`supergit daemon: ${signal} -> stopping`);
-  if (fetchTimer) clearInterval(fetchTimer);
-  stopActivity();
-  await server.stop(true);
+  const hardExit = setTimeout(() => {
+    console.log("supergit daemon: graceful shutdown stalled, forcing exit");
+    process.exit(1);
+  }, 2000);
+  hardExit.unref?.();
+  try {
+    if (fetchTimer) clearInterval(fetchTimer);
+    stopActivity();
+    await server.stop(true);
+  } catch (err) {
+    console.log(`supergit daemon: shutdown error: ${(err as Error).message}`);
+  }
   process.exit(0);
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));

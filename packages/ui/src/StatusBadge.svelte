@@ -24,14 +24,50 @@
    *  older than BLINK_AHEAD_MINUTES; previewable with the `?pulsate=1`
    *  debug param in App.svelte. No-op for behind / dirty. */
   export let pulsate = false;
+  /** When set, the badge renders as a button and clicking it invokes
+   *  this callback. Used by the worktree row to wire the ↑ badge to
+   *  push and the ↓ badge to pull. Default null = plain decorative
+   *  span (used by `?badgeanim=1` debug previews and anywhere else
+   *  that just wants the look). */
+  export let onClick: ((e: MouseEvent) => void) | null = null;
+  /** Optional native title= for the button — surfaces a quick action
+   *  hint (e.g. "Push 2 commits to origin/main") even when the wider
+   *  Tooltip wrapper isn't open. */
+  export let title = "";
+  /** When true and the badge is clickable, swap the ↑N / ↓N label for
+   *  an inline spinner and disable the button. Used to gate
+   *  double-clicks while a pull/push request is in flight. */
+  export let busy = false;
 
   $: kind = pickBadgeKind(ahead, behind, dirty);
+  $: clickable = onClick !== null;
 </script>
 
 {#if kind === "ahead"}
-  <span class="status-badge status-badge-ahead" class:pulsate>↑{ahead}</span>
+  {#if clickable}
+    <button
+      type="button"
+      class="status-badge status-badge-ahead status-badge-clickable"
+      class:pulsate={pulsate && !busy}
+      title={title}
+      disabled={busy}
+      on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
+    >{#if busy}<span class="status-badge-spinner" aria-label="pushing"></span>{:else}↑{ahead}{/if}</button>
+  {:else}
+    <span class="status-badge status-badge-ahead" class:pulsate>↑{ahead}</span>
+  {/if}
 {:else if kind === "behind"}
-  <span class="status-badge status-badge-behind">↓{behind}</span>
+  {#if clickable}
+    <button
+      type="button"
+      class="status-badge status-badge-behind status-badge-clickable"
+      title={title}
+      disabled={busy}
+      on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
+    >{#if busy}<span class="status-badge-spinner" aria-label="pulling"></span>{:else}↓{behind}{/if}</button>
+  {:else}
+    <span class="status-badge status-badge-behind">↓{behind}</span>
+  {/if}
 {:else if kind === "dirty"}
   <span class="status-badge status-badge-dirty">~{dirty}</span>
 {/if}
