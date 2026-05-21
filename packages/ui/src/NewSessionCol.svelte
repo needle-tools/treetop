@@ -62,7 +62,7 @@
    *  resumeSessionId), these mirror the equivalent SessionView props
    *  so the header's ctx chip / activity / message count light up
    *  while the user is still in the TUI. Undefined ⇒ the header shows
-   *  the "new session" placeholders instead. */
+   *  the "starting…" / "no messages yet" placeholder instead. */
   export let totalMessageCount: number | undefined = undefined;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
@@ -210,7 +210,6 @@
     {model}
     {lastActivityIso}
     {lastUserMessage}
-    lastActivityFallback="new session"
     messageCountFallback={agent === "shell" ? "starting…" : "no messages yet"}
     {menuItems}
     {onDragStart}
