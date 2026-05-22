@@ -4834,11 +4834,20 @@
                         · {ctx.title}
                       </span>
                     {/if}
+                    <!-- Split into per-stat cells so adjacent rows line
+                         up vertically (was a single string separated by
+                         '·' — readable per-row, jagged across rows).
+                         CSS pins each cell to a fixed-width grid column. -->
                     <span
                       class="tui-stats"
                       title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
                     >
-                      {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}{#if isIdle(p)} · idle {formatUptime(p.lastOutputAt)}{/if}
+                      <span class="tui-stat tui-cpu">{p.cpuPercent.toFixed(1)}%</span>
+                      <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
+                      <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
+                      {#if isIdle(p)}
+                        <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
+                      {/if}
                     </span>
                     <button
                       class="row-close tui-kill-x"
@@ -4847,11 +4856,6 @@
                       aria-label="Kill terminal"
                     >×</button>
                   </div>
-                  {#if ctx.lastActivity}
-                    <div class="tui-last-activity muted small" title={ctx.lastActivity}>
-                      last: {ctx.lastActivity}
-                    </div>
-                  {/if}
                 </li>
               {/each}
             </ul>
@@ -4860,20 +4864,36 @@
       {/if}
     </div>
 
-    {#if orphanNotes.length > 0}
-      <div class="actions-anchor notes-tray-anchor">
-        <button
-          class="actions-btn"
-          class:open={notesTrayOpen}
-          on:click={() => (notesTrayOpen = !notesTrayOpen)}
-          title={`${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`}
-        >
-          Notes
+    <!-- Notes tray. Pinned in the menubar (no longer conditional on
+         `orphanNotes.length > 0`) so the affordance stays put across
+         the initial-load race where notes finish loading before
+         repos do — that gap used to make the button flash in and
+         out. Count badge only renders when there are orphans to
+         action, but the button is always reachable. -->
+    <div class="actions-anchor notes-tray-anchor">
+      <button
+        class="actions-btn"
+        class:open={notesTrayOpen}
+        on:click={() => (notesTrayOpen = !notesTrayOpen)}
+        title={orphanNotes.length > 0
+          ? `${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`
+          : "Notes whose repo/worktree was removed appear here for re-anchoring."}
+      >
+        Notes
+        {#if orphanNotes.length > 0}
           <span class="count">{orphanNotes.length}</span>
-        </button>
-        {#if notesTrayOpen}
-          <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
-            <span slot="head">Orphaned notes</span>
+        {/if}
+      </button>
+      {#if notesTrayOpen}
+        <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
+          <span slot="head">Orphaned notes</span>
+          {#if orphanNotes.length === 0}
+            <p class="muted small nopad">
+              No orphaned notes. When a repo or worktree gets removed,
+              any notes anchored there land in this tray so you can
+              re-anchor or delete them.
+            </p>
+          {:else}
             <ul class="orphan-list">
               {#each orphanNotes as n (n.id)}
                 <li class="orphan-row">
@@ -4910,10 +4930,10 @@
                 </li>
               {/each}
             </ul>
-          </Popover>
-        {/if}
-      </div>
-    {/if}
+          {/if}
+        </Popover>
+      {/if}
+    </div>
 
     <MessagesInbox />
 

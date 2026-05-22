@@ -113,19 +113,42 @@
   width: 540px;
   max-width: 90vw;
 }
+/* Make every row share the same column tracks so stats columns align
+   vertically across rows ("memory under memory"). The trick: the
+   <ul> declares the column template; each <li> passes through via
+   display: contents; each .tui-row-static uses `grid-template-columns:
+   subgrid` to inherit the ul's tracks. Without this, each row was its
+   own independent grid and the same `1fr` resolved differently per
+   row based on local content widths. */
+.tuis-popover .agents-list {
+  display: grid;
+  grid-template-columns: 16px auto auto 1fr 6ch 8ch 5ch auto 18px;
+  /* The vertical gap is what was the default `gap: 0.25rem` on
+     .agents-list — preserve the spacing between rows. */
+  row-gap: 0.25rem;
+}
+.tuis-popover .agents-list > li {
+  display: contents;
+}
 .tui-row-static {
   cursor: default;
-  /* 6 grid columns:
-     - icon (fixed 16px) · name (auto) · repo-breadcrumb (auto)
-       · title (1fr — the flexible cell so a long title can absorb the
-       leftover width and ellipsize when it overflows)
-       · stats (auto) · × (fixed 18px).
-     Title and repo-breadcrumb spans are conditionally rendered. To keep
-     right-aligned stats and × anchored regardless of which optional cells
-     are present, every cell pins itself to its column via grid-column
-     below — without that, omitting .tui-repo shifts .tui-inline-title
-     into the auto column instead of the 1fr column. */
-  grid-template-columns: 16px auto auto 1fr auto 18px;
+  /* Inherit the 9 column tracks declared on `.tuis-popover .agents-list`
+     so adjacent rows share track widths and columns align vertically.
+     `grid-column: 1 / -1` makes this row span every track. The
+     column placements on individual cells (`> .tui-cpu { grid-column: 5; }`
+     etc.) still apply to subgrid items.
+     Columns (defined on the parent ul):
+       1. icon            16px
+       2. name            auto
+       3. repo            auto (optional)
+       4. title           1fr  (absorbs leftover; ellipsises long titles)
+       5. cpu             6ch  ("100.0%")
+       6. mem             8ch  ("999.9 MB" / "1.23 GB")
+       7. uptime          5ch  ("999d")
+       8. idle            auto (only present on idle rows)
+       9. ×               18px */
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   justify-content: end;
 }
 .tui-row-static > .agent-row-icon,
@@ -133,8 +156,11 @@
 .tui-row-static > .agent-row-name { grid-column: 2; }
 .tui-row-static > .tui-repo { grid-column: 3; }
 .tui-row-static > .tui-inline-title { grid-column: 4; }
-.tui-row-static > .tui-stats { grid-column: 5; }
-.tui-row-static > .tui-kill-x { grid-column: 6; }
+.tui-row-static > .tui-cpu { grid-column: 5; }
+.tui-row-static > .tui-mem { grid-column: 6; }
+.tui-row-static > .tui-uptime { grid-column: 7; }
+.tui-row-static > .tui-idle { grid-column: 8; }
+.tui-row-static > .tui-kill-x { grid-column: 9; }
 .tui-row-static:hover {
   background: var(--surface-2);
 }
@@ -170,23 +196,29 @@
   white-space: nowrap;
   min-width: 0;
 }
-/* Stats are mono + tabular so columns of digits line up across rows. */
+/* Stats column. Each stat lives in its own grid cell so adjacent
+   rows align: CPU sits under CPU, memory under memory, uptime under
+   uptime — regardless of value widths. tabular-nums keeps digits a
+   uniform glyph width inside each cell so e.g. "1.0%" and "100.0%"
+   end on the same pixel.
+   Widths picked to fit worst-cases:
+     cpu    "100.0%"     ≤ 6ch
+     mem    "999.9 MB" / "1.23 GB" ≤ 8ch
+     uptime "999d"      ≤ 5ch
+     idle   "idle 99d"  remaining (auto). */
 .tui-stats {
+  display: grid;
+  grid-template-columns: 6ch 8ch 5ch auto;
+  gap: 0 0.6rem;
+  align-items: baseline;
   font-variant-numeric: tabular-nums;
   color: var(--text-4);
   white-space: nowrap;
 }
-/* Sub-line under the main agent-row: latest activity summary. Sits
-   OUTSIDE the grid (sibling of .agent-row inside the <li>), so we
-   indent it to line up under the agent name. */
-.tui-last-activity {
-  padding: 0 0.45rem 0.2rem calc(0.45rem + 16px + 0.5rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: ui-monospace, monospace;
-  font-size: 0.72rem;
-  font-weight: 400;
+.tui-stat {
+  text-align: right;
+}
+.tui-idle {
   color: var(--text-muted);
 }
 /* X always reserves the 18px column (no layout shift between hover
