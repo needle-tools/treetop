@@ -22,8 +22,9 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 const BASE_URL = "https://api.anthropic.com";
 const USAGE_PATH = "/api/oauth/usage";
@@ -125,6 +126,137 @@ function candidateCredentialPaths(): string[] {
   });
 }
 
+/** macOS Keychain fallback. Claude Code on macOS stores the OAuth
+ *  token in the Keychain under the "Claude Code-credentials" service
+ *  rather than (or in addition to) a JSON file. CodexBar uses the same
+ *  approach via `/usr/bin/security find-generic-password -w`. We only
+ *  run this on darwin and only after the file probes turn up empty,
+ *  so non-macOS hosts pay nothing for the import.
+ *
+ *  Output is either:
+ *    - a plain token followed by a newline on success
+ *    - a non-zero exit with an `errSecItemNotFound`-style message on
+ *      a missing item
+ *    - non-zero with `user interaction is not allowed` if ACL gating
+ *      requires a GUI prompt and the daemon isn't attached to one
+ *
+ *  The token contents are never logged; only metadata about how the
+ *  read went. */
+async function readMacOSKeychainToken(): Promise<
+  { token: string } | { error: OAuthUsageError }
+> {
+  return await new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(
+        "/usr/bin/security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (e) {
+      resolve({
+        error: {
+          kind: "credentials-unreadable",
+          checkedPath: "keychain://Claude Code-credentials",
+          message: e instanceof Error ? e.message : String(e),
+        },
+      });
+      return;
+    }
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (b: Buffer) => {
+      out += b.toString("utf-8");
+    });
+    child.stderr?.on("data", (b: Buffer) => {
+      err += b.toString("utf-8");
+    });
+    child.on("error", (e) => {
+      resolve({
+        error: {
+          kind: "credentials-unreadable",
+          checkedPath: "keychain://Claude Code-credentials",
+          message: e.message,
+        },
+      });
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        const token = out.replace(/\r?\n$/, "").trim();
+        if (!token) {
+          resolve({
+            error: {
+              kind: "credentials-schema",
+              checkedPath: "keychain://Claude Code-credentials",
+              message: "security CLI returned exit 0 but no token",
+            },
+          });
+          return;
+        }
+        // If the keychain stores the JSON blob (not the raw token),
+        // try to parse and extract the OAuth access token. Otherwise
+        // pass the value through verbatim.
+        if (token.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(token) as RawCredentials;
+            const oauth = parsed.claudeAiOauth;
+            if (oauth && typeof oauth.accessToken === "string") {
+              if (
+                typeof oauth.expiresAt === "number" &&
+                oauth.expiresAt < Date.now()
+              ) {
+                resolve({ error: { kind: "expired" } });
+                return;
+              }
+              resolve({ token: oauth.accessToken });
+              return;
+            }
+            resolve({
+              error: {
+                kind: "credentials-schema",
+                checkedPath: "keychain://Claude Code-credentials",
+                message:
+                  "Keychain payload parsed as JSON but lacks claudeAiOauth.accessToken",
+              },
+            });
+            return;
+          } catch (e) {
+            resolve({
+              error: {
+                kind: "credentials-malformed",
+                checkedPath: "keychain://Claude Code-credentials",
+                message:
+                  "Keychain payload looked like JSON but failed to parse: " +
+                  (e instanceof Error ? e.message : String(e)),
+              },
+            });
+            return;
+          }
+        }
+        resolve({ token });
+        return;
+      }
+      const stderrSnippet = err.trim().slice(0, 200);
+      if (stderrSnippet.includes("could not be found")) {
+        resolve({
+          error: {
+            kind: "no-credentials",
+            checkedPath: "keychain://Claude Code-credentials",
+          },
+        });
+        return;
+      }
+      resolve({
+        error: {
+          kind: "credentials-unreadable",
+          checkedPath: "keychain://Claude Code-credentials",
+          message: stderrSnippet || `security exit ${code}`,
+        },
+      });
+    });
+  });
+}
+
 async function readAccessToken(): Promise<
   { token: string } | { error: OAuthUsageError }
 > {
@@ -174,6 +306,32 @@ async function readAccessToken(): Promise<
       return { error: { kind: "expired" } };
     }
     return { token: oauth.accessToken };
+  }
+
+  // On macOS, fall through to the Keychain if no file produced a
+  // token. Claude Code there stores the OAuth blob in the Keychain
+  // under "Claude Code-credentials"; if the ACL on the item is
+  // permissive (the common case for items created by Anthropic's
+  // installer), `security find-generic-password -w` reads it without
+  // a GUI dialog. Restricted ACLs error with "user interaction not
+  // allowed", which we surface via credentials-unreadable.
+  if (platform() === "darwin") {
+    const keychain = await readMacOSKeychainToken();
+    if ("token" in keychain) return keychain;
+    // Only return the Keychain error if it's more informative than
+    // "no credentials at <paths>". Schema/malformed/unreadable beat
+    // a vanilla not-found from the file probes.
+    if (
+      keychain.error.kind === "credentials-schema" ||
+      keychain.error.kind === "credentials-malformed" ||
+      keychain.error.kind === "credentials-unreadable" ||
+      keychain.error.kind === "expired"
+    ) {
+      return keychain;
+    }
+    // Keychain also said not-found → fall through and report the
+    // combined no-credentials below (file paths + the keychain).
+    tried.push("keychain://Claude Code-credentials");
   }
 
   // Nothing usable in any candidate path. Prefer reporting the most
