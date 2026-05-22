@@ -18,6 +18,8 @@ import {
   pullFastForward,
   pushUpstream,
   listRemotes,
+  getUpstreamRemoteName,
+  pickRemoteUrlForShare,
   parseChangedFiles,
   parseNumstat,
   parseUnpushedCommits,
@@ -1364,7 +1366,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "DELETE", path: "/api/repos/:id/worktrees", body: { path: "string", force: "boolean?" }, description: "remove a worktree directory + its .git slot. Refuses on dirty state unless force=true. Returns 409 with {dirty:true} if uncommitted/untracked work exists." },
           { method: "GET", path: "/api/repos/:id/branches", description: "list local + remote branches and the currently checked-out branch. Optional ?path=<wt> to query a specific worktree's HEAD (default: the repo's main worktree)." },
           { method: "POST", path: "/api/repos/:id/checkout", body: { path: "string", branch: "string", force: "boolean?" }, description: "run `git checkout <branch>` in the given worktree. Refuses on dirty state unless force=true. Remote-style branches (origin/foo) get an implicit `-t` to create a tracking local branch." },
-          { method: "POST", path: "/api/repos/:id/pull", body: { path: "string", preStash: "boolean?" }, description: "run `git pull --ff-only` in the given worktree. Returns { ok, kind } where kind ∈ updated|up_to_date|diverged|dirty|no_upstream|error. With preStash=true, retries once after `git stash push --include-untracked` if kind=dirty." },
+          { method: "POST", path: "/api/repos/:id/pull", body: { path: "string", preStash: "boolean?" }, description: "fast-forward the given worktree to its upstream via `git merge --ff-only @{u}` (NOT `git pull` — the daemon's background fetch cycle already keeps `@{u}` fresh, so we skip the extra network round-trip). Returns { ok, kind } where kind ∈ updated|up_to_date|diverged|dirty|no_upstream|error. With preStash=true, retries once after `git stash push --include-untracked` if kind=dirty." },
           { method: "POST", path: "/api/repos/:id/push", body: { path: "string" }, description: "run `git push` in the given worktree against its tracked upstream. Never forces; non-fast-forward failures return 409 with the git error verbatim." },
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/pick-file", body: { prompt: "string?", startAt: "string? (file or dir to open the picker in)", fallback: "string? (used when startAt doesn't exist)" }, description: "open OS-native file picker, returns chosen path or 204 if cancelled" },
@@ -3061,7 +3063,17 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
       const remotes = await listRemotes(repo.path);
-      const originRemote = remotes[0]?.url ?? "";
+      // In a multi-remote repo (a fork checkout where `origin` is your
+      // fork and `upstream` is the canonical project), grabbing
+      // remotes[0] would send the wrong URL — the receiver would clone
+      // your private fork instead of the upstream the branch actually
+      // came from. Inspect the checked-out branch in the WORKTREE that
+      // hosts the session (not necessarily repo.path; the session can
+      // live in `git worktree add ../foo-feat`) and use the remote it
+      // tracks; fall back to remotes[0] only when no upstream is set.
+      const branchWorktree = originWorktreePath ?? repo.path;
+      const upstreamName = await getUpstreamRemoteName(branchWorktree);
+      const originRemote = pickRemoteUrlForShare(remotes, upstreamName) ?? "";
       if (!originRemote) {
         return json(
           { error: "repo has no git remote — cannot identify across machines" },

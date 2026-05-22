@@ -367,9 +367,12 @@ export interface PullResult {
   stashed?: boolean;
 }
 
-/** Run `git pull --ff-only` in `worktreePath`. Never falls back to
- *  merge/rebase: anything other than a strict fast-forward is reported
- *  to the caller so the UI can prompt the user.
+/** Fast-forward the current branch to its upstream in `worktreePath`.
+ *  Runs `git merge --ff-only @{u}` — NOT `git pull` — because the daemon's
+ *  background fetch cycle already keeps `@{u}` fresh, and `git pull` would
+ *  add a gratuitous network round-trip that makes the badge feel sluggish.
+ *  Never falls back to merge/rebase: anything other than a strict
+ *  fast-forward is reported to the caller so the UI can prompt the user.
  *
  *  Options:
  *    - `preStash`: if the first attempt fails because of dirty state
@@ -382,7 +385,7 @@ export async function pullFastForward(
   options: { preStash?: boolean } = {},
 ): Promise<PullResult> {
   const run = async (): Promise<PullResult> => {
-    const r = await $`git -C ${worktreePath} pull --ff-only`
+    const r = await $`git -C ${worktreePath} merge --ff-only @{u}`
       .quiet()
       .nothrow();
     const stdout = r.stdout.toString();
@@ -587,6 +590,55 @@ export async function listRemotes(repoPath: string): Promise<RemoteRef[]> {
   if (r.exitCode !== 0) return [];
   const parsed = parseRemotesOutput(r.stdout.toString());
   return parsed.map(({ name, url }) => ({ name, url, ...parseRemoteUrl(url) }));
+}
+
+/** Parse `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}`
+ *  output. Successful form is "<remote>/<branch>" (e.g. "origin/main");
+ *  we extract the remote part. Empty/unparseable input → null so callers
+ *  can fall back. */
+export function parseUpstreamRemote(out: string): string | null {
+  const line = out.trim().split("\n")[0]?.trim();
+  if (!line) return null;
+  const slash = line.indexOf("/");
+  if (slash <= 0) return null;
+  return line.slice(0, slash);
+}
+
+/** Resolve the remote name (e.g. "origin", "upstream") that the
+ *  checked-out branch at `worktreePath` tracks. Returns null when the
+ *  branch has no upstream configured, the path is detached HEAD, or
+ *  the git invocation fails — callers should fall back to the
+ *  first-remote heuristic in that case. */
+export async function getUpstreamRemoteName(
+  worktreePath: string,
+): Promise<string | null> {
+  const r = await $`git -C ${worktreePath} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`
+    .quiet()
+    .nothrow();
+  if (r.exitCode !== 0) return null;
+  return parseUpstreamRemote(r.stdout.toString());
+}
+
+/** Pick the remote URL to put in a session-share manifest. The share
+ *  receiver uses this URL to locate (or clone) the repo on its side,
+ *  so picking the WRONG remote in a multi-remote setup (think a fork
+ *  where `origin = your-fork` and `upstream = canonical`) sends
+ *  receivers chasing the wrong repo. Order of preference:
+ *    1. Remote that the currently checked-out branch tracks.
+ *    2. First remote in the list (historical behaviour — matches the
+ *       common single-remote case).
+ *  Returns null only when the repo has no remotes at all. Pure so the
+ *  test suite can pin every combination without spinning up a real
+ *  multi-remote repo on disk. */
+export function pickRemoteUrlForShare(
+  remotes: RemoteRef[],
+  upstreamRemoteName: string | null,
+): string | null {
+  if (upstreamRemoteName) {
+    const found = remotes.find((r) => r.name === upstreamRemoteName);
+    if (found) return found.url;
+  }
+  return remotes[0]?.url ?? null;
 }
 
 export async function fetchAll(repoPath: string): Promise<boolean> {
