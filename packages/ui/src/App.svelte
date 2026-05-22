@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import { DismissedSessionsStore, ExpandedStore } from "./storage";
+  import { singleFlight } from "./single-flight";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
@@ -2657,7 +2658,13 @@
     return out;
   }
 
-  async function load() {
+  /** Coalesced via singleFlight: the dashboard's many refresh paths
+   *  (initial mount, SSE change/error bursts, the new-session poll
+   *  timer, every mutation's optimistic refresh) all funnel through
+   *  here. Without the wrapper an `fs_change` storm or two mutations
+   *  landing in the same tick would issue concurrent /api/repos NDJSON
+   *  streams that race each other writing into `repos`. */
+  const load = singleFlight(async () => {
     loading = true;
     error = "";
     // Browser-side timing for the initial dashboard load. Pair with the
@@ -2760,7 +2767,7 @@
         `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
       );
     }
-  }
+  });
 
   /** Scroll to the bottom of the page so the just-added repo (which
    *  appends to the end of the list) AND the footer CTAs below it are
