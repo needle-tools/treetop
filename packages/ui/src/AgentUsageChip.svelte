@@ -278,7 +278,13 @@
   function errorHint(e: OAuthUsageError | CodexUsageError): string {
     switch (e.kind) {
       case "no-credentials":
-        return "no ~/.claude credentials";
+        // `checkedPath` carries every location the daemon probed; if
+        // the user is on a path we don't know about, this surfaces
+        // "checked X, Y, Z" so they can tell us where the file
+        // actually lives.
+        return "checkedPath" in e && e.checkedPath
+          ? `no Claude credentials at: ${e.checkedPath}`
+          : "no Claude credentials found";
       case "credentials-unreadable":
         // Permissions / FS issue: file is there but we can't read it.
         return `credentials at ${"checkedPath" in e ? e.checkedPath : "?"} unreadable: ${e.message}`;
@@ -424,17 +430,16 @@
                next to `.usage-local-rows`. -->
           {@const todayR = localRatio(usage.today.messages, usage.peakDay)}
           {@const weekR = localRatio(usage.week.messages, usage.peakWeek)}
-          <!-- Only surface error hints for genuinely actionable failures
-               (token expired, 401, network blip, etc.). `no-credentials`
-               is the *expected* state on macOS (Claude Code stores its
-               OAuth token in the system Keychain, not a JSON file) and
-               on any host where the user hasn't installed/logged-in to
-               the provider — showing "no ~/.claude credentials" there
-               reads as a broken feature when the chip is actually
-               working as designed against local JSONL counts. -->
-          {#if agent === "claude" && claudeLiveErr && claudeLiveErr.kind !== "no-credentials"}
+          <!-- Surface every error kind including no-credentials. The
+               daemon now probes multiple known credential paths and
+               returns the full list in `checkedPath`, so a no-credentials
+               hint here is the user's only diagnostic for "file is
+               actually somewhere I don't know about" — useful enough
+               to outweigh the "looks like an error on a clean install"
+               concern. -->
+          {#if agent === "claude" && claudeLiveErr}
             <div class="usage-live-error">{errorHint(claudeLiveErr)}</div>
-          {:else if agent === "codex" && codexLiveErr && codexLiveErr.kind !== "no-credentials"}
+          {:else if agent === "codex" && codexLiveErr}
             <div class="usage-live-error">{errorHint(codexLiveErr)}</div>
           {/if}
           <div class="usage-local-rows">

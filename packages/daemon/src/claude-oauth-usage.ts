@@ -100,62 +100,121 @@ interface RawCredentials {
   };
 }
 
+/** Known on-disk locations Claude Code may store its OAuth token at.
+ *  Windows/Linux land at the first one; older or alternate macOS
+ *  installs sometimes use the Library Application Support copy. We
+ *  probe each in order until one parses successfully — the first match
+ *  wins regardless of platform. */
+function candidateCredentialPaths(): string[] {
+  const home = homedir();
+  const paths = [
+    join(home, ".claude", ".credentials.json"),
+    join(home, ".claude", "credentials.json"),
+    join(home, "Library", "Application Support", "Claude", ".credentials.json"),
+    join(home, "Library", "Application Support", "Claude", "credentials.json"),
+    join(home, ".config", "claude", ".credentials.json"),
+    join(home, ".config", "claude", "credentials.json"),
+  ];
+  // De-dupe while preserving order (same path can resolve identically
+  // on case-insensitive filesystems).
+  const seen = new Set<string>();
+  return paths.filter((p) => {
+    if (seen.has(p)) return false;
+    seen.add(p);
+    return true;
+  });
+}
+
 async function readAccessToken(): Promise<
   { token: string } | { error: OAuthUsageError }
 > {
-  // Cross-platform path — Claude Code writes to this same location on
-  // Windows, Linux, and macOS (CodexBar uses the identical relative
-  // path in its ClaudeOAuthCredentials.swift: `.claude/.credentials.json`).
-  // macOS additionally mirrors the token into the Keychain, but the
-  // file is still present unless the user explicitly cleared it.
-  const checkedPath = join(homedir(), ".claude", ".credentials.json");
-  let content: string;
-  try {
-    content = await readFile(checkedPath, "utf-8");
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err && err.code === "ENOENT") {
-      return { error: { kind: "no-credentials", checkedPath } };
-    }
-    // EACCES / EPERM / EISDIR / something else — surface so the user
-    // knows it's a permission / FS issue, not "you're not logged in."
-    return {
-      error: {
-        kind: "credentials-unreadable",
-        checkedPath,
+  const candidates = candidateCredentialPaths();
+  const tried: string[] = [];
+  let lastFsError: { path: string; message: string } | null = null;
+  let lastMalformed: { path: string; message: string } | null = null;
+  let lastSchema: { path: string; message: string } | null = null;
+
+  for (const checkedPath of candidates) {
+    tried.push(checkedPath);
+    let content: string;
+    try {
+      content = await readFile(checkedPath, "utf-8");
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err && err.code === "ENOENT") continue; // try next candidate
+      lastFsError = {
+        path: checkedPath,
         message: err?.message || String(e),
-      },
-    };
-  }
-  let parsed: RawCredentials;
-  try {
-    parsed = JSON.parse(content) as RawCredentials;
-  } catch (e) {
-    return {
-      error: {
-        kind: "credentials-malformed",
-        checkedPath,
+      };
+      continue;
+    }
+    let parsed: RawCredentials;
+    try {
+      parsed = JSON.parse(content) as RawCredentials;
+    } catch (e) {
+      lastMalformed = {
+        path: checkedPath,
         message: e instanceof Error ? e.message : String(e),
-      },
-    };
+      };
+      continue;
+    }
+    const oauth = parsed.claudeAiOauth;
+    if (!oauth || typeof oauth.accessToken !== "string") {
+      lastSchema = {
+        path: checkedPath,
+        message:
+          "JSON parsed but `claudeAiOauth.accessToken` is missing — file format may have changed.",
+      };
+      continue;
+    }
+    if (typeof oauth.expiresAt === "number" && oauth.expiresAt < Date.now()) {
+      // Don't refresh here — CodexBar runs a separate refresh
+      // coordinator; that's a follow-up. Report expiry so the UI can
+      // prompt re-auth.
+      return { error: { kind: "expired" } };
+    }
+    return { token: oauth.accessToken };
   }
-  const oauth = parsed.claudeAiOauth;
-  if (!oauth || typeof oauth.accessToken !== "string") {
+
+  // Nothing usable in any candidate path. Prefer reporting the most
+  // specific failure mode we saw (schema > malformed > unreadable >
+  // no-credentials) so the user has actionable info.
+  if (lastSchema) {
     return {
       error: {
         kind: "credentials-schema",
-        checkedPath,
-        message:
-          "JSON parsed but `claudeAiOauth.accessToken` is missing — file format may have changed.",
+        checkedPath: lastSchema.path,
+        message: lastSchema.message,
       },
     };
   }
-  if (typeof oauth.expiresAt === "number" && oauth.expiresAt < Date.now()) {
-    // Don't refresh here — CodexBar runs a separate refresh coordinator;
-    // that's a follow-up. Report expiry so the UI can prompt re-auth.
-    return { error: { kind: "expired" } };
+  if (lastMalformed) {
+    return {
+      error: {
+        kind: "credentials-malformed",
+        checkedPath: lastMalformed.path,
+        message: lastMalformed.message,
+      },
+    };
   }
-  return { token: oauth.accessToken };
+  if (lastFsError) {
+    return {
+      error: {
+        kind: "credentials-unreadable",
+        checkedPath: lastFsError.path,
+        message: lastFsError.message,
+      },
+    };
+  }
+  // All candidates returned ENOENT — surface the full list so a user on
+  // a not-yet-supported path can paste it back and we can extend
+  // `candidateCredentialPaths()` in one round.
+  return {
+    error: {
+      kind: "no-credentials",
+      checkedPath: tried.join(", "),
+    },
+  };
 }
 
 /** Shape-tolerant decoder. Mirrors CodexBar's `DynamicCodingKey` walk:
