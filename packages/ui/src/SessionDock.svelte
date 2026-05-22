@@ -645,6 +645,11 @@
     justify-content: flex-start;
     gap: 0.5rem;
     flex: 0 0 auto;
+    /* Chromium's UA stylesheet for <button> doesn't inherit font from
+       the page, so without this the dock labels render in the default
+       button font (Arial-ish on Windows) while the rest of the UI uses
+       Segoe UI from body — letterforms visibly mismatch. */
+    font: inherit;
   }
   /* Top margin on the first dot of each new repo group so the dock
      visually separates per-repo stacks. Applied via a class set in
