@@ -31,6 +31,7 @@ import {
   groupSessionsByFolder,
   type FolderSuggestion,
 } from "./agents";
+import { computeAgentUsage } from "./agent-usage";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats, parseSessionFile } from "./sessions";
 import { serveImage } from "./images";
@@ -481,6 +482,16 @@ const REPOS_CACHE_MS = 500;
 type EnrichedRepo = Record<string, unknown> & { id: string };
 let reposInflight: Promise<EnrichedRepo[]> | null = null;
 let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
+
+// /api/agent-usage caches its (detectAgents + computeAgentUsage)
+// result for 60s. The data is for an at-a-glance hover tooltip — sub-
+// minute freshness is overkill, and detectAgents() walks the whole
+// ~/.claude + ~/.codex tree which is the bulk of the cost.
+const AGENT_USAGE_CACHE_MS = 60_000;
+let agentUsageCache: {
+  at: number;
+  value: ReturnType<typeof computeAgentUsage> | null;
+} = { at: 0, value: null };
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
   return {
@@ -1342,6 +1353,25 @@ const server = Bun.serve<TermWsData, never>({
           titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
         ),
       );
+    }
+
+    // GET /api/agent-usage — sessions + messages per detected coding
+    // agent, bucketed into rolling 24h and 7d windows. The UI uses this
+    // to render the menubar agent-usage chip (per-agent logos + hover
+    // tooltip). 60s in-memory cache keeps the JSONL scan from running
+    // on every poll while still feeling live.
+    if (url.pathname === "/api/agent-usage" && req.method === "GET") {
+      const now = Date.now();
+      if (
+        agentUsageCache.value &&
+        now - agentUsageCache.at < AGENT_USAGE_CACHE_MS
+      ) {
+        return json(agentUsageCache.value);
+      }
+      const agents = await detectAgents(WORKSPACE_PATH);
+      const report = computeAgentUsage(agents, now);
+      agentUsageCache = { at: now, value: report };
+      return json(report);
     }
 
     // GET /api/sessions/folder-suggestions — derive a list of folders the

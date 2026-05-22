@@ -19,6 +19,7 @@
   import AttachmentIcon from "./AttachmentIcon.svelte";
   import NoteIcon from "./NoteIcon.svelte";
   import AgentIcon from "./AgentIcon.svelte";
+  import AgentUsageChip from "./AgentUsageChip.svelte";
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
@@ -4819,6 +4820,8 @@
         </Popover>
       {/if}
     </div>
+
+    <AgentUsageChip />
 
     {#if orphanNotes.length > 0}
       <div class="actions-anchor notes-tray-anchor">
