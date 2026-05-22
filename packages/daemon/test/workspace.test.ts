@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workspace } from "../src/workspace";
@@ -211,6 +211,62 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await expect(ws.migrateSessionTitle("", "/x")).rejects.toThrow();
     await expect(ws.migrateSessionTitle("/x", "")).rejects.toThrow();
+  });
+
+  test("setSessionTitle throws rather than clobbering an unparseable file", async () => {
+    // Regression: a transient read returning {} from listSessionTitles would
+    // make the next setSessionTitle rewrite session-titles.json with only the
+    // new entry, wiping every previously-saved title. Corrupted contents must
+    // surface as an error instead so the caller can retry without data loss.
+    const path = await tempDir();
+    const ws = await Workspace.open(path);
+    await ws.setSessionTitle("/a.jsonl", "alpha");
+    await ws.setSessionTitle("/b.jsonl", "beta");
+    // Simulate a half-written / corrupt file (or a parse failure of any kind).
+    await writeFile(join(path, "session-titles.json"), "{ this is not json");
+    await expect(
+      ws.setSessionTitle("/c.jsonl", "gamma"),
+    ).rejects.toThrow(/session-titles/i);
+    // File contents are untouched — recovery is still possible by hand.
+    const raw = await readFile(join(path, "session-titles.json"), "utf-8");
+    expect(raw).toBe("{ this is not json");
+  });
+
+  test("migrateSessionTitle throws rather than clobbering an unparseable file", async () => {
+    const path = await tempDir();
+    const ws = await Workspace.open(path);
+    await ws.setSessionTitle("/old.jsonl", "alpha");
+    await writeFile(join(path, "session-titles.json"), "garbage");
+    await expect(
+      ws.migrateSessionTitle("/old.jsonl", "/new.jsonl"),
+    ).rejects.toThrow(/session-titles/i);
+    const raw = await readFile(join(path, "session-titles.json"), "utf-8");
+    expect(raw).toBe("garbage");
+  });
+
+  test("setSessionTitle still works when session-titles.json is simply missing", async () => {
+    // Missing-file (ENOENT) is the legitimate empty-start case; it must NOT
+    // throw. Only "file exists but unreadable/unparseable" is the dangerous
+    // case the hardening above guards against.
+    const ws = await Workspace.open(await tempDir());
+    await expect(
+      ws.setSessionTitle("/a.jsonl", "alpha"),
+    ).resolves.toBeUndefined();
+    expect(await ws.listSessionTitles()).toEqual({ "/a.jsonl": "alpha" });
+  });
+
+  test("setSessionTitle writes atomically and leaves no .tmp behind", async () => {
+    // We can't easily simulate a crash mid-write inside a unit test, but the
+    // implementation property we want is "write to a tmp file then rename" —
+    // verified here by asserting the tmp file is cleaned up after a normal
+    // save (and that nothing else creeps into the workspace dir).
+    const path = await tempDir();
+    const ws = await Workspace.open(path);
+    await ws.setSessionTitle("/a.jsonl", "alpha");
+    await ws.setSessionTitle("/b.jsonl", "beta");
+    const entries = await readdir(path);
+    expect(entries).toContain("session-titles.json");
+    expect(entries.some((e) => e.endsWith(".tmp"))).toBe(false);
   });
 
   test("addCustomLink persists a link on the repo and returns it", async () => {

@@ -1,5 +1,5 @@
 import { join, basename } from "node:path";
-import { mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -142,22 +142,49 @@ export class Workspace {
 
   /** Return all manual session titles as `{ [source]: title }`. Missing
    *  file or unparseable contents yield an empty map (tolerant of corrupt
-   *  state). */
+   *  state — callers here are read-only display paths that prefer "show
+   *  placeholders" over surfacing an error). The strict variant
+   *  `readSessionTitlesStrict` is used for read-modify-write paths so a
+   *  transient error can never clobber the file. */
   async listSessionTitles(): Promise<Record<string, string>> {
-    let raw: string;
     try {
-      raw = await readFile(join(this.path, SESSION_TITLES_FILE), "utf-8");
+      return await this.readSessionTitlesStrict();
     } catch {
       return {};
+    }
+  }
+
+  /** Read + parse session-titles.json. Returns `{}` when the file is
+   *  legitimately absent (first run). Throws when the file exists but
+   *  is unreadable or unparseable — used by set/migrate to refuse to
+   *  overwrite an opaque file with a stripped-down one entry.
+   *
+   *  Background: previously every read returned `{}` on any error, so a
+   *  Windows AV scan or partial-write race that briefly blocked the
+   *  read would cause the next setSessionTitle call to JSON.stringify a
+   *  single-entry object and writeFile it, wiping every other title the
+   *  user had set. */
+  private async readSessionTitlesStrict(): Promise<Record<string, string>> {
+    const file = join(this.path, SESSION_TITLES_FILE);
+    let raw: string;
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw new Error(
+        `failed to read session-titles.json: ${(err as Error).message}`,
+      );
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
-    } catch {
-      return {};
+    } catch (err) {
+      throw new Error(
+        `failed to parse session-titles.json: ${(err as Error).message}`,
+      );
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
+      throw new Error("session-titles.json must be a JSON object");
     }
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
@@ -168,6 +195,26 @@ export class Workspace {
     return out;
   }
 
+  /** Atomically replace session-titles.json. Writes to a sibling .tmp
+   *  file then renames it over the destination — `rename` is atomic
+   *  on a single volume on every supported OS, so a power loss or
+   *  daemon crash mid-write can leave either the old or new file in
+   *  place but never a half-written / empty one. */
+  private async writeSessionTitles(titles: Record<string, string>): Promise<void> {
+    const dst = join(this.path, SESSION_TITLES_FILE);
+    const tmp = `${dst}.tmp`;
+    await writeFile(tmp, JSON.stringify(titles, null, 2));
+    try {
+      await rename(tmp, dst);
+    } catch (err) {
+      // Best-effort cleanup so a failed rename doesn't leave a stray
+      // .tmp behind. We swallow the unlink error because the rename
+      // error is the one the caller cares about.
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
+  }
+
   /** Persist a manual title for a session, keyed by the session's `source`
    *  (its JSONL path, or the synthetic `__new__:…` source while a TUI is
    *  still spawning). Empty / whitespace-only `title` deletes the entry. */
@@ -175,7 +222,7 @@ export class Workspace {
     if (typeof source !== "string" || source.length === 0) {
       throw new Error("source must be a non-empty string");
     }
-    const titles = await this.listSessionTitles();
+    const titles = await this.readSessionTitlesStrict();
     const trimmed = title.trim();
     if (trimmed.length === 0) {
       if (!(source in titles)) return;
@@ -183,10 +230,7 @@ export class Workspace {
     } else {
       titles[source] = trimmed;
     }
-    await writeFile(
-      join(this.path, SESSION_TITLES_FILE),
-      JSON.stringify(titles, null, 2),
-    );
+    await this.writeSessionTitles(titles);
   }
 
   /** Move a manual title from `oldSource` to `newSource`. Used when a
@@ -207,16 +251,13 @@ export class Workspace {
       throw new Error("newSource must be a non-empty string");
     }
     if (oldSource === newSource) return;
-    const titles = await this.listSessionTitles();
+    const titles = await this.readSessionTitlesStrict();
     const oldTitle = titles[oldSource];
     if (!oldTitle) return;
     if (titles[newSource]) return; // destination already named; don't clobber
     delete titles[oldSource];
     titles[newSource] = oldTitle;
-    await writeFile(
-      join(this.path, SESSION_TITLES_FILE),
-      JSON.stringify(titles, null, 2),
-    );
+    await this.writeSessionTitles(titles);
   }
 
   async listRepos(): Promise<Repo[]> {
