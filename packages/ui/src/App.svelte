@@ -4826,14 +4826,17 @@
                            sidebar / chips on a darker surface, and on the
                            muted popover background it reads as low-contrast.
                            Keep the breadcrumb in the standard muted text
-                           color so it stays readable. -->
+                           color so it stays readable.
+                           Grid + column-gap handle separation between
+                           name / repo / title cells — no inline "·"
+                           bullets, the gutter is the separator. -->
                       <span class="tui-repo muted small" title={p.cwd}>
-                        · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
+                        {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
                       </span>
                     {/if}
                     {#if ctx.title}
                       <span class="tui-inline-title" title={ctx.title}>
-                        · {ctx.title}
+                        {ctx.title}
                       </span>
                     {/if}
                     <!-- Per-stat cells live as DIRECT children of
