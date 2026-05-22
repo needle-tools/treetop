@@ -29,6 +29,50 @@ export const OLLAMA_HOST =
   process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
 
 /**
+ * Format an Ollama HTTP error into a user-facing message.
+ *
+ * Ollama's error strings are technically accurate but often
+ * confusing in context. The common cases we map to friendlier
+ * hints:
+ *
+ *  - `"<model>" does not support chat`: usually means the model is
+ *    a base/completion-only build, but it's *also* the message you
+ *    get when a model registry entry exists for an Ollama version
+ *    that doesn't recognise its capability — e.g. an outdated
+ *    server, or a manifest the user copied from elsewhere. The
+ *    user's intuition matches: "it's not really installed in a
+ *    usable form." Surface that as the suggested action.
+ *  - `model "<x>" not found`: literal missing model. Tell the user
+ *    to pull it.
+ *  - Anything else: pass through verbatim so we don't hide unknown
+ *    failures behind a friendly-but-wrong label.
+ *
+ * `model` is the tag the daemon asked Ollama to use; included in
+ * the rendered message so the user knows *which* model is broken
+ * when several are installed.
+ */
+export function formatOllamaError(
+  status: number,
+  statusText: string,
+  parsedError: string | null,
+  model: string,
+): string {
+  const e = parsedError ?? "";
+  if (/does not support chat/i.test(e)) {
+    return (
+      `Model "${model}" can't be used for chat — it may not be ` +
+      `installed correctly. Try \`ollama pull ${model}\` (or pick ` +
+      `a different model).`
+    );
+  }
+  if (/not found/i.test(e) || /try pulling it/i.test(e)) {
+    return `Model "${model}" is not installed. Run \`ollama pull ${model}\` first.`;
+  }
+  if (e) return `Ollama responded ${status} ${statusText} — ${e}`;
+  return `Ollama responded ${status} ${statusText}`;
+}
+
+/**
  * Fetch installed Ollama models via the HTTP API.
  * Returns null if the server is unreachable so the caller can fall
  * back to the CLI; throws only on unexpected JSON shape.

@@ -43,7 +43,7 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
-import { listOllamaModels, OLLAMA_HOST } from "./ollama";
+import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { SummariesStore, RepoSummariesStore } from "./summaries";
 import { sampleSessionForSummary } from "./ollama-summarize";
 import {
@@ -1768,18 +1768,26 @@ const server = Bun.serve<TermWsData, never>({
               signal: abort.signal,
             });
             if (!res.ok || !res.body) {
-              let detail = "";
+              let parsedError: string | null = null;
               try {
                 const errBody = await res.text();
-                const parsed = JSON.parse(errBody) as { error?: string };
-                if (parsed.error) detail = ` — ${parsed.error}`;
-                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+                try {
+                  parsedError =
+                    (JSON.parse(errBody) as { error?: string }).error ?? null;
+                } catch {
+                  parsedError = errBody.slice(0, 200) || null;
+                }
               } catch {
                 // body unreadable
               }
               send("error", {
                 kind: "ollama_http",
-                message: `Ollama responded ${res.status} ${res.statusText}${detail}`,
+                message: formatOllamaError(
+                  res.status,
+                  res.statusText,
+                  parsedError,
+                  prior.model,
+                ),
               });
               try { controller.close(); } catch {}
               return;
@@ -2048,18 +2056,26 @@ const server = Bun.serve<TermWsData, never>({
               signal: abort.signal,
             });
             if (!res.ok || !res.body) {
-              let detail = "";
+              let parsedError: string | null = null;
               try {
                 const errBody = await res.text();
-                const parsed = JSON.parse(errBody) as { error?: string };
-                if (parsed.error) detail = ` — ${parsed.error}`;
-                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+                try {
+                  parsedError =
+                    (JSON.parse(errBody) as { error?: string }).error ?? null;
+                } catch {
+                  parsedError = errBody.slice(0, 200) || null;
+                }
               } catch {
                 // body unreadable
               }
               send("error", {
                 kind: "ollama_http",
-                message: `Ollama responded ${res.status} ${res.statusText}${detail}`,
+                message: formatOllamaError(
+                  res.status,
+                  res.statusText,
+                  parsedError,
+                  model,
+                ),
               });
               try { controller.close(); } catch {}
               return;
@@ -3232,20 +3248,35 @@ const server = Bun.serve<TermWsData, never>({
             if (!res.ok || !res.body) {
               // Ollama returns 404 with a JSON `error` field when the
               // model isn't installed (e.g. "model 'llama3.2:3b' not
-              // found, try pulling it first"). Surface that, not just
-              // the HTTP status — saved us from a mystery in prod.
-              let detail = "";
+              // found, try pulling it first") and 400 "does not
+              // support chat" for a broken/non-chat manifest. The
+              // formatter normalises both into install-flavoured
+              // hints so the user knows to `ollama pull <model>`.
+              let parsedError: string | null = null;
               try {
                 const errBody = await res.text();
-                const parsed = JSON.parse(errBody) as { error?: string };
-                if (parsed.error) detail = ` — ${parsed.error}`;
-                else if (errBody) detail = ` — ${errBody.slice(0, 200)}`;
+                try {
+                  parsedError =
+                    (JSON.parse(errBody) as { error?: string }).error ?? null;
+                } catch {
+                  parsedError = errBody.slice(0, 200) || null;
+                }
               } catch {
                 // body unreadable or already consumed
               }
               throw Object.assign(
-                new Error(`Ollama responded ${res.status} ${res.statusText}${detail}`),
-                { kind: res.status === 404 ? "ollama_model_missing" : "ollama_http" },
+                new Error(
+                  formatOllamaError(
+                    res.status,
+                    res.statusText,
+                    parsedError,
+                    model,
+                  ),
+                ),
+                {
+                  kind:
+                    res.status === 404 ? "ollama_model_missing" : "ollama_http",
+                },
               );
             }
             const reader = res.body.getReader();
