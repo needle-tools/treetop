@@ -358,17 +358,6 @@
     background: color-mix(in srgb, #d35400 18%, transparent);
     color: color-mix(in srgb, #d35400 90%, var(--text));
   }
-  .inbox-section-head {
-    /* Small uppercase divider above the Received / Sent groups so
-       direction is obvious at a glance. Margin top is bigger than
-       bottom so the heading clearly belongs to the list below. */
-    margin: 0.4rem 0 0.2rem;
-    font-size: 0.66rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-  }
   .inbox-msgs {
     list-style: none;
     margin: 0;
@@ -387,17 +376,10 @@
     border-left-width: 3px;
   }
   .inbox-msg {
-    /* Two-column row: [direction arrow] [body + meta stacked]. */
-    display: flex;
-    align-items: flex-start;
-    gap: 0.4rem;
-  }
-  .inbox-msg-body-wrap {
-    /* Anchor for the absolute-positioned copy icon, and the column
-       that holds the body + time. */
+    /* Body + meta stacked; the direction arrow lives inline INSIDE
+       the body now (Svelte template prepends it as a sibling text
+       node before {msg.body}). */
     position: relative;
-    flex: 1;
-    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
@@ -419,19 +401,14 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
-  /* Direction marker as a real inline cell to the LEFT of the
-     message body. Vertically centered against the first line of
-     body text — the calc lines the icon's centerline up with the
-     first line's center:
-       body padding-top (0.45rem) + line-height/2 (0.76 * 1.4 / 2
-       = 0.53rem) - icon height/2 (12px / 2 = 0.375rem)
-       ≈ 0.6rem
-     `align-self: flex-start` keeps it pinned to the top of the row
-     regardless of how many lines the body wraps to. */
+  /* Direction marker rendered INLINE inside `<pre>` as the first
+     thing on the line. `vertical-align: middle` centres it against
+     the surrounding text's x-height (close enough to "centred with
+     the line" without a per-pixel calibration), and a touch of
+     right margin separates it from the first character. */
   .inbox-msg-dir {
-    align-self: flex-start;
-    margin-top: 0.6rem;
-    flex: 0 0 auto;
+    vertical-align: middle;
+    margin-right: 0.2rem;
     color: var(--text-muted);
     opacity: 0.8;
   }
@@ -690,64 +667,14 @@
                 <p class="inbox-err small" role="alert">{sendError[row.peer.id]}</p>
               {/if}
 
-              {#if row.messages.some((m) => m.direction !== "out")}
-                <h3 class="inbox-section-head">Received messages</h3>
+              {#if row.messages.length > 0}
                 <ul class="inbox-msgs">
-                  {#each row.messages.filter((m) => m.direction !== "out") as msg (msg.id)}
-                    <li class="inbox-msg">
-                      <!-- Direction arrow as the leftmost inline cell
-                           of the message row, vertically aligned with
-                           the first line of body text. Received = ←. -->
-                      <svg
-                        class="inbox-msg-dir inbox-msg-dir-in"
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.4"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        aria-label="Received"
-                      >
-                        <line x1="19" y1="12" x2="5" y2="12"></line>
-                        <polyline points="12 19 5 12 12 5"></polyline>
-                      </svg>
-                      <div class="inbox-msg-body-wrap">
-                        <pre class="inbox-body">{msg.body}</pre>
-                        <button
-                          type="button"
-                          class="inbox-copy-icon"
-                          class:inbox-copy-icon-copied={copied[msg.id]}
-                          on:click|stopPropagation={() => onCopy(msg.id, msg.body)}
-                          title={copied[msg.id] ? "Copied" : "Copy to clipboard"}
-                          aria-label={copied[msg.id] ? "Copied" : "Copy"}
-                        >
-                          {#if copied[msg.id]}
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <polyline points="20 6 9 17 4 12"></polyline>
-                            </svg>
-                          {:else}
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                          {/if}
-                        </button>
-                        <span class="inbox-msg-time muted small">received {relTime(msg.receivedAt)}</span>
-                      </div>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if row.messages.some((m) => m.direction === "out")}
-                <h3 class="inbox-section-head">Sent messages</h3>
-                <ul class="inbox-msgs">
-                  {#each row.messages.filter((m) => m.direction === "out") as msg (msg.id)}
-                    <li class="inbox-msg inbox-msg-sent">
-                      <!-- Direction arrow → leftmost cell, brand-tinted
-                           so sent vs. received reads at a glance. -->
-                      <svg
+                  {#each row.messages as msg (msg.id)}
+                    <li class="inbox-msg" class:inbox-msg-sent={msg.direction === "out"}>
+                      <!-- Direction arrow lives INSIDE the body so it
+                           sits inline at the start of the first line
+                           of text. ← for received, → for sent. -->
+                      <pre class="inbox-body" class:inbox-body-sent={msg.direction === "out"}>{#if msg.direction === "out"}<svg
                         class="inbox-msg-dir inbox-msg-dir-out"
                         width="12"
                         height="12"
@@ -758,33 +685,38 @@
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         aria-label="Sent"
+                      ><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>{:else}<svg
+                        class="inbox-msg-dir inbox-msg-dir-in"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-label="Received"
+                      ><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>{/if} {msg.body}</pre>
+                      <button
+                        type="button"
+                        class="inbox-copy-icon"
+                        class:inbox-copy-icon-copied={copied[msg.id]}
+                        on:click|stopPropagation={() => onCopy(msg.id, msg.body)}
+                        title={copied[msg.id] ? "Copied" : "Copy to clipboard"}
+                        aria-label={copied[msg.id] ? "Copied" : "Copy"}
                       >
-                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                        <polyline points="12 5 19 12 12 19"></polyline>
-                      </svg>
-                      <div class="inbox-msg-body-wrap">
-                        <pre class="inbox-body inbox-body-sent">{msg.body}</pre>
-                        <button
-                          type="button"
-                          class="inbox-copy-icon"
-                          class:inbox-copy-icon-copied={copied[msg.id]}
-                          on:click|stopPropagation={() => onCopy(msg.id, msg.body)}
-                          title={copied[msg.id] ? "Copied" : "Copy to clipboard"}
-                          aria-label={copied[msg.id] ? "Copied" : "Copy"}
-                        >
-                          {#if copied[msg.id]}
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <polyline points="20 6 9 17 4 12"></polyline>
-                            </svg>
-                          {:else}
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                          {/if}
-                        </button>
-                        <span class="inbox-msg-time muted small">sent {relTime(msg.sentAt)}</span>
-                      </div>
+                        {#if copied[msg.id]}
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="20 6 9 17 4 12"></polyline>
+                          </svg>
+                        {:else}
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                          </svg>
+                        {/if}
+                      </button>
+                      <span class="inbox-msg-time muted small">{msg.direction === "out" ? "sent" : "received"} {relTime(msg.direction === "out" ? msg.sentAt : msg.receivedAt)}</span>
                     </li>
                   {/each}
                 </ul>
