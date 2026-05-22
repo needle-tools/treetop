@@ -13,6 +13,7 @@
   import NewSessionCol from "./NewSessionCol.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
+  import { statusSummary, type FileStatus } from "./status-summary";
   import { planReveal, type RevealMode } from "./reveal-session";
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
   import AttachmentIcon from "./AttachmentIcon.svelte";
@@ -62,14 +63,6 @@
   installFetchTracking();
   installGlobalErrorHandlers();
 
-  interface FileStatus {
-    staged: number;
-    unstaged: number;
-    untracked: number;
-    /** Submodule-internal dirt (parent's recorded SHA unchanged). Shown
-     *  as a muted "N submodule" trailer; never counted as parent dirty. */
-    submodules?: number;
-  }
   interface BranchStatus {
     branch: string;
     upstream: string | null;
@@ -3827,22 +3820,6 @@
     return lines.join("\n");
   }
 
-  function statusSummary(s: FileStatus): {
-    clean: boolean;
-    text: string;
-    submoduleText: string;
-  } {
-    const subs = s.submodules ?? 0;
-    const submoduleText = subs > 0 ? `${subs} submodule${subs === 1 ? "" : "s"} changed` : "";
-    const total = s.staged + s.unstaged + s.untracked;
-    if (total === 0) return { clean: true, text: "clean", submoduleText };
-    const parts: string[] = [];
-    if (s.staged) parts.push(`${s.staged} staged`);
-    if (s.unstaged) parts.push(`${s.unstaged} unstaged`);
-    if (s.untracked) parts.push(`${s.untracked} untracked`);
-    return { clean: false, text: parts.join(", "), submoduleText };
-  }
-
   // Flat list of rendered rows. Each repo contributes ONE row per
   // worktree the user has chosen to show (via the worktrees picker),
   // not one per worktree on disk. A repo with no checked worktrees
@@ -4896,7 +4873,7 @@
     <ul class="rows">
       {#each rows as row, rowIdx (row.key)}
         {@const { repo, wt } = row}
-        {@const summary = wt ? statusSummary(wt.fileStatus) : null}
+        {@const summary = wt ? statusSummary(wt.fileStatus, wtSummaryByPath[wt.path]) : null}
         {@const noteAnchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`}
         {@const noteCount = $notesCountByAnchor[noteAnchor] ?? 0}
         {@const isFirstOfRepo =
