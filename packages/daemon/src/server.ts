@@ -319,6 +319,12 @@ void (async () => {
       port: PORT,
       id: peerIdentity.id,
       label: peerIdentity.label,
+      // Pin the multicast socket to the LAN IPv4 so we don't end
+      // up advertising over a WSL2 / Hyper-V virtual switch on
+      // Windows. findLocalIp() returns null when the host has no
+      // usable private IPv4 (rare — laptop offline); bonjour then
+      // falls back to its default interface selection.
+      interfaceAddress: findLocalIp() ?? undefined,
     });
     peerDiscovery.start();
     console.log(
@@ -2498,6 +2504,7 @@ const server = Bun.serve<TermWsData, never>({
             port: PORT,
             id: peerIdentity.id,
             label: peerIdentity.label,
+            interfaceAddress: findLocalIp() ?? undefined,
           });
           peerDiscovery.start();
         }

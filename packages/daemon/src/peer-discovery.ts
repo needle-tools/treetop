@@ -34,6 +34,14 @@ export interface DiscoveryOpts {
   id: string;
   label: string;
   version?: string;
+  /** IPv4 address of the network interface multicast traffic should
+   *  use. On hosts with multiple adapters (Windows boxes with WSL2 /
+   *  Hyper-V / VPN virtual switches, multi-homed Macs) bonjour
+   *  otherwise picks one of them based on routing-table ordering —
+   *  often a virtual switch, so the advert never reaches the LAN.
+   *  Caller derives this via `findLocalIp()`; passing `undefined`
+   *  falls back to bonjour's default selection. */
+  interfaceAddress?: string;
 }
 
 export class PeerDiscovery {
@@ -51,7 +59,20 @@ export class PeerDiscovery {
    *  daemon must keep working even when the LAN has no mDNS at all. */
   start(): void {
     try {
-      this.bonjour = new Bonjour();
+      // multicast-dns options flow through Bonjour's constructor →
+      // Server → multicast-dns(opts). `interface` pins the outbound
+      // multicast adapter (fixes the Windows multi-NIC case where
+      // adverts went out on WSL2 vEthernet instead of the LAN);
+      // `reuseAddr` lets us co-exist with the OS's mDNS daemon on
+      // UDP 5353 (Apple's mDNSResponder, Avahi).
+      const mdnsOpts: Record<string, unknown> = { reuseAddr: true };
+      if (this.opts.interfaceAddress) {
+        mdnsOpts.interface = this.opts.interfaceAddress;
+      }
+      // The TS types restrict the constructor's first arg to
+      // ServiceConfig, but at runtime mdns options pass through —
+      // see node_modules/bonjour-service/dist/lib/mdns-server.js.
+      this.bonjour = new Bonjour(mdnsOpts as never);
       // The mDNS service name has to be unique on the LAN per
       // (type, name) pair — two supergit daemons on the same box (or
       // two laptops with the same user@host) would otherwise collide
