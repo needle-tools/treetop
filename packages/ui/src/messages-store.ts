@@ -13,6 +13,10 @@ export interface StoredMessage {
   body: string;
   sentAt: string;
   receivedAt: string;
+  /** "in" = received from this peer; "out" = we sent it to this peer.
+   *  Older messages predate this field — backward-compat treats them
+   *  as "in" client-side. */
+  direction?: "in" | "out";
 }
 export interface PeerInbox {
   peer: { id: string; label: string };
@@ -44,21 +48,26 @@ export async function refreshMessages(): Promise<void> {
   }
 }
 
-/** Total messages across all non-muted senders. Used as a fallback
- *  when no unread baseline has been recorded yet. */
+/** Total INBOUND messages across all non-muted senders. Used as a
+ *  fallback when no unread baseline has been recorded yet. Outbound
+ *  ("out") entries are ours — they never contribute to the unread
+ *  badge. */
 export function totalCount(snap: InboxSnapshot): number {
   let n = 0;
   for (const row of snap.inbox) {
     if (snap.mutes[row.peer.id]) continue;
-    n += row.messages.length;
+    for (const m of row.messages) {
+      if (m.direction === "out") continue;
+      n++;
+    }
   }
   return n;
 }
 
-/** Unread = anything received after `lastReadAtIso`. When that
- *  baseline isn't set yet (first run, fresh browser) we treat every
- *  stored message as unread so the user still gets a hint. Muted
- *  senders are ignored. */
+/** Unread = inbound messages received after `lastReadAtIso`. When
+ *  that baseline isn't set yet (first run, fresh browser) we treat
+ *  every inbound message as unread so the user still gets a hint.
+ *  Muted senders and outbound entries are ignored. */
 export function unreadCount(snap: InboxSnapshot, lastReadAtIso: string | null): number {
   if (!lastReadAtIso) return totalCount(snap);
   const cutoff = Date.parse(lastReadAtIso);
@@ -67,6 +76,7 @@ export function unreadCount(snap: InboxSnapshot, lastReadAtIso: string | null): 
   for (const row of snap.inbox) {
     if (snap.mutes[row.peer.id]) continue;
     for (const m of row.messages) {
+      if (m.direction === "out") continue;
       const ts = Date.parse(m.receivedAt);
       if (Number.isFinite(ts) && ts > cutoff) n++;
     }

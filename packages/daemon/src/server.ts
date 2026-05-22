@@ -88,6 +88,7 @@ import {
 import { PeerDiscovery } from "./peer-discovery";
 import {
   addIncomingMessage,
+  addOutgoingMessage,
   getMessages,
   mutePeer,
   unmutePeer,
@@ -2581,8 +2582,9 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/messages/send" && req.method === "POST") {
       // Sender side — POST our message to the chosen peer's
-      // /api/messages/receive endpoint. We never store outbound
-      // messages locally; if you want a sent-history, that's v2.
+      // /api/messages/receive endpoint, then mirror the outbound
+      // copy into our own inbox under the recipient peer's row so
+      // the UI can show sent history alongside received.
       const body = (await req.json().catch(() => null)) as
         | {
             peerHost?: unknown;
@@ -2640,6 +2642,21 @@ const server = Bun.serve<TermWsData, never>({
           { status: 502 },
         );
       }
+      // Resolve the recipient's stable peer id + label from the mDNS
+      // registry so the local sent-history row is grouped under the
+      // same peer the receiver shows up under. Falls back to a
+      // synthetic id derived from host:port when the peer isn't
+      // currently advertising (manual host:port entry).
+      const recipient = (peerDiscovery?.peers() ?? []).find(
+        (p) => p.host === peerHost && p.port === peerPort,
+      );
+      const toId = recipient?.id ?? `manual:${peerHost}:${peerPort}`;
+      const toLabel = recipient?.label ?? `${peerHost}:${peerPort}`;
+      await addOutgoingMessage(workspace.path, { id: toId, label: toLabel }, text, payload.sentAt);
+      broadcast("change", {
+        kind: "message_sent",
+        to: { id: toId, label: toLabel },
+      });
       return json({ ok: true, sentAt: payload.sentAt }, { status: 202 });
     }
 

@@ -26,11 +26,16 @@ export interface IncomingMessage {
   sentAt: string;
 }
 
+export type MessageDirection = "in" | "out";
 export interface StoredMessage {
   id: string;
   body: string;
   sentAt: string;
   receivedAt: string;
+  /** "in" = received from this peer; "out" = we sent it to this peer.
+   *  Optional in older data — backward-compat code defaults absent
+   *  entries to "in". */
+  direction: MessageDirection;
 }
 
 export interface PeerInbox {
@@ -51,6 +56,14 @@ async function loadStore(workspaceDir: string): Promise<OnDisk> {
     const raw = await readFile(join(workspaceDir, MESSAGES_FILE), "utf-8");
     const parsed = JSON.parse(raw) as Partial<OnDisk>;
     if (parsed && typeof parsed === "object" && parsed.byPeer) {
+      // Backward-compat: messages stored before the direction field
+      // existed should be treated as inbound (the only kind we
+      // tracked at the time).
+      for (const entry of Object.values(parsed.byPeer)) {
+        for (const m of entry.messages) {
+          if (!m.direction) m.direction = "in";
+        }
+      }
       return { version: 1, byPeer: parsed.byPeer };
     }
   } catch {
@@ -70,21 +83,63 @@ export async function addIncomingMessage(
   workspaceDir: string,
   msg: IncomingMessage,
 ): Promise<void> {
-  const store = await loadStore(workspaceDir);
-  let entry = store.byPeer[msg.from.id];
-  if (!entry) {
-    entry = { label: msg.from.label, messages: [] };
-    store.byPeer[msg.from.id] = entry;
-  }
-  entry.label = msg.from.label; // refresh the human label
-  entry.messages.unshift({
+  await pushMessage(workspaceDir, msg.from.id, msg.from.label, {
     id: crypto.randomUUID(),
     body: msg.body,
     sentAt: msg.sentAt,
     receivedAt: new Date().toISOString(),
+    direction: "in",
   });
-  if (entry.messages.length > MAX_PER_PEER) {
-    entry.messages.length = MAX_PER_PEER;
+}
+
+/** Stamp a message WE just sent into the same per-peer buffer so the
+ *  UI can show outbound history alongside inbound. Called from
+ *  /api/messages/send after the peer's /api/messages/receive
+ *  returned 202. The "receivedAt" field on outbound messages records
+ *  when the peer ACKed delivery, which is fine to treat as the
+ *  ordering key alongside inbound receivedAt. */
+export async function addOutgoingMessage(
+  workspaceDir: string,
+  to: { id: string; label: string },
+  body: string,
+  sentAt: string,
+): Promise<void> {
+  await pushMessage(workspaceDir, to.id, to.label, {
+    id: crypto.randomUUID(),
+    body,
+    sentAt,
+    receivedAt: new Date().toISOString(),
+    direction: "out",
+  });
+}
+
+async function pushMessage(
+  workspaceDir: string,
+  peerId: string,
+  peerLabel: string,
+  msg: StoredMessage,
+): Promise<void> {
+  const store = await loadStore(workspaceDir);
+  let entry = store.byPeer[peerId];
+  if (!entry) {
+    entry = { label: peerLabel, messages: [] };
+    store.byPeer[peerId] = entry;
+  }
+  entry.label = peerLabel; // refresh the human label
+  entry.messages.unshift(msg);
+  // Per-direction cap so a chatty sender can't push the received
+  // history off the end, and a chatty receiver can't push out the
+  // sent history. Trim each direction independently.
+  for (const dir of ["in", "out"] as const) {
+    let kept = 0;
+    entry.messages = entry.messages.filter((m) => {
+      if (m.direction !== dir) return true;
+      if (kept < MAX_PER_PEER) {
+        kept++;
+        return true;
+      }
+      return false;
+    });
   }
   await saveStore(workspaceDir, store);
 }
