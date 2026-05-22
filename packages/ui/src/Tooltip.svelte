@@ -213,7 +213,11 @@
      ceiling was the active bottleneck once `COMMIT_SUBJECT_MAX`
      bumped to 200 chars — drop it and let viewport width be the
      only cap. `92vw` keeps the tooltip from butting against the
-     right edge on small screens. */
+     right edge on small screens.
+     No `min-width` here on purpose: that would also widen
+     `tt-wide` tooltips whose content is shorter (e.g. the changed-
+     files list), leaving big empty gutters. The commit grid sets
+     its own floor — see `.wt-tt-commits` in worktree-row.css. */
   .tt-wide {
     max-width: 96vw;
   }

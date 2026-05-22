@@ -11,7 +11,17 @@
    * redacted so the user has a clear "what just left this machine"
    * receipt.
    */
+  import { onDestroy } from "svelte";
   import { activeShare, closeShare, rememberPeer, recallPeer } from "./share-session-dialog";
+
+  interface DiscoveredPeer {
+    id: string;
+    label: string;
+    host: string;
+    port: number;
+    version?: string;
+    lastSeen?: string;
+  }
 
   let peerInput = "";
   let includeToolOutputs = false;
@@ -21,17 +31,56 @@
     | { kind: "ok"; offerId: string; strippedCount: number; redactions: Array<{ kind: string; count: number }> }
     | { kind: "error"; message: string } = { kind: "idle" };
 
+  // mDNS-discovered peers, refreshed on a short interval while the
+  // dialog is open. Empty list is the common state when nothing else
+  // on the LAN is running supergit — manual host:port input below is
+  // always available regardless.
+  let peers: DiscoveredPeer[] = [];
+  let selectedPeerId: string | null = null;
+  let peersPoll: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshPeers() {
+    try {
+      const res = await fetch("/api/peers");
+      if (!res.ok) return;
+      const body = (await res.json()) as { peers?: DiscoveredPeer[] };
+      peers = body.peers ?? [];
+    } catch {
+      // best-effort — discovery isn't load-bearing, manual input wins.
+    }
+  }
+
   // Reset state every time the dialog opens with a fresh source so
   // a previous send's success/error message doesn't carry over.
   let lastSource: string | null = null;
   $: if ($activeShare && $activeShare.source !== lastSource) {
     lastSource = $activeShare.source;
     peerInput = recallPeer();
+    selectedPeerId = null;
     includeToolOutputs = false;
     sending = false;
     result = { kind: "idle" };
+    void refreshPeers();
+    // Poll while open; 3s is short enough to feel live, long enough
+    // not to spam the daemon. Cleared on close + onDestroy below.
+    if (peersPoll) clearInterval(peersPoll);
+    peersPoll = setInterval(refreshPeers, 3000);
   }
-  $: if (!$activeShare) lastSource = null;
+  $: if (!$activeShare) {
+    lastSource = null;
+    if (peersPoll) {
+      clearInterval(peersPoll);
+      peersPoll = null;
+    }
+  }
+  onDestroy(() => {
+    if (peersPoll) clearInterval(peersPoll);
+  });
+
+  function pickPeer(p: DiscoveredPeer) {
+    selectedPeerId = p.id;
+    peerInput = `${p.host}:${p.port}`;
+  }
 
   function parsePeer(value: string): { host: string; port: number } | null {
     const trimmed = value.trim();
@@ -121,13 +170,37 @@
         are redacted before send.
       </p>
 
+      <div class="share-field">
+        <span class="share-label">Peers on this network</span>
+        {#if peers.length > 0}
+          <ul class="share-peers">
+            {#each peers as p (p.id)}
+              <button
+                type="button"
+                class="share-peer"
+                class:share-peer-selected={selectedPeerId === p.id}
+                on:click={() => pickPeer(p)}
+              >
+                <span class="share-peer-label">{p.label}</span>
+                <span class="share-peer-host">{p.host}:{p.port}</span>
+              </button>
+            {/each}
+          </ul>
+        {:else}
+          <p class="share-peers-empty">
+            No peers discovered yet. Start supergit on another machine on this LAN, or use the manual field below.
+          </p>
+        {/if}
+      </div>
+
       <label class="share-field">
-        <span class="share-label">Peer (host:port)</span>
+        <span class="share-label">Or enter host:port</span>
         <input
           type="text"
           class="share-input"
           placeholder="192.168.1.42:27787"
           bind:value={peerInput}
+          on:input={() => { selectedPeerId = null; }}
           autocomplete="off"
           spellcheck="false"
         />
@@ -219,6 +292,56 @@
   }
   .share-label {
     color: var(--text-muted);
+  }
+  .share-peers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .share-peer {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 35%, transparent);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .share-peer:hover {
+    background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+    border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  }
+  .share-peer-selected {
+    border-color: var(--brand, color-mix(in srgb, var(--text-muted) 70%, transparent));
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+  }
+  .share-peer-label {
+    font-weight: 500;
+    color: var(--text-1, inherit);
+  }
+  .share-peer-host {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+  .share-peers-empty {
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--surface-2) 25%, transparent);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
   }
   .share-input {
     font: inherit;

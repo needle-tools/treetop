@@ -11,7 +11,7 @@
 import { redactLikelySecrets, type Redaction } from "./secret-redactor";
 
 export type SharePlatform = "darwin" | "linux" | "win32";
-export type ShareAgent = "claude" | "codex";
+export type ShareAgent = "claude" | "codex" | "ollama";
 export type ToolOutputMode = "stripped" | "included";
 
 export interface SessionShareManifest {
@@ -406,7 +406,7 @@ const REQUIRED_STRINGS: Array<keyof SessionShareManifest> = [
   "toolOutputs",
 ];
 
-const VALID_AGENTS: ShareAgent[] = ["claude", "codex"];
+const VALID_AGENTS: ShareAgent[] = ["claude", "codex", "ollama"];
 const VALID_PLATFORMS: SharePlatform[] = ["darwin", "linux", "win32"];
 const VALID_TOOL_OUTPUTS: ToolOutputMode[] = ["stripped", "included"];
 

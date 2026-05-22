@@ -203,6 +203,82 @@ export async function migrateClaudeImportsToProjects(
   return { moved, skipped };
 }
 
+/** Third-stage migrator: rehouse legacy ollama imports out of
+ *  `<ws>/imported-sessions/<machine>/ollama/<sid>.jsonl` into
+ *  `<ws>/ollama/<sid>.jsonl` so the receiver's `scanOllama` discovers
+ *  them as native sessions (no separate "imported-ollama" code path).
+ *  Sidecar stays under imported-sessions/, gains `importedJsonlPath`
+ *  pointing at the new location. Idempotent on `importedJsonlPath`. */
+export async function migrateOllamaImportsToWorkspace(
+  workspaceDir: string,
+): Promise<MigrateResult> {
+  const root = join(workspaceDir, "imported-sessions");
+  let machines: string[];
+  try {
+    machines = await readdir(root);
+  } catch {
+    return { moved: 0, skipped: 0 };
+  }
+  const ollamaDir = join(workspaceDir, "ollama");
+  let moved = 0;
+  let skipped = 0;
+  for (const machine of machines) {
+    const importDir = join(root, machine, "ollama");
+    let entries: string[];
+    try {
+      entries = await readdir(importDir);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      if (!name.endsWith(".jsonl")) continue;
+      const sid = name.replace(/\.jsonl$/, "").replace(/\.from-\d+$/, "");
+      const jsonlPath = join(importDir, name);
+      const sidecarPath = join(importDir, `${sid}.manifest.json`);
+      let sidecar: { importedJsonlPath?: string };
+      try {
+        sidecar = JSON.parse(await readFile(sidecarPath, "utf-8"));
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      if (sidecar.importedJsonlPath) {
+        try {
+          await access(sidecar.importedJsonlPath);
+          await dropLegacyJsonl(jsonlPath, sidecar.importedJsonlPath);
+          continue;
+        } catch {
+          // pointer dangling — fall through and re-migrate
+        }
+      }
+      await mkdir(ollamaDir, { recursive: true });
+      const targetPath = join(ollamaDir, `${sid}.jsonl`);
+      let alreadyThere = false;
+      try {
+        await access(targetPath);
+        alreadyThere = true;
+      } catch {}
+      try {
+        if (!alreadyThere) await rename(jsonlPath, targetPath);
+      } catch {
+        try {
+          const data = await readFile(jsonlPath);
+          await writeFile(targetPath, data);
+          await rename(jsonlPath, jsonlPath + ".migrated-bak");
+        } catch {
+          skipped += 1;
+          continue;
+        }
+      }
+      const updated = { ...sidecar, importedJsonlPath: targetPath };
+      await writeFile(sidecarPath, JSON.stringify(updated, null, 2));
+      if (alreadyThere) await dropLegacyJsonl(jsonlPath, targetPath);
+      moved += 1;
+    }
+  }
+  return { moved, skipped };
+}
+
 /** Remove a legacy `imported-sessions/.../<sid>.jsonl` file once a
  *  canonical copy exists at `keepPath`. The legacy file is unlinked
  *  outright when it's safe — same inode (hardlink) or byte-identical

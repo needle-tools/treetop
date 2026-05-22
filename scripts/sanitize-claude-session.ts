@@ -38,9 +38,13 @@ function replaceField(key: string, _value: unknown): unknown | undefined {
   if (key === "model") return "claude-test";
   if (key === "tool_use_id") return "toolu_test_00000000";
   if (key === "summary") return "[summary redacted]";
-  if (key === "file_path" || key === "path") return "/Users/test/repo/file.ts";
+  if (key === "file_path" || key === "path" || key === "filePath")
+    return "/Users/test/repo/file.ts";
   if (key === "command") return "echo redacted";
   if (key === "old_string" || key === "new_string") return "[redacted]";
+  if (key === "oldString" || key === "newString") return "[redacted]";
+  if (key === "originalFile") return "[redacted text]";
+  if (key === "structuredPatch") return [];
   if (key === "text") return "[redacted text]";
   if (key === "content" && typeof _value === "string") return "[redacted text]";
   return undefined; // signal "no override, recurse normally"

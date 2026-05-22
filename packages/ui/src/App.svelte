@@ -582,6 +582,36 @@
     return { repoName, repoColor, wtBranch, title, lastActivity };
   }
 
+  /** Map a tracked TUI PTY back to the session `source` string the
+   *  dashboard uses to address open session columns. Walks the same
+   *  cwd→worktree→agent path as `tuiContext`, matching the PTY's
+   *  `ownerId` against `agent.sessionId`. Returns null for shells (no
+   *  ownerId) and for orphan TUIs whose owning session has fallen out
+   *  of the loaded `repos` snapshot. */
+  function tuiSource(p: TuiProc): string | null {
+    if (!p.ownerId) return null;
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        if (wt.path !== p.cwd) continue;
+        for (const a of wt.agents ?? []) {
+          if (a.sessionId === p.ownerId) return a.source ?? null;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Click handler for a row in the TUIs popover — closes the popover
+   *  and uses the shared `focusSessionBySource` pipeline to scroll the
+   *  matching session column into view and flash its outline. */
+  async function focusTui(p: TuiProc): Promise<void> {
+    const source = tuiSource(p);
+    if (!source) return;
+    tuisOpen = false;
+    startTuiPolling(TUI_SLOW_MS);
+    await focusSessionBySource(source);
+  }
+
   function prettyTuiName(p: TuiProc): string {
     if (p.agent === "claude") return "Claude";
     if (p.agent === "codex") return "Codex";
@@ -4671,268 +4701,6 @@
       >
         {streamConnected ? "● connected" : "○ offline"}
       </span>
-
-      <div class="actions-anchor tuis-anchor">
-        <button
-          class="actions-btn tuis-btn"
-          class:open={tuisOpen}
-          class:warm={tuisWarm}
-          class:hot={tuisHot}
-          on:click={toggleTuisOpen}
-          title={tuisHot
-            ? "A TUI is using significant CPU or memory — open to inspect"
-            : tuisWarm
-              ? "A TUI is working hard — open to inspect"
-              : "Active TUIs (terminals supergit is hosting)"}
-        >
-          TUIs
-          <!-- Always-rendered so the button width stays stable whether
-               there are 0 TUIs or 12. -->
-          <span class="count">{tuiProcs.length}</span>
-        </button>
-        {#if tuisOpen}
-          <Popover variant="actions" extraClass="tuis-popover">
-            <svelte:fragment slot="head">
-              Active TUIs
-              {#if tuisLoading}
-                <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
-              {/if}
-            </svelte:fragment>
-            {#if !tuisEverLoaded}
-              <p class="muted small nopad">Loading…</p>
-            {:else if tuiProcs.length === 0}
-              <p class="muted small nopad">Nothing running.</p>
-            {:else}
-              <ul class="agents-list">
-                {#each tuiProcs as p (p.id)}
-                  {@const ctx = tuiContext(p)}
-                  <li>
-                    <div class="agent-row brand-{p.agent ?? 'shell'} tui-row-static">
-                      {#if p.agent === "claude"}
-                        <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                      {:else if p.agent === "codex"}
-                        <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                      {:else if p.agent === "ollama"}
-                        <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
-                      {:else}
-                        <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
-                      {/if}
-                      <span class="agent-row-name">{prettyTuiName(p)}</span>
-                      {#if ctx.repoName}
-                        <span
-                          class="tui-repo muted small"
-                          title={p.cwd}
-                          style={ctx.repoColor ? `color: ${ctx.repoColor}` : ""}
-                        >
-                          · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
-                        </span>
-                      {/if}
-                      {#if ctx.title}
-                        <span class="tui-inline-title" title={ctx.title}>
-                          · {ctx.title}
-                        </span>
-                      {/if}
-                      <span
-                        class="tui-stats"
-                        title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
-                      >
-                        {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}{#if isIdle(p)} · idle {formatUptime(p.lastOutputAt)}{/if}
-                      </span>
-                      <button
-                        class="row-close tui-kill-x"
-                        on:click={() => killTui(p.id)}
-                        title="Dispose (SIGTERM → SIGKILL)"
-                        aria-label="Kill terminal"
-                      >×</button>
-                    </div>
-                    {#if ctx.lastActivity}
-                      <div class="tui-last-activity muted small" title={ctx.lastActivity}>
-                        last: {ctx.lastActivity}
-                      </div>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </Popover>
-        {/if}
-      </div>
-
-      {#if orphanNotes.length > 0}
-        <div class="actions-anchor notes-tray-anchor">
-          <button
-            class="actions-btn"
-            class:open={notesTrayOpen}
-            on:click={() => (notesTrayOpen = !notesTrayOpen)}
-            title={`${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`}
-          >
-            Notes
-            <span class="count">{orphanNotes.length}</span>
-          </button>
-          {#if notesTrayOpen}
-            <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
-              <span slot="head">Orphaned notes</span>
-              <ul class="orphan-list">
-                {#each orphanNotes as n (n.id)}
-                  <li class="orphan-row">
-                    <div class="orphan-summary">
-                      <span class="orphan-body" title={n.body}>
-                        {noteExcerpt(n.body) || "(empty)"}
-                      </span>
-                      <span class="orphan-anchor" title={n.anchors.join("\n")}>
-                        ⚓ {n.anchors[0] ?? "no anchor"}
-                      </span>
-                    </div>
-                    <div class="orphan-actions">
-                      <button
-                        class="undo"
-                        on:click={() =>
-                          (orphanReanchorFor =
-                            orphanReanchorFor === n.id ? null : n.id)}
-                      >Re-anchor…</button>
-                      <button
-                        class="undo"
-                        on:click={() => void deleteOrphan(n.id)}
-                        title="Delete (an Undo toast lets you bring it back)"
-                      >Delete</button>
-                    </div>
-                    {#if orphanReanchorFor === n.id}
-                      <AnchorPicker
-                        {repos}
-                        currentAnchor={n.anchors[0] ?? null}
-                        on:pick={(e) =>
-                          void reassignOrphan(n.id, e.detail.anchor)}
-                        on:cancel={() => (orphanReanchorFor = null)}
-                      />
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            </Popover>
-          {/if}
-        </div>
-      {/if}
-
-      <div class="actions-anchor">
-        <button
-          class="actions-btn"
-          class:open={actionsOpen}
-          on:click={() => (actionsOpen = !actionsOpen)}
-          title="Reversible workspace actions (undo / redo)"
-        >
-          Undo
-          {#if visibleEvents.length > 0}
-            <span class="count">{visibleEvents.length}</span>
-          {/if}
-        </button>
-        {#if actionsOpen}
-          <Popover variant="actions" unclamped>
-            <span slot="head">Recent actions</span>
-            {#if visibleEvents.length === 0}
-              <p class="muted small nopad">No actions yet.</p>
-            {:else}
-              <ul class="events">
-                {#each visibleEvents.slice(0, 50) as ev (ev.id)}
-                  <li class:undone={ev.undone}>
-                    <div class="ev-row">
-                      <span class="ev-type">{eventLabel(ev)}</span>
-                      <span class="muted ev-time">{relTime(ev.timestamp)}</span>
-                    </div>
-                    <div class="ev-meta">
-                      <span class="actor actor-{ev.actor}">{ev.actor}</span>
-                      {#if ev.reversible}
-                        {#if ev.undone}
-                          <button
-                            class="undo"
-                            on:click={() => toggleEvent(ev.id, "redo")}>Redo</button
-                          >
-                        {:else}
-                          <button
-                            class="undo"
-                            on:click={() => toggleEvent(ev.id, "undo")}>Undo</button
-                          >
-                        {/if}
-                      {/if}
-                    </div>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </Popover>
-        {/if}
-      </div>
-
-      <div class="actions-anchor events-anchor">
-        <button
-          class="actions-btn"
-          class:open={eventsOpen}
-          class:has-errors={errorEntries.length > 0}
-          on:click={() => (eventsOpen = !eventsOpen)}
-          title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
-        >
-          Events
-          {#if errorEntries.length > 0}
-            <span class="count">{errorEntries.length}</span>
-          {/if}
-        </button>
-        {#if eventsOpen}
-          <Popover variant="actions" extraClass="events-popover" unclamped>
-            <svelte:fragment slot="head">
-              Events
-              {#if errorEntries.length > 0}
-                <button
-                  class="undo events-clear"
-                  on:click={clearAllErrors}
-                  title="Clear the recorded error log"
-                >Clear</button>
-              {/if}
-            </svelte:fragment>
-            {#if errorEntries.length === 0}
-              <p class="muted small nopad">No errors. 🎉</p>
-            {:else}
-              <ul class="events err-list">
-                {#each errorEntries.slice(0, 50) as e (e.id)}
-                  <li>
-                    <button
-                      class="err-row"
-                      class:expanded={errorExpanded[e.id]}
-                      on:click={() => toggleErrorExpanded(e.id)}
-                    >
-                      <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
-                      <span class="err-msg" title={e.message}>
-                        {e.message}
-                        {#if e.count && e.count > 1}
-                          <span class="err-count" title={`${e.count} occurrences in the coalesce window`}>× {e.count}</span>
-                        {/if}
-                      </span>
-                      <span class="muted ev-time">{relTime(e.timestamp)}</span>
-                    </button>
-                    {#if errorExpanded[e.id]}
-                      <div class="err-detail">
-                        <div class="err-meta">
-                          <span class="actor actor-{e.source === 'daemon' ? 'supergit' : 'user'}">{e.source}</span>
-                          {#if e.method || e.route}
-                            <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code>
-                          {/if}
-                          {#if e.status !== undefined}
-                            <span class="err-status">{e.status}</span>
-                          {/if}
-                        </div>
-                        {#if e.stack}
-                          <pre class="err-stack">{e.stack}</pre>
-                        {/if}
-                        {#if e.extra && Object.keys(e.extra).length > 0}
-                          <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
-                        {/if}
-                      </div>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </Popover>
-        {/if}
-      </div>
     </h1>
     <p class="muted tagline-text">multi-repo, multi-agent, worktree-first dashboard</p>
     {#if localLanUrl}
@@ -4944,6 +4712,290 @@
       </p>
     {/if}
   </header>
+
+  <!-- Fixed top-right menubar. Always visible (including while the
+       page is scrolled). Anchored containers stay `position: relative`
+       so the existing actions-popover (top-right anchored) keeps
+       working unchanged. -->
+  <nav class="menubar" aria-label="Workspace actions">
+    <div class="actions-anchor tuis-anchor">
+      <button
+        class="actions-btn tuis-btn"
+        class:open={tuisOpen}
+        class:warm={tuisWarm}
+        class:hot={tuisHot}
+        on:click={toggleTuisOpen}
+        title={tuisHot
+          ? "A TUI is using significant CPU or memory — open to inspect"
+          : tuisWarm
+            ? "A TUI is working hard — open to inspect"
+            : "Active TUIs (terminals supergit is hosting)"}
+      >
+        TUIs
+        <!-- Always-rendered so the button width stays stable whether
+             there are 0 TUIs or 12. -->
+        <span class="count">{tuiProcs.length}</span>
+      </button>
+      {#if tuisOpen}
+        <Popover variant="actions" extraClass="tuis-popover">
+          <svelte:fragment slot="head">
+            Active TUIs
+            {#if tuisLoading}
+              <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
+            {/if}
+          </svelte:fragment>
+          {#if !tuisEverLoaded}
+            <p class="muted small nopad">Loading…</p>
+          {:else if tuiProcs.length === 0}
+            <p class="muted small nopad">Nothing running.</p>
+          {:else}
+            <ul class="agents-list">
+              {#each tuiProcs as p (p.id)}
+                {@const ctx = tuiContext(p)}
+                {@const source = tuiSource(p)}
+                <li>
+                  <div
+                    class="agent-row brand-{p.agent ?? 'shell'} tui-row-static"
+                    class:tui-row-focusable={source !== null}
+                    role={source !== null ? "button" : undefined}
+                    tabindex={source !== null ? 0 : -1}
+                    on:click={() => void focusTui(p)}
+                    on:keydown={(e) => {
+                      if (source !== null && (e.key === "Enter" || e.key === " ")) {
+                        e.preventDefault();
+                        void focusTui(p);
+                      }
+                    }}
+                    title={source !== null
+                      ? "Click to jump to this session in its worktree strip"
+                      : undefined}
+                  >
+                    {#if p.agent === "claude"}
+                      <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                    {:else if p.agent === "codex"}
+                      <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                    {:else if p.agent === "ollama"}
+                      <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
+                    {:else}
+                      <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
+                    {/if}
+                    <span class="agent-row-name">{prettyTuiName(p)}</span>
+                    {#if ctx.repoName}
+                      <span
+                        class="tui-repo muted small"
+                        title={p.cwd}
+                        style={ctx.repoColor ? `color: ${ctx.repoColor}` : ""}
+                      >
+                        · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
+                      </span>
+                    {/if}
+                    {#if ctx.title}
+                      <span class="tui-inline-title" title={ctx.title}>
+                        · {ctx.title}
+                      </span>
+                    {/if}
+                    <span
+                      class="tui-stats"
+                      title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
+                    >
+                      {p.cpuPercent.toFixed(1)}% · {formatBytes(p.memBytes)} · {formatUptime(p.createdAt)}{#if isIdle(p)} · idle {formatUptime(p.lastOutputAt)}{/if}
+                    </span>
+                    <button
+                      class="row-close tui-kill-x"
+                      on:click|stopPropagation={() => killTui(p.id)}
+                      title="Dispose (SIGTERM → SIGKILL)"
+                      aria-label="Kill terminal"
+                    >×</button>
+                  </div>
+                  {#if ctx.lastActivity}
+                    <div class="tui-last-activity muted small" title={ctx.lastActivity}>
+                      last: {ctx.lastActivity}
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
+
+    {#if orphanNotes.length > 0}
+      <div class="actions-anchor notes-tray-anchor">
+        <button
+          class="actions-btn"
+          class:open={notesTrayOpen}
+          on:click={() => (notesTrayOpen = !notesTrayOpen)}
+          title={`${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`}
+        >
+          Notes
+          <span class="count">{orphanNotes.length}</span>
+        </button>
+        {#if notesTrayOpen}
+          <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
+            <span slot="head">Orphaned notes</span>
+            <ul class="orphan-list">
+              {#each orphanNotes as n (n.id)}
+                <li class="orphan-row">
+                  <div class="orphan-summary">
+                    <span class="orphan-body" title={n.body}>
+                      {noteExcerpt(n.body) || "(empty)"}
+                    </span>
+                    <span class="orphan-anchor" title={n.anchors.join("\n")}>
+                      ⚓ {n.anchors[0] ?? "no anchor"}
+                    </span>
+                  </div>
+                  <div class="orphan-actions">
+                    <button
+                      class="undo"
+                      on:click={() =>
+                        (orphanReanchorFor =
+                          orphanReanchorFor === n.id ? null : n.id)}
+                    >Re-anchor…</button>
+                    <button
+                      class="undo"
+                      on:click={() => void deleteOrphan(n.id)}
+                      title="Delete (an Undo toast lets you bring it back)"
+                    >Delete</button>
+                  </div>
+                  {#if orphanReanchorFor === n.id}
+                    <AnchorPicker
+                      {repos}
+                      currentAnchor={n.anchors[0] ?? null}
+                      on:pick={(e) =>
+                        void reassignOrphan(n.id, e.detail.anchor)}
+                      on:cancel={() => (orphanReanchorFor = null)}
+                    />
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </Popover>
+        {/if}
+      </div>
+    {/if}
+
+    <div class="actions-anchor">
+      <button
+        class="actions-btn"
+        class:open={actionsOpen}
+        on:click={() => (actionsOpen = !actionsOpen)}
+        title="Reversible workspace actions (undo / redo)"
+      >
+        Undo
+        {#if visibleEvents.length > 0}
+          <span class="count">{visibleEvents.length}</span>
+        {/if}
+      </button>
+      {#if actionsOpen}
+        <Popover variant="actions" unclamped>
+          <span slot="head">Recent actions</span>
+          {#if visibleEvents.length === 0}
+            <p class="muted small nopad">No actions yet.</p>
+          {:else}
+            <ul class="events">
+              {#each visibleEvents.slice(0, 50) as ev (ev.id)}
+                <li class:undone={ev.undone}>
+                  <div class="ev-row">
+                    <span class="ev-type">{eventLabel(ev)}</span>
+                    <span class="muted ev-time">{relTime(ev.timestamp)}</span>
+                  </div>
+                  <div class="ev-meta">
+                    <span class="actor actor-{ev.actor}">{ev.actor}</span>
+                    {#if ev.reversible}
+                      {#if ev.undone}
+                        <button
+                          class="undo"
+                          on:click={() => toggleEvent(ev.id, "redo")}>Redo</button
+                        >
+                      {:else}
+                        <button
+                          class="undo"
+                          on:click={() => toggleEvent(ev.id, "undo")}>Undo</button
+                        >
+                      {/if}
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
+
+    <div class="actions-anchor events-anchor">
+      <button
+        class="actions-btn"
+        class:open={eventsOpen}
+        class:has-errors={errorEntries.length > 0}
+        on:click={() => (eventsOpen = !eventsOpen)}
+        title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
+      >
+        Events
+        {#if errorEntries.length > 0}
+          <span class="count">{errorEntries.length}</span>
+        {/if}
+      </button>
+      {#if eventsOpen}
+        <Popover variant="actions" extraClass="events-popover" unclamped>
+          <svelte:fragment slot="head">
+            Events
+            {#if errorEntries.length > 0}
+              <button
+                class="undo events-clear"
+                on:click={clearAllErrors}
+                title="Clear the recorded error log"
+              >Clear</button>
+            {/if}
+          </svelte:fragment>
+          {#if errorEntries.length === 0}
+            <p class="muted small nopad">No errors. 🎉</p>
+          {:else}
+            <ul class="events err-list">
+              {#each errorEntries.slice(0, 50) as e (e.id)}
+                <li>
+                  <button
+                    class="err-row"
+                    class:expanded={errorExpanded[e.id]}
+                    on:click={() => toggleErrorExpanded(e.id)}
+                  >
+                    <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
+                    <span class="err-msg" title={e.message}>
+                      {e.message}
+                      {#if e.count && e.count > 1}
+                        <span class="err-count" title={`${e.count} occurrences in the coalesce window`}>× {e.count}</span>
+                      {/if}
+                    </span>
+                    <span class="muted ev-time">{relTime(e.timestamp)}</span>
+                  </button>
+                  {#if errorExpanded[e.id]}
+                    <div class="err-detail">
+                      <div class="err-meta">
+                        <span class="actor actor-{e.source === 'daemon' ? 'supergit' : 'user'}">{e.source}</span>
+                        {#if e.method || e.route}
+                          <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code>
+                        {/if}
+                        {#if e.status !== undefined}
+                          <span class="err-status">{e.status}</span>
+                        {/if}
+                      </div>
+                      {#if e.stack}
+                        <pre class="err-stack">{e.stack}</pre>
+                      {/if}
+                      {#if e.extra && Object.keys(e.extra).length > 0}
+                        <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
+                      {/if}
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
+  </nav>
 
   {#if loading && repos.length === 0}
     <div class="loading-screen">

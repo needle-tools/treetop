@@ -143,6 +143,11 @@ describe("acceptOffer", () => {
       offerId: m.offerId,
       repoLookup: repoFound(localPath),
       claudeProjectsDir: cpd,
+      // Tests use POSIX-shaped paths regardless of host OS; force the
+      // rewriter to treat the target as POSIX so separators in the
+      // assertion strings below stay as `/` instead of being flipped
+      // to `\\` on Windows test runs.
+      toPlatform: "darwin",
     });
 
     if (!result.ok) throw new Error("expected ok: " + result.error);
@@ -365,6 +370,7 @@ describe("acceptOffer", () => {
       offerId: m.offerId,
       repoLookup,
       claudeProjectsDir: cpd,
+      toPlatform: "darwin",
     });
     if (!r.ok) throw new Error("expected ok");
     // Worktree wins over repo path when picking the project dir.
@@ -399,6 +405,49 @@ describe("acceptOffer", () => {
     );
     // The shared claude projects dir stays empty for codex imports.
     expect(await readdir(cpd)).toEqual([]);
+  });
+
+  test("ollama offer: JSONL lands in <workspace>/ollama/<sid>.jsonl, sidecar under imported-sessions", async () => {
+    const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
+    const m = manifest({ agent: "ollama" });
+    const j = JSON.stringify({
+      kind: "header",
+      termId: m.sid,
+      spawnCwd: m.originRepoPath,
+      model: "llama3",
+      createdAt: "2026-05-21T10:00:00Z",
+    });
+    await storePendingOffer(ws, m, j);
+
+    const localPath = "/home/desktop/code/bar";
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: m.offerId,
+      repoLookup: repoFound(localPath),
+      claudeProjectsDir: cpd,
+      toPlatform: "darwin",
+    });
+    if (!r.ok) throw new Error("expected ok");
+
+    // JSONL lives in the workspace's own ollama dir, the same place
+    // scanOllama walks — so an imported ollama session shows up as a
+    // native one with no extra plumbing.
+    expect(r.importedPath).toBe(join(ws, "ollama", "sid-aaa.jsonl"));
+
+    // Sidecar stays under imported-sessions/, carries the pointer.
+    const sidecar = JSON.parse(
+      await readFile(
+        join(ws, "imported-sessions", "marcels-laptop", "ollama", "sid-aaa.manifest.json"),
+        "utf-8",
+      ),
+    );
+    expect(sidecar.importedJsonlPath).toBe(r.importedPath);
+    expect(sidecar.localRepoPath).toBe(localPath);
+
+    // The rewritten JSONL's spawnCwd now points at the receiver's path.
+    const header = JSON.parse((await readFile(r.importedPath, "utf-8")).split("\n")[0]!);
+    expect(header.spawnCwd).toBe(localPath);
   });
 });
 

@@ -1073,7 +1073,7 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
       continue;
     }
     for (const agentDir of agentDirs) {
-      if (agentDir !== "claude" && agentDir !== "codex") continue;
+      if (agentDir !== "claude" && agentDir !== "codex" && agentDir !== "ollama") continue;
       const dir = join(root, machine, agentDir);
       let entries: string[];
       try {
@@ -1125,7 +1125,7 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
           continue;
         }
         out.push({
-          agent: agentDir as "claude" | "codex",
+          agent: agentDir as "claude" | "codex" | "ollama",
           cwd: resolve(cwd),
           lastActive: st.mtime.toISOString(),
           sessionId: sidecar.sid ?? sid,
@@ -1142,7 +1142,7 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
         try {
           const st = await stat(jsonlPath);
           out.push({
-            agent: agentDir as "claude" | "codex",
+            agent: agentDir as "claude" | "codex" | "ollama",
             cwd: "",
             lastActive: st.mtime.toISOString(),
             sessionId: sid,

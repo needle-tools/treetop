@@ -76,7 +76,14 @@ import {
 import {
   migrateLegacyImportedSessions,
   migrateClaudeImportsToProjects,
+  migrateOllamaImportsToWorkspace,
 } from "./session-share-migrate";
+import {
+  loadOrCreatePeerIdentity,
+  setPeerLabel,
+  type PeerIdentity,
+} from "./peer-identity";
+import { PeerDiscovery } from "./peer-discovery";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -268,6 +275,65 @@ void migrateClaudeImportsToProjects(WORKSPACE_PATH)
       }`,
     );
   });
+
+// Mirror for ollama imports: move them from
+// <ws>/imported-sessions/<machine>/ollama/<sid>.jsonl into
+// <ws>/ollama/<sid>.jsonl so scanOllama surfaces them as native
+// sessions. Sidecar stays under imported-sessions/, gains
+// importedJsonlPath.
+void migrateOllamaImportsToWorkspace(WORKSPACE_PATH)
+  .then((r) => {
+    if (r.moved > 0 || r.skipped > 0) {
+      console.log(
+        `supergit daemon: ollama imports → workspace — moved=${r.moved} skipped=${r.skipped}`,
+      );
+    }
+  })
+  .catch((e) => {
+    console.error(
+      `supergit daemon: ollama imports → workspace migrate failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  });
+
+// Peer identity + mDNS discovery. Identity is the stable
+// `(id, label)` pair this daemon advertises and that receivers store
+// in their imported-session sidecars; discovery browses for other
+// daemons advertising the same service type on the LAN. Both
+// initialise asynchronously so the daemon's HTTP listener doesn't
+// block on file I/O or bonjour init — routes check the module-level
+// state and gracefully degrade (empty peer list, fallback hostname)
+// during the brief startup window.
+let peerIdentity: PeerIdentity | null = null;
+let peerDiscovery: PeerDiscovery | null = null;
+void (async () => {
+  try {
+    const username = process.env.USER || process.env.USERNAME || "user";
+    const defaultLabel = `${username}@${osHostname() || "unknown"}`;
+    peerIdentity = await loadOrCreatePeerIdentity(WORKSPACE_PATH, {
+      defaultLabel,
+    });
+    peerDiscovery = new PeerDiscovery({
+      port: PORT,
+      id: peerIdentity.id,
+      label: peerIdentity.label,
+    });
+    peerDiscovery.start();
+    console.log(
+      `supergit daemon: peer identity = ${peerIdentity.label} (${peerIdentity.id.slice(
+        0,
+        8,
+      )})`,
+    );
+  } catch (e) {
+    console.error(
+      `supergit daemon: peer system init failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+})();
 
 // CORS allowlist. The wildcard `*` is a real attack surface: with `*` any
 // website you visit could call localhost:7777 from your browser and read the
@@ -2375,6 +2441,52 @@ const server = Bun.serve<TermWsData, never>({
       return null;
     };
 
+    if (url.pathname === "/api/identity" && req.method === "GET") {
+      // Surface our own (id, label) — UI uses this in the header so
+      // the user can see/edit how peers see them.
+      if (!peerIdentity) {
+        return json({ error: "identity not ready" }, { status: 503 });
+      }
+      return json(peerIdentity);
+    }
+
+    if (url.pathname === "/api/identity" && req.method === "PATCH") {
+      // Rename. Updates the disk file, restarts the mDNS advert so
+      // peers see the new label, then echoes the new state.
+      const body = (await req.json().catch(() => null)) as
+        | { label?: unknown }
+        | null;
+      if (typeof body?.label !== "string") {
+        return json({ error: "label (string) required" }, { status: 400 });
+      }
+      try {
+        peerIdentity = await setPeerLabel(workspace.path, body.label);
+        // Restart discovery so the mDNS advert carries the new label.
+        if (peerDiscovery) {
+          await peerDiscovery.stop();
+          peerDiscovery = new PeerDiscovery({
+            port: PORT,
+            id: peerIdentity.id,
+            label: peerIdentity.label,
+          });
+          peerDiscovery.start();
+        }
+        return json(peerIdentity);
+      } catch (e) {
+        return json(
+          { error: e instanceof Error ? e.message : String(e) },
+          { status: 400 },
+        );
+      }
+    }
+
+    if (url.pathname === "/api/peers" && req.method === "GET") {
+      // Other supergit daemons discovered via mDNS on the LAN. The
+      // Share dialog renders this as a clickable list; empty list is
+      // fine — the dialog falls back to manual host:port.
+      return json({ peers: peerDiscovery?.peers() ?? [] });
+    }
+
     if (url.pathname === "/api/sessions/offer" && req.method === "POST") {
       // Incoming offer from a peer daemon. Validate, store as pending,
       // fire the receiver-side event, respond 202.
@@ -2665,16 +2777,30 @@ const server = Bun.serve<TermWsData, never>({
           (await workspace.listSessionTitles())[source] ??
           parsed.messages[0]?.blocks[0]?.text?.slice(0, 60) ??
           "Untitled session",
-        agent: resolved.agent === "claude" ? "claude" : "codex",
+        // Share-side agent kind. resolved.agent is one of
+        // claude|codex|ollama and ShareAgent covers all three — pass
+        // through directly so the receiver knows how to route the
+        // import (claude → claude projects dir, ollama → workspace
+        // ollama dir, codex → imported-sessions sidecar).
+        agent: resolved.agent,
         turnCount: parsed.messages.length,
-        // os.hostname() works cross-platform — process.env.HOSTNAME is
-        // unset on Windows (which uses COMPUTERNAME) and also unset in
-        // many launchd / systemd contexts. Sanitise to a path-safe
-        // identifier since this becomes a directory name on the
-        // receiver (no spaces, no special chars).
-        originMachine: sanitiseMachineId(osHostname() || "unknown"),
+        // originMachine becomes a directory name on the receiver, so
+        // sanitise to [a-z0-9._-]. Source order:
+        //   1. The peer-identity id (uuid, stable across restarts) —
+        //      ideal because two different machines with the same
+        //      hostname don't collide on the receiver's filesystem.
+        //   2. Fallback to os.hostname() if identity hasn't loaded yet
+        //      (early-boot send before the async init completes).
+        originMachine: sanitiseMachineId(
+          peerIdentity?.id || osHostname() || "unknown",
+        ),
+        // originMachineLabel is the human-readable name the receiver
+        // shows in the inbox card. Prefer the peer identity's label
+        // (user-editable, defaults to <username>@<hostname>) over the
+        // per-send override and the bare hostname.
         originMachineLabel:
           (typeof body?.machineLabel === "string" && body.machineLabel) ||
+          peerIdentity?.label ||
           osHostname() ||
           "unknown",
         originPlatform:

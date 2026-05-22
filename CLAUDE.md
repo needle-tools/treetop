@@ -147,6 +147,25 @@ into every Vite/dev-server PTY supergit spawns, and Vite reads
 full GC first and reports before+after — useful when triaging "is RSS
 high because of live data or V8 reservation?".
 
+## UI styles
+
+Shared component CSS lives in `packages/ui/src/styles/` (e.g.
+`header.css`, `popover.css`), **not** scoped inside `.svelte` files.
+Two reasons:
+
+1. Variants and the shell often need to apply to the same DOM node
+   (Popover.svelte's root). Svelte's per-component scope hashing would
+   otherwise force every variant rule to be split between the
+   component file (for the shell) and `:global()` in every caller.
+2. `extraClass`-based variant rules (`.events-popover`,
+   `.tuis-popover`, `.menubar .actions-btn`, …) can target shared
+   roots directly without `:global()` boilerplate.
+
+Per-component look-and-feel (one-off layouts that don't compose with
+anything else) still belongs in `<style>` inside the relevant
+`.svelte` file. The file-header comments in `styles/*.css` explain the
+rationale at length when you need it.
+
 ## Test coverage
 
 We don't enforce a hard percentage gate (chasing 100% rewards bad tests),
