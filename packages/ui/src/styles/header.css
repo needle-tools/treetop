@@ -45,14 +45,22 @@ main > header > h1 {
 
 /* Fixed top-right menubar that holds the action-button cluster. Stays
    pinned while the page scrolls so TUIs/Undo/Events are always one
-   click away. Sits below popover stacking (z-index 1100) but above
-   normal page chrome. The soft surface + blur reads as a unified bar
-   without obscuring whatever scrolls underneath. */
+   click away. The soft surface + blur reads as a unified bar without
+   obscuring whatever scrolls underneath.
+
+   z-index 2550 sits above every notes layer (sticky-host 1000+,
+   sticky-link-preview 2200, mention-popover 2500) and below toasts
+   (3000). Has to be this high because `backdrop-filter` creates a
+   stacking context — every popover anchored INSIDE the menubar
+   (.inbox-anchor, .tuis-anchor, etc.) is trapped at the menubar's
+   z-index in the root context, regardless of any z-index they set
+   on themselves. So the menubar's z-index = the ceiling for every
+   popover that lives in it. */
 .menubar {
   position: fixed;
   top: 0.55rem;
   right: 0.7rem;
-  z-index: 100;
+  z-index: 2550;
   display: flex;
   align-items: center;
   gap: 0.35rem;

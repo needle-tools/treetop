@@ -44,6 +44,22 @@
   z-index: 1100;
 }
 
+/* Inbox menu has to clear every notes layer (mention-popover at
+   z 2500, sticky-link-preview at 2200, bumped sticky-hosts at 1015+)
+   so chat from a peer is never hidden behind a sticky note. The
+   inbox button is global UI, notes are user content — chat wins.
+   Setting z-index on `.inbox-anchor` creates a stacking context that
+   lifts the trigger button, the popover, and any nested popovers
+   (mute select, etc.) above notes in one shot; the per-popover rule
+   stays as defence-in-depth in case the anchor selector is ever
+   refactored. */
+.inbox-anchor {
+  z-index: 2600;
+}
+.inbox-popover {
+  z-index: 2600;
+}
+
 .agents-popover {
   top: calc(100% + 0.3rem);
   left: 0;
