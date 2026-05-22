@@ -54,7 +54,10 @@
   // on the LAN is running supergit — manual host:port input below is
   // always available regardless.
   let peers: DiscoveredPeer[] = [];
-  let selectedPeerId: string | null = null;
+  // Composite `${id}:${port}` — matches the each-block key. Selecting
+  // by `id` alone would light up dev+prod siblings together since they
+  // share one workspace identity. See peer-registry.ts.
+  let selectedPeerKey: string | null = null;
   let peersPoll: ReturnType<typeof setInterval> | null = null;
 
   async function refreshPeers() {
@@ -74,7 +77,7 @@
   $: if ($activeShare && $activeShare.source !== lastSource) {
     lastSource = $activeShare.source;
     peerInput = recallPeer();
-    selectedPeerId = null;
+    selectedPeerKey = null;
     includeToolOutputs = false;
     redactSecrets = true;
     sending = false;
@@ -97,7 +100,7 @@
   });
 
   function pickPeer(p: DiscoveredPeer) {
-    selectedPeerId = p.id;
+    selectedPeerKey = `${p.id}:${p.port}`;
     peerInput = `${p.host}:${p.port}`;
   }
 
@@ -211,7 +214,7 @@
               <button
                 type="button"
                 class="share-peer"
-                class:share-peer-selected={selectedPeerId === p.id}
+                class:share-peer-selected={selectedPeerKey === `${p.id}:${p.port}`}
                 on:click={() => pickPeer(p)}
               >
                 <span class="share-peer-label">{p.label}</span>
@@ -238,7 +241,7 @@
           class="share-input"
           placeholder="192.168.1.42:27787"
           bind:value={peerInput}
-          on:input={() => { selectedPeerId = null; }}
+          on:input={() => { selectedPeerKey = null; }}
           autocomplete="off"
           spellcheck="false"
         />
@@ -379,6 +382,13 @@
   .share-peer-selected {
     border-color: var(--brand, color-mix(in srgb, var(--text-muted) 70%, transparent));
     background: color-mix(in srgb, var(--brand) 14%, transparent);
+  }
+  /* Defined AFTER `.share-peer:hover` so it wins on equal specificity
+     when hovering a selected row — otherwise the muted hover would
+     strip the brand tint and the row looks unselected mid-hover. */
+  .share-peer-selected:hover {
+    background: color-mix(in srgb, var(--brand) 22%, transparent);
+    border-color: var(--brand, color-mix(in srgb, var(--text-muted) 70%, transparent));
   }
   .share-peer-label {
     font-weight: 500;
