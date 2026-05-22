@@ -1457,8 +1457,18 @@ const server = Bun.serve<TermWsData, never>({
       ) {
         return json({ claudeTopSessions: claudeTopSessionsCache.value });
       }
-      const agents = await detectAgents(WORKSPACE_PATH);
-      const top = await topClaudeSessionsByTokens(agents, now, 5);
+      // Merge the workspace's manual session titles into the agents
+      // list before computing — same pattern as /api/agents — so the
+      // Top-Sessions list shows whatever the user renamed sessions to
+      // rather than the auto-derived first-prompt title.
+      const [agents, titles] = await Promise.all([
+        detectAgents(WORKSPACE_PATH),
+        workspace.listSessionTitles(),
+      ]);
+      const enriched = agents.map((s) =>
+        titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+      );
+      const top = await topClaudeSessionsByTokens(enriched, now, 5);
       claudeTopSessionsCache = { at: now, value: top };
       return json({ claudeTopSessions: top });
     }

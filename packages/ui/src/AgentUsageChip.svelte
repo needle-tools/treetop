@@ -301,7 +301,7 @@
 
   /** Trim a title for the Top-sessions row. Long first-prompt titles
    *  blow the tooltip wide otherwise. */
-  function truncTitle(t: string | undefined, max = 56): string {
+  function truncTitle(t: string | undefined, max = 28): string {
     if (!t) return "(untitled session)";
     if (t.length <= max) return t;
     return t.slice(0, max - 1) + "…";
