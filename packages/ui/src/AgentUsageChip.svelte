@@ -14,6 +14,7 @@
   import { onMount, onDestroy } from "svelte";
   import Tooltip from "./Tooltip.svelte";
   import AgentIcon from "./AgentIcon.svelte";
+  import { requestSessionFocus } from "./session-focus-store";
 
   interface UsageWindow {
     sessions: number;
@@ -79,6 +80,17 @@
     | { kind: "network"; message: string }
     | { kind: "server"; status: number; body?: string }
     | { kind: "decode"; message: string };
+  interface ClaudeTopSession {
+    sessionId?: string;
+    source: string;
+    cwd: string;
+    title?: string;
+    totalTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }
   interface Report {
     asOf: string;
     windows: { todayMs: number; weekMs: number };
@@ -87,6 +99,7 @@
     claudeLiveUsageError?: OAuthUsageError;
     codexLiveUsage?: CodexOAuthUsage | null;
     codexLiveUsageError?: CodexUsageError;
+    claudeTopSessions?: ClaudeTopSession[];
     agents: Partial<Record<string, AgentUsage>>;
   }
 
@@ -222,6 +235,34 @@
 
   function pct(v: number): string {
     return `${Math.round(v * 100)}%`;
+  }
+
+  /** Compact token formatter — 1,234 → "1.2k", 5,432,100 → "5.4M".
+   *  Keeps the Top-sessions list scannable without making it look
+   *  like the value is small (raw "1234" reads as "a few hundred" at
+   *  a glance because of how many digits there are). */
+  function fmtTokens(n: number): string {
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+    return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+  }
+
+  /** Pull a display label from the session's cwd — last 1–2 path
+   *  segments. The full cwd lives on the row's title attr… actually
+   *  no, we drop title attrs to dodge browser tooltips elsewhere,
+   *  so we just show whatever's compact and useful. */
+  function cwdTail(cwd: string): string {
+    const parts = cwd.replace(/[\\/]+$/, "").split(/[\\/]+/);
+    if (parts.length === 0) return cwd;
+    return parts.slice(-2).join("/");
+  }
+
+  /** Trim a title for the Top-sessions row. Long first-prompt titles
+   *  blow the tooltip wide otherwise. */
+  function truncTitle(t: string | undefined, max = 56): string {
+    if (!t) return "(untitled session)";
+    if (t.length <= max) return t;
+    return t.slice(0, max - 1) + "…";
   }
 
   function liveBarWidth(util: number | undefined): string {
@@ -482,6 +523,30 @@
               </span>
               <span class="usage-local-sub">{usage.week.sessions} sess</span>
             </div>
+          </div>
+        {/if}
+
+        <!-- Top-sessions list (Claude only, derived from local JSONLs).
+             Always shown when populated regardless of whether the bars
+             came from the live OAuth endpoint or local fallback — it's
+             a different kind of insight (who's burning tokens) from the
+             aggregate plan-% bars above. Click a row to jump to that
+             session's column via the shared focus channel. -->
+        {#if agent === "claude" && report?.claudeTopSessions && report.claudeTopSessions.length > 0}
+          <div class="usage-top-sessions">
+            <div class="usage-top-head">Top sessions this week (local)</div>
+            {#each report.claudeTopSessions as s (s.source)}
+              <button
+                type="button"
+                class="usage-top-row"
+                on:click={() => requestSessionFocus(s.source)}
+                aria-label={`Open session ${truncTitle(s.title)} — ${fmtTokens(s.totalTokens)} tokens this week`}
+              >
+                <span class="usage-top-title">{truncTitle(s.title)}</span>
+                <span class="usage-top-cwd">{cwdTail(s.cwd)}</span>
+                <span class="usage-top-tokens">{fmtTokens(s.totalTokens)}</span>
+              </button>
+            {/each}
           </div>
         {/if}
 
@@ -759,6 +824,65 @@
   }
   .usage-bar.live .usage-bar-fill {
     box-shadow: 0 0 6px color-mix(in srgb, var(--bar-color, #60a5fa) 55%, transparent);
+  }
+
+  /* Top-sessions list — 3-column grid per row: title (1fr, ellipsised),
+     cwd-tail (muted, ellipsised), token count (right-aligned, tabular).
+     Click target is the whole row. */
+  .usage-top-sessions {
+    margin-top: 0.7rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--surface-2);
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .usage-top-head {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+  }
+  .usage-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto;
+    gap: 0.5rem;
+    align-items: baseline;
+    padding: 0.25rem 0.35rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-1);
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 0.74rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .usage-top-row:hover,
+  .usage-top-row:focus-visible {
+    background: color-mix(in srgb, var(--text-1) 8%, transparent);
+    outline: none;
+  }
+  .usage-top-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .usage-top-cwd {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .usage-top-tokens {
+    color: var(--bar-color, var(--text-1));
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .usage-tt-foot {

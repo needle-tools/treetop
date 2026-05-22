@@ -1,5 +1,11 @@
 import { test, expect, describe } from "bun:test";
-import { computeAgentUsage, scanClaudeDailyBuckets, clearClaudeDailyCache } from "../src/agent-usage";
+import {
+  computeAgentUsage,
+  scanClaudeDailyBuckets,
+  clearClaudeDailyCache,
+  scanClaudeSessionTokenTotals,
+  clearClaudeTokenScanCache,
+} from "../src/agent-usage";
 import type { AgentSession } from "../src/agents";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,6 +26,7 @@ function computeAgentUsageSilent(
   return computeAgentUsage(sessions, now, {
     skipClaudeLiveUsage: true,
     skipCodexLiveUsage: true,
+    skipClaudeTopSessions: true,
     ...opts,
   });
 }
@@ -224,6 +231,86 @@ describe("scanClaudeDailyBuckets", () => {
     clearClaudeDailyCache();
     const buckets = await scanClaudeDailyBuckets("/no/such/path.jsonl");
     expect(buckets.size).toBe(0);
+  });
+});
+
+describe("scanClaudeSessionTokenTotals", () => {
+  test("sums every in-window assistant turn's usage block", async () => {
+    clearClaudeTokenScanCache();
+    const dir = await mkdtemp(join(tmpdir(), "supergit-agent-usage-"));
+    const file = join(dir, "sess.jsonl");
+    const sinceMs = Date.UTC(2026, 4, 20);
+    const lines = [
+      // In-window assistant turn with full usage block.
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-22T10:00:00.000Z",
+        message: {
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_input_tokens: 5000,
+            cache_creation_input_tokens: 100,
+          },
+        },
+      }),
+      // In-window assistant turn, output-only usage block.
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-22T11:00:00.000Z",
+        message: { usage: { output_tokens: 50 } },
+      }),
+      // Out-of-window — predates `sinceMs`. Must NOT contribute.
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-19T08:00:00.000Z",
+        message: { usage: { input_tokens: 99_999, output_tokens: 99_999 } },
+      }),
+      // User turns are skipped regardless of usage payload.
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-05-22T10:00:30.000Z",
+      }),
+    ].join("\n");
+    await writeFile(file, lines);
+    const totals = await scanClaudeSessionTokenTotals(file, undefined, sinceMs);
+    expect(totals.inputTokens).toBe(1000);
+    expect(totals.outputTokens).toBe(250);
+    expect(totals.cacheReadTokens).toBe(5000);
+    expect(totals.cacheCreationTokens).toBe(100);
+    expect(totals.totalTokens).toBe(1000 + 250 + 5000 + 100);
+  });
+
+  test("turns without a usage block contribute 0", async () => {
+    clearClaudeTokenScanCache();
+    const dir = await mkdtemp(join(tmpdir(), "supergit-agent-usage-"));
+    const file = join(dir, "sess.jsonl");
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-22T10:00:00.000Z",
+        message: {}, // no usage
+      }),
+    ].join("\n");
+    await writeFile(file, lines);
+    const totals = await scanClaudeSessionTokenTotals(file, undefined, 0);
+    expect(totals.totalTokens).toBe(0);
+  });
+
+  test("missing file returns zeroed totals (no throw)", async () => {
+    clearClaudeTokenScanCache();
+    const totals = await scanClaudeSessionTokenTotals(
+      "/no/such/path.jsonl",
+      undefined,
+      0,
+    );
+    expect(totals).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 0,
+    });
   });
 });
 

@@ -69,8 +69,38 @@ export interface AgentUsageReport {
    *  secondary rate-limit windows, and any API credit balance. */
   codexLiveUsage?: CodexOAuthUsage | null;
   codexLiveUsageError?: CodexOAuthUsageError;
+  /** Sessions sorted by total tokens spent inside the past 7-day window,
+   *  most-expensive first. Capped at 5 entries. Only populated when the
+   *  local JSONL scan finds at least one session with > 0 tokens — saves
+   *  a no-op section in the tooltip. Pure-local data — sessions on
+   *  other machines / the web client don't appear here. */
+  claudeTopSessions?: ClaudeTopSession[];
   /** Only agents with non-zero week activity appear here. */
   agents: Partial<Record<AgentKind, AgentUsage>>;
+}
+
+export interface ClaudeTopSession {
+  /** Anthropic's per-session UUID. Pulled from the AgentSession;
+   *  may be undefined for malformed sessions. */
+  sessionId?: string;
+  /** JSONL file path — the dashboard's session identifier. The UI
+   *  uses this to address its open-session columns. */
+  source: string;
+  /** Working directory the session ran in. UI uses this to derive
+   *  the repo + worktree breadcrumb for display. */
+  cwd: string;
+  /** Best-effort display title (manualTitle > title > firstUserMessage). */
+  title?: string;
+  /** Sum of (input + cache_read + cache_creation + output) tokens
+   *  across every in-window assistant turn. The single "total" the
+   *  list sorts on. */
+  totalTokens: number;
+  /** Breakdown so the tooltip can show "X in / Y out" or hover to
+   *  see cache-hit savings. */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -172,6 +202,153 @@ export async function scanClaudeDailyBuckets(
     }
   }
   return buckets;
+}
+
+interface ClaudeSessionTokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+}
+
+/** (path, mtime+since) → in-window token sums. The `sinceMs` parameter
+ *  is baked into the cache key so a Tuesday read and a Saturday read
+ *  of the same file produce independent (correct) results. */
+const claudeTokenScanCache = new Map<
+  string,
+  { mtimeMs: number; sinceMs: number; result: ClaudeSessionTokenTotals }
+>();
+const MAX_CLAUDE_TOKEN_SCAN_CACHE = 5000;
+
+export function clearClaudeTokenScanCache(): void {
+  claudeTokenScanCache.clear();
+}
+
+/** Walk a single Claude JSONL and sum every assistant turn's
+ *  message.usage block when the turn's `timestamp` is on/after
+ *  `sinceMs`. Each turn contributes its full usage row — Anthropic's
+ *  per-turn accounting is already final; we don't try to disambiguate
+ *  thinking/tool/output. */
+export async function scanClaudeSessionTokenTotals(
+  path: string,
+  mtimeMs: number | undefined,
+  sinceMs: number,
+): Promise<ClaudeSessionTokenTotals> {
+  const cacheKey = `${path}|${sinceMs}`;
+  if (mtimeMs !== undefined) {
+    const cached = claudeTokenScanCache.get(cacheKey);
+    if (cached && cached.mtimeMs === mtimeMs && cached.sinceMs === sinceMs) {
+      claudeTokenScanCache.delete(cacheKey);
+      claudeTokenScanCache.set(cacheKey, cached);
+      return cached.result;
+    }
+  }
+  const zero: ClaudeSessionTokenTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalTokens: 0,
+  };
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return zero;
+  }
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    // Cheap prefilter — only assistant turns carry usage blocks.
+    if (!line.includes('"type":"assistant"')) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (obj.type !== "assistant") continue;
+    const ts = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : NaN;
+    if (Number.isNaN(ts) || ts < sinceMs) continue;
+    const msg = obj.message as { usage?: unknown } | undefined;
+    const usage = msg?.usage as
+      | {
+          input_tokens?: unknown;
+          output_tokens?: unknown;
+          cache_read_input_tokens?: unknown;
+          cache_creation_input_tokens?: unknown;
+        }
+      | undefined;
+    if (!usage || typeof usage !== "object") continue;
+    if (typeof usage.input_tokens === "number") inputTokens += usage.input_tokens;
+    if (typeof usage.output_tokens === "number") outputTokens += usage.output_tokens;
+    if (typeof usage.cache_read_input_tokens === "number")
+      cacheReadTokens += usage.cache_read_input_tokens;
+    if (typeof usage.cache_creation_input_tokens === "number")
+      cacheCreationTokens += usage.cache_creation_input_tokens;
+  }
+  const result: ClaudeSessionTokenTotals = {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+  };
+  if (mtimeMs !== undefined) {
+    claudeTokenScanCache.set(cacheKey, { mtimeMs, sinceMs, result });
+    if (claudeTokenScanCache.size > MAX_CLAUDE_TOKEN_SCAN_CACHE) {
+      const oldest = claudeTokenScanCache.keys().next().value;
+      if (oldest !== undefined) claudeTokenScanCache.delete(oldest);
+    }
+  }
+  return result;
+}
+
+/** Walk every Claude AgentSession active in the past week, fetch its
+ *  token totals, and return the top-N sorted by totalTokens desc. */
+async function topClaudeSessionsByTokens(
+  sessions: AgentSession[],
+  now: number,
+  limit: number,
+): Promise<ClaudeTopSession[]> {
+  const sinceMs = now - WEEK_MS;
+  const cutoffMtime = now - WEEK_MS;
+  const results = await Promise.all(
+    sessions.map(async (s): Promise<ClaudeTopSession | null> => {
+      if (s.agent !== "claude") return null;
+      const lastActive = Date.parse(s.lastActive);
+      if (Number.isNaN(lastActive) || lastActive < cutoffMtime) return null;
+      let mtimeMs: number | undefined;
+      try {
+        const st = await stat(s.source);
+        mtimeMs = st.mtimeMs;
+      } catch {
+        return null;
+      }
+      const totals = await scanClaudeSessionTokenTotals(s.source, mtimeMs, sinceMs);
+      if (totals.totalTokens === 0) return null;
+      return {
+        sessionId: s.sessionId,
+        source: s.source,
+        cwd: s.cwd,
+        title: s.manualTitle ?? s.title ?? s.firstUserMessage,
+        totalTokens: totals.totalTokens,
+        inputTokens: totals.inputTokens,
+        outputTokens: totals.outputTokens,
+        cacheReadTokens: totals.cacheReadTokens,
+        cacheCreationTokens: totals.cacheCreationTokens,
+      };
+    }),
+  );
+  const populated = results.filter(
+    (r): r is ClaudeTopSession => r !== null,
+  );
+  populated.sort((a, b) => b.totalTokens - a.totalTokens);
+  return populated.slice(0, limit);
 }
 
 /** Sum per-date buckets across every Claude session whose mtime is
@@ -344,6 +521,12 @@ export interface ComputeOptions {
   /** Same pair for the Codex (ChatGPT) usage endpoint. */
   skipCodexLiveUsage?: boolean;
   codexLiveUsageFetcher?: typeof fetchCodexOAuthUsage;
+  /** Skip the per-session token scan (Top-N list). Tests inject totals
+   *  directly via `preComputedClaudeDailyTotals` and don't need a
+   *  parallel filesystem walk for the unrelated token list. */
+  skipClaudeTopSessions?: boolean;
+  /** Override the top-N cap. Default 5 — keeps the tooltip compact. */
+  claudeTopSessionsLimit?: number;
 }
 
 export async function computeAgentUsage(
@@ -413,6 +596,20 @@ export async function computeAgentUsage(
   }
   if (fetches.length > 0) await Promise.all(fetches);
 
+  // Top-5 most-expensive Claude sessions in the past week (local).
+  // Walks JSONLs of every Claude session active in window, sums each
+  // turn's token usage, sorts desc. Empty when no in-window session
+  // had a usage block.
+  let claudeTopSessions: ClaudeTopSession[] | undefined;
+  if (!opts.skipClaudeTopSessions && agents.claude) {
+    claudeTopSessions = await topClaudeSessionsByTokens(
+      byAgent.get("claude") ?? [],
+      now,
+      opts.claudeTopSessionsLimit ?? 5,
+    );
+    if (claudeTopSessions.length === 0) claudeTopSessions = undefined;
+  }
+
   return {
     asOf: new Date(now).toISOString(),
     windows: { todayMs: DAY_MS, weekMs: WEEK_MS },
@@ -421,6 +618,7 @@ export async function computeAgentUsage(
     claudeLiveUsageError,
     codexLiveUsage,
     codexLiveUsageError,
+    claudeTopSessions,
     agents,
   };
 }
