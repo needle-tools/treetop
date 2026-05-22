@@ -197,6 +197,14 @@
     });
   }
 
+  /** Capitalize a Codex plan_type string ("free" / "plus" / "pro" /
+   *  "business" / …) so it reads like a proper name in the tooltip
+   *  head, matching how Claude's "Max (20x)" is presented. */
+  function codexPlanLabel(planType: string): string {
+    if (!planType) return planType;
+    return planType[0].toUpperCase() + planType.slice(1);
+  }
+
   function planLabel(p: Report["claudePlan"]): string | null {
     if (!p) return null;
     const sub = p.subscriptionType?.toLowerCase();
@@ -320,6 +328,8 @@
           <span>{agentLabel(agent)}</span>
           {#if agent === "claude" && planLabel(report?.claudePlan)}
             <span class="usage-plan">· {planLabel(report?.claudePlan)}</span>
+          {:else if agent === "codex" && codexLive?.planType}
+            <span class="usage-plan">· {codexPlanLabel(codexLive.planType)}</span>
           {/if}
           <span
             class="usage-source"
@@ -381,9 +391,6 @@
               <span class="usage-live-reset">{fmtResets(row.window?.resetsAt)}</span>
             {/each}
           </div>
-          {#if codexLive.planType}
-            <div class="usage-extra">Plan: <strong>{codexLive.planType}</strong></div>
-          {/if}
           {#if codexLive.credits && (codexLive.credits.hasCredits || codexLive.credits.unlimited)}
             <div class="usage-extra">
               Credits:
