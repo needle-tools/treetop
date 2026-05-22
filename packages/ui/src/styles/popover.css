@@ -149,8 +149,14 @@
 .tuis-popover .agents-list {
   display: grid;
   /* Uptime is sized for `formatUptime`'s worst case `999h 59m` (8ch);
-     anything narrower wraps "7m 29s" onto a second line. */
-  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 8ch minmax(0, auto) 18px;
+     anything narrower wraps "7m 29s" onto a second line.
+     Idle is `auto` (not `minmax(0, auto)`): with right-aligned
+     nowrap content, letting idle shrink below content width pushes
+     the overflow LEFTWARD into the uptime cell — visible as
+     "4m 18s" jammed into "idle 3m 58s". Keeping idle at its
+     natural width forces any overflow to the row's right edge,
+     where `overflow-x: hidden` clips it cleanly. */
+  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 8ch auto 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
      .agents-list — preserve the spacing between rows. The
      `column-gap` matches `.agent-row`'s default; without it set
@@ -259,6 +265,13 @@
 }
 .tui-idle {
   color: var(--text-muted);
+  /* Override `.tui-stat`'s right-alignment: idle is text-then-number
+     ("idle 3m 58s"), not a pure number — reading anchors on the
+     "idle " prefix, and right-align made overflow extend leftward
+     into the uptime cell when the grid was tight. Left-align keeps
+     the prefix flush to the cell's left edge and pushes any
+     overflow rightward where `overflow-x: hidden` clips it. */
+  text-align: left;
 }
 /* X always reserves the 18px column (no layout shift between hover
    states), revealed on row hover like the agents popover's × is on
