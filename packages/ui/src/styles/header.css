@@ -1,10 +1,13 @@
 /*
- * Top header strip — h1 + brand mark + the cluster of action buttons
- * (Recent Actions, Events, TUIs, Add Folder). Anchored containers
- * (`.actions-anchor`, `.events-anchor`, `.tuis-anchor`) position the
- * popovers below their triggers. Lives in styles/ so a future
- * DashboardHeader.svelte extraction can own this without rewiring CSS
- * scoping. See plans/PLAN.md → "App.svelte refactor (componentization)".
+ * Top header strip — h1 + brand mark + tagline. The action button
+ * cluster (TUIs, Notes, Undo, Events) used to live inside the h1 but
+ * was lifted into a fixed `<nav class="menubar">` so it stays visible
+ * while the page is scrolled. Anchored containers (`.actions-anchor`,
+ * `.events-anchor`, `.tuis-anchor`) still position the popovers below
+ * their triggers — they just now hang off the menubar instead of the
+ * header. Lives in styles/ so a future DashboardHeader.svelte
+ * extraction can own this without rewiring CSS scoping. See
+ * plans/PLAN.md → "App.svelte refactor (componentization)".
  */
 
 /* Scoped to the page-level header (`<main><header>…</header>` in
@@ -40,21 +43,62 @@ main > header > h1 {
   color: #22c55e;
 }
 
-/* Action-button cluster on the right side of the header strip. */
+/* Fixed top-right menubar that holds the action-button cluster. Stays
+   pinned while the page scrolls so TUIs/Undo/Events are always one
+   click away. Sits below popover stacking (z-index 1100) but above
+   normal page chrome. The soft surface + blur reads as a unified bar
+   without obscuring whatever scrolls underneath. */
+.menubar {
+  position: fixed;
+  top: 0.55rem;
+  right: 0.7rem;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.4rem;
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+/* Anchor stays `position: relative` so the existing popover anchoring
+   (top: calc(100% + 0.4rem); right: 0;) keeps working — just relative
+   to the menubar button instead of a header button. */
 .actions-anchor {
   position: relative;
-  margin-left: auto;
 }
-/* When TUIs sits left of Actions in the same header strip, the TUIs
-   anchor claims the auto-margin (pushed to the right edge) and the
-   Actions anchor sits flush next to it with just a small gap.
-   Without this, both `margin-left: auto` siblings produce a big
-   equal gap between them. */
-.tuis-anchor + .actions-anchor {
-  margin-left: 0.4rem;
+/* In the menubar, neighbours sit in a flex row, so no auto-margins.
+   The header strip is the only other place .actions-anchor showed up;
+   removing the global `margin-left: auto` doesn't affect it now that
+   the cluster has moved out. */
+.menubar .actions-anchor {
+  margin-left: 0;
 }
-.events-anchor {
-  margin-left: 0.4rem;
+
+/* Compact button styling inside the menubar — smaller than the old
+   header buttons so the fixed bar doesn't dominate the viewport.
+   Border is dropped because the menubar already has its own outer
+   border; without this we get a visible border-inside-a-border ring
+   around every button. Plain `.actions-btn` rule below still drives
+   colours, hover, warm, hot, has-errors. */
+.menubar .actions-btn {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  gap: 0.35rem;
+  border: none;
+}
+.menubar .actions-btn:hover,
+.menubar .actions-btn.open {
+  border: none;
+}
+.menubar .actions-btn .count {
+  font-size: 0.65rem;
+  padding: 0.3em 0.35em;
+  min-width: 1rem;
 }
 .actions-btn {
   padding: 0.4rem 0.75rem;
