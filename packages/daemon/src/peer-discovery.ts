@@ -25,6 +25,7 @@
 import Bonjour from "bonjour-service";
 import type BrowserType from "bonjour-service/dist/lib/browser";
 import type ServiceType from "bonjour-service/dist/lib/service";
+import { createSocket, type Socket as DgramSocket } from "node:dgram";
 import { PeerRegistry, type Peer } from "./peer-registry";
 
 const SERVICE_TYPE = "supergit";
@@ -48,6 +49,11 @@ export class PeerDiscovery {
   private bonjour: Bonjour | null = null;
   private service: ServiceType | null = null;
   private browser: BrowserType | null = null;
+  private mdnsSocket: DgramSocket | null = null;
+  /** Diagnostic set to true after a successful start. Stays false when
+   *  bonjour init failed (logged separately) so the UI could surface
+   *  "mDNS unavailable" later if we want. */
+  enabled = false;
   readonly registry: PeerRegistry;
 
   constructor(private opts: DiscoveryOpts) {
@@ -55,24 +61,67 @@ export class PeerDiscovery {
   }
 
   /** Advertise ourselves and start browsing for other supergit
-   *  daemons. Throws are swallowed — discovery is best-effort, the
-   *  daemon must keep working even when the LAN has no mDNS at all. */
+   *  daemons. Throws are surfaced via `console.error` (previously
+   *  `console.warn` — too easy to miss in a noisy log) but never
+   *  rethrown: the daemon must keep working when the LAN has no mDNS
+   *  at all (corporate network, container, port collision). */
   start(): void {
     try {
+      // We build the multicast UDP socket ourselves so we can set
+      // BOTH `reuseAddr` AND `reusePort`. multicast-dns (the lib
+      // bonjour-service wraps) only sets `reuseAddr`, which is
+      // sufficient on Linux but NOT on macOS: a second daemon on the
+      // same host hits EADDRINUSE on UDP 5353 unless SO_REUSEPORT is
+      // also set. Symptom this fixed: Mac dev daemon (port 7777)
+      // ran fine, Mac prod daemon (port 27787) started but its
+      // bonjour silently never received any packets and never
+      // advertised, so the other machine on the LAN saw only dev.
+      //
+      // `reusePort` is Linux/macOS only — Windows's WSASocketW lacks
+      // the equivalent and Node throws ENOTSUP if we set it. On
+      // Windows we fall back to reuseAddr alone (which works fine
+      // because Windows is more permissive about SO_REUSEADDR than
+      // BSD-derived stacks). Node's dgram exposes `reusePort` from
+      // v18.14; Bun supports it too.
+      const socketOpts: { type: "udp4"; reuseAddr: boolean; reusePort?: boolean } = {
+        type: "udp4",
+        reuseAddr: true,
+      };
+      if (process.platform !== "win32") {
+        socketOpts.reusePort = true;
+      }
+      this.mdnsSocket = createSocket(socketOpts);
+      this.mdnsSocket.on("error", (err) => {
+        console.error(
+          `supergit daemon: mDNS socket error (${process.platform}) — ${err.message}`,
+        );
+      });
+
       // multicast-dns options flow through Bonjour's constructor →
-      // Server → multicast-dns(opts). `interface` pins the outbound
+      // Server → multicast-dns(opts) — see
+      // node_modules/bonjour-service/dist/lib/mdns-server.js. `socket`
+      // injects our pre-built dgram; `interface` pins the outbound
       // multicast adapter (fixes the Windows multi-NIC case where
-      // adverts went out on WSL2 vEthernet instead of the LAN);
-      // `reuseAddr` lets us co-exist with the OS's mDNS daemon on
-      // UDP 5353 (Apple's mDNSResponder, Avahi).
-      const mdnsOpts: Record<string, unknown> = { reuseAddr: true };
+      // adverts otherwise went out on a WSL2 vEthernet instead of
+      // the LAN); `reuseAddr` is kept as belt-and-braces in case a
+      // future bonjour update stops honouring opts.socket.
+      const mdnsOpts: Record<string, unknown> = {
+        socket: this.mdnsSocket,
+        reuseAddr: true,
+      };
       if (this.opts.interfaceAddress) {
         mdnsOpts.interface = this.opts.interfaceAddress;
       }
       // The TS types restrict the constructor's first arg to
-      // ServiceConfig, but at runtime mdns options pass through —
-      // see node_modules/bonjour-service/dist/lib/mdns-server.js.
-      this.bonjour = new Bonjour(mdnsOpts as never);
+      // ServiceConfig, but at runtime mdns options pass through.
+      // The second arg is an errorCallback bonjour invokes when its
+      // probe / publish / advertise pipeline hits an error — used to
+      // be silently rethrown, now logged.
+      this.bonjour = new Bonjour(mdnsOpts as never, (err: Error) => {
+        console.error(
+          `supergit daemon: mDNS publish/probe error (${process.platform}) — ${err.message}`,
+        );
+      });
       // The mDNS service name has to be unique on the LAN per
       // (type, name) pair — two supergit daemons on the same box (or
       // two laptops with the same user@host) would otherwise collide
@@ -96,9 +145,10 @@ export class PeerDiscovery {
       });
       this.browser.on("up", (svc: ServiceType) => this.onUp(svc));
       this.browser.on("down", (svc: ServiceType) => this.onDown(svc));
+      this.enabled = true;
     } catch (e) {
-      console.warn(
-        `supergit daemon: mDNS discovery disabled — ${
+      console.error(
+        `supergit daemon: mDNS discovery disabled (${process.platform}) — ${
           e instanceof Error ? e.message : String(e)
         }`,
       );
@@ -110,8 +160,20 @@ export class PeerDiscovery {
       try {
         this.browser?.stop();
         this.service?.stop?.(() => {});
-        this.bonjour?.destroy(() => resolve());
+        this.bonjour?.destroy(() => {
+          try {
+            this.mdnsSocket?.close();
+          } catch {}
+          this.mdnsSocket = null;
+          this.enabled = false;
+          resolve();
+        });
       } catch {
+        try {
+          this.mdnsSocket?.close();
+        } catch {}
+        this.mdnsSocket = null;
+        this.enabled = false;
         resolve();
       }
     });
