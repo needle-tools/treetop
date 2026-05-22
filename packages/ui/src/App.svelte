@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import { DismissedSessionsStore, ExpandedStore } from "./storage";
   import DiffViewer from "./DiffViewer.svelte";
@@ -1323,9 +1323,26 @@
   }
 
   /** After inserting `source` into the strip, smooth-scroll the strip so
-   *  the new column sits at the viewport's left edge. */
+   *  the new column sits at the viewport's left edge, AND vertically
+   *  scroll the page so the row is visible (centered when possible,
+   *  closest-edge when not — e.g. row is already partially visible).
+   *  Without the vertical bit, creating a new session on a row below the
+   *  fold gives no feedback: the column exists, but the user can't see it.
+   *
+   *  Delay before measuring: two concurrent CSS animations distort the
+   *  column geometry for ~250ms after insert —
+   *    1. `animate:flip` on `.session-col` (220ms) — existing siblings
+   *       slide to their new positions when the new column splices in.
+   *    2. `.session-col` width transitions on flex-basis/min/max-width
+   *       (250ms) — read-mode siblings can snap to their narrower size
+   *       when a live TUI is added.
+   *  Measuring at the next rAF lands on mid-animation offsets, which
+   *  parks the strip / page on a target that drifts under it as the
+   *  animation finishes. Wait ~280ms so layout has settled before we
+   *  compute scrollTo()'s target. */
+  const NEW_COL_SCROLL_DELAY_MS = 280;
   function scrollNewColIntoView(wtPath: string, source: string): void {
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       const strip = document.querySelector(
         `[data-wt-strip="${CSS.escape(wtPath)}"]`,
       ) as HTMLElement | null;
@@ -1334,8 +1351,43 @@
         `.session-col[data-session-source="${CSS.escape(source)}"]`,
       );
       if (!newCol) return;
-      strip.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
-    });
+      // Skip BOTH axes when the column is already in view: TerminalView's
+      // xterm.focus() (fired from the WS-onopen handler) already triggers
+      // the browser's built-in "scroll focused element into view" — it
+      // typically lands the column nicely centered. Issuing our own
+      // strip.scrollTo + scrollIntoView on top of that competes with
+      // xterm's scroll and the user sees a second jump that yanks the
+      // column off the position xterm just put it in.
+      //
+      // Per-axis skips so each axis only moves if it actually needs to:
+      //   - horizontal: only flush-left the strip if the column isn't
+      //     fully inside the strip's visible width.
+      //   - vertical: only scrollIntoView if the column isn't fully in
+      //     the viewport's vertical extent.
+      //
+      // When we do step in vertically, anchor on the column itself (not
+      // the row-body): centering a tall row-body parks its middle in the
+      // viewport and pushes the column off-screen, which was the prior
+      // bug. `block: "center"` centers when the column fits, falls back
+      // to nearest-edge for columns taller than the viewport — that's
+      // the "center if possible / closest view" semantics.
+      const r = newCol.getBoundingClientRect();
+      const stripR = strip.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const horizontallyVisible =
+        r.left >= stripR.left && r.right <= stripR.right;
+      const verticallyVisible = r.top >= 0 && r.bottom <= vh;
+      if (!horizontallyVisible) {
+        strip.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
+      }
+      if (!verticallyVisible) {
+        newCol.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "smooth",
+        });
+      }
+    }, NEW_COL_SCROLL_DELAY_MS);
   }
 
   /** Open a brand-new agent session in this worktree. Adds a transient
@@ -4250,6 +4302,160 @@
     return {};
   }
 
+  /** Visibility-driven per-repo fetch loop.
+   *
+   *  Daemon also runs a 5-minute auto-fetch for the whole workspace.
+   *  This loop layers on top: while a repo's row is visible in the
+   *  viewport, the dashboard tells the daemon to re-fetch that repo
+   *  every 30 s so ahead/behind stays current for the rows you can
+   *  actually see. Repos scrolled off-screen drop out of the loop.
+   *
+   *  Debounce: when a row first becomes visible we wait 3 s before the
+   *  first fetch. That keeps a quick scroll past 20 repos from firing
+   *  20 fetches; only the ones the user lingers on count.
+   *
+   *  Granularity is per-repo (not per-row): a repo with multiple
+   *  worktrees has multiple rows, and we want one fetch loop shared
+   *  across them. We track the set of visible rows per repo and only
+   *  stop the loop when *every* row for that repo goes off-screen. */
+  const VISIBLE_FETCH_DEBOUNCE_MS = 3_000;
+  const VISIBLE_FETCH_INTERVAL_MS = 30_000;
+  type RepoVisibleFetchState = {
+    visibleRows: Set<string>;
+    debounceTimer: ReturnType<typeof setTimeout> | null;
+    intervalTimer: ReturnType<typeof setInterval> | null;
+  };
+  const repoFetchStates = new Map<string, RepoVisibleFetchState>();
+  const rowNodeMeta = new WeakMap<
+    Element,
+    { repoId: string; rowKey: string }
+  >();
+
+  async function fetchVisibleRepo(repoId: string): Promise<void> {
+    try {
+      await fetch("/api/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repos: [repoId] }),
+      });
+      // Daemon broadcasts `change { kind: "fetch_complete" }` on
+      // success and the SSE handler already triggers load() — no
+      // explicit refresh needed here.
+    } catch {
+      // Network blip; the next 30 s tick (or the daemon's own 5-min
+      // cycle) will try again.
+    }
+  }
+
+  function ensureRepoFetchState(repoId: string): RepoVisibleFetchState {
+    let s = repoFetchStates.get(repoId);
+    if (!s) {
+      s = { visibleRows: new Set(), debounceTimer: null, intervalTimer: null };
+      repoFetchStates.set(repoId, s);
+    }
+    return s;
+  }
+
+  function startVisibleFetchLoop(repoId: string): void {
+    const s = ensureRepoFetchState(repoId);
+    if (s.debounceTimer !== null || s.intervalTimer !== null) return;
+    s.debounceTimer = setTimeout(() => {
+      s.debounceTimer = null;
+      void fetchVisibleRepo(repoId);
+      s.intervalTimer = setInterval(
+        () => void fetchVisibleRepo(repoId),
+        VISIBLE_FETCH_INTERVAL_MS,
+      );
+    }, VISIBLE_FETCH_DEBOUNCE_MS);
+  }
+
+  function stopVisibleFetchLoop(repoId: string): void {
+    const s = repoFetchStates.get(repoId);
+    if (!s) return;
+    if (s.debounceTimer !== null) {
+      clearTimeout(s.debounceTimer);
+      s.debounceTimer = null;
+    }
+    if (s.intervalTimer !== null) {
+      clearInterval(s.intervalTimer);
+      s.intervalTimer = null;
+    }
+  }
+
+  function noteRowVisible(repoId: string, rowKey: string): void {
+    const s = ensureRepoFetchState(repoId);
+    const wasEmpty = s.visibleRows.size === 0;
+    s.visibleRows.add(rowKey);
+    if (wasEmpty) startVisibleFetchLoop(repoId);
+  }
+
+  function noteRowHidden(repoId: string, rowKey: string): void {
+    const s = repoFetchStates.get(repoId);
+    if (!s) return;
+    s.visibleRows.delete(rowKey);
+    if (s.visibleRows.size === 0) stopVisibleFetchLoop(repoId);
+  }
+
+  const rowVisibilityObserver: IntersectionObserver | null =
+    typeof window !== "undefined" && "IntersectionObserver" in window
+      ? new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              const meta = rowNodeMeta.get(entry.target);
+              if (!meta) continue;
+              if (entry.isIntersecting) {
+                noteRowVisible(meta.repoId, meta.rowKey);
+              } else {
+                noteRowHidden(meta.repoId, meta.rowKey);
+              }
+            }
+          },
+          // Any sliver visible is enough; users often see ahead/behind
+          // peeking at the edge of the viewport while scrolling.
+          { threshold: 0 },
+        )
+      : null;
+
+  /** Svelte action — attach to each row <li>. Registers the node with
+   *  the IntersectionObserver and feeds (repoId, rowKey) into the
+   *  per-repo visibility tracker. When the bound repo changes (rare —
+   *  rows are keyed by `${repo.id}|${wt.path}` so the same DOM node
+   *  shouldn't host two different repos, but Svelte's keyed-each isn't
+   *  guaranteed across rerenders), we mark the old repo as hidden so
+   *  its loop drains cleanly. */
+  function rowVisibility(
+    node: HTMLElement,
+    params: { repoId: string; rowKey: string },
+  ) {
+    if (!rowVisibilityObserver) return {};
+    rowNodeMeta.set(node, params);
+    rowVisibilityObserver.observe(node);
+    return {
+      update(next: { repoId: string; rowKey: string }) {
+        const prev = rowNodeMeta.get(node);
+        if (
+          prev &&
+          (prev.repoId !== next.repoId || prev.rowKey !== next.rowKey)
+        ) {
+          noteRowHidden(prev.repoId, prev.rowKey);
+        }
+        rowNodeMeta.set(node, next);
+      },
+      destroy() {
+        rowVisibilityObserver?.unobserve(node);
+        const prev = rowNodeMeta.get(node);
+        if (prev) noteRowHidden(prev.repoId, prev.rowKey);
+        rowNodeMeta.delete(node);
+      },
+    };
+  }
+
+  onDestroy(() => {
+    rowVisibilityObserver?.disconnect();
+    for (const repoId of repoFetchStates.keys()) stopVisibleFetchLoop(repoId);
+    repoFetchStates.clear();
+  });
+
   /** URL teammates / other machines on the LAN should hit when they
    *  receive a Share-locally invite from this dashboard. Resolved
    *  from /api/health (localIp + port) on mount. Null while the
@@ -4886,6 +5092,7 @@
             ? zenRowKey !== row.key || !notesShownInZen
             : !!notesHiddenByRow[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
+          use:rowVisibility={{ repoId: repo.id, rowKey: row.key }}
         >
           <div class="row-content">
           <div class="row-head">

@@ -2832,8 +2832,19 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/fetch" && req.method === "POST") {
       // Kick off an immediate fetch cycle. Returns immediately; the SSE
-      // stream emits "change" when fetches complete.
-      void runFetchCycle();
+      // stream emits "change" when fetches complete. Optional body
+      // `{ repos: [id, ...] }` restricts the cycle to those repo IDs —
+      // used by the dashboard to keep on-screen repos fresh on a 30s
+      // cadence without paying the cost of fetching the whole workspace.
+      const body = (await req.json().catch(() => null)) as
+        | { repos?: unknown }
+        | null;
+      const repoIds = Array.isArray(body?.repos)
+        ? (body!.repos as unknown[]).filter(
+            (v): v is string => typeof v === "string" && v.length > 0,
+          )
+        : undefined;
+      void runFetchCycle(repoIds);
       return json({ status: "queued" });
     }
 
@@ -4439,26 +4450,36 @@ const FETCH_INTERVAL_MS = Number(
   process.env.SUPERGIT_FETCH_INTERVAL_MS ?? 5 * 60 * 1000,
 );
 let fetchTimer: ReturnType<typeof setInterval> | null = null;
-let fetchInFlight = false;
+// Per-repo in-flight guard — was a single bool, but visibility-driven
+// fetches from the dashboard can target a subset of repos concurrently
+// with the global 5-minute cycle, and we want them to coexist (only
+// the same repo can't fetch twice simultaneously).
+const fetchInFlight = new Set<string>();
 
-async function runFetchCycle(): Promise<void> {
-  if (fetchInFlight) return;
-  fetchInFlight = true;
+async function runFetchCycle(repoIds?: string[]): Promise<void> {
+  const all = await workspace.listRepos();
+  const targeted = repoIds
+    ? all.filter((r) => repoIds.includes(r.id))
+    : all;
+  // Drop any already being fetched — avoids stomping on an in-progress
+  // cycle when the dashboard's 30s tick lands on top of the 5-min one.
+  const claimed = targeted.filter((r) => !fetchInFlight.has(r.id));
+  if (claimed.length === 0) return;
+  for (const r of claimed) fetchInFlight.add(r.id);
   try {
-    const repos = await workspace.listRepos();
-    if (repos.length === 0) return;
     const results = await Promise.allSettled(
-      repos.map((r) => fetchAll(r.path)),
+      claimed.map((r) => fetchAll(r.path)),
     );
     const ok = results.filter(
       (r) => r.status === "fulfilled" && r.value,
     ).length;
+    const tag = repoIds ? "visible-fetch" : "auto-fetch";
     console.log(
-      `supergit daemon: auto-fetch — ${ok}/${repos.length} repos updated`,
+      `supergit daemon: ${tag} — ${ok}/${claimed.length} repos updated`,
     );
-    broadcast("change", { kind: "fetch_complete", ok, total: repos.length });
+    broadcast("change", { kind: "fetch_complete", ok, total: claimed.length });
   } finally {
-    fetchInFlight = false;
+    for (const r of claimed) fetchInFlight.delete(r.id);
   }
 }
 
