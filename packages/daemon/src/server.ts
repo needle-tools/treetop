@@ -496,7 +496,7 @@ let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
 const AGENT_USAGE_CACHE_MS = 60_000;
 let agentUsageCache: {
   at: number;
-  value: ReturnType<typeof computeAgentUsage> | null;
+  value: Awaited<ReturnType<typeof computeAgentUsage>> | null;
 } = { at: 0, value: null };
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
@@ -1375,7 +1375,7 @@ const server = Bun.serve<TermWsData, never>({
         return json(agentUsageCache.value);
       }
       const agents = await detectAgents(WORKSPACE_PATH);
-      const report = computeAgentUsage(agents, now);
+      const report = await computeAgentUsage(agents, now);
       agentUsageCache = { at: now, value: report };
       return json(report);
     }
@@ -2708,7 +2708,9 @@ const server = Bun.serve<TermWsData, never>({
       // Sender side — build an offer manifest from a session we host,
       // run the strip + redact pipeline, POST to the peer's
       // /api/sessions/offer. Body:
-      //   { source, peerHost, peerPort, machineLabel?, includeToolOutputs? }
+      //   { source, peerHost, peerPort, machineLabel?,
+      //     includeToolOutputs?: boolean (default false),
+      //     redactSecrets?: boolean (default true) }
       const body = (await req.json().catch(() => null)) as
         | {
             source?: unknown;
@@ -2716,6 +2718,7 @@ const server = Bun.serve<TermWsData, never>({
             peerPort?: unknown;
             machineLabel?: unknown;
             includeToolOutputs?: unknown;
+            redactSecrets?: unknown;
           }
         | null;
       const source = typeof body?.source === "string" ? body.source : "";
@@ -2800,12 +2803,17 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
 
-      // Strip + redact unless the sender explicitly opted into full
-      // transcript. The UI surfaces the choice.
-      const include = body?.includeToolOutputs === true;
-      const prepared = include
-        ? { jsonl, strippedCount: 0, redactions: [] as Array<{ kind: string; count: number }> }
-        : prepareOutgoingJsonl(jsonl);
+      // Two independent toggles. Defaults match the conservative
+      // stance: tool outputs stripped, secrets redacted. The UI
+      // exposes both as separate checkboxes so the user can opt into
+      // full transcript without giving up secret redaction (and vice
+      // versa).
+      const includeToolOutputs = body?.includeToolOutputs === true;
+      const redactSecrets = body?.redactSecrets !== false; // default true
+      const prepared = prepareOutgoingJsonl(jsonl, {
+        includeToolOutputs,
+        redactSecrets,
+      });
 
       const manifest: SessionShareManifest = {
         offerId: crypto.randomUUID(),
@@ -2853,8 +2861,10 @@ const server = Bun.serve<TermWsData, never>({
         createdAt: parsed.startedAt ?? new Date().toISOString(),
         sentAt: new Date().toISOString(),
         bytes: prepared.jsonl.length,
-        toolOutputs: include ? "included" : "stripped",
+        toolOutputs: includeToolOutputs ? "included" : "stripped",
         strippedCount: prepared.strippedCount,
+        secrets: redactSecrets ? "redacted" : "raw",
+        redactionCount: prepared.redactions.reduce((n, r) => n + r.count, 0),
       };
 
       const peerUrl = `http://${peerHost}:${peerPort}/api/sessions/offer`;
@@ -2887,6 +2897,7 @@ const server = Bun.serve<TermWsData, never>({
           peer: `${peerHost}:${peerPort}`,
           toolOutputs: manifest.toolOutputs,
           strippedCount: manifest.strippedCount,
+          secrets: manifest.secrets,
           redactions: prepared.redactions,
         },
       });
@@ -2894,7 +2905,9 @@ const server = Bun.serve<TermWsData, never>({
         {
           offerId: manifest.offerId,
           status: "pending",
+          toolOutputs: manifest.toolOutputs,
           strippedCount: manifest.strippedCount,
+          secrets: manifest.secrets,
           redactions: prepared.redactions,
         },
         { status: 202 },

@@ -29,6 +29,8 @@
     bytes: number;
     toolOutputs: "stripped" | "included";
     strippedCount: number;
+    secrets?: "redacted" | "raw";
+    redactionCount?: number;
   }
   interface InviteCard {
     manifest: InviteManifest;
@@ -221,12 +223,24 @@
           <div><dt>turns</dt><dd>{invite.manifest.turnCount}</dd></div>
           <div><dt>size</dt><dd>{fmtBytes(invite.manifest.bytes)}</dd></div>
           <div>
-            <dt>transcript</dt>
+            <dt>tool outputs</dt>
             <dd>
               {#if invite.manifest.toolOutputs === "stripped"}
-                <span class="invite-pill ok">tool outputs stripped ({invite.manifest.strippedCount})</span>
+                <span class="invite-pill ok">stripped ({invite.manifest.strippedCount})</span>
               {:else}
-                <span class="invite-pill warn">full transcript — tool outputs included</span>
+                <span class="invite-pill warn">included — full transcript</span>
+              {/if}
+            </dd>
+          </div>
+          <div>
+            <dt>secrets</dt>
+            <dd>
+              {#if invite.manifest.secrets === "raw"}
+                <span class="invite-pill warn">NOT redacted</span>
+              {:else}
+                <span class="invite-pill ok">
+                  redacted{#if (invite.manifest.redactionCount ?? 0) > 0} ({invite.manifest.redactionCount}){/if}
+                </span>
               {/if}
             </dd>
           </div>

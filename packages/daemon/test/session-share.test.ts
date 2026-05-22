@@ -393,10 +393,10 @@ describe("rewritePaths", () => {
 });
 
 describe("prepareOutgoingJsonl — strip + redact composed", () => {
-  test("strips tool_result AND redacts a secret in a sibling text block", () => {
-    const ghToken = "ghp_" + "x".repeat(36);
-    const stripSecret = "OPENAI_API_KEY=sk-proj-" + "y".repeat(60);
-    const lines = [
+  const ghToken = "ghp_" + "x".repeat(36);
+  const stripSecret = "OPENAI_API_KEY=sk-proj-" + "y".repeat(60);
+  const buildLines = () =>
+    [
       JSON.stringify({
         type: "assistant",
         message: {
@@ -418,13 +418,51 @@ describe("prepareOutgoingJsonl — strip + redact composed", () => {
       }),
     ].join("\n");
 
-    const out = prepareOutgoingJsonl(lines);
-
+  test("default: strips tool_result AND redacts secrets", () => {
+    const out = prepareOutgoingJsonl(buildLines());
     expect(out.strippedCount).toBe(1);
     expect(out.jsonl.includes(stripSecret)).toBe(false);
     expect(out.jsonl.includes(ghToken)).toBe(false);
     expect(out.jsonl.includes("[REDACTED:github_token]")).toBe(true);
     expect(out.redactions.find((r) => r.kind === "github_token")?.count).toBe(1);
+  });
+
+  test("includeToolOutputs:true keeps tool_result, still redacts secrets", () => {
+    const out = prepareOutgoingJsonl(buildLines(), {
+      includeToolOutputs: true,
+    });
+    expect(out.strippedCount).toBe(0);
+    // The OPENAI key is inside the tool_result — still redacted by
+    // the secrets layer, which runs independently of strip.
+    expect(out.jsonl.includes(stripSecret)).toBe(false);
+    expect(out.jsonl.includes("[REDACTED:openai_project_key]")).toBe(true);
+    // The github token in the sibling text block is also redacted.
+    expect(out.jsonl.includes(ghToken)).toBe(false);
+    expect(out.jsonl.includes("[REDACTED:github_token]")).toBe(true);
+  });
+
+  test("redactSecrets:false strips tool_result but leaves secrets in text", () => {
+    const out = prepareOutgoingJsonl(buildLines(), { redactSecrets: false });
+    expect(out.strippedCount).toBe(1);
+    // tool_result content is gone (so the OPENAI secret inside it
+    // doesn't leak anyway).
+    expect(out.jsonl.includes(stripSecret)).toBe(false);
+    // But the github token in the assistant text block is NOT
+    // redacted — the user explicitly asked for raw text.
+    expect(out.jsonl.includes(ghToken)).toBe(true);
+    expect(out.redactions).toEqual([]);
+  });
+
+  test("both toggles off: full transcript, raw", () => {
+    const out = prepareOutgoingJsonl(buildLines(), {
+      includeToolOutputs: true,
+      redactSecrets: false,
+    });
+    expect(out.strippedCount).toBe(0);
+    expect(out.redactions).toEqual([]);
+    // Everything passes through unchanged.
+    expect(out.jsonl.includes(stripSecret)).toBe(true);
+    expect(out.jsonl.includes(ghToken)).toBe(true);
   });
 });
 

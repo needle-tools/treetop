@@ -24,11 +24,21 @@
   }
 
   let peerInput = "";
+  // Two independent privacy toggles. Defaults match the daemon's
+  // conservative stance: tool outputs stripped, secrets redacted.
   let includeToolOutputs = false;
+  let redactSecrets = true;
   let sending = false;
   let result:
     | { kind: "idle" }
-    | { kind: "ok"; offerId: string; strippedCount: number; redactions: Array<{ kind: string; count: number }> }
+    | {
+        kind: "ok";
+        offerId: string;
+        toolOutputs: "stripped" | "included";
+        strippedCount: number;
+        secrets: "redacted" | "raw";
+        redactions: Array<{ kind: string; count: number }>;
+      }
     | { kind: "error"; message: string } = { kind: "idle" };
 
   // mDNS-discovered peers, refreshed on a short interval while the
@@ -58,6 +68,7 @@
     peerInput = recallPeer();
     selectedPeerId = null;
     includeToolOutputs = false;
+    redactSecrets = true;
     sending = false;
     result = { kind: "idle" };
     void refreshPeers();
@@ -109,10 +120,18 @@
           peerHost: parsedPeer.host,
           peerPort: parsedPeer.port,
           includeToolOutputs,
+          redactSecrets,
         }),
       });
       const body = (await res.json().catch(() => null)) as
-        | { offerId?: string; strippedCount?: number; redactions?: Array<{ kind: string; count: number }>; error?: string }
+        | {
+            offerId?: string;
+            toolOutputs?: "stripped" | "included";
+            strippedCount?: number;
+            secrets?: "redacted" | "raw";
+            redactions?: Array<{ kind: string; count: number }>;
+            error?: string;
+          }
         | null;
       if (res.status !== 202) {
         result = {
@@ -125,7 +144,9 @@
       result = {
         kind: "ok",
         offerId: body?.offerId ?? "",
+        toolOutputs: body?.toolOutputs ?? (includeToolOutputs ? "included" : "stripped"),
         strippedCount: body?.strippedCount ?? 0,
+        secrets: body?.secrets ?? (redactSecrets ? "redacted" : "raw"),
         redactions: body?.redactions ?? [],
       };
     } catch (e) {
@@ -209,12 +230,23 @@
       <label class="share-check">
         <input type="checkbox" bind:checked={includeToolOutputs} />
         <span class="share-check-text">
-          <span class="share-check-label">Send the full transcript</span>
+          <span class="share-check-label">Include tool outputs</span>
           <span class="share-check-help">
-            Off (recommended): tool outputs are dropped and known secret
-            formats (GitHub, Stripe, AWS, …) are masked before send.
-            On: nothing is removed — useful when the receiver needs the
-            exact command output you got.
+            Off (recommended): tool result blocks are stripped before
+            send. On: the full transcript (env dumps, file contents,
+            command output) goes through as-is.
+          </span>
+        </span>
+      </label>
+
+      <label class="share-check">
+        <input type="checkbox" bind:checked={redactSecrets} />
+        <span class="share-check-text">
+          <span class="share-check-label">Strip recognised secrets</span>
+          <span class="share-check-help">
+            On (recommended): keys matching known formats (GitHub, npm,
+            Stripe, AWS, Anthropic, OpenAI, JWT, PEM, …) get redacted.
+            Off: the transcript is shipped verbatim.
           </span>
         </span>
       </label>
@@ -224,10 +256,16 @@
       {:else if result.kind === "ok"}
         <p class="share-result share-ok">
           Offer sent.
-          {#if !includeToolOutputs}
-            Stripped {result.strippedCount} tool output{result.strippedCount === 1 ? "" : "s"}{#if result.redactions.length > 0},
-            redacted {result.redactions.reduce((n, r) => n + r.count, 0)} likely secret{result.redactions.reduce((n, r) => n + r.count, 0) === 1 ? "" : "s"}
-            ({result.redactions.map((r) => `${r.count}× ${r.kind}`).join(", ")}){/if}.
+          {#if result.toolOutputs === "stripped"}
+            Stripped {result.strippedCount} tool output{result.strippedCount === 1 ? "" : "s"}.
+          {:else}
+            Tool outputs included.
+          {/if}
+          {#if result.secrets === "redacted" && result.redactions.length > 0}
+            Redacted {result.redactions.reduce((n, r) => n + r.count, 0)} likely secret{result.redactions.reduce((n, r) => n + r.count, 0) === 1 ? "" : "s"}
+            ({result.redactions.map((r) => `${r.count}× ${r.kind}`).join(", ")}).
+          {:else if result.secrets === "raw"}
+            Secrets NOT redacted.
           {/if}
         </p>
       {/if}

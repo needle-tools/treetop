@@ -13,6 +13,9 @@ import { redactLikelySecrets, type Redaction } from "./secret-redactor";
 export type SharePlatform = "darwin" | "linux" | "win32";
 export type ShareAgent = "claude" | "codex" | "ollama";
 export type ToolOutputMode = "stripped" | "included";
+/** Whether the sender's secret-redactor ran. The receiver shows a
+ *  different (more cautious) badge when `secrets: "raw"`. */
+export type SecretsMode = "redacted" | "raw";
 
 export interface SessionShareManifest {
   offerId: string;
@@ -33,6 +36,17 @@ export interface SessionShareManifest {
   bytes: number;
   toolOutputs: ToolOutputMode;
   strippedCount: number;
+  /** Whether the sender ran the secret-redactor. `redacted` (the
+   *  default) is what we recommend; `raw` is an opt-in escape for
+   *  cases where the receiver needs the exact payload. Optional for
+   *  backward-compat with manifests written before this field was
+   *  added — `validateManifest` treats an absent value as `redacted`. */
+  secrets?: SecretsMode;
+  /** Number of redactions performed across all kinds, surfaced so
+   *  the receiver inbox card can show "N likely secrets redacted"
+   *  without parsing the per-kind breakdown. Optional alongside
+   *  `secrets` for backward-compat. */
+  redactionCount?: number;
 }
 
 export type ValidateResult =
@@ -47,18 +61,53 @@ export interface PreparedJsonl {
   redactions: Redaction[];
 }
 
-/** The full send-side scrub: strip tool_results, then redact common
- *  secret formats. Two independent layers; either may fire on the
- *  same byte range. Tests live with the underlying functions; this
- *  is just a thin compose so callers don't forget step two. */
-export function prepareOutgoingJsonl(jsonl: string): PreparedJsonl {
-  const stripped = stripToolOutputs(jsonl);
-  const redacted = redactLikelySecrets(stripped.jsonl);
-  return {
-    jsonl: redacted.text,
-    strippedCount: stripped.strippedCount,
-    redactions: redacted.redactions,
-  };
+/** Caller-controlled toggles for the send-side scrub. The two layers
+ *  are independent (each can be turned off without affecting the
+ *  other), so the UI can present them as separate checkboxes:
+ *
+ *   - `includeToolOutputs: false` (default) → strip tool_result
+ *     blocks. Tool outputs commonly contain env dumps, file contents
+ *     from outside the shared repo, command output that mentions
+ *     internal paths, etc. — defence-in-depth even when the receiver
+ *     is the user's own other machine.
+ *   - `redactSecrets: true` (default) → run the secret-redactor over
+ *     text/thinking/tool_use blocks (the cases tool-stripping doesn't
+ *     reach: keys pasted into a prompt, Bearer headers in tool args,
+ *     PEM blobs in assistant output). */
+export interface PrepareOpts {
+  includeToolOutputs?: boolean;
+  redactSecrets?: boolean;
+}
+
+/** Run the send-side scrub with caller-chosen toggles. By default
+ *  both layers are active (tool outputs stripped + secrets redacted),
+ *  which matches the conservative "leak nothing accidentally" stance
+ *  documented in plans/PLAN-SESSION-SHARE.md. Either layer can be
+ *  disabled independently — the receiver sees the choice via the
+ *  manifest so accept/decline is informed. */
+export function prepareOutgoingJsonl(
+  jsonl: string,
+  opts: PrepareOpts = {},
+): PreparedJsonl {
+  const includeToolOutputs = opts.includeToolOutputs ?? false;
+  const redactSecrets = opts.redactSecrets ?? true;
+
+  let text = jsonl;
+  let strippedCount = 0;
+  let redactions: Redaction[] = [];
+
+  if (!includeToolOutputs) {
+    const r = stripToolOutputs(text);
+    text = r.jsonl;
+    strippedCount = r.strippedCount;
+  }
+  if (redactSecrets) {
+    const r = redactLikelySecrets(text);
+    text = r.text;
+    redactions = r.redactions;
+  }
+
+  return { jsonl: text, strippedCount, redactions };
 }
 
 /** Hard cap on a single offer payload. Anything larger is almost
@@ -431,6 +480,18 @@ export function validateManifest(m: unknown): ValidateResult {
   }
   if (!VALID_TOOL_OUTPUTS.includes(obj.toolOutputs as ToolOutputMode)) {
     return { ok: false, error: `unknown toolOutputs: ${obj.toolOutputs}` };
+  }
+  // `secrets` and `redactionCount` are optional for backward-compat
+  // with manifests built before the toggle split. When present they
+  // must be sane.
+  if (obj.secrets !== undefined && obj.secrets !== "redacted" && obj.secrets !== "raw") {
+    return { ok: false, error: `unknown secrets: ${obj.secrets}` };
+  }
+  if (
+    obj.redactionCount !== undefined &&
+    (typeof obj.redactionCount !== "number" || obj.redactionCount < 0)
+  ) {
+    return { ok: false, error: "redactionCount must be a non-negative number" };
   }
 
   if (typeof obj.turnCount !== "number" || obj.turnCount < 0) {
