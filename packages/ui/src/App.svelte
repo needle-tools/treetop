@@ -4831,7 +4831,7 @@
                            name / repo / title cells — no inline "·"
                            bullets, the gutter is the separator. -->
                       <span class="tui-repo muted small" title={p.cwd}>
-                        {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
+                        {ctx.repoName}{ctx.wtBranch ? ` ${ctx.wtBranch}` : ""}
                       </span>
                     {/if}
                     {#if ctx.title}
