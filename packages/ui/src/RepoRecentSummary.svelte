@@ -190,17 +190,39 @@
       return;
     }
     currentModel = pick;
+    // Track which stage we're in so a thrown TypeError surfaces as
+    // something useful ("daemon unreachable" vs "stream interrupted")
+    // instead of the browser's opaque "network error".
+    let stage: "connect" | "stream" = "connect";
     try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summarize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: pick }),
-        signal: aborter.signal,
-      });
-      if (!res.ok || !res.body) {
-        errorMsg = `HTTP ${res.status}`;
+      let res: Response;
+      try {
+        res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summarize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: pick }),
+          signal: aborter.signal,
+        });
+      } catch (e) {
+        // Connect-time failure: the daemon refused the connection or
+        // the SPA's tab is older than the current daemon. Either way
+        // the request never made it past the initial handshake.
+        if ((e as Error).name === "AbortError") throw e;
+        const detail = e instanceof Error ? e.message : String(e);
+        errorMsg = `Can't reach the daemon — ${detail}`;
         return;
       }
+      if (!res.ok || !res.body) {
+        let detail = "";
+        try {
+          detail = (await res.text()).slice(0, 200);
+        } catch {
+          // body unreadable
+        }
+        errorMsg = `HTTP ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`;
+        return;
+      }
+      stage = "stream";
       // We don't render streamed chunks live for repo summaries —
       // the strip is a "morning glance" surface, not an
       // entertainment piece. Consume + ignore the SSE body, then
@@ -225,8 +247,14 @@
           }
           if (event === "error") {
             try {
-              errorMsg =
-                (JSON.parse(data) as { message?: string }).message ?? "error";
+              const payload = JSON.parse(data) as {
+                kind?: string;
+                message?: string;
+              };
+              const label = errorLabelFor(payload.kind);
+              errorMsg = payload.message
+                ? `${label}: ${payload.message}`
+                : label;
             } catch {
               errorMsg = "error";
             }
@@ -271,11 +299,19 @@
         // from a clean unmount-abort (we don't know which on its own).
         // Show a short hint either way so a stuck summary is visible.
         if (queueSignal?.aborted) {
-          errorMsg = "timed out";
+          errorMsg = "timed out (60s)";
         }
         return;
       }
-      errorMsg = e instanceof Error ? e.message : String(e);
+      const detail = e instanceof Error ? e.message : String(e);
+      // A TypeError caught here only happens AFTER the stream opened
+      // (we already handled the connect-time TypeError above). So this
+      // is "stream interrupted" — daemon died or restarted mid-stream.
+      if (stage === "stream" && (e as Error).name === "TypeError") {
+        errorMsg = `Stream interrupted — ${detail}`;
+      } else {
+        errorMsg = detail;
+      }
     } finally {
       queueSignal?.removeEventListener("abort", onQueueAbort);
       generating = false;
@@ -293,6 +329,25 @@
     if (h < 24) return `${h}h ago`;
     const d = Math.floor(h / 24);
     return `${d}d ago`;
+  }
+
+  /** Human label for the SSE error `kind` tag the server attaches.
+   *  Lets us say "Ollama unreachable" instead of letting the message
+   *  do all the work — the kind+message pair is much easier to scan
+   *  than a raw "fetch failed" string. */
+  function errorLabelFor(kind: string | undefined): string {
+    switch (kind) {
+      case "ollama_unreachable":
+        return "Ollama unreachable";
+      case "ollama_model_missing":
+        return "Model not installed";
+      case "ollama_http":
+        return "Ollama error";
+      case "ollama_payload":
+        return "Ollama returned an error";
+      default:
+        return "error";
+    }
   }
 
   /** Compact "5.2k" / "880" style for the prompt's estimated token
@@ -407,7 +462,7 @@
         {/if}
       </span>
     {:else if errorMsg}
-      <span class="err">{errorMsg}</span>
+      <span class="err" title={errorMsg}>{errorMsg}</span>
     {:else if body}
       {#if frontmatter}
         <span
@@ -570,7 +625,15 @@
     font-size: 0.7rem;
     white-space: nowrap;
   }
-  .err { color: #e74c3c; }
+  .err {
+    color: #e74c3c;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: help;
+  }
   .refresh {
     flex: 0 0 auto;
     display: inline-flex;

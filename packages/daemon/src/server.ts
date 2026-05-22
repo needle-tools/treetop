@@ -3200,23 +3200,35 @@ const server = Bun.serve<TermWsData, never>({
             // Surface prompt-side budget to the client so the status
             // strip can show "context ~5.2k" alongside the model name.
             send("prompt", { estimatedTokens, promptChars: prompt.length });
-            const res = await fetch("http://127.0.0.1:11434/api/chat", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model,
-                stream: true,
-                messages: [
-                  { role: "system", content: systemPrompt },
-                  { role: "user", content: prompt },
-                  { role: "user", content: "Now summarise this." },
-                ],
-                options: {
-                  num_ctx: Math.max(8192, estimatedTokens * 2 + 2048),
-                },
-              }),
-              signal: abort.signal,
-            });
+            let res: Response;
+            try {
+              res = await fetch("http://127.0.0.1:11434/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  model,
+                  stream: true,
+                  messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: prompt },
+                    { role: "user", content: "Now summarise this." },
+                  ],
+                  options: {
+                    num_ctx: Math.max(8192, estimatedTokens * 2 + 2048),
+                  },
+                }),
+                signal: abort.signal,
+              });
+            } catch (e) {
+              // Connect-time failure (Ollama not running, wrong port,
+              // refused by firewall). Tag the SSE error so the client
+              // can show "Ollama unreachable" instead of a generic
+              // "network error" surfaced from the browser side.
+              const msg = e instanceof Error ? e.message : String(e);
+              throw Object.assign(new Error(`Ollama unreachable — ${msg}`), {
+                kind: "ollama_unreachable",
+              });
+            }
             if (!res.ok || !res.body) {
               // Ollama returns 404 with a JSON `error` field when the
               // model isn't installed (e.g. "model 'llama3.2:3b' not
@@ -3231,8 +3243,9 @@ const server = Bun.serve<TermWsData, never>({
               } catch {
                 // body unreadable or already consumed
               }
-              throw new Error(
-                `Ollama responded ${res.status} ${res.statusText}${detail}`,
+              throw Object.assign(
+                new Error(`Ollama responded ${res.status} ${res.statusText}${detail}`),
+                { kind: res.status === 404 ? "ollama_model_missing" : "ollama_http" },
               );
             }
             const reader = res.body.getReader();
@@ -3254,7 +3267,9 @@ const server = Bun.serve<TermWsData, never>({
                     error?: string;
                   };
                   if (obj.error) {
-                    throw new Error(obj.error);
+                    throw Object.assign(new Error(obj.error), {
+                      kind: "ollama_payload",
+                    });
                   }
                   const c = obj.message?.content ?? "";
                   if (c) {
@@ -3300,7 +3315,16 @@ const server = Bun.serve<TermWsData, never>({
             send("done", { elapsedMs: Date.now() - startedAt });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            send("error", { message: msg });
+            // Propagate the `kind` tag attached upstream (ollama_unreachable,
+            // ollama_model_missing, ollama_http, ollama_payload) so the
+            // client can distinguish a connect failure from a bad model
+            // from a mid-stream error instead of guessing.
+            const kind =
+              (e as { kind?: unknown }).kind &&
+              typeof (e as { kind?: unknown }).kind === "string"
+                ? ((e as { kind: string }).kind)
+                : "unknown";
+            send("error", { kind, message: msg });
           } finally {
             repoSummaryInflight.delete(id);
             try { controller.close(); } catch {}
