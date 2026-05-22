@@ -19,6 +19,7 @@ import {
   scanClaude,
   scanCodex,
   scanCopilot,
+  scanImported,
   type AgentSession,
 } from "../src/agents";
 
@@ -1034,4 +1035,77 @@ describe("agentsForWorktree", () => {
     expect(result.map((r) => r.agent)).toEqual(["codex", "claude", "copilot"]);
   });
 });
+
+describe("scanImported", () => {
+  test("returns [] when the imported-sessions directory does not exist", async () => {
+    const ws = await tempDir("supergit-imported-empty-");
+    expect(await scanImported(ws)).toEqual([]);
+  });
+
+  test("surfaces claude + codex imports with metadata from the sidecar", async () => {
+    const ws = await tempDir("supergit-imported-");
+    const claudeDir = join(ws, "imported-sessions", "marcels-mbp", "claude");
+    const codexDir = join(ws, "imported-sessions", "alice-desktop", "codex");
+    await mkdir(claudeDir, { recursive: true });
+    await mkdir(codexDir, { recursive: true });
+
+    await writeFile(join(claudeDir, "sid-1.jsonl"), '{"hello":"world"}\n');
+    await writeFile(
+      join(claudeDir, "sid-1.manifest.json"),
+      JSON.stringify({
+        sid: "sid-1",
+        title: "Refactor PTY scrub",
+        originMachineLabel: "Marcel's MBP",
+        localRepoPath: "/local/foo",
+        localWorktreePath: "/local/foo/.worktrees/feat-x",
+      }),
+    );
+
+    await writeFile(join(codexDir, "sid-2.jsonl"), "{}\n");
+    await writeFile(
+      join(codexDir, "sid-2.manifest.json"),
+      JSON.stringify({
+        sid: "sid-2",
+        title: "Codex session",
+        originMachineLabel: "Alice desktop",
+        localRepoPath: "/local/bar",
+      }),
+    );
+
+    const sessions = await scanImported(ws);
+    expect(sessions.length).toBe(2);
+
+    const c = sessions.find((s) => s.agent === "claude");
+    const x = sessions.find((s) => s.agent === "codex");
+    expect(c?.title).toBe("Refactor PTY scrub");
+    expect(c?.importedFrom).toBe("Marcel's MBP");
+    expect(c?.cwd).toBe(resolve("/local/foo/.worktrees/feat-x"));
+    expect(c?.sessionId).toBe("sid-1");
+    expect(x?.title).toBe("Codex session");
+    expect(x?.cwd).toBe(resolve("/local/bar"));
+    expect(x?.importedFrom).toBe("Alice desktop");
+  });
+
+  test("skips unknown agent subdirs", async () => {
+    const ws = await tempDir("supergit-imported-unknown-");
+    const dir = join(ws, "imported-sessions", "host", "skynet");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "x.jsonl"), "{}");
+    expect(await scanImported(ws)).toEqual([]);
+  });
+
+  test("still surfaces a session when its sidecar is missing — best-effort", async () => {
+    const ws = await tempDir("supergit-imported-no-sidecar-");
+    const dir = join(ws, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "orphan.jsonl"), "{}");
+
+    const sessions = await scanImported(ws);
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]?.sessionId).toBe("orphan");
+    expect(sessions[0]?.title).toBeUndefined();
+    expect(sessions[0]?.importedFrom).toBe("host");
+  });
+});
+
 

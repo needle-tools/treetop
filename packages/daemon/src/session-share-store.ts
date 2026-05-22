@@ -174,7 +174,17 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
     });
   }
 
-  const importDir = join(workspaceDir, IMPORTED_DIR, manifest.originMachine);
+  // Path: imported-sessions/<machine>/<agent>/<sid>.jsonl
+  // The <agent> segment lets the server's resolveSessionAgent figure
+  // out which JSONL parser to use without reading the sidecar — keeps
+  // that helper sync and matches the existing `~/.claude` /
+  // `~/.codex` segmentation.
+  const importDir = join(
+    workspaceDir,
+    IMPORTED_DIR,
+    manifest.originMachine,
+    manifest.agent,
+  );
   await mkdir(importDir, { recursive: true });
   const defaultPath = join(importDir, `${manifest.sid}.jsonl`);
   const sidecarPath = join(importDir, `${manifest.sid}.manifest.json`);

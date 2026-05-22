@@ -17,6 +17,11 @@ export interface AgentSession {
   agent: AgentKind;
   /** Resolved absolute path of the cwd the agent was working in. */
   cwd: string;
+  /** Set when the session was imported from another machine via the
+   *  session-share flow. Carries the originating machine's friendly
+   *  label so the UI can render an "↓ from <machine>" chip without
+   *  needing a second fetch. Absent for native sessions. */
+  importedFrom?: string;
   /** ISO timestamp; we use the session file mtime. */
   lastActive: string;
   /** Per-agent session id where available (used for resume). */
@@ -1009,16 +1014,102 @@ export async function scanOllama(workspacePath: string): Promise<AgentSession[]>
   return sessions;
 }
 
+/** Walk `<workspace>/imported-sessions/<machine>/<agent>/*.jsonl` and
+ *  surface each as an AgentSession, with metadata pulled from the
+ *  sidecar `.manifest.json` written at accept time. Each session's
+ *  `cwd` is the receiver-side path (already rewritten when the file
+ *  was imported), so `agentsForWorktree` matches imported sessions
+ *  against local worktrees the same way it matches native ones. */
+export async function scanImported(workspacePath: string): Promise<AgentSession[]> {
+  const root = join(workspacePath, "imported-sessions");
+  let machines: string[];
+  try {
+    machines = await readdir(root);
+  } catch {
+    return [];
+  }
+  const out: AgentSession[] = [];
+  for (const machine of machines) {
+    let agentDirs: string[];
+    try {
+      agentDirs = await readdir(join(root, machine));
+    } catch {
+      continue;
+    }
+    for (const agentDir of agentDirs) {
+      if (agentDir !== "claude" && agentDir !== "codex") continue;
+      const dir = join(root, machine, agentDir);
+      let entries: string[];
+      try {
+        entries = await readdir(dir);
+      } catch {
+        continue;
+      }
+      for (const name of entries) {
+        if (!name.endsWith(".jsonl")) continue;
+        const jsonlPath = join(dir, name);
+        const sid = name.replace(/\.jsonl$/, "").replace(/\.from-\d+$/, "");
+        const sidecarPath = join(dir, `${sid}.manifest.json`);
+        try {
+          const sidecarRaw = await readFile(sidecarPath, "utf-8");
+          const sidecar = JSON.parse(sidecarRaw) as {
+            sid?: string;
+            title?: string;
+            originMachineLabel?: string;
+            localRepoPath?: string;
+            localWorktreePath?: string;
+            createdAt?: string;
+          };
+          const cwd =
+            sidecar.localWorktreePath || sidecar.localRepoPath || "";
+          if (!cwd) continue;
+          const st = await stat(jsonlPath);
+          out.push({
+            agent: agentDir as "claude" | "codex",
+            cwd: resolve(cwd),
+            lastActive: st.mtime.toISOString(),
+            sessionId: sidecar.sid ?? sid,
+            source: jsonlPath,
+            title: sidecar.title,
+            importedFrom: sidecar.originMachineLabel ?? machine,
+          });
+        } catch {
+          // Missing or malformed sidecar — surface the file with
+          // best-effort metadata so the user still sees it instead of
+          // an invisible orphan.
+          try {
+            const st = await stat(jsonlPath);
+            out.push({
+              agent: agentDir as "claude" | "codex",
+              cwd: "",
+              lastActive: st.mtime.toISOString(),
+              sessionId: sid,
+              source: jsonlPath,
+              importedFrom: machine,
+            });
+          } catch {
+            // skip
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export async function detectAgents(workspacePath?: string): Promise<AgentSession[]> {
-  const [claude, codex, copilot, ollama] = await Promise.all([
+  const [claude, codex, copilot, ollama, imported] = await Promise.all([
     scanClaude().catch(() => []),
     scanCodex().catch(() => []),
     scanCopilot().catch(() => []),
     workspacePath
       ? scanOllama(workspacePath).catch(() => [])
       : Promise.resolve([] as AgentSession[]),
+    workspacePath
+      ? scanImported(workspacePath).catch(() => [])
+      : Promise.resolve([] as AgentSession[]),
   ]);
-  return [...claude, ...codex, ...copilot, ...ollama];
+  return [...claude, ...codex, ...copilot, ...ollama, ...imported];
 }
 
 /**

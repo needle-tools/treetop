@@ -4256,18 +4256,31 @@
    *  tick scrolls the column into view and toggles a brief outline
    *  highlight via `.session-col-focused`. */
   async function focusSessionBySource(source: string): Promise<void> {
-    let targetWtPath: string | null = null;
-    let agentName: OpenSession["agent"] | null = null;
-    for (const repo of repos) {
-      for (const wt of repo.worktrees ?? []) {
-        const found = (wt.agents ?? []).find((a) => a.source === source);
-        if (found) {
-          targetWtPath = wt.path;
-          agentName = found.agent;
-          break;
+    const findInRepos = () => {
+      let targetWtPath: string | null = null;
+      let agentName: OpenSession["agent"] | null = null;
+      for (const repo of repos) {
+        for (const wt of repo.worktrees ?? []) {
+          const found = (wt.agents ?? []).find((a) => a.source === source);
+          if (found) {
+            targetWtPath = wt.path;
+            agentName = found.agent;
+            break;
+          }
         }
+        if (targetWtPath) break;
       }
-      if (targetWtPath) break;
+      return { targetWtPath, agentName };
+    };
+
+    let { targetWtPath, agentName } = findInRepos();
+    if (!targetWtPath || !agentName) {
+      // The session may have just been created (e.g. a freshly
+      // imported session from session-share — we get the focus
+      // request before `load()` has had time to refetch /api/repos).
+      // Force one refresh and try again.
+      await load();
+      ({ targetWtPath, agentName } = findInRepos());
     }
     // Orphan session (no live worktree matches the saved source) —
     // we'd need a separate "orphan strip" surface to render it. For

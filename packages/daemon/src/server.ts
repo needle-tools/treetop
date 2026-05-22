@@ -149,6 +149,13 @@ function resolveSessionAgent(
     join(home, ".config", "openai-codex", "sessions") + sep,
   ];
   const ollamaRoot = join(WORKSPACE_PATH, "ollama") + sep;
+  // Imported sessions from session-share live under
+  //   <workspace>/imported-sessions/<machine>/<agent>/<sid>.jsonl
+  // The agent kind is encoded in the third-from-last path segment,
+  // which is why acceptOffer writes the file at that depth — keeps
+  // this resolver sync. The same path is recognised for either
+  // claude or codex; ollama imports aren't supported yet.
+  const importedRoot = join(WORKSPACE_PATH, "imported-sessions") + sep;
   const normalised = resolve(source);
   const ci = process.platform === "win32";
   const cmp = (s: string, prefix: string) =>
@@ -156,6 +163,15 @@ function resolveSessionAgent(
   if (cmp(normalised, claudeRoot)) return { agent: "claude", normalised };
   if (codexRoots.some((r) => cmp(normalised, r))) return { agent: "codex", normalised };
   if (cmp(normalised, ollamaRoot)) return { agent: "ollama", normalised };
+  if (cmp(normalised, importedRoot)) {
+    // Path looks like .../imported-sessions/<machine>/<agent>/<sid>.jsonl
+    // — peel three segments to extract the agent.
+    const parts = normalised.split(sep);
+    const agentSeg = parts[parts.length - 2];
+    if (agentSeg === "claude" || agentSeg === "codex") {
+      return { agent: agentSeg, normalised };
+    }
+  }
   return null;
 }
 

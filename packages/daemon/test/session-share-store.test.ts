@@ -135,7 +135,7 @@ describe("acceptOffer", () => {
 
     if (!result.ok) throw new Error("expected ok: " + result.error);
     expect(result.importedPath).toBe(
-      join(ws, "imported-sessions", "marcels-laptop", "sid-aaa.jsonl"),
+      join(ws, "imported-sessions", "marcels-laptop", "claude", "sid-aaa.jsonl"),
     );
 
     const imported = await readFile(result.importedPath, "utf-8");
@@ -144,7 +144,7 @@ describe("acceptOffer", () => {
 
     const sidecar = JSON.parse(
       await readFile(
-        join(ws, "imported-sessions", "marcels-laptop", "sid-aaa.manifest.json"),
+        join(ws, "imported-sessions", "marcels-laptop", "claude", "sid-aaa.manifest.json"),
         "utf-8",
       ),
     );
@@ -238,7 +238,7 @@ describe("acceptOffer", () => {
     const imported = await readFile(r.importedPath, "utf-8");
     expect(imported).toBe("new content");
     // Default-named file — same path as the first import.
-    expect(r.importedPath.endsWith("/sid-aaa.jsonl")).toBe(true);
+    expect(r.importedPath.endsWith("claude/sid-aaa.jsonl")).toBe(true);
   });
 
   test("mode=keep_both writes a sibling file with a suffix", async () => {

@@ -8,6 +8,7 @@
    * matching daemon route.
    */
   import { activeInvite, closeInvite } from "./receive-invite-dialog";
+  import { requestSessionFocus } from "./session-focus-store";
 
   interface InviteManifest {
     offerId: string;
@@ -117,6 +118,9 @@
         action = { kind: "err", message: body?.error ?? `HTTP ${res.status}` };
         return;
       }
+      const body = (await res.json().catch(() => null)) as
+        | { sid?: string; importedAs?: string }
+        | null;
       action = {
         kind: "ok",
         message:
@@ -126,6 +130,13 @@
               ? "Saved alongside the existing copy."
               : "Accepted. Session imported.",
       };
+      // Auto-focus the freshly imported session in its worktree
+      // strip. App.svelte's focusSessionBySource awaits one repos
+      // refresh if the source isn't in cache yet — which it
+      // typically won't be, since the import only just landed.
+      if (body?.importedAs) {
+        requestSessionFocus(body.importedAs);
+      }
       // Auto-close on success after a beat so the user sees the result
       // and so a fresh invite doesn't open over a stale state.
       setTimeout(() => closeInvite(), 1200);
