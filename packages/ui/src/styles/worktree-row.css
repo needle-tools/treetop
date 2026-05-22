@@ -1038,6 +1038,13 @@ button.branch-button:hover {
   row-gap: 0.18rem;
   font-size: 0.72rem;
   align-items: baseline;
+  /* Forces the enclosing `.tt-wide` tooltip to claim real width so
+     the `1fr` subject column has somewhere to expand into. Without
+     this the tooltip shrunk to min-content and chopped subjects at
+     ~40 chars. Scoped to this grid (rather than `.tt-wide`) so file-
+     list tooltips stay compact. `min(...)` keeps the floor honest on
+     narrow viewports. */
+  min-width: min(64rem, 90vw);
 }
 .wt-tt-sha {
   font-family: ui-monospace, monospace;
