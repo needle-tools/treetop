@@ -15,6 +15,15 @@ Tracking cross-platform issues found while porting supergit to Windows.
 - [x] **Agent binary resolution** (`procs.ts:resolveAgentBinary`) — PATH dirs joined
       with `/` instead of `path.join()`. Also: didn't probe `.exe`/`.cmd` suffixes,
       so `claude.exe` and `codex.cmd` were invisible.
+- [x] **TUI spawn: error 193** (`procs.ts:resolveAgentBinary`,
+      `node-pty-backend.ts:spawn`) — creating a codex session died with
+      `spawn failed: Cannot create process, error code: 193`. npm installs
+      the codex CLI as four sibling files sharing one mtime (bare bash
+      script, `.cmd`, `.ps1`, no `.exe`), the resolver was picking the
+      bare script, and ConPTY's CreateProcess can't execute non-PE
+      files. Fix: resolver now probes only `.exe/.cmd/.bat/.ps1` on
+      Windows; backend wraps `.cmd`/`.bat` in `cmd.exe /d /s /c` and
+      `.ps1` in `powershell.exe -File` before handing to node-pty.
 - [x] **Submodule worktree detection** (`git.ts:99,115`) — `.includes("/.git/")`
       misses `\.git\` on Windows. Now uses regex `/[/\\]\.git[/\\]/`.
 - [x] **Session ID from path** (`agents.ts:825`) — `split("/")` on session file path.

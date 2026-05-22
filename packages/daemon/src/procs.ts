@@ -53,9 +53,18 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
   for (const dir of pathDirs) {
     all.push(join(dir, name));
   }
-  // On Windows, CLI tools are often installed as .exe or .cmd — probe
-  // those suffixes in addition to the bare name.
-  const exts = process.platform === "win32" ? ["", ".exe", ".cmd"] : [""];
+  // On Windows, CLI tools are installed as one of .exe / .cmd / .bat /
+  // .ps1. CreateProcess (which node-pty's ConPTY backend uses) can ONLY
+  // execute PE binaries — handing it a bare bash script or a .ps1 file
+  // produces ERROR_BAD_EXE_FORMAT (193). npm installs codex/claude as
+  // four sibling files in the same dir — a bare bash script, .cmd,
+  // .ps1, and (sometimes) .exe — all sharing one mtime. If we left the
+  // bare extension in the candidate set, mtime ties would pick the
+  // bash script and every TUI spawn would die at error 193. Probing
+  // only the spawnable extensions sidesteps that entirely.
+  const exts = process.platform === "win32"
+    ? [".exe", ".cmd", ".bat", ".ps1"]
+    : [""];
   for (const p of all) {
     for (const ext of exts) {
       const full = p + ext;
@@ -83,6 +92,52 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
     }
   }
   return best?.path ?? candidates[0] ?? null;
+}
+
+/** Wrap a Windows command so node-pty's ConPTY backend can spawn it.
+ *
+ *  CreateProcess (which ConPTY ultimately calls) can only execute PE
+ *  binaries. A `.cmd`/`.bat` needs `cmd.exe /c`, and a `.ps1` needs
+ *  `powershell.exe -File`. Without this wrap, `codex.cmd` (npm's
+ *  global install of the codex CLI) blows up with
+ *  `spawn failed: Cannot create process, error code: 193`
+ *  (ERROR_BAD_EXE_FORMAT) the moment a user clicks "new TUI" on
+ *  Windows.
+ *
+ *  Pure function — does NOT check `process.platform`. Callers apply
+ *  it only on Windows. Returns the input array unchanged for `.exe`,
+ *  extensionless commands, or an empty cmd, so it's safe to call
+ *  blindly when the caller has already gated on platform.
+ *
+ *  Why /d /s /c:
+ *  - /d: skip per-user AutoRun — avoids dragging registry-configured
+ *    cmd hooks into the TUI session.
+ *  - /s: makes cmd's quote-stripping rules predictable when the path
+ *    after /c is itself quoted (paths with spaces, e.g.
+ *    `C:\Users\Joe Bloggs\AppData\Roaming\npm\codex.cmd`).
+ *  - /c: run the command and exit, so PTY lifetime tracks the CLI.
+ */
+export function wrapWindowsCmd(cmd: string[]): string[] {
+  if (cmd.length === 0) return cmd;
+  const head = cmd[0]!;
+  const dot = head.lastIndexOf(".");
+  const ext = dot >= 0 ? head.slice(dot).toLowerCase() : "";
+  if (ext === ".cmd" || ext === ".bat") {
+    return ["cmd.exe", "/d", "/s", "/c", head, ...cmd.slice(1)];
+  }
+  if (ext === ".ps1") {
+    return [
+      "powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      head,
+      ...cmd.slice(1),
+    ];
+  }
+  return cmd;
 }
 
 /** Single-quote a shell argument robustly. Empty strings are fine; any

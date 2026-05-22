@@ -12,7 +12,13 @@
 import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
 import { NodePtyBackend, detectAgentLabel } from "../src/terminals/node-pty-backend";
-import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
+import {
+  sampleProcs,
+  shQuote,
+  renameArgv,
+  resolveAgentBinary,
+  wrapWindowsCmd,
+} from "../src/procs";
 import { mkdtemp, writeFile, readFile, mkdir, chmod, utimes, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -574,17 +580,17 @@ describe("resolveAgentBinary", () => {
       //     regardless of the executable bit, which is what
       //     resolveAgentBinary cares about.
       //   - PATH separator is ":" on Unix and ";" on Windows.
-      //   - File extension: on Windows, executables typically need a
-      //     ".exe" / ".cmd" suffix. We don't add one; resolveAgentBinary
-      //     uses bare filenames just like `bun install -g` does on
-      //     Windows (it puts a .cmd shim there). This test passes on
-      //     Windows because we're not actually executing the file —
-      //     we just check `stat()` finds it.
-      const agent = `supergit-test-agent-${Date.now().toString(36)}`;
+      //   - File extension: on Windows we MUST use ".cmd" (or ".exe")
+      //     here because resolveAgentBinary excludes bare-extension
+      //     candidates on Windows — CreateProcess can't spawn them,
+      //     so picking one would just produce error 193 downstream.
+      const agentName = `supergit-test-agent-${Date.now().toString(36)}`;
+      const agent = agentName;
+      const fileExt = isWin ? ".cmd" : "";
       const dirA = await mkdtemp(join(tmpdir(), "supergit-bin-a-"));
       const dirB = await mkdtemp(join(tmpdir(), "supergit-bin-b-"));
-      const pathA = join(dirA, agent);
-      const pathB = join(dirB, agent);
+      const pathA = join(dirA, agent + fileExt);
+      const pathB = join(dirB, agent + fileExt);
       await writeFile(pathA, "#!/bin/sh\necho A\n");
       await writeFile(pathB, "#!/bin/sh\necho B\n");
       try { await chmod(pathA, 0o755); } catch {}
@@ -605,6 +611,92 @@ describe("resolveAgentBinary", () => {
     },
     10_000,
   );
+});
+
+describe.skipIf(!isWin)("resolveAgentBinary on Windows", () => {
+  test(
+    "prefers a spawnable .cmd over a bare bash script with equal mtime",
+    async () => {
+      // npm installs CLIs as a bash script + a .cmd + a .ps1, all
+      // sharing one mtime. CreateProcess can't execute the bash
+      // script (ERROR_BAD_EXE_FORMAT 193) — only .exe/.cmd/.bat/.ps1
+      // are spawnable. The resolver must skip the bare script.
+      const agent = `supergit-test-winagent-${Date.now().toString(36)}`;
+      const dir = await mkdtemp(join(tmpdir(), "supergit-winbin-"));
+      const bare = join(dir, agent);
+      const cmdFile = join(dir, agent + ".cmd");
+      await writeFile(bare, "#!/bin/sh\necho A\n");
+      await writeFile(cmdFile, "@echo off\r\necho A\r\n");
+      const same = new Date("2026-04-01T00:00:00Z");
+      await utimes(bare, same, same);
+      await utimes(cmdFile, same, same);
+      const origPath = process.env.PATH ?? "";
+      process.env.PATH = [dir, origPath].filter(Boolean).join(";");
+      try {
+        const r = await resolveAgentBinary(agent);
+        expect(r).toBe(cmdFile);
+      } finally {
+        process.env.PATH = origPath;
+      }
+    },
+    10_000,
+  );
+});
+
+describe("wrapWindowsCmd", () => {
+  test("wraps a .cmd file in cmd.exe /d /s /c", () => {
+    expect(
+      wrapWindowsCmd(["C:\\Users\\m\\AppData\\Roaming\\npm\\codex.cmd", "exec"]),
+    ).toEqual([
+      "cmd.exe",
+      "/d",
+      "/s",
+      "/c",
+      "C:\\Users\\m\\AppData\\Roaming\\npm\\codex.cmd",
+      "exec",
+    ]);
+  });
+
+  test("wraps a .bat file the same way", () => {
+    expect(wrapWindowsCmd(["foo.bat", "a", "b"])).toEqual([
+      "cmd.exe", "/d", "/s", "/c", "foo.bat", "a", "b",
+    ]);
+  });
+
+  test("wraps a .ps1 file in powershell -File", () => {
+    expect(wrapWindowsCmd(["C:\\tools\\codex.ps1", "--help"])).toEqual([
+      "powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "C:\\tools\\codex.ps1",
+      "--help",
+    ]);
+  });
+
+  test("passes a .exe through unchanged", () => {
+    expect(wrapWindowsCmd(["C:\\Windows\\System32\\cmd.exe", "/c", "dir"])).toEqual([
+      "C:\\Windows\\System32\\cmd.exe", "/c", "dir",
+    ]);
+  });
+
+  test("passes an extensionless head through unchanged (caller decides)", () => {
+    expect(wrapWindowsCmd(["bash", "-c", "echo hi"])).toEqual([
+      "bash", "-c", "echo hi",
+    ]);
+  });
+
+  test("handles an empty cmd defensively", () => {
+    expect(wrapWindowsCmd([])).toEqual([]);
+  });
+
+  test("ext check is case-insensitive (.CMD treated as .cmd)", () => {
+    expect(wrapWindowsCmd(["C:\\Tools\\AGENT.CMD"])).toEqual([
+      "cmd.exe", "/d", "/s", "/c", "C:\\Tools\\AGENT.CMD",
+    ]);
+  });
 });
 
 describe("shQuote", () => {

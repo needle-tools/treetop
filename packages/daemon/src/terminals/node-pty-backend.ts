@@ -19,6 +19,7 @@ import type {
   TerminalSubscriber,
 } from "./types";
 import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
+import { wrapWindowsCmd } from "../procs";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 
@@ -368,11 +369,18 @@ export class NodePtyBackend implements PtyBackend {
       t.spawnedAck = { resolve, reject };
     });
     this.terms.set(id, t);
+    // On Windows, node-pty's ConPTY backend calls CreateProcess, which
+    // only handles PE binaries — wrap `.cmd`/`.bat`/`.ps1` in their
+    // respective launchers. We keep `t.cmd` as the *original* (so the
+    // dashboard still shows `codex.cmd`, agent detection still labels
+    // it `codex`, etc.) and only wrap the cmd we hand to the helper.
+    const cmdForHelper =
+      process.platform === "win32" ? wrapWindowsCmd(opts.cmd) : opts.cmd;
     this.send({
       op: "spawn",
       id,
       cwd: opts.cwd,
-      cmd: opts.cmd,
+      cmd: cmdForHelper,
       env,
       cols: opts.size.cols,
       rows: opts.size.rows,
