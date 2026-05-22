@@ -61,14 +61,55 @@
     function reposition() {
       if (!wrapEl) return;
       const r = wrapEl.getBoundingClientRect();
+      const margin = 6;
       node.style.position = "fixed";
+      // First pass: place flush with the trigger's left + below/above
+      // it. We measure the popup's natural size in this position and
+      // then clamp horizontally + flip vertically below so it never
+      // overflows the viewport. (Initial style writes are inside the
+      // same task; the browser only paints once after we're done.)
       node.style.left = `${Math.round(r.left)}px`;
+      node.style.right = "auto";
       if (placement === "top") {
-        node.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+        node.style.bottom = `${Math.round(window.innerHeight - r.top + margin)}px`;
         node.style.top = "auto";
       } else {
-        node.style.top = `${Math.round(r.bottom + 6)}px`;
+        node.style.top = `${Math.round(r.bottom + margin)}px`;
         node.style.bottom = "auto";
+      }
+
+      // Horizontal clamp. The menubar lives flush against the right
+      // edge of the viewport, so a tooltip anchored to its trigger's
+      // left would otherwise extend past the right edge. Prefer
+      // right-alignment to the trigger when the tooltip is wider than
+      // the space to the right; only after that, hard-clamp into the
+      // viewport so even very wide tooltips remain fully visible.
+      const tr = node.getBoundingClientRect();
+      let left = r.left;
+      if (left + tr.width > window.innerWidth - margin) {
+        left = r.right - tr.width;
+      }
+      if (left + tr.width > window.innerWidth - margin) {
+        left = window.innerWidth - tr.width - margin;
+      }
+      if (left < margin) left = margin;
+      node.style.left = `${Math.round(left)}px`;
+
+      // Vertical flip. If the requested placement would push the
+      // tooltip past the viewport edge, swap to the opposite side
+      // when there's more room there. Don't oscillate: only flip when
+      // the chosen side genuinely won't fit.
+      const spaceBelow = window.innerHeight - r.bottom - margin;
+      const spaceAbove = r.top - margin;
+      const wantsBottom = placement !== "top";
+      const fitsBottom = tr.height <= spaceBelow;
+      const fitsTop = tr.height <= spaceAbove;
+      if (wantsBottom && !fitsBottom && fitsTop) {
+        node.style.top = "auto";
+        node.style.bottom = `${Math.round(window.innerHeight - r.top + margin)}px`;
+      } else if (!wantsBottom && !fitsTop && fitsBottom) {
+        node.style.bottom = "auto";
+        node.style.top = `${Math.round(r.bottom + margin)}px`;
       }
     }
     reposition();

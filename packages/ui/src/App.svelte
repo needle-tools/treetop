@@ -4719,6 +4719,13 @@
        so the existing actions-popover (top-right anchored) keeps
        working unchanged. -->
   <nav class="menubar" aria-label="Workspace actions">
+    <!-- Per-agent usage buttons live leftmost — one icon-only button
+         per detected coding agent (Claude / Codex / Ollama / Copilot),
+         each with its own hover tooltip. Claude renders the real
+         /api/oauth/usage bars; others fall back to local JSONL
+         counts. AgentUsageChip iterates and emits the buttons here. -->
+    <AgentUsageChip />
+
     <div class="actions-anchor tuis-anchor">
       <button
         class="actions-btn tuis-btn"
@@ -4820,8 +4827,6 @@
         </Popover>
       {/if}
     </div>
-
-    <AgentUsageChip />
 
     {#if orphanNotes.length > 0}
       <div class="actions-anchor notes-tray-anchor">
