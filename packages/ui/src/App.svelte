@@ -31,6 +31,8 @@
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
   import { openInvite } from "./receive-invite-dialog";
+  import MessagesInbox from "./MessagesInbox.svelte";
+  import { refreshMessages } from "./messages-store";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
@@ -3490,6 +3492,29 @@
         }
         return;
       }
+      if (payload.kind === "message_received") {
+        // Refresh the inbox snapshot, then surface a toast unless the
+        // sender is currently muted. The toast is auto-dismiss so it
+        // doesn't pile up; the badge on the Inbox pill is the
+        // persistent surface.
+        const muted = (payload as { muted?: unknown }).muted === true;
+        const from = (payload as { from?: { label?: unknown } }).from;
+        const label =
+          from && typeof from.label === "string" ? from.label : "a peer";
+        void refreshMessages();
+        if (!muted) {
+          addToast({
+            kind: "info",
+            title: `Message from ${label}`,
+            message: "click the Inbox pill to read",
+          });
+        }
+        return;
+      }
+      if (payload.kind === "message_mute" || payload.kind === "message_unmute") {
+        void refreshMessages();
+        return;
+      }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
       fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
@@ -4882,6 +4907,8 @@
         {/if}
       </div>
     {/if}
+
+    <MessagesInbox />
 
     <div class="actions-anchor">
       <button

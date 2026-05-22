@@ -44,6 +44,7 @@ import { OllamaSessionsLog } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
+import { pingSubscribers } from "./sse-heartbeat";
 import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
@@ -85,6 +86,15 @@ import {
   type PeerIdentity,
 } from "./peer-identity";
 import { PeerDiscovery } from "./peer-discovery";
+import {
+  addIncomingMessage,
+  getMessages,
+  mutePeer,
+  unmutePeer,
+  listMutes,
+  isPeerMuted,
+  MAX_BODY_BYTES,
+} from "./messages";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -437,6 +447,23 @@ function corsHeaders(req: Request): Record<string, string> {
 // clients refresh without polling.
 const sseSubscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
+
+// Periodic SSE comment-frame heartbeat. Without this, an EventSource
+// only learns its connection is dead via TCP error — which on Windows
+// after sleep/wake (or behind a proxy that drops idle conns) can take
+// minutes, during which the dashboard's "● connected" pill silently
+// lies and `change`/`fs_change` events go nowhere. Writing `: ping\n\n`
+// on a fixed interval forces the half-open socket to error fast so
+// EventSource's auto-reconnect can kick in. Override with
+// SUPERGIT_SSE_HEARTBEAT_MS=0 to disable (e.g. in tests that spin up
+// the daemon and want a quiet stream).
+const SSE_HEARTBEAT_MS = Math.max(
+  0,
+  Number(process.env.SUPERGIT_SSE_HEARTBEAT_MS ?? 20_000),
+);
+if (SSE_HEARTBEAT_MS > 0) {
+  setInterval(() => pingSubscribers(sseSubscribers), SSE_HEARTBEAT_MS).unref?.();
+}
 
 function broadcast(event: string, data: unknown): void {
   // Mutations expire the /api/repos cache so the UI's follow-up GET
@@ -2522,6 +2549,165 @@ const server = Bun.serve<TermWsData, never>({
       // Share dialog renders this as a clickable list; empty list is
       // fine — the dialog falls back to manual host:port.
       return json({ peers: peerDiscovery?.peers() ?? [] });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Peer-to-peer message inbox. Tiny: max MAX_BODY_BYTES per
+    // message, last 5 per sender, no chat threading. The receiver
+    // never auto-acts on body content — UI shows monospace + a
+    // Copy button. Mute is a receiver-side preference.
+    // ──────────────────────────────────────────────────────────────
+
+    if (url.pathname === "/api/messages" && req.method === "GET") {
+      const [inbox, mutes] = await Promise.all([
+        getMessages(workspace.path),
+        listMutes(workspace.path),
+      ]);
+      return json({ inbox, mutes });
+    }
+
+    if (url.pathname === "/api/messages/send" && req.method === "POST") {
+      // Sender side — POST our message to the chosen peer's
+      // /api/messages/receive endpoint. We never store outbound
+      // messages locally; if you want a sent-history, that's v2.
+      const body = (await req.json().catch(() => null)) as
+        | {
+            peerHost?: unknown;
+            peerPort?: unknown;
+            body?: unknown;
+          }
+        | null;
+      const peerHost =
+        typeof body?.peerHost === "string" ? body.peerHost : "";
+      const peerPort =
+        typeof body?.peerPort === "number" ? body.peerPort : 0;
+      const text = typeof body?.body === "string" ? body.body : "";
+      if (!peerHost || !peerPort || !text) {
+        return json(
+          { error: "peerHost, peerPort, body (non-empty string) required" },
+          { status: 400 },
+        );
+      }
+      if (text.length > MAX_BODY_BYTES) {
+        return json(
+          { error: `body exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})` },
+          { status: 413 },
+        );
+      }
+      if (!peerIdentity) {
+        return json({ error: "identity not ready" }, { status: 503 });
+      }
+      const payload = {
+        from: { id: peerIdentity.id, label: peerIdentity.label },
+        body: text,
+        sentAt: new Date().toISOString(),
+      };
+      const peerUrl = `http://${peerHost}:${peerPort}/api/messages/receive`;
+      let peerRes: Response;
+      try {
+        peerRes = await fetch(peerUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        return json(
+          {
+            error:
+              "could not reach peer: " +
+              (e instanceof Error ? e.message : String(e)),
+          },
+          { status: 502 },
+        );
+      }
+      if (peerRes.status !== 202) {
+        const errText = await peerRes.text().catch(() => "");
+        return json(
+          { error: `peer rejected message (${peerRes.status}): ${errText}` },
+          { status: 502 },
+        );
+      }
+      return json({ ok: true, sentAt: payload.sentAt }, { status: 202 });
+    }
+
+    if (url.pathname === "/api/messages/receive" && req.method === "POST") {
+      // Receiver side — another daemon delivers a message to us.
+      // Validate, store in the ring buffer, broadcast a change so
+      // the dashboard can fire its toast and update the pill count.
+      // The sender knows nothing about our mute state; we still
+      // store muted messages (so they appear when the mute lifts)
+      // but suppress the toast.
+      const body = (await req.json().catch(() => null)) as
+        | {
+            from?: { id?: unknown; label?: unknown };
+            body?: unknown;
+            sentAt?: unknown;
+          }
+        | null;
+      const fromId =
+        body?.from && typeof body.from.id === "string" ? body.from.id : "";
+      const fromLabel =
+        body?.from && typeof body.from.label === "string"
+          ? body.from.label
+          : "";
+      const text = typeof body?.body === "string" ? body.body : "";
+      const sentAt = typeof body?.sentAt === "string" ? body.sentAt : "";
+      if (!fromId || !fromLabel || !text || !sentAt) {
+        return json(
+          { error: "from.id, from.label, body, sentAt all required" },
+          { status: 400 },
+        );
+      }
+      if (text.length > MAX_BODY_BYTES) {
+        return json(
+          { error: `body exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})` },
+          { status: 413 },
+        );
+      }
+      await addIncomingMessage(workspace.path, {
+        from: { id: fromId, label: fromLabel },
+        body: text,
+        sentAt,
+      });
+      const muted = await isPeerMuted(workspace.path, fromId);
+      broadcast("change", {
+        kind: "message_received",
+        from: { id: fromId, label: fromLabel },
+        muted,
+      });
+      return json({ ok: true }, { status: 202 });
+    }
+
+    const muteMatch = url.pathname.match(/^\/api\/messages\/mute$/);
+    if (muteMatch && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { peerId?: unknown; durationMinutes?: unknown }
+        | null;
+      const peerId = typeof body?.peerId === "string" ? body.peerId : "";
+      const dur =
+        typeof body?.durationMinutes === "number" ? body.durationMinutes : 0;
+      if (!peerId || !Number.isFinite(dur) || dur <= 0) {
+        return json(
+          { error: "peerId, durationMinutes (positive number) required" },
+          { status: 400 },
+        );
+      }
+      await mutePeer(workspace.path, peerId, dur);
+      broadcast("change", { kind: "message_mute", peerId });
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/messages/unmute" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { peerId?: unknown }
+        | null;
+      const peerId = typeof body?.peerId === "string" ? body.peerId : "";
+      if (!peerId) {
+        return json({ error: "peerId required" }, { status: 400 });
+      }
+      await unmutePeer(workspace.path, peerId);
+      broadcast("change", { kind: "message_unmute", peerId });
+      return new Response(null, { status: 204, headers: CORS });
     }
 
     if (url.pathname === "/api/sessions/offer" && req.method === "POST") {
