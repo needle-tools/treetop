@@ -183,6 +183,25 @@
   flex: 1;
   word-break: break-word;
 }
+/* When a toast carries both a title and a message, stack them as two
+   rows with a small gap so the title reads as a heading rather than
+   running into the message (the old "Session invite click to review"
+   on one line read as a single sentence). Toasts without a title fall
+   back to the inline layout — message-only toasts have nothing to
+   stack against. */
+.toast-body-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.toast-title {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.toast-message {
+  color: var(--text-2);
+  font-size: 0.78rem;
+}
 .toast-close {
   background: transparent;
   color: var(--text-muted);

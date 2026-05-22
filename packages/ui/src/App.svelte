@@ -7034,9 +7034,11 @@
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
         <div
           class="toast-body"
+          class:toast-body-stacked={!!t.title}
           on:click={t.onClick ? () => { t.onClick?.(); dismissToast(t.id); } : undefined}
         >
-          {#if t.title}<strong>{t.title}</strong> {/if}{t.message}
+          {#if t.title}<strong class="toast-title">{t.title}</strong>{/if}
+          <span class="toast-message">{t.message}</span>
         </div>
         <button
           class="toast-close"
