@@ -209,8 +209,23 @@ interface ClaudeSessionTokenTotals {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Billing-faithful weighted sum used to rank sessions in the
+   *  "top sessions this week" list. Anthropic prices cache reads at
+   *  ~10% of input, so a raw sum of all four fields is dominated by
+   *  cache_read (every assistant turn re-reads the cached context)
+   *  and turns a thoughtful one-hour session into a 100M-token
+   *  monster. Formula: in + out + cache_write + CACHE_READ_WEIGHT *
+   *  cache_read. Keep the unweighted fields above for any consumer
+   *  that wants a different breakdown. */
   totalTokens: number;
 }
+
+/** Cache-read price multiplier on the Anthropic API (roughly 0.1 of
+ *  the per-input-token rate at time of writing). Used to fold
+ *  cache-read tokens into `totalTokens` without letting them swamp
+ *  the ranking. If Anthropic re-prices, bump this; the unweighted
+ *  cache_read count stays on `cacheReadTokens` either way. */
+const CACHE_READ_WEIGHT = 0.1;
 
 /** (path, mtime+since) → in-window token sums. The `sinceMs` parameter
  *  is baked into the cache key so a Tuesday read and a Saturday read
@@ -296,7 +311,12 @@ export async function scanClaudeSessionTokenTotals(
     outputTokens,
     cacheReadTokens,
     cacheCreationTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+    totalTokens: Math.round(
+      inputTokens +
+        outputTokens +
+        cacheCreationTokens +
+        CACHE_READ_WEIGHT * cacheReadTokens,
+    ),
   };
   if (mtimeMs !== undefined) {
     claudeTokenScanCache.set(cacheKey, { mtimeMs, sinceMs, result });
@@ -309,8 +329,11 @@ export async function scanClaudeSessionTokenTotals(
 }
 
 /** Walk every Claude AgentSession active in the past week, fetch its
- *  token totals, and return the top-N sorted by totalTokens desc. */
-async function topClaudeSessionsByTokens(
+ *  token totals, and return the top-N sorted by totalTokens desc.
+ *  Exported so the route can serve this independently of the main
+ *  /api/agent-usage payload — the scan is the slowest part of the
+ *  report, so we lazy-load it. */
+export async function topClaudeSessionsByTokens(
   sessions: AgentSession[],
   now: number,
   limit: number,

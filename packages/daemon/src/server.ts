@@ -31,7 +31,7 @@ import {
   groupSessionsByFolder,
   type FolderSuggestion,
 } from "./agents";
-import { computeAgentUsage } from "./agent-usage";
+import { computeAgentUsage, topClaudeSessionsByTokens } from "./agent-usage";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats, parseSessionFile } from "./sessions";
 import { serveImage } from "./images";
@@ -536,6 +536,16 @@ const AGENT_USAGE_CACHE_MS = 60_000;
 let agentUsageCache: {
   at: number;
   value: Awaited<ReturnType<typeof computeAgentUsage>> | null;
+} = { at: 0, value: null };
+
+// /api/agent-usage/claude-top-sessions has its own cache because it's
+// served from a different route now — top-sessions is the slowest
+// part of the report (full JSONL scan over every Claude session
+// active in the past week) so the tooltip fetches it lazily after
+// the main payload lands. Same 60s TTL.
+let claudeTopSessionsCache: {
+  at: number;
+  value: Awaited<ReturnType<typeof topClaudeSessionsByTokens>> | null;
 } = { at: 0, value: null };
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
@@ -1405,6 +1415,13 @@ const server = Bun.serve<TermWsData, never>({
     // to render the menubar agent-usage chip (per-agent logos + hover
     // tooltip). 60s in-memory cache keeps the JSONL scan from running
     // on every poll while still feeling live.
+    //
+    // Claude top-sessions is intentionally skipped here — it's the
+    // slowest piece of the report (full JSONL token scan over every
+    // Claude session active in the past week) so the UI fetches it
+    // separately from /api/agent-usage/claude-top-sessions and
+    // renders a spinner in the tooltip slot until it arrives. Keeps
+    // the bars + live numbers visible quickly.
     if (url.pathname === "/api/agent-usage" && req.method === "GET") {
       const now = Date.now();
       if (
@@ -1414,9 +1431,34 @@ const server = Bun.serve<TermWsData, never>({
         return json(agentUsageCache.value);
       }
       const agents = await detectAgents(WORKSPACE_PATH);
-      const report = await computeAgentUsage(agents, now);
+      const report = await computeAgentUsage(agents, now, {
+        skipClaudeTopSessions: true,
+      });
       agentUsageCache = { at: now, value: report };
       return json(report);
+    }
+
+    // GET /api/agent-usage/claude-top-sessions — slow companion to
+    // /api/agent-usage. Returns just the top-N Claude sessions of the
+    // past week ranked by weighted token total (in + out +
+    // cache_write + 0.1·cache_read; weighted to keep cache_read from
+    // dominating). 60s in-memory cache. Empty list when no Claude
+    // sessions are detected or none have a usage block in window.
+    if (
+      url.pathname === "/api/agent-usage/claude-top-sessions" &&
+      req.method === "GET"
+    ) {
+      const now = Date.now();
+      if (
+        claudeTopSessionsCache.value &&
+        now - claudeTopSessionsCache.at < AGENT_USAGE_CACHE_MS
+      ) {
+        return json({ claudeTopSessions: claudeTopSessionsCache.value });
+      }
+      const agents = await detectAgents(WORKSPACE_PATH);
+      const top = await topClaudeSessionsByTokens(agents, now, 5);
+      claudeTopSessionsCache = { at: now, value: top };
+      return json({ claudeTopSessions: top });
     }
 
     // GET /api/sessions/folder-suggestions — derive a list of folders the

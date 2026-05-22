@@ -278,7 +278,12 @@ describe("scanClaudeSessionTokenTotals", () => {
     expect(totals.outputTokens).toBe(250);
     expect(totals.cacheReadTokens).toBe(5000);
     expect(totals.cacheCreationTokens).toBe(100);
-    expect(totals.totalTokens).toBe(1000 + 250 + 5000 + 100);
+    // Billing-faithful weighting: cache_read counts at 0.1× because
+    // Anthropic prices it that way, and a raw sum is dominated by
+    // cache replay rather than work done.
+    //   1000 (in) + 250 (out) + 100 (cache_write) + 0.1 * 5000 (cache_read)
+    //   = 1000 + 250 + 100 + 500 = 1850
+    expect(totals.totalTokens).toBe(1850);
   });
 
   test("turns without a usage block contribute 0", async () => {
