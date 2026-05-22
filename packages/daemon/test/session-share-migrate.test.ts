@@ -191,7 +191,10 @@ describe("migrateClaudeImportsToProjects", () => {
       }),
     );
     await migrateClaudeImportsToProjects(w, root);
-    await access(join(root, "-local-bar-.worktrees-feat-x", "s.jsonl"));
+    // `.worktrees` encodes to `-worktrees` — `.` is replaced with `-`
+    // to match Claude's actual encoder. A naive reading might expect
+    // `.worktrees` preserved; that would mis-locate the file.
+    await access(join(root, "-local-bar--worktrees-feat-x", "s.jsonl"));
   });
 
   test("idempotent: a sidecar whose importedJsonlPath already points at an existing file is left alone", async () => {
@@ -279,6 +282,56 @@ describe("migrateClaudeImportsToProjects", () => {
       "abc.jsonl.migrated-bak",
       "abc.manifest.json",
     ]);
+  });
+
+  test("re-migrates when sidecar.importedJsonlPath is stale (encoder changed)", async () => {
+    // Reproduces the bug we hit in prod: an earlier encoder produced
+    // `-Users-...-js-package~` for a cwd ending in `~`; the current
+    // encoder produces `-Users-...-js-package-` because `~` now
+    // gets replaced with `-` to match Claude's own behaviour.
+    // After the encoder change, the migrator must detect that the
+    // sidecar's pointer is stale and move the file to where the
+    // current encoder lands it. Otherwise claude --resume keeps
+    // failing.
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    // Stale dir, where the old encoder placed the file:
+    const staleDir = join(root, "-foo-bar-pkg~");
+    // Where the current encoder would now place it:
+    const currentDir = join(root, "-foo-bar-pkg-");
+    await mkdir(dir, { recursive: true });
+    await mkdir(staleDir, { recursive: true });
+    const stalePath = join(staleDir, "sid.jsonl");
+    await writeFile(stalePath, "imported");
+    await writeFile(
+      join(dir, "sid.manifest.json"),
+      JSON.stringify({
+        sid: "sid",
+        agent: "claude",
+        localRepoPath: "/foo/bar/pkg~",
+        importedJsonlPath: stalePath,
+      }),
+    );
+
+    const res = await migrateClaudeImportsToProjects(w, root);
+    expect(res.moved).toBe(1);
+
+    // File moved to the current-encoder location
+    expect(await readFile(join(currentDir, "sid.jsonl"), "utf-8")).toBe("imported");
+    // Stale location now empty
+    let stillThere = true;
+    try {
+      await access(stalePath);
+    } catch {
+      stillThere = false;
+    }
+    expect(stillThere).toBe(false);
+    // Sidecar pointer updated
+    const updated = JSON.parse(
+      await readFile(join(dir, "sid.manifest.json"), "utf-8"),
+    );
+    expect(updated.importedJsonlPath).toBe(join(currentDir, "sid.jsonl"));
   });
 });
 

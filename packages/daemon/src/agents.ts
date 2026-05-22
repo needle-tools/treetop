@@ -82,13 +82,21 @@ export interface AgentSession {
 export const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
 
 /** Claude Code encodes a session's cwd into a flat dir name under
- *  `~/.claude/projects/` by replacing `/`, `\`, and `:` with `-`. The
- *  filesystem is case-insensitive on Windows + macOS (default APFS) but
- *  case-preserving — the first invocation in a given cwd locks the casing,
- *  and subsequent invocations (potentially with a differently-cased cwd
- *  string) keep appending into the same dir. We mirror that: encode
- *  literally, but if a case-insensitive sibling already exists, reuse its
- *  exact casing so we land in the same dir Claude itself would write to. */
+ *  `~/.claude/projects/` by replacing any path/non-identifier
+ *  character with `-`. Verified by inspecting real Claude project
+ *  dirs: `/.git/` → `--git-`, `~` → `-`, `.` → `-`. Our previous
+ *  implementation only replaced `/`, `\`, `:` and skipped `.`/`~`,
+ *  which broke `claude --resume` on cwds containing those characters
+ *  (e.g. a folder literally named `package~` — we landed the JSONL
+ *  in `<...>js-package~` but Claude looked in `<...>js-package-`).
+ *
+ *  The filesystem is case-insensitive on Windows + macOS (default
+ *  APFS) but case-preserving — the first invocation in a given cwd
+ *  locks the casing, and subsequent invocations (potentially with a
+ *  differently-cased cwd string) keep appending into the same dir.
+ *  We mirror that: encode literally, but if a case-insensitive
+ *  sibling already exists, reuse its exact casing so we land in the
+ *  same dir Claude itself would write to. */
 export async function claudeProjectDirForCwd(
   cwd: string,
   projectsRoot: string = CLAUDE_ROOT(),
@@ -98,7 +106,10 @@ export async function claudeProjectDirForCwd(
   // session whose cwd happened to carry a trailing separator becomes
   // invisible to `claude --resume` from the canonical no-trailing form.
   const normalized = cwd.replace(/[/\\]+$/, "") || cwd;
-  const encoded = normalized.replace(/[/\\:]/g, "-");
+  // Anything not [A-Za-z0-9-] becomes a dash. This matches Claude's
+  // own encoder — keep this in sync if Claude's behaviour ever
+  // changes (e.g. starts preserving underscores).
+  const encoded = normalized.replace(/[^A-Za-z0-9-]/g, "-");
   let entries: string[];
   try {
     entries = await readdir(projectsRoot);

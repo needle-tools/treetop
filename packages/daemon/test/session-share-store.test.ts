@@ -31,9 +31,11 @@ async function tempClaudeProjects(): Promise<string> {
 }
 
 /** Mirrors claudeProjectDirForCwd's encoding so tests can predict the
- *  JSONL path without depending on the import order of agents.ts. */
+ *  JSONL path without depending on the import order of agents.ts.
+ *  Must stay in sync with the production encoder. */
 function encodedProjectDir(cwd: string): string {
-  return cwd.replace(/[/\\:]/g, "-");
+  const normalized = cwd.replace(/[/\\]+$/, "") || cwd;
+  return normalized.replace(/[^A-Za-z0-9-]/g, "-");
 }
 
 function manifest(

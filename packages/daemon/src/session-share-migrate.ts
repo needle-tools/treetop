@@ -128,11 +128,16 @@ export async function migrateClaudeImportsToProjects(
     } catch {
       continue;
     }
+    // Iterate by manifest, not by jsonl: after a successful migration
+    // the .jsonl sibling is gone but the manifest stays — and that's
+    // exactly the case where we still need to act, e.g. when the
+    // encoder changes and the existing `importedJsonlPath` becomes
+    // stale (the user's prod failure mode).
     for (const name of entries) {
-      if (!name.endsWith(".jsonl")) continue;
-      const sid = name.replace(/\.jsonl$/, "").replace(/\.from-\d+$/, "");
-      const jsonlPath = join(claudeDir, name);
-      const sidecarPath = join(claudeDir, `${sid}.manifest.json`);
+      if (!name.endsWith(".manifest.json")) continue;
+      const sid = name.replace(/\.manifest\.json$/, "");
+      const sidecarPath = join(claudeDir, name);
+      const jsonlPath = join(claudeDir, `${sid}.jsonl`);
       let sidecar: {
         localRepoPath?: string;
         localWorktreePath?: string;
@@ -144,17 +149,6 @@ export async function migrateClaudeImportsToProjects(
         skipped += 1;
         continue;
       }
-      // Already migrated if sidecar points at an existing claude-projects file.
-      if (sidecar.importedJsonlPath) {
-        try {
-          await access(sidecar.importedJsonlPath);
-          // The legacy sibling JSONL is now redundant.
-          await dropLegacyJsonl(jsonlPath, sidecar.importedJsonlPath);
-          continue;
-        } catch {
-          // pointer dangling — fall through and re-migrate
-        }
-      }
       const cwd = sidecar.localWorktreePath || sidecar.localRepoPath || "";
       if (!cwd) {
         skipped += 1;
@@ -163,6 +157,56 @@ export async function migrateClaudeImportsToProjects(
       const targetDir = await claudeProjectDirForCwd(cwd, claudeProjectsDir);
       await mkdir(targetDir, { recursive: true });
       const targetPath = join(targetDir, `${sid}.jsonl`);
+
+      // Already migrated, and to the place the *current* encoder
+      // would land it? (Previously this just checked existence at
+      // `importedJsonlPath`. That was wrong: an earlier encoder
+      // version produced a different directory name for paths with
+      // `~` / `.` in them, so a stale pointer would survive the
+      // re-migration and Claude --resume would still fail. Compare
+      // against the path the current encoder produces.)
+      if (sidecar.importedJsonlPath === targetPath) {
+        try {
+          await access(targetPath);
+          await dropLegacyJsonl(jsonlPath, targetPath);
+          continue;
+        } catch {
+          // pointer dangling — fall through and re-migrate
+        }
+      }
+      // Stale pointer: the sidecar references a different location
+      // than what the current encoder produces. Move the file
+      // there if it's at the stale location, then rewrite the
+      // sidecar's pointer.
+      if (sidecar.importedJsonlPath && sidecar.importedJsonlPath !== targetPath) {
+        try {
+          await access(sidecar.importedJsonlPath);
+          try {
+            await rename(sidecar.importedJsonlPath, targetPath);
+            const updated = { ...sidecar, importedJsonlPath: targetPath };
+            await writeFile(sidecarPath, JSON.stringify(updated, null, 2));
+            moved += 1;
+            continue;
+          } catch {
+            // EXDEV / perm — copy + remove fallback
+            try {
+              const data = await readFile(sidecar.importedJsonlPath);
+              await writeFile(targetPath, data);
+              await unlink(sidecar.importedJsonlPath);
+              const updated = { ...sidecar, importedJsonlPath: targetPath };
+              await writeFile(sidecarPath, JSON.stringify(updated, null, 2));
+              moved += 1;
+              continue;
+            } catch {
+              skipped += 1;
+              continue;
+            }
+          }
+        } catch {
+          // Stale pointer's file is gone too — fall through to the
+          // standard rehoming-from-imported-sessions path below.
+        }
+      }
       let alreadyThere = false;
       try {
         await access(targetPath);
