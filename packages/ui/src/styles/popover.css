@@ -169,7 +169,17 @@
 .tuis-popover .agents-list > li {
   display: contents;
 }
-.tui-row-static {
+/* IMPORTANT: every `.tui-row-static` rule below qualifies with
+   `.tuis-popover` to bump specificity to (0,2,0). `.agent-row`
+   (declared in agent-row.css, which loads AFTER popover.css in
+   main.ts) shares this element and sets a 7-column
+   `grid-template-columns` — at single-class specificity (0,1,0)
+   it would otherwise win by source order and clobber our
+   `subgrid` here, collapsing the row into .agent-row's 7-col
+   template (uptime gets crammed into the 18px kill-button slot
+   and the whole layout falls apart). Don't drop the
+   `.tuis-popover` prefix on these rules. */
+.tuis-popover .tui-row-static {
   cursor: default;
   /* Inherit the 9 column tracks declared on `.tuis-popover .agents-list`
      so adjacent rows share track widths and columns align vertically.
@@ -186,21 +196,23 @@
        7. uptime          8ch  ("999h 59m")
        8. idle            auto (only present on idle rows)
        9. ×               18px */
+  display: grid;
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
-  justify-content: end;
+  align-items: center;
+  width: 100%;
 }
-.tui-row-static > .agent-row-icon,
-.tui-row-static > .agent-dot { grid-column: 1; }
-.tui-row-static > .agent-row-name { grid-column: 2; }
-.tui-row-static > .tui-repo { grid-column: 3; }
-.tui-row-static > .tui-inline-title { grid-column: 4; }
-.tui-row-static > .tui-cpu { grid-column: 5; }
-.tui-row-static > .tui-mem { grid-column: 6; }
-.tui-row-static > .tui-uptime { grid-column: 7; }
-.tui-row-static > .tui-idle { grid-column: 8; }
-.tui-row-static > .tui-kill-x { grid-column: 9; }
-.tui-row-static:hover {
+.tuis-popover .tui-row-static > .agent-row-icon,
+.tuis-popover .tui-row-static > .agent-dot { grid-column: 1; }
+.tuis-popover .tui-row-static > .agent-row-name { grid-column: 2; }
+.tuis-popover .tui-row-static > .tui-repo { grid-column: 3; }
+.tuis-popover .tui-row-static > .tui-inline-title { grid-column: 4; }
+.tuis-popover .tui-row-static > .tui-cpu { grid-column: 5; }
+.tuis-popover .tui-row-static > .tui-mem { grid-column: 6; }
+.tuis-popover .tui-row-static > .tui-uptime { grid-column: 7; }
+.tuis-popover .tui-row-static > .tui-idle { grid-column: 8; }
+.tuis-popover .tui-row-static > .tui-kill-x { grid-column: 9; }
+.tuis-popover .tui-row-static:hover {
   background: var(--surface-2);
 }
 /* Rows with a resolvable session source act as a "jump to this
@@ -208,10 +220,10 @@
    sets by default but that `.tui-row-static`'s `cursor: default`
    above turned off, and add a keyboard focus outline. Rows without
    a source (shells, orphan TUIs) stay non-interactive. */
-.tui-row-static.tui-row-focusable {
+.tuis-popover .tui-row-static.tui-row-focusable {
   cursor: pointer;
 }
-.tui-row-static.tui-row-focusable:focus-visible {
+.tuis-popover .tui-row-static.tui-row-focusable:focus-visible {
   outline: 2px solid var(--accent, #6aa9ff);
   outline-offset: -2px;
 }
@@ -276,7 +288,7 @@
 /* X always reserves the 18px column (no layout shift between hover
    states), revealed on row hover like the agents popover's × is on
    hover of a dimmed row. */
-.tui-row-static:hover .tui-kill-x {
+.tuis-popover .tui-row-static:hover .tui-kill-x {
   opacity: 1;
   pointer-events: auto;
 }
