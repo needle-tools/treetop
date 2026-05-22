@@ -29,13 +29,25 @@ async function stopExisting(): Promise<void> {
   //    UI restart flow uses before reconnecting).
   await Bun.sleep(2000);
 
-  // 3) Belt-and-braces: if anything is still holding the port (stuck
-  //    daemon, orphaned child, TIME_WAIT-but-actually-bound), force-kill
-  //    it. Without this we get EADDRINUSE when /api/shutdown didn't
-  //    actually clear the socket in time.
+  // 3) Belt-and-braces: if anything is still LISTENING on the port
+  //    (stuck daemon, orphaned child), force-kill it. Without this we
+  //    get EADDRINUSE when /api/shutdown didn't actually clear the
+  //    socket in time.
+  //
+  //    -sTCP:LISTEN is load-bearing: plain `lsof -ti :PORT` also matches
+  //    *connections* to the port (e.g. the fetch this script just made
+  //    to /api/shutdown), which can include our own PID. We once
+  //    SIGKILL'd ourselves that way. We also explicitly exclude our own
+  //    PID and our parent's PID as a second line of defence.
   if (process.platform !== "win32") {
-    const result = await $`lsof -ti :${port}`.quiet().nothrow();
-    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
+    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`.quiet().nothrow();
+    const self = String(process.pid);
+    const parent = String(process.ppid);
+    const pids = result.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter((p) => p && p !== self && p !== parent);
     if (pids.length > 0) {
       console.log(`supergit: port ${port} still held by ${pids.join(", ")} — killing`);
       for (const pid of pids) {
