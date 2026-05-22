@@ -18,7 +18,15 @@
     id: string;
     label: string;
     host: string;
+    /** Daemon HTTP API port — used as the destination for the
+     *  /api/sessions/offer POST (and pre-filled into the manual
+     *  host:port input below the peer list). */
     port: number;
+    /** Browser-openable port for this peer's dashboard. In prod it
+     *  matches `port`; in dev Vite serves the UI on a separate port.
+     *  Falls back to `port` on the daemon side when older peers don't
+     *  advertise this field. */
+    frontendPort?: number;
     version?: string;
     lastSeen?: string;
   }
@@ -203,7 +211,12 @@
                 on:click={() => pickPeer(p)}
               >
                 <span class="share-peer-label">{p.label}</span>
-                <span class="share-peer-host">{p.host}:{p.port}</span>
+                <span
+                  class="share-peer-host"
+                  title={`Open ${p.label}'s dashboard (daemon API on :${p.port})`}
+                >
+                  {p.host}:{p.frontendPort ?? p.port}
+                </span>
               </button>
             {/each}
           </ul>

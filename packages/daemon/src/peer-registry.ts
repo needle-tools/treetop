@@ -19,7 +19,14 @@ export interface Peer {
   id: string;
   label: string;
   host: string;
+  /** Daemon HTTP API port — what supergit-internal traffic
+   *  (session offers, message send) hits. */
   port: number;
+  /** Port the user opens in a browser to see this peer's dashboard.
+   *  In prod that matches `port`; in dev Vite serves the UI elsewhere
+   *  (conventionally 7779). Falls back to `port` when the advertising
+   *  peer didn't provide it (older daemons). */
+  frontendPort: number;
   version?: string;
   /** ISO timestamp of the last time this peer's advertisement was
    *  observed (or refreshed). The UI can hide stale entries if it
@@ -54,10 +61,16 @@ export class PeerRegistry {
     if (id) this.byId.delete(id);
   }
 
-  addPeer(peer: Omit<Peer, "lastSeen">): void {
+  addPeer(peer: Omit<Peer, "lastSeen" | "frontendPort"> & { frontendPort?: number }): void {
     if (!peer.id || !peer.host || !peer.port || !peer.label) return;
     if (peer.id === this.selfId) return;
-    this.byId.set(peer.id, { ...peer, lastSeen: new Date().toISOString() });
+    this.byId.set(peer.id, {
+      ...peer,
+      // Default to the daemon port for back-compat with older
+      // advertising peers that didn't ship a frontendPort TXT field.
+      frontendPort: peer.frontendPort ?? peer.port,
+      lastSeen: new Date().toISOString(),
+    });
   }
 
   removePeer(id: string): void {

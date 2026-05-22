@@ -43,6 +43,12 @@ export interface DiscoveryOpts {
    *  Caller derives this via `findLocalIp()`; passing `undefined`
    *  falls back to bonjour's default selection. */
   interfaceAddress?: string;
+  /** Port the user can hit in a browser to open this peer's
+   *  dashboard. In prod the daemon serves the UI itself and this
+   *  equals `port`; in dev Vite serves the UI separately so it's a
+   *  different port (conventionally 7779). The Share dialog and
+   *  inbox surface this as an "Open dashboard" link. */
+  frontendPort?: number;
 }
 
 export class PeerDiscovery {
@@ -158,6 +164,11 @@ export class PeerDiscovery {
           id: this.opts.id,
           label: this.opts.label,
           version: this.opts.version ?? "",
+          // frontendPort is the *user-visible* port (where the
+          // browser dashboard lives). In prod that matches the
+          // daemon API port; in dev Vite serves the UI elsewhere.
+          // Stringify because TXT values are byte strings.
+          frontendPort: String(this.opts.frontendPort ?? this.opts.port),
         },
       });
       this.browser = this.bonjour.find({ type: SERVICE_TYPE }, (svc) => {
@@ -208,6 +219,14 @@ export class PeerDiscovery {
     const id = typeof txt.id === "string" ? txt.id : "";
     const label = typeof txt.label === "string" ? txt.label : svc.name;
     const version = typeof txt.version === "string" ? txt.version : undefined;
+    // frontendPort comes back as a string from TXT records — parse to
+    // number and fall back to the daemon port when absent / malformed
+    // (older daemons didn't advertise this field).
+    let frontendPort: number | undefined;
+    if (typeof txt.frontendPort === "string") {
+      const n = Number(txt.frontendPort);
+      if (Number.isInteger(n) && n > 0 && n < 65536) frontendPort = n;
+    }
     const host =
       (Array.isArray(svc.addresses) &&
         svc.addresses.find((a: string) => !a.includes(":"))) ||
@@ -219,6 +238,7 @@ export class PeerDiscovery {
       label,
       host,
       port: svc.port,
+      frontendPort,
       version,
     });
   }

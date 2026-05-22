@@ -325,6 +325,15 @@ void (async () => {
     peerIdentity = await loadOrCreatePeerIdentity(WORKSPACE_PATH, {
       defaultLabel,
     });
+    // Where to point a browser to open this daemon's dashboard.
+    //   - prod (UI_DIR set): daemon serves the SPA itself, frontend
+    //     == daemon port.
+    //   - dev (UI_DIR null): Vite serves the SPA on a separate port,
+    //     conventionally 7779. SUPERGIT_FRONTEND_PORT env can
+    //     override (matches our vite.config.ts behaviour).
+    const FRONTEND_PORT = UI_DIR
+      ? PORT
+      : Number(process.env.SUPERGIT_FRONTEND_PORT ?? 7779);
     peerDiscovery = new PeerDiscovery({
       port: PORT,
       id: peerIdentity.id,
@@ -335,6 +344,7 @@ void (async () => {
       // usable private IPv4 (rare — laptop offline); bonjour then
       // falls back to its default interface selection.
       interfaceAddress: findLocalIp() ?? undefined,
+      frontendPort: FRONTEND_PORT,
     });
     peerDiscovery.start();
     console.log(
@@ -2532,6 +2542,9 @@ const server = Bun.serve<TermWsData, never>({
             id: peerIdentity.id,
             label: peerIdentity.label,
             interfaceAddress: findLocalIp() ?? undefined,
+            frontendPort: UI_DIR
+              ? PORT
+              : Number(process.env.SUPERGIT_FRONTEND_PORT ?? 7779),
           });
           peerDiscovery.start();
         }

@@ -22,6 +22,10 @@
     label: string;
     host: string;
     port: number;
+    /** Browser-openable port for this peer's dashboard. In prod it
+     *  matches `port`; in dev Vite is on a different port. Falls back
+     *  to `port` on the daemon side when older peers don't advertise. */
+    frontendPort?: number;
   }
 
   interface InboxRow {
@@ -29,6 +33,10 @@
     messages: import("./messages-store").StoredMessage[];
     online: boolean;
     muted: boolean;
+    /** Populated when the peer is currently discoverable on the LAN —
+     *  carries the host/ports we need to render the "Open dashboard"
+     *  link and to actually deliver a message via /api/messages/send. */
+    contact: DiscoveredPeer | null;
   }
 
   let open = false;
@@ -37,6 +45,11 @@
   let replyText: Record<string, string> = {};
   let sending: Record<string, boolean> = {};
   let sendError: Record<string, string> = {};
+  /** Per-peer "Sent…" indicator timer id. When non-null we know to
+   *  render the confirmation badge in the textbox corner for ~2s
+   *  after a successful send. Cleared on next send to that peer. */
+  let sentBadgeTimer: Record<string, ReturnType<typeof setTimeout> | null> = {};
+  let sentBadge: Record<string, boolean> = {};
 
   $: count = totalCount($messages);
 
@@ -52,12 +65,16 @@
     discovered: DiscoveredPeer[],
   ): InboxRow[] {
     const byId = new Map<string, InboxRow>();
+    const byIdDiscovered = new Map<string, DiscoveredPeer>();
+    for (const p of discovered) byIdDiscovered.set(p.id, p);
     for (const r of inbox) {
+      const contact = byIdDiscovered.get(r.peer.id) ?? null;
       byId.set(r.peer.id, {
         peer: r.peer,
         messages: r.messages,
-        online: discovered.some((p) => p.id === r.peer.id),
+        online: contact !== null,
         muted: !!mutes[r.peer.id],
+        contact,
       });
     }
     for (const p of discovered) {
@@ -67,6 +84,7 @@
         messages: [],
         online: true,
         muted: !!mutes[p.id],
+        contact: p,
       });
     }
     return [...byId.values()].sort((a, b) => {
@@ -161,6 +179,19 @@
     sending = { ...sending, [peerId]: false };
     if (r.ok) {
       replyText = { ...replyText, [peerId]: "" };
+      // Show a quick "Sent…" ack in the same corner where the send
+      // icon was — the icon disappears once the textarea empties, so
+      // this slot is free. Auto-clears after 2s.
+      sentBadge = { ...sentBadge, [peerId]: true };
+      const prior = sentBadgeTimer[peerId];
+      if (prior) clearTimeout(prior);
+      sentBadgeTimer = {
+        ...sentBadgeTimer,
+        [peerId]: setTimeout(() => {
+          sentBadge = { ...sentBadge, [peerId]: false };
+          sentBadgeTimer = { ...sentBadgeTimer, [peerId]: null };
+        }, 2000),
+      };
     } else {
       sendError = { ...sendError, [peerId]: r.error };
     }
@@ -220,10 +251,27 @@
     align-items: center;
     gap: 0.5rem;
   }
+  .inbox-peer-id {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    min-width: 0;
+  }
   .inbox-peer-label {
     font-weight: 600;
     font-size: 0.82rem;
     color: var(--text-1, inherit);
+  }
+  .inbox-peer-host {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    word-break: break-all;
+  }
+  .inbox-peer-host:hover {
+    color: var(--text-1, inherit);
+    text-decoration: underline;
   }
   .inbox-head-meta {
     display: flex;
@@ -301,44 +349,76 @@
     border-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   }
   .inbox-reply {
-    display: flex;
-    gap: 0.4rem;
+    position: relative;
     margin-top: 0.2rem;
   }
   .inbox-reply-input {
-    flex: 1;
+    box-sizing: border-box;
+    width: 100%;
     font: inherit;
     font-size: 0.78rem;
     line-height: 1.4;
-    padding: 0.35rem 0.5rem;
+    /* Right padding clears the embedded send icon when it appears. */
+    padding: 0.35rem 1.9rem 0.35rem 0.5rem;
     background: var(--surface-1, transparent);
     border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
     border-radius: 4px;
     color: inherit;
-    resize: vertical;
+    /* User asked for non-resizable — keep the popover layout stable
+       and avoid the corner grip badly overlapping the send icon. */
+    resize: none;
     min-height: 2.2rem;
   }
   .inbox-reply-input:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--text-muted) 50%, transparent);
     outline-offset: 1px;
   }
-  .inbox-send {
-    font: inherit;
-    font-size: 0.78rem;
-    padding: 0.3rem 0.7rem;
+  /* Send button as an icon embedded inside the textarea, only
+     rendered when there's actual content to send. No background by
+     default — the icon sits on the same surface as the textarea.
+     Hover tints it with the brand colour so it still reads as a
+     button. */
+  .inbox-send-icon {
+    position: absolute;
+    right: 0.35rem;
+    bottom: 0.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
     border-radius: 4px;
-    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
-    background: color-mix(in srgb, var(--text-muted) 20%, transparent);
-    color: inherit;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
     cursor: pointer;
-    align-self: flex-end;
   }
-  .inbox-send:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  .inbox-send-icon:hover:not(:disabled) {
+    color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 12%, transparent);
   }
-  .inbox-send:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+  .inbox-send-icon:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+  /* "Sent ✓" badge — drop-in for the send-icon slot once a message
+     went out. Muted text, no background, fades quietly. */
+  .inbox-sent-badge {
+    position: absolute;
+    right: 0.55rem;
+    bottom: 0.5rem;
+    font-size: 0.7rem;
+    color: color-mix(in srgb, #2ecc71 80%, var(--text-muted));
+    pointer-events: none;
+    user-select: none;
+  }
+  .inbox-send-spinning {
+    animation: inbox-spin 0.9s linear infinite;
+    transform-origin: center;
+  }
+  @keyframes inbox-spin {
+    to { transform: rotate(360deg); }
   }
   .inbox-err {
     margin: 0;
@@ -393,7 +473,21 @@
           {#each rows as row (row.peer.id)}
             <li class="inbox-row" class:inbox-row-muted={row.muted}>
               <div class="inbox-head">
-                <span class="inbox-peer-label">{row.peer.label}</span>
+                <div class="inbox-peer-id">
+                  <span class="inbox-peer-label">{row.peer.label}</span>
+                  {#if row.contact}
+                    {@const fp = row.contact.frontendPort ?? row.contact.port}
+                    <a
+                      class="inbox-peer-host"
+                      href={`http://${row.contact.host}:${fp}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`Open this peer's dashboard (daemon API on :${row.contact.port})`}
+                    >
+                      {row.contact.host}:{fp} ↗
+                    </a>
+                  {/if}
+                </div>
                 <span class="inbox-head-meta">
                   {#if !row.online}
                     <span class="inbox-offline" title="Peer isn't currently advertising on the LAN — you can't send right now.">offline</span>
@@ -459,12 +553,32 @@
                   disabled={!row.online || sending[row.peer.id]}
                   on:keydown={(e) => onReplyKey(e, row.peer.id)}
                 ></textarea>
-                <button
-                  type="button"
-                  class="inbox-send"
-                  on:click={() => onSend(row.peer.id)}
-                  disabled={!row.online || !((replyText[row.peer.id] ?? "").trim()) || sending[row.peer.id]}
-                >{sending[row.peer.id] ? "Sending…" : "Send"}</button>
+                {#if (replyText[row.peer.id] ?? "").trim().length > 0 && row.online}
+                  <button
+                    type="button"
+                    class="inbox-send-icon"
+                    on:click={() => onSend(row.peer.id)}
+                    disabled={sending[row.peer.id]}
+                    title={sending[row.peer.id] ? "Sending…" : "Send (Enter)"}
+                    aria-label="Send"
+                  >
+                    {#if sending[row.peer.id]}
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inbox-send-spinning" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" stroke-dasharray="42" stroke-dashoffset="20"></circle>
+                      </svg>
+                    {:else}
+                      <!-- Lucide "send" — paper-plane silhouette. -->
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M22 2 11 13"></path>
+                        <path d="m22 2-7 20-4-9-9-4 20-7z"></path>
+                      </svg>
+                    {/if}
+                  </button>
+                {:else if sentBadge[row.peer.id]}
+                  <!-- Brief "Sent…" ack in the same corner where the
+                       send icon was. Auto-clears after 2s. -->
+                  <span class="inbox-sent-badge" aria-live="polite">Sent ✓</span>
+                {/if}
               </div>
               {#if sendError[row.peer.id]}
                 <p class="inbox-err small" role="alert">{sendError[row.peer.id]}</p>
