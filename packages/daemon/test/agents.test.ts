@@ -1058,6 +1058,24 @@ describe("claudeProjectDirForCwd", () => {
     const got = await claudeProjectDirForCwd("/Users/me/proj", root);
     expect(got).toBe(join(root, "-Users-me-proj"));
   });
+
+  test("strips a trailing slash so /path and /path/ land in the same dir", async () => {
+    // Real-world bug: a synced session arrived with a trailing-slash cwd,
+    // producing `-Users-…-supergit-` instead of `-Users-…-supergit`, so
+    // Claude's `--resume` couldn't find it in the canonical no-dash dir.
+    const root = await tempDir("supergit-cpd-trailing-");
+    const a = await claudeProjectDirForCwd("/Users/me/proj", root);
+    const b = await claudeProjectDirForCwd("/Users/me/proj/", root);
+    expect(a).toBe(join(root, "-Users-me-proj"));
+    expect(b).toBe(a);
+  });
+
+  test("strips a trailing backslash on Windows-style paths", async () => {
+    const root = await tempDir("supergit-cpd-trailing-bs-");
+    const a = await claudeProjectDirForCwd("C:\\git\\supergit", root);
+    const b = await claudeProjectDirForCwd("C:\\git\\supergit\\", root);
+    expect(b).toBe(a);
+  });
 });
 
 describe("scanImported", () => {

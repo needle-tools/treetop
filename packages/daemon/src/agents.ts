@@ -93,7 +93,12 @@ export async function claudeProjectDirForCwd(
   cwd: string,
   projectsRoot: string = CLAUDE_ROOT(),
 ): Promise<string> {
-  const encoded = cwd.replace(/[/\\:]/g, "-");
+  // Strip a single trailing slash/backslash before encoding, otherwise
+  // `/p` and `/p/` produce different dirs (`-p` vs `-p-`) and a synced
+  // session whose cwd happened to carry a trailing separator becomes
+  // invisible to `claude --resume` from the canonical no-trailing form.
+  const normalized = cwd.replace(/[/\\]+$/, "") || cwd;
+  const encoded = normalized.replace(/[/\\:]/g, "-");
   let entries: string[];
   try {
     entries = await readdir(projectsRoot);
