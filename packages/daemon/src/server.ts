@@ -2380,16 +2380,52 @@ const server = Bun.serve<TermWsData, never>({
       }
       const parsed = await parseSessionFile(resolved.agent, source);
       const cwd = parsed.cwd ?? "";
+      if (!cwd) {
+        return json(
+          {
+            error:
+              "session has no cwd recorded — cannot identify which repo it belongs to",
+          },
+          { status: 400 },
+        );
+      }
       // Find the matching repo so we can identify the origin remote +
-      // repo root. Without that, the receiver has no way to apply the
-      // session to its local clone.
+      // repo root. The cwd may sit inside the repo's main path OR
+      // inside one of its worktrees, which can live anywhere on disk
+      // (`git worktree add ../foo-feat` creates a path outside the
+      // repo dir). So we check both: first a simple prefix match
+      // against repo.path, then a prefix match against each of the
+      // repo's worktrees.
       const repos = await workspace.listRepos();
-      const repo = repos.find(
-        (r) => cwd === r.path || cwd.startsWith(`${r.path}/`) || cwd.startsWith(`${r.path}\\`),
-      );
+      let repo: typeof repos[number] | undefined;
+      let originWorktreePath: string | undefined;
+      const matchesPrefix = (p: string) =>
+        cwd === p || cwd.startsWith(`${p}/`) || cwd.startsWith(`${p}\\`);
+      for (const r of repos) {
+        if (matchesPrefix(r.path)) {
+          repo = r;
+          // Even when r.path matches we still walk worktrees so we can
+          // surface the *worktree* path in the manifest (the receiver
+          // uses it to rewrite the cwd properly).
+          const wts = await listWorktrees(r.path).catch(() => []);
+          const wt = wts.find((w) => matchesPrefix(w.path));
+          if (wt && wt.path !== r.path) originWorktreePath = wt.path;
+          break;
+        }
+        const wts = await listWorktrees(r.path).catch(() => []);
+        const wt = wts.find((w) => matchesPrefix(w.path));
+        if (wt) {
+          repo = r;
+          if (wt.path !== r.path) originWorktreePath = wt.path;
+          break;
+        }
+      }
       if (!repo) {
         return json(
-          { error: "session cwd is not inside any known repo — add the repo first" },
+          {
+            error: `session cwd "${cwd}" is not inside any known repo or worktree — add the repo to supergit first`,
+            cwd,
+          },
           { status: 400 },
         );
       }
@@ -2401,10 +2437,6 @@ const server = Bun.serve<TermWsData, never>({
           { status: 400 },
         );
       }
-      // Worktree detection: the cwd is the worktree path if it's
-      // inside .worktrees, otherwise undefined (cwd == repo root).
-      const wts = await listWorktrees(repo.path);
-      const originWorktreePath = wts.find((w) => w.path === cwd)?.path;
 
       // Strip + redact unless the sender explicitly opted into full
       // transcript. The UI surfaces the choice.
