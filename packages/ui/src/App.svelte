@@ -4107,16 +4107,31 @@
     return {};
   }
 
+  /** URL teammates / other machines on the LAN should hit when they
+   *  receive a Share-locally invite from this dashboard. Resolved
+   *  from /api/health (localIp + port) on mount. Null while the
+   *  request is in flight or when the host has no usable private
+   *  IPv4 (laptop offline). Shown right-aligned next to the tagline. */
+  let localLanUrl: string | null = null;
+
   /** Fetch system memory from the daemon (via /api/health) so the TUI
    *  hot/warm thresholds scale to a fraction of total RAM. Static for
-   *  the lifetime of the daemon; one fetch on mount is enough. */
+   *  the lifetime of the daemon; one fetch on mount is enough. Also
+   *  reads localIp + port so the tagline can show the LAN URL. */
   async function loadSystemInfo() {
     try {
       const res = await fetch("/api/health");
       if (!res.ok) return;
-      const body = (await res.json()) as { totalMemBytes?: unknown };
+      const body = (await res.json()) as {
+        totalMemBytes?: unknown;
+        localIp?: unknown;
+        port?: unknown;
+      };
       if (typeof body.totalMemBytes === "number" && body.totalMemBytes > 0) {
         systemMemBytes = body.totalMemBytes;
+      }
+      if (typeof body.localIp === "string" && typeof body.port === "number") {
+        localLanUrl = `http://${body.localIp}:${body.port}`;
       }
     } catch {
       // best-effort — we fall back to TUI_*_MEM_FALLBACK byte ceilings.
@@ -4290,9 +4305,9 @@
       <span
         class="live"
         class:on={streamConnected}
-        title={streamConnected ? "live (SSE connected)" : "offline (SSE disconnected)"}
+        title={streamConnected ? "connected (SSE stream live)" : "offline (SSE disconnected)"}
       >
-        {streamConnected ? "● live" : "○ offline"}
+        {streamConnected ? "● connected" : "○ offline"}
       </span>
 
       <div class="actions-anchor tuis-anchor">
@@ -4557,7 +4572,15 @@
         {/if}
       </div>
     </h1>
-    <p class="muted">multi-repo, multi-agent, worktree-first dashboard</p>
+    <p class="muted tagline-text">multi-repo, multi-agent, worktree-first dashboard</p>
+    {#if localLanUrl}
+      <p
+        class="tagline-lan"
+        title="Teammates on your LAN can reach this dashboard at this URL — use it as the peer address when accepting a 'Share session in local network' invite."
+      >
+        <code>{localLanUrl}</code>
+      </p>
+    {/if}
   </header>
 
   {#if loading && repos.length === 0}

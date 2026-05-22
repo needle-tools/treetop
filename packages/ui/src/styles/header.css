@@ -34,7 +34,10 @@ main > header > h1 {
   letter-spacing: 0.04em;
 }
 .live.on {
-  color: var(--status-clean);
+  /* One step brighter than the global --status-clean (#16a34a, green-600)
+     so the header dot reads as "active right now" without recolouring
+     every clean-status badge across the dashboard. ~Tailwind green-500. */
+  color: #22c55e;
 }
 
 /* Action-button cluster on the right side of the header strip. */

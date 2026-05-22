@@ -778,7 +778,7 @@
       },
       {
         kind: "action",
-        label: "Share locally",
+        label: "Share session in local network",
         // Lucide "send"-ish: paper-plane silhouette. Reads as "ship
         // this somewhere" without confusing with "open in external".
         iconSvg: [
@@ -790,7 +790,7 @@
       },
       {
         kind: "action",
-        label: "Save as link",
+        label: "Create a link note",
         icon: "⤴",
         // Anchor is the current worktree — same data the saved-link
         // chip uses for its commit-provider / move-to picker. No

@@ -10,10 +10,11 @@ export default defineConfig({
     // set for the rare case someone wants a different port without
     // editing this file.
     port: process.env.PORT ? Number(process.env.PORT) : 7779,
-    // Bind to "localhost" by default; HOST env can override. Don't use
-    // 127.0.0.1 unless asked — Vite resolves "localhost" via the OS so
-    // it works for both IPv4 and IPv6 clients.
-    host: process.env.HOST ?? "localhost",
+    // Bind to all interfaces by default so other machines on the LAN
+    // can hit the dev UI (matches the daemon, which listens on
+    // 0.0.0.0 for session-share). HOST env still wins if set, so
+    // `HOST=localhost bun dev` recovers the old behaviour.
+    host: process.env.HOST ?? "0.0.0.0",
     strictPort: true,
     proxy: {
       "/api": {

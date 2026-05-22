@@ -1,5 +1,5 @@
 import { join, resolve, normalize, sep } from "node:path";
-import { homedir, totalmem } from "node:os";
+import { homedir, totalmem, networkInterfaces } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Workspace } from "./workspace";
@@ -159,8 +159,34 @@ function resolveSessionAgent(
   return null;
 }
 
+/** Return the host's first private-LAN IPv4 address (192.168.x.x,
+ *  10.x.x.x, or 172.16-31.x.x). Used by the dashboard's tagline strip
+ *  to show the URL teammates / other machines should hit when sharing
+ *  sessions on the LAN. Returns null if nothing usable is found
+ *  (laptop offline, only loopback present, etc.). */
+function findLocalIp(): string | null {
+  const ifaces = networkInterfaces();
+  const candidates: string[] = [];
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const ni of list) {
+      if (ni.family !== "IPv4" || ni.internal) continue;
+      candidates.push(ni.address);
+    }
+  }
+  const isPrivate = (ip: string) =>
+    ip.startsWith("192.168.") ||
+    ip.startsWith("10.") ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip);
+  return candidates.find(isPrivate) ?? candidates[0] ?? null;
+}
+
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
-console.log(`supergit daemon: listening on http://localhost:${PORT}`);
+{
+  const ip = findLocalIp();
+  console.log(`supergit daemon: listening on http://0.0.0.0:${PORT}`);
+  if (ip) console.log(`supergit daemon: LAN url       http://${ip}:${PORT}`);
+}
 
 // CORS allowlist. The wildcard `*` is a real attack surface: with `*` any
 // website you visit could call localhost:7777 from your browser and read the
@@ -830,6 +856,11 @@ interface TermWsData {
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
+  // Bind to all interfaces so other machines on the LAN can reach the
+  // daemon (needed for session sharing — see plans/PLAN-SESSION-SHARE.md).
+  // Bun's default is also 0.0.0.0 but we set it explicitly so a future
+  // Bun change can't silently flip us to localhost-only.
+  hostname: "0.0.0.0",
   // Bun's default per-request idle timeout is 10s. Some of our routes —
   // /api/diff on a large changeset, /api/session priming the cache on a
   // 100 MB+ JSONL, /api/fetch over a slow network — can legitimately
@@ -908,10 +939,17 @@ const server = Bun.serve<TermWsData, never>({
       // a 16 GB MacBook and a 96 GB Linux workstation shouldn't trip
       // the same alert. Static for the lifetime of the daemon, so the
       // UI caches it after the first /api/health response.
+      //
+      // `localIp` + `port` give the dashboard the URL teammates on the
+      // LAN should hit when accepting a session-share invite, so the
+      // tagline can show it inline without the user having to grep
+      // ifconfig.
       return json({
         status: "ok",
         workspace: WORKSPACE_PATH,
         totalMemBytes: totalmem(),
+        localIp: findLocalIp(),
+        port: PORT,
       });
     }
 

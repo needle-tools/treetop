@@ -143,7 +143,7 @@
     },
     {
       kind: "action",
-      label: "Save as link",
+      label: "Create a link note",
       icon: "⤴",
       disabled: !wtPath,
       title: wtPath

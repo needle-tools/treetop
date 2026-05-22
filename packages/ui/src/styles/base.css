@@ -116,9 +116,84 @@ button.tiny {
   font-size: 0.9rem;
 }
 
+/* Global custom checkbox. Native checkboxes render very differently
+   across Chrome / Safari / Firefox and clash visually with the rest
+   of the dashboard. We replace them with a flat box that picks up
+   --brand on check, drawing the tick from an SVG background-image so
+   it's reliably centred (the rotated-pseudo trick was off-axis on
+   Webkit). Any future checkbox in the app inherits this look — keep
+   markup as `<input type="checkbox" />` and don't roll your own. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  /* The global `input` rule above sets `padding: 0.55rem 0.75rem` for
+     text inputs. We MUST zero it here — inside a flex container the
+     default `min-width: auto` resolves to the content's min-content
+     size, which *includes* padding. So even with width:16px the
+     checkbox would stretch to ~24px because the inherited horizontal
+     padding inflates min-content. Same for min-width itself, set to
+     0 as belt-and-braces. */
+  padding: 0;
+  min-width: 0;
+  /* Lock the aspect ratio so a flex parent can't stretch the box on
+     one axis. */
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  margin: 0;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 60%, transparent);
+  background: var(--surface-1);
+  cursor: pointer;
+  display: inline-block;
+  vertical-align: middle;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+input[type="checkbox"]:hover {
+  border-color: color-mix(in srgb, var(--text-muted) 85%, transparent);
+}
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 60%, transparent);
+  outline-offset: 1px;
+}
+input[type="checkbox"]:checked {
+  background-color: var(--brand);
+  border-color: var(--brand);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='3.5,8.5 6.8,11.5 12.5,5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px 14px;
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Inline utility classes used across the dashboard. */
 .muted {
   color: var(--text-muted);
+}
+
+/* Header tagline + LAN URL. LAN line sits below the tagline on its
+   own row, small + monospace so it reads as machine-targetable
+   rather than prose. Hidden gracefully when /api/health doesn't
+   surface a localIp (offline, only loopback present). */
+.tagline-text {
+  margin: 0;
+}
+.tagline-lan {
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.tagline-lan code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.7rem;
+  background: transparent;
+  color: inherit;
+  user-select: all;
 }
 .small {
   font-size: 0.8rem;

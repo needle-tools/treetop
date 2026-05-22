@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Sender-side "Share locally" dialog. Subscribes to `activeShare`;
+   * Sender-side "Share session in local network" dialog. Subscribes to `activeShare`;
    * renders a modal that lets the user pick a peer (host:port input
    * for v1; mDNS peer discovery lands in a later slice) and send the
    * session.
@@ -114,7 +114,7 @@
       aria-labelledby="share-title"
       on:click|stopPropagation
     >
-      <h2 id="share-title" class="share-title">Share locally</h2>
+      <h2 id="share-title" class="share-title">Share session in local network</h2>
       <p class="share-blurb">
         Ship this session to another supergit on your LAN. Tool outputs
         are stripped and common secrets (GitHub, npm, Stripe, AWS, …)
@@ -135,8 +135,14 @@
 
       <label class="share-check">
         <input type="checkbox" bind:checked={includeToolOutputs} />
-        <span>
-          Include tool outputs <span class="share-warn">(skip the scrub — full transcript)</span>
+        <span class="share-check-text">
+          <span class="share-check-label">Send the full transcript</span>
+          <span class="share-check-help">
+            Off (recommended): tool outputs are dropped and known secret
+            formats (GitHub, Stripe, AWS, …) are masked before send.
+            On: nothing is removed — useful when the receiver needs the
+            exact command output you got.
+          </span>
         </span>
       </label>
 
@@ -229,14 +235,41 @@
   }
   .share-check {
     display: flex;
-    align-items: center;
-    gap: 0.45rem;
+    align-items: flex-start;
+    text-align: left;
+    gap: 0.6rem;
     font-size: 0.8rem;
     color: var(--text-muted);
     cursor: pointer;
+    padding: 0.55rem 0.6rem;
+    background: color-mix(in srgb, var(--surface-2) 35%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+    border-radius: 4px;
   }
-  .share-warn {
-    color: color-mix(in srgb, #c0392b 80%, var(--text-muted));
+  .share-check:hover,
+  .share-check:focus-within {
+    background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+    border-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
+  }
+  /* Optically align the 16px checkbox with the first line of the
+     two-line label (bold header + smaller help text). */
+  .share-check input[type="checkbox"] {
+    margin-top: 1px;
+  }
+  .share-check-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    flex: 1;
+  }
+  .share-check-label {
+    color: var(--text-1, inherit);
+    font-weight: 500;
+  }
+  .share-check-help {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
   }
   .share-result {
     margin: 0;
