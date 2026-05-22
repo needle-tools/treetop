@@ -49,6 +49,10 @@
    *  keeps the store in sync; this catches the case where an SSE
    *  reconnect drops events or the broadcast was missed. */
   let messagesPoll: ReturnType<typeof setInterval> | null = null;
+  /** While the popover is open, periodically re-stamp `lastReadAt`
+   *  so messages that arrive WHILE viewing get marked read after a
+   *  few seconds — no need to close + reopen to clear the badge. */
+  let readStamper: ReturnType<typeof setInterval> | null = null;
   /** ISO timestamp of the last time the user opened the inbox.
    *  Anything received after this counts as unread for the badge. */
   let lastReadAt: string | null = recallLastRead();
@@ -159,9 +163,24 @@
       // a peer comes back online or drops.
       if (peersPoll) clearInterval(peersPoll);
       peersPoll = setInterval(refreshPeers, 3000);
-    } else if (peersPoll) {
-      clearInterval(peersPoll);
-      peersPoll = null;
+      // While the popover stays open, treat the user as "watching"
+      // and re-stamp lastReadAt every 5s. A message that arrives at
+      // T+0 with the popover already open gets marked read at the
+      // next stamp tick (within 5s), so the badge clears without
+      // needing a close+reopen.
+      if (readStamper) clearInterval(readStamper);
+      readStamper = setInterval(() => {
+        lastReadAt = markInboxRead();
+      }, 5000);
+    } else {
+      if (peersPoll) {
+        clearInterval(peersPoll);
+        peersPoll = null;
+      }
+      if (readStamper) {
+        clearInterval(readStamper);
+        readStamper = null;
+      }
     }
     // Bump the messages poll to a faster cadence while the popover
     // is open so new arrivals show up in the list within ~1.5s
@@ -180,6 +199,7 @@
   onDestroy(() => {
     if (peersPoll) clearInterval(peersPoll);
     if (messagesPoll) clearInterval(messagesPoll);
+    if (readStamper) clearInterval(readStamper);
   });
 
   function peerOnline(peerId: string): DiscoveredPeer | null {

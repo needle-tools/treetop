@@ -56,6 +56,12 @@ export class PeerDiscovery {
   private service: ServiceType | null = null;
   private browser: BrowserType | null = null;
   private mdnsSocket: DgramSocket | null = null;
+  /** Active HTTP liveness check. mDNS `'down'` events are advisory
+   *  (and aggressive), and a daemon that dies hard never emits one
+   *  at all, so we also probe each known peer's /api/identity
+   *  periodically. Two consecutive failures = remove. */
+  private healthCheck: ReturnType<typeof setInterval> | null = null;
+  private failedHealthChecks = new Map<string, number>();
   /** Diagnostic set to true after a successful start. Stays false when
    *  bonjour init failed (logged separately) so the UI could surface
    *  "mDNS unavailable" later if we want. */
@@ -177,6 +183,12 @@ export class PeerDiscovery {
       this.browser.on("up", (svc: ServiceType) => this.onUp(svc));
       this.browser.on("down", (svc: ServiceType) => this.onDown(svc));
       this.enabled = true;
+      // Active liveness probe — see field comment above. 30s cadence
+      // catches "daemon died hard" within ~60s (two failures), which
+      // a missing bonjour 'down' event would never tell us about.
+      this.healthCheck = setInterval(() => {
+        void this.runHealthCheck();
+      }, 30_000);
     } catch (e) {
       console.error(
         `supergit daemon: mDNS discovery disabled (${process.platform}) — ${
@@ -186,9 +198,45 @@ export class PeerDiscovery {
     }
   }
 
+  /** Probe each known peer's /api/identity once. A peer that fails
+   *  the probe twice in a row gets removed without grace — bonjour
+   *  may never fire 'down' for a daemon that died hard (kill -9,
+   *  network drop, sleep), so we can't rely on it for liveness.
+   *  Successful probes clear the failure counter. */
+  private async runHealthCheck(): Promise<void> {
+    const known = this.registry.peers();
+    await Promise.all(
+      known.map(async (peer) => {
+        const url = `http://${peer.host}:${peer.port}/api/identity`;
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3000);
+          const res = await fetch(url, { signal: ctrl.signal });
+          clearTimeout(t);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          // Reachable — clear any pending failure count.
+          this.failedHealthChecks.delete(peer.id);
+        } catch {
+          const fails = (this.failedHealthChecks.get(peer.id) ?? 0) + 1;
+          if (fails >= 2) {
+            this.registry.removePeer(peer.id);
+            this.failedHealthChecks.delete(peer.id);
+          } else {
+            this.failedHealthChecks.set(peer.id, fails);
+          }
+        }
+      }),
+    );
+  }
+
   stop(): Promise<void> {
     return new Promise((resolve) => {
       try {
+        if (this.healthCheck) {
+          clearInterval(this.healthCheck);
+          this.healthCheck = null;
+        }
+        this.failedHealthChecks.clear();
         this.browser?.stop();
         this.service?.stop?.(() => {});
         this.bonjour?.destroy(() => {
