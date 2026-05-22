@@ -4821,11 +4821,13 @@
                     {/if}
                     <span class="agent-row-name">{prettyTuiName(p)}</span>
                     {#if ctx.repoName}
-                      <span
-                        class="tui-repo muted small"
-                        title={p.cwd}
-                        style={ctx.repoColor ? `color: ${ctx.repoColor}` : ""}
-                      >
+                      <!-- No per-repo color tint here: the dashboard's repo
+                           color is a high-saturation accent picked for the
+                           sidebar / chips on a darker surface, and on the
+                           muted popover background it reads as low-contrast.
+                           Keep the breadcrumb in the standard muted text
+                           color so it stays readable. -->
+                      <span class="tui-repo muted small" title={p.cwd}>
                         · {ctx.repoName}{ctx.wtBranch ? ` · ${ctx.wtBranch}` : ""}
                       </span>
                     {/if}
@@ -4834,21 +4836,25 @@
                         · {ctx.title}
                       </span>
                     {/if}
-                    <!-- Split into per-stat cells so adjacent rows line
-                         up vertically (was a single string separated by
-                         '·' — readable per-row, jagged across rows).
-                         CSS pins each cell to a fixed-width grid column. -->
+                    <!-- Per-stat cells live as DIRECT children of
+                         `.tui-row-static` so the parent's subgrid
+                         column placements (`> .tui-cpu { grid-column: 5; }`
+                         etc.) actually match and the columns line up
+                         across rows. A wrapping `<span class="tui-stats">`
+                         used to nest them, which broke the direct-child
+                         selectors and left every stat in one auto cell.
+                         The pid + cmd title rides on the leftmost stat
+                         (.tui-cpu) so you can still hover any of them
+                         to inspect the process. -->
                     <span
-                      class="tui-stats"
+                      class="tui-stat tui-cpu"
                       title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
-                    >
-                      <span class="tui-stat tui-cpu">{p.cpuPercent.toFixed(1)}%</span>
-                      <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
-                      <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
-                      {#if isIdle(p)}
-                        <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
-                      {/if}
-                    </span>
+                    >{p.cpuPercent.toFixed(1)}%</span>
+                    <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
+                    <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
+                    {#if isIdle(p)}
+                      <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
+                    {/if}
                     <button
                       class="row-close tui-kill-x"
                       on:click|stopPropagation={() => killTui(p.id)}
