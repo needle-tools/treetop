@@ -4,9 +4,13 @@
  * `peers()` to render the Share dialog peer list.
  *
  * Two responsibilities only:
- *   - dedup by `id` (bonjour can report the same service through
- *     multiple interfaces — same uuid in TXT records, different
- *     hostnames),
+ *   - dedup by `(id, port)` (bonjour can report the same service
+ *     through multiple interfaces — same uuid + port in TXT records,
+ *     different hostnames). Note `(id, port)`, not `id` alone:
+ *     siblings on the same host (dev daemon on 7777 + prod daemon on
+ *     27787) share one workspace identity file and therefore one id,
+ *     so collapsing by id alone hid one of them from every receiver
+ *     on the LAN. Composite key lets both coexist.
  *   - filter out our own advertisement (selfId).
  *
  * Decoupled from `bonjour-service` so the daemon can run in test
@@ -52,12 +56,19 @@ export interface RegistryOpts {
  *  every time the LAN drops a packet. */
 const DEFAULT_REMOVE_GRACE_MS = 60_000;
 
+/** Composite key. `id` alone isn't enough because dev + prod daemons
+ *  on the same host share one workspace identity. Including port lets
+ *  both adverts coexist in the registry. */
+function key(id: string, port: number): string {
+  return `${id}:${port}`;
+}
+
 export class PeerRegistry {
-  private byId = new Map<string, Peer>();
+  private byKey = new Map<string, Peer>();
   private selfId: string;
-  /** Pending soft-remove timers keyed by peer id. An incoming
-   *  `addPeer` for the same id cancels the timer so the peer survives
-   *  the missed-announcement hiccup. */
+  /** Pending soft-remove timers keyed by `(id, port)`. An incoming
+   *  `addPeer` for the same key cancels the timer so the peer
+   *  survives the missed-announcement hiccup. */
   private removeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: RegistryOpts) {
@@ -67,22 +78,34 @@ export class PeerRegistry {
   /** Late-bind the self id. Identity loads asynchronously at daemon
    *  startup; the registry exists before that so the bonjour browser
    *  has somewhere to deliver events. Once the id is known, this call
-   *  also removes any peer that turns out to be us. */
+   *  also removes every entry that turns out to be us — including
+   *  sibling daemons on the same host that share our id. */
   setSelfId(id: string): void {
     this.selfId = id;
-    if (id) this.byId.delete(id);
+    if (!id) return;
+    for (const [k, p] of this.byKey) {
+      if (p.id === id) {
+        this.byKey.delete(k);
+        const t = this.removeTimers.get(k);
+        if (t) {
+          clearTimeout(t);
+          this.removeTimers.delete(k);
+        }
+      }
+    }
   }
 
   addPeer(peer: Omit<Peer, "lastSeen" | "frontendPort"> & { frontendPort?: number }): void {
     if (!peer.id || !peer.host || !peer.port || !peer.label) return;
     if (peer.id === this.selfId) return;
+    const k = key(peer.id, peer.port);
     // Cancel any pending removal — the peer's still talking to us.
-    const pending = this.removeTimers.get(peer.id);
+    const pending = this.removeTimers.get(k);
     if (pending) {
       clearTimeout(pending);
-      this.removeTimers.delete(peer.id);
+      this.removeTimers.delete(k);
     }
-    this.byId.set(peer.id, {
+    this.byKey.set(k, {
       ...peer,
       // Default to the daemon port for back-compat with older
       // advertising peers that didn't ship a frontendPort TXT field.
@@ -94,39 +117,63 @@ export class PeerRegistry {
   /** Schedule (or immediately do) the removal of a peer.
    *  `opts.graceMs` defers actual removal — used by the bonjour
    *  wrapper on `'down'` events to absorb missed announcements.
-   *  Default behaviour (no grace) is immediate, kept so existing
-   *  callers + tests work unchanged. */
+   *  `port` is required: removal targets a specific `(id, port)`
+   *  pair, not every advert from that id, so a dev daemon going down
+   *  doesn't take its sibling prod daemon's entry with it. */
   removePeer(
     id: string,
+    port: number,
     opts: { graceMs?: number } = {},
   ): void {
+    const k = key(id, port);
     const graceMs = opts.graceMs ?? 0;
     if (graceMs <= 0) {
-      this.byId.delete(id);
-      const t = this.removeTimers.get(id);
+      this.byKey.delete(k);
+      const t = this.removeTimers.get(k);
       if (t) {
         clearTimeout(t);
-        this.removeTimers.delete(id);
+        this.removeTimers.delete(k);
       }
       return;
     }
     // Already scheduled — don't reset the timer (otherwise repeated
     // 'down' events from bonjour would keep deferring the removal
     // forever).
-    if (this.removeTimers.has(id)) return;
+    if (this.removeTimers.has(k)) return;
     this.removeTimers.set(
-      id,
+      k,
       setTimeout(() => {
-        this.byId.delete(id);
-        this.removeTimers.delete(id);
+        this.byKey.delete(k);
+        this.removeTimers.delete(k);
       }, graceMs),
     );
   }
 
   /** Snapshot — caller may mutate without affecting the registry. */
   peers(): Peer[] {
-    return Array.from(this.byId.values());
+    return Array.from(this.byKey.values());
   }
+}
+
+/** Append `:${frontendPort}` to the label of every peer that collides
+ *  with another peer on label alone. The collision group is what the
+ *  user actually sees as ambiguous in the Share dialog / inbox — most
+ *  often it's the dev + prod siblings from a single host (same
+ *  `<username>@<hostname>` label, different ports). Peers with a
+ *  unique label keep their advertised label untouched.
+ *
+ *  Pure: returns a new array, doesn't mutate the input.
+ */
+export function disambiguatePeerLabels(peers: Peer[]): Peer[] {
+  const counts = new Map<string, number>();
+  for (const p of peers) {
+    counts.set(p.label, (counts.get(p.label) ?? 0) + 1);
+  }
+  return peers.map((p) =>
+    (counts.get(p.label) ?? 0) > 1
+      ? { ...p, label: `${p.label}:${p.frontendPort}` }
+      : p,
+  );
 }
 
 export { DEFAULT_REMOVE_GRACE_MS };

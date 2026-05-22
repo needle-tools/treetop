@@ -219,7 +219,7 @@ export class PeerDiscovery {
         } catch {
           const fails = (this.failedHealthChecks.get(peer.id) ?? 0) + 1;
           if (fails >= 2) {
-            this.registry.removePeer(peer.id);
+            this.registry.removePeer(peer.id, peer.port);
             this.failedHealthChecks.delete(peer.id);
           } else {
             this.failedHealthChecks.set(peer.id, fails);
@@ -298,8 +298,8 @@ export class PeerDiscovery {
     // alive. Defer the removal so a follow-up `'up'` (the peer's
     // next periodic re-announce) cancels it and the UI doesn't
     // flicker offline → online over a single dropped packet.
-    if (typeof txt.id === "string") {
-      this.registry.removePeer(txt.id, { graceMs: 60_000 });
+    if (typeof txt.id === "string" && typeof svc.port === "number") {
+      this.registry.removePeer(txt.id, svc.port, { graceMs: 60_000 });
     }
   }
 }

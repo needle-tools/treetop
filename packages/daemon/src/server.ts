@@ -86,6 +86,7 @@ import {
   type PeerIdentity,
 } from "./peer-identity";
 import { PeerDiscovery } from "./peer-discovery";
+import { disambiguatePeerLabels } from "./peer-registry";
 import {
   addIncomingMessage,
   addOutgoingMessage,
@@ -2562,7 +2563,14 @@ const server = Bun.serve<TermWsData, never>({
       // Other supergit daemons discovered via mDNS on the LAN. The
       // Share dialog renders this as a clickable list; empty list is
       // fine — the dialog falls back to manual host:port.
-      return json({ peers: peerDiscovery?.peers() ?? [] });
+      //
+      // disambiguatePeerLabels suffixes labels in any collision group
+      // (most often "marcel@windows-pc" advertised by both the dev
+      // daemon on 7777 and the prod daemon on 27787) so the user can
+      // tell sibling daemons apart in the UI without us having to
+      // teach every consumer about ports.
+      const raw = peerDiscovery?.peers() ?? [];
+      return json({ peers: disambiguatePeerLabels(raw) });
     }
 
     // ──────────────────────────────────────────────────────────────
