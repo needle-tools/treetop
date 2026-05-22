@@ -43,7 +43,7 @@ import { OllamaSessionsLog } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
-import { terminalBackend } from "./terminals/node-pty-backend";
+import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
@@ -1575,15 +1575,8 @@ const server = Bun.serve<TermWsData, never>({
       // Detect the agent label from the ORIGINAL cmd before we wrap.
       // Otherwise wrapping with `bash -c '…'` would make the backend
       // see cmd[0]="bash" and mis-label every TUI as a shell.
+      const agentHint = detectAgentLabel(body.cmd[0]);
       const head0 = body.cmd[0]?.split(/[\\/]/).pop()?.toLowerCase();
-      const agentHint = ((): string | undefined => {
-        if (!head0) return undefined;
-        if (head0 === "claude") return "claude";
-        if (head0 === "codex") return "codex";
-        if (head0 === "ollama") return "ollama";
-        if (head0 === "bash" || head0 === "zsh" || head0 === "sh" || head0 === "fish") return "shell";
-        return undefined;
-      })();
       // If cmd[0] is a BARE agent name (no path separators), resolve it
       // to an absolute path picking the newest install across known
       // prefixes. This sidesteps the "two installs of codex, PATH

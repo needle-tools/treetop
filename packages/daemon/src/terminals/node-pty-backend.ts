@@ -102,13 +102,38 @@ function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
   return AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
 }
 
-function detectAgent(cmd: string[]): string | undefined {
-  const head = cmd[0]?.split(/[\\/]/).pop()?.toLowerCase();
+/** Map a PTY's argv[0] to an agent label used by the daemon for
+ *  per-agent behavior (shell-transcript persistence, command-history
+ *  capture, dashboard pill text). The Windows shell binaries
+ *  (`powershell.exe`, `pwsh.exe`, `cmd.exe`) must map to "shell" too —
+ *  otherwise on Windows `shells.writeHeader()` never runs, the column
+ *  flips to ShellView on exit and shows "shell not found", and the
+ *  command transcript stays empty. Exported so the test suite can
+ *  exercise it without booting the full daemon (server.ts has top-level
+ *  side effects we don't want firing in tests). */
+export function detectAgentLabel(cmd0: string | undefined): string | undefined {
+  const head = cmd0?.split(/[\\/]/).pop()?.toLowerCase();
   if (!head) return undefined;
-  if (head === "claude") return "claude";
-  if (head === "codex") return "codex";
-  if (head === "bash" || head === "zsh" || head === "sh" || head === "fish") return "shell";
+  const base = head.endsWith(".exe") ? head.slice(0, -4) : head;
+  if (base === "claude") return "claude";
+  if (base === "codex") return "codex";
+  if (base === "ollama") return "ollama";
+  if (
+    base === "bash" ||
+    base === "zsh" ||
+    base === "sh" ||
+    base === "fish" ||
+    base === "powershell" ||
+    base === "pwsh" ||
+    base === "cmd"
+  ) {
+    return "shell";
+  }
   return undefined;
+}
+
+function detectAgent(cmd: string[]): string | undefined {
+  return detectAgentLabel(cmd[0]);
 }
 
 /** Make sure node-pty's prebuilt spawn-helper has its executable bit.

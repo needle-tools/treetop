@@ -11,7 +11,7 @@
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
-import { NodePtyBackend } from "../src/terminals/node-pty-backend";
+import { NodePtyBackend, detectAgentLabel } from "../src/terminals/node-pty-backend";
 import { sampleProcs, shQuote, renameArgv, resolveAgentBinary } from "../src/procs";
 import { mkdtemp, writeFile, readFile, mkdir, chmod, utimes, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -688,4 +688,44 @@ describe.skipIf(isWin)("/api/processes report shape (integration)", () => {
     },
     10_000,
   );
+});
+
+// Platform-agnostic: detectAgentLabel is what gates the "this is a
+// shell" branch in /api/terminals POST (writes the JSONL header,
+// registers the termId for command-history capture). On Windows the
+// default shell resolves to powershell.exe / pwsh.exe / cmd.exe, none
+// of which the original Unix-only check matched — so columns flipped
+// to ShellView on exit and showed "shell not found", and their
+// command transcripts stayed empty.
+describe("detectAgentLabel", () => {
+  test("recognizes Unix shells", () => {
+    expect(detectAgentLabel("bash")).toBe("shell");
+    expect(detectAgentLabel("/bin/zsh")).toBe("shell");
+    expect(detectAgentLabel("/usr/bin/sh")).toBe("shell");
+    expect(detectAgentLabel("fish")).toBe("shell");
+  });
+
+  test("recognizes Windows shells (with or without .exe, any case)", () => {
+    expect(detectAgentLabel("powershell.exe")).toBe("shell");
+    expect(detectAgentLabel("PowerShell.exe")).toBe("shell");
+    expect(detectAgentLabel("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")).toBe("shell");
+    expect(detectAgentLabel("pwsh.exe")).toBe("shell");
+    expect(detectAgentLabel("pwsh")).toBe("shell");
+    expect(detectAgentLabel("cmd.exe")).toBe("shell");
+    expect(detectAgentLabel("C:\\Windows\\System32\\cmd.exe")).toBe("shell");
+  });
+
+  test("recognizes AI agents", () => {
+    expect(detectAgentLabel("claude")).toBe("claude");
+    expect(detectAgentLabel("claude.exe")).toBe("claude");
+    expect(detectAgentLabel("codex")).toBe("codex");
+    expect(detectAgentLabel("ollama")).toBe("ollama");
+  });
+
+  test("returns undefined for unknown commands and empty input", () => {
+    expect(detectAgentLabel(undefined)).toBeUndefined();
+    expect(detectAgentLabel("")).toBeUndefined();
+    expect(detectAgentLabel("vim")).toBeUndefined();
+    expect(detectAgentLabel("git")).toBeUndefined();
+  });
 });
