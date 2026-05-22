@@ -421,7 +421,20 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         if (cancelled) return;
         try { controller.enqueue(chunk); } catch { cancelled = true; }
       };
+      // Phase timings for the /api/repos load. Logged as a single
+      // structured line at the end so a slow load can be triaged from
+      // the prod log (`/tmp/supergit-prod.log`) without needing to
+      // re-run. Per-repo / per-worktree max times are surfaced so it's
+      // obvious *which* repo or worktree dominated — the typical
+      // pathologies (a slow drive, antivirus, a repo with many submodules)
+      // all show up as one outlier.
+      const t0 = performance.now();
+      let tManifest = 0;
+      let tEnrichStart = 0;
+      const perRepoMs = new Map<string, number>();
+      const perWorktreeMs: { wt: string; ms: number }[] = [];
       try {
+        const tPrelude = performance.now();
         const [repos, agents, titles] = await Promise.all([
           workspace.listRepos(),
           detectAgents(WORKSPACE_PATH),
@@ -430,15 +443,18 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const titled = agents.map((s) =>
           titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
         );
+        tManifest = performance.now() - tPrelude;
         safeEnqueue(enc.encode(manifestLineFor(repos)));
 
         const enriched: EnrichedRepo[] = [];
+        tEnrichStart = performance.now();
         // Each repo enriches in parallel; we flush its line the moment
         // it resolves rather than waiting for the slowest one. Failed
         // repos still emit an entry so the UI's skeleton doesn't dangle
         // forever — they just carry an empty worktrees array.
         await Promise.all(
           repos.map(async (repo) => {
+            const tRepo = performance.now();
             let result: EnrichedRepo;
             try {
               const [worktrees, remotes] = await Promise.all([
@@ -446,11 +462,16 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
                 listRemotes(repo.path),
               ]);
               const withDetails = await Promise.all(
-                worktrees.map(async (wt) => ({
-                  ...wt,
-                  ...(await getWorktreeDetails(wt.path)),
-                  agents: agentsForWorktree(wt.path, titled),
-                })),
+                worktrees.map(async (wt) => {
+                  const tWt = performance.now();
+                  const details = await getWorktreeDetails(wt.path);
+                  perWorktreeMs.push({ wt: wt.path, ms: performance.now() - tWt });
+                  return {
+                    ...wt,
+                    ...details,
+                    agents: agentsForWorktree(wt.path, titled),
+                  };
+                }),
               );
               result = { ...repo, worktrees: withDetails, remotes } as EnrichedRepo;
             } catch {
@@ -459,6 +480,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
               // remove or recover it from the UI).
               result = { ...repo, worktrees: [], remotes: [] } as EnrichedRepo;
             }
+            perRepoMs.set(repo.id, performance.now() - tRepo);
             enriched.push(result);
             safeEnqueue(enc.encode(repoLineFor(result)));
           }),
@@ -473,6 +495,17 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
           .filter((r): r is EnrichedRepo => r !== undefined);
         reposCache = { at: Date.now(), value: ordered };
         resolveInflight(ordered);
+        const totalMs = performance.now() - t0;
+        const enrichMs = performance.now() - tEnrichStart;
+        const slowestRepo = [...perRepoMs.entries()].sort((a, b) => b[1] - a[1])[0];
+        const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
+        console.log(
+          `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
+          `prelude=${tManifest.toFixed(0)}ms (listRepos+detectAgents+titles) ` +
+          `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
+          (slowestRepo ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms` : "") +
+          (slowestWt ? ` slowestWt=${slowestWt.wt}:${slowestWt.ms.toFixed(0)}ms` : "")
+        );
         if (!cancelled) {
           try { controller.close(); } catch { /* already closed */ }
         }

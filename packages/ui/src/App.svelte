@@ -2581,13 +2581,24 @@
   async function load() {
     loading = true;
     error = "";
+    // Browser-side timing for the initial dashboard load. Pair with the
+    // daemon's `/api/repos total=…` line — together they tell you
+    // whether a slow load is server-side (git fan-out) or client-side
+    // (rendering / network).
+    const tStart = performance.now();
+    let tManifest = 0;
+    let tFirstRepo = 0;
+    let repoCount = 0;
     try {
       // Kick off /api/repos NDJSON first so its manifest lands and
       // paints skeleton rows before the other fetches resolve. The
       // sibling fetches still run in parallel — we just don't await
       // them inside the stream pump.
+      console.log(`[load] start`);
       const reposStream = fetchReposNDJSON({
         onManifest: (skel) => {
+          tManifest = performance.now() - tStart;
+          console.log(`[load] manifest after ${tManifest.toFixed(0)}ms (${skel.length} repos)`);
           // First load: paint skeletons so the user sees structure
           // immediately. Subsequent reloads: keep already-rendered
           // rows in place and just sync add/remove from the manifest
@@ -2602,6 +2613,10 @@
           loading = false;
         },
         onRepo: (full) => {
+          repoCount += 1;
+          const dt = performance.now() - tStart;
+          if (tFirstRepo === 0) tFirstRepo = dt;
+          console.log(`[load] repo ${repoCount} (${full.name}) after ${dt.toFixed(0)}ms`);
           // If a color save is still in flight for this repo, the
           // daemon's snapshot of `color` is stale (the POST hasn't
           // persisted yet). Preserve the optimistic local value so the
@@ -2626,6 +2641,7 @@
         fetch("/api/shells"),
         fetch("/api/session-titles"),
       ]);
+      console.log(`[load] sibling fetches resolved after ${(performance.now() - tStart).toFixed(0)}ms`);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
       // Wait for the stream to finish before reading sibling responses,
       // but DON'T reassign `repos` from the stream's return value — that
@@ -2634,6 +2650,7 @@
       // in-place updates by id). Reassigning would reorder the dashboard
       // on every refresh.
       await reposStream;
+      console.log(`[load] /api/repos stream complete after ${(performance.now() - tStart).toFixed(0)}ms`);
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.
@@ -2659,6 +2676,10 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
+      console.log(
+        `[load] done after ${(performance.now() - tStart).toFixed(0)}ms ` +
+        `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
+      );
     }
   }
 
