@@ -35,22 +35,36 @@
     needsClone: boolean;
   }
 
+  interface Divergence {
+    commonPrefix: number;
+    existingAfter: number;
+    incomingAfter: number;
+    supersetOfExisting: boolean;
+    diverged: boolean;
+  }
+
   let invite: InviteCard | null = null;
   let loading = false;
   let actionPending = false;
   let action: { kind: "ok"; message: string } | { kind: "err"; message: string } | null = null;
+  /** Set when a previous accept attempt returned 409 "exists" — the
+   *  dialog then shows the conflict view with three buttons (replace
+   *  / keep both / cancel) instead of the normal Accept button. */
+  let conflict: Divergence | null = null;
 
   let lastOfferId: string | null = null;
   $: if ($activeInvite && $activeInvite.offerId !== lastOfferId) {
     lastOfferId = $activeInvite.offerId;
     invite = null;
     action = null;
+    conflict = null;
     void loadInvite($activeInvite.offerId);
   }
   $: if (!$activeInvite) {
     lastOfferId = null;
     invite = null;
     action = null;
+    conflict = null;
   }
 
   async function loadInvite(offerId: string) {
@@ -70,19 +84,28 @@
     }
   }
 
-  async function accept() {
+  async function accept(mode?: "replace" | "keep_both") {
     if (!invite || actionPending) return;
     actionPending = true;
     action = null;
     try {
       const res = await fetch(
         `/api/sessions/invites/${encodeURIComponent(invite.manifest.offerId)}/accept`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(mode ? { mode } : {}),
+        },
       );
       if (res.status === 409) {
         const body = (await res.json().catch(() => null)) as
-          | { remote?: string }
+          | { error?: string; remote?: string; divergence?: Divergence }
           | null;
+        if (body?.error === "exists" && body.divergence) {
+          // Surface the three-button conflict view instead of an error.
+          conflict = body.divergence;
+          return;
+        }
         action = {
           kind: "err",
           message: `Clone the repo first: ${body?.remote ?? invite.manifest.originRepoRemote}`,
@@ -94,7 +117,15 @@
         action = { kind: "err", message: body?.error ?? `HTTP ${res.status}` };
         return;
       }
-      action = { kind: "ok", message: "Accepted. Session imported." };
+      action = {
+        kind: "ok",
+        message:
+          mode === "replace"
+            ? "Replaced. Session updated."
+            : mode === "keep_both"
+              ? "Saved alongside the existing copy."
+              : "Accepted. Session imported.",
+      };
       // Auto-close on success after a beat so the user sees the result
       // and so a fresh invite doesn't open over a stale state.
       setTimeout(() => closeInvite(), 1200);
@@ -206,20 +237,67 @@
           </p>
         {/if}
 
-        <div class="invite-buttons">
-          <button
-            type="button"
-            class="invite-btn invite-decline"
-            disabled={actionPending}
-            on:click={decline}
-          >Decline</button>
-          <button
-            type="button"
-            class="invite-btn invite-accept"
-            disabled={actionPending || invite.needsClone}
-            on:click={accept}
-          >{invite.needsClone ? "Clone first" : "Accept"}</button>
-        </div>
+        {#if conflict}
+          <div class="invite-conflict">
+            {#if conflict.supersetOfExisting}
+              <p class="invite-conflict-head">
+                You already have this session.
+                The new offer adds <strong>{conflict.incomingAfter}</strong>
+                message{conflict.incomingAfter === 1 ? "" : "s"} on top of the
+                existing {conflict.commonPrefix} you have.
+              </p>
+            {:else}
+              <p class="invite-conflict-head">
+                Diverged from your copy at message {conflict.commonPrefix}.
+                You have <strong>{conflict.existingAfter}</strong>
+                message{conflict.existingAfter === 1 ? "" : "s"} the sender
+                doesn't; sender has
+                <strong>{conflict.incomingAfter}</strong>
+                message{conflict.incomingAfter === 1 ? "" : "s"} you don't.
+              </p>
+            {/if}
+            <p class="invite-conflict-help">
+              <strong>Replace</strong> overwrites your local copy.
+              <strong>Keep both</strong> saves the incoming next to it as a sibling file.
+              <strong>Cancel</strong> leaves everything alone.
+            </p>
+            <div class="invite-buttons">
+              <button
+                type="button"
+                class="invite-btn"
+                disabled={actionPending}
+                on:click={() => { conflict = null; }}
+              >Cancel</button>
+              <button
+                type="button"
+                class="invite-btn"
+                disabled={actionPending}
+                on:click={() => accept("keep_both")}
+              >Keep both</button>
+              <button
+                type="button"
+                class="invite-btn invite-accept"
+                disabled={actionPending}
+                on:click={() => accept("replace")}
+              >{conflict.supersetOfExisting ? "Update" : "Replace"}</button>
+            </div>
+          </div>
+        {:else}
+          <div class="invite-buttons">
+            <button
+              type="button"
+              class="invite-btn invite-decline"
+              disabled={actionPending}
+              on:click={decline}
+            >Decline</button>
+            <button
+              type="button"
+              class="invite-btn invite-accept"
+              disabled={actionPending || invite.needsClone}
+              on:click={() => accept()}
+            >{invite.needsClone ? "Clone first" : "Accept"}</button>
+          </div>
+        {/if}
       {/if}
     </div>
   </div>
@@ -336,6 +414,27 @@
   .invite-result.err {
     background: color-mix(in srgb, #c0392b 22%, transparent);
     color: #fff;
+  }
+  .invite-conflict {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.6rem 0.7rem;
+    background: color-mix(in srgb, #d35400 12%, transparent);
+    border: 1px solid color-mix(in srgb, #d35400 35%, transparent);
+    border-radius: 4px;
+  }
+  .invite-conflict-head {
+    margin: 0;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text-1, inherit);
+  }
+  .invite-conflict-help {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text-muted);
   }
   .invite-buttons {
     display: flex;

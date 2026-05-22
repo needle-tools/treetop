@@ -180,32 +180,138 @@ describe("acceptOffer", () => {
     expect(r.ok === false && r.error).toBe("not_found");
   });
 
-  test("replaces existing import on re-accept of the same sid", async () => {
+  test("re-accept of the same sid without mode → exists with divergence info", async () => {
     const ws = await tempWorkspace();
     const m1 = manifest({ offerId: "o1" });
-    await storePendingOffer(ws, m1, jsonlMentioning(m1.originRepoPath));
+    const j1 = [
+      JSON.stringify({ uuid: "u1", text: "hello" }),
+      JSON.stringify({ uuid: "u2", text: "world" }),
+    ].join("\n");
+    await storePendingOffer(ws, m1, j1);
     await acceptOffer({
       workspaceDir: ws,
       offerId: "o1",
       repoLookup: repoFound("/local/bar"),
     });
 
-    // Second send of the same sid with updated content
+    // Re-send: same prefix, two new turns appended → strict superset.
     const m2 = manifest({ offerId: "o2" });
-    const j2 = JSON.stringify({
-      cwd: `${m2.originRepoPath}/src`,
-      extra: "second send",
-    });
+    const j2 = [
+      JSON.stringify({ uuid: "u1", text: "hello" }),
+      JSON.stringify({ uuid: "u2", text: "world" }),
+      JSON.stringify({ uuid: "u3", text: "more" }),
+      JSON.stringify({ uuid: "u4", text: "still more" }),
+    ].join("\n");
     await storePendingOffer(ws, m2, j2);
     const r = await acceptOffer({
       workspaceDir: ws,
       offerId: "o2",
       repoLookup: repoFound("/local/bar"),
     });
-    if (!r.ok) throw new Error("expected ok");
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.error).toBe("exists");
+    expect(r.divergence?.supersetOfExisting).toBe(true);
+    expect(r.divergence?.incomingAfter).toBe(2);
+    expect(r.divergence?.existingAfter).toBe(0);
+    // Pending file stays alive so the user can retry with mode.
+    expect(await loadPendingOffer(ws, "o2")).not.toBeNull();
+  });
 
+  test("mode=replace overwrites the existing import", async () => {
+    const ws = await tempWorkspace();
+    await storePendingOffer(ws, manifest({ offerId: "o1" }), "old content");
+    await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o1",
+      repoLookup: repoFound("/local/bar"),
+    });
+
+    await storePendingOffer(ws, manifest({ offerId: "o2" }), "new content");
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o2",
+      repoLookup: repoFound("/local/bar"),
+      mode: "replace",
+    });
+    if (!r.ok) throw new Error("expected ok");
     const imported = await readFile(r.importedPath, "utf-8");
-    expect(imported.includes("second send")).toBe(true);
+    expect(imported).toBe("new content");
+    // Default-named file — same path as the first import.
+    expect(r.importedPath.endsWith("/sid-aaa.jsonl")).toBe(true);
+  });
+
+  test("mode=keep_both writes a sibling file with a suffix", async () => {
+    const ws = await tempWorkspace();
+    await storePendingOffer(ws, manifest({ offerId: "o1" }), "first");
+    const r1 = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o1",
+      repoLookup: repoFound("/local/bar"),
+    });
+    if (!r1.ok) throw new Error("expected ok");
+
+    await storePendingOffer(ws, manifest({ offerId: "o2" }), "second");
+    const r2 = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o2",
+      repoLookup: repoFound("/local/bar"),
+      mode: "keep_both",
+    });
+    if (!r2.ok) throw new Error("expected ok");
+
+    expect(r2.importedPath).not.toBe(r1.importedPath);
+    expect(r2.importedPath.includes("/sid-aaa.")).toBe(true);
+    // Both files survive
+    expect(await readFile(r1.importedPath, "utf-8")).toBe("first");
+    expect(await readFile(r2.importedPath, "utf-8")).toBe("second");
+  });
+
+  test("first import succeeds even when mode defaults — exists check applies only on collision", async () => {
+    const ws = await tempWorkspace();
+    await storePendingOffer(ws, manifest(), "fresh");
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "offer-aaa",
+      repoLookup: repoFound("/local/bar"),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("genuine fork → exists with diverged=true, supersetOfExisting=false", async () => {
+    const ws = await tempWorkspace();
+    const j1 = [
+      JSON.stringify({ uuid: "u1" }),
+      JSON.stringify({ uuid: "u2" }),
+      JSON.stringify({ uuid: "x1" }),
+    ].join("\n");
+    const j2 = [
+      JSON.stringify({ uuid: "u1" }),
+      JSON.stringify({ uuid: "u2" }),
+      JSON.stringify({ uuid: "y1" }),
+      JSON.stringify({ uuid: "y2" }),
+    ].join("\n");
+    await storePendingOffer(ws, manifest({ offerId: "o1" }), j1);
+    await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o1",
+      repoLookup: repoFound("/local/bar"),
+    });
+
+    await storePendingOffer(ws, manifest({ offerId: "o2" }), j2);
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o2",
+      repoLookup: repoFound("/local/bar"),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.error).toBe("exists");
+    expect(r.divergence?.diverged).toBe(true);
+    expect(r.divergence?.supersetOfExisting).toBe(false);
+    expect(r.divergence?.commonPrefix).toBe(2);
+    expect(r.divergence?.existingAfter).toBe(1);
+    expect(r.divergence?.incomingAfter).toBe(2);
   });
 
   test("rewrites worktree path when receiver has a matching worktree", async () => {

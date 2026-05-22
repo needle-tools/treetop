@@ -2236,23 +2236,48 @@ const server = Bun.serve<TermWsData, never>({
     );
     if (inviteAcceptMatch && req.method === "POST") {
       const offerId = inviteAcceptMatch[1]!;
+      // Body may carry { mode: "replace" | "keep_both" } when the
+      // user has already resolved a previous collision prompt. Default
+      // (no body / no mode) is "abort_if_exists" — the safe choice.
+      const body = (await req.json().catch(() => null)) as
+        | { mode?: unknown }
+        | null;
+      const mode =
+        body?.mode === "replace" || body?.mode === "keep_both"
+          ? body.mode
+          : "abort_if_exists";
+
       const result = await acceptOffer({
         workspaceDir: workspace.path,
         offerId,
         repoLookup,
+        mode,
       });
       if (!result.ok) {
         if (result.error === "not_found") {
           return json({ error: "not_found" }, { status: 404 });
         }
-        // needs_clone — receiver needs to add the repo before accepting.
-        // Re-load the manifest so the UI can surface the missing remote.
-        const offers = await listPendingOffers(workspace.path);
-        const pending = offers.find((o) => o.manifest.offerId === offerId);
+        if (result.error === "needs_clone") {
+          // Receiver needs to add the repo before accepting. Re-load
+          // the manifest so the UI can surface the missing remote.
+          const offers = await listPendingOffers(workspace.path);
+          const pending = offers.find((o) => o.manifest.offerId === offerId);
+          return json(
+            {
+              error: "needs_clone",
+              remote: pending?.manifest.originRepoRemote,
+            },
+            { status: 409 },
+          );
+        }
+        // result.error === "exists" — surface divergence stats so
+        // the UI can show "update from N to M" or "diverged" copy
+        // and the right three buttons.
         return json(
           {
-            error: "needs_clone",
-            remote: pending?.manifest.originRepoRemote,
+            error: "exists",
+            divergence: result.divergence,
+            existingPath: result.existingPath,
           },
           { status: 409 },
         );
@@ -2266,6 +2291,7 @@ const server = Bun.serve<TermWsData, never>({
           originMachine: result.manifest.originMachine,
           repoRemote: result.manifest.originRepoRemote,
           importedPath: result.importedPath,
+          mode,
         },
       });
       broadcast("change", { kind: "session_imported", sid: result.manifest.sid });

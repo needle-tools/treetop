@@ -16,9 +16,11 @@ import {
   writeFile,
   readdir,
   unlink,
+  access,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { rewritePaths, type SessionShareManifest } from "./session-share";
+import { findDivergence, type Divergence } from "./session-share-divergence";
 
 const INVITES_DIR = "session-invites";
 const IMPORTED_DIR = "imported-sessions";
@@ -37,15 +39,29 @@ export type RepoLookup = (
   originWorktreePath: string | undefined,
 ) => Promise<{ localRepoPath: string; localWorktreePath?: string } | null>;
 
+/** How acceptOffer should behave when an imported file already exists
+ *  for `(originMachine, sid)`:
+ *   - `abort_if_exists` (default): refuse and return `{ ok: false,
+ *     error: "exists", divergence }` so the UI can prompt the user.
+ *   - `replace`: overwrite the existing file.
+ *   - `keep_both`: write to a sibling path `<sid>.from-<machine>-<n>.jsonl`
+ *     so both copies live side by side.
+ *
+ *  The default is intentionally cautious — the v1 implementation
+ *  silently overwrote, which lost data when two machines diverged. */
+export type AcceptMode = "abort_if_exists" | "replace" | "keep_both";
+
 export interface AcceptOfferArgs {
   workspaceDir: string;
   offerId: string;
   repoLookup: RepoLookup;
+  mode?: AcceptMode;
 }
 
 export type AcceptResult =
   | { ok: true; manifest: SessionShareManifest; importedPath: string }
-  | { ok: false; error: "not_found" | "needs_clone" };
+  | { ok: false; error: "not_found" | "needs_clone" }
+  | { ok: false; error: "exists"; divergence: Divergence; existingPath: string };
 
 /** Persist an incoming offer in the pending inbox. Idempotent on `offerId`. */
 export async function storePendingOffer(
@@ -112,9 +128,20 @@ export async function listPendingOffers(
 
 /** Accept a pending offer: rewrite paths, write the import + sidecar
  *  manifest, delete the pending file. Caller is responsible for
- *  appending the corresponding event-log entry. */
+ *  appending the corresponding event-log entry.
+ *
+ *  When a previous import for `(originMachine, sid)` already exists,
+ *  behaviour depends on `args.mode`:
+ *   - default / `abort_if_exists`: returns `{ ok: false, error:
+ *     "exists", divergence }` and leaves both the existing file and
+ *     the pending offer untouched. The UI is expected to render a
+ *     three-button choice (replace / keep both / cancel) and re-call
+ *     with an explicit mode.
+ *   - `replace`: overwrites the existing file.
+ *   - `keep_both`: writes to a sibling path so both copies survive.
+ */
 export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> {
-  const { workspaceDir, offerId, repoLookup } = args;
+  const { workspaceDir, offerId, repoLookup, mode = "abort_if_exists" } = args;
   const pending = await loadPendingOffer(workspaceDir, offerId);
   if (!pending) return { ok: false, error: "not_found" };
 
@@ -126,25 +153,54 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
   if (!looked) return { ok: false, error: "needs_clone" };
 
   // Rewrite repo root first, then the worktree if both ends have it.
+  const toPlatform =
+    process.platform === "win32"
+      ? "win32"
+      : process.platform === "darwin"
+        ? "darwin"
+        : "linux";
   let rewritten = rewritePaths(jsonl, {
     from: manifest.originRepoPath,
     to: looked.localRepoPath,
     fromPlatform: manifest.originPlatform,
-    toPlatform: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux",
+    toPlatform,
   });
   if (manifest.originWorktreePath && looked.localWorktreePath) {
     rewritten = rewritePaths(rewritten, {
       from: manifest.originWorktreePath,
       to: looked.localWorktreePath,
       fromPlatform: manifest.originPlatform,
-      toPlatform: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux",
+      toPlatform,
     });
   }
 
   const importDir = join(workspaceDir, IMPORTED_DIR, manifest.originMachine);
   await mkdir(importDir, { recursive: true });
-  const importedPath = join(importDir, `${manifest.sid}.jsonl`);
+  const defaultPath = join(importDir, `${manifest.sid}.jsonl`);
   const sidecarPath = join(importDir, `${manifest.sid}.manifest.json`);
+
+  // Check collision + compute divergence so the caller can decide.
+  let existingPath: string | null = null;
+  let divergence: Divergence | null = null;
+  try {
+    await access(defaultPath);
+    existingPath = defaultPath;
+    const existingJsonl = await readFile(defaultPath, "utf-8").catch(() => "");
+    divergence = findDivergence(existingJsonl, rewritten);
+  } catch {
+    // No collision — proceed normally below.
+  }
+
+  let importedPath = defaultPath;
+  if (existingPath && divergence) {
+    if (mode === "abort_if_exists") {
+      return { ok: false, error: "exists", divergence, existingPath };
+    }
+    if (mode === "keep_both") {
+      importedPath = await pickKeepBothPath(importDir, manifest.sid);
+    }
+    // mode === "replace" → keep defaultPath, writeFile will overwrite.
+  }
 
   await writeFile(importedPath, rewritten);
   await writeFile(
@@ -167,6 +223,26 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
   await unlink(join(workspaceDir, INVITES_DIR, `${offerId}.json`));
 
   return { ok: true, manifest, importedPath };
+}
+
+/** Find a free `<sid>.from-<n>.jsonl` slot in `importDir`. Used by the
+ *  `keep_both` accept mode so a divergent import can sit next to the
+ *  existing copy without overwriting. Probes up to 99 suffixes which
+ *  is well past any realistic re-import count. */
+async function pickKeepBothPath(
+  importDir: string,
+  sid: string,
+): Promise<string> {
+  for (let n = 2; n < 100; n++) {
+    const candidate = join(importDir, `${sid}.from-${n}.jsonl`);
+    try {
+      await access(candidate);
+    } catch {
+      return candidate;
+    }
+  }
+  // Fallback: timestamp suffix. Implausible to reach in practice.
+  return join(importDir, `${sid}.from-${Date.now()}.jsonl`);
 }
 
 /** Decline a pending offer. Returns whether anything was actually
