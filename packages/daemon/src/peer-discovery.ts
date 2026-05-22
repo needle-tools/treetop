@@ -161,7 +161,15 @@ export class PeerDiscovery {
       // is already in use on the network". The TXT records carry the
       // human label and id verbatim, so this suffix only affects the
       // raw mDNS record name; the UI never sees it.
-      const serviceName = `${this.opts.label} [${this.opts.id.slice(0, 8)}]`;
+      //
+      // Port is part of the suffix because the dev daemon (7777) and
+      // prod daemon (27787) on a single host share one workspace
+      // identity file, so they have the same id+label and would
+      // otherwise generate the same service name. Before this,
+      // whichever daemon started second had its bonjour publish
+      // silently rejected and never advertised on the LAN at all —
+      // so the other machine could only ever see one of the two.
+      const serviceName = `${this.opts.label} [${this.opts.id.slice(0, 8)}:${this.opts.port}]`;
       this.service = this.bonjour.publish({
         name: serviceName,
         type: SERVICE_TYPE,
