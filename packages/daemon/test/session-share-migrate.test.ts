@@ -18,6 +18,7 @@ import { join } from "node:path";
 import {
   migrateLegacyImportedSessions,
   migrateClaudeImportsToProjects,
+  migrateOllamaImportsToWorkspace,
 } from "../src/session-share-migrate";
 
 async function ws(): Promise<string> {
@@ -278,5 +279,76 @@ describe("migrateClaudeImportsToProjects", () => {
       "abc.jsonl.migrated-bak",
       "abc.manifest.json",
     ]);
+  });
+});
+
+describe("migrateOllamaImportsToWorkspace", () => {
+  test("noop when imported-sessions dir doesn't exist", async () => {
+    const w = await ws();
+    expect(await migrateOllamaImportsToWorkspace(w)).toEqual({
+      moved: 0,
+      skipped: 0,
+    });
+  });
+
+  test("moves an ollama JSONL into <workspace>/ollama/ and stamps the sidecar", async () => {
+    const w = await ws();
+    const dir = join(w, "imported-sessions", "host-1", "ollama");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "abc.jsonl"), "ollama-transcript");
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({ sid: "abc", agent: "ollama" }),
+    );
+
+    const res = await migrateOllamaImportsToWorkspace(w);
+    expect(res).toEqual({ moved: 1, skipped: 0 });
+
+    const targetPath = join(w, "ollama", "abc.jsonl");
+    expect(await readFile(targetPath, "utf-8")).toBe("ollama-transcript");
+
+    const sidecar = JSON.parse(
+      await readFile(join(dir, "abc.manifest.json"), "utf-8"),
+    );
+    expect(sidecar.importedJsonlPath).toBe(targetPath);
+
+    // Original jsonl is gone.
+    let stillThere = true;
+    try {
+      await access(join(dir, "abc.jsonl"));
+    } catch {
+      stillThere = false;
+    }
+    expect(stillThere).toBe(false);
+  });
+
+  test("idempotent: a sidecar whose importedJsonlPath points at an existing file is left alone", async () => {
+    const w = await ws();
+    const dir = join(w, "imported-sessions", "host", "ollama");
+    const ollamaDir = join(w, "ollama");
+    await mkdir(dir, { recursive: true });
+    await mkdir(ollamaDir, { recursive: true });
+    const targetPath = join(ollamaDir, "abc.jsonl");
+    await writeFile(targetPath, "already-migrated");
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "ollama",
+        importedJsonlPath: targetPath,
+      }),
+    );
+    const res = await migrateOllamaImportsToWorkspace(w);
+    expect(res).toEqual({ moved: 0, skipped: 0 });
+    expect(await readFile(targetPath, "utf-8")).toBe("already-migrated");
+  });
+
+  test("skips when sidecar is missing", async () => {
+    const w = await ws();
+    const dir = join(w, "imported-sessions", "host", "ollama");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "orphan.jsonl"), "x");
+    const res = await migrateOllamaImportsToWorkspace(w);
+    expect(res).toEqual({ moved: 0, skipped: 1 });
   });
 });

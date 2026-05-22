@@ -29,7 +29,11 @@ import {
   access,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { rewritePaths, type SessionShareManifest } from "./session-share";
+import {
+  rewritePaths,
+  type SessionShareManifest,
+  type SharePlatform,
+} from "./session-share";
 import { findDivergence, type Divergence } from "./session-share-divergence";
 import { claudeProjectDirForCwd, CLAUDE_ROOT } from "./agents";
 
@@ -72,6 +76,12 @@ export interface AcceptOfferArgs {
    *  `<claudeProjectsDir>/<encoded(cwd)>/<sid>.jsonl` so Claude Code's
    *  `--resume` finds it. */
   claudeProjectsDir?: string;
+  /** Override the rewriter's target platform. Defaults to the daemon's
+   *  `process.platform` because the imported JSONL lives on this host
+   *  and should use its separator conventions. Tests pass an explicit
+   *  value to keep the rewriter from converting separators when the
+   *  test's expected output assumes the sender's platform. */
+  toPlatform?: SharePlatform;
 }
 
 export type AcceptResult =
@@ -175,12 +185,13 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
   if (!looked) return { ok: false, error: "needs_clone" };
 
   // Rewrite repo root first, then the worktree if both ends have it.
-  const toPlatform =
-    process.platform === "win32"
+  const toPlatform: SharePlatform =
+    args.toPlatform ??
+    (process.platform === "win32"
       ? "win32"
       : process.platform === "darwin"
         ? "darwin"
-        : "linux";
+        : "linux");
   let rewritten = rewritePaths(jsonl, {
     from: manifest.originRepoPath,
     to: looked.localRepoPath,
@@ -199,14 +210,19 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
   // Where the import lives depends on agent:
   //   - claude: the rewritten JSONL goes straight into
   //     `<claudeProjectsDir>/<encoded(cwd)>/<sid>.jsonl` so Claude Code's
-  //     own `--resume <sid>` lookup finds it. The sidecar (import
-  //     metadata only) sits under
-  //     `<workspace>/imported-sessions/<machine>/claude/<sid>.manifest.json`.
-  //   - codex: legacy layout — JSONL + sidecar both under
-  //     `<workspace>/imported-sessions/<machine>/codex/`. Codex doesn't
-  //     have a single canonical projects dir we can drop into, and
-  //     `codex resume` takes a sid plus picker so a sibling location
-  //     is fine.
+  //     own `--resume <sid>` lookup finds it.
+  //   - ollama: JSONL lands in `<workspace>/ollama/<sid>.jsonl` — the
+  //     same directory supergit's own `scanOllama` walks, so the
+  //     receiver's dashboard surfaces the imported session natively
+  //     (no separate "imported ollama" code path) and can resume it
+  //     by spawning a new PTY that replays the transcript.
+  //   - codex: JSONL + sidecar both stay under
+  //     `<workspace>/imported-sessions/<machine>/codex/`. Codex's
+  //     date-bucketed projects dir is a follow-up; sibling location
+  //     is fine for now since `codex resume` accepts a sid + picker.
+  //
+  // Sidecars (import metadata only) ALWAYS live under
+  // `<workspace>/imported-sessions/<machine>/<agent>/<sid>.manifest.json`.
   const sidecarDir = join(
     workspaceDir,
     IMPORTED_DIR,
@@ -220,6 +236,8 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
   if (manifest.agent === "claude") {
     const cwd = looked.localWorktreePath || looked.localRepoPath;
     jsonlDir = await claudeProjectDirForCwd(cwd, claudeProjectsDir);
+  } else if (manifest.agent === "ollama") {
+    jsonlDir = join(workspaceDir, "ollama");
   } else {
     jsonlDir = sidecarDir;
   }
