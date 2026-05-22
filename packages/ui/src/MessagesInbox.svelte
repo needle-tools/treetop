@@ -14,7 +14,9 @@
     sendMessage,
     mutePeer,
     unmutePeer,
-    totalCount,
+    unreadCount,
+    recallLastRead,
+    markInboxRead,
   } from "./messages-store";
 
   interface DiscoveredPeer {
@@ -42,6 +44,14 @@
   let open = false;
   let peers: DiscoveredPeer[] = [];
   let peersPoll: ReturnType<typeof setInterval> | null = null;
+  /** Polls /api/messages on a slow cadence as a safety net for the
+   *  SSE-driven refresh. The SSE handler in App.svelte normally
+   *  keeps the store in sync; this catches the case where an SSE
+   *  reconnect drops events or the broadcast was missed. */
+  let messagesPoll: ReturnType<typeof setInterval> | null = null;
+  /** ISO timestamp of the last time the user opened the inbox.
+   *  Anything received after this counts as unread for the badge. */
+  let lastReadAt: string | null = recallLastRead();
   let replyText: Record<string, string> = {};
   let sending: Record<string, boolean> = {};
   let sendError: Record<string, string> = {};
@@ -50,8 +60,13 @@
    *  after a successful send. Cleared on next send to that peer. */
   let sentBadgeTimer: Record<string, ReturnType<typeof setTimeout> | null> = {};
   let sentBadge: Record<string, boolean> = {};
+  /** Per-message "just copied" flag, keyed by message id. The copy
+   *  button swaps to a checkmark for ~1.4s after a successful
+   *  clipboard write so the click feels acknowledged. */
+  let copied: Record<string, boolean> = {};
+  let copiedTimer: Record<string, ReturnType<typeof setTimeout> | null> = {};
 
-  $: count = totalCount($messages);
+  $: count = unreadCount($messages, lastReadAt);
 
   // Unified rows: every peer the user can talk to — peers who've
   // messaged us (with history) and peers currently discovered on the
@@ -105,6 +120,11 @@
 
   onMount(() => {
     void refreshMessages();
+    // Slow background poll — safety net for the SSE-driven refresh
+    // in case `message_received` events get dropped (reconnect, tab
+    // throttling, etc.). 7s is short enough to feel reactive
+    // without spamming the daemon.
+    messagesPoll = setInterval(refreshMessages, 7000);
   });
 
   async function refreshPeers() {
@@ -123,6 +143,10 @@
     if (open) {
       void refreshMessages();
       void refreshPeers();
+      // Opening the inbox is the "I read it" moment for the badge.
+      // Anything received after this timestamp counts as unread next
+      // time around.
+      lastReadAt = markInboxRead();
       // Poll peers while open so the "reply" state turns on/off if
       // a peer comes back online or drops.
       if (peersPoll) clearInterval(peersPoll);
@@ -143,6 +167,7 @@
   }
   onDestroy(() => {
     if (peersPoll) clearInterval(peersPoll);
+    if (messagesPoll) clearInterval(messagesPoll);
   });
 
   function peerOnline(peerId: string): DiscoveredPeer | null {
@@ -161,9 +186,19 @@
     return new Date(iso).toLocaleDateString();
   }
 
-  async function onCopy(body: string) {
+  async function onCopy(msgId: string, body: string) {
     try {
       await navigator.clipboard.writeText(body);
+      copied = { ...copied, [msgId]: true };
+      const prior = copiedTimer[msgId];
+      if (prior) clearTimeout(prior);
+      copiedTimer = {
+        ...copiedTimer,
+        [msgId]: setTimeout(() => {
+          copied = { ...copied, [msgId]: false };
+          copiedTimer = { ...copiedTimer, [msgId]: null };
+        }, 1400),
+      };
     } catch {
       // older browsers — silently no-op; user can still select+copy.
     }
@@ -220,6 +255,17 @@
   .inbox-icon {
     flex: 0 0 auto;
     opacity: 0.85;
+  }
+  /* Bright notification-style badge — the same orange-red email
+     clients use for unread counts. Overrides the default .count
+     pill (which is a subtle muted-border style) so unread inbox
+     items are impossible to miss. */
+  .inbox-unread-count {
+    background: #ef4444;
+    color: #fff;
+    border-color: #ef4444;
+    padding: 0.15em 0.4em;
+    font-weight: 600;
   }
   .inbox-list {
     list-style: none;
@@ -309,13 +355,18 @@
     gap: 0.4rem;
   }
   .inbox-msg {
+    /* Anchor for the inline copy icon overlaid in the bottom-right
+       of the message body. */
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 0.15rem;
   }
   .inbox-body {
     margin: 0;
-    padding: 0.45rem 0.55rem;
+    /* Extra right padding clears the absolute-positioned copy icon
+       so a long final line doesn't slip under it. */
+    padding: 0.45rem 1.7rem 0.45rem 0.55rem;
     background: color-mix(in srgb, var(--surface-2) 50%, transparent);
     border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
     border-radius: 4px;
@@ -328,25 +379,34 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
-  .inbox-msg-meta {
-    display: flex;
-    justify-content: space-between;
+  /* Copy icon mirrors the send-icon style on the textarea — same
+     corner, same transparent / brand-hover treatment, so the two
+     compose-area affordances feel like a pair. */
+  .inbox-copy-icon {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    display: inline-flex;
     align-items: center;
-    font-size: 0.7rem;
-  }
-  .inbox-copy {
-    font: inherit;
-    font-size: 0.7rem;
-    padding: 0.1rem 0.45rem;
-    border-radius: 3px;
-    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    border-radius: 4px;
+    border: none;
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
+    opacity: 0.7;
   }
-  .inbox-copy:hover {
+  .inbox-copy-icon:hover {
     color: var(--text-1, inherit);
-    border-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
+    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+    opacity: 1;
+  }
+  .inbox-msg-time {
+    align-self: flex-end;
+    font-size: 0.7rem;
   }
   .inbox-reply {
     position: relative;
@@ -456,7 +516,7 @@
     </svg>
     Inbox
     {#if count > 0}
-      <span class="count">{count}</span>
+      <span class="count inbox-unread-count">{count}</span>
     {/if}
   </button>
   {#if open}
@@ -526,15 +586,33 @@
                   {#each row.messages as msg (msg.id)}
                     <li class="inbox-msg">
                       <pre class="inbox-body">{msg.body}</pre>
-                      <div class="inbox-msg-meta">
-                        <span class="muted small">{relTime(msg.receivedAt)}</span>
-                        <button
-                          type="button"
-                          class="inbox-copy"
-                          on:click={() => onCopy(msg.body)}
-                          title="Copy to clipboard"
-                        >Copy</button>
-                      </div>
+                      <!-- Copy button overlaid in the bottom-right
+                           of the message body, matching the send
+                           icon's placement on the textarea. The
+                           body has padding-right so a long final
+                           line doesn't slip under the icon. -->
+                      <button
+                        type="button"
+                        class="inbox-copy-icon"
+                        class:inbox-copy-icon-copied={copied[msg.id]}
+                        on:click={() => onCopy(msg.id, msg.body)}
+                        title={copied[msg.id] ? "Copied" : "Copy to clipboard"}
+                        aria-label={copied[msg.id] ? "Copied" : "Copy"}
+                      >
+                        {#if copied[msg.id]}
+                          <!-- Lucide "check" — confirmation. -->
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="20 6 9 17 4 12"></polyline>
+                          </svg>
+                        {:else}
+                          <!-- Lucide "copy" — two overlapping rectangles. -->
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                          </svg>
+                        {/if}
+                      </button>
+                      <span class="inbox-msg-time muted small">{relTime(msg.receivedAt)}</span>
                     </li>
                   {/each}
                 </ul>

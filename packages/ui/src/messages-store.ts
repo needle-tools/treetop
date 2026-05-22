@@ -44,11 +44,8 @@ export async function refreshMessages(): Promise<void> {
   }
 }
 
-/** Total unread count for the header pill — currently just the sum
- *  of every peer's stored messages from peers that aren't muted.
- *  v1 has no per-message "read" flag; the pill clears on popover open
- *  by snapshotting the count at that moment (handled by the
- *  component). */
+/** Total messages across all non-muted senders. Used as a fallback
+ *  when no unread baseline has been recorded yet. */
 export function totalCount(snap: InboxSnapshot): number {
   let n = 0;
   for (const row of snap.inbox) {
@@ -56,6 +53,49 @@ export function totalCount(snap: InboxSnapshot): number {
     n += row.messages.length;
   }
   return n;
+}
+
+/** Unread = anything received after `lastReadAtIso`. When that
+ *  baseline isn't set yet (first run, fresh browser) we treat every
+ *  stored message as unread so the user still gets a hint. Muted
+ *  senders are ignored. */
+export function unreadCount(snap: InboxSnapshot, lastReadAtIso: string | null): number {
+  if (!lastReadAtIso) return totalCount(snap);
+  const cutoff = Date.parse(lastReadAtIso);
+  if (!Number.isFinite(cutoff)) return totalCount(snap);
+  let n = 0;
+  for (const row of snap.inbox) {
+    if (snap.mutes[row.peer.id]) continue;
+    for (const m of row.messages) {
+      const ts = Date.parse(m.receivedAt);
+      if (Number.isFinite(ts) && ts > cutoff) n++;
+    }
+  }
+  return n;
+}
+
+const LAST_READ_KEY = "supergit.inbox.lastReadAt";
+
+/** Read the "I've seen the inbox" timestamp. Persisted in
+ *  localStorage so reactive badge state survives a page reload. */
+export function recallLastRead(): string | null {
+  try {
+    return localStorage.getItem(LAST_READ_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Stamp "the inbox was opened just now" so future arrivals count as
+ *  unread relative to this moment. */
+export function markInboxRead(): string {
+  const now = new Date().toISOString();
+  try {
+    localStorage.setItem(LAST_READ_KEY, now);
+  } catch {
+    // private mode / storage quota — non-fatal
+  }
+  return now;
 }
 
 export async function sendMessage(
