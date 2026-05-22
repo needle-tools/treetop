@@ -20,6 +20,11 @@ import {
   type ClaudeOAuthUsage,
   type OAuthUsageError,
 } from "./claude-oauth-usage";
+import {
+  fetchCodexOAuthUsage,
+  type CodexOAuthUsage,
+  type CodexOAuthUsageError,
+} from "./codex-oauth-usage";
 
 export interface AgentUsageWindow {
   /** Distinct sessions active inside the window. For Claude this is
@@ -59,6 +64,11 @@ export interface AgentUsageReport {
   /** When `claudeLiveUsage` is null, this carries the reason the call
    *  failed (no-credentials / expired / unauthorized / server). */
   claudeLiveUsageError?: OAuthUsageError;
+  /** Same idea as `claudeLiveUsage`, but for Codex via ChatGPT's
+   *  `backend-api/wham/usage` endpoint. Carries plan type, primary +
+   *  secondary rate-limit windows, and any API credit balance. */
+  codexLiveUsage?: CodexOAuthUsage | null;
+  codexLiveUsageError?: CodexOAuthUsageError;
   /** Only agents with non-zero week activity appear here. */
   agents: Partial<Record<AgentKind, AgentUsage>>;
 }
@@ -331,6 +341,9 @@ export interface ComputeOptions {
   /** Inject a custom fetcher for tests that DO exercise the OAuth path
    *  without hitting Anthropic. */
   claudeLiveUsageFetcher?: typeof fetchClaudeOAuthUsage;
+  /** Same pair for the Codex (ChatGPT) usage endpoint. */
+  skipCodexLiveUsage?: boolean;
+  codexLiveUsageFetcher?: typeof fetchCodexOAuthUsage;
 }
 
 export async function computeAgentUsage(
@@ -370,18 +383,35 @@ export async function computeAgentUsage(
 
   const claudePlan = await readClaudePlanTier();
 
-  // Live plan utilization (% used + reset times) from Anthropic's
-  // undocumented OAuth endpoint. Done in parallel-ish with the rest of
-  // the report — failure is non-fatal; the chip falls back to local
-  // JSONL counts and surfaces the error reason.
+  // Live plan utilization from each provider's undocumented OAuth
+  // endpoint. Both fetched in parallel — neither call gates the
+  // report; failure on either is non-fatal, the chip falls back to
+  // local JSONL counts and surfaces the error reason.
+  const fetches: Array<Promise<unknown>> = [];
   let claudeLiveUsage: ClaudeOAuthUsage | null | undefined;
   let claudeLiveUsageError: OAuthUsageError | undefined;
+  let codexLiveUsage: CodexOAuthUsage | null | undefined;
+  let codexLiveUsageError: CodexOAuthUsageError | undefined;
+
   if (!opts.skipClaudeLiveUsage && agents.claude) {
     const fetcher = opts.claudeLiveUsageFetcher ?? fetchClaudeOAuthUsage;
-    const result = await fetcher();
-    claudeLiveUsage = result.usage;
-    if (result.error) claudeLiveUsageError = result.error;
+    fetches.push(
+      fetcher().then((result) => {
+        claudeLiveUsage = result.usage;
+        if (result.error) claudeLiveUsageError = result.error;
+      }),
+    );
   }
+  if (!opts.skipCodexLiveUsage && agents.codex) {
+    const fetcher = opts.codexLiveUsageFetcher ?? fetchCodexOAuthUsage;
+    fetches.push(
+      fetcher().then((result) => {
+        codexLiveUsage = result.usage;
+        if (result.error) codexLiveUsageError = result.error;
+      }),
+    );
+  }
+  if (fetches.length > 0) await Promise.all(fetches);
 
   return {
     asOf: new Date(now).toISOString(),
@@ -389,6 +419,8 @@ export async function computeAgentUsage(
     claudePlan,
     claudeLiveUsage,
     claudeLiveUsageError,
+    codexLiveUsage,
+    codexLiveUsageError,
     agents,
   };
 }

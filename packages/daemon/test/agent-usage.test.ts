@@ -17,7 +17,11 @@ function computeAgentUsageSilent(
   now: number,
   opts: Parameters<typeof computeAgentUsage>[2] = {},
 ): ReturnType<typeof computeAgentUsage> {
-  return computeAgentUsage(sessions, now, { skipClaudeLiveUsage: true, ...opts });
+  return computeAgentUsage(sessions, now, {
+    skipClaudeLiveUsage: true,
+    skipCodexLiveUsage: true,
+    ...opts,
+  });
 }
 
 function session(

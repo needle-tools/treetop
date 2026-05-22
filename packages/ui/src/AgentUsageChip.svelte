@@ -53,12 +53,37 @@
     | { kind: "network"; message: string }
     | { kind: "server"; status: number; body?: string }
     | { kind: "decode"; message: string };
+  interface CodexWindow {
+    utilization: number;
+    resetsAt?: string;
+    windowSeconds?: number;
+  }
+  interface CodexCredits {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance?: number;
+  }
+  interface CodexOAuthUsage {
+    planType?: string;
+    primaryWindow?: CodexWindow;
+    secondaryWindow?: CodexWindow;
+    credits?: CodexCredits;
+    fetchedAt: string;
+  }
+  type CodexUsageError =
+    | { kind: "no-credentials" }
+    | { kind: "unauthorized" }
+    | { kind: "network"; message: string }
+    | { kind: "server"; status: number; body?: string }
+    | { kind: "decode"; message: string };
   interface Report {
     asOf: string;
     windows: { todayMs: number; weekMs: number };
     claudePlan?: { subscriptionType?: string; rateLimitTier?: string };
     claudeLiveUsage?: ClaudeOAuthUsage | null;
     claudeLiveUsageError?: OAuthUsageError;
+    codexLiveUsage?: CodexOAuthUsage | null;
+    codexLiveUsageError?: CodexUsageError;
     agents: Partial<Record<string, AgentUsage>>;
   }
 
@@ -93,6 +118,45 @@
 
   $: claudeLive = report?.claudeLiveUsage ?? null;
   $: claudeLiveErr = report?.claudeLiveUsageError ?? null;
+  $: codexLive = report?.codexLiveUsage ?? null;
+  $: codexLiveErr = report?.codexLiveUsageError ?? null;
+
+  /** Has-live-data check per agent. The trigger button's bottom bar
+   *  and the tooltip body both branch on this. */
+  function hasLiveData(agent: string): boolean {
+    if (agent === "claude") return !!claudeLive;
+    if (agent === "codex") return !!codexLive;
+    return false;
+  }
+
+  /** Pick a human-readable label for a Codex rate-limit window based
+   *  on its `windowSeconds`. Codex Free returns a single primary window
+   *  that's actually a 7-day budget, while paid plans return both 5h
+   *  and 7d — so a fixed "Session (5h) / Weekly" labeling would lie
+   *  to Free users. */
+  function codexWindowLabel(seconds: number | undefined, fallback: string): string {
+    if (!seconds || seconds <= 0) return fallback;
+    if (seconds <= 60) return `Session (${seconds}s)`;
+    if (seconds < 3600) return `Session (${Math.round(seconds / 60)}m)`;
+    if (seconds < 86400) return `Session (${Math.round(seconds / 3600)}h)`;
+    const days = Math.round(seconds / 86400);
+    return days === 7 ? "Weekly" : days === 1 ? "Daily" : `${days}-day`;
+  }
+
+  $: codexLiveRows = codexLive
+    ? (
+        [
+          {
+            label: codexWindowLabel(codexLive.primaryWindow?.windowSeconds, "Primary"),
+            window: codexLive.primaryWindow,
+          },
+          {
+            label: codexWindowLabel(codexLive.secondaryWindow?.windowSeconds, "Secondary"),
+            window: codexLive.secondaryWindow,
+          },
+        ] as const
+      ).filter((r) => r.window !== undefined)
+    : [];
 
   function agentLabel(a: string): string {
     if (a === "claude") return "Claude";
@@ -155,16 +219,6 @@
     return `${Math.min(100, util * 100).toFixed(1)}%`;
   }
 
-  /** Same warn/hot tiers as SessionHeader's .ctx-bar: a fill > 60% goes
-   *  amber, > 85% goes red. Lets a near-full plan-limit bar catch the
-   *  eye without coloring every healthy bar in the tooltip. */
-  function tier(ratio: number | undefined): "" | "warn" | "hot" {
-    if (typeof ratio !== "number") return "";
-    if (ratio > 0.85) return "hot";
-    if (ratio > 0.6) return "warn";
-    return "";
-  }
-
   /** Fill ratio for the 3px progress bar painted along the bottom of
    *  the button — surfaces the agent's *weekly* usage at-a-glance so
    *  you don't have to hover. For Claude with live OAuth data we use
@@ -176,6 +230,16 @@
       const live = report?.claudeLiveUsage;
       if (live?.sevenDay?.utilization !== undefined) {
         return Math.max(0, Math.min(1, live.sevenDay.utilization));
+      }
+    }
+    if (agent === "codex") {
+      // Prefer the long (weekly) Codex window for the button bar so
+      // the "how much of my plan have I burned this week" read matches
+      // Claude's bottom bar semantics.
+      const live = report?.codexLiveUsage;
+      const w = live?.secondaryWindow ?? live?.primaryWindow;
+      if (w?.utilization !== undefined) {
+        return Math.max(0, Math.min(1, w.utilization));
       }
     }
     if (usage.peakWeek > 0) {
@@ -200,7 +264,7 @@
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  function errorHint(e: OAuthUsageError): string {
+  function errorHint(e: OAuthUsageError | CodexUsageError): string {
     switch (e.kind) {
       case "no-credentials":
         return "no ~/.claude credentials";
@@ -250,7 +314,7 @@
         <AgentIcon {agent} size={14} />
       </button>
 
-      <div slot="content" class="usage-tt">
+      <div slot="content" class="usage-tt brand-{agent}">
         <div class="usage-tt-head brand-{agent}">
           <AgentIcon {agent} size={14} />
           <span>{agentLabel(agent)}</span>
@@ -259,12 +323,12 @@
           {/if}
           <span
             class="usage-source"
-            class:source-live={agent === "claude" && claudeLive}
-            aria-label={agent === "claude" && claudeLive
-              ? "From Anthropic /api/oauth/usage — same data as claude.ai's Plan-Nutzungslimits page."
+            class:source-live={hasLiveData(agent)}
+            aria-label={hasLiveData(agent)
+              ? "Real plan usage from the provider's API."
               : "Counted from local JSONL turns; no public usage API for this agent."}
           >
-            {agent === "claude" && claudeLive ? "live" : "local"}
+            {hasLiveData(agent) ? "live" : "local"}
           </span>
         </div>
 
@@ -274,7 +338,7 @@
             {#each liveRows as row (row.label)}
               <span class="usage-live-label">{row.label}</span>
               <span
-                class="usage-bar live {tier(row.window?.utilization)}"
+                class="usage-bar live"
                 aria-label={row.window?.resetsAt
                   ? `Resets ${fmtResets(row.window.resetsAt)} (${row.window.resetsAt})`
                   : undefined}
@@ -296,6 +360,42 @@
               {/if}
             </div>
           {/if}
+        {:else if agent === "codex" && codexLive && codexLiveRows.length > 0}
+          <!-- Codex: real plan-utilization bars from chatgpt.com's
+               backend-api/wham/usage endpoint (CodexBar's discovery). -->
+          <div class="usage-live-grid">
+            {#each codexLiveRows as row (row.label)}
+              <span class="usage-live-label">{row.label}</span>
+              <span
+                class="usage-bar live"
+                aria-label={row.window?.resetsAt
+                  ? `Resets ${fmtResets(row.window.resetsAt)} (${row.window.resetsAt})`
+                  : undefined}
+              >
+                <span
+                  class="usage-bar-fill live"
+                  style:width={liveBarWidth(row.window?.utilization)}
+                ></span>
+              </span>
+              <span class="usage-live-pct">{pct(row.window?.utilization ?? 0)}</span>
+              <span class="usage-live-reset">{fmtResets(row.window?.resetsAt)}</span>
+            {/each}
+          </div>
+          {#if codexLive.planType}
+            <div class="usage-extra">Plan: <strong>{codexLive.planType}</strong></div>
+          {/if}
+          {#if codexLive.credits && (codexLive.credits.hasCredits || codexLive.credits.unlimited)}
+            <div class="usage-extra">
+              Credits:
+              {#if codexLive.credits.unlimited}
+                <strong>unlimited</strong>
+              {:else if codexLive.credits.balance !== undefined}
+                <strong>{codexLive.credits.balance.toFixed(2)}</strong>
+              {:else}
+                <strong>available</strong>
+              {/if}
+            </div>
+          {/if}
         {:else}
           <!-- Local-count fallback (every non-Claude agent, plus
                Claude when the OAuth call failed). `{@const}` has to be
@@ -306,11 +406,19 @@
           {@const weekR = localRatio(usage.week.messages, usage.peakWeek)}
           {#if agent === "claude" && claudeLiveErr}
             <div class="usage-live-error">{errorHint(claudeLiveErr)}</div>
+          {:else if agent === "codex" && codexLiveErr}
+            <div class="usage-live-error">{errorHint(codexLiveErr)}</div>
           {/if}
           <div class="usage-local-rows">
             <div class="usage-local-row">
               <span class="usage-local-label">Today</span>
-              <span class="usage-bar {tier(todayR)}" aria-label={`${usage.today.messages} of ${usage.peakDay || "—"} peak day`}>
+              <!-- No tier() coloring on local "vs. your peak" bars: a
+                   freshly-detected agent is by definition at 100% of
+                   its own brief history, and painting that red as
+                   "hot" misreads the signal. tier() stays meaningful
+                   only for the live OAuth bars where 100% = real
+                   plan cap. -->
+              <span class="usage-bar" aria-label={`${usage.today.messages} of ${usage.peakDay || "—"} peak day`}>
                 <span
                   class="usage-bar-fill"
                   style:width={usage.peakDay > 0
@@ -327,7 +435,7 @@
 
             <div class="usage-local-row">
               <span class="usage-local-label">Week</span>
-              <span class="usage-bar {tier(weekR)}" aria-label={`${usage.week.messages} of ${usage.peakWeek || "—"} peak week`}>
+              <span class="usage-bar" aria-label={`${usage.week.messages} of ${usage.peakWeek || "—"} peak week`}>
                 <span
                   class="usage-bar-fill"
                   style:width={usage.peakWeek > 0
@@ -347,7 +455,7 @@
         {#if report}
           <div class="usage-tt-foot">
             <span>
-              {#if agent === "claude" && claudeLive}
+              {#if hasLiveData(agent)}
                 fill = % of plan
               {:else}
                 fill = vs. your peak
@@ -455,21 +563,24 @@
     color: var(--text-muted);
     font-weight: 400;
   }
+  /* Source pill ("LIVE" / "LOCAL"). High contrast on both states —
+     these read as small chips, so they need to be readable at a
+     glance, not blend into the surface. */
   .usage-source {
     margin-left: auto;
     font-size: 0.62rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    padding: 0.1rem 0.35rem;
+    padding: 0.1rem 0.4rem;
     border-radius: 999px;
-    background: var(--surface-2);
-    color: var(--text-muted);
+    background: color-mix(in srgb, var(--text-1) 14%, transparent);
+    color: var(--text-1);
+    font-weight: 600;
     cursor: help;
   }
-  .usage-source.source-live {
-    background: color-mix(in srgb, #3b82f6 22%, var(--surface-2) 78%);
-    color: #93c5fd;
-  }
+  /* LIVE pill stays the same neutral chip as LOCAL — same contrast,
+     no special blue tint. The data source is informational, not a
+     status callout, so it shouldn't compete visually with the bars. */
 
   /* Live (OAuth) — 4-column grid: label · bar · % · resets-in.
      Bar is the same fixed 64px width as SessionHeader's ctx-bar so
@@ -492,8 +603,11 @@
     min-width: 2.7rem;
   }
   .usage-live-reset {
-    color: var(--text-faint);
-    font-size: 0.68rem;
+    /* Bumped from --text-faint to --text-muted — the countdown is one
+       of the more useful bits of info on the row and needs to read,
+       not whisper. */
+    color: var(--text-muted);
+    font-size: 0.7rem;
     text-align: right;
     white-space: nowrap;
   }
@@ -555,7 +669,10 @@
   .usage-bar {
     display: inline-grid;
     grid-template-areas: "bar";
-    height: 10px;
+    /* Same 8px as SessionHeader's .ctx-bar — keeps the usage tooltip
+       looking like a sibling of the context bar in the session header
+       rather than its own visual system. */
+    height: 8px;
     align-items: stretch;
     border-radius: 999px;
     /* Theme-agnostic track: a translucent layer over whatever surface
@@ -567,46 +684,47 @@
     cursor: help;
     transition: border-color 200ms ease;
   }
+  /* Every bar — live OR local — paints in the agent's brand color
+     (`--bar-color` cascades from `.usage-tt.brand-{agent}` below).
+     One consistent visual language: a Claude bar is Anthropic
+     sienna at 5% AND at 95%, no special "warn" or "hot" tier
+     coloring at high values. The user explicitly asked for this:
+     brand color only, no traffic-light states. A soft halo keeps
+     small fills readable. */
+  .usage-tt.brand-claude {
+    --bar-color: #cc785c;
+  }
+  .usage-tt.brand-codex {
+    --bar-color: #10a37f;
+  }
+  .usage-tt.brand-ollama {
+    --bar-color: #4fb6d2;
+  }
+  .usage-tt.brand-copilot {
+    --bar-color: #a371f7;
+  }
   .usage-bar-fill {
     grid-area: bar;
-    /* Brighter than the previous --text-faint so the bar reads even
-       at low percentages. Live bars get a blue tint via .live below. */
-    background: var(--text-2);
+    background: var(--bar-color, var(--text-2));
     transition: width 220ms ease, background 200ms ease;
     border-radius: 999px;
   }
-  /* Live (real plan-%) bars get the brand-blue + a soft halo so a
-     single-digit-% fill is still readable. The halo is intentionally
-     subtle — it only catches the eye on small fills where the bar
-     would otherwise be a 1px sliver. */
   .usage-bar.live {
-    border-color: color-mix(in srgb, #60a5fa 50%, transparent);
+    border-color: color-mix(in srgb, var(--bar-color, #60a5fa) 50%, transparent);
   }
   .usage-bar.live .usage-bar-fill {
-    background: #60a5fa;
-    box-shadow: 0 0 6px color-mix(in srgb, #60a5fa 55%, transparent);
-  }
-  .usage-bar.warn {
-    border-color: var(--ctx-warn);
-  }
-  .usage-bar.warn .usage-bar-fill {
-    background: var(--ctx-warn);
-    box-shadow: none;
-  }
-  .usage-bar.hot {
-    border-color: var(--ctx-hot);
-  }
-  .usage-bar.hot .usage-bar-fill {
-    background: var(--ctx-hot);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--ctx-hot) 55%, transparent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--bar-color, #60a5fa) 55%, transparent);
   }
 
   .usage-tt-foot {
     margin-top: 0.55rem;
     padding-top: 0.4rem;
     border-top: 1px solid var(--surface-2);
-    font-size: 0.68rem;
-    color: var(--text-muted);
+    font-size: 0.7rem;
+    /* Was --text-muted; bumped to --text-2 so the "as of HH:MM" and
+       "fill = …" footer copy actually reads, instead of sitting one
+       step above invisible. */
+    color: var(--text-2);
     display: flex;
     justify-content: space-between;
     gap: 0.6rem;
