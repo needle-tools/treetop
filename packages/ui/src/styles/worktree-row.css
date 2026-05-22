@@ -1029,11 +1029,17 @@ button.branch-button:hover {
      the full remaining width. The JS-side `clampSubject(100)` in
      App.svelte bounds how big the subject string can get, so this
      column won't push the tooltip past its outer max-width. */
-  /* sha (auto) · author (8–30ch — most real names + a domain
-     fit in 30ch; longer ones ellipsize via the matching overflow
-     rule on .wt-tt-author) · date (auto) · subject (1fr, see comment
-     above). */
-  grid-template-columns: auto minmax(8ch, 30ch) auto minmax(40ch, 1fr);
+  /* sha (auto) · author (auto — content-sized, capped at 30ch via
+     `.wt-tt-author { max-width }` below) · date (auto) · subject
+     (1fr). All three meta columns are `auto` so each sits tight
+     against the next; using `minmax(_, 30ch)` on author made the
+     column GROW toward 30ch when there was free space (after the
+     tooltip got its `min-width` floor), leaving a wide gap between
+     a short name and the date. The extra breathing room before the
+     subject column lives on `.wt-tt-subject` as `margin-left` —
+     intentional, so the eye gets a clear "meta vs. message" break
+     without padding the author↔date pair apart. */
+  grid-template-columns: auto auto auto minmax(40ch, 1fr);
   column-gap: 0.5rem;
   row-gap: 0.18rem;
   font-size: 0.72rem;
@@ -1064,6 +1070,10 @@ button.branch-button:hover {
   text-overflow: ellipsis;
   min-width: 0;
   line-height: 1.3;
+  /* Extra gap between the date and the subject — visual separator
+     between "meta" (sha/author/date, all muted) and "message". On top
+     of the grid's 0.5rem column-gap, so total spacing is ~1.5rem. */
+  margin-left: 1rem;
 }
 .wt-tt-author,
 .wt-tt-date {
@@ -1071,12 +1081,14 @@ button.branch-button:hover {
   white-space: nowrap;
 }
 .wt-tt-author {
-  /* Honour the 20ch cap from the grid template by clipping long
-     names with ellipsis. The full author string stays in the
-     `title=` attr (App.svelte) for the hover-reveal. */
+  /* Cap really long author strings (e.g. "Firstname Lastname
+     <email@long-domain.example>") with ellipsis. The grid column is
+     now `auto` so the cap lives on the cell itself, not the track.
+     Full string stays in the `title=` attr (App.svelte) for hover. */
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: 30ch;
 }
 .wt-tt-more {
   margin-top: 0.3rem;
