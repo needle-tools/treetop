@@ -99,18 +99,38 @@ export class PeerDiscovery {
 
       // multicast-dns options flow through Bonjour's constructor →
       // Server → multicast-dns(opts) — see
-      // node_modules/bonjour-service/dist/lib/mdns-server.js. `socket`
-      // injects our pre-built dgram; `interface` pins the outbound
-      // multicast adapter (fixes the Windows multi-NIC case where
-      // adverts otherwise went out on a WSL2 vEthernet instead of
-      // the LAN); `reuseAddr` is kept as belt-and-braces in case a
-      // future bonjour update stops honouring opts.socket.
+      // node_modules/bonjour-service/dist/lib/mdns-server.js.
+      //   - `socket` injects our pre-built dgram (gets SO_REUSEPORT
+      //     handling above).
+      //   - `interface` pins the outbound multicast adapter and the
+      //     addMembership() call to the LAN interface (fixes the
+      //     Windows multi-NIC WSL2 case where adverts otherwise went
+      //     out on a vEthernet adapter).
+      //   - `bind` is the bind-time IP for the UDP socket.
+      //     multicast-dns defaults to `opts.bind || opts.interface`,
+      //     which means setting `interface` ALSO pins the bind to a
+      //     specific unicast IP. That's the right thing on Windows
+      //     (multicast reception requires bind to the interface IP
+      //     there) but the WRONG thing on macOS/BSD, which filters
+      //     incoming multicast (destined for 224.0.0.251) away from
+      //     a socket bound to a non-multicast unicast IP.
+      //     So on macOS we force bind to 0.0.0.0 — addMembership()
+      //     still scopes the membership to the right interface.
+      //     Symptom this gated fix: macOS's own mDNSResponder saw
+      //     every peer on the LAN, but our bonjour browser saw
+      //     none; meanwhile Windows worked fine with the existing
+      //     interface-IP bind.
+      //   - `reuseAddr` is kept as belt-and-braces in case a future
+      //     bonjour update stops honouring opts.socket.
       const mdnsOpts: Record<string, unknown> = {
         socket: this.mdnsSocket,
         reuseAddr: true,
       };
       if (this.opts.interfaceAddress) {
         mdnsOpts.interface = this.opts.interfaceAddress;
+      }
+      if (process.platform === "darwin") {
+        mdnsOpts.bind = "0.0.0.0";
       }
       // The TS types restrict the constructor's first arg to
       // ServiceConfig, but at runtime mdns options pass through.
