@@ -203,7 +203,11 @@
         <span class="share-label">Peers on this network</span>
         {#if peers.length > 0}
           <ul class="share-peers">
-            {#each peers as p (p.id)}
+            <!-- Composite key: dev + prod daemons on the same host share
+                 one workspace identity (same `id`) but advertise on
+                 different ports. Keying on `id` alone would crash with
+                 `each_key_duplicate`. See peer-registry.ts. -->
+            {#each peers as p (`${p.id}:${p.port}`)}
               <button
                 type="button"
                 class="share-peer"
