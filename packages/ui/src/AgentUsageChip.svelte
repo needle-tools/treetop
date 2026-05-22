@@ -47,7 +47,10 @@
     fetchedAt: string;
   }
   type OAuthUsageError =
-    | { kind: "no-credentials" }
+    | { kind: "no-credentials"; checkedPath?: string }
+    | { kind: "credentials-unreadable"; checkedPath?: string; message: string }
+    | { kind: "credentials-malformed"; checkedPath?: string; message: string }
+    | { kind: "credentials-schema"; checkedPath?: string; message: string }
     | { kind: "unauthorized" }
     | { kind: "expired" }
     | { kind: "network"; message: string }
@@ -276,6 +279,16 @@
     switch (e.kind) {
       case "no-credentials":
         return "no ~/.claude credentials";
+      case "credentials-unreadable":
+        // Permissions / FS issue: file is there but we can't read it.
+        return `credentials at ${"checkedPath" in e ? e.checkedPath : "?"} unreadable: ${e.message}`;
+      case "credentials-malformed":
+        // JSON.parse blew up — file format changed or file is corrupt.
+        return `credentials file is not valid JSON: ${e.message}`;
+      case "credentials-schema":
+        // File parsed but missing expected fields — format may have
+        // shifted since this code was written.
+        return `credentials present but ${e.message}`;
       case "expired":
         return "OAuth token expired — run `claude login`";
       case "unauthorized":
@@ -411,9 +424,17 @@
                next to `.usage-local-rows`. -->
           {@const todayR = localRatio(usage.today.messages, usage.peakDay)}
           {@const weekR = localRatio(usage.week.messages, usage.peakWeek)}
-          {#if agent === "claude" && claudeLiveErr}
+          <!-- Only surface error hints for genuinely actionable failures
+               (token expired, 401, network blip, etc.). `no-credentials`
+               is the *expected* state on macOS (Claude Code stores its
+               OAuth token in the system Keychain, not a JSON file) and
+               on any host where the user hasn't installed/logged-in to
+               the provider — showing "no ~/.claude credentials" there
+               reads as a broken feature when the chip is actually
+               working as designed against local JSONL counts. -->
+          {#if agent === "claude" && claudeLiveErr && claudeLiveErr.kind !== "no-credentials"}
             <div class="usage-live-error">{errorHint(claudeLiveErr)}</div>
-          {:else if agent === "codex" && codexLiveErr}
+          {:else if agent === "codex" && codexLiveErr && codexLiveErr.kind !== "no-credentials"}
             <div class="usage-live-error">{errorHint(codexLiveErr)}</div>
           {/if}
           <div class="usage-local-rows">
@@ -490,6 +511,18 @@
   .agent-usage-btn {
     position: relative;
     padding: 0.3rem 0.45rem 0.42rem;
+    /* Don't paint the per-agent buttons as actual menubar buttons —
+       they're informational chips that just happen to be clickable.
+       Drop the inherited `.menubar .actions-btn` surface so the icon
+       sits flush on the menubar background; the bottom progress bar
+       and the agent's brand color carry the visual identity. */
+    background: transparent;
+  }
+  .agent-usage-btn:hover,
+  .agent-usage-btn:focus-visible {
+    /* A subtle hover-only surface so the click affordance still
+       registers without making the resting state look like a button. */
+    background: color-mix(in srgb, var(--text-1) 10%, transparent);
   }
   /* `color` controls the icon glyph (via AgentIcon's currentColor) and
      stays muted-on-dark so the icon reads cleanly. The bottom-bar

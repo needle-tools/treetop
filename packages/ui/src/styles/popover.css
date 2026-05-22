@@ -108,10 +108,15 @@
 }
 
 /* TUIs overview popover — wider than the actions default; the head
-   shows "Active TUIs" + a spinner. */
+   shows "Active TUIs" + a spinner. `overflow-x: hidden` keeps the
+   row grid from triggering a horizontal scrollbar when an unusually
+   long repo/title would otherwise blow past the 540px ceiling —
+   ellipsis handles the visible truncation, scroll would just feel
+   broken. */
 .tuis-popover {
   width: 540px;
   max-width: 90vw;
+  overflow-x: hidden;
 }
 /* Make every row share the same column tracks so stats columns align
    vertically across rows ("memory under memory"). The trick: the
@@ -119,10 +124,15 @@
    display: contents; each .tui-row-static uses `grid-template-columns:
    subgrid` to inherit the ul's tracks. Without this, each row was its
    own independent grid and the same `1fr` resolved differently per
-   row based on local content widths. */
+   row based on local content widths.
+
+   The repo + idle cells use `minmax(0, auto)` rather than plain
+   `auto` so a long repo path can shrink + ellipsize instead of
+   forcing the whole grid to overflow the popover width (which is
+   what was driving the horizontal scrollbar). */
 .tuis-popover .agents-list {
   display: grid;
-  grid-template-columns: 16px auto auto 1fr 6ch 8ch 5ch auto 18px;
+  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 5ch minmax(0, auto) 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
      .agents-list — preserve the spacing between rows. */
   row-gap: 0.25rem;

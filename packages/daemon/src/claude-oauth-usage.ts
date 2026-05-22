@@ -69,9 +69,19 @@ export interface ClaudeOAuthUsage {
 }
 
 /** What the fetcher reports back on failure. The route logs this but
- *  still returns the rest of the report. */
+ *  still returns the rest of the report.
+ *
+ *  Every step in `readAccessToken` used to collapse into `no-credentials`,
+ *  which lied when the file existed but failed to parse or had an
+ *  unexpected shape. Distinguishing the kinds lets the UI surface a
+ *  helpful hint ("file is malformed", "permission denied", etc.) so
+ *  diagnosing the macOS path-mismatch / permission cases doesn't
+ *  require the user to attach a debugger. */
 export type OAuthUsageError =
-  | { kind: "no-credentials" }
+  | { kind: "no-credentials"; checkedPath: string }
+  | { kind: "credentials-unreadable"; checkedPath: string; message: string }
+  | { kind: "credentials-malformed"; checkedPath: string; message: string }
+  | { kind: "credentials-schema"; checkedPath: string; message: string }
   | { kind: "unauthorized" }
   | { kind: "expired" }
   | { kind: "network"; message: string }
@@ -93,22 +103,52 @@ interface RawCredentials {
 async function readAccessToken(): Promise<
   { token: string } | { error: OAuthUsageError }
 > {
-  const path = join(homedir(), ".claude", ".credentials.json");
+  // Cross-platform path — Claude Code writes to this same location on
+  // Windows, Linux, and macOS (CodexBar uses the identical relative
+  // path in its ClaudeOAuthCredentials.swift: `.claude/.credentials.json`).
+  // macOS additionally mirrors the token into the Keychain, but the
+  // file is still present unless the user explicitly cleared it.
+  const checkedPath = join(homedir(), ".claude", ".credentials.json");
   let content: string;
   try {
-    content = await readFile(path, "utf-8");
-  } catch {
-    return { error: { kind: "no-credentials" } };
+    content = await readFile(checkedPath, "utf-8");
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err && err.code === "ENOENT") {
+      return { error: { kind: "no-credentials", checkedPath } };
+    }
+    // EACCES / EPERM / EISDIR / something else — surface so the user
+    // knows it's a permission / FS issue, not "you're not logged in."
+    return {
+      error: {
+        kind: "credentials-unreadable",
+        checkedPath,
+        message: err?.message || String(e),
+      },
+    };
   }
   let parsed: RawCredentials;
   try {
     parsed = JSON.parse(content) as RawCredentials;
-  } catch {
-    return { error: { kind: "no-credentials" } };
+  } catch (e) {
+    return {
+      error: {
+        kind: "credentials-malformed",
+        checkedPath,
+        message: e instanceof Error ? e.message : String(e),
+      },
+    };
   }
   const oauth = parsed.claudeAiOauth;
   if (!oauth || typeof oauth.accessToken !== "string") {
-    return { error: { kind: "no-credentials" } };
+    return {
+      error: {
+        kind: "credentials-schema",
+        checkedPath,
+        message:
+          "JSON parsed but `claudeAiOauth.accessToken` is missing — file format may have changed.",
+      },
+    };
   }
   if (typeof oauth.expiresAt === "number" && oauth.expiresAt < Date.now()) {
     // Don't refresh here — CodexBar runs a separate refresh coordinator;
