@@ -2,7 +2,12 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { detectEditors, findWorkspaceFile, resetDetectEditorsCache } from "../src/open";
+import {
+  buildRestoreWindowScript,
+  detectEditors,
+  findWorkspaceFile,
+  resetDetectEditorsCache,
+} from "../src/open";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-open-"));
@@ -33,6 +38,26 @@ describe("findWorkspaceFile", () => {
     expect(await findWorkspaceFile(d)).toBe(
       join(d, `${base}.code-workspace`),
     );
+  });
+});
+
+describe("buildRestoreWindowScript", () => {
+  test("embeds the process name in a Get-Process call", () => {
+    const script = buildRestoreWindowScript("Cursor");
+    expect(script).toContain("Get-Process -Name 'Cursor'");
+  });
+
+  test("uses SW_RESTORE (9) on minimized windows", () => {
+    const script = buildRestoreWindowScript("Code");
+    expect(script).toContain("IsIconic");
+    expect(script).toContain("ShowWindow($h, 9)");
+  });
+
+  test("doubles single quotes in process names to neutralise injection", () => {
+    const script = buildRestoreWindowScript("foo'; rm -rf /; '");
+    // PowerShell single-quoted strings escape ' as ''. Verify the raw
+    // single quote never appears unescaped inside the Get-Process arg.
+    expect(script).toContain("Get-Process -Name 'foo''; rm -rf /; '''");
   });
 });
 

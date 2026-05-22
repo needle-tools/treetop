@@ -25,16 +25,22 @@ interface EditorSpec {
   name: string;
   cmd: string;
   app?: string; // macOS .app bundle name (without .app)
+  /** Windows process name (without .exe) used to find the editor's main
+   *  window so we can SW_RESTORE it after the CLI hands off. The editor
+   *  CLIs signal the running instance over IPC; if its window is
+   *  minimized, Windows' foreground-prevention leaves it minimized
+   *  (the taskbar just flashes). Spawn powershell + Win32 to un-min it. */
+  winProcess?: string;
 }
 
 const KNOWN_EDITORS: readonly EditorSpec[] = [
-  { name: "Cursor", cmd: "cursor", app: "Cursor" },
-  { name: "VSCode", cmd: "code", app: "Visual Studio Code" },
-  { name: "Rider", cmd: "rider", app: "Rider" },
-  { name: "IntelliJ", cmd: "idea", app: "IntelliJ IDEA" },
-  { name: "IntelliJ CE", cmd: "idea-ce", app: "IntelliJ IDEA CE" },
-  { name: "WebStorm", cmd: "webstorm", app: "WebStorm" },
-  { name: "Sublime Text", cmd: "subl", app: "Sublime Text" },
+  { name: "Cursor", cmd: "cursor", app: "Cursor", winProcess: "Cursor" },
+  { name: "VSCode", cmd: "code", app: "Visual Studio Code", winProcess: "Code" },
+  { name: "Rider", cmd: "rider", app: "Rider", winProcess: "rider64" },
+  { name: "IntelliJ", cmd: "idea", app: "IntelliJ IDEA", winProcess: "idea64" },
+  { name: "IntelliJ CE", cmd: "idea-ce", app: "IntelliJ IDEA CE", winProcess: "idea64" },
+  { name: "WebStorm", cmd: "webstorm", app: "WebStorm", winProcess: "webstorm64" },
+  { name: "Sublime Text", cmd: "subl", app: "Sublime Text", winProcess: "sublime_text" },
   { name: "Neovim", cmd: "nvim" },
 ];
 
@@ -171,6 +177,51 @@ export async function openDefault(path: string): Promise<{ via: string }> {
  *  scripts use; doesn't depend on any shell beyond POSIX. */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build a PowerShell snippet that finds a process by name and, if its
+ * main window is minimized, restores it. Used after spawning the
+ * editor CLI on Windows — see EditorSpec.winProcess for why.
+ *
+ * `processName` is interpolated into the script verbatim, so callers
+ * must pass a controlled value (we only call this with hardcoded
+ * KNOWN_EDITORS entries). The single-quote replace is a defence-in-depth
+ * guard for that invariant rather than a real escape layer.
+ */
+export function buildRestoreWindowScript(processName: string): string {
+  const safe = processName.replace(/'/g, "''");
+  // SW_RESTORE = 9. Get-Process throws when no match → SilentlyContinue.
+  return `$ErrorActionPreference = 'SilentlyContinue'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class SgWin {
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+}
+"@
+$p = Get-Process -Name '${safe}' | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if ($p) {
+  $h = $p.MainWindowHandle
+  if ([SgWin]::IsIconic($h)) { [SgWin]::ShowWindow($h, 9) | Out-Null }
+  [SgWin]::SetForegroundWindow($h) | Out-Null
+}`;
+}
+
+function restoreWindowsWindow(processName: string): void {
+  if (process.platform !== "win32") return;
+  Bun.spawn(
+    [
+      "powershell",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      buildRestoreWindowScript(processName),
+    ],
+    { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
+  );
 }
 
 export async function openIn(
@@ -380,6 +431,9 @@ export async function openIn(
       stderr: "ignore",
       stdin: "ignore",
     });
+    if (process.platform === "win32" && spec.winProcess) {
+      restoreWindowsWindow(spec.winProcess);
+    }
     return { via: target === path ? spec.cmd : `${spec.cmd} (workspace file)` };
   }
 
