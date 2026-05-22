@@ -374,11 +374,14 @@
     align-items: center;
   }
   .col-name {
-    /* Grow to fill the space col-meta + col-actions don't claim, and
-       shrink (with min-width: 0) so a long title ellipsizes inside its
-       own slot instead of pushing the meta/actions out of the row. */
+    /* Grow to fill the space col-meta + col-actions don't claim. The
+       title can still ellipsize (it explicitly sets min-width: 0 on
+       its own button), but we floor col-name itself at a ~2x-wider
+       minimum so a cramped column doesn't truncate the title down to
+       6 chars before anything else gives. Pair with the bumped
+       .session-col min-width in worktree-row.css. */
     flex: 1 1 0;
-    min-width: 0;
+    min-width: 16ch;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;

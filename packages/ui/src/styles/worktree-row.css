@@ -1234,6 +1234,23 @@ button.branch-button:hover {
      text edge lines up with the summary text. */
   padding-left: var(--row-strip-pad);
 }
+/* Windows draws inset scrollbars (not macOS' overlay), and the default
+   8px height is awkward to grab while horizontally panning through a
+   long sessions strip. Double the height on Windows only — the global
+   8px rule in tokens.css still covers every other scrollable surface,
+   and the override is `body.platform-windows`-scoped so non-Windows
+   users keep the slim default.
+
+   The tokens.css `* { scrollbar-width: thin }` rule (standardised
+   property) wins over `::-webkit-scrollbar { height }` in modern
+   Chromium, so we have to reset scrollbar-width to `auto` on the strip
+   first to let the pseudo-element height take effect. */
+body.platform-windows .sessions-strip {
+  scrollbar-width: auto;
+}
+body.platform-windows .sessions-strip::-webkit-scrollbar {
+  height: 24px;
+}
 /* Invisible trailing flex spacer at the end of `.sessions-strip`.
    We can't use `padding-right` here — browsers historically drop the
    trailing padding from a horizontally-scrolling flex container — so a
@@ -1247,10 +1264,13 @@ button.branch-button:hover {
   /* Chat columns sized for comfortable reading — wide enough that code
      blocks don't wrap aggressively, narrow enough that two fit side
      by side on a 1440px screen. Hard cap in ch (not %) so widening
-     the window doesn't stretch each column to billboard widths. */
-  flex: 1 1 70ch;
-  min-width: 60ch;
-  max-width: 90ch;
+     the window doesn't stretch each column to billboard widths.
+     min-width is the floor that keeps the SessionHeader's title +
+     ctx-bar + last-activity + messages chips from overlapping; bumped
+     up so the title gets ~2x more characters before truncating. */
+  flex: 1 1 80ch;
+  min-width: 76ch;
+  max-width: 100ch;
   box-sizing: border-box;
   /* Anchor the drag-drop preview pseudos (::before / ::after) so the
      dashed insertion line lines up with the column edges. */
@@ -1271,9 +1291,9 @@ button.branch-button:hover {
    the inner `.session.read-mode` flag (set by SessionView based on
    its `mode`), keeping width control in one CSS place. */
 .session-col:has(> .session.read-mode) {
-  flex-basis: 59.5ch;
-  min-width: 51ch;
-  max-width: 76.5ch;
+  flex-basis: 68ch;
+  min-width: 65ch;
+  max-width: 85ch;
 }
 /* Drag-drop insertion preview: a brand-coloured dashed vertical line
    in the inter-column gap on the side the cursor is on. Anchored via

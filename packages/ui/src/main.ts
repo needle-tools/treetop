@@ -31,6 +31,14 @@ window.addEventListener("popstate", () => {
   history.pushState(null, "", location.href);
 });
 
+// Mark Windows clients so CSS can target them. Used by worktree-row.css
+// to give the horizontal sessions-strip scrollbar a taller hit-target on
+// Windows, where the default 8px scrollbar feels noticeably harder to
+// grab than on macOS' overlay scrollbars.
+if (/Windows/.test(navigator.userAgent)) {
+  document.body.classList.add("platform-windows");
+}
+
 // Pause all CSS animations when the tab is backgrounded. Chrome
 // already throttles JS timers / RAFs in hidden tabs but keeps CSS
 // animations running, so the compositor still pays for the always-on
