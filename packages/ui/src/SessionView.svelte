@@ -9,6 +9,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
+  import { openShare } from "./share-session-dialog";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -774,6 +775,18 @@
           ? "Summarize this session with a local Ollama model"
           : "Session is empty — nothing to summarize",
         onSelect: () => openSummarize(source),
+      },
+      {
+        kind: "action",
+        label: "Share locally",
+        // Lucide "send"-ish: paper-plane silhouette. Reads as "ship
+        // this somewhere" without confusing with "open in external".
+        iconSvg: [
+          "M22 2 11 13",
+          "m22 2-7 20-4-9-9-4 20-7z",
+        ],
+        title: "Send this session to another supergit on the LAN",
+        onSelect: () => openShare(source),
       },
       {
         kind: "action",

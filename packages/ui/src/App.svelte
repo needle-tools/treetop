@@ -25,6 +25,9 @@
   import OpenInActions from "./OpenInActions.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import SummarizeDialog from "./SummarizeDialog.svelte";
+  import ShareSessionDialog from "./ShareSessionDialog.svelte";
+  import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
+  import { openInvite } from "./receive-invite-dialog";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
@@ -213,9 +216,17 @@
    *  was wired earlier (which now uses this same machinery). */
   interface Toast {
     id: number;
-    kind: "error" | "info" | "success";
+    kind: "error" | "info" | "success" | "invite";
     message: string;
     title?: string;
+    /** When set, clicking the toast body fires this callback (and also
+     *  dismisses the toast). Used by the session-share invite toast to
+     *  open the accept/decline dialog. */
+    onClick?: () => void;
+    /** When true, the toast does NOT auto-dismiss on a timer. The user
+     *  has to click the body (which fires onClick) or the close button.
+     *  Used for invite toasts that should persist until acted on. */
+    persist?: boolean;
   }
   let toasts: Toast[] = [];
   let toastSeq = 0;
@@ -226,15 +237,34 @@
     queueMicrotask(() => node.focus());
   }
 
-  function addToast(opts: { kind: Toast["kind"]; message: string; title?: string; ttlMs?: number }): number {
+  function addToast(opts: {
+    kind: Toast["kind"];
+    message: string;
+    title?: string;
+    ttlMs?: number;
+    onClick?: () => void;
+    persist?: boolean;
+  }): number {
     if (!opts.message) return -1;
     const id = ++toastSeq;
-    toasts = [...toasts, { id, kind: opts.kind, message: opts.message, title: opts.title }];
-    const ttl = opts.ttlMs ?? (opts.kind === "error" ? 12_000 : 7_000);
-    toastTimers.set(
-      id,
-      setTimeout(() => dismissToast(id), ttl),
-    );
+    toasts = [
+      ...toasts,
+      {
+        id,
+        kind: opts.kind,
+        message: opts.message,
+        title: opts.title,
+        onClick: opts.onClick,
+        persist: opts.persist,
+      },
+    ];
+    if (!opts.persist) {
+      const ttl = opts.ttlMs ?? (opts.kind === "error" ? 12_000 : 7_000);
+      toastTimers.set(
+        id,
+        setTimeout(() => dismissToast(id), ttl),
+      );
+    }
     return id;
   }
   function dismissToast(id: number) {
@@ -3204,6 +3234,21 @@
       // the next page load.
       if (payload.kind === "undo" || payload.kind === "redo") {
         notesChangeKey++;
+        return;
+      }
+      if (payload.kind === "session_invite_received") {
+        // Persistent toast — stays until the user clicks the body
+        // (which opens the accept/decline dialog) or the × close button.
+        const offerId = (payload as { offerId?: unknown }).offerId;
+        if (typeof offerId === "string") {
+          addToast({
+            kind: "invite",
+            title: "Session invite",
+            message: "click to review",
+            onClick: () => openInvite(offerId),
+            persist: true,
+          });
+        }
         return;
       }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
@@ -6196,6 +6241,8 @@
 
 <ConfirmDialog />
 <SummarizeDialog />
+<ShareSessionDialog />
+<ReceiveInviteDialog />
 
 {#if dirtyCheckout}
   <div
@@ -6288,11 +6335,19 @@
 {#if toasts.length > 0}
   <div class="toast-stack" role="region" aria-label="Notifications">
     {#each toasts as t (t.id)}
-      <div class="toast toast-{t.kind}" role={t.kind === "error" ? "alert" : "status"}>
+      <div
+        class="toast toast-{t.kind}"
+        class:toast-clickable={!!t.onClick}
+        role={t.kind === "error" ? "alert" : "status"}
+      >
         <span class="toast-icon" aria-hidden="true">
-          {#if t.kind === "error"}!{:else if t.kind === "success"}✓{:else}ℹ{/if}
+          {#if t.kind === "error"}!{:else if t.kind === "success"}✓{:else if t.kind === "invite"}⇆{:else}ℹ{/if}
         </span>
-        <div class="toast-body">
+        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+        <div
+          class="toast-body"
+          on:click={t.onClick ? () => { t.onClick?.(); dismissToast(t.id); } : undefined}
+        >
           {#if t.title}<strong>{t.title}</strong> {/if}{t.message}
         </div>
         <button
