@@ -99,12 +99,23 @@
     claudeLiveUsageError?: OAuthUsageError;
     codexLiveUsage?: CodexOAuthUsage | null;
     codexLiveUsageError?: CodexUsageError;
-    claudeTopSessions?: ClaudeTopSession[];
     agents: Partial<Record<string, AgentUsage>>;
   }
 
   let report: Report | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Top-sessions is fetched separately from the main report because
+  // it's the slowest piece (full JSONL token scan). State machine:
+  //   - "idle"       → never loaded; tooltip hasn't opened yet.
+  //   - "loading"    → fetch in flight; render a spinner where the
+  //                     list would go.
+  //   - "loaded"     → `claudeTopSessions` populated (may be empty).
+  //   - "error"      → fetch failed; show a quiet retry hint.
+  // We only fire the lazy fetch the first time the tooltip is
+  // hovered, so the cheap menubar render isn't held up by it.
+  let claudeTopSessions: ClaudeTopSession[] | null = null;
+  let topSessionsState: "idle" | "loading" | "loaded" | "error" = "idle";
 
   async function load(): Promise<void> {
     try {
@@ -115,9 +126,40 @@
     }
   }
 
+  /** Lazy-load the slow top-sessions endpoint. Idempotent during
+   *  flight — repeated tooltip hovers won't fire concurrent
+   *  requests. */
+  async function loadTopSessions(): Promise<void> {
+    if (topSessionsState === "loading") return;
+    topSessionsState = "loading";
+    try {
+      const res = await fetch("/api/agent-usage/claude-top-sessions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as {
+        claudeTopSessions: ClaudeTopSession[];
+      };
+      claudeTopSessions = body.claudeTopSessions ?? [];
+      topSessionsState = "loaded";
+    } catch {
+      topSessionsState = "error";
+    }
+  }
+
+  /** Trigger on first tooltip open. After the initial load, the
+   *  background poll keeps it fresh on its own cadence. */
+  function ensureTopSessionsLoaded(): void {
+    if (topSessionsState === "idle") void loadTopSessions();
+  }
+
   onMount(() => {
     void load();
-    pollTimer = setInterval(load, 60_000);
+    pollTimer = setInterval(() => {
+      void load();
+      // Only re-poll top-sessions if the user has already seen them
+      // at least once — no reason to do the expensive scan
+      // proactively for someone who never opens the tooltip.
+      if (topSessionsState !== "idle") void loadTopSessions();
+    }, 60_000);
   });
 
   onDestroy(() => {
@@ -265,6 +307,7 @@
     return t.slice(0, max - 1) + "…";
   }
 
+
   function liveBarWidth(util: number | undefined): string {
     if (typeof util !== "number") return "0%";
     if (util > 0 && util < 0.01) return "1%";
@@ -367,7 +410,12 @@
   {@const url = usageUrl(agent)}
   {@const barRatio = buttonBarRatio(agent, usage)}
   <div class="actions-anchor agent-usage-anchor">
-    <Tooltip placement="bottom" variant="wide" escapeClip>
+    <Tooltip
+      placement="bottom"
+      variant="wide"
+      escapeClip
+      onShow={agent === "claude" ? ensureTopSessionsLoaded : () => {}}
+    >
       <button
         slot="trigger"
         type="button"
@@ -526,30 +574,11 @@
           </div>
         {/if}
 
-        <!-- Top-sessions list (Claude only, derived from local JSONLs).
-             Always shown when populated regardless of whether the bars
-             came from the live OAuth endpoint or local fallback — it's
-             a different kind of insight (who's burning tokens) from the
-             aggregate plan-% bars above. Click a row to jump to that
-             session's column via the shared focus channel. -->
-        {#if agent === "claude" && report?.claudeTopSessions && report.claudeTopSessions.length > 0}
-          <div class="usage-top-sessions">
-            <div class="usage-top-head">Top sessions this week (local)</div>
-            {#each report.claudeTopSessions as s (s.source)}
-              <button
-                type="button"
-                class="usage-top-row"
-                on:click={() => requestSessionFocus(s.source)}
-                aria-label={`Open session ${truncTitle(s.title)} — ${fmtTokens(s.totalTokens)} tokens this week`}
-              >
-                <span class="usage-top-title">{truncTitle(s.title)}</span>
-                <span class="usage-top-cwd">{cwdTail(s.cwd)}</span>
-                <span class="usage-top-tokens">{fmtTokens(s.totalTokens)}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-
+        <!-- Footer sits ABOVE the top-sessions list: the "fill = % of
+             plan" key explains the bars right under them, while the
+             top-sessions list is a separate insight (which sessions
+             are burning tokens) that reads cleanest as the bottom
+             chunk of the tooltip. -->
         {#if report}
           <div class="usage-tt-foot">
             <span>
@@ -560,6 +589,82 @@
               {/if}
             </span>
             <span class="usage-tt-asof">as of {fmtTime(report.asOf)}</span>
+          </div>
+        {/if}
+
+        <!-- Top-sessions list (Claude only, derived from local JSONLs).
+             Always shown when this agent block is Claude regardless of
+             whether the bars came from the live OAuth endpoint or
+             local fallback — it's a different kind of insight (who's
+             burning tokens) from the aggregate plan-% bars above.
+             Click a row to jump to that session's column via the
+             shared focus channel.
+             Fetched lazily from a separate endpoint (full JSONL token
+             scan is the slowest piece of the report), so the section
+             renders a spinner until the data arrives; the bars +
+             live numbers above don't wait for it. -->
+        {#if agent === "claude"}
+          <div class="usage-top-sessions">
+            <div class="usage-top-head">Top sessions this week (local)</div>
+
+            {#if topSessionsState === "loading" || topSessionsState === "idle"}
+              <div class="usage-top-status" aria-live="polite">
+                <span class="usage-top-spinner" aria-hidden="true"></span>
+                <span>Scanning sessions…</span>
+              </div>
+            {:else if topSessionsState === "error"}
+              <div class="usage-top-status usage-top-status-error" aria-live="polite">
+                Couldn't load top sessions.
+              </div>
+            {:else if (claudeTopSessions?.length ?? 0) === 0}
+              <div class="usage-top-status">No Claude sessions with usage in window.</div>
+            {:else if claudeTopSessions}
+              {#each claudeTopSessions as s (s.source)}
+                <!-- Per-row Tooltip: hovering reveals the raw breakdown
+                     (input / output / cache_write / cache_read) so the
+                     headline weighted number stays scannable while the
+                     full picture is one hover away. Nested inside the
+                     outer Tooltip — the project's Tooltip component
+                     supports this via TOOLTIP_HOVER_CTX so the outer
+                     tooltip stays open while the cursor is on the
+                     inner popup. -->
+                <Tooltip placement="top" variant="wide" escapeClip>
+                  <button
+                    slot="trigger"
+                    type="button"
+                    class="usage-top-row"
+                    on:click={() => requestSessionFocus(s.source)}
+                    aria-label={`Open session ${truncTitle(s.title)} — ${fmtTokens(s.totalTokens)} weighted tokens this week`}
+                  >
+                    <span class="usage-top-title">{truncTitle(s.title)}</span>
+                    <span class="usage-top-cwd">{cwdTail(s.cwd)}</span>
+                    <span class="usage-top-tokens">{fmtTokens(s.totalTokens)}</span>
+                  </button>
+                  <div slot="content" class="usage-top-breakdown">
+                    <div class="usage-top-breakdown-row">
+                      <span class="usage-top-breakdown-k">input</span>
+                      <span class="usage-top-breakdown-v">{fmtTokens(s.inputTokens)}</span>
+                    </div>
+                    <div class="usage-top-breakdown-row">
+                      <span class="usage-top-breakdown-k">output</span>
+                      <span class="usage-top-breakdown-v">{fmtTokens(s.outputTokens)}</span>
+                    </div>
+                    <div class="usage-top-breakdown-row">
+                      <span class="usage-top-breakdown-k">cache write</span>
+                      <span class="usage-top-breakdown-v">{fmtTokens(s.cacheCreationTokens)}</span>
+                    </div>
+                    <div class="usage-top-breakdown-row">
+                      <span class="usage-top-breakdown-k">cache read</span>
+                      <span class="usage-top-breakdown-v">{fmtTokens(s.cacheReadTokens)}</span>
+                    </div>
+                    <div class="usage-top-breakdown-row usage-top-breakdown-total">
+                      <span class="usage-top-breakdown-k">weighted</span>
+                      <span class="usage-top-breakdown-v">{fmtTokens(s.totalTokens)}</span>
+                    </div>
+                  </div>
+                </Tooltip>
+              {/each}
+            {/if}
           </div>
         {/if}
       </div>
@@ -829,13 +934,20 @@
   /* Top-sessions list — 3-column grid per row: title (1fr, ellipsised),
      cwd-tail (muted, ellipsised), token count (right-aligned, tabular).
      Click target is the whole row. */
+  /* Vertical stack; the per-row alignment is owned by each
+     .usage-top-row (fixed-width 3-col grid). Subgrid through the
+     intervening Tooltip wrap was fragile — Tooltip.svelte already
+     paints `.tt-wrap` as `display: inline-flex`, and overriding that
+     globally was breaking the row layout for every Tooltip on the
+     page in subtle ways. Identical grid templates per row align
+     just as cleanly without the subgrid plumbing. */
   .usage-top-sessions {
     margin-top: 0.7rem;
     padding-top: 0.5rem;
     border-top: 1px solid var(--surface-2);
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.05rem;
   }
   .usage-top-head {
     font-size: 0.66rem;
@@ -844,11 +956,87 @@
     color: var(--text-muted);
     margin-bottom: 0.25rem;
   }
+  /* Per-row breakdown rendered inside a nested Tooltip popup. The
+     two-column grid lines up the keys + values cleanly; ~tabular-nums
+     keeps the right column stable across rows. */
+  .usage-top-breakdown {
+    display: grid;
+    grid-template-columns: auto auto;
+    column-gap: 0.8rem;
+    row-gap: 0.15rem;
+    font-size: 0.75rem;
+    color: var(--text-1);
+    font-variant-numeric: tabular-nums;
+    min-width: 14ch;
+  }
+  .usage-top-breakdown-row {
+    display: contents;
+  }
+  .usage-top-breakdown-k {
+    color: var(--text-muted);
+  }
+  .usage-top-breakdown-v {
+    text-align: right;
+  }
+  .usage-top-breakdown-total .usage-top-breakdown-k,
+  .usage-top-breakdown-total .usage-top-breakdown-v {
+    /* Separator-less emphasis on the weighted total; padding-top
+       gives the eye a beat between the unweighted rows and the
+       headline figure. */
+    padding-top: 0.2rem;
+    color: var(--text-1);
+    font-weight: 600;
+  }
+  /* Loading / error / empty placeholder occupying the same slot as
+     the row list. Min-height keeps the panel from popping in size
+     when the rows arrive. */
+  .usage-top-status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.35rem;
+    min-height: 1.6rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+  .usage-top-status-error {
+    color: var(--text-2);
+  }
+  /* 10px circular spinner. Sized to sit next to the muted "Scanning
+     sessions…" label without dominating it; brand-colour-agnostic so
+     it works in both light and dark themes via currentColor. */
+  .usage-top-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    animation: usage-top-spin 0.7s linear infinite;
+  }
+  @keyframes usage-top-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  /* Make each per-row Tooltip wrapper fill the row width so the
+     button inside gets the full `.usage-top-sessions` width to grid
+     into. Without this the .tt-wrap defaults to inline-flex sized to
+     the button's content and rows look ragged on the right. */
+  .usage-top-sessions :global(.tt-wrap) {
+    display: block;
+    width: 100%;
+  }
+  /* Identical 3-column template on every row → all rows have the
+     same x-offsets for cwd and token cells, columns line up cleanly
+     without any subgrid plumbing. cwd is sized for a short
+     parent/leaf path; longer paths ellipsise inside the cell. */
   .usage-top-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto;
-    gap: 0.5rem;
+    grid-template-columns: minmax(0, 1fr) 8rem 4ch;
+    column-gap: 0.7rem;
     align-items: baseline;
+    width: 100%;
     padding: 0.25rem 0.35rem;
     border: 0;
     background: transparent;
@@ -883,6 +1071,7 @@
     color: var(--bar-color, var(--text-1));
     font-weight: 600;
     white-space: nowrap;
+    text-align: right;
   }
 
   .usage-tt-foot {
