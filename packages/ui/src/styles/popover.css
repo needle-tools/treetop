@@ -148,10 +148,17 @@
    what was driving the horizontal scrollbar). */
 .tuis-popover .agents-list {
   display: grid;
-  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 5ch minmax(0, auto) 18px;
+  /* Uptime is sized for `formatUptime`'s worst case `999h 59m` (8ch);
+     anything narrower wraps "7m 29s" onto a second line. */
+  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 8ch minmax(0, auto) 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
-     .agents-list — preserve the spacing between rows. */
+     .agents-list — preserve the spacing between rows. The
+     `column-gap` matches `.agent-row`'s default; without it set
+     explicitly here, the subgrid rows render with cells flush
+     against each other (right-aligned uptime jams into the
+     left-edge of the idle cell). */
   row-gap: 0.25rem;
+  column-gap: 0.6rem;
 }
 .tuis-popover .agents-list > li {
   display: contents;
@@ -170,7 +177,7 @@
        4. title           1fr  (absorbs leftover; ellipsises long titles)
        5. cpu             6ch  ("100.0%")
        6. mem             8ch  ("999.9 MB" / "1.23 GB")
-       7. uptime          5ch  ("999d")
+       7. uptime          8ch  ("999h 59m")
        8. idle            auto (only present on idle rows)
        9. ×               18px */
   grid-template-columns: subgrid;
@@ -230,8 +237,8 @@
    Widths picked to fit worst-cases:
      cpu    "100.0%"     ≤ 6ch
      mem    "999.9 MB" / "1.23 GB" ≤ 8ch
-     uptime "999d"      ≤ 5ch
-     idle   "idle 99d"  remaining (auto). */
+     uptime "999h 59m"  ≤ 8ch
+     idle   "idle 99h 59m"  remaining (auto). */
 .tui-stats {
   display: grid;
   grid-template-columns: 6ch 8ch 5ch auto;
@@ -243,6 +250,12 @@
 }
 .tui-stat {
   text-align: right;
+  /* Never wrap a stat onto a second line. The column tracks above are
+     sized for worst-case content; nowrap is the belt-and-suspenders
+     guard so a value that's a hair too wide ellipsises-or-overflows
+     in place instead of doubling the row height. */
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .tui-idle {
   color: var(--text-muted);
