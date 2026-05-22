@@ -56,6 +56,39 @@ describe("PeerRegistry", () => {
     expect(r.peers()).toHaveLength(1);
   });
 
+  test("removePeer with graceMs keeps the peer visible until the timer fires", async () => {
+    const r = new PeerRegistry({ selfId: "me" });
+    r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
+    r.removePeer("p1", { graceMs: 30 });
+    // Peer still present immediately after a soft remove.
+    expect(r.peers()).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(r.peers()).toHaveLength(0);
+  });
+
+  test("an addPeer during the grace window cancels the pending removal", async () => {
+    const r = new PeerRegistry({ selfId: "me" });
+    r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
+    r.removePeer("p1", { graceMs: 50 });
+    // Hiccup: bonjour fired 'down' then 'up' for the same peer.
+    r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(r.peers()).toHaveLength(1);
+  });
+
+  test("repeated removePeer calls during the grace window don't reset the timer", async () => {
+    const r = new PeerRegistry({ selfId: "me" });
+    r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
+    r.removePeer("p1", { graceMs: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Second 'down' before the timer fires — should NOT push the
+    // removal deadline further out.
+    r.removePeer("p1", { graceMs: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Original 30ms timer should have fired by now.
+    expect(r.peers()).toHaveLength(0);
+  });
+
   test("setSelfId can be called after construction (identity loads async at startup)", () => {
     const r = new PeerRegistry({ selfId: "" });
     r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });

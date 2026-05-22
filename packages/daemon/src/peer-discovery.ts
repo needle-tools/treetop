@@ -245,6 +245,13 @@ export class PeerDiscovery {
 
   private onDown(svc: ServiceType): void {
     const txt = (svc.txt ?? {}) as Record<string, unknown>;
-    if (typeof txt.id === "string") this.registry.removePeer(txt.id);
+    // bonjour-service emits `'down'` aggressively — a missed multicast
+    // announcement is enough to fire it even when the peer is still
+    // alive. Defer the removal so a follow-up `'up'` (the peer's
+    // next periodic re-announce) cancels it and the UI doesn't
+    // flicker offline → online over a single dropped packet.
+    if (typeof txt.id === "string") {
+      this.registry.removePeer(txt.id, { graceMs: 60_000 });
+    }
   }
 }

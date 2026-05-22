@@ -44,9 +44,21 @@ export interface RegistryOpts {
   selfId: string;
 }
 
+/** How long to keep a peer visible after bonjour fires a `'down'`
+ *  event for it. bonjour-service emits `'down'` aggressively — a
+ *  single missed multicast announcement can trigger it even though
+ *  the peer is still alive and will re-announce on its next cycle
+ *  (~30-60s). Without this grace, peers flicker offline → online
+ *  every time the LAN drops a packet. */
+const DEFAULT_REMOVE_GRACE_MS = 60_000;
+
 export class PeerRegistry {
   private byId = new Map<string, Peer>();
   private selfId: string;
+  /** Pending soft-remove timers keyed by peer id. An incoming
+   *  `addPeer` for the same id cancels the timer so the peer survives
+   *  the missed-announcement hiccup. */
+  private removeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: RegistryOpts) {
     this.selfId = opts.selfId;
@@ -64,6 +76,12 @@ export class PeerRegistry {
   addPeer(peer: Omit<Peer, "lastSeen" | "frontendPort"> & { frontendPort?: number }): void {
     if (!peer.id || !peer.host || !peer.port || !peer.label) return;
     if (peer.id === this.selfId) return;
+    // Cancel any pending removal — the peer's still talking to us.
+    const pending = this.removeTimers.get(peer.id);
+    if (pending) {
+      clearTimeout(pending);
+      this.removeTimers.delete(peer.id);
+    }
     this.byId.set(peer.id, {
       ...peer,
       // Default to the daemon port for back-compat with older
@@ -73,8 +91,36 @@ export class PeerRegistry {
     });
   }
 
-  removePeer(id: string): void {
-    this.byId.delete(id);
+  /** Schedule (or immediately do) the removal of a peer.
+   *  `opts.graceMs` defers actual removal — used by the bonjour
+   *  wrapper on `'down'` events to absorb missed announcements.
+   *  Default behaviour (no grace) is immediate, kept so existing
+   *  callers + tests work unchanged. */
+  removePeer(
+    id: string,
+    opts: { graceMs?: number } = {},
+  ): void {
+    const graceMs = opts.graceMs ?? 0;
+    if (graceMs <= 0) {
+      this.byId.delete(id);
+      const t = this.removeTimers.get(id);
+      if (t) {
+        clearTimeout(t);
+        this.removeTimers.delete(id);
+      }
+      return;
+    }
+    // Already scheduled — don't reset the timer (otherwise repeated
+    // 'down' events from bonjour would keep deferring the removal
+    // forever).
+    if (this.removeTimers.has(id)) return;
+    this.removeTimers.set(
+      id,
+      setTimeout(() => {
+        this.byId.delete(id);
+        this.removeTimers.delete(id);
+      }, graceMs),
+    );
   }
 
   /** Snapshot — caller may mutate without affecting the registry. */
@@ -82,3 +128,5 @@ export class PeerRegistry {
     return Array.from(this.byId.values());
   }
 }
+
+export { DEFAULT_REMOVE_GRACE_MS };
