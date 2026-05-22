@@ -25,21 +25,65 @@ export const DEV_DAEMON_PORT = Number(process.env.SUPERGIT_DEV_PORT ?? 7777);
 export const DEV_UI_PORT = Number(process.env.SUPERGIT_DEV_UI_PORT ?? 7779);
 
 export async function killOnPort(port: number): Promise<void> {
-  // lsof exists on macOS and most Linux distros; on Windows this just
-  // no-ops which is fine — there's nothing to clean up there anyway.
-  const result = await $`lsof -ti :${port}`.quiet().nothrow();
-  const pids = result.stdout
-    .toString()
-    .trim()
-    .split("\n")
-    .filter(Boolean);
-  if (pids.length === 0) return;
-  console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
-  for (const pid of pids) {
-    await $`kill -9 ${pid}`.quiet().nothrow();
+  // Try graceful shutdown first — the daemon may be healthy and just
+  // needs to be told to stop. This works on all platforms.
+  try {
+    const res = await fetch(`http://localhost:${port}/api/shutdown`, {
+      method: "POST",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { pid?: number };
+      console.log(`dev: asked daemon on :${port} (pid ${body.pid ?? "?"}) to shut down`);
+      await Bun.sleep(1500);
+      // Check if it actually stopped.
+      try {
+        await fetch(`http://localhost:${port}/api/health`, {
+          signal: AbortSignal.timeout(500),
+        });
+        // Still alive — fall through to force-kill below.
+      } catch {
+        return; // Gone — port is free.
+      }
+    }
+  } catch {
+    // Nothing listening, or it didn't respond — fall through.
   }
-  // Give the kernel a moment to release the socket before we bind it again.
-  await new Promise((r) => setTimeout(r, 200));
+
+  // Force-kill: platform-specific.
+  if (process.platform === "win32") {
+    // netstat + taskkill on Windows.
+    const result = await $`netstat -ano -p TCP`.quiet().nothrow();
+    const lines = result.stdout.toString().split("\n");
+    const self = String(process.pid);
+    const pids = new Set<string>();
+    for (const line of lines) {
+      if (!line.includes("LISTENING")) continue;
+      const m = line.match(/:(\d+)\s.*LISTENING\s+(\d+)/);
+      if (m && m[1] === String(port) && m[2] !== "0" && m[2] !== self) {
+        pids.add(m[2]);
+      }
+    }
+    if (pids.size === 0) return;
+    console.log(`dev: port ${port} held by ${[...pids].join(", ")} — killing`);
+    for (const pid of pids) {
+      await $`taskkill /F /PID ${pid}`.quiet().nothrow();
+    }
+    await Bun.sleep(300);
+  } else {
+    const result = await $`lsof -ti :${port}`.quiet().nothrow();
+    const pids = result.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (pids.length === 0) return;
+    console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
+    for (const pid of pids) {
+      await $`kill -9 ${pid}`.quiet().nothrow();
+    }
+    await Bun.sleep(200);
+  }
 }
 
 /** Kill anything holding the dev ports. Idempotent. Prod (27787) is
