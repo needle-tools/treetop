@@ -120,12 +120,20 @@
 
   onMount(() => {
     void refreshMessages();
-    // Slow background poll — safety net for the SSE-driven refresh
-    // in case `message_received` events get dropped (reconnect, tab
-    // throttling, etc.). 7s is short enough to feel reactive
-    // without spamming the daemon.
-    messagesPoll = setInterval(refreshMessages, 7000);
+    startMessagesPoll();
   });
+
+  /** Start (or restart) the messages refresh interval. Two
+   *  cadences:
+   *   - open: 1.5s so a new message rendering inside the popover
+   *     feels instant even when SSE drops an event.
+   *   - closed: 7s as the slower badge-keeping pulse.
+   *  Called from onMount and on every setOpen toggle. */
+  function startMessagesPoll() {
+    if (messagesPoll) clearInterval(messagesPoll);
+    const interval = open ? 1500 : 7000;
+    messagesPoll = setInterval(refreshMessages, interval);
+  }
 
   async function refreshPeers() {
     try {
@@ -155,6 +163,10 @@
       clearInterval(peersPoll);
       peersPoll = null;
     }
+    // Bump the messages poll to a faster cadence while the popover
+    // is open so new arrivals show up in the list within ~1.5s
+    // even when the SSE 'message_received' event drops.
+    startMessagesPoll();
   }
   function toggleOpen() {
     setOpen(!open);
