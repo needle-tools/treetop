@@ -26,6 +26,16 @@ async function tempWorkspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-share-store-"));
 }
 
+async function tempClaudeProjects(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "supergit-claude-projects-"));
+}
+
+/** Mirrors claudeProjectDirForCwd's encoding so tests can predict the
+ *  JSONL path without depending on the import order of agents.ts. */
+function encodedProjectDir(cwd: string): string {
+  return cwd.replace(/[/\\:]/g, "-");
+}
+
 function manifest(
   overrides: Partial<SessionShareManifest> = {},
 ): SessionShareManifest {
@@ -120,8 +130,9 @@ describe("loadPendingOffer / listPendingOffers", () => {
 });
 
 describe("acceptOffer", () => {
-  test("rewrites paths, writes imported-sessions/<machine>/<sid>.jsonl, deletes pending", async () => {
+  test("claude offer: JSONL lands in <claudeProjectsDir>/<encoded-cwd>/<sid>.jsonl, sidecar under imported-sessions", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     const m = manifest();
     const j = jsonlMentioning(m.originRepoPath);
     await storePendingOffer(ws, m, j);
@@ -131,11 +142,12 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: m.offerId,
       repoLookup: repoFound(localPath),
+      claudeProjectsDir: cpd,
     });
 
     if (!result.ok) throw new Error("expected ok: " + result.error);
     expect(result.importedPath).toBe(
-      join(ws, "imported-sessions", "marcels-laptop", "claude", "sid-aaa.jsonl"),
+      join(cpd, encodedProjectDir(localPath), "sid-aaa.jsonl"),
     );
 
     const imported = await readFile(result.importedPath, "utf-8");
@@ -150,6 +162,7 @@ describe("acceptOffer", () => {
     );
     expect(sidecar.sid).toBe("sid-aaa");
     expect(sidecar.localRepoPath).toBe(localPath);
+    expect(sidecar.importedJsonlPath).toBe(result.importedPath);
 
     expect(await loadPendingOffer(ws, m.offerId)).toBeNull();
   });
@@ -182,6 +195,7 @@ describe("acceptOffer", () => {
 
   test("re-accept of the same sid without mode → exists with divergence info", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     const m1 = manifest({ offerId: "o1" });
     const j1 = [
       JSON.stringify({ uuid: "u1", text: "hello" }),
@@ -192,6 +206,7 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: "o1",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
 
     // Re-send: same prefix, two new turns appended → strict superset.
@@ -207,6 +222,7 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: "o2",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
@@ -220,11 +236,13 @@ describe("acceptOffer", () => {
 
   test("mode=replace overwrites the existing import", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     await storePendingOffer(ws, manifest({ offerId: "o1" }), "old content");
     await acceptOffer({
       workspaceDir: ws,
       offerId: "o1",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
 
     await storePendingOffer(ws, manifest({ offerId: "o2" }), "new content");
@@ -233,21 +251,26 @@ describe("acceptOffer", () => {
       offerId: "o2",
       repoLookup: repoFound("/local/bar"),
       mode: "replace",
+      claudeProjectsDir: cpd,
     });
     if (!r.ok) throw new Error("expected ok");
     const imported = await readFile(r.importedPath, "utf-8");
     expect(imported).toBe("new content");
     // Default-named file — same path as the first import.
-    expect(r.importedPath.endsWith("claude/sid-aaa.jsonl")).toBe(true);
+    expect(r.importedPath).toBe(
+      join(cpd, encodedProjectDir("/local/bar"), "sid-aaa.jsonl"),
+    );
   });
 
   test("mode=keep_both writes a sibling file with a suffix", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     await storePendingOffer(ws, manifest({ offerId: "o1" }), "first");
     const r1 = await acceptOffer({
       workspaceDir: ws,
       offerId: "o1",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
     if (!r1.ok) throw new Error("expected ok");
 
@@ -257,11 +280,12 @@ describe("acceptOffer", () => {
       offerId: "o2",
       repoLookup: repoFound("/local/bar"),
       mode: "keep_both",
+      claudeProjectsDir: cpd,
     });
     if (!r2.ok) throw new Error("expected ok");
 
     expect(r2.importedPath).not.toBe(r1.importedPath);
-    expect(r2.importedPath.includes("/sid-aaa.")).toBe(true);
+    expect(r2.importedPath.includes("sid-aaa.")).toBe(true);
     // Both files survive
     expect(await readFile(r1.importedPath, "utf-8")).toBe("first");
     expect(await readFile(r2.importedPath, "utf-8")).toBe("second");
@@ -269,17 +293,20 @@ describe("acceptOffer", () => {
 
   test("first import succeeds even when mode defaults — exists check applies only on collision", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     await storePendingOffer(ws, manifest(), "fresh");
     const r = await acceptOffer({
       workspaceDir: ws,
       offerId: "offer-aaa",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
     expect(r.ok).toBe(true);
   });
 
   test("genuine fork → exists with diverged=true, supersetOfExisting=false", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     const j1 = [
       JSON.stringify({ uuid: "u1" }),
       JSON.stringify({ uuid: "u2" }),
@@ -296,6 +323,7 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: "o1",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
 
     await storePendingOffer(ws, manifest({ offerId: "o2" }), j2);
@@ -303,6 +331,7 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: "o2",
       repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
@@ -314,8 +343,9 @@ describe("acceptOffer", () => {
     expect(r.divergence?.incomingAfter).toBe(2);
   });
 
-  test("rewrites worktree path when receiver has a matching worktree", async () => {
+  test("rewrites worktree path when receiver has a matching worktree; JSONL lives under encoded(worktree)", async () => {
     const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
     const m = manifest({
       originWorktreePath: "/Users/marcel/git/bar/.worktrees/feat-x",
     });
@@ -334,13 +364,41 @@ describe("acceptOffer", () => {
       workspaceDir: ws,
       offerId: m.offerId,
       repoLookup,
+      claudeProjectsDir: cpd,
     });
     if (!r.ok) throw new Error("expected ok");
+    // Worktree wins over repo path when picking the project dir.
+    expect(r.importedPath).toBe(
+      join(
+        cpd,
+        encodedProjectDir("/local/bar/.worktrees/feat-x"),
+        "sid-aaa.jsonl",
+      ),
+    );
     const imported = await readFile(r.importedPath, "utf-8");
     expect(imported.includes(m.originWorktreePath!)).toBe(false);
     expect(imported.includes("/local/bar/.worktrees/feat-x/src/file.ts")).toBe(
       true,
     );
+  });
+
+  test("codex offer keeps legacy layout: JSONL + sidecar under imported-sessions/<machine>/codex/", async () => {
+    const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
+    const m = manifest({ agent: "codex" });
+    await storePendingOffer(ws, m, "irrelevant\n");
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: m.offerId,
+      repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
+    });
+    if (!r.ok) throw new Error("expected ok");
+    expect(r.importedPath).toBe(
+      join(ws, "imported-sessions", "marcels-laptop", "codex", "sid-aaa.jsonl"),
+    );
+    // The shared claude projects dir stays empty for codex imports.
+    expect(await readdir(cpd)).toEqual([]);
   });
 });
 

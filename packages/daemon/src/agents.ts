@@ -79,7 +79,33 @@ export interface AgentSession {
   model?: string;
 }
 
-const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
+export const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
+
+/** Claude Code encodes a session's cwd into a flat dir name under
+ *  `~/.claude/projects/` by replacing `/`, `\`, and `:` with `-`. The
+ *  filesystem is case-insensitive on Windows + macOS (default APFS) but
+ *  case-preserving — the first invocation in a given cwd locks the casing,
+ *  and subsequent invocations (potentially with a differently-cased cwd
+ *  string) keep appending into the same dir. We mirror that: encode
+ *  literally, but if a case-insensitive sibling already exists, reuse its
+ *  exact casing so we land in the same dir Claude itself would write to. */
+export async function claudeProjectDirForCwd(
+  cwd: string,
+  projectsRoot: string = CLAUDE_ROOT(),
+): Promise<string> {
+  const encoded = cwd.replace(/[/\\:]/g, "-");
+  let entries: string[];
+  try {
+    entries = await readdir(projectsRoot);
+  } catch {
+    return join(projectsRoot, encoded);
+  }
+  const lower = encoded.toLowerCase();
+  for (const e of entries) {
+    if (e.toLowerCase() === lower) return join(projectsRoot, e);
+  }
+  return join(projectsRoot, encoded);
+}
 
 const CODEX_ROOTS = () => [
   join(homedir(), ".codex", "sessions"),
@@ -1014,12 +1040,22 @@ export async function scanOllama(workspacePath: string): Promise<AgentSession[]>
   return sessions;
 }
 
-/** Walk `<workspace>/imported-sessions/<machine>/<agent>/*.jsonl` and
- *  surface each as an AgentSession, with metadata pulled from the
- *  sidecar `.manifest.json` written at accept time. Each session's
- *  `cwd` is the receiver-side path (already rewritten when the file
- *  was imported), so `agentsForWorktree` matches imported sessions
- *  against local worktrees the same way it matches native ones. */
+/** Walk `<workspace>/imported-sessions/<machine>/<agent>/` and surface
+ *  every import as an AgentSession. Two layouts coexist:
+ *
+ *   - **New (claude):** sidecar `.manifest.json` lives here, but the
+ *     rewritten JSONL itself lives under `~/.claude/projects/...`. The
+ *     sidecar's `importedJsonlPath` points at the real file. These
+ *     entries' `source` matches what `scanClaude` would return, so
+ *     `detectAgents` dedupes them and just attaches the `importedFrom`
+ *     annotation onto the native entry.
+ *
+ *   - **Legacy / codex:** the JSONL sits next to the sidecar under
+ *     `imported-sessions/...` and `source` points there. These show up
+ *     as standalone entries with no native counterpart.
+ *
+ *  Orphans (a `.jsonl` with no sidecar) get a best-effort entry so the
+ *  file isn't invisible. */
 export async function scanImported(workspacePath: string): Promise<AgentSession[]> {
   const root = join(workspacePath, "imported-sessions");
   let machines: string[];
@@ -1045,51 +1081,76 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
       } catch {
         continue;
       }
+      const sidecarBySid = new Map<string, string>();
+      const jsonlBySid = new Map<string, string>();
       for (const name of entries) {
-        if (!name.endsWith(".jsonl")) continue;
-        const jsonlPath = join(dir, name);
-        const sid = name.replace(/\.jsonl$/, "").replace(/\.from-\d+$/, "");
-        const sidecarPath = join(dir, `${sid}.manifest.json`);
+        if (name.endsWith(".manifest.json")) {
+          sidecarBySid.set(name.replace(/\.manifest\.json$/, ""), name);
+        } else if (name.endsWith(".jsonl")) {
+          const sid = name.replace(/\.jsonl$/, "").replace(/\.from-\d+$/, "");
+          jsonlBySid.set(sid, name);
+        }
+      }
+      // Pass 1: each sidecar surfaces an import. The JSONL might be at
+      // sidecar.importedJsonlPath (new layout) or sibling (legacy).
+      for (const [sid, sidecarName] of sidecarBySid) {
+        const sidecarPath = join(dir, sidecarName);
+        let sidecar: {
+          sid?: string;
+          title?: string;
+          originMachineLabel?: string;
+          localRepoPath?: string;
+          localWorktreePath?: string;
+          importedJsonlPath?: string;
+        };
         try {
-          const sidecarRaw = await readFile(sidecarPath, "utf-8");
-          const sidecar = JSON.parse(sidecarRaw) as {
-            sid?: string;
-            title?: string;
-            originMachineLabel?: string;
-            localRepoPath?: string;
-            localWorktreePath?: string;
-            createdAt?: string;
-          };
-          const cwd =
-            sidecar.localWorktreePath || sidecar.localRepoPath || "";
-          if (!cwd) continue;
+          sidecar = JSON.parse(await readFile(sidecarPath, "utf-8"));
+        } catch {
+          continue;
+        }
+        const cwd = sidecar.localWorktreePath || sidecar.localRepoPath || "";
+        if (!cwd) continue;
+        const siblingJsonl = jsonlBySid.get(sid);
+        const jsonlPath =
+          sidecar.importedJsonlPath ??
+          (siblingJsonl ? join(dir, siblingJsonl) : null);
+        if (!jsonlPath) continue;
+        let st;
+        try {
+          st = await stat(jsonlPath);
+        } catch {
+          // JSONL missing (file deleted, moved, perm issue) — drop
+          // the listing so we don't surface a dead source. The
+          // sidecar can be cleaned up by hand or by the next accept.
+          continue;
+        }
+        out.push({
+          agent: agentDir as "claude" | "codex",
+          cwd: resolve(cwd),
+          lastActive: st.mtime.toISOString(),
+          sessionId: sidecar.sid ?? sid,
+          source: jsonlPath,
+          title: sidecar.title,
+          importedFrom: sidecar.originMachineLabel ?? machine,
+        });
+        jsonlBySid.delete(sid);
+      }
+      // Pass 2: orphan JSONLs (no sidecar). Best-effort metadata so
+      // the user sees the file rather than nothing.
+      for (const [sid, name] of jsonlBySid) {
+        const jsonlPath = join(dir, name);
+        try {
           const st = await stat(jsonlPath);
           out.push({
             agent: agentDir as "claude" | "codex",
-            cwd: resolve(cwd),
+            cwd: "",
             lastActive: st.mtime.toISOString(),
-            sessionId: sidecar.sid ?? sid,
+            sessionId: sid,
             source: jsonlPath,
-            title: sidecar.title,
-            importedFrom: sidecar.originMachineLabel ?? machine,
+            importedFrom: machine,
           });
         } catch {
-          // Missing or malformed sidecar — surface the file with
-          // best-effort metadata so the user still sees it instead of
-          // an invisible orphan.
-          try {
-            const st = await stat(jsonlPath);
-            out.push({
-              agent: agentDir as "claude" | "codex",
-              cwd: "",
-              lastActive: st.mtime.toISOString(),
-              sessionId: sid,
-              source: jsonlPath,
-              importedFrom: machine,
-            });
-          } catch {
-            // skip
-          }
+          // skip
         }
       }
     }
@@ -1109,7 +1170,29 @@ export async function detectAgents(workspacePath?: string): Promise<AgentSession
       ? scanImported(workspacePath).catch(() => [])
       : Promise.resolve([] as AgentSession[]),
   ]);
-  return [...claude, ...codex, ...copilot, ...ollama, ...imported];
+  // Imported claude sessions live under `~/.claude/projects/...` and so
+  // also show up in `scanClaude` results. Dedupe by source: keep the
+  // native entry (richer stats) and attach the sidecar's
+  // `importedFrom` (+ title fallback) so the UI can still badge it as
+  // "↓ from <machine>". Imports with no native counterpart (codex,
+  // legacy, or a JSONL that no longer exists in claude-projects) are
+  // appended as-is.
+  const bySource = new Map<string, AgentSession>();
+  for (const s of [...claude, ...codex, ...copilot, ...ollama]) {
+    bySource.set(s.source, s);
+  }
+  for (const s of imported) {
+    const existing = bySource.get(s.source);
+    if (existing) {
+      if (s.importedFrom && !existing.importedFrom) {
+        existing.importedFrom = s.importedFrom;
+      }
+      if (s.title && !existing.title) existing.title = s.title;
+    } else {
+      bySource.set(s.source, s);
+    }
+  }
+  return [...bySource.values()];
 }
 
 /**

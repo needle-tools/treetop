@@ -73,7 +73,10 @@ import {
   storePendingOffer,
   type RepoLookup,
 } from "./session-share-store";
-import { migrateLegacyImportedSessions } from "./session-share-migrate";
+import {
+  migrateLegacyImportedSessions,
+  migrateClaudeImportsToProjects,
+} from "./session-share-migrate";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -240,6 +243,27 @@ void migrateLegacyImportedSessions(WORKSPACE_PATH)
   .catch((e) => {
     console.error(
       `supergit daemon: imported-sessions migrate failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  });
+
+// Second-stage migrate: rehouse legacy claude JSONLs that still live
+// under <ws>/imported-sessions/<machine>/claude/ into the equivalent
+// ~/.claude/projects/<encoded(cwd)>/ slot so Claude Code's --resume
+// finds them. Sidecar stays where it is, gains importedJsonlPath.
+// Idempotent.
+void migrateClaudeImportsToProjects(WORKSPACE_PATH)
+  .then((r) => {
+    if (r.moved > 0 || r.skipped > 0) {
+      console.log(
+        `supergit daemon: claude imports → projects — moved=${r.moved} skipped=${r.skipped}`,
+      );
+    }
+  })
+  .catch((e) => {
+    console.error(
+      `supergit daemon: claude imports → projects migrate failed: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );

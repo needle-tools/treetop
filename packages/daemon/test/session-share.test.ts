@@ -1,6 +1,8 @@
 import { test, expect, describe } from "bun:test";
 import {
+  healLegacyStrippedToolResults,
   normalizeRemote,
+  STRIPPED_MARKER_PREFIX,
   stripToolOutputs,
   rewritePaths,
   validateManifest,
@@ -98,9 +100,45 @@ describe("stripToolOutputs", () => {
     expect(jsonl.includes('"text":"running env"')).toBe(true);
     expect(jsonl.includes('"type":"tool_use"')).toBe(true);
     expect(jsonl.includes('"name":"bash"')).toBe(true);
-    // Placeholder shape preserved
-    expect(jsonl.includes('"stripped":true')).toBe(true);
+    // Stripped marker embedded inside `content` (not as an extra key).
+    expect(jsonl.includes(STRIPPED_MARKER_PREFIX)).toBe(true);
     expect(jsonl.includes('"tool_use_id":"u1"')).toBe(true);
+  });
+
+  test("emits only API-valid keys on the tool_result block — no `stripped` / `originalBytes` siblings", () => {
+    // Anthropic's API rejects tool_result blocks with keys other than
+    // `type`, `tool_use_id`, `content`, `is_error`, `cache_control`.
+    // The old strip format emitted `stripped: true` + `originalBytes`
+    // which made the resumed session unsendable. Lock the shape down.
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "u-keep",
+            content: "huge command output here",
+            is_error: true,
+          },
+        ],
+      },
+    });
+    const { jsonl } = stripToolOutputs(line);
+    const parsed = JSON.parse(jsonl) as {
+      message: { content: Array<Record<string, unknown>> };
+    };
+    const block = parsed.message.content[0]!;
+    expect(Object.keys(block).sort()).toEqual(
+      ["content", "is_error", "tool_use_id", "type"].sort(),
+    );
+    expect(block.type).toBe("tool_result");
+    expect(block.tool_use_id).toBe("u-keep");
+    expect(block.is_error).toBe(true);
+    expect(typeof block.content).toBe("string");
+    expect((block.content as string).startsWith(STRIPPED_MARKER_PREFIX)).toBe(
+      true,
+    );
   });
 
   test("handles array-form tool_result content (Anthropic block form)", () => {
@@ -159,6 +197,57 @@ describe("stripToolOutputs", () => {
     const { jsonl, strippedCount } = stripToolOutputs(input);
     expect(strippedCount).toBe(0);
     expect(jsonl.startsWith("not json\n")).toBe(true);
+  });
+
+  test("healLegacyStrippedToolResults rewrites old shape to API-valid shape", () => {
+    // Simulate a JSONL written by the v1 strip code: tool_result has
+    // `stripped: true` + `originalBytes` siblings, no `content`.
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            stripped: true,
+            originalBytes: 4096,
+            tool_use_id: "u-old",
+            is_error: true,
+          },
+        ],
+      },
+    });
+    const { jsonl, healedCount } = healLegacyStrippedToolResults(line);
+    expect(healedCount).toBe(1);
+    const parsed = JSON.parse(jsonl) as {
+      message: { content: Array<Record<string, unknown>> };
+    };
+    const block = parsed.message.content[0]!;
+    expect(Object.keys(block).sort()).toEqual(
+      ["content", "is_error", "tool_use_id", "type"].sort(),
+    );
+    expect(block.content).toBe(`${STRIPPED_MARKER_PREFIX}4096]`);
+    expect(block.is_error).toBe(true);
+    expect(block.tool_use_id).toBe("u-old");
+  });
+
+  test("healLegacyStrippedToolResults is idempotent on already-healed input", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "u-new",
+            content: `${STRIPPED_MARKER_PREFIX}123]`,
+          },
+        ],
+      },
+    });
+    const r = healLegacyStrippedToolResults(line);
+    expect(r.healedCount).toBe(0);
+    expect(r.jsonl).toBe(line);
   });
 
   test("empty input → empty output, count 0", () => {
@@ -251,6 +340,55 @@ describe("rewritePaths", () => {
         toPlatform: "darwin",
       }),
     ).toBe("");
+  });
+
+  test("trailing slash on `from` (POSIX) still rewrites both root and nested paths", () => {
+    const from = "/Users/marcel/git/bar/"; // trailing slash
+    const to = "/home/desktop/code/bar";
+    const input = [
+      JSON.stringify({ cwd: "/Users/marcel/git/bar" }),
+      JSON.stringify({ cwd: "/Users/marcel/git/bar/packages/daemon" }),
+    ].join("\n");
+    const out = rewritePaths(input, {
+      from,
+      to,
+      fromPlatform: "darwin",
+      toPlatform: "darwin",
+    });
+    expect(out.includes("/Users/marcel/git/bar")).toBe(false);
+    expect(out.includes(`"cwd":"${to}"`)).toBe(true);
+    expect(out.includes(`"cwd":"${to}/packages/daemon"`)).toBe(true);
+  });
+
+  test("trailing slash on both `from` and `to` does not duplicate the separator", () => {
+    const from = "/Users/marcel/git/bar/";
+    const to = "/home/desktop/code/bar/";
+    const input = JSON.stringify({ cwd: "/Users/marcel/git/bar/sub" });
+    const out = rewritePaths(input, {
+      from,
+      to,
+      fromPlatform: "darwin",
+      toPlatform: "darwin",
+    });
+    expect(out).toBe(JSON.stringify({ cwd: "/home/desktop/code/bar/sub" }));
+  });
+
+  test("trailing backslash on Windows `from` still rewrites", () => {
+    const from = "C:\\Users\\marcel\\git\\bar\\"; // trailing backslash
+    const to = "/Users/marcel/git/bar";
+    const input = [
+      JSON.stringify({ cwd: "C:\\Users\\marcel\\git\\bar" }),
+      JSON.stringify({ cwd: "C:\\Users\\marcel\\git\\bar\\packages\\ui" }),
+    ].join("\n");
+    const out = rewritePaths(input, {
+      from,
+      to,
+      fromPlatform: "win32",
+      toPlatform: "darwin",
+    });
+    expect(out.includes("C:\\\\")).toBe(false);
+    expect(out.includes(`"cwd":"${to}"`)).toBe(true);
+    expect(out.includes(`"cwd":"${to}/packages/ui"`)).toBe(true);
   });
 });
 

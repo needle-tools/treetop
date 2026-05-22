@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   agentsForWorktree,
+  claudeProjectDirForCwd,
   readJsonlField,
   readClaudeSessionMeta,
   scanClaudeUserMessages,
@@ -1037,6 +1038,28 @@ describe("agentsForWorktree", () => {
   });
 });
 
+describe("claudeProjectDirForCwd", () => {
+  test("encodes / \\ : as -", async () => {
+    const root = await tempDir("supergit-cpd-empty-");
+    const got = await claudeProjectDirForCwd("C:\\git\\supergit", root);
+    expect(got).toBe(join(root, "C--git-supergit"));
+  });
+
+  test("reuses an existing case-insensitive match instead of creating a new dir", async () => {
+    const root = await tempDir("supergit-cpd-case-");
+    // Pre-existing dir was created by Claude with lowercased casing.
+    await mkdir(join(root, "c--git-supergit"), { recursive: true });
+    const got = await claudeProjectDirForCwd("C:\\git\\supergit", root);
+    expect(got).toBe(join(root, "c--git-supergit"));
+  });
+
+  test("returns the encoded path even when the projects root does not exist", async () => {
+    const root = join(await tempDir("supergit-cpd-noroot-"), "does-not-exist");
+    const got = await claudeProjectDirForCwd("/Users/me/proj", root);
+    expect(got).toBe(join(root, "-Users-me-proj"));
+  });
+});
+
 describe("scanImported", () => {
   test("returns [] when the imported-sessions directory does not exist", async () => {
     const ws = await tempDir("supergit-imported-empty-");
@@ -1106,6 +1129,52 @@ describe("scanImported", () => {
     expect(sessions[0]?.sessionId).toBe("orphan");
     expect(sessions[0]?.title).toBeUndefined();
     expect(sessions[0]?.importedFrom).toBe("host");
+  });
+
+  test("claude import with importedJsonlPath points source at the claude-projects file (no sibling JSONL needed)", async () => {
+    const ws = await tempDir("supergit-imported-cpd-");
+    const cpd = await tempDir("supergit-imported-cpd-root-");
+    const sidecarDir = join(ws, "imported-sessions", "marcels-mbp", "claude");
+    const projDir = join(cpd, "-local-foo");
+    await mkdir(sidecarDir, { recursive: true });
+    await mkdir(projDir, { recursive: true });
+
+    const jsonlPath = join(projDir, "sid-9.jsonl");
+    await writeFile(jsonlPath, '{"cwd":"/local/foo"}\n');
+    await writeFile(
+      join(sidecarDir, "sid-9.manifest.json"),
+      JSON.stringify({
+        sid: "sid-9",
+        title: "Claude in projects dir",
+        originMachineLabel: "Marcel's MBP",
+        localRepoPath: "/local/foo",
+        importedJsonlPath: jsonlPath,
+      }),
+    );
+    // Crucially: no sibling jsonl under imported-sessions/.../claude/.
+    const sessions = await scanImported(ws);
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]?.source).toBe(jsonlPath);
+    expect(sessions[0]?.sessionId).toBe("sid-9");
+    expect(sessions[0]?.importedFrom).toBe("Marcel's MBP");
+    expect(sessions[0]?.title).toBe("Claude in projects dir");
+  });
+
+  test("drops the entry when the sidecar points at a JSONL that no longer exists", async () => {
+    const ws = await tempDir("supergit-imported-dangling-");
+    const sidecarDir = join(ws, "imported-sessions", "host", "claude");
+    await mkdir(sidecarDir, { recursive: true });
+    await writeFile(
+      join(sidecarDir, "sid-x.manifest.json"),
+      JSON.stringify({
+        sid: "sid-x",
+        title: "Dangling",
+        originMachineLabel: "host",
+        localRepoPath: "/local/foo",
+        importedJsonlPath: "/no/such/file.jsonl",
+      }),
+    );
+    expect(await scanImported(ws)).toEqual([]);
   });
 });
 

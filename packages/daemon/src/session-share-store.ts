@@ -1,13 +1,23 @@
 /**
  * Filesystem storage for the session-share offer/accept flow. Pending
- * offers live in `<workspace>/session-invites/<offerId>.json`; accepted
- * imports land in `<workspace>/imported-sessions/<originMachine>/<sid>.jsonl`
- * with a sidecar `.manifest.json`. See plans/PLAN-SESSION-SHARE.md.
+ * offers live in `<workspace>/session-invites/<offerId>.json`. On
+ * accept, the import is split:
  *
- * No HTTP, no Workspace dependency, no agent-CLI knowledge. The server
- * routes compose these functions with `validateManifest` from
- * `session-share.ts` and a `repoLookup` callback that resolves the
- * origin remote against the workspace's `repos.json`.
+ *   - **JSONL (claude)** → `~/.claude/projects/<encoded(cwd)>/<sid>.jsonl`
+ *     so Claude Code's own `--resume <sid>` finds it without supergit
+ *     having to copy / symlink at spawn time.
+ *   - **JSONL (codex)** → `<workspace>/imported-sessions/<machine>/codex/<sid>.jsonl`
+ *     (legacy layout; codex has no analogous projects-dir convention).
+ *   - **Sidecar manifest** (both agents) →
+ *     `<workspace>/imported-sessions/<machine>/<agent>/<sid>.manifest.json`,
+ *     carrying the import metadata + an `importedJsonlPath` pointer.
+ *
+ * See plans/PLAN-SESSION-SHARE.md.
+ *
+ * No HTTP, no Workspace dependency. The server routes compose these
+ * functions with `validateManifest` from `session-share.ts` and a
+ * `repoLookup` callback that resolves the origin remote against the
+ * workspace's `repos.json`.
  */
 
 import {
@@ -21,6 +31,7 @@ import {
 import { join } from "node:path";
 import { rewritePaths, type SessionShareManifest } from "./session-share";
 import { findDivergence, type Divergence } from "./session-share-divergence";
+import { claudeProjectDirForCwd, CLAUDE_ROOT } from "./agents";
 
 const INVITES_DIR = "session-invites";
 const IMPORTED_DIR = "imported-sessions";
@@ -56,6 +67,11 @@ export interface AcceptOfferArgs {
   offerId: string;
   repoLookup: RepoLookup;
   mode?: AcceptMode;
+  /** Override Claude's `~/.claude/projects` for tests. The accept flow
+   *  for claude offers places the rewritten JSONL directly under
+   *  `<claudeProjectsDir>/<encoded(cwd)>/<sid>.jsonl` so Claude Code's
+   *  `--resume` finds it. */
+  claudeProjectsDir?: string;
 }
 
 export type AcceptResult =
@@ -141,7 +157,13 @@ export async function listPendingOffers(
  *   - `keep_both`: writes to a sibling path so both copies survive.
  */
 export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> {
-  const { workspaceDir, offerId, repoLookup, mode = "abort_if_exists" } = args;
+  const {
+    workspaceDir,
+    offerId,
+    repoLookup,
+    mode = "abort_if_exists",
+    claudeProjectsDir = CLAUDE_ROOT(),
+  } = args;
   const pending = await loadPendingOffer(workspaceDir, offerId);
   if (!pending) return { ok: false, error: "not_found" };
 
@@ -174,20 +196,35 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
     });
   }
 
-  // Path: imported-sessions/<machine>/<agent>/<sid>.jsonl
-  // The <agent> segment lets the server's resolveSessionAgent figure
-  // out which JSONL parser to use without reading the sidecar — keeps
-  // that helper sync and matches the existing `~/.claude` /
-  // `~/.codex` segmentation.
-  const importDir = join(
+  // Where the import lives depends on agent:
+  //   - claude: the rewritten JSONL goes straight into
+  //     `<claudeProjectsDir>/<encoded(cwd)>/<sid>.jsonl` so Claude Code's
+  //     own `--resume <sid>` lookup finds it. The sidecar (import
+  //     metadata only) sits under
+  //     `<workspace>/imported-sessions/<machine>/claude/<sid>.manifest.json`.
+  //   - codex: legacy layout — JSONL + sidecar both under
+  //     `<workspace>/imported-sessions/<machine>/codex/`. Codex doesn't
+  //     have a single canonical projects dir we can drop into, and
+  //     `codex resume` takes a sid plus picker so a sibling location
+  //     is fine.
+  const sidecarDir = join(
     workspaceDir,
     IMPORTED_DIR,
     manifest.originMachine,
     manifest.agent,
   );
-  await mkdir(importDir, { recursive: true });
-  const defaultPath = join(importDir, `${manifest.sid}.jsonl`);
-  const sidecarPath = join(importDir, `${manifest.sid}.manifest.json`);
+  await mkdir(sidecarDir, { recursive: true });
+  const sidecarPath = join(sidecarDir, `${manifest.sid}.manifest.json`);
+
+  let jsonlDir: string;
+  if (manifest.agent === "claude") {
+    const cwd = looked.localWorktreePath || looked.localRepoPath;
+    jsonlDir = await claudeProjectDirForCwd(cwd, claudeProjectsDir);
+  } else {
+    jsonlDir = sidecarDir;
+  }
+  await mkdir(jsonlDir, { recursive: true });
+  const defaultPath = join(jsonlDir, `${manifest.sid}.jsonl`);
 
   // Check collision + compute divergence so the caller can decide.
   let existingPath: string | null = null;
@@ -207,7 +244,7 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
       return { ok: false, error: "exists", divergence, existingPath };
     }
     if (mode === "keep_both") {
-      importedPath = await pickKeepBothPath(importDir, manifest.sid);
+      importedPath = await pickKeepBothPath(jsonlDir, manifest.sid);
     }
     // mode === "replace" → keep defaultPath, writeFile will overwrite.
   }
@@ -224,6 +261,10 @@ export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> 
         worktreeMissing:
           manifest.originWorktreePath !== undefined &&
           looked.localWorktreePath === undefined,
+        // Records where the JSONL actually lives so scanImported can
+        // find it without re-deriving from cwd, and so the UI can
+        // surface the import as a native claude session (dedupe key).
+        importedJsonlPath: importedPath,
       },
       null,
       2,

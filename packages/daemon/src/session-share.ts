@@ -139,6 +139,69 @@ export function stripToolOutputs(text: string): {
   return { jsonl: out.join("\n"), strippedCount };
 }
 
+/** Marker prefix used inside the replacement `content` string of a
+ *  stripped tool_result. Detect this on the receiver to render an
+ *  "output stripped" badge in the UI / to count strips on import. */
+export const STRIPPED_MARKER_PREFIX = "[supergit-stripped:";
+
+/** Repair tool_result blocks left behind by an older `stripToolOutputs`
+ *  that emitted `stripped: true` + `originalBytes` siblings (now invalid
+ *  on Anthropic's API). Walks every line; for each tool_result whose
+ *  shape carries the legacy markers, rewrites to the current API-valid
+ *  shape. Returns the rewritten JSONL and a count of healed blocks.
+ *  Idempotent — running on an already-healed file is a no-op. */
+export function healLegacyStrippedToolResults(text: string): {
+  jsonl: string;
+  healedCount: number;
+} {
+  if (!text) return { jsonl: "", healedCount: 0 };
+  let healedCount = 0;
+  const lines = text.split("\n");
+  const out: string[] = [];
+  for (const line of lines) {
+    if (!line) {
+      out.push(line);
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      out.push(line);
+      continue;
+    }
+    const replaced = walkAndHealLegacy(parsed, () => {
+      healedCount += 1;
+    });
+    out.push(JSON.stringify(replaced));
+  }
+  return { jsonl: out.join("\n"), healedCount };
+}
+
+function walkAndHealLegacy(node: unknown, onHeal: () => void): unknown {
+  if (Array.isArray(node)) return node.map((i) => walkAndHealLegacy(i, onHeal));
+  if (node === null || typeof node !== "object") return node;
+  const obj = node as Record<string, unknown>;
+  if (obj.type === "tool_result" && obj.stripped === true) {
+    onHeal();
+    const bytes = typeof obj.originalBytes === "number" ? obj.originalBytes : 0;
+    const replacement: Record<string, unknown> = {
+      type: "tool_result",
+      content: `${STRIPPED_MARKER_PREFIX}${bytes}]`,
+    };
+    if (typeof obj.tool_use_id === "string") {
+      replacement.tool_use_id = obj.tool_use_id;
+    }
+    if (obj.is_error === true) replacement.is_error = true;
+    return replacement;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = walkAndHealLegacy(v, onHeal);
+  }
+  return out;
+}
+
 function walkAndStrip(node: unknown, onStrip: (n: number) => void): unknown {
   if (Array.isArray(node)) {
     return node.map((item) => walkAndStrip(item, onStrip));
@@ -149,10 +212,16 @@ function walkAndStrip(node: unknown, onStrip: (n: number) => void): unknown {
   if (obj.type === "tool_result") {
     const originalBytes = approximateBytes(obj.content);
     onStrip(1);
+    // Anthropic's API only accepts these keys on a tool_result content
+    // block: `type`, `tool_use_id`, `content`, `is_error`, `cache_control`.
+    // Any extra key (we previously emitted `stripped: true` +
+    // `originalBytes`) gets rejected as "Extra inputs are not permitted"
+    // when Claude Code replays the conversation on `--resume`. Encode the
+    // stripped marker into the `content` string so the shape stays valid
+    // while still being self-describing on read.
     const replacement: Record<string, unknown> = {
       type: "tool_result",
-      stripped: true,
-      originalBytes,
+      content: `${STRIPPED_MARKER_PREFIX}${originalBytes}]`,
     };
     if (typeof obj.tool_use_id === "string") {
       replacement.tool_use_id = obj.tool_use_id;
@@ -209,11 +278,20 @@ export function rewritePaths(text: string, opts: RewritePathsOptions): string {
   const { from, to, fromPlatform, toPlatform } = opts;
   if (!from || !to) return text;
 
+  // Strip trailing separator from both ends before building the regex.
+  // The terminator lookahead below already enforces a boundary after the
+  // prefix; if `from` itself ends in `/` or `\`, the regex requires a
+  // *second* separator in the data, which breaks both root paths (no
+  // trailing sep in the data) and nested paths (sep present but followed
+  // by a non-terminator letter).
+  const fromTrim = stripTrailingSep(from, fromPlatform);
+  const toTrim = stripTrailingSep(to, toPlatform);
+
   // JSON-encoded form of the prefix. On Windows, single backslashes in a
   // path string get encoded as `\\` in JSON, so the literal bytes in the
   // JSONL contain doubled backslashes.
-  const fromEncoded = jsonEncodePath(from, fromPlatform);
-  const toEncoded = jsonEncodePath(to, toPlatform);
+  const fromEncoded = jsonEncodePath(fromTrim, fromPlatform);
+  const toEncoded = jsonEncodePath(toTrim, toPlatform);
 
   // Match the prefix, then *require* a path-terminator: separator (either
   // platform's), JSON-string close, end-of-input, or whitespace. This is
@@ -240,6 +318,20 @@ export function rewritePaths(text: string, opts: RewritePathsOptions): string {
  *  because that's what `JSON.stringify` produces. */
 function jsonEncodePath(p: string, platform: SharePlatform): string {
   if (platform === "win32") return p.replace(/\\/g, "\\\\");
+  return p;
+}
+
+/** Strip a single trailing path separator. Platform-aware but permissive —
+ *  Windows tooling occasionally produces `/`-suffixed paths and vice versa,
+ *  and either form would defeat the rewrite regex's terminator lookahead. */
+function stripTrailingSep(p: string, platform: SharePlatform): string {
+  if (!p) return p;
+  const last = p[p.length - 1];
+  if (platform === "win32") {
+    if (last === "\\" || last === "/") return p.slice(0, -1);
+  } else {
+    if (last === "/") return p.slice(0, -1);
+  }
   return p;
 }
 

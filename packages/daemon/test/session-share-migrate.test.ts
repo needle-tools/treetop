@@ -15,10 +15,17 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, mkdir, writeFile, readFile, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateLegacyImportedSessions } from "../src/session-share-migrate";
+import {
+  migrateLegacyImportedSessions,
+  migrateClaudeImportsToProjects,
+} from "../src/session-share-migrate";
 
 async function ws(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-migrate-"));
+}
+
+async function cpd(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "supergit-migrate-cpd-"));
 }
 
 describe("migrateLegacyImportedSessions", () => {
@@ -118,5 +125,158 @@ describe("migrateLegacyImportedSessions", () => {
     );
     const res = await migrateLegacyImportedSessions(w);
     expect(res).toEqual({ moved: 0, skipped: 1 });
+  });
+});
+
+describe("migrateClaudeImportsToProjects", () => {
+  test("noop when imported-sessions dir doesn't exist", async () => {
+    const w = await ws();
+    const root = await cpd();
+    expect(await migrateClaudeImportsToProjects(w, root)).toEqual({
+      moved: 0,
+      skipped: 0,
+    });
+  });
+
+  test("moves a claude JSONL into <claudeProjectsDir>/<encoded(cwd)>/ and stamps the sidecar", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host-1", "claude");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "abc.jsonl"), "transcript");
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        localRepoPath: "/local/foo",
+      }),
+    );
+
+    const res = await migrateClaudeImportsToProjects(w, root);
+    expect(res).toEqual({ moved: 1, skipped: 0 });
+
+    const targetPath = join(root, "-local-foo", "abc.jsonl");
+    expect(await readFile(targetPath, "utf-8")).toBe("transcript");
+
+    const sidecar = JSON.parse(
+      await readFile(join(dir, "abc.manifest.json"), "utf-8"),
+    );
+    expect(sidecar.importedJsonlPath).toBe(targetPath);
+
+    // Original jsonl is gone (renamed away on rename success).
+    let stillThere = true;
+    try {
+      await access(join(dir, "abc.jsonl"));
+    } catch {
+      stillThere = false;
+    }
+    expect(stillThere).toBe(false);
+  });
+
+  test("uses localWorktreePath over localRepoPath when both are set", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "s.jsonl"), "x");
+    await writeFile(
+      join(dir, "s.manifest.json"),
+      JSON.stringify({
+        sid: "s",
+        agent: "claude",
+        localRepoPath: "/local/bar",
+        localWorktreePath: "/local/bar/.worktrees/feat-x",
+      }),
+    );
+    await migrateClaudeImportsToProjects(w, root);
+    await access(join(root, "-local-bar-.worktrees-feat-x", "s.jsonl"));
+  });
+
+  test("idempotent: a sidecar whose importedJsonlPath already points at an existing file is left alone", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    const targetDir = join(root, "-local-foo");
+    await mkdir(dir, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    const targetPath = join(targetDir, "abc.jsonl");
+    await writeFile(targetPath, "already-migrated");
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        localRepoPath: "/local/foo",
+        importedJsonlPath: targetPath,
+      }),
+    );
+    const res = await migrateClaudeImportsToProjects(w, root);
+    expect(res).toEqual({ moved: 0, skipped: 0 });
+    expect(await readFile(targetPath, "utf-8")).toBe("already-migrated");
+  });
+
+  test("skips when the sidecar has no localRepoPath / localWorktreePath to derive the project dir", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "s.jsonl"), "x");
+    await writeFile(
+      join(dir, "s.manifest.json"),
+      JSON.stringify({ sid: "s", agent: "claude" }),
+    );
+    const res = await migrateClaudeImportsToProjects(w, root);
+    expect(res).toEqual({ moved: 0, skipped: 1 });
+  });
+
+  test("unlinks the legacy JSONL when its content matches the canonical copy (no .migrated-bak leftover)", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    const targetDir = join(root, "-local-foo");
+    await mkdir(dir, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    const body = "same content here\n";
+    const targetPath = join(targetDir, "abc.jsonl");
+    await writeFile(targetPath, body);
+    await writeFile(join(dir, "abc.jsonl"), body);
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        localRepoPath: "/local/foo",
+      }),
+    );
+    await migrateClaudeImportsToProjects(w, root);
+    // Legacy JSONL is gone — no .migrated-bak either.
+    const entries = await readdir(dir);
+    expect(entries.sort()).toEqual(["abc.manifest.json"]);
+  });
+
+  test("parks the legacy JSONL as .migrated-bak when content differs from the canonical copy", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    const targetDir = join(root, "-local-foo");
+    await mkdir(dir, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(join(targetDir, "abc.jsonl"), "canonical body\n");
+    await writeFile(join(dir, "abc.jsonl"), "DIFFERENT body — needs review\n");
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        localRepoPath: "/local/foo",
+      }),
+    );
+    await migrateClaudeImportsToProjects(w, root);
+    const entries = await readdir(dir);
+    expect(entries.sort()).toEqual([
+      "abc.jsonl.migrated-bak",
+      "abc.manifest.json",
+    ]);
   });
 });
