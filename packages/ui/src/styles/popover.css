@@ -138,6 +138,18 @@
 .tui-row-static:hover {
   background: var(--surface-2);
 }
+/* Rows with a resolvable session source act as a "jump to this
+   session" button — restore the pointer cursor that `.agent-row`
+   sets by default but that `.tui-row-static`'s `cursor: default`
+   above turned off, and add a keyboard focus outline. Rows without
+   a source (shells, orphan TUIs) stay non-interactive. */
+.tui-row-static.tui-row-focusable {
+  cursor: pointer;
+}
+.tui-row-static.tui-row-focusable:focus-visible {
+  outline: 2px solid var(--accent, #6aa9ff);
+  outline-offset: -2px;
+}
 /* Per-row repo/branch breadcrumb. Truncates if the popover is narrow
    so it doesn't push stats off-screen. */
 .tui-repo {

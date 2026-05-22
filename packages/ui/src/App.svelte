@@ -582,6 +582,36 @@
     return { repoName, repoColor, wtBranch, title, lastActivity };
   }
 
+  /** Map a tracked TUI PTY back to the session `source` string the
+   *  dashboard uses to address open session columns. Walks the same
+   *  cwd→worktree→agent path as `tuiContext`, matching the PTY's
+   *  `ownerId` against `agent.sessionId`. Returns null for shells (no
+   *  ownerId) and for orphan TUIs whose owning session has fallen out
+   *  of the loaded `repos` snapshot. */
+  function tuiSource(p: TuiProc): string | null {
+    if (!p.ownerId) return null;
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        if (wt.path !== p.cwd) continue;
+        for (const a of wt.agents ?? []) {
+          if (a.sessionId === p.ownerId) return a.source ?? null;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Click handler for a row in the TUIs popover — closes the popover
+   *  and uses the shared `focusSessionBySource` pipeline to scroll the
+   *  matching session column into view and flash its outline. */
+  async function focusTui(p: TuiProc): Promise<void> {
+    const source = tuiSource(p);
+    if (!source) return;
+    tuisOpen = false;
+    startTuiPolling(TUI_SLOW_MS);
+    await focusSessionBySource(source);
+  }
+
   function prettyTuiName(p: TuiProc): string {
     if (p.agent === "claude") return "Claude";
     if (p.agent === "codex") return "Codex";
@@ -4722,8 +4752,24 @@
             <ul class="agents-list">
               {#each tuiProcs as p (p.id)}
                 {@const ctx = tuiContext(p)}
+                {@const source = tuiSource(p)}
                 <li>
-                  <div class="agent-row brand-{p.agent ?? 'shell'} tui-row-static">
+                  <div
+                    class="agent-row brand-{p.agent ?? 'shell'} tui-row-static"
+                    class:tui-row-focusable={source !== null}
+                    role={source !== null ? "button" : undefined}
+                    tabindex={source !== null ? 0 : -1}
+                    on:click={() => void focusTui(p)}
+                    on:keydown={(e) => {
+                      if (source !== null && (e.key === "Enter" || e.key === " ")) {
+                        e.preventDefault();
+                        void focusTui(p);
+                      }
+                    }}
+                    title={source !== null
+                      ? "Click to jump to this session in its worktree strip"
+                      : undefined}
+                  >
                     {#if p.agent === "claude"}
                       <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
                     {:else if p.agent === "codex"}
@@ -4756,7 +4802,7 @@
                     </span>
                     <button
                       class="row-close tui-kill-x"
-                      on:click={() => killTui(p.id)}
+                      on:click|stopPropagation={() => killTui(p.id)}
                       title="Dispose (SIGTERM → SIGKILL)"
                       aria-label="Kill terminal"
                     >×</button>
