@@ -24,6 +24,13 @@
     port: number;
   }
 
+  interface InboxRow {
+    peer: { id: string; label: string };
+    messages: import("./messages-store").StoredMessage[];
+    online: boolean;
+    muted: boolean;
+  }
+
   let open = false;
   let peers: DiscoveredPeer[] = [];
   let peersPoll: ReturnType<typeof setInterval> | null = null;
@@ -32,6 +39,51 @@
   let sendError: Record<string, string> = {};
 
   $: count = totalCount($messages);
+
+  // Unified rows: every peer the user can talk to — peers who've
+  // messaged us (with history) and peers currently discovered on the
+  // LAN (compose-only, ready to receive). Keyed by peer id so a peer
+  // who's both online and has history appears once.
+  $: rows = buildRows($messages.inbox, $messages.mutes, peers);
+
+  function buildRows(
+    inbox: { peer: { id: string; label: string }; messages: import("./messages-store").StoredMessage[] }[],
+    mutes: Record<string, string>,
+    discovered: DiscoveredPeer[],
+  ): InboxRow[] {
+    const byId = new Map<string, InboxRow>();
+    for (const r of inbox) {
+      byId.set(r.peer.id, {
+        peer: r.peer,
+        messages: r.messages,
+        online: discovered.some((p) => p.id === r.peer.id),
+        muted: !!mutes[r.peer.id],
+      });
+    }
+    for (const p of discovered) {
+      if (byId.has(p.id)) continue;
+      byId.set(p.id, {
+        peer: { id: p.id, label: p.label },
+        messages: [],
+        online: true,
+        muted: !!mutes[p.id],
+      });
+    }
+    return [...byId.values()].sort((a, b) => {
+      // Peers with messages bubble to the top, sorted by most recent
+      // received message; the rest fall in alphabetic-by-label order.
+      const aHas = a.messages.length > 0;
+      const bHas = b.messages.length > 0;
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+      if (aHas && bHas) {
+        const ta = a.messages[0]?.receivedAt ?? "";
+        const tb = b.messages[0]?.receivedAt ?? "";
+        return tb.localeCompare(ta);
+      }
+      return a.peer.label.localeCompare(b.peer.label);
+    });
+  }
 
   onMount(() => {
     void refreshMessages();
@@ -330,31 +382,33 @@
   {#if open}
     <Popover variant="actions" extraClass="inbox-popover" unclamped>
       <span slot="head">Messages</span>
-      {#if $messages.inbox.length === 0}
+      {#if rows.length === 0}
         <p class="muted small nopad">
-          Nothing yet. Other supergit instances on your LAN can send
-          you short text snippets that appear here.
+          No peers discovered on this network yet, and nobody's sent
+          you anything. Once another supergit instance comes online
+          on your LAN it'll show up here.
         </p>
       {:else}
         <ul class="inbox-list">
-          {#each $messages.inbox as row (row.peer.id)}
-            {@const online = peerOnline(row.peer.id)}
-            {@const muted = !!$messages.mutes[row.peer.id]}
-            <li class="inbox-row" class:inbox-row-muted={muted}>
+          {#each rows as row (row.peer.id)}
+            <li class="inbox-row" class:inbox-row-muted={row.muted}>
               <div class="inbox-head">
                 <span class="inbox-peer-label">{row.peer.label}</span>
                 <span class="inbox-head-meta">
-                  {#if !online}
-                    <span class="inbox-offline" title="Peer isn't currently advertising on the LAN — you can't reply until they're back online.">offline</span>
+                  {#if !row.online}
+                    <span class="inbox-offline" title="Peer isn't currently advertising on the LAN — you can't send right now.">offline</span>
                   {/if}
-                  {#if muted}
+                  {#if row.muted}
                     <button
                       type="button"
                       class="inbox-mute-btn inbox-muted"
                       on:click={() => onMute(row.peer.id, null)}
                       title="Unmute this peer"
                     >muted · unmute</button>
-                  {:else}
+                  {:else if row.messages.length > 0}
+                    <!-- Mute only makes sense once someone has actually
+                         sent us something; for compose-only peers we
+                         hide the control to keep the row tidy. -->
                     <select
                       class="inbox-mute-select"
                       title="Mute this peer"
@@ -373,37 +427,43 @@
                 </span>
               </div>
 
-              <ul class="inbox-msgs">
-                {#each row.messages as msg (msg.id)}
-                  <li class="inbox-msg">
-                    <pre class="inbox-body">{msg.body}</pre>
-                    <div class="inbox-msg-meta">
-                      <span class="muted small">{relTime(msg.receivedAt)}</span>
-                      <button
-                        type="button"
-                        class="inbox-copy"
-                        on:click={() => onCopy(msg.body)}
-                        title="Copy to clipboard"
-                      >Copy</button>
-                    </div>
-                  </li>
-                {/each}
-              </ul>
+              {#if row.messages.length > 0}
+                <ul class="inbox-msgs">
+                  {#each row.messages as msg (msg.id)}
+                    <li class="inbox-msg">
+                      <pre class="inbox-body">{msg.body}</pre>
+                      <div class="inbox-msg-meta">
+                        <span class="muted small">{relTime(msg.receivedAt)}</span>
+                        <button
+                          type="button"
+                          class="inbox-copy"
+                          on:click={() => onCopy(msg.body)}
+                          title="Copy to clipboard"
+                        >Copy</button>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
 
               <div class="inbox-reply">
                 <textarea
                   class="inbox-reply-input"
-                  placeholder={online ? `Reply to ${row.peer.label}…` : "Peer offline — can't reply right now"}
+                  placeholder={row.online
+                    ? row.messages.length > 0
+                      ? `Reply to ${row.peer.label}…`
+                      : `Send to ${row.peer.label}…`
+                    : "Peer offline — can't send right now"}
                   rows="2"
                   bind:value={replyText[row.peer.id]}
-                  disabled={!online || sending[row.peer.id]}
+                  disabled={!row.online || sending[row.peer.id]}
                   on:keydown={(e) => onReplyKey(e, row.peer.id)}
                 ></textarea>
                 <button
                   type="button"
                   class="inbox-send"
                   on:click={() => onSend(row.peer.id)}
-                  disabled={!online || !((replyText[row.peer.id] ?? "").trim()) || sending[row.peer.id]}
+                  disabled={!row.online || !((replyText[row.peer.id] ?? "").trim()) || sending[row.peer.id]}
                 >{sending[row.peer.id] ? "Sending…" : "Send"}</button>
               </div>
               {#if sendError[row.peer.id]}
