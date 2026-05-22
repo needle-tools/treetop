@@ -1,5 +1,5 @@
 import { join, resolve, normalize, sep } from "node:path";
-import { homedir, totalmem, networkInterfaces } from "node:os";
+import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Workspace } from "./workspace";
@@ -73,6 +73,7 @@ import {
   storePendingOffer,
   type RepoLookup,
 } from "./session-share-store";
+import { migrateLegacyImportedSessions } from "./session-share-migrate";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -202,12 +203,47 @@ function findLocalIp(): string | null {
   return candidates.find(isPrivate) ?? candidates[0] ?? null;
 }
 
+/** Strip a hostname down to a path-safe identifier — used as a
+ *  directory name on the receiver's filesystem when an imported
+ *  session lands. Keeps letters, digits, dot, dash, underscore. Any
+ *  other character becomes a single dash, and the result is lowercased
+ *  + truncated so collisions across casing or pathological hostnames
+ *  don't blow up the file system. */
+function sanitiseMachineId(raw: string): string {
+  const cleaned = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return cleaned || "unknown";
+}
+
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 {
   const ip = findLocalIp();
   console.log(`supergit daemon: listening on http://0.0.0.0:${PORT}`);
   if (ip) console.log(`supergit daemon: LAN url       http://${ip}:${PORT}`);
 }
+
+// One-time migration for imported sessions written under the
+// pre-discovery layout (<machine>/<sid>.jsonl → <machine>/<agent>/<sid>.jsonl).
+// Idempotent — a daemon restart on a clean tree is a noop. Logs the
+// outcome so the user can spot if anything got left behind.
+void migrateLegacyImportedSessions(WORKSPACE_PATH)
+  .then((r) => {
+    if (r.moved > 0 || r.skipped > 0) {
+      console.log(
+        `supergit daemon: imported-sessions migrate — moved=${r.moved} skipped=${r.skipped}`,
+      );
+    }
+  })
+  .catch((e) => {
+    console.error(
+      `supergit daemon: imported-sessions migrate failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  });
 
 // CORS allowlist. The wildcard `*` is a real attack surface: with `*` any
 // website you visit could call localhost:7777 from your browser and read the
@@ -2599,10 +2635,15 @@ const server = Bun.serve<TermWsData, never>({
           "Untitled session",
         agent: resolved.agent === "claude" ? "claude" : "codex",
         turnCount: parsed.messages.length,
-        originMachine: process.env.HOSTNAME ?? "unknown",
+        // os.hostname() works cross-platform — process.env.HOSTNAME is
+        // unset on Windows (which uses COMPUTERNAME) and also unset in
+        // many launchd / systemd contexts. Sanitise to a path-safe
+        // identifier since this becomes a directory name on the
+        // receiver (no spaces, no special chars).
+        originMachine: sanitiseMachineId(osHostname() || "unknown"),
         originMachineLabel:
           (typeof body?.machineLabel === "string" && body.machineLabel) ||
-          process.env.HOSTNAME ||
+          osHostname() ||
           "unknown",
         originPlatform:
           process.platform === "win32"
