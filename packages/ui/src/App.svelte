@@ -17,6 +17,7 @@
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
   import AttachmentIcon from "./AttachmentIcon.svelte";
   import NoteIcon from "./NoteIcon.svelte";
+  import AgentIcon from "./AgentIcon.svelte";
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
@@ -2683,6 +2684,22 @@
     }
   }
 
+  /** Scroll to the bottom of the page so the just-added repo (which
+   *  appends to the end of the list) AND the footer CTAs below it are
+   *  in view. `load()` returns when its NDJSON stream finishes, but
+   *  Svelte still has to render the new row and the daemon may stream
+   *  one more enrichment frame after. The 150ms delay lets all of
+   *  that settle before we measure `scrollHeight`. */
+  async function scrollToNewRepo() {
+    await tick();
+    setTimeout(() => {
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: "smooth",
+      });
+    }, 150);
+  }
+
   async function pickAndAdd() {
     error = "";
     try {
@@ -2703,9 +2720,134 @@
         throw new Error(body.error ?? `HTTP ${add.status}`);
       }
       await load();
+      await scrollToNewRepo();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  /** Suggestion returned by /api/sessions/folder-suggestions — a folder
+   *  the user might want to import as a repo, derived from cwds the
+   *  agents (Claude, Codex, Copilot, Ollama) have been observed in.
+   *  Sorted newest-first by the daemon; already-registered repos +
+   *  their worktrees are filtered out server-side. */
+  interface FolderSuggestion {
+    path: string;
+    name: string;
+    repoUrl?: string;
+    sessionCount: number;
+    lastActive: string;
+    agents: string[];
+    exists: boolean;
+  }
+
+  /** "Import from sessions" popover state. Anchored from the trigger
+   *  button (one of two CTAs depending on whether the dashboard is in
+   *  the empty-onboarding view or the populated-with-footer view).
+   *  Outside clicks close it via `handleDocClick`, keyed off the
+   *  `.import-sessions-anchor` ancestor. */
+  let importSessionsOpen = false;
+  let importSuggestions: FolderSuggestion[] = [];
+  let importLoading = false;
+  let importError = "";
+  /** Paths currently being added — prevents double-clicks from spamming
+   *  the daemon and lets the row render a spinner while the request is
+   *  in flight. */
+  let importAdding = new Set<string>();
+  /** When the trigger button sits in the lower half of the viewport,
+   *  flip the popover above the button so the dropdown doesn't extend
+   *  past the bottom of the screen. Decided once on each open, from
+   *  the click event's currentTarget — works equally for the empty-
+   *  state CTA (top of screen) and the footer CTA (bottom of long
+   *  list). */
+  let importFlipUp = false;
+
+  async function openImportSessions() {
+    importSessionsOpen = true;
+    if (importLoading) return;
+    importLoading = true;
+    importError = "";
+    try {
+      const r = await fetch("/api/sessions/folder-suggestions");
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${r.status}`);
+      }
+      importSuggestions = (await r.json()) as FolderSuggestion[];
+    } catch (e) {
+      importError = e instanceof Error ? e.message : String(e);
+      importSuggestions = [];
+    } finally {
+      importLoading = false;
+    }
+  }
+
+  function toggleImportSessions(e: MouseEvent) {
+    if (importSessionsOpen) {
+      importSessionsOpen = false;
+    } else {
+      // Decide flip direction from the click event's button before
+      // we render the popover, so the dropdown opens upward if the
+      // button is in the lower half of the viewport.
+      const btn = e.currentTarget as HTMLElement | null;
+      if (btn) {
+        const rect = btn.getBoundingClientRect();
+        importFlipUp =
+          rect.top + rect.height / 2 > window.innerHeight / 2;
+      }
+      void openImportSessions();
+    }
+  }
+
+  async function addRepoFromSuggestion(path: string) {
+    if (importAdding.has(path)) return;
+    importAdding = new Set(importAdding).add(path);
+    importError = "";
+    try {
+      const r = await fetch("/api/repos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${r.status}`);
+      }
+      // Drop the just-added entry from the suggestions list so the
+      // popover reflects the new state without a refetch round-trip,
+      // then refresh the dashboard so the new row appears.
+      importSuggestions = importSuggestions.filter((s) => s.path !== path);
+      await load();
+      // Close the popover when the list is empty — nothing left to do.
+      if (importSuggestions.length === 0) importSessionsOpen = false;
+      await scrollToNewRepo();
+    } catch (e) {
+      importError = e instanceof Error ? e.message : String(e);
+    } finally {
+      const next = new Set(importAdding);
+      next.delete(path);
+      importAdding = next;
+    }
+  }
+
+  /** Human-friendly relative time for a session's `lastActive`. Mirrors
+   *  the format used elsewhere in the dashboard so the import popover
+   *  reads like the rest of the UI. */
+  function formatRelativeTime(iso: string): string {
+    const then = Date.parse(iso);
+    if (!Number.isFinite(then)) return "";
+    const delta = Date.now() - then;
+    const s = Math.round(delta / 1000);
+    if (s < 60) return s <= 5 ? "just now" : `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.round(h / 24);
+    if (d < 30) return `${d}d ago`;
+    const mo = Math.round(d / 30);
+    if (mo < 12) return `${mo}mo ago`;
+    return `${Math.round(mo / 12)}y ago`;
   }
 
   function startRenameRepo(repo: Repo, rowKey: string) {
@@ -4012,6 +4154,9 @@
       tuisOpen = false;
       stopTuiPolling();
     }
+    if (importSessionsOpen && !target?.closest(".import-sessions-anchor")) {
+      importSessionsOpen = false;
+    }
     // Close any open "new agent" picker the click landed outside of.
     for (const key of Object.keys(newAgentPopoverOpen)) {
       if (!newAgentPopoverOpen[key]) continue;
@@ -4626,29 +4771,123 @@
     </div>
   {:else if rows.length === 0 || emptyReposDebug}
     <div class="empty-repos">
-      <button
-        class="add-folder-cta"
-        on:click={pickAndAdd}
-        title="Pick a folder to register as a repo"
-      >
-        <svg
-          class="add-folder-icon"
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+      <div class="add-folder-actions">
+        <button
+          class="add-folder-cta"
+          on:click={pickAndAdd}
+          title="Pick a folder to register as a repo"
         >
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          <path d="M12 11v6" />
-          <path d="M9 14h6" />
-        </svg>
-        <span>Add folder</span>
-      </button>
+          <svg
+            class="add-folder-icon"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <path d="M12 11v6" />
+            <path d="M9 14h6" />
+          </svg>
+          <span>Add folder</span>
+        </button>
+        <div class="import-sessions-anchor" class:flip-up={importFlipUp}>
+          <button
+            class="add-folder-cta"
+            on:click|stopPropagation={toggleImportSessions}
+            aria-haspopup="menu"
+            aria-expanded={importSessionsOpen}
+            title="Suggest folders to add based on detected AI agent sessions"
+          >
+            <svg
+              class="add-folder-icon"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3v12" />
+              <path d="M7 10l5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+            <span>Import from sessions</span>
+          </button>
+          {#if importSessionsOpen}
+            <Popover variant="actions" extraClass="import-sessions-popover">
+              <svelte:fragment slot="head">
+                <strong>Folders from detected sessions</strong>
+                <span class="muted small">
+                  Pick a folder you've already been working in with an AI agent.
+                </span>
+              </svelte:fragment>
+              {#if importLoading}
+                <div class="import-empty">
+                  <LoadingSpinner size="0.85rem" label="Scanning sessions" />
+                  <span>scanning sessions…</span>
+                </div>
+              {:else if importError}
+                <div class="import-empty import-error">{importError}</div>
+              {:else if importSuggestions.length === 0}
+                <div class="import-empty muted">
+                  No new folders to suggest — every detected session's cwd is
+                  already in the dashboard.
+                </div>
+              {:else}
+                <ul class="import-list">
+                  {#each importSuggestions as sug (sug.path)}
+                    {@const busy = importAdding.has(sug.path)}
+                    <li>
+                      <button
+                        type="button"
+                        class="import-row"
+                        class:busy
+                        disabled={busy}
+                        on:click={() => addRepoFromSuggestion(sug.path)}
+                        title={`Add ${sug.path} to the dashboard`}
+                      >
+                        <span class="import-row-main">
+                          <span class="import-row-name">{sug.name}</span>
+                          <span class="import-row-path muted small">{sug.path}</span>
+                          {#if sug.repoUrl}
+                            <span class="import-row-url muted small">{sug.repoUrl}</span>
+                          {/if}
+                        </span>
+                        <span class="import-row-meta">
+                          <span class="import-row-count">
+                            <span class="import-row-agents-icons" aria-hidden="true">
+                              {#each sug.agents as agent (agent)}
+                                <AgentIcon {agent} size={14} />
+                              {/each}
+                            </span>
+                            <span>
+                              {sug.sessionCount} session{sug.sessionCount === 1 ? "" : "s"}
+                            </span>
+                          </span>
+                          <span class="import-row-time muted small">
+                            {formatRelativeTime(sug.lastActive)}
+                          </span>
+                          <span class="import-row-agents-names muted small">
+                            {sug.agents.join(", ")}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </Popover>
+          {/if}
+        </div>
+      </div>
       <p class="add-folder-sub muted small">
         Pick any folder on disk — git repo or not — to start tracking it.
       </p>
@@ -6258,29 +6497,123 @@
       {/each}
     </ul>
     <div class="add-folder-footer">
-      <button
-        class="add-folder-cta add-folder-cta-compact"
-        on:click={pickAndAdd}
-        title="Pick a folder to register as a repo"
-      >
-        <svg
-          class="add-folder-icon"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+      <div class="add-folder-actions">
+        <button
+          class="add-folder-cta add-folder-cta-compact"
+          on:click={pickAndAdd}
+          title="Pick a folder to register as a repo"
         >
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          <path d="M12 11v6" />
-          <path d="M9 14h6" />
-        </svg>
-        <span>Add folder</span>
-      </button>
+          <svg
+            class="add-folder-icon"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <path d="M12 11v6" />
+            <path d="M9 14h6" />
+          </svg>
+          <span>Add folder</span>
+        </button>
+        <div class="import-sessions-anchor" class:flip-up={importFlipUp}>
+          <button
+            class="add-folder-cta add-folder-cta-compact"
+            on:click|stopPropagation={toggleImportSessions}
+            aria-haspopup="menu"
+            aria-expanded={importSessionsOpen}
+            title="Suggest folders to add based on detected AI agent sessions"
+          >
+            <svg
+              class="add-folder-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3v12" />
+              <path d="M7 10l5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+            <span>Import from sessions</span>
+          </button>
+          {#if importSessionsOpen}
+            <Popover variant="actions" extraClass="import-sessions-popover">
+              <svelte:fragment slot="head">
+                <strong>Folders from detected sessions</strong>
+                <span class="muted small">
+                  Pick a folder you've already been working in with an AI agent.
+                </span>
+              </svelte:fragment>
+              {#if importLoading}
+                <div class="import-empty">
+                  <LoadingSpinner size="0.85rem" label="Scanning sessions" />
+                  <span>scanning sessions…</span>
+                </div>
+              {:else if importError}
+                <div class="import-empty import-error">{importError}</div>
+              {:else if importSuggestions.length === 0}
+                <div class="import-empty muted">
+                  No new folders to suggest — every detected session's cwd is
+                  already in the dashboard.
+                </div>
+              {:else}
+                <ul class="import-list">
+                  {#each importSuggestions as sug (sug.path)}
+                    {@const busy = importAdding.has(sug.path)}
+                    <li>
+                      <button
+                        type="button"
+                        class="import-row"
+                        class:busy
+                        disabled={busy}
+                        on:click={() => addRepoFromSuggestion(sug.path)}
+                        title={`Add ${sug.path} to the dashboard`}
+                      >
+                        <span class="import-row-main">
+                          <span class="import-row-name">{sug.name}</span>
+                          <span class="import-row-path muted small">{sug.path}</span>
+                          {#if sug.repoUrl}
+                            <span class="import-row-url muted small">{sug.repoUrl}</span>
+                          {/if}
+                        </span>
+                        <span class="import-row-meta">
+                          <span class="import-row-count">
+                            <span class="import-row-agents-icons" aria-hidden="true">
+                              {#each sug.agents as agent (agent)}
+                                <AgentIcon {agent} size={14} />
+                              {/each}
+                            </span>
+                            <span>
+                              {sug.sessionCount} session{sug.sessionCount === 1 ? "" : "s"}
+                            </span>
+                          </span>
+                          <span class="import-row-time muted small">
+                            {formatRelativeTime(sug.lastActive)}
+                          </span>
+                          <span class="import-row-agents-names muted small">
+                            {sug.agents.join(", ")}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </Popover>
+          {/if}
+        </div>
+      </div>
       <p class="add-folder-sub muted small">
         Track another folder — git repo or plain directory.
       </p>

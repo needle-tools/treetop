@@ -25,7 +25,12 @@ import {
   type FileDiffKind,
 } from "./git";
 import { $ } from "bun";
-import { detectAgents, agentsForWorktree } from "./agents";
+import {
+  detectAgents,
+  agentsForWorktree,
+  groupSessionsByFolder,
+  type FolderSuggestion,
+} from "./agents";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats, parseSessionFile } from "./sessions";
 import { serveImage } from "./images";
@@ -1138,6 +1143,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },
           { method: "GET", path: "/api/repos", description: "NDJSON stream of registered repos with their worktrees + detected agents. First line is {type:'manifest',repos:[{id,path,name,addedAt,color}]} for skeleton rows; each subsequent line is {type:'repo',repo:{...full enriched repo...}} flushed as that repo's git fan-out completes. Stream ends with EOF (no explicit done marker)." },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
+          { method: "GET", path: "/api/sessions/folder-suggestions", description: "list folders the user could add to the dashboard, derived from detected sessions' cwd. Groups sessions by folder, filters already-registered repos + their worktrees, enriches with `git remote get-url origin`. Sorted newest-active first. Returns [{path,name,repoUrl?,sessionCount,lastActive,agents:string[],exists:true}]." },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
           { method: "POST", path: "/api/session/title", body: { source: "string", title: "string" }, description: "set a manual title for the session keyed by `source`. Empty title clears." },
@@ -1210,6 +1216,80 @@ const server = Bun.serve<TermWsData, never>({
           titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
         ),
       );
+    }
+
+    // GET /api/sessions/folder-suggestions — derive a list of folders the
+    // user could add to the dashboard by scanning every detected agent
+    // session's cwd. Sessions are grouped by folder; already-registered
+    // repos and their worktrees are filtered out. Each suggestion is
+    // enriched with the folder's `git remote get-url origin` (when the
+    // path is a git repo). Sorted newest-active first so the list reads
+    // as "where I was working most recently."
+    if (
+      url.pathname === "/api/sessions/folder-suggestions" &&
+      req.method === "GET"
+    ) {
+      const [agents, repos] = await Promise.all([
+        detectAgents(WORKSPACE_PATH),
+        workspace.listRepos(),
+      ]);
+      // Suppress already-registered repos AND every worktree they own,
+      // so the user doesn't see paths they've already added under a
+      // different surface (e.g. a `~/wt/<repo>/<branch>` worktree of an
+      // already-registered repo at `~/git/<repo>`).
+      const ci = process.platform === "win32";
+      const norm = (s: string) =>
+        ci ? resolve(s).toLowerCase() : resolve(s);
+      const suppress = new Set<string>();
+      for (const r of repos) suppress.add(norm(r.path));
+      await Promise.all(
+        repos.map(async (r) => {
+          try {
+            const wts = await listWorktrees(r.path);
+            for (const w of wts) suppress.add(norm(w.path));
+          } catch {
+            // Repo path missing / not a git repo — fine, the repo.path
+            // entry above is enough.
+          }
+        }),
+      );
+      const grouped = groupSessionsByFolder(agents, suppress);
+      // Enrich each suggestion with the remote origin URL when the
+      // folder is a git repo. `git -C <path> config --get
+      // remote.origin.url` returns empty / non-zero exit when there's
+      // no origin; we treat any failure as "no url."
+      const enriched: (FolderSuggestion & {
+        repoUrl?: string;
+        exists: boolean;
+      })[] = await Promise.all(
+        grouped.map(async (g) => {
+          let exists = false;
+          try {
+            const st = await fsStat(g.path);
+            exists = st.isDirectory();
+          } catch {
+            exists = false;
+          }
+          let repoUrl: string | undefined;
+          if (exists) {
+            try {
+              const out =
+                await $`git -C ${g.path} config --get remote.origin.url`
+                  .quiet()
+                  .text();
+              const trimmed = out.trim();
+              if (trimmed) repoUrl = trimmed;
+            } catch {
+              // Not a git repo / no remote — leave undefined.
+            }
+          }
+          return { ...g, repoUrl, exists };
+        }),
+      );
+      // Drop suggestions whose folder no longer exists on disk — the
+      // user can't add a path that isn't there.
+      const visible = enriched.filter((e) => e.exists);
+      return json(visible);
     }
 
     if (url.pathname === "/api/session/title" && req.method === "POST") {

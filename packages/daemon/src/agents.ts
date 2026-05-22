@@ -1136,3 +1136,78 @@ export function agentsForWorktree(
     })
     .sort((a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive));
 }
+
+/**
+ * A folder the user might want to add to the dashboard, derived from the
+ * cwd of a detected agent session. Groups every session that ran in the
+ * same cwd into a single suggestion with the rolled-up count of sessions
+ * and the most recent activity timestamp.
+ *
+ * `repoUrl` and `alreadyRegistered` are NOT computed here — they're a
+ * job for the route handler that has access to git + the workspace's
+ * repo list. This helper stays pure for testability.
+ */
+export interface FolderSuggestion {
+  path: string;
+  name: string;
+  sessionCount: number;
+  lastActive: string;
+  agents: AgentKind[];
+}
+
+/**
+ * Group sessions by their resolved cwd and produce one suggestion per
+ * distinct folder. Sessions with no cwd are skipped. Folders whose
+ * normalised path is in `suppress` (already-registered repos and their
+ * worktrees) are filtered out. Result is sorted newest-active first.
+ *
+ * Case-insensitive comparison on Windows; case-sensitive on Unix.
+ */
+export function groupSessionsByFolder(
+  sessions: AgentSession[],
+  suppress: Set<string> = new Set(),
+): FolderSuggestion[] {
+  // Group by normalised path so windows c:\ === C:\.
+  const byKey = new Map<
+    string,
+    {
+      path: string;
+      sessions: AgentSession[];
+      agents: Set<AgentKind>;
+      lastActive: string;
+    }
+  >();
+  for (const s of sessions) {
+    if (!s.cwd) continue;
+    const resolved = resolve(s.cwd);
+    const key = normCase(resolved);
+    if (suppress.has(key)) continue;
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = {
+        path: resolved,
+        sessions: [],
+        agents: new Set(),
+        lastActive: s.lastActive,
+      };
+      byKey.set(key, entry);
+    }
+    entry.sessions.push(s);
+    entry.agents.add(s.agent);
+    if (Date.parse(s.lastActive) > Date.parse(entry.lastActive)) {
+      entry.lastActive = s.lastActive;
+    }
+  }
+  const out: FolderSuggestion[] = [];
+  for (const e of byKey.values()) {
+    out.push({
+      path: e.path,
+      name: e.path.split(sep).filter(Boolean).pop() ?? e.path,
+      sessionCount: e.sessions.length,
+      lastActive: e.lastActive,
+      agents: [...e.agents].sort(),
+    });
+  }
+  out.sort((a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive));
+  return out;
+}

@@ -20,6 +20,7 @@ import {
   scanCodex,
   scanCopilot,
   scanImported,
+  groupSessionsByFolder,
   type AgentSession,
 } from "../src/agents";
 
@@ -1109,3 +1110,61 @@ describe("scanImported", () => {
 });
 
 
+describe("groupSessionsByFolder", () => {
+  function s(
+    cwd: string,
+    agent: AgentSession["agent"] = "claude",
+    lastActive = "2026-05-12T01:00:00Z",
+  ): AgentSession {
+    return { agent, cwd: resolve(cwd), lastActive, source: "" };
+  }
+
+  test("groups multiple sessions sharing a cwd into one suggestion", () => {
+    const sessions = [
+      s("/repo/a", "claude", "2026-05-12T01:00:00Z"),
+      s("/repo/a", "codex", "2026-05-12T02:00:00Z"),
+      s("/repo/a", "claude", "2026-05-12T00:30:00Z"),
+    ];
+    const result = groupSessionsByFolder(sessions);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.sessionCount).toBe(3);
+    expect(result[0]!.lastActive).toBe("2026-05-12T02:00:00Z");
+    expect(result[0]!.agents).toEqual(["claude", "codex"]);
+  });
+
+  test("skips sessions with empty cwd", () => {
+    const sessions = [
+      { agent: "claude", cwd: "", lastActive: "2026-05-12T01:00:00Z", source: "" } as AgentSession,
+      s("/repo/b"),
+    ];
+    const result = groupSessionsByFolder(sessions);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.path).toBe(resolve("/repo/b"));
+  });
+
+  test("filters out folders in the suppress set", () => {
+    const sessions = [s("/repo/a"), s("/repo/b")];
+    const suppress = new Set<string>([
+      process.platform === "win32"
+        ? resolve("/repo/a").toLowerCase()
+        : resolve("/repo/a"),
+    ]);
+    const result = groupSessionsByFolder(sessions, suppress);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.path).toBe(resolve("/repo/b"));
+  });
+
+  test("sorts suggestions newest-active first", () => {
+    const sessions = [
+      s("/repo/older", "claude", "2026-05-12T00:00:00Z"),
+      s("/repo/newer", "claude", "2026-05-12T05:00:00Z"),
+      s("/repo/middle", "claude", "2026-05-12T02:00:00Z"),
+    ];
+    const result = groupSessionsByFolder(sessions);
+    expect(result.map((r) => r.name)).toEqual(["newer", "middle", "older"]);
+  });
+
+  test("returns empty when no sessions", () => {
+    expect(groupSessionsByFolder([])).toEqual([]);
+  });
+});
