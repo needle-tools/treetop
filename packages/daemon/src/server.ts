@@ -2463,6 +2463,21 @@ const server = Bun.serve<TermWsData, never>({
           { status: 409 },
         );
       }
+      // Seed the manualTitle store with the sender's title so the
+      // session-column header shows it without the user having to
+      // re-name. The session list / activity popover already read
+      // wt.agents[].title (which scanImported pulls from the
+      // sidecar), but SessionHeader reads from /api/session's
+      // manualTitle — without this the header showed the
+      // "Name this session…" placeholder for imported sessions.
+      // No-op when manifest.title is empty.
+      if (result.manifest.title) {
+        try {
+          await workspace.setSessionTitle(result.importedPath, result.manifest.title);
+        } catch {
+          // best-effort
+        }
+      }
       await events.append({
         type: "session_imported",
         actor: "user",
