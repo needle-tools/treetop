@@ -1,4 +1,4 @@
-import { join, resolve, normalize, sep } from "node:path";
+import { join, resolve, normalize, sep, dirname } from "node:path";
 import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -132,6 +132,10 @@ const UI_DIR = ((): string | null => {
   if (process.env.SUPERGIT_UI_DIR) {
     return resolve(process.cwd(), process.env.SUPERGIT_UI_DIR);
   }
+  // Compiled binary: look for ui/ next to the executable.
+  const exeAdj = resolve(dirname(process.execPath), "ui");
+  if (existsSync(exeAdj)) return exeAdj;
+  // Dev / uncompiled: sibling workspace package.
   const sibling = resolve(import.meta.dir, "../../ui/dist");
   return existsSync(sibling) ? sibling : null;
 })();
@@ -4669,6 +4673,26 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    // ── UI preferences (shared across browser + native app) ──────────
+
+    if (url.pathname === "/api/prefs" && req.method === "GET") {
+      return json(await workspace.getPrefs());
+    }
+
+    if (url.pathname === "/api/prefs" && req.method === "PATCH") {
+      const body = await req.json().catch(() => null);
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return json({ error: "body must be a JSON object" }, { status: 400 });
+      }
+      const patch: Record<string, string | null> = {};
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (v === null) patch[k] = null;
+        else if (typeof v === "string") patch[k] = v;
+      }
+      const updated = await workspace.patchPrefs(patch);
+      return json(updated);
     }
 
     if (url.pathname === "/api/notes" && req.method === "GET") {

@@ -13,6 +13,7 @@
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
     "build": "cd packages/ui && bun run build",
+    "build:native": "bun run scripts/build-native.ts",
     "start": "bun run build && bun run start.ts"
   },
   "devDependencies": {

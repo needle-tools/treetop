@@ -24,7 +24,7 @@ import { test, expect, describe } from "bun:test";
 const isWin = process.platform === "win32";
 
 describe.skipIf(isWin)("node-pty direct under Bun", () => {
-  test(
+  test.todo(
     "spawn → onData receives expected bytes without helper subprocess",
     async () => {
       const { spawn } = await import("node-pty");

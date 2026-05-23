@@ -125,6 +125,7 @@ interface ReposFile {
 
 const REPOS_FILE = "repos.json";
 const SESSION_TITLES_FILE = "session-titles.json";
+const PREFS_FILE = "prefs.json";
 
 async function resolveGitToplevel(dir: string): Promise<string> {
   try {
@@ -567,5 +568,32 @@ export class Workspace {
       join(this.path, REPOS_FILE),
       JSON.stringify(payload, null, 2),
     );
+  }
+
+  // ── UI preferences (shared across all clients) ───────────────────
+
+  async getPrefs(): Promise<Record<string, string>> {
+    try {
+      const raw = await readFile(join(this.path, PREFS_FILE), "utf-8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "string") out[k] = v;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  async patchPrefs(patch: Record<string, string | null>): Promise<Record<string, string>> {
+    const current = await this.getPrefs();
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete current[k];
+      else current[k] = v;
+    }
+    await writeFile(join(this.path, PREFS_FILE), JSON.stringify(current, null, 2));
+    return current;
   }
 }

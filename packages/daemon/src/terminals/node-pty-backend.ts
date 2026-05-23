@@ -8,7 +8,7 @@
  */
 
 import { spawn as bunSpawn, type Subprocess } from "bun";
-import { resolve as pathResolve } from "node:path";
+import { resolve as pathResolve, dirname as pathDirname } from "node:path";
 import { existsSync, chmodSync, constants as fsConstants } from "node:fs";
 import type {
   PtyBackend,
@@ -146,6 +146,13 @@ function fixSpawnHelperBit() {
     ? `darwin-${process.arch}`
     : `linux-${process.arch}`;
   const candidates = [
+    // Compiled binary: prebuilds live next to the executable.
+    pathResolve(
+      pathDirname(process.execPath),
+      "node-pty-prebuilds",
+      platform,
+      "spawn-helper",
+    ),
     pathResolve(
       import.meta.dir,
       "../../../../node_modules/node-pty/prebuilds",
@@ -177,6 +184,10 @@ export class NodePtyBackend implements PtyBackend {
   private stdoutCarry = "";
 
   private helperPath(): string {
+    // Compiled binary: helper.mjs lives next to the executable.
+    const exeAdj = pathResolve(pathDirname(process.execPath), "helper.mjs");
+    if (existsSync(exeAdj)) return exeAdj;
+    // Dev / uncompiled: same directory as this source file.
     return pathResolve(import.meta.dir, "helper.mjs");
   }
 

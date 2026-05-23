@@ -121,6 +121,7 @@
   import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
   import StickyNote, { type NoteShape } from "./StickyNote.svelte";
   import { notesCountByAnchor, notesAll } from "./notes-counts";
+  import { getDaemonKV } from "./daemon-kv";
 
   /** Bumped by App.svelte on any SSE `change` event so the layer
    *  refetches if a note was created/updated/deleted via another tab
@@ -244,13 +245,13 @@
 
   function loadOffsets(): void {
     try {
-      const raw = localStorage.getItem(OFFSETS_KEY);
+      const raw = getDaemonKV().getItem(OFFSETS_KEY);
       if (raw) offsets = JSON.parse(raw) ?? {};
     } catch {
       offsets = {};
     }
     try {
-      const raw = localStorage.getItem(Z_KEY);
+      const raw = getDaemonKV().getItem(Z_KEY);
       if (raw) zOrder = JSON.parse(raw) ?? [];
     } catch {
       zOrder = [];
@@ -258,12 +259,12 @@
   }
   function saveOffsets(): void {
     try {
-      localStorage.setItem(OFFSETS_KEY, JSON.stringify(offsets));
+      getDaemonKV().setItem(OFFSETS_KEY, JSON.stringify(offsets));
     } catch {}
   }
   function saveZ(): void {
     try {
-      localStorage.setItem(Z_KEY, JSON.stringify(zOrder));
+      getDaemonKV().setItem(Z_KEY, JSON.stringify(zOrder));
     } catch {}
   }
 

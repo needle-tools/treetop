@@ -119,16 +119,76 @@ fires, buffer stays empty, test times out after 2s. The
 helper-subprocess workaround remains load-bearing. Re-run this test
 when bumping Bun — it's the canary for collapsing the architecture.
 
-## Recommended sequencing (if/when we commit)
+## Spike results (2026-05-23)
 
-1. Keep the helper subprocess. The smoke test confirms we have to.
-2. Decide windowing model: browser-tab (path A) vs native window
+**`bun build --compile` works out of the box.** Zero source changes
+needed for the compile itself. The daemon (63 modules) compiles to a
+61MB Mach-O arm64 binary in <1s.
+
+### What was done
+
+Source changes (minimal, backwards-compatible with dev mode):
+- `server.ts`: UI_DIR resolution now checks
+  `dirname(process.execPath)/ui` before the existing
+  `import.meta.dir`-based sibling check. In a compiled binary,
+  `import.meta.dir` is `/$bunfs/root` (Bun's virtual FS) so the
+  sibling check never hits; the exe-adjacent check finds the `ui/`
+  directory we ship next to the binary.
+- `node-pty-backend.ts`: `helperPath()` now checks
+  `dirname(process.execPath)/helper.mjs` first. Same for
+  `fixSpawnHelperBit()` which checks `node-pty-prebuilds/` next to
+  the binary before the existing `node_modules/` paths.
+
+Build script: `scripts/build-native.ts` (run via `bun run build:native`):
+1. Builds the Svelte SPA.
+2. Compiles the daemon to a single binary.
+3. Copies `ui/`, `helper.mjs`, and `node-pty` (current platform's
+   prebuilds only) into `build/supergit-native/`.
+4. Runs a smoke test: launches the binary on a temp port, curls the
+   API + UI, asserts both respond.
+
+Output layout:
+```
+build/supergit-native/       (63MB total for darwin-arm64)
+├── supergit                  61MB compiled binary
+├── ui/                       ~1MB SPA dist
+├── helper.mjs                node-pty sidecar (runs under Node)
+├── node-pty-prebuilds/       exe-adjacent prebuilds
+│   └── darwin-arm64/
+│       ├── pty.node
+│       └── spawn-helper
+└── node_modules/node-pty/    for Node's module resolution in helper.mjs
+    ├── package.json
+    ├── lib/
+    └── prebuilds/darwin-arm64/
+```
+
+### Gotcha found during spike
+
+`SUPERGIT_UI_DIR` is set in the current shell by the prod daemon's env.
+When the compiled binary inherits that env, it skips exe-adjacent
+detection and serves from the prod path. The build script's smoke test
+strips all `SUPERGIT_*` env vars to test the compiled path correctly.
+Real users won't hit this since they won't have `SUPERGIT_UI_DIR` set
+globally — it only matters for developers who also run prod locally.
+
+### Bun embedded files — considered and rejected
+
+Bun's `Bun.embeddedFiles` API could theoretically embed the SPA into
+the binary itself (no adjacent `ui/` directory). However, directory
+embedding has reported bugs (Oct 2025–Feb 2026, oven-sh/bun#23852),
+and we need to ship adjacent files anyway (helper.mjs + node-pty),
+so there's no win from embedding just the UI.
+
+## Recommended sequencing
+
+1. ✅ **DONE** — Bundling spike. `bun build --compile` works, smoke
+   test passes, path resolution is backwards-compatible.
+2. Keep the helper subprocess. The node-pty-direct smoke test confirms
+   Bun 1.3.13 still can't host PTYs in-process.
+3. Decide windowing model: browser-tab (path A) vs native window
    (path B / Electrobun). User leans toward B because it removes the
    URL-memorability problem entirely.
-3. Either way, first deliverable is the bundling story: embed UI
-   `dist/`, ship node-pty prebuilts per platform, figure out app
-   support dir for workspace state. Solve this once; both paths reuse
-   it.
 4. Path B specifically: prototype Electrobun with the existing daemon
    wired up; the daemon code shouldn't need substantive changes.
 5. Signing / notarisation / installer / auto-update — last, per platform.
