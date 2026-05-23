@@ -229,6 +229,15 @@ export const ICONS: Record<string, IconDef> = {
       <path d="M8 13a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6h-2.2v-3h-3.6v3H8z" fill="#29C0E5"/>
     `,
   },
+
+  // ---- UI chrome -------------------------------------------------------
+  pin: {
+    paths: [
+      "M9 4v6l-2 4v2h10v-2l-2-4V4",
+      "M12 16v5",
+      "M8 4h8",
+    ],
+  },
 };
 
 export function iconFor(key: string | null | undefined): IconDef | null {

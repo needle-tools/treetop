@@ -16,6 +16,7 @@
   import Popover from "./Popover.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import { requestSessionFocus } from "./session-focus-store";
+  import { ICONS } from "./icons";
 
   /** Which agent's popover is currently visible — either from hover
    *  (temporary) or from a click (pinned). Only one at a time. */
@@ -36,7 +37,9 @@
     if (pinnedAgent === agent) return;
     if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
     hoverCloseTimer = setTimeout(() => {
-      if (pinnedAgent !== agent) openAgent = null;
+      // If something is pinned, revert to showing the pinned agent's
+      // popover rather than closing everything. Otherwise close.
+      openAgent = pinnedAgent;
       hoverCloseTimer = null;
     }, 300);
   }
@@ -54,8 +57,10 @@
   function handleDocClick(e: MouseEvent): void {
     const target = e.target as HTMLElement | null;
     if (!target?.closest?.(".agent-usage-anchor")) {
-      pinnedAgent = null;
-      openAgent = null;
+      // Don't close a pinned popover on outside-click — only icon
+      // clicks (same icon to unpin, or different icon to switch)
+      // dismiss a pin. Hover-only popovers (no pin) still close.
+      if (!pinnedAgent) openAgent = null;
     }
   }
 
@@ -534,6 +539,26 @@
           >
             {hasLiveData(agent) ? "live" : "local"}
           </span>
+          {#if pinnedAgent === agent}
+            <button
+              type="button"
+              class="usage-pin-btn"
+              aria-label="Unpin this popover"
+              on:click|stopPropagation={() => { pinnedAgent = null; openAgent = null; }}
+            >
+              <svg
+                class="usage-pin-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                {#each ICONS.pin.paths ?? [] as d}<path {d}/>{/each}
+              </svg>
+            </button>
+          {/if}
         </div>
         </svelte:fragment>
 
@@ -847,6 +872,26 @@
   .usage-agent-link:hover {
     text-decoration: underline;
     text-underline-offset: 2px;
+  }
+  .usage-pin-btn {
+    margin-left: 0.3rem;
+    padding: 0.15rem;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    line-height: 1;
+    color: var(--text-muted);
+    transition: color 120ms ease;
+    border-radius: var(--radius-sm);
+  }
+  .usage-pin-btn:hover {
+    color: var(--text-1);
+    background: color-mix(in srgb, var(--text-1) 10%, transparent);
+  }
+  .usage-pin-icon {
+    width: 12px;
+    height: 12px;
+    display: block;
   }
   /* Source pill ("LIVE" / "LOCAL"). High contrast on both states —
      these read as small chips, so they need to be readable at a
