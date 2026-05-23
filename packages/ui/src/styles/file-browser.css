@@ -108,9 +108,8 @@
   background: color-mix(in srgb, var(--status-dirty) 12%, transparent);
 }
 .fb-copied-hint {
-  font-size: 0.58rem;
-  font-style: italic;
-  color: var(--text-muted);
+  font-size: 0.62rem;
+  color: var(--brand);
   flex-shrink: 0;
 }
 .fb-selected {
