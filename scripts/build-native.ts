@@ -139,7 +139,18 @@ const daemon = Bun.spawn([binaryPath], {
 
 let ok = true;
 try {
-  await Bun.sleep(3000);
+  // Wait for daemon to be ready (retries for up to 10s)
+  let ready = false;
+  for (let i = 0; i < 20 && !ready; i++) {
+    await Bun.sleep(500);
+    try {
+      const r = await fetch(`http://localhost:${smokePort}/api/debug/mem`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (r.ok) ready = true;
+    } catch {}
+  }
+  if (!ready) throw new Error("Daemon didn't respond after 10s");
 
   const mem = await fetch(`http://localhost:${smokePort}/api/debug/mem`, {
     signal: AbortSignal.timeout(3000),
