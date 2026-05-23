@@ -88,7 +88,7 @@ import {
   type PeerIdentity,
 } from "./peer-identity";
 import { PeerDiscovery } from "./peer-discovery";
-import { listWorkspaces, copySessionToWorkspace } from "./session-copy";
+import { copySessionToWorktree } from "./session-copy";
 import { disambiguatePeerLabels } from "./peer-registry";
 import {
   addIncomingMessage,
@@ -2803,55 +2803,50 @@ const server = Bun.serve<TermWsData, never>({
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    if (url.pathname === "/api/workspaces" && req.method === "GET") {
-      const ws = await listWorkspaces(workspace.path);
-      return json({ workspaces: ws });
+    if (url.pathname === "/api/copy-targets" && req.method === "GET") {
+      // List every worktree across every repo in this workspace as a
+      // potential "Copy to" target. The UI shows them grouped by repo
+      // and lets the user pick one; the session JSONL is rewritten
+      // from the source cwd to the target worktree path.
+      const repos = await workspace.listRepos();
+      const targets: Array<{
+        repoName: string;
+        repoPath: string;
+        worktrees: Array<{ path: string; branch: string }>;
+      }> = [];
+      for (const r of repos) {
+        const wts = await listWorktrees(r.path).catch(() => []);
+        targets.push({
+          repoName: r.name,
+          repoPath: r.path,
+          worktrees: wts.map((w) => ({ path: w.path, branch: w.branch })),
+        });
+      }
+      return json({ targets });
     }
 
-    if (url.pathname === "/api/sessions/copy-to-workspace" && req.method === "POST") {
+    if (url.pathname === "/api/sessions/copy-to" && req.method === "POST") {
       const body = (await req.json().catch(() => null)) as
-        | { source?: unknown; targetWorkspace?: unknown }
+        | { source?: unknown; targetCwd?: unknown }
         | null;
       const source = typeof body?.source === "string" ? body.source : "";
-      const targetWorkspace = typeof body?.targetWorkspace === "string" ? body.targetWorkspace : "";
-      if (!source || !targetWorkspace) {
-        return json({ error: "source and targetWorkspace required" }, { status: 400 });
+      const targetCwd = typeof body?.targetCwd === "string" ? body.targetCwd : "";
+      if (!source || !targetCwd) {
+        return json({ error: "source and targetCwd required" }, { status: 400 });
       }
-      // Resolve the source session's repo.
       const resolved = resolveSessionAgent(source);
       if (!resolved) {
         return json({ error: "unknown session source" }, { status: 404 });
       }
       const parsed = await parseSessionFile(resolved.agent, source);
-      const cwd = parsed.cwd ?? "";
-      if (!cwd) {
-        return json({ error: "session has no cwd — cannot identify its repo" }, { status: 400 });
+      const sourceCwd = parsed.cwd ?? "";
+      if (!sourceCwd) {
+        return json({ error: "session has no cwd — cannot rewrite paths" }, { status: 400 });
       }
-      const repos = await workspace.listRepos();
-      const matchesPrefix = (p: string) =>
-        cwd === p || cwd.startsWith(`${p}/`) || cwd.startsWith(`${p}\\`);
-      let repo: typeof repos[number] | undefined;
-      for (const r of repos) {
-        if (matchesPrefix(r.path)) { repo = r; break; }
-        const wts = await listWorktrees(r.path).catch(() => []);
-        if (wts.find((w) => matchesPrefix(w.path))) { repo = r; break; }
-      }
-      if (!repo) {
-        return json(
-          { error: `session cwd "${cwd}" is not inside any known repo` },
-          { status: 400 },
-        );
-      }
-      const remotes = await listRemotes(repo.path);
-      const remote = remotes[0]?.url ?? "";
-      if (!remote) {
-        return json({ error: "repo has no git remote" }, { status: 400 });
-      }
-      const result = await copySessionToWorkspace({
+      const result = await copySessionToWorktree({
         source,
-        sourceRepoPath: repo.path,
-        sourceRemote: normalizeRemote(remote),
-        targetWorkspaceDir: targetWorkspace,
+        sourceCwd,
+        targetCwd,
       });
       if (!result.ok) {
         return json({ error: result.error }, { status: 409 });

@@ -1,12 +1,17 @@
 <script lang="ts">
   import { activeCopy, closeCopy } from "./copy-session-dialog";
 
-  interface WorkspaceInfo {
-    name: string;
+  interface Worktree {
     path: string;
+    branch: string;
+  }
+  interface RepoGroup {
+    repoName: string;
+    repoPath: string;
+    worktrees: Worktree[];
   }
 
-  let workspaces: WorkspaceInfo[] = [];
+  let targets: RepoGroup[] = [];
   let loading = false;
   let copying = false;
   let result:
@@ -19,35 +24,35 @@
     lastSource = $activeCopy.source;
     copying = false;
     result = { kind: "idle" };
-    void loadWorkspaces();
+    void loadTargets();
   }
   $: if (!$activeCopy) lastSource = null;
 
-  async function loadWorkspaces() {
+  async function loadTargets() {
     loading = true;
     try {
-      const res = await fetch("/api/workspaces");
+      const res = await fetch("/api/copy-targets");
       if (!res.ok) return;
-      const body = (await res.json()) as { workspaces?: WorkspaceInfo[] };
-      workspaces = body.workspaces ?? [];
+      const body = (await res.json()) as { targets?: RepoGroup[] };
+      targets = body.targets ?? [];
     } catch {
-      workspaces = [];
+      targets = [];
     } finally {
       loading = false;
     }
   }
 
-  async function copyTo(ws: WorkspaceInfo) {
+  async function copyTo(wt: Worktree) {
     if (!$activeCopy || copying) return;
     copying = true;
     result = { kind: "idle" };
     try {
-      const res = await fetch("/api/sessions/copy-to-workspace", {
+      const res = await fetch("/api/sessions/copy-to", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source: $activeCopy.source,
-          targetWorkspace: ws.path,
+          targetCwd: wt.path,
         }),
       });
       const body = (await res.json().catch(() => null)) as
@@ -57,16 +62,18 @@
         result = { kind: "error", message: body?.error ?? `HTTP ${res.status}` };
         return;
       }
-      result = {
-        kind: "ok",
-        copiedTo: body.copiedTo ?? ws.path,
-      };
+      result = { kind: "ok", copiedTo: body.copiedTo ?? wt.path };
       setTimeout(() => closeCopy(), 1500);
     } catch (e) {
       result = { kind: "error", message: e instanceof Error ? e.message : String(e) };
     } finally {
       copying = false;
     }
+  }
+
+  function shortPath(wt: Worktree): string {
+    const parts = wt.path.replace(/\\/g, "/").split("/");
+    return parts.slice(-2).join("/");
   }
 
   function onKeydown(ev: KeyboardEvent) {
@@ -96,42 +103,45 @@
     >
       <h2 id="copy-title" class="copy-title">Copy to</h2>
       <p class="copy-blurb">
-        Copy this session to another workspace so you can resume it
-        there. Paths are rewritten automatically if the repo lives at
-        a different location.
+        Copy this session to another worktree so you can resume it
+        there. Paths are rewritten automatically.
       </p>
 
       {#if loading}
-        <p class="copy-loading">Loading workspaces…</p>
-      {:else if workspaces.length === 0}
-        <p class="copy-empty">
-          No other workspaces found. Create a workspace under
-          <code>~/supergit/workspaces/</code> and add the same repo
-          to it, then this dialog will list it here.
-        </p>
+        <p class="copy-loading">Loading…</p>
+      {:else if targets.length === 0}
+        <p class="copy-empty">No repos found in this workspace.</p>
       {:else}
-        <ul class="copy-list">
-          {#each workspaces as ws (ws.path)}
-            <li>
-              <button
-                type="button"
-                class="copy-ws-btn"
-                disabled={copying}
-                on:click={() => copyTo(ws)}
-              >
-                <span class="copy-ws-name">{ws.name}</span>
-                <span class="copy-ws-path">{ws.path}</span>
-              </button>
-            </li>
+        <div class="copy-targets">
+          {#each targets as group (group.repoPath)}
+            <div class="copy-group">
+              <span class="copy-repo-name">{group.repoName}</span>
+              <ul class="copy-wt-list">
+                {#each group.worktrees as wt (wt.path)}
+                  <li>
+                    <button
+                      type="button"
+                      class="copy-wt-btn"
+                      disabled={copying}
+                      on:click={() => copyTo(wt)}
+                      title={wt.path}
+                    >
+                      <span class="copy-wt-branch">{wt.branch || shortPath(wt)}</span>
+                      <span class="copy-wt-path">{shortPath(wt)}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            </div>
           {/each}
-        </ul>
+        </div>
       {/if}
 
       {#if result.kind === "error"}
         <p class="copy-result copy-err" role="alert">{result.message}</p>
       {:else if result.kind === "ok"}
         <p class="copy-result copy-ok">
-          Copied. You can resume this session from the target workspace.
+          Copied. You can resume this session from that worktree now.
         </p>
       {/if}
 
@@ -158,6 +168,8 @@
   .copy-dialog {
     min-width: 380px;
     max-width: min(520px, 92vw);
+    max-height: 80vh;
+    overflow-y: auto;
     background: var(--surface-1);
     color: var(--text, inherit);
     border: 1px solid var(--surface-2);
@@ -184,30 +196,38 @@
     margin: 0;
     font-size: 0.8rem;
     color: var(--text-muted);
-    padding: 0.5rem 0.6rem;
-    background: color-mix(in srgb, var(--surface-2) 25%, transparent);
-    border-radius: 4px;
-    line-height: 1.4;
   }
-  .copy-empty code {
-    font-size: 0.78rem;
+  .copy-targets {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
   }
-  .copy-list {
+  .copy-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .copy-repo-name {
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding-left: 0.1rem;
+  }
+  .copy-wt-list {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    max-height: 240px;
-    overflow-y: auto;
+    gap: 0.25rem;
   }
-  .copy-ws-btn {
+  .copy-wt-btn {
     display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
     width: 100%;
-    padding: 0.55rem 0.65rem;
+    padding: 0.4rem 0.6rem;
     border-radius: 4px;
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
     background: color-mix(in srgb, var(--surface-2) 35%, transparent);
@@ -216,20 +236,20 @@
     cursor: pointer;
     text-align: left;
   }
-  .copy-ws-btn:hover:not(:disabled) {
+  .copy-wt-btn:hover:not(:disabled) {
     background: color-mix(in srgb, var(--surface-2) 60%, transparent);
     border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
   }
-  .copy-ws-btn:disabled {
+  .copy-wt-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
-  .copy-ws-name {
-    font-weight: 600;
-    font-size: 0.85rem;
+  .copy-wt-branch {
+    font-weight: 500;
+    font-size: 0.83rem;
     color: var(--text-1, inherit);
   }
-  .copy-ws-path {
+  .copy-wt-path {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 0.7rem;
     color: var(--text-muted);
