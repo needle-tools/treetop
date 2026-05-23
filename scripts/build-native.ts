@@ -1,77 +1,83 @@
 #!/usr/bin/env bun
 /**
- * Build a self-contained supergit native binary + support files.
+ * Build supergit as a macOS .app bundle with a native window.
  *
- * Output layout:
- *   build/supergit-native/
- *   ├── supergit               compiled Bun binary
- *   ├── ui/                    SPA dist
- *   ├── helper.mjs             node-pty sidecar
- *   └── node_modules/node-pty/ runtime JS + current-platform prebuilds
+ * Output:
+ *   build/Supergit.app/Contents/
+ *   ├── MacOS/Supergit           Swift launcher (WKWebView + daemon lifecycle)
+ *   ├── Resources/
+ *   │   ├── supergit             compiled Bun daemon binary
+ *   │   ├── ui/                  SPA dist
+ *   │   ├── helper.mjs           node-pty sidecar
+ *   │   ├── node-pty-prebuilds/  native prebuilds (current platform)
+ *   │   └── node_modules/node-pty/  for Node module resolution
+ *   └── Info.plist
+ *
+ * Also produces build/supergit-native/ (the flat layout) for headless use.
  */
 
 import { $ } from "bun";
 import { resolve, join } from "node:path";
-import { rm, mkdir, cp, readdir } from "node:fs/promises";
+import { rm, mkdir, cp, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
 const ROOT = resolve(import.meta.dir, "..");
-const OUT = resolve(ROOT, "build", "supergit-native");
+const BUILD = resolve(ROOT, "build");
+const FLAT = join(BUILD, "supergit-native");
+const APP = join(BUILD, "Supergit.app");
+const CONTENTS = join(APP, "Contents");
+const MACOS = join(CONTENTS, "MacOS");
+const RESOURCES = join(CONTENTS, "Resources");
 const platform = `${process.platform}-${process.arch}`;
 
 console.log(`\n=== supergit native build (${platform}) ===\n`);
 
-// 1. Build UI
-console.log("1/4  Building UI…");
+// ── 1. Build UI ──────────────────────────────────────────────────────
+console.log("1/6  Building UI…");
 await $`cd ${resolve(ROOT, "packages/ui")} && bun run build`.quiet();
 const distDir = resolve(ROOT, "packages/ui/dist");
 if (!existsSync(distDir)) {
-  console.error("   ✗ UI dist not found after build");
+  console.error("     ✗ UI dist not found after build");
   process.exit(1);
 }
 console.log("     ✓ UI built");
 
-// 2. Compile binary
-console.log("2/4  Compiling daemon…");
-const binaryPath = join(OUT, "supergit");
-await rm(OUT, { recursive: true, force: true });
-await mkdir(OUT, { recursive: true });
+// ── 2. Compile daemon binary ─────────────────────────────────────────
+console.log("2/6  Compiling daemon…");
+await rm(FLAT, { recursive: true, force: true });
+await rm(APP, { recursive: true, force: true });
+await mkdir(FLAT, { recursive: true });
+const binaryPath = join(FLAT, "supergit");
 await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${binaryPath}`.quiet();
-console.log("     ✓ Binary compiled");
+console.log("     ✓ Daemon binary compiled");
 
-// 3. Copy support files
-console.log("3/4  Copying support files…");
+// ── 3. Copy support files into flat layout ───────────────────────────
+console.log("3/6  Copying support files…");
 
-// UI dist
-await cp(distDir, join(OUT, "ui"), { recursive: true });
+await cp(distDir, join(FLAT, "ui"), { recursive: true });
 
-// helper.mjs
 await cp(
   resolve(ROOT, "packages/daemon/src/terminals/helper.mjs"),
-  join(OUT, "helper.mjs"),
+  join(FLAT, "helper.mjs"),
 );
 
-// node-pty: lib + current-platform prebuilds only
 const ptySrc = resolve(ROOT, "node_modules/node-pty");
-const ptyDst = join(OUT, "node_modules", "node-pty");
+const ptyDst = join(FLAT, "node_modules", "node-pty");
 await mkdir(join(ptyDst, "lib"), { recursive: true });
 await cp(join(ptySrc, "package.json"), join(ptyDst, "package.json"));
 await cp(join(ptySrc, "lib"), join(ptyDst, "lib"), { recursive: true });
 
-// Only copy prebuilds for the current platform
 const prebuildSrc = join(ptySrc, "prebuilds", platform);
 if (existsSync(prebuildSrc)) {
   const prebuildDst = join(ptyDst, "prebuilds", platform);
   await mkdir(prebuildDst, { recursive: true });
   await cp(prebuildSrc, prebuildDst, { recursive: true });
 
-  // Also copy into the exe-adjacent location the backend checks first
-  const exeAdjDst = join(OUT, "node-pty-prebuilds", platform);
+  const exeAdjDst = join(FLAT, "node-pty-prebuilds", platform);
   await mkdir(exeAdjDst, { recursive: true });
   await cp(prebuildSrc, exeAdjDst, { recursive: true });
 }
 
-// Strip test files from the copied lib
 for (const f of await readdir(join(ptyDst, "lib"))) {
   if (f.endsWith(".test.js") || f.endsWith(".test.js.map") || f.endsWith(".js.map")) {
     await rm(join(ptyDst, "lib", f));
@@ -80,11 +86,73 @@ for (const f of await readdir(join(ptyDst, "lib"))) {
 
 console.log("     ✓ Support files copied");
 
-// 4. Smoke test
-const smokePort = "17779";
-console.log(`4/5  Smoke test on :${smokePort}…`);
+// ── 4. Compile Swift launcher ────────────────────────────────────────
+console.log("4/6  Compiling Swift launcher…");
+const swiftSrc = resolve(ROOT, "scripts/Supergit.swift");
+const launcherBin = join(MACOS, "Supergit");
+await mkdir(MACOS, { recursive: true });
+await $`swiftc -O -o ${launcherBin} ${swiftSrc} -framework Cocoa -framework WebKit`.quiet();
+console.log("     ✓ Swift launcher compiled");
 
-// Clear inherited env that would override path resolution
+// ── 5. Assemble .app bundle ──────────────────────────────────────────
+console.log("5/6  Assembling .app bundle…");
+
+await mkdir(RESOURCES, { recursive: true });
+
+// Copy everything from flat layout into Resources
+await cp(join(FLAT, "supergit"), join(RESOURCES, "supergit"));
+await cp(join(FLAT, "ui"), join(RESOURCES, "ui"), { recursive: true });
+await cp(join(FLAT, "helper.mjs"), join(RESOURCES, "helper.mjs"));
+await cp(join(FLAT, "node_modules"), join(RESOURCES, "node_modules"), { recursive: true });
+if (existsSync(join(FLAT, "node-pty-prebuilds"))) {
+  await cp(join(FLAT, "node-pty-prebuilds"), join(RESOURCES, "node-pty-prebuilds"), { recursive: true });
+}
+
+// Make the daemon binary executable
+await $`chmod +x ${join(RESOURCES, "supergit")}`.quiet();
+
+// Info.plist
+const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>Supergit</string>
+  <key>CFBundleIdentifier</key>
+  <string>tools.needle.supergit</string>
+  <key>CFBundleName</key>
+  <string>Supergit</string>
+  <key>CFBundleDisplayName</key>
+  <string>Supergit</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticTermination</key>
+  <false/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>`;
+await writeFile(join(CONTENTS, "Info.plist"), plist);
+
+console.log("     ✓ .app bundle assembled");
+
+// ── 6. Smoke test (headless, flat binary) ────────────────────────────
+const smokePort = "17779";
+console.log(`6/6  Smoke test on :${smokePort}…`);
+
 const cleanEnv: Record<string, string> = {};
 for (const [k, v] of Object.entries(process.env)) {
   if (k.startsWith("SUPERGIT_")) continue;
@@ -124,13 +192,13 @@ try {
   await daemon.exited;
 }
 
-// 5. Summary
-const { stdout: sizeOut } = await $`du -sh ${OUT}`.quiet();
-console.log(`5/5  Done!\n`);
-console.log(`  Output:  ${OUT}`);
-console.log(`  Size:    ${sizeOut.toString().trim().split("\t")[0]}`);
-console.log(`  Binary:  ${binaryPath}`);
-console.log(`\n  To run:  ${binaryPath}`);
-console.log(`  Or:      SUPERGIT_PORT=17777 ${binaryPath}\n`);
+// ── Summary ──────────────────────────────────────────────────────────
+const { stdout: flatSize } = await $`du -sh ${FLAT}`.quiet();
+const { stdout: appSize } = await $`du -sh ${APP}`.quiet();
+console.log(`\n  Done!\n`);
+console.log(`  Flat:    ${FLAT}  (${flatSize.toString().trim().split("\t")[0]})`);
+console.log(`  App:     ${APP}  (${appSize.toString().trim().split("\t")[0]})`);
+console.log(`\n  Double-click ${APP} or run:`);
+console.log(`    open ${APP}\n`);
 
 if (!ok) process.exit(1);
