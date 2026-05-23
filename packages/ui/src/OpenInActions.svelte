@@ -1079,7 +1079,6 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        class:cmd-running={cmdRunning}
         title={cmdRunning ? `Stop: ${target}` : linkTooltip(link)}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
@@ -1124,13 +1123,13 @@
         {:else if kind === "command"}
           {#if cmdRunning}
             <svg
-              class="open-in-icon cmd-stop-icon"
+              class="open-in-icon cmd-spinner"
               viewBox="0 0 24 24"
               width="13"
               height="13"
               aria-hidden="true"
             >
-              <rect x="6" y="6" width="12" height="12" rx="1" />
+              <circle cx="12" cy="12" r="9" />
             </svg>
           {:else}
             <svg
@@ -1748,17 +1747,17 @@
   .custom-link-input {
     min-width: 0;
   }
-  .custom-link-btn.cmd-running {
-    outline: 1px solid var(--brand, #4a9);
-    outline-offset: -1px;
-    animation: cmd-pulse 2s ease-in-out infinite;
+  .cmd-spinner {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.5;
+    stroke-dasharray: 42;
+    stroke-dashoffset: 12;
+    stroke-linecap: round;
+    animation: cmd-spin 0.8s linear infinite;
+    transform-origin: center;
   }
-  .cmd-stop-icon {
-    fill: var(--brand, #4a9);
-    stroke: none;
-  }
-  @keyframes cmd-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
+  @keyframes cmd-spin {
+    to { transform: rotate(360deg); }
   }
 </style>

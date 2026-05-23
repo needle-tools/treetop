@@ -2,8 +2,10 @@
   import SessionHeader from "./SessionHeader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
-  import { joinPath, formatSize, formatMtime, fetchDir, type FileEntry } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchGitStatus, type FileEntry } from "./file-browser-utils";
   import { ICONS } from "./icons";
+  import FileTreeNode from "./FileTreeNode.svelte";
+  import type { SessionMenuItem } from "./SessionMenu.svelte";
 
   export let wtPath: string;
   export let source: string;
@@ -19,6 +21,8 @@
   let error: string | null = null;
   let dirHistory: string[] = [];
   let selected: Set<string> = new Set();
+  let showDotfiles = true;
+  let gitStatusByDir: Record<string, Map<string, string>> = {};
 
   let savedExpandedPaths: string[] = [];
 
@@ -39,6 +43,7 @@
       if (Array.isArray(state.selected)) {
         selected = new Set(state.selected.filter((x: unknown): x is string => typeof x === "string"));
       }
+      if (typeof state.showDotfiles === "boolean") showDotfiles = state.showDotfiles;
     } catch {}
   }
 
@@ -51,6 +56,7 @@
         dirHistory,
         expanded: Object.keys(expanded),
         selected: [...selected],
+        showDotfiles,
       };
       getDaemonKV().setItem(KV_KEY, JSON.stringify(all));
     } catch {}
@@ -67,6 +73,9 @@
       entries = [];
     }
     loading = false;
+    fetchGitStatus(currentDir, wtPath).then((m) => {
+      gitStatusByDir = { ...gitStatusByDir, [currentDir]: m };
+    });
     if (savedExpandedPaths.length > 0) {
       const toRestore = savedExpandedPaths;
       savedExpandedPaths = [];
@@ -125,6 +134,9 @@
       try {
         const children = await fetchDir(fullPath);
         expanded = { ...expanded, [fullPath]: children };
+        fetchGitStatus(fullPath, wtPath).then((m) => {
+          gitStatusByDir = { ...gitStatusByDir, [fullPath]: m };
+        });
       } catch {}
     }
     persistState();
@@ -134,23 +146,15 @@
 
   function visibleFilePaths(): string[] {
     const paths: string[] = [];
-    for (const entry of entries) {
-      const fp = joinPath(currentDir, entry.name);
-      paths.push(fp);
-      const children = expanded[fp];
-      if (children) {
-        for (const child of children) {
-          const cp = joinPath(fp, child.name);
-          paths.push(cp);
-          const grandchildren = expanded[cp];
-          if (grandchildren) {
-            for (const gc of grandchildren) {
-              paths.push(joinPath(cp, gc.name));
-            }
-          }
-        }
+    function walk(items: FileEntry[], base: string) {
+      for (const entry of items) {
+        const fp = joinPath(base, entry.name);
+        paths.push(fp);
+        const children = expanded[fp];
+        if (children) walk(filterDot(children), fp);
       }
     }
+    walk(visibleEntries, currentDir);
     return paths;
   }
 
@@ -217,6 +221,7 @@
 
   let copied = false;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  let copiedPaths: Set<string> = new Set();
 
   function copyPaths() {
     const text = selected.size > 0
@@ -224,11 +229,46 @@
       : currentDir;
     void navigator.clipboard.writeText(text).then(() => {
       copied = true;
+      copiedPaths = new Set(selected);
       clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => { copied = false; }, 1200);
+      copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
     });
   }
 
+  function handleNodeDblClick(fullPath: string, type: string) {
+    if (type === "directory") {
+      navigateTo(fullPath);
+    } else {
+      const parts = fullPath.split("/");
+      const name = parts.pop()!;
+      const dir = parts.join("/");
+      openFile(name, dir);
+    }
+  }
+
+  function handleNodeToggleExpand(name: string, parentDir: string) {
+    toggleExpand(name, parentDir);
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    const meta = e.metaKey || e.ctrlKey;
+    if (meta && e.key === "c") {
+      e.preventDefault();
+      copyPaths();
+    } else if (meta && e.key === "a") {
+      e.preventDefault();
+      const all = visibleFilePaths();
+      selected = new Set(all);
+      persistState();
+    }
+  }
+
+  function filterDot(list: FileEntry[]): FileEntry[] {
+    if (showDotfiles) return list;
+    return list.filter((e) => !e.name.startsWith("."));
+  }
+
+  $: visibleEntries = showDotfiles ? entries : entries.filter((e) => !e.name.startsWith("."));
   $: selectedNames = [...selected].map((p) => p.split("/").pop() ?? p);
 
   loadPersistedState();
@@ -237,7 +277,8 @@
   $: displayName = currentDir.split("/").pop() || currentDir;
 </script>
 
-<div class="session file-browser">
+<!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+<div class="session file-browser" tabindex="0" on:keydown={handleKeydown}>
   <SessionHeader
     agent="files"
     agentLabel="files"
@@ -248,8 +289,17 @@
     canEnd={false}
     {onClose}
     {onDragStart}
-    lastActivityFallback="{entries.length} items"
+    lastActivityFallback="{visibleEntries.length} items"
     closeTitle="Close this file browser panel."
+    menuItems={[
+      {
+        kind: "action",
+        label: showDotfiles ? "Hide dotfiles" : "Show dotfiles",
+        icon: showDotfiles ? "●" : "○",
+        keepOpen: true,
+        onSelect: () => { showDotfiles = !showDotfiles; persistState(); },
+      },
+    ] satisfies SessionMenuItem[]}
   />
 
   <nav class="fb-breadcrumbs">
@@ -302,114 +352,19 @@
       <div class="fb-status muted small">Empty folder</div>
     {:else}
       <ul class="fb-list">
-        {#each entries as entry (entry.name)}
-          {@const fullPath = joinPath(currentDir, entry.name)}
-          <li>
-            <div
-              class="fb-row"
-              class:fb-selected={selected.has(fullPath)}
-              role="button"
-              tabindex="0"
-              on:click={(e) => handleSelect(fullPath, e)}
-              on:keydown={(e) => { if (e.key === "Enter") handleSelect(fullPath, e); }}
-              on:dblclick={() => {
-                if (entry.type === "directory") enterDir(entry.name);
-                else openFile(entry.name);
-              }}
-              title={entry.type === "directory"
-                ? "Click icon to expand, double-click to enter"
-                : "Click to select, double-click to open"}
-            >
-              {#if entry.type === "directory"}
-                <span
-                  class="fb-arrow fb-icon-clickable"
-                  role="button"
-                  tabindex="-1"
-                  on:click|stopPropagation={() => toggleExpand(entry.name)}
-                ><svg class="fb-tri" class:fb-tri-open={expanded[fullPath]} viewBox="0 0 8 8"><polygon points="2,1 7,4 2,7"/></svg></span>
-                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.folder.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-              {:else}
-                <span class="fb-arrow-spacer" aria-hidden="true"></span>
-                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-              {/if}
-              <span class="fb-name">{entry.name}</span>
-              <span class="fb-mtime muted">{formatMtime(entry.mtime)}</span>
-              <span class="fb-size muted">{entry.type === "directory" ? "" : formatSize(entry.size)}</span>
-            </div>
-            {#if entry.type === "directory" && expanded[fullPath]}
-              <ul class="fb-list fb-indent">
-                {#each expanded[fullPath] as child (child.name)}
-                  {@const childPath = joinPath(fullPath, child.name)}
-                  <li>
-                    <div
-                      class="fb-row"
-                      class:fb-selected={selected.has(childPath)}
-                      role="button"
-                      tabindex="0"
-                      on:click={(e) => handleSelect(childPath, e)}
-                      on:keydown={(e) => { if (e.key === "Enter") handleSelect(childPath, e); }}
-                      on:dblclick={() => {
-                        if (child.type === "directory") navigateTo(childPath);
-                        else openFile(child.name, fullPath);
-                      }}
-                      title={child.type === "directory"
-                        ? "Click icon to expand, double-click to enter"
-                        : "Click to select, double-click to open"}
-                    >
-                      {#if child.type === "directory"}
-                        <span
-                          class="fb-arrow fb-icon-clickable"
-                          role="button"
-                          tabindex="-1"
-                          on:click|stopPropagation={() => toggleExpand(child.name, fullPath)}
-                        ><svg class="fb-tri" class:fb-tri-open={expanded[childPath]} viewBox="0 0 8 8"><polygon points="2,1 7,4 2,7"/></svg></span>
-                        <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.folder.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-                      {:else}
-                        <span class="fb-arrow-spacer" aria-hidden="true"></span>
-                        <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-                      {/if}
-                      <span class="fb-name">{child.name}</span>
-                      <span class="fb-mtime muted">{formatMtime(child.mtime)}</span>
-                      <span class="fb-size muted">{child.type === "directory" ? "" : formatSize(child.size)}</span>
-                    </div>
-                    {#if child.type === "directory" && expanded[childPath]}
-                      <ul class="fb-list fb-indent">
-                        {#each expanded[childPath] as grandchild (grandchild.name)}
-                          {@const grandchildPath = joinPath(childPath, grandchild.name)}
-                          <li>
-                            <div
-                              class="fb-row"
-                              class:fb-selected={selected.has(grandchildPath)}
-                              role="button"
-                              tabindex="0"
-                              on:click={(e) => handleSelect(grandchildPath, e)}
-                              on:keydown={(e) => { if (e.key === "Enter") handleSelect(grandchildPath, e); }}
-                              on:dblclick={() => {
-                                if (grandchild.type === "directory") navigateTo(grandchildPath);
-                                else openFile(grandchild.name, childPath);
-                              }}
-                              title={grandchild.type === "directory"
-                                ? "Double-click to enter"
-                                : "Click to select, double-click to open"}
-                            >
-                              {#if grandchild.type === "directory"}
-                                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.folder.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-                              {:else}
-                                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
-                              {/if}
-                              <span class="fb-name">{grandchild.name}</span>
-                              <span class="fb-mtime muted">{formatMtime(grandchild.mtime)}</span>
-                              <span class="fb-size muted">{grandchild.type === "directory" ? "" : formatSize(grandchild.size)}</span>
-                            </div>
-                          </li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </li>
+        {#each visibleEntries as entry (entry.name)}
+          <FileTreeNode
+            {entry}
+            parentDir={currentDir}
+            {expanded}
+            {selected}
+            {copiedPaths}
+            {gitStatusByDir}
+            {showDotfiles}
+            onSelect={handleSelect}
+            onDblClick={handleNodeDblClick}
+            onToggleExpand={handleNodeToggleExpand}
+          />
         {/each}
       </ul>
       {#if loading}
@@ -536,102 +491,5 @@
   .fb-status {
     padding: 1rem;
     text-align: center;
-  }
-  .fb-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .fb-indent {
-    padding-left: 1.2rem;
-  }
-  .fb-row {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 0.15rem 0.6rem;
-    height: 1.45rem;
-    width: 100%;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--surface-2);
-    cursor: pointer;
-    text-align: left;
-    font-family: ui-monospace, monospace;
-    box-sizing: border-box;
-  }
-  .fb-row:hover {
-    background: color-mix(in srgb, var(--text-muted) 6%, var(--surface-1));
-  }
-  .fb-arrow-spacer {
-    flex-shrink: 0;
-    width: 0.7rem;
-  }
-  .fb-arrow {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 0.7rem;
-    cursor: pointer;
-    border-radius: 2px;
-    color: var(--text-faint);
-  }
-  .fb-arrow:hover {
-    color: var(--text-1);
-    background: var(--surface-3);
-  }
-  :global(.fb-tri) {
-    width: 0.5rem;
-    height: 0.5rem;
-    fill: currentColor;
-    transition: transform 0.15s ease-out;
-  }
-  :global(.fb-tri-open) {
-    transform: rotate(90deg);
-  }
-  .fb-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 0.85rem;
-    color: var(--text-faint);
-  }
-  .fb-icon :global(svg) {
-    width: 0.85rem;
-    height: 0.85rem;
-  }
-  .fb-name {
-    font-size: 0.72rem;
-    color: var(--text-1);
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .fb-mtime {
-    font-size: 0.62rem;
-    color: var(--text-faint);
-    font-family: ui-monospace, monospace;
-    flex-shrink: 0;
-    text-align: right;
-    min-width: 4rem;
-  }
-  .fb-size {
-    font-size: 0.62rem;
-    color: var(--text-muted);
-    font-family: ui-monospace, monospace;
-    flex-shrink: 0;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    min-width: 4rem;
-  }
-  .fb-selected {
-    background: color-mix(in srgb, var(--text-muted) 15%, var(--surface-1));
-  }
-  .fb-selected:hover {
-    background: color-mix(in srgb, var(--text-muted) 22%, var(--surface-1));
   }
 </style>

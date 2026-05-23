@@ -56,11 +56,11 @@ describe("/api/files", () => {
     }
   });
 
-  test("skips dotfiles and dot-directories", async () => {
+  test("includes dotfiles and dot-directories", async () => {
     const result = await fetchFiles(tmpDir);
     const names = result.entries.map((e) => e.name);
-    expect(names.includes(".hidden-dir")).toBe(false);
-    expect(names.includes(".gitignore")).toBe(false);
+    expect(names.includes(".hidden-dir")).toBe(true);
+    expect(names.includes(".gitignore")).toBe(true);
   });
 
   test("returns file sizes for files", async () => {

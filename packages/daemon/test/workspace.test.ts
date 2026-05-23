@@ -636,6 +636,22 @@ describe("Workspace", () => {
     });
   });
 
+  test("addCustomLink command with runMode internal round-trips through persistence", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "npm run dev",
+      cwd: "/abs/project",
+      runMode: "internal",
+      name: "Dev",
+    });
+    expect((link as any).runMode).toBe("internal");
+    const persisted = (await ws.listRepos())[0]!.customLinks?.[0];
+    expect(persisted).toEqual(link);
+    expect((persisted as any).runMode).toBe("internal");
+  });
+
   test("updateCustomLink can flip a URL link into a command link", async () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo("/tmp/foo");

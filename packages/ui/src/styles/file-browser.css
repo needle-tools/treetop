@@ -1,0 +1,121 @@
+.fb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fb-indent {
+  padding-left: 1.2rem;
+}
+.fb-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.6rem;
+  height: 1.45rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--surface-2);
+  cursor: pointer;
+  text-align: left;
+  font-family: ui-monospace, monospace;
+  box-sizing: border-box;
+  user-select: none;
+}
+.fb-row:hover {
+  background: color-mix(in srgb, var(--text-muted) 6%, var(--surface-1));
+}
+.fb-arrow-spacer {
+  flex-shrink: 0;
+  width: 0.7rem;
+}
+.fb-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 0.7rem;
+  cursor: pointer;
+  border-radius: 2px;
+  color: var(--text-faint);
+}
+.fb-arrow:hover {
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+.fb-tri {
+  width: 0.5rem;
+  height: 0.5rem;
+  fill: currentColor;
+  transition: transform 0.15s ease-out;
+}
+.fb-tri-open {
+  transform: rotate(90deg);
+}
+.fb-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 0.85rem;
+  color: var(--text-faint);
+}
+.fb-icon svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+.fb-icon-clickable {
+  cursor: pointer;
+  border-radius: 2px;
+}
+.fb-icon-clickable:hover {
+  background: var(--surface-3);
+}
+.fb-name {
+  font-size: 0.72rem;
+  color: var(--text-1);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-mtime {
+  font-size: 0.62rem;
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  text-align: right;
+  min-width: 4rem;
+}
+.fb-size {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 4rem;
+}
+.fb-git {
+  font-size: 0.58rem;
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  color: var(--status-dirty);
+  flex-shrink: 0;
+  padding: 0 0.2rem;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--status-dirty) 12%, transparent);
+}
+.fb-copied-hint {
+  font-size: 0.58rem;
+  font-style: italic;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.fb-selected {
+  background: color-mix(in srgb, var(--text-muted) 15%, var(--surface-1));
+}
+.fb-selected:hover {
+  background: color-mix(in srgb, var(--text-muted) 22%, var(--surface-1));
+}

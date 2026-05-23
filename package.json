@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "start": "bun run build && bun run start.ts",
+    "start": "bun run build:bun && bun run start.ts",
     "dev": "bun run dev.ts",
     "stop-dev": "bun run stop-dev.ts",
     "test": "bun test packages/",

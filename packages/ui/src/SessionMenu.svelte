@@ -29,6 +29,9 @@
          *  a 24×24 viewBox at 14×14 with `currentColor`. Wins over
          *  `icon` when both are set. */
         iconSvg?: string[];
+        /** When true, the menu stays open after clicking this item.
+         *  Useful for toggle-style actions (e.g. show/hide dotfiles). */
+        keepOpen?: boolean;
       }
     | {
         kind: "copy";
@@ -107,11 +110,7 @@
     if (item.disabled) return;
     if (item.kind === "submenu") return;
     if (item.kind === "action") {
-      open = false;
-      // Hand the action the trigger button's bounding rect so it
-      // can animate from where the user clicked. Falls back to a
-      // centred rect if the binding hasn't resolved yet (effectively
-      // never, since we only get here from a click on the trigger).
+      if (!item.keepOpen) open = false;
       const rect =
         triggerEl?.getBoundingClientRect() ??
         new DOMRect(window.innerWidth / 2 - 10, window.innerHeight / 2 - 10, 20, 20);

@@ -408,4 +408,35 @@ describe("ShellsLog", () => {
       expect(await log.getCarryOverCmdLines("B")).toEqual(["echo A", "echo B"]);
     });
   });
+
+  describe("command PTYs must not pollute the shells list", () => {
+    test("a termId without a writeHeader call is invisible to listHeaders", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      // Simulate a normal shell that DOES write a header.
+      await log.writeHeader({
+        kind: "header",
+        termId: "shell-1",
+        wt: "/w",
+        spawnCwd: "/w",
+        createdAt: "2026-05-20T00:00:00Z",
+      });
+      // A command PTY (internal mode) should NOT call writeHeader.
+      // Verify only the real shell appears.
+      const headers = await log.listHeaders();
+      expect(headers.map((h) => h.termId)).toEqual(["shell-1"]);
+    });
+
+    test("readTranscript returns null for a command PTY that never wrote a header", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      expect(await log.readTranscript("cmd-pty-abc")).toBeNull();
+    });
+
+    test("readHeader returns null for a command PTY that never wrote a header", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      expect(await log.readHeader("cmd-pty-abc")).toBeNull();
+    });
+  });
 });

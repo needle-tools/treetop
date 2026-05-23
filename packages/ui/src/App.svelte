@@ -2128,6 +2128,17 @@
 
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
     dismissIfShell(s);
+    for (const [linkId, entry] of commandTermSources) {
+      if (entry.source === s.source) {
+        commandTermSources.delete(linkId);
+        if (runningCommandIds.has(linkId)) {
+          const next = new Set(runningCommandIds);
+          next.delete(linkId);
+          runningCommandIds = next;
+        }
+        break;
+      }
+    }
     openSessionsByWt = {
       ...openSessionsByWt,
       [wtPath]: (openSessionsByWt[wtPath] ?? []).filter(
@@ -3377,6 +3388,11 @@
           openSessionsByWt = { ...openSessionsByWt, [prev.wtPath]: next };
         }
         commandTermSources.delete(link.id);
+        if (runningCommandIds.has(link.id)) {
+          const nextSet = new Set(runningCommandIds);
+          nextSet.delete(link.id);
+          runningCommandIds = nextSet;
+        }
       }
     }
 
@@ -3399,7 +3415,15 @@
       if (body.mode === "internal" && body.termId) {
         const source = `__attached__:shell:${body.termId}`;
         commandTermSources.set(link.id, { wtPath, source });
+        runningCommandIds = new Set([...runningCommandIds, link.id]);
         undismissShellSource(source);
+        const title = link.name?.trim() || cmdLink.cmd;
+        void fetch("/api/session/title", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source, title }),
+        });
+        newSessionTitles = { ...newSessionTitles, [source]: title };
         const existing = openSessionsByWt[wtPath] ?? [];
         if (!existing.some((s) => s.source === source)) {
           const entry: OpenSession = { agent: "shell", source };

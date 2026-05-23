@@ -3,6 +3,7 @@ export interface FileEntry {
   type: "file" | "directory" | "symlink";
   size?: number;
   mtime?: string;
+  git?: string;
 }
 
 export function joinPath(base: string, name: string): string {
@@ -34,4 +35,19 @@ export async function fetchDir(path: string): Promise<FileEntry[]> {
   if (!res.ok) throw new Error(`Failed to list ${path}`);
   const data = await res.json();
   return data.entries ?? [];
+}
+
+export async function fetchGitStatus(path: string, gitWt: string): Promise<Map<string, string>> {
+  try {
+    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`);
+    if (!res.ok) return new Map();
+    const data = await res.json();
+    const map = new Map<string, string>();
+    for (const e of data.entries ?? []) {
+      if (e.git) map.set(e.name, e.git);
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
 }
