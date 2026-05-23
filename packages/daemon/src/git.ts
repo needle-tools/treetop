@@ -404,7 +404,7 @@ export async function pullFastForward(
     let r;
     try {
       r = await raceTimeout(
-        $`git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
+        $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
         PUSH_PULL_TIMEOUT_MS,
         "git pull",
       );
@@ -455,7 +455,7 @@ export async function pullFastForward(
     let stashRes;
     try {
       stashRes = await raceTimeout(
-        $`git -C ${worktreePath} stash push --include-untracked -m ${stashMsg}`
+        $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} stash push --include-untracked -m ${stashMsg}`
           .quiet()
           .nothrow(),
         PUSH_PULL_TIMEOUT_MS,
@@ -495,7 +495,7 @@ export async function pushUpstream(worktreePath: string): Promise<PushResult> {
   let r;
   try {
     r = await raceTimeout(
-      $`git -C ${worktreePath} push`.quiet().nothrow(),
+      $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`.quiet().nothrow(),
       PUSH_PULL_TIMEOUT_MS,
       "git push",
     );
