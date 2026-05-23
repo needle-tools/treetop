@@ -399,51 +399,34 @@ export function clearClaudeMetaCache(): void {
   claudeMetaCache.clear();
 }
 
-const claudeUserScanCache = new Map<
-  string,
-  { mtimeMs: number; result: ClaudeUserScanResult }
->();
+interface UserScanCacheEntry {
+  mtimeMs: number;
+  /** Byte offset we've parsed up to — lets us read only new bytes on
+   *  the next call instead of re-reading the whole file. */
+  offset: number;
+  result: ClaudeUserScanResult;
+  /** Whether the background full-scan has completed. When false, the
+   *  counts are approximate (from a tail-only read). */
+  fullScanDone: boolean;
+}
 
-/** Bounded; reset on miss when above. Sessions count is ~2k for an active
- *  user — generous headroom + LRU eviction. */
+const claudeUserScanCache = new Map<string, UserScanCacheEntry>();
+
 const MAX_CLAUDE_USER_SCAN_CACHE = 5000;
 
 export function clearClaudeUserScanCache(): void {
   claudeUserScanCache.clear();
 }
 
-export async function scanClaudeUserMessages(
-  path: string,
-  mtimeMs?: number,
-): Promise<ClaudeUserScanResult> {
-  if (mtimeMs !== undefined) {
-    const cached = claudeUserScanCache.get(path);
-    if (cached && cached.mtimeMs === mtimeMs) {
-      // LRU touch.
-      claudeUserScanCache.delete(path);
-      claudeUserScanCache.set(path, cached);
-      return cached.result;
-    }
-  }
-  let content: string;
-  try {
-    content = await readFile(path, "utf-8");
-  } catch {
-    return { lastUserMessages: [], userMessageCount: 0, totalMessageCount: 0 };
-  }
-  let firstUserMessage: string | undefined;
-  const tail: string[] = [];
-  let userCount = 0;
-  let totalCount = 0;
-  let lastContextTokens: number | undefined;
-  let lastModel: string | undefined;
-  for (const line of content.split("\n")) {
+/** Parse JSONL lines and update a running ClaudeUserScanResult in
+ *  place. Shared by the full-scan, tail-scan, and incremental paths. */
+function ingestUserScanLines(
+  lines: string,
+  result: ClaudeUserScanResult,
+  countLines: boolean,
+): void {
+  for (const line of lines.split("\n")) {
     if (!line) continue;
-    // Cheap pre-filter so we don't JSON.parse every line on huge files.
-    // `compact_boundary` is rare but mandatory — when it appears after
-    // the latest assistant usage, the previous reading is stale and
-    // must be cleared. Looking for the literal substring keeps the
-    // fast path fast.
     if (
       !line.includes('"type":"user"') &&
       !line.includes('"type":"assistant"') &&
@@ -458,9 +441,6 @@ export async function scanClaudeUserMessages(
       continue;
     }
     if (obj.type === "user") {
-      // Tool-result-only "user" turns (an Anthropic API convention)
-      // shouldn't be counted as conversation. Detect by inspecting
-      // message.content blocks.
       const msg = obj.message as { content?: unknown } | undefined;
       const content = msg?.content;
       const isToolResultOnly = (() => {
@@ -474,18 +454,18 @@ export async function scanClaudeUserMessages(
         );
       })();
       if (isToolResultOnly) continue;
-      totalCount++;
+      if (countLines) result.totalMessageCount++;
       const raw = firstTextFromMessageContent(content);
       if (!raw) continue;
       const cleaned = cleanForTitle(raw);
       if (!cleaned) continue;
       const capped = capForTooltip(cleaned);
-      if (!firstUserMessage) firstUserMessage = capped;
-      tail.push(capped);
-      if (tail.length > 3) tail.shift();
-      userCount++;
+      if (!result.firstUserMessage) result.firstUserMessage = capped;
+      result.lastUserMessages.push(capped);
+      if (result.lastUserMessages.length > 3) result.lastUserMessages.shift();
+      if (countLines) result.userMessageCount++;
     } else if (obj.type === "assistant") {
-      totalCount++;
+      if (countLines) result.totalMessageCount++;
       const msg = obj.message as
         | { model?: unknown; usage?: unknown }
         | undefined;
@@ -506,38 +486,133 @@ export async function scanClaudeUserMessages(
           typeof usage.cache_creation_input_tokens === "number"
             ? usage.cache_creation_input_tokens
             : 0;
-        // A later assistant turn with no usage block must not clobber
-        // an earlier good reading — that's why this update is gated on
-        // `usage && typeof usage === "object"` above.
-        lastContextTokens = inp + cr + cc;
-        lastModel = typeof msg?.model === "string" ? msg.model : undefined;
+        result.lastContextTokens = inp + cr + cc;
+        result.model = typeof msg?.model === "string" ? msg.model : undefined;
       }
     } else if (
       obj.type === "system" &&
       obj.subtype === "compact_boundary"
     ) {
-      // /compact (manual or auto): the model's context window has been
-      // reset. Drop the previous reading so the chip stops lying about
-      // pre-compact size. A new assistant turn after the compact will
-      // re-populate it with fresh usage.
-      lastContextTokens = undefined;
-      // Keep `lastModel` — same model, just compacted state.
+      result.lastContextTokens = undefined;
     }
   }
-  const result: ClaudeUserScanResult = {
-    firstUserMessage,
-    lastUserMessages: tail,
-    userMessageCount: userCount,
-    totalMessageCount: totalCount,
-    lastContextTokens,
-    model: lastModel,
-  };
+}
+
+/** Background full-scan queue. After the fast tail-only scan returns
+ *  immediate results, these are processed in small batches so the
+ *  daemon stays responsive while backfilling accurate counts. */
+const backgroundScanQueue: { path: string; mtimeMs: number }[] = [];
+let backgroundScanRunning = false;
+const BG_SCAN_BATCH = 5;
+
+function queueBackgroundScan(path: string, mtimeMs: number): void {
+  if (backgroundScanQueue.some((e) => e.path === path)) return;
+  backgroundScanQueue.push({ path, mtimeMs });
+  if (!backgroundScanRunning) {
+    backgroundScanRunning = true;
+    setTimeout(processBackgroundScans, 50);
+  }
+}
+
+async function processBackgroundScans(): Promise<void> {
+  while (backgroundScanQueue.length > 0) {
+    const batch = backgroundScanQueue.splice(0, BG_SCAN_BATCH);
+    await Promise.all(
+      batch.map(async ({ path, mtimeMs }) => {
+        let content: string;
+        try {
+          content = await readFile(path, "utf-8");
+        } catch {
+          return;
+        }
+        const result: ClaudeUserScanResult = {
+          lastUserMessages: [],
+          userMessageCount: 0,
+          totalMessageCount: 0,
+        };
+        ingestUserScanLines(content, result, true);
+        const entry: UserScanCacheEntry = {
+          mtimeMs,
+          offset: Buffer.byteLength(content, "utf-8"),
+          result,
+          fullScanDone: true,
+        };
+        claudeUserScanCache.delete(path);
+        claudeUserScanCache.set(path, entry);
+      }),
+    );
+    // Yield between batches so other requests aren't starved.
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  backgroundScanRunning = false;
+}
+
+export async function scanClaudeUserMessages(
+  path: string,
+  mtimeMs?: number,
+): Promise<ClaudeUserScanResult> {
   if (mtimeMs !== undefined) {
-    claudeUserScanCache.set(path, { mtimeMs, result });
+    const cached = claudeUserScanCache.get(path);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      // LRU touch.
+      claudeUserScanCache.delete(path);
+      claudeUserScanCache.set(path, cached);
+      return cached.result;
+    }
+    // File grew since last scan — read only the new bytes.
+    if (cached && cached.fullScanDone) {
+      const st = await stat(path).catch(() => null);
+      if (st && st.size > cached.offset) {
+        const fh = await open(path, "r").catch(() => null);
+        if (fh) {
+          try {
+            const length = st.size - cached.offset;
+            const buf = Buffer.alloc(length);
+            await fh.read(buf, 0, length, cached.offset);
+            ingestUserScanLines(buf.toString("utf-8"), cached.result, true);
+            cached.offset = st.size;
+            cached.mtimeMs = mtimeMs;
+            claudeUserScanCache.delete(path);
+            claudeUserScanCache.set(path, cached);
+            return cached.result;
+          } finally {
+            await fh.close();
+          }
+        }
+      }
+      // File shrank (truncation/compact) — fall through to fresh scan.
+    }
+  }
+  const TAIL_BYTES = 64 * 1024;
+  const st = await stat(path).catch(() => null);
+  const fileSize = st?.size ?? 0;
+  // Small file (fits in one tail read): parse the whole thing with
+  // counts — no background scan needed. Large file: tail-only for
+  // immediate results (lastUserMessages, model, contextTokens), then
+  // queue a background full scan to backfill accurate counts.
+  const isSmall = fileSize <= TAIL_BYTES;
+  const tailText = await readTail(path, TAIL_BYTES);
+  const result: ClaudeUserScanResult = {
+    lastUserMessages: [],
+    userMessageCount: 0,
+    totalMessageCount: 0,
+  };
+  if (tailText) {
+    ingestUserScanLines(tailText, result, isSmall);
+  }
+  if (mtimeMs !== undefined) {
+    const entry: UserScanCacheEntry = {
+      mtimeMs,
+      offset: fileSize,
+      result,
+      fullScanDone: isSmall,
+    };
+    claudeUserScanCache.set(path, entry);
     if (claudeUserScanCache.size > MAX_CLAUDE_USER_SCAN_CACHE) {
       const oldest = claudeUserScanCache.keys().next().value;
       if (oldest !== undefined) claudeUserScanCache.delete(oldest);
     }
+    if (!isSmall) queueBackgroundScan(path, mtimeMs);
   }
   return result;
 }

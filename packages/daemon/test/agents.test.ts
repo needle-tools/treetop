@@ -15,6 +15,7 @@ import {
   readClaudeSessionMeta,
   clearClaudeMetaCache,
   scanClaudeUserMessages,
+  clearClaudeUserScanCache,
   scanCodexMessageCount,
   scanCodexContextTokens,
   scanCodexTokenUsage,
@@ -611,6 +612,46 @@ describe("scanClaudeUserMessages", () => {
     const stats = await scanClaudeUserMessages(file);
     expect(stats.lastContextTokens).toBe(5_001);
     expect(stats.model).toBe("claude-opus-4-7");
+  });
+
+  test("incremental scan: appended lines update counts without re-reading the whole file", async () => {
+    clearClaudeUserScanCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    const line1 = JSON.stringify({
+      type: "user",
+      message: { content: "first" },
+    });
+    const line2 = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "reply" }] },
+    });
+    await writeFile(file, line1 + "\n" + line2 + "\n");
+    const st1 = (await import("node:fs/promises")).statSync
+      ? undefined
+      : undefined;
+    // First scan with mtimeMs to populate cache + trigger background scan.
+    const { stat: fsStat } = await import("node:fs/promises");
+    const s1 = await fsStat(file);
+    const first = await scanClaudeUserMessages(file, s1.mtimeMs);
+    // Small file → full scan inline, counts are accurate immediately.
+    expect(first.userMessageCount).toBe(1);
+    expect(first.totalMessageCount).toBe(2);
+    expect(first.lastUserMessages).toEqual(["first"]);
+
+    // Append a new user message.
+    const { appendFile } = await import("node:fs/promises");
+    const line3 = JSON.stringify({
+      type: "user",
+      message: { content: "second prompt" },
+    });
+    await appendFile(file, line3 + "\n");
+    const s2 = await fsStat(file);
+    const second = await scanClaudeUserMessages(file, s2.mtimeMs);
+    // Incremental: only the appended bytes were parsed.
+    expect(second.userMessageCount).toBe(2);
+    expect(second.totalMessageCount).toBe(3);
+    expect(second.lastUserMessages).toEqual(["first", "second prompt"]);
   });
 });
 
