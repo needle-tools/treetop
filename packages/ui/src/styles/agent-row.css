@@ -64,6 +64,12 @@
   /* Inline SVGs pick up the row's currentColor (brand-* below). */
   color: inherit;
 }
+.agent-row-icon-svg {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+  flex-shrink: 0;
+}
 
 /* Brand colours — the row's currentColor flows through to the icon
    and the name via `color: inherit`. */

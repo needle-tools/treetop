@@ -19,14 +19,18 @@ import { $ } from "bun";
  * entries without a kind default to "url" and carry their target in
  * `url`. New writes always include the explicit `kind`.
  */
+export type CommandRunMode = "internal" | "external" | "shell";
+
 export type CustomLink =
   | { id: string; kind?: "url"; url: string; name?: string }
   | { id: string; kind: "file"; path: string; name?: string }
-  | { id: string; kind: "folder"; path: string; name?: string };
+  | { id: string; kind: "folder"; path: string; name?: string }
+  | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
 
 /** Resolve a CustomLink's effective kind, treating a missing field as
  *  "url" for backward-compat with pre-file-link repos.json entries. */
-export function customLinkKind(link: CustomLink): "url" | "file" | "folder" {
+export function customLinkKind(link: CustomLink): "url" | "file" | "folder" | "command" {
+  if (link.kind === "command") return "command";
   if (link.kind === "file") return "file";
   if (link.kind === "folder") return "folder";
   return "url";
@@ -38,6 +42,7 @@ export function customLinkKind(link: CustomLink): "url" | "file" | "folder" {
  *  `link.url ?? link.path`. */
 export function customLinkTarget(link: CustomLink): string {
   const k = customLinkKind(link);
+  if (k === "command") return (link as { cmd: string }).cmd;
   return k === "file" || k === "folder"
     ? (link as { path: string }).path
     : (link as { url: string }).url;
@@ -48,14 +53,39 @@ export function customLinkTarget(link: CustomLink): string {
  *  `updateCustomLink` (which preserves the existing id while swapping
  *  the target). Throws on bad URLs / non-absolute file paths /
  *  unknown kinds. */
+export type CustomLinkInput =
+  | { url: string; name?: string }
+  | { kind: "url"; url: string; name?: string }
+  | { kind: "file"; path: string; name?: string }
+  | { kind: "folder"; path: string; name?: string }
+  | { kind: "command"; cmd: string; cwd?: string; runMode?: CommandRunMode; name?: string };
+
+const VALID_RUN_MODES: ReadonlySet<string> = new Set(["internal", "external", "shell"]);
+
 function buildCustomLink(
   id: string,
-  input:
-    | { url: string; name?: string }
-    | { kind: "url"; url: string; name?: string }
-    | { kind: "file"; path: string; name?: string }
-    | { kind: "folder"; path: string; name?: string },
+  input: CustomLinkInput,
 ): CustomLink {
+  if ("kind" in input && input.kind === "command") {
+    const rawCmd = typeof input.cmd === "string" ? input.cmd.trim() : "";
+    if (rawCmd.length === 0) throw new Error("cmd must be a non-empty string");
+    const rawCwd = typeof input.cwd === "string" ? input.cwd.trim() : "";
+    if (rawCwd.length > 0 && !rawCwd.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(rawCwd)) {
+      throw new Error("cwd must be absolute when provided");
+    }
+    const mode: CommandRunMode =
+      typeof input.runMode === "string" && VALID_RUN_MODES.has(input.runMode)
+        ? input.runMode
+        : "shell";
+    const link: CustomLink = { id, kind: "command", cmd: rawCmd, runMode: mode };
+    if (rawCwd.length > 0) link.cwd = rawCwd;
+    if (typeof input.name === "string") {
+      const trimmed = input.name.trim();
+      if (trimmed.length > 0) link.name = trimmed;
+    }
+    return link;
+  }
+
   const pathKind =
     "kind" in input && (input.kind === "file" || input.kind === "folder")
       ? input.kind
@@ -383,11 +413,7 @@ export class Workspace {
    */
   async addCustomLink(
     id: string,
-    input:
-      | { url: string; name?: string }
-      | { kind: "url"; url: string; name?: string }
-      | { kind: "file"; path: string; name?: string }
-      | { kind: "folder"; path: string; name?: string },
+    input: CustomLinkInput,
   ): Promise<CustomLink> {
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
@@ -414,11 +440,10 @@ export class Workspace {
     input: {
       url?: string;
       path?: string;
-      /** Discriminator override — needed when `path` could mean either
-       *  a file or a folder. If omitted with `path`, the existing
-       *  link's kind is preserved (or "file" as the default for new
-       *  paths replacing a URL). */
-      kind?: "url" | "file" | "folder";
+      cmd?: string;
+      cwd?: string;
+      runMode?: CommandRunMode;
+      kind?: "url" | "file" | "folder" | "command";
       name?: string;
     },
   ): Promise<CustomLink | null> {
@@ -430,30 +455,32 @@ export class Workspace {
     if (linkIdx < 0) return null;
     const current = links[linkIdx]!;
 
-    // Start from the current link, then apply only the fields the
-    // caller passed. If they pass `url` we flip to kind=url; if they
-    // pass `path` we flip to file or folder (using the explicit
-    // `kind` override when given, otherwise preserving the current
-    // kind, falling back to "file"). Passing both is ambiguous.
-    if (input.url !== undefined && input.path !== undefined) {
-      throw new Error("pass either url or path, not both");
-    }
-
     const currentKind = customLinkKind(current);
     const currentName = current.name;
 
-    let merged:
-      | { url: string; name?: string }
-      | { kind: "url"; url: string; name?: string }
-      | { kind: "file"; path: string; name?: string }
-      | { kind: "folder"; path: string; name?: string };
-    if (input.url !== undefined) {
+    let merged: CustomLinkInput;
+
+    if (input.kind === "command" || (input.cmd !== undefined && currentKind === "command")) {
+      const rawCmd = input.cmd ?? (currentKind === "command" ? (current as { cmd: string }).cmd : "");
+      const rawCwd = input.cwd ?? (currentKind === "command" ? (current as { cwd?: string }).cwd : undefined);
+      const rawMode = input.runMode ?? (currentKind === "command" ? (current as { runMode: CommandRunMode }).runMode : "shell");
+      merged = { kind: "command", cmd: rawCmd, cwd: rawCwd, runMode: rawMode };
+    } else if (input.url !== undefined && input.path !== undefined) {
+      throw new Error("pass either url or path, not both");
+    } else if (input.url !== undefined) {
       merged = { kind: "url", url: input.url };
     } else if (input.path !== undefined) {
       const explicit = input.kind === "folder" ? "folder" : input.kind === "file" ? "file" : null;
       const inherited = currentKind === "folder" ? "folder" : currentKind === "file" ? "file" : "file";
       const newKind = explicit ?? inherited;
       merged = { kind: newKind, path: input.path };
+    } else if (currentKind === "command") {
+      merged = {
+        kind: "command",
+        cmd: (current as { cmd: string }).cmd,
+        cwd: (current as { cwd?: string }).cwd,
+        runMode: (current as { runMode: CommandRunMode }).runMode,
+      };
     } else if (currentKind === "file") {
       merged = {
         kind: "file",

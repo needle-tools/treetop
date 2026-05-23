@@ -18,22 +18,25 @@
    *   - `kind: "folder"` — an absolute directory opened in the OS
    *     file manager (same endpoint; OS handlers route folders to
    *     Finder / Explorer / the default file-manager). */
+  export type CommandRunMode = "internal" | "external" | "shell";
+
   export type CustomLink =
     | { id: string; kind?: "url"; url: string; name?: string }
     | { id: string; kind: "file"; path: string; name?: string }
-    | { id: string; kind: "folder"; path: string; name?: string };
+    | { id: string; kind: "folder"; path: string; name?: string }
+    | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
 
-  /** Discriminator-safe getters so callers don't have to narrow at
-   *  every reference. */
   export function customLinkKind(
     link: CustomLink,
-  ): "url" | "file" | "folder" {
+  ): "url" | "file" | "folder" | "command" {
+    if (link.kind === "command") return "command";
     if (link.kind === "file") return "file";
     if (link.kind === "folder") return "folder";
     return "url";
   }
   export function customLinkTarget(link: CustomLink): string {
     const k = customLinkKind(link);
+    if (k === "command") return (link as { cmd: string }).cmd;
     return k === "file" || k === "folder"
       ? (link as { path: string }).path
       : (link as { url: string }).url;
@@ -62,9 +65,12 @@
   import { flip } from "svelte/animate";
 
   export let path: string;
+  export let repoId: string = "";
   export let editors: EditorDescriptor[] = [];
   export let remotes: RemoteRef[] = [];
   export let customLinks: CustomLink[] = [];
+  export let runningCommandIds: ReadonlySet<string> = new Set();
+  export let onCommandClick: ((link: CustomLink) => void) | null = null;
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
   /** Add-link handler, supplied by the parent which owns the fetch.
@@ -76,7 +82,8 @@
         input:
           | { kind: "url"; url: string; name?: string }
           | { kind: "file"; path: string; name?: string }
-          | { kind: "folder"; path: string; name?: string },
+          | { kind: "folder"; path: string; name?: string }
+          | { kind: "command"; cmd: string; cwd?: string; runMode?: CommandRunMode; name?: string },
       ) => Promise<boolean>)
     | null = null;
   /** Remove-link handler. Same contract — the parent owns the fetch. */
@@ -92,7 +99,10 @@
         input: {
           url?: string;
           path?: string;
-          kind?: "url" | "file" | "folder";
+          cmd?: string;
+          cwd?: string;
+          runMode?: CommandRunMode;
+          kind?: "url" | "file" | "folder" | "command";
           name?: string;
         },
       ) => Promise<boolean>)
@@ -142,6 +152,10 @@
   function linkLabel(link: CustomLink): string {
     if (link.name && link.name.trim().length > 0) return link.name;
     const k = customLinkKind(link);
+    if (k === "command") {
+      const cmd = (link as { cmd: string }).cmd;
+      return cmd.length > 30 ? cmd.slice(0, 28) + "…" : cmd;
+    }
     if (k === "file" || k === "folder") {
       const p = (link as { path: string }).path;
       const segs = p.split(/[\\/]/).filter(Boolean);
@@ -157,6 +171,10 @@
   function linkTooltip(link: CustomLink): string {
     const target = customLinkTarget(link);
     const k = customLinkKind(link);
+    if (k === "command") {
+      const mode = (link as { runMode: CommandRunMode }).runMode;
+      return `Run: ${target} (${mode})`;
+    }
     if (k === "file") return `Open ${target} with the default app`;
     if (k === "folder") return `Open ${target} in the file manager`;
     return `Open ${target} in browser`;
@@ -176,9 +194,12 @@
   $: linkIconDef = iconFor("link");
 
   let addOpen = false;
-  let newKind: "url" | "file" | "folder" = "url";
+  let newKind: "url" | "file" | "folder" | "command" = "url";
   let newUrl = "";
   let newPath = "";
+  let newCmd = "";
+  let newCwd = "";
+  let newRunMode: CommandRunMode = "shell";
   let newName = "";
   let adding = false;
   let addError = "";
@@ -190,9 +211,12 @@
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
   let editingLinkId: string | null = null;
-  let editKind: "url" | "file" | "folder" = "url";
+  let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
   let editPath = "";
+  let editCmd = "";
+  let editCwd = "";
+  let editRunMode: CommandRunMode = "shell";
   let editName = "";
   let editing = false;
   let editError = "";
@@ -237,6 +261,15 @@
       editKind === "file" || editKind === "folder"
         ? (link as { path: string }).path
         : "";
+    if (editKind === "command") {
+      editCmd = (link as { cmd: string }).cmd;
+      editCwd = (link as { cwd?: string }).cwd ?? "";
+      editRunMode = (link as { runMode: CommandRunMode }).runMode;
+    } else {
+      editCmd = "";
+      editCwd = "";
+      editRunMode = "shell";
+    }
     editName = link.name ?? "";
     editError = "";
     setTimeout(() => editUrlInput?.focus(), 0);
@@ -250,6 +283,31 @@
   async function submitEdit() {
     if (!onEditCustomLink || !editingLinkId) return;
     const id = editingLinkId;
+    if (editKind === "command") {
+      const c = editCmd.trim();
+      if (c.length === 0) {
+        editError = "Command required.";
+        return;
+      }
+      editing = true;
+      editError = "";
+      try {
+        const ok = await onEditCustomLink(id, {
+          cmd: c,
+          cwd: editCwd.trim() || undefined,
+          runMode: editRunMode,
+          kind: "command",
+          name: editName,
+        });
+        if (ok) closeEdit();
+        else editError = "Couldn't save — server rejected the change.";
+      } catch (e) {
+        editError = e instanceof Error ? e.message : String(e);
+      } finally {
+        editing = false;
+      }
+      return;
+    }
     if (editKind === "file" || editKind === "folder") {
       const p = editPath.trim();
       if (p.length === 0) {
@@ -328,14 +386,13 @@
   function toggleAdd() {
     addOpen = !addOpen;
     if (addOpen) {
-      // Restore the user's last tab choice + any in-progress draft
-      // for this worktree so the popover lands where they left off,
-      // even across reloads / accidental dismissals. Drafted values
-      // win over the empty defaults; missing fields default to "".
       const draft = readDraft();
       newKind = draft.kind ?? readLastKind();
       newUrl = draft.url ?? "";
       newPath = draft.path ?? "";
+      newCmd = draft.cmd ?? "";
+      newCwd = draft.cwd ?? "";
+      newRunMode = draft.runMode ?? "shell";
       newName = draft.name ?? "";
       addError = "";
       setTimeout(() => urlInput?.focus(), 0);
@@ -345,6 +402,41 @@
   async function submitAdd() {
     if (!onAddCustomLink) return;
     const trimmedName = newName.trim() || undefined;
+    if (newKind === "command") {
+      const c = newCmd.trim();
+      if (c.length === 0) {
+        addError = "Command required.";
+        return;
+      }
+      adding = true;
+      addError = "";
+      try {
+        const ok = await onAddCustomLink({
+          kind: "command",
+          cmd: c,
+          cwd: newCwd.trim() || undefined,
+          runMode: newRunMode,
+          name: trimmedName,
+        });
+        if (ok) {
+          addOpen = false;
+          newCmd = "";
+          newCwd = "";
+          newRunMode = "shell";
+          newUrl = "";
+          newPath = "";
+          newName = "";
+          clearDraft();
+        } else {
+          addError = "Couldn't add — server rejected the command.";
+        }
+      } catch (e) {
+        addError = e instanceof Error ? e.message : String(e);
+      } finally {
+        adding = false;
+      }
+      return;
+    }
     if (newKind === "file" || newKind === "folder") {
       const p = newPath.trim();
       if (p.length === 0) {
@@ -466,16 +558,16 @@
       // works, the start dir just won't carry over next time.
     }
   }
-  function readLastKind(): "url" | "file" | "folder" {
+  function readLastKind(): "url" | "file" | "folder" | "command" {
     try {
       const v = localStorage.getItem(lastKindKey());
-      if (v === "file" || v === "folder") return v;
+      if (v === "file" || v === "folder" || v === "command") return v;
       return "url";
     } catch {
       return "url";
     }
   }
-  function writeLastKind(k: "url" | "file" | "folder"): void {
+  function writeLastKind(k: "url" | "file" | "folder" | "command"): void {
     try {
       localStorage.setItem(lastKindKey(), k);
     } catch {
@@ -491,9 +583,12 @@
     return `supergit.customLinks.draft.${path}`;
   }
   function readDraft(): {
-    kind?: "url" | "file" | "folder";
+    kind?: "url" | "file" | "folder" | "command";
     url?: string;
     path?: string;
+    cmd?: string;
+    cwd?: string;
+    runMode?: CommandRunMode;
     name?: string;
   } {
     try {
@@ -512,6 +607,9 @@
         kind: newKind,
         url: newUrl,
         path: newPath,
+        cmd: newCmd,
+        cwd: newCwd,
+        runMode: newRunMode,
         name: newName,
       };
       // No empty-state pruning — keep the JSON shape stable so the
@@ -574,15 +672,32 @@
     }
   }
 
+  async function pickAddCwd() {
+    try {
+      const picked = await runPathPicker("folder");
+      if (picked) newCwd = picked;
+    } catch (e) {
+      addError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function pickEditCwd() {
+    try {
+      const picked = await runPathPicker("folder");
+      if (picked) editCwd = picked;
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   function openLink(link: CustomLink) {
     const k = customLinkKind(link);
+    if (k === "command") {
+      onCommandClick?.(link);
+      return;
+    }
     if (k === "file" || k === "folder") {
       const p = (link as { path: string }).path;
-      // Hand off to the daemon — the browser can't shell out to the
-      // OS default-app handler itself. Fire-and-forget; same
-      // endpoint works for files (default app) and folders (file
-      // manager) because `open`/`xdg-open`/`start` route them based
-      // on the path's type.
       void fetch("/api/open-default", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -779,8 +894,87 @@
                 </svg>
                 Folder
               </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={newKind === "command"}
+                role="tab"
+                aria-selected={newKind === "command"}
+                on:click={() => (newKind = "command")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                Cmd
+              </button>
             </div>
-            {#if newKind === "url"}
+            {#if newKind === "command"}
+              <label class="custom-link-field">
+                <span class="custom-link-label">Command</span>
+                <input
+                  bind:this={urlInput}
+                  class="custom-link-input"
+                  type="text"
+                  placeholder="npm run dev"
+                  bind:value={newCmd}
+                  disabled={adding}
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") submitAdd();
+                  }}
+                />
+              </label>
+              <label class="custom-link-field">
+                <span class="custom-link-label">Working directory <span class="muted">(optional — defaults to repo dir)</span></span>
+                <div class="custom-link-fileinput">
+                  <input
+                    class="custom-link-input"
+                    type="text"
+                    placeholder={path}
+                    bind:value={newCwd}
+                    disabled={adding}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") submitAdd();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="tiny custom-link-browse"
+                    on:click={pickAddCwd}
+                    disabled={adding}
+                  >Browse…</button>
+                </div>
+              </label>
+              <div class="custom-link-field">
+                <span class="custom-link-label">Run mode</span>
+                <div class="custom-link-kinds" role="radiogroup" style="margin-top:2px">
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={newRunMode === "shell"}
+                    role="radio"
+                    aria-checked={newRunMode === "shell"}
+                    on:click={() => (newRunMode = "shell")}
+                  >Shell</button>
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={newRunMode === "internal"}
+                    role="radio"
+                    aria-checked={newRunMode === "internal"}
+                    on:click={() => (newRunMode = "internal")}
+                  >Internal</button>
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={newRunMode === "external"}
+                    role="radio"
+                    aria-checked={newRunMode === "external"}
+                    on:click={() => (newRunMode = "external")}
+                  >External</button>
+                </div>
+              </div>
+            {:else if newKind === "url"}
               <label class="custom-link-field">
                 <span class="custom-link-label">URL</span>
                 <input
@@ -823,7 +1017,7 @@
               </label>
             {/if}
             <label class="custom-link-field">
-              <span class="custom-link-label">Label <span class="muted">(optional — auto-fills from page title for URLs)</span></span>
+              <span class="custom-link-label">Label <span class="muted">(optional{newKind === "url" ? " — auto-fills from page title for URLs" : ""})</span></span>
               <input
                 class="custom-link-input"
                 type="text"
@@ -852,8 +1046,9 @@
                 disabled={adding
                   || (newKind === "url" && newUrl.trim().length === 0)
                   || ((newKind === "file" || newKind === "folder")
-                    && newPath.trim().length === 0)}
-              >{adding ? "Adding…" : "Add link"}</button>
+                    && newPath.trim().length === 0)
+                  || (newKind === "command" && newCmd.trim().length === 0)}
+              >{adding ? "Adding…" : newKind === "command" ? "Add command" : "Add link"}</button>
             </div>
           </div>
         </Popover>
@@ -865,6 +1060,7 @@
     {@const failed = failedFavicons.has(link.id)}
     {@const kind = customLinkKind(link)}
     {@const target = customLinkTarget(link)}
+    {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -883,7 +1079,8 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        title={linkTooltip(link)}
+        class:cmd-running={cmdRunning}
+        title={cmdRunning ? `Stop: ${target}` : linkTooltip(link)}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);
@@ -915,9 +1112,6 @@
             <path d="M14 2v6h6" />
           </svg>
         {:else if kind === "folder"}
-          <!-- Folder glyph — opens the path in Finder / Explorer / the
-               default file manager. Outline + muted to match the file
-               glyph treatment. -->
           <svg
             class="open-in-icon muted"
             viewBox="0 0 24 24"
@@ -927,6 +1121,29 @@
           >
             <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
           </svg>
+        {:else if kind === "command"}
+          {#if cmdRunning}
+            <svg
+              class="open-in-icon cmd-stop-icon"
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              aria-hidden="true"
+            >
+              <rect x="6" y="6" width="12" height="12" rx="1" />
+            </svg>
+          {:else}
+            <svg
+              class="open-in-icon muted"
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              aria-hidden="true"
+            >
+              <polyline points="4 17 10 11 4 5" />
+              <line x1="12" y1="19" x2="20" y2="19" />
+            </svg>
+          {/if}
         {:else if linkIconDef}
           <svg
             class="open-in-icon"
@@ -1016,8 +1233,86 @@
                 </svg>
                 Folder
               </button>
+              <button
+                type="button"
+                class="custom-link-kind"
+                class:active={editKind === "command"}
+                role="tab"
+                aria-selected={editKind === "command"}
+                on:click={() => (editKind = "command")}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                Cmd
+              </button>
             </div>
-            {#if editKind === "url"}
+            {#if editKind === "command"}
+              <label class="custom-link-field">
+                <span class="custom-link-label">Command</span>
+                <input
+                  bind:this={editUrlInput}
+                  class="custom-link-input"
+                  type="text"
+                  bind:value={editCmd}
+                  disabled={editing}
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") submitEdit();
+                  }}
+                />
+              </label>
+              <label class="custom-link-field">
+                <span class="custom-link-label">Working directory <span class="muted">(optional)</span></span>
+                <div class="custom-link-fileinput">
+                  <input
+                    class="custom-link-input"
+                    type="text"
+                    placeholder={path}
+                    bind:value={editCwd}
+                    disabled={editing}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") submitEdit();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="tiny custom-link-browse"
+                    on:click={pickEditCwd}
+                    disabled={editing}
+                  >Browse…</button>
+                </div>
+              </label>
+              <div class="custom-link-field">
+                <span class="custom-link-label">Run mode</span>
+                <div class="custom-link-kinds" role="radiogroup" style="margin-top:2px">
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={editRunMode === "shell"}
+                    role="radio"
+                    aria-checked={editRunMode === "shell"}
+                    on:click={() => (editRunMode = "shell")}
+                  >Shell</button>
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={editRunMode === "internal"}
+                    role="radio"
+                    aria-checked={editRunMode === "internal"}
+                    on:click={() => (editRunMode = "internal")}
+                  >Internal</button>
+                  <button
+                    type="button"
+                    class="custom-link-kind"
+                    class:active={editRunMode === "external"}
+                    role="radio"
+                    aria-checked={editRunMode === "external"}
+                    on:click={() => (editRunMode = "external")}
+                  >External</button>
+                </div>
+              </div>
+            {:else if editKind === "url"}
               <label class="custom-link-field">
                 <span class="custom-link-label">URL</span>
                 <input
@@ -1096,7 +1391,8 @@
                 disabled={editing
                   || (editKind === "url" && editUrl.trim().length === 0)
                   || ((editKind === "file" || editKind === "folder")
-                    && editPath.trim().length === 0)}
+                    && editPath.trim().length === 0)
+                  || (editKind === "command" && editCmd.trim().length === 0)}
               >{editing ? "Saving…" : "Save"}</button>
             </div>
           </div>
@@ -1451,5 +1747,18 @@
      viewports. */
   .custom-link-input {
     min-width: 0;
+  }
+  .custom-link-btn.cmd-running {
+    outline: 1px solid var(--brand, #4a9);
+    outline-offset: -1px;
+    animation: cmd-pulse 2s ease-in-out infinite;
+  }
+  .cmd-stop-icon {
+    fill: var(--brand, #4a9);
+    stroke: none;
+  }
+  @keyframes cmd-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
   }
 </style>

@@ -549,6 +549,105 @@ describe("Workspace", () => {
     ).rejects.toThrow(/either url or path/);
   });
 
+  // ── Command links ──────────────────────────────────────────────────
+
+  test("addCustomLink stores a command link with all fields", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "npm run dev",
+      cwd: "/abs/project",
+      runMode: "shell",
+      name: "Dev server",
+    });
+    expect(link).toEqual({
+      id: link.id,
+      kind: "command",
+      cmd: "npm run dev",
+      cwd: "/abs/project",
+      runMode: "shell",
+      name: "Dev server",
+    });
+    const persisted = (await ws.listRepos())[0]!;
+    expect(persisted.customLinks).toEqual([link]);
+  });
+
+  test("addCustomLink command defaults runMode to shell", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "echo hello",
+    });
+    expect(link.kind).toBe("command");
+    expect((link as any).runMode).toBe("shell");
+  });
+
+  test("addCustomLink command omits cwd when empty", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "ls",
+      cwd: "",
+    });
+    expect((link as any).cwd).toBeUndefined();
+  });
+
+  test("addCustomLink command rejects empty cmd", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(
+      ws.addCustomLink(repo.id, { kind: "command", cmd: "  " }),
+    ).rejects.toThrow(/non-empty/i);
+  });
+
+  test("addCustomLink command rejects relative cwd", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    await expect(
+      ws.addCustomLink(repo.id, { kind: "command", cmd: "ls", cwd: "relative/dir" }),
+    ).rejects.toThrow(/absolute/i);
+  });
+
+  test("updateCustomLink can edit a command link's fields", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "npm run dev",
+      runMode: "shell",
+      name: "Dev",
+    });
+    const updated = await ws.updateCustomLink(repo.id, link.id, {
+      cmd: "npm run build",
+      cwd: "/abs/out",
+      runMode: "external",
+      kind: "command",
+    });
+    expect(updated).toEqual({
+      id: link.id,
+      kind: "command",
+      cmd: "npm run build",
+      cwd: "/abs/out",
+      runMode: "external",
+      name: "Dev",
+    });
+  });
+
+  test("updateCustomLink can flip a URL link into a command link", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
+    const updated = await ws.updateCustomLink(repo.id, link.id, {
+      kind: "command",
+      cmd: "make build",
+    });
+    expect(updated?.kind).toBe("command");
+    expect((updated as any).cmd).toBe("make build");
+  });
+
   // ── Prefs ──────────────────────────────────────────────────────────
 
   test("getPrefs returns empty object when no prefs.json exists", async () => {

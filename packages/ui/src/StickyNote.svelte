@@ -754,7 +754,7 @@
    *  entering edit mode (the user clearly didn't mean to discard) and
    *  by unmounting the component (component teardown shouldn't
    *  silently delete the underlying note). */
-  const DELETE_GRACE_MS = 3000;
+  const DELETE_GRACE_MS = 2000;
   let confirmingDelete = false;
   let deleteTimerId: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
@@ -1397,7 +1397,7 @@
           class:confirming={confirmingDelete}
           on:click={onDeleteClick}
           title={confirmingDelete
-            ? "Click to cancel — note will delete in 3 seconds"
+            ? "Click to cancel — note will delete in 2 seconds"
             : "Delete (3-second grace; click again to cancel)"}
           aria-label={confirmingDelete ? "Cancel pending delete" : "Delete"}
         >{confirmingDelete ? "■" : "×"}</button>
@@ -1633,14 +1633,6 @@
   {/if}
 
   {#if confirmingDelete}
-    <!-- 3s countdown ring traced around the note's perimeter via a
-         single <rect> with pathLength normalized to 100 and an animated
-         stroke-dashoffset. `vector-effect: non-scaling-stroke` is set
-         in CSS so the line stays a consistent thickness even though
-         the SVG itself is sized via percentages and the rect is
-         stretched non-uniformly. -->
-    <svg class="sticky-delete-progress" aria-hidden="true">
-      <rect width="100%" height="100%" rx="4" ry="4" pathLength="100" />
-    </svg>
+    <div class="sticky-delete-progress" aria-hidden="true"></div>
   {/if}
 </div>

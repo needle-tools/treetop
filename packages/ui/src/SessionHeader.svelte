@@ -27,7 +27,7 @@
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { contextChip } from "./context-tokens";
 
-  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
+  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell" | "files";
   /** Overrides the lowercase agent name in the agent-pill. Used by
    *  Ollama columns to show the model tag (e.g. `qwen3-coder:30b`)
    *  instead of the generic "ollama" — for an Ollama column the
@@ -502,6 +502,11 @@
     background: var(--surface-3);
     color: var(--text-2);
     --agent-color: var(--text-2);
+  }
+  .agent-pill.agent-files {
+    background: var(--chip-default-bg);
+    color: var(--chip-default-text);
+    --agent-color: var(--chip-default-text);
   }
   /* Working: comet-trail conic-gradient ring. The @property-animated
      `from` angle sweeps the bright arc smoothly around the pill's

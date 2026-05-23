@@ -26,6 +26,7 @@ const MIGRATED_KEYS = [
   "supergit:dismissedSessions",
   "supergit:foldedRows",
   "supergit:summarize:lastModel",
+  "supergit:fileBrowser:state",
 ] as const;
 
 class DaemonKVStore implements KVStore {

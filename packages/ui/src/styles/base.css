@@ -51,9 +51,20 @@ main {
    design. */
 .loading-screen {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   min-height: 60vh;
+  gap: 0.6rem;
+}
+.loading-slow {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  animation: loading-slow-fade-in 0.4s ease-out;
+}
+@keyframes loading-slow-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .loading-inline {
   display: inline-flex;

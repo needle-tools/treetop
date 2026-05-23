@@ -13,8 +13,51 @@
    */
   import { onMount, onDestroy } from "svelte";
   import Tooltip from "./Tooltip.svelte";
+  import Popover from "./Popover.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import { requestSessionFocus } from "./session-focus-store";
+
+  /** Which agent's popover is currently visible — either from hover
+   *  (temporary) or from a click (pinned). Only one at a time. */
+  let openAgent: string | null = null;
+  /** Which agent the user has click-pinned. When pinned, the popover
+   *  stays open even when the mouse leaves. Null = not pinned. */
+  let pinnedAgent: string | null = null;
+
+  function onAnchorEnter(agent: string): void {
+    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
+    openAgent = agent;
+    if (agent === "claude") ensureTopSessionsLoaded();
+  }
+
+  let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function onAnchorLeave(agent: string): void {
+    if (pinnedAgent === agent) return;
+    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
+    hoverCloseTimer = setTimeout(() => {
+      if (pinnedAgent !== agent) openAgent = null;
+      hoverCloseTimer = null;
+    }, 300);
+  }
+
+  function togglePin(agent: string): void {
+    if (pinnedAgent === agent) {
+      pinnedAgent = null;
+      openAgent = null;
+    } else {
+      pinnedAgent = agent;
+      openAgent = agent;
+    }
+  }
+
+  function handleDocClick(e: MouseEvent): void {
+    const target = e.target as HTMLElement | null;
+    if (!target?.closest?.(".agent-usage-anchor")) {
+      pinnedAgent = null;
+      openAgent = null;
+    }
+  }
 
   interface UsageWindow {
     sessions: number;
@@ -155,15 +198,15 @@
     void load();
     pollTimer = setInterval(() => {
       void load();
-      // Only re-poll top-sessions if the user has already seen them
-      // at least once — no reason to do the expensive scan
-      // proactively for someone who never opens the tooltip.
       if (topSessionsState !== "idle") void loadTopSessions();
     }, 60_000);
+    window.addEventListener("click", handleDocClick, true);
   });
 
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
+    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
+    window.removeEventListener("click", handleDocClick, true);
   });
 
   const AGENT_ORDER = ["claude", "codex", "ollama", "copilot"] as const;
@@ -277,6 +320,43 @@
 
   function pct(v: number): string {
     return `${Math.round(v * 100)}%`;
+  }
+
+  interface WeeklyProjection {
+    projectedPct: number;
+    isOverPace: boolean;
+    label: string;
+  }
+
+  /** Given a window's current utilization and reset timestamp, project
+   *  what % will be used by the time the window resets — assuming the
+   *  current consumption rate holds steady.
+   *
+   *  Math: rate = utilization / elapsed, projected = rate × windowDuration.
+   *
+   *  Returns null when the window has no resetsAt or the numbers are
+   *  too fresh to project (< 1h elapsed → jittery). */
+  function projectWeekly(
+    utilization: number | undefined,
+    resetsAt: string | undefined,
+    windowSeconds?: number,
+  ): WeeklyProjection | null {
+    if (typeof utilization !== "number" || !resetsAt) return null;
+    const resetMs = Date.parse(resetsAt);
+    if (Number.isNaN(resetMs)) return null;
+    const windowMs = (windowSeconds ?? 7 * 24 * 3600) * 1000;
+    const remaining = resetMs - Date.now();
+    if (remaining <= 0) return null;
+    const elapsed = windowMs - remaining;
+    if (elapsed < 3_600_000) return null;
+    const rate = utilization / elapsed;
+    const projected = Math.min(rate * windowMs, 2);
+    const isOverPace = projected > 1.0;
+    const pp = Math.round(projected * 100);
+    const label = isOverPace
+      ? `On pace to exceed limit (~${pp}%)`
+      : `On pace for ~${pp}% — ${Math.round((1 - projected) * 100)}% headroom`;
+    return { projectedPct: projected, isOverPace, label };
   }
 
   /** Compact token formatter — 1,234 → "1.2k", 5,432,100 → "5.4M".
@@ -409,31 +489,37 @@
 {#each agentsList as [agent, usage] (agent)}
   {@const url = usageUrl(agent)}
   {@const barRatio = buttonBarRatio(agent, usage)}
-  <div class="actions-anchor agent-usage-anchor">
-    <Tooltip
-      placement="bottom"
-      variant="wide"
-      escapeClip
-      onShow={agent === "claude" ? ensureTopSessionsLoaded : () => {}}
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div
+    class="actions-anchor agent-usage-anchor"
+    on:mouseenter={() => onAnchorEnter(agent)}
+    on:mouseleave={() => onAnchorLeave(agent)}
+  >
+    <button
+      type="button"
+      class="actions-btn agent-usage-btn brand-{agent}"
+      class:open={openAgent === agent}
+      style:--usage-bar-pct={`${(barRatio * 100).toFixed(1)}%`}
+      aria-label={`${agentLabel(agent)} usage`}
+      on:click|stopPropagation={() => togglePin(agent)}
     >
-      <button
-        slot="trigger"
-        type="button"
-        class="actions-btn agent-usage-btn brand-{agent}"
-        class:has-url={url !== null}
-        style:--usage-bar-pct={`${(barRatio * 100).toFixed(1)}%`}
-        aria-label={url
-          ? `${agentLabel(agent)} usage — opens ${url}`
-          : `${agentLabel(agent)} usage`}
-        on:click={() => openUsagePage(agent)}
-      >
-        <AgentIcon {agent} size={14} />
-      </button>
-
-      <div slot="content" class="usage-tt brand-{agent}">
-        <div class="usage-tt-head brand-{agent}">
+      <AgentIcon {agent} size={14} />
+    </button>
+    {#if openAgent === agent}
+      <Popover variant="actions" extraClass="usage-popover brand-{agent}">
+        <svelte:fragment slot="head">
+          <div class="usage-tt-head brand-{agent}">
           <AgentIcon {agent} size={14} />
-          <span>{agentLabel(agent)}</span>
+          {#if usageUrl(agent)}
+            <a
+              href={usageUrl(agent)}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="usage-agent-link"
+            >{agentLabel(agent)}</a>
+          {:else}
+            <span>{agentLabel(agent)}</span>
+          {/if}
           {#if agent === "claude" && planLabel(report?.claudePlan)}
             <span class="usage-plan">· {planLabel(report?.claudePlan)}</span>
           {:else if agent === "codex" && codexLive?.planType}
@@ -449,27 +535,31 @@
             {hasLiveData(agent) ? "live" : "local"}
           </span>
         </div>
+        </svelte:fragment>
 
+        <!-- Unified 4-column bar grid. Same template across live +
+             local so switching between agent popovers doesn't shift
+             any column. Cells: label | bar | value | detail. -->
         {#if agent === "claude" && claudeLive && liveRows.length > 0}
-          <!-- Claude: real plan-utilization bars from OAuth API. -->
-          <div class="usage-live-grid">
+          <div class="usage-bars-grid">
             {#each liveRows as row (row.label)}
-              <span class="usage-live-label">{row.label}</span>
-              <span
-                class="usage-bar live"
-                aria-label={row.window?.resetsAt
-                  ? `Resets ${fmtResets(row.window.resetsAt)} (${row.window.resetsAt})`
-                  : undefined}
-              >
-                <span
-                  class="usage-bar-fill live"
-                  style:width={liveBarWidth(row.window?.utilization)}
-                ></span>
+              <span class="usage-bars-label">{row.label}</span>
+              <span class="usage-bar live">
+                <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
               </span>
-              <span class="usage-live-pct">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-live-reset">{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
+              <span class="usage-bars-detail">{fmtResets(row.window?.resetsAt)}</span>
             {/each}
           </div>
+          {@const weekProj = projectWeekly(
+            claudeLive.sevenDay?.utilization,
+            claudeLive.sevenDay?.resetsAt,
+          )}
+          {#if weekProj}
+            <div class="usage-projection" class:over-pace={weekProj.isOverPace}>
+              {weekProj.label}
+            </div>
+          {/if}
           {#if claudeLive.extraUsage?.isEnabled}
             <div class="usage-extra">
               Extra usage: {pct(claudeLive.extraUsage.utilization ?? 0)}
@@ -479,26 +569,27 @@
             </div>
           {/if}
         {:else if agent === "codex" && codexLive && codexLiveRows.length > 0}
-          <!-- Codex: real plan-utilization bars from chatgpt.com's
-               backend-api/wham/usage endpoint (CodexBar's discovery). -->
-          <div class="usage-live-grid">
+          <div class="usage-bars-grid">
             {#each codexLiveRows as row (row.label)}
-              <span class="usage-live-label">{row.label}</span>
-              <span
-                class="usage-bar live"
-                aria-label={row.window?.resetsAt
-                  ? `Resets ${fmtResets(row.window.resetsAt)} (${row.window.resetsAt})`
-                  : undefined}
-              >
-                <span
-                  class="usage-bar-fill live"
-                  style:width={liveBarWidth(row.window?.utilization)}
-                ></span>
+              <span class="usage-bars-label">{row.label}</span>
+              <span class="usage-bar live">
+                <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
               </span>
-              <span class="usage-live-pct">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-live-reset">{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
+              <span class="usage-bars-detail">{fmtResets(row.window?.resetsAt)}</span>
             {/each}
           </div>
+          {@const codexWeekWin = codexLive.secondaryWindow ?? codexLive.primaryWindow}
+          {@const codexProj = projectWeekly(
+            codexWeekWin?.utilization,
+            codexWeekWin?.resetsAt,
+            codexWeekWin?.windowSeconds,
+          )}
+          {#if codexProj}
+            <div class="usage-projection" class:over-pace={codexProj.isOverPace}>
+              {codexProj.label}
+            </div>
+          {/if}
           {#if codexLive.credits && (codexLive.credits.hasCredits || codexLive.credits.unlimited)}
             <div class="usage-extra">
               Credits:
@@ -512,65 +603,27 @@
             </div>
           {/if}
         {:else}
-          <!-- Local-count fallback (every non-Claude agent, plus
-               Claude when the OAuth call failed). `{@const}` has to be
-               the immediate child of the control-flow block, not nested
-               inside a `<div>` — that's why these sit here instead of
-               next to `.usage-local-rows`. -->
           {@const todayR = localRatio(usage.today.messages, usage.peakDay)}
           {@const weekR = localRatio(usage.week.messages, usage.peakWeek)}
-          <!-- Surface every error kind including no-credentials. The
-               daemon now probes multiple known credential paths and
-               returns the full list in `checkedPath`, so a no-credentials
-               hint here is the user's only diagnostic for "file is
-               actually somewhere I don't know about" — useful enough
-               to outweigh the "looks like an error on a clean install"
-               concern. -->
           {#if agent === "claude" && claudeLiveErr}
             <div class="usage-live-error">{errorHint(claudeLiveErr)}</div>
           {:else if agent === "codex" && codexLiveErr}
             <div class="usage-live-error">{errorHint(codexLiveErr)}</div>
           {/if}
-          <div class="usage-local-rows">
-            <div class="usage-local-row">
-              <span class="usage-local-label">Today</span>
-              <!-- No tier() coloring on local "vs. your peak" bars: a
-                   freshly-detected agent is by definition at 100% of
-                   its own brief history, and painting that red as
-                   "hot" misreads the signal. tier() stays meaningful
-                   only for the live OAuth bars where 100% = real
-                   plan cap. -->
-              <span class="usage-bar" aria-label={`${usage.today.messages} of ${usage.peakDay || "—"} peak day`}>
-                <span
-                  class="usage-bar-fill"
-                  style:width={usage.peakDay > 0
-                    ? `${Math.round(todayR * 100)}%`
-                    : "0%"}
-                ></span>
-              </span>
-              <span class="usage-local-num">
-                {usage.today.messages}
-                <span class="usage-local-unit">msg</span>
-              </span>
-              <span class="usage-local-sub">{usage.today.sessions} sess</span>
-            </div>
+          <div class="usage-bars-grid">
+            <span class="usage-bars-label">Today</span>
+            <span class="usage-bar">
+              <span class="usage-bar-fill" style:width={usage.peakDay > 0 ? `${Math.round(todayR * 100)}%` : "0%"}></span>
+            </span>
+            <span class="usage-bars-value">{usage.today.messages} <span class="usage-bars-unit">msg</span></span>
+            <span class="usage-bars-detail">{usage.today.sessions} sess</span>
 
-            <div class="usage-local-row">
-              <span class="usage-local-label">Week</span>
-              <span class="usage-bar" aria-label={`${usage.week.messages} of ${usage.peakWeek || "—"} peak week`}>
-                <span
-                  class="usage-bar-fill"
-                  style:width={usage.peakWeek > 0
-                    ? `${Math.round(weekR * 100)}%`
-                    : "0%"}
-                ></span>
-              </span>
-              <span class="usage-local-num">
-                {usage.week.messages}
-                <span class="usage-local-unit">msg</span>
-              </span>
-              <span class="usage-local-sub">{usage.week.sessions} sess</span>
-            </div>
+            <span class="usage-bars-label">Week</span>
+            <span class="usage-bar">
+              <span class="usage-bar-fill" style:width={usage.peakWeek > 0 ? `${Math.round(weekR * 100)}%` : "0%"}></span>
+            </span>
+            <span class="usage-bars-value">{usage.week.messages} <span class="usage-bars-unit">msg</span></span>
+            <span class="usage-bars-detail">{usage.week.sessions} sess</span>
           </div>
         {/if}
 
@@ -615,6 +668,11 @@
             {:else if topSessionsState === "error"}
               <div class="usage-top-status usage-top-status-error" aria-live="polite">
                 Couldn't load top sessions.
+                <button
+                  type="button"
+                  class="usage-retry-btn"
+                  on:click={() => { topSessionsState = "idle"; void loadTopSessions(); }}
+                >retry</button>
               </div>
             {:else if (claudeTopSessions?.length ?? 0) === 0}
               <div class="usage-top-status">No Claude sessions with usage in window.</div>
@@ -667,8 +725,8 @@
             {/if}
           </div>
         {/if}
-      </div>
-    </Tooltip>
+      </Popover>
+    {/if}
   </div>
 {/each}
 
@@ -712,7 +770,7 @@
   }
   .agent-usage-btn.brand-codex {
     color: var(--chip-codex-text);
-    --bar-color: #10a37f; /* OpenAI green */
+    --bar-color: #ffffff; /* matches the codex.svg fill */
   }
   .agent-usage-btn.brand-ollama {
     color: var(--chip-ollama-text);
@@ -778,6 +836,18 @@
     color: var(--text-muted);
     font-weight: 400;
   }
+  /* The agent name is a clickable link when a public usage page
+     exists. Subtle underline on hover so it doesn't read as a
+     standalone link — the popover head is already visually "a label
+     row", and the underline just says "click me to go deeper." */
+  .usage-agent-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .usage-agent-link:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
   /* Source pill ("LIVE" / "LOCAL"). High contrast on both states —
      these read as small chips, so they need to be readable at a
      glance, not blend into the surface. */
@@ -800,27 +870,38 @@
   /* Live (OAuth) — 4-column grid: label · bar · % · resets-in.
      Bar is the same fixed 64px width as SessionHeader's ctx-bar so
      a single-agent tooltip doesn't stretch to fill the viewport. */
-  .usage-live-grid {
+  /* Unified 4-column bar grid shared by live + local branches.
+     Same template across every agent popover → no visual shift when
+     the user hovers from Claude to Codex to Ollama.
+     Cells: label | bar (fixed 64px, ctx-bar–sized) | value | detail. */
+  :global(.usage-popover) {
+    width: 340px;
+    max-width: 90vw;
+  }
+  .usage-bars-grid {
     display: grid;
-    grid-template-columns: minmax(7rem, auto) 64px auto auto;
-    gap: 0.3rem 0.6rem;
+    grid-template-columns: minmax(6.5rem, auto) 64px auto auto;
+    gap: 0.25rem 0.6rem;
     align-items: center;
     font-size: 0.74rem;
     font-variant-numeric: tabular-nums;
   }
-  .usage-live-label {
+  .usage-bars-label {
     color: var(--text-muted);
   }
-  .usage-live-pct {
+  .usage-bars-value {
     font-weight: 600;
     color: var(--text-1);
     text-align: right;
     min-width: 2.7rem;
+    white-space: nowrap;
   }
-  .usage-live-reset {
-    /* Bumped from --text-faint to --text-muted — the countdown is one
-       of the more useful bits of info on the row and needs to read,
-       not whisper. */
+  .usage-bars-unit {
+    color: var(--text-muted);
+    margin-left: 0.15rem;
+    font-weight: 400;
+  }
+  .usage-bars-detail {
     color: var(--text-muted);
     font-size: 0.7rem;
     text-align: right;
@@ -837,50 +918,27 @@
     color: var(--text-muted);
   }
 
-  /* Local-count rows — same shape as before, just isolated per agent. */
-  .usage-local-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .usage-local-row {
-    display: grid;
-    /* Fixed 64px bar (matches ctx-bar); the num + sub columns hug their
-       content on the right. A `1fr` bar made single-agent tooltips
-       look comically wide; this keeps them compact. */
-    grid-template-columns: 2.4rem 64px minmax(4rem, auto) auto;
-    gap: 0.5rem;
-    align-items: center;
-    font-size: 0.74rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .usage-local-label {
-    color: var(--text-muted);
-    font-size: 0.7rem;
-  }
-  .usage-local-num {
-    font-weight: 600;
-    color: var(--text-1);
-    white-space: nowrap;
-  }
-  .usage-local-unit {
-    color: var(--text-muted);
-    margin-left: 0.15rem;
-    font-weight: 400;
-  }
-  .usage-local-sub {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    white-space: nowrap;
-    text-align: right;
-  }
-
   /* Shared bar shell — colours match SessionHeader's `.ctx-bar`:
      a `--surface-3` track with a `--text-faint` border, a `--text-faint`
      fill at rest, and `var(--ctx-warn)` / `var(--ctx-hot)` tints when
      the value crosses 60% / 85% of the bar's reference (plan-% for
      live, peak for local). No brand-coloured fills — the bar reads as
      a neutral measurement, only screaming when it should. */
+  /* Projection line: "On pace for ~60% — 40% headroom" or
+     "On pace to exceed limit (~120%)". Shows below the live bars
+     when we have enough elapsed time in the window (>1h) to project
+     meaningfully. Orange/red tint when over-pace so it catches the
+     eye without coloring every healthy projection. */
+  .usage-projection {
+    margin-top: 0.35rem;
+    font-size: 0.7rem;
+    color: var(--text-2);
+  }
+  .usage-projection.over-pace {
+    color: #f97316;
+    font-weight: 600;
+  }
+
   .usage-bar {
     display: inline-grid;
     grid-template-areas: "bar";
@@ -906,16 +964,20 @@
      coloring at high values. The user explicitly asked for this:
      brand color only, no traffic-light states. A soft halo keeps
      small fills readable. */
-  .usage-tt.brand-claude {
+  /* Popover's root gets `.usage-popover.brand-{agent}` via extraClass;
+     set `--bar-color` there so it cascades to every bar + token cell
+     inside. `:global()` needed because the class is owned by Popover's
+     root DOM node, outside this component's scope. */
+  :global(.usage-popover.brand-claude) {
     --bar-color: #cc785c;
   }
-  .usage-tt.brand-codex {
-    --bar-color: #10a37f;
+  :global(.usage-popover.brand-codex) {
+    --bar-color: #ffffff;
   }
-  .usage-tt.brand-ollama {
+  :global(.usage-popover.brand-ollama) {
     --bar-color: #4fb6d2;
   }
-  .usage-tt.brand-copilot {
+  :global(.usage-popover.brand-copilot) {
     --bar-color: #a371f7;
   }
   .usage-bar-fill {
@@ -1001,6 +1063,20 @@
   }
   .usage-top-status-error {
     color: var(--text-2);
+  }
+  .usage-retry-btn {
+    margin-left: 0.4rem;
+    padding: 0.15rem 0.45rem;
+    font: inherit;
+    font-size: 0.7rem;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-1);
+    cursor: pointer;
+  }
+  .usage-retry-btn:hover {
+    background: var(--surface-3);
   }
   /* 10px circular spinner. Sized to sit next to the muted "Scanning
      sessions…" label without dominating it; brand-colour-agnostic so

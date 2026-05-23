@@ -3358,9 +3358,23 @@
       const prev = commandTermSources.get(link.id);
       if (prev) {
         const existing = openSessionsByWt[prev.wtPath] ?? [];
-        if (existing.some((s) => s.source === prev.source)) {
-          scrollNewColIntoView(prev.wtPath, prev.source);
-          return;
+        const colOpen = existing.some((s) => s.source === prev.source);
+        if (colOpen) {
+          const termId = prev.source.replace("__attached__:shell:", "");
+          let alive = false;
+          try {
+            const r = await fetch("/api/terminals");
+            if (r.ok) {
+              const list = (await r.json()) as { id: string; exitedAt?: string }[];
+              alive = list.some((t) => t.id === termId && !t.exitedAt);
+            }
+          } catch {}
+          if (alive) {
+            scrollNewColIntoView(prev.wtPath, prev.source);
+            return;
+          }
+          const next = existing.filter((s) => s.source !== prev.source);
+          openSessionsByWt = { ...openSessionsByWt, [prev.wtPath]: next };
         }
         commandTermSources.delete(link.id);
       }
@@ -5852,7 +5866,7 @@
                             }}
                             title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
                           >
-                            <span class="agent-dot agent-shell"></span>
+                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l5-5-5-5"/><path d="M11 19h8"/></svg>
                             <span class="agent-row-name">Terminal</span>
                             <span class="agent-title muted">{defaultShell}</span>
                           </button>
@@ -5867,7 +5881,7 @@
                             }}
                             title={`Browse files in ${wt.path}`}
                           >
-                            <span class="agent-dot agent-files"></span>
+                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                             <span class="agent-row-name">Files</span>
                             <span class="agent-title muted">browse</span>
                           </button>
@@ -6620,7 +6634,7 @@
                 remotes={repo.remotes ?? []}
                 customLinks={repo.customLinks ?? []}
                 {runningCommandIds}
-                onCommandRun={(r) => handleCommandRun(wt.path, r)}
+                onCommandClick={(l) => handleCommandClick(wt.path, l)}
                 {openIn}
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
