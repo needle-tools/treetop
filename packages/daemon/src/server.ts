@@ -3936,6 +3936,38 @@ const server = Bun.serve<TermWsData, never>({
             cmd: [shell, "-l", "-c", cmdLink.cmd],
             cwd,
             size: { cols: 120, rows: 30 },
+            agent: "shell",
+          });
+          await shells
+            .writeHeader({
+              kind: "header",
+              termId: handle.id,
+              wt: cwd,
+              spawnCwd: cwd,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((err) => {
+              console.error(
+                `supergit daemon: shells.writeHeader failed for command ${handle.id}: ${err}`,
+              );
+            });
+          shellTermIds.add(handle.id);
+          const cleanup = handle.subscribe({
+            onData() {},
+            onExit(info) {
+              shellTermIds.delete(handle.id);
+              clearShellInputBuffer(handle.id);
+              shellCwds.delete(handle.id);
+              void shells
+                .append(handle.id, {
+                  kind: "exit",
+                  ts: new Date().toISOString(),
+                  code: info.code,
+                  signal: info.signal,
+                })
+                .catch(() => {});
+              cleanup();
+            },
           });
           return json({ ok: true, mode: "internal", termId: handle.id, pid: handle.pid });
         } catch (e) {

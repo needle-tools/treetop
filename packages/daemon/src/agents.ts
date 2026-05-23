@@ -252,7 +252,16 @@ async function readTail(path: string, bytes = 64 * 1024): Promise<string> {
  *  session don't overlap. */
 export async function readClaudeSessionMeta(
   path: string,
+  mtimeMs?: number,
 ): Promise<{ cwd?: string; title?: string; lastUserMessage?: string }> {
+  if (mtimeMs !== undefined) {
+    const cached = claudeMetaCache.get(path);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      claudeMetaCache.delete(path);
+      claudeMetaCache.set(path, cached);
+      return cached.result;
+    }
+  }
   const head = await readHead(path, 256 * 1024);
   if (!head) return {};
   let cwd: string | undefined;
@@ -321,7 +330,15 @@ export async function readClaudeSessionMeta(
   if (lastUserMessage && lastUserMessage.length > 600) {
     lastUserMessage = lastUserMessage.slice(0, 599) + "…";
   }
-  return { cwd, title, lastUserMessage };
+  const result = { cwd, title, lastUserMessage };
+  if (mtimeMs !== undefined) {
+    claudeMetaCache.set(path, { mtimeMs, result });
+    if (claudeMetaCache.size > MAX_CLAUDE_META_CACHE) {
+      const oldest = claudeMetaCache.keys().next().value;
+      if (oldest !== undefined) claudeMetaCache.delete(oldest);
+    }
+  }
+  return result;
 }
 
 /** Per-prompt cap for the tooltip-friendly user-message snapshot. The
@@ -372,6 +389,16 @@ interface ClaudeUserScanResult {
  *  without this cache reads gigabytes of JSONL every time /api/repos polls
  *  — which is exactly the wedge we observed. Keyed on mtimeMs (not size)
  *  because some agents rewrite files in place; mtime catches that. */
+const claudeMetaCache = new Map<
+  string,
+  { mtimeMs: number; result: { cwd?: string; title?: string; lastUserMessage?: string } }
+>();
+const MAX_CLAUDE_META_CACHE = 5000;
+
+export function clearClaudeMetaCache(): void {
+  claudeMetaCache.clear();
+}
+
 const claudeUserScanCache = new Map<
   string,
   { mtimeMs: number; result: ClaudeUserScanResult }
@@ -727,7 +754,7 @@ async function claudeSessionFromFile(
   sessionId: string,
   fileStat: { mtimeMs: number; mtime: Date },
 ): Promise<AgentSession | null> {
-  const meta = await readClaudeSessionMeta(sessionPath);
+  const meta = await readClaudeSessionMeta(sessionPath, fileStat.mtimeMs);
   if (!meta.cwd) return null;
   const userStats = await scanClaudeUserMessages(
     sessionPath,
@@ -767,60 +794,70 @@ export async function scanClaude(
   } catch {
     return [];
   }
-  const sessions: AgentSession[] = [];
-  for (const proj of projDirs) {
-    const projPath = join(root, proj);
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(projPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    // Track session IDs we've seen via flat .jsonl files so we don't
-    // double-count sessions that have both a .jsonl AND a directory.
-    const seenIds = new Set<string>();
-    // Pass 1: flat .jsonl files (original format).
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const sessionPath = join(projPath, entry.name);
-      const sessionId = entry.name.replace(/\.jsonl$/, "");
+  const perProject = await Promise.all(
+    projDirs.map(async (proj) => {
+      const projPath = join(root, proj);
+      let entries: import("node:fs").Dirent[];
       try {
-        const stats = await stat(sessionPath);
-        const session = await claudeSessionFromFile(
-          sessionPath,
-          sessionId,
-          stats,
-        );
-        if (session) {
-          sessions.push(session);
-          seenIds.add(sessionId);
+        entries = await readdir(projPath, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+      // Pass 1: flat .jsonl files (original format) — parallel.
+      const flatEntries = entries.filter(
+        (e) => e.isFile() && e.name.endsWith(".jsonl"),
+      );
+      const flatResults = await Promise.all(
+        flatEntries.map(async (entry) => {
+          const sessionPath = join(projPath, entry.name);
+          const sessionId = entry.name.replace(/\.jsonl$/, "");
+          try {
+            const stats = await stat(sessionPath);
+            const session = await claudeSessionFromFile(
+              sessionPath,
+              sessionId,
+              stats,
+            );
+            return session ? { sessionId, session } : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const sessions: AgentSession[] = [];
+      const seenIds = new Set<string>();
+      for (const r of flatResults) {
+        if (r) {
+          sessions.push(r.session);
+          seenIds.add(r.sessionId);
         }
-      } catch {
-        // unreadable session, skip
       }
-    }
-    // Pass 2: directory-based sessions (newer Claude format).
-    // Each UUID directory may contain subagents/*.jsonl. Pick the most
-    // recently modified subagent file as the session representative.
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !UUID_RE.test(entry.name)) continue;
-      if (seenIds.has(entry.name)) continue; // already found via .jsonl
-      const sessionDir = join(projPath, entry.name);
-      try {
-        const best = await bestSubagentFile(sessionDir);
-        if (!best) continue;
-        const session = await claudeSessionFromFile(
-          best.path,
-          entry.name,
-          best,
-        );
-        if (session) sessions.push(session);
-      } catch {
-        // skip
+      // Pass 2: directory-based sessions (newer Claude format) — parallel.
+      const dirEntries = entries.filter(
+        (e) =>
+          e.isDirectory() &&
+          UUID_RE.test(e.name) &&
+          !seenIds.has(e.name),
+      );
+      const dirResults = await Promise.all(
+        dirEntries.map(async (entry) => {
+          const sessionDir = join(projPath, entry.name);
+          try {
+            const best = await bestSubagentFile(sessionDir);
+            if (!best) return null;
+            return await claudeSessionFromFile(best.path, entry.name, best);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      for (const s of dirResults) {
+        if (s) sessions.push(s);
       }
-    }
-  }
-  return sessions;
+      return sessions;
+    }),
+  );
+  return perProject.flat();
 }
 
 /** Recursively collect `.jsonl` / `.json` files under `dir`. Codex

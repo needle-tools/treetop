@@ -13,6 +13,7 @@ import {
   claudeProjectDirForCwd,
   readJsonlField,
   readClaudeSessionMeta,
+  clearClaudeMetaCache,
   scanClaudeUserMessages,
   scanCodexMessageCount,
   scanCodexContextTokens,
@@ -230,6 +231,60 @@ describe("readClaudeSessionMeta", () => {
     expect((await readClaudeSessionMeta(file)).title).toBe(
       "I'll read the file first.",
     );
+  });
+
+  test("returns cached result when mtimeMs matches", async () => {
+    clearClaudeMetaCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      '{"cwd":"/a"}\n{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}\n',
+    );
+    const first = await readClaudeSessionMeta(file, 1000);
+    expect(first.cwd).toBe("/a");
+    expect(first.title).toBe("hello");
+    // Overwrite file with different content but same mtimeMs → cache hit
+    await writeFile(file, '{"cwd":"/b"}\n{"type":"user","message":{"content":[{"type":"text","text":"world"}]}}\n');
+    const second = await readClaudeSessionMeta(file, 1000);
+    expect(second.cwd).toBe("/a");
+    expect(second.title).toBe("hello");
+  });
+
+  test("invalidates cache when mtimeMs changes", async () => {
+    clearClaudeMetaCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      '{"cwd":"/a"}\n{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}\n',
+    );
+    await readClaudeSessionMeta(file, 1000);
+    await writeFile(
+      file,
+      '{"cwd":"/b"}\n{"type":"user","message":{"content":[{"type":"text","text":"world"}]}}\n',
+    );
+    const refreshed = await readClaudeSessionMeta(file, 2000);
+    expect(refreshed.cwd).toBe("/b");
+    expect(refreshed.title).toBe("world");
+  });
+
+  test("without mtimeMs always reads from disk", async () => {
+    clearClaudeMetaCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      '{"cwd":"/a"}\n{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}\n',
+    );
+    await readClaudeSessionMeta(file);
+    await writeFile(
+      file,
+      '{"cwd":"/b"}\n{"type":"user","message":{"content":[{"type":"text","text":"world"}]}}\n',
+    );
+    const second = await readClaudeSessionMeta(file);
+    expect(second.cwd).toBe("/b");
+    expect(second.title).toBe("world");
   });
 });
 
