@@ -810,6 +810,13 @@
    *  by NewSessionCol's on:workingChange (which TerminalView raises on
    *  PTY frames). Drives the rotating-gradient border on the agent pill. */
   let transientWorking: Record<string, boolean> = {};
+  /** ms timestamp of when each source last entered the "working" state.
+   *  Used to filter out brief PTY output bursts (status-bar redraws,
+   *  resize-triggered re-renders) that don't represent real agent work
+   *  — only working periods longer than MIN_WORKING_FOR_PULSE_MS arm
+   *  the "unread" pulse in the dock. */
+  let workingStartedAt: Record<string, number | undefined> = {};
+  const MIN_WORKING_FOR_PULSE_MS = 3_000;
   /** Sources whose PTY has exited (TerminalView.onExit fired). The
    *  column stays in the page in read mode; the side dock uses this
    *  to render the row's dot smaller so the user can see at a
@@ -6685,17 +6692,14 @@
                                 [s.source]: nowWorking,
                               };
                               if (wasWorking && !nowWorking) {
-                                // working → idle: arm the debounced
-                                // "unread" stamp. Fires only after
-                                // FINISH_DEBOUNCE_MS of continued
-                                // idle, so tool-call oscillation
-                                // doesn't trigger the pulse.
-                                scheduleFinished(s.source);
-                              } else if (nowWorking) {
-                                // AI is working again — cancel any
-                                // pending debounce and clear an
-                                // existing pulse so the dot doesn't
-                                // keep nagging through a new turn.
+                                const start = workingStartedAt[s.source];
+                                const worked = start ? Date.now() - start : 0;
+                                if (worked >= MIN_WORKING_FOR_PULSE_MS) {
+                                  scheduleFinished(s.source);
+                                }
+                                workingStartedAt[s.source] = undefined;
+                              } else if (nowWorking && !wasWorking) {
+                                workingStartedAt[s.source] = Date.now();
                                 clearFinishedFor(s.source);
                               }
                             }}
@@ -6704,15 +6708,13 @@
                                 ...transientExited,
                                 [s.source]: true,
                               };
-                              // PTY exited: clear live state flags
-                              // so the dot doesn't keep "working"
-                              // or "awaiting" animations going.
                               if (transientWorking[s.source]) {
                                 transientWorking = {
                                   ...transientWorking,
                                   [s.source]: false,
                                 };
                               }
+                              workingStartedAt[s.source] = undefined;
                               clearFinishedFor(s.source);
                               if (transientAwaiting[s.source]) {
                                 transientAwaiting = {
@@ -6760,8 +6762,14 @@
                                 [s.source]: w,
                               };
                               if (wasWorking && !w) {
-                                scheduleFinished(s.source);
-                              } else if (w) {
+                                const start = workingStartedAt[s.source];
+                                const worked = start ? Date.now() - start : 0;
+                                if (worked >= MIN_WORKING_FOR_PULSE_MS) {
+                                  scheduleFinished(s.source);
+                                }
+                                workingStartedAt[s.source] = undefined;
+                              } else if (w && !wasWorking) {
+                                workingStartedAt[s.source] = Date.now();
                                 clearFinishedFor(s.source);
                               }
                             }}
