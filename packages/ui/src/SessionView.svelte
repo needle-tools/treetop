@@ -88,6 +88,12 @@
    *  the header's burger menu. Used by Ollama to inject "Resume with
    *  context" alongside the default Resume action. */
   export let extraMenuItems: SessionMenuItem[] = [];
+  /** Called when the user picks "Continue with <agent>" from the burger
+   *  menu. The parent fetches /api/session/context, opens a new column
+   *  for `targetAgent`, and seeds it with the conversation context.
+   *  When undefined the menu items are hidden (e.g. copilot sessions
+   *  where continuation isn't supported). */
+  export let onContinueWith: ((targetAgent: "claude" | "codex" | "ollama", ollamaModel?: string) => void) | undefined = undefined;
   /** Called when the user successfully renames this session. Lets the
    *  parent refresh its `/api/repos` snapshot so the worktree row and
    *  the "+N sessions" popover reflect the new title immediately,
@@ -838,6 +844,30 @@
         onSelect: (triggerRect: DOMRect) => void saveAsLink(triggerRect),
       },
     ];
+    if (onContinueWith && session && session.messages.length > 0) {
+      const others: Array<{ agent: "claude" | "codex" | "ollama"; label: string }> = [
+        { agent: "claude", label: "Claude" },
+        { agent: "codex", label: "Codex" },
+        { agent: "ollama", label: "Ollama" },
+      ].filter((o) => o.agent !== agent) as Array<{ agent: "claude" | "codex" | "ollama"; label: string }>;
+      base.push({
+        kind: "submenu",
+        label: "Continue with…",
+        iconSvg: [
+          "m16 3 4 4-4 4",
+          "M20 7H4",
+          "m8 21-4-4 4-4",
+          "M4 17h16",
+        ],
+        title: "Start a new session with another agent, seeded with this conversation's context",
+        children: others.map((o) => ({
+          kind: "action" as const,
+          label: o.label,
+          title: `Continue with ${o.label}`,
+          onSelect: () => onContinueWith!(o.agent),
+        })),
+      });
+    }
     return [...base, ...extraMenuItems];
   })();
 

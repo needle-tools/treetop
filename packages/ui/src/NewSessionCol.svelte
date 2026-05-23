@@ -79,6 +79,9 @@
    *  this the drop handler in App.svelte never sees a source and the
    *  column snaps back instead of reordering. */
   export let onDragStart: (e: DragEvent) => void = () => {};
+  /** Context text to seed into the PTY on first awaiting signal.
+   *  Forwarded straight to TerminalView's initialPrompt. */
+  export let initialPrompt: string | undefined = undefined;
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -220,6 +223,7 @@
     {procName}
     {attachTermId}
     {resumeFromTermId}
+    {initialPrompt}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}

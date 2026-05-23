@@ -93,7 +93,7 @@ export class DismissedSessionsStore {
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.
  */
-export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
+export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell" | "files";
 
 export interface PersistedSession {
   agent: PersistedAgent;
@@ -138,6 +138,7 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   // every persisted shell entry on `OpenSessionsStore.load()` — the
   // disposed-terminal-column-disappears-after-reload bug.
   "shell",
+  "files",
 ]);
 
 function sanitizeSession(item: unknown): PersistedSession | null {
@@ -242,6 +243,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   // Past-shell read-mode column — ShellView renders the transcript and
   // a Resume button.
   "__transcript__:",
+  // File browser panel — entirely UI-owned, no daemon-side session.
+  "__files__:",
 ] as const;
 
 /**
@@ -287,6 +290,7 @@ export function cmdForOpenSession(
     agent: PersistedAgent | "shell";
     resumeSessionId?: string;
     preassignedSessionId?: string;
+    contextFilePath?: string;
   },
   defaultShell: string,
 ): string[] {
@@ -310,17 +314,23 @@ export function cmdForOpenSession(
         "--allow-dangerously-skip-permissions",
       ];
     }
-    // Force a fresh session id for brand-new columns so recent Claude
-    // versions can't auto-load the cwd's most-recent conversation
-    // (`claude` alone has started doing this; --session-id makes it
-    // deterministic).
+    const cmd = ["claude"];
     if (s.preassignedSessionId) {
-      return ["claude", "--session-id", s.preassignedSessionId];
+      cmd.push("--session-id", s.preassignedSessionId);
     }
-    return ["claude"];
+    if (s.contextFilePath) {
+      cmd.push("--append-system-prompt-file", s.contextFilePath);
+    }
+    return cmd;
   }
   if (s.agent === "codex") {
     if (sid) return ["codex", "resume", sid];
+    if (s.contextFilePath) {
+      return [
+        "codex",
+        `Continue this conversation. Read the prior context from ${s.contextFilePath}`,
+      ];
+    }
     return ["codex"];
   }
   // copilot has no resume semantics in v0; ollama no longer spawns a

@@ -50,6 +50,11 @@
    *  prior cmd history (visible in ShellView next time the column is
    *  closed and reopened in read mode). */
   export let resumeFromTermId: string | undefined = undefined;
+  /** @deprecated — kept as a no-op prop so existing callers don't
+   *  break. Context injection now goes through the cmd array
+   *  (--append-system-prompt-file for Claude, positional prompt for
+   *  Codex). */
+  export let initialPrompt: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;

@@ -13,6 +13,7 @@
   import Tooltip from "./Tooltip.svelte";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
+  import FileBrowser from "./FileBrowser.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { statusSummary, type FileStatus } from "./status-summary";
@@ -158,10 +159,12 @@
    *  tab; file / folder links go through `/api/open-default` which
    *  hands the path to the platform's default app (Finder, Explorer,
    *  xdg-open). */
+  type CommandRunMode = "internal" | "external" | "shell";
   type CustomLink =
     | { id: string; kind?: "url"; url: string; name?: string }
     | { id: string; kind: "file"; path: string; name?: string }
-    | { id: string; kind: "folder"; path: string; name?: string };
+    | { id: string; kind: "folder"; path: string; name?: string }
+    | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
   interface Repo {
     id: string;
     path: string;
@@ -198,6 +201,7 @@
   let repos: Repo[] = [];
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
+  let runningCommandIds: Set<string> = new Set();
   /** Shells (Terminal columns the daemon is hosting / has hosted). Used
    *  by the worktree session picker so past + live shells appear next
    *  to Claude/Codex agent sessions instead of hiding under a separate
@@ -1606,6 +1610,81 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  async function continueSessionWith(
+    wtPath: string,
+    sessionSource: string,
+    targetAgent: "claude" | "codex" | "ollama",
+    ollamaModel?: string,
+  ): Promise<void> {
+    let contextPath: string;
+    let contextText: string | undefined;
+    try {
+      const res = await fetch(
+        `/api/session/context?source=${encodeURIComponent(sessionSource)}`,
+      );
+      if (!res.ok) return;
+      const body = (await res.json()) as { contextPath?: string; context?: string };
+      contextPath = body.contextPath ?? "";
+      contextText = body.context;
+    } catch {
+      return;
+    }
+    if (!contextPath) return;
+
+    if (targetAgent === "ollama") {
+      await ensureOllamaModelsLoaded();
+      const model = ollamaModel ?? ollamaModels[0]?.name ?? "gemma3:4b";
+      await openNewOllamaChat(wtPath, model);
+      const lastWt = openSessionsByWt[wtPath] ?? [];
+      const ollamaEntry = [...lastWt].reverse().find(
+        (s) => s.agent === "ollama" && s.source.startsWith("__transcript__:ollama:"),
+      );
+      if (ollamaEntry) {
+        const termId = ollamaEntry.source.replace("__transcript__:ollama:", "");
+        const prompt =
+          "I'm continuing a conversation from another agent. " +
+          "Pick up where it left off:\n\n" +
+          (contextText ?? `(see ${contextPath})`);
+        void fetch("/api/ollama/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ termId, content: prompt }),
+        });
+      }
+      return;
+    }
+
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__new__:${targetAgent}:${id}`;
+    const entry: OpenSession = {
+      agent: targetAgent,
+      source: synthetic,
+      contextFilePath: contextPath,
+    };
+    if (targetAgent === "claude") {
+      (entry as { preassignedSessionId?: string }).preassignedSessionId =
+        crypto.randomUUID();
+    }
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
+  }
+
+  function openFileBrowser(wtPath: string) {
+    const id = `fb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__files__:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const entry: OpenSession = { agent: "files", source: synthetic };
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
+  }
+
   async function loadDefaultShell() {
     try {
       const res = await fetch("/api/shell-default");
@@ -1951,6 +2030,10 @@
      *  time (e.g. `qwen3-coder:30b`). Persisted so a reload re-spawns
      *  `ollama run <model>`, and surfaced in the agent pill. */
     ollamaModel?: string;
+    /** Absolute path to the context handoff file written by the daemon.
+     *  Claude gets `--append-system-prompt-file <path>`, Codex gets it
+     *  as a positional prompt reference. Ephemeral — not persisted. */
+    contextFilePath?: string;
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -3127,7 +3210,8 @@
       | { url: string; name?: string }
       | { kind: "url"; url: string; name?: string }
       | { kind: "file"; path: string; name?: string }
-      | { kind: "folder"; path: string; name?: string },
+      | { kind: "folder"; path: string; name?: string }
+      | { kind: "command"; cmd: string; cwd?: string; runMode?: string; name?: string },
   ): Promise<boolean> {
     try {
       const res = await fetch(`/api/repos/${repoId}/custom-links`, {
@@ -3199,7 +3283,10 @@
     input: {
       url?: string;
       path?: string;
-      kind?: "url" | "file" | "folder";
+      cmd?: string;
+      cwd?: string;
+      runMode?: string;
+      kind?: "url" | "file" | "folder" | "command";
       name?: string;
     },
   ): Promise<boolean> {
@@ -3248,6 +3335,71 @@
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const commandTermSources = new Map<string, { wtPath: string; source: string }>();
+
+  async function handleCommandClick(wtPath: string, link: CustomLink) {
+    if (link.kind !== "command") return;
+    const cmdLink = link as { cmd: string; cwd?: string; runMode: string; id: string };
+    const isRunning = runningCommandIds.has(link.id);
+
+    if (isRunning && cmdLink.runMode === "shell") {
+      void fetch("/api/command/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ linkId: link.id }),
+      });
+      return;
+    }
+
+    if (cmdLink.runMode === "internal") {
+      const prev = commandTermSources.get(link.id);
+      if (prev) {
+        const existing = openSessionsByWt[prev.wtPath] ?? [];
+        if (existing.some((s) => s.source === prev.source)) {
+          scrollNewColIntoView(prev.wtPath, prev.source);
+          return;
+        }
+        commandTermSources.delete(link.id);
+      }
+    }
+
+    const repoId = repos.find((r) =>
+      (r.customLinks ?? []).some((l) => l.id === link.id),
+    )?.id;
+
+    try {
+      const res = await fetch("/api/command/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ linkId: link.id, repoId, repoPath: wtPath }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        addToast({ kind: "error", message: `Command failed: ${body.error ?? `HTTP ${res.status}`}` });
+        return;
+      }
+
+      if (body.mode === "internal" && body.termId) {
+        const source = `__attached__:shell:${body.termId}`;
+        commandTermSources.set(link.id, { wtPath, source });
+        undismissShellSource(source);
+        const existing = openSessionsByWt[wtPath] ?? [];
+        if (!existing.some((s) => s.source === source)) {
+          const entry: OpenSession = { agent: "shell", source };
+          const insertAt = visibleLeftInsertIndex(wtPath, existing);
+          const next = [...existing];
+          next.splice(insertAt, 0, entry);
+          openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+          scrollNewColIntoView(wtPath, source);
+        }
+      } else if (body.mode === "shell") {
+        void refreshRunningCommands();
+      }
+    } catch (e) {
+      addToast({ kind: "error", message: `Command failed: ${e instanceof Error ? e.message : String(e)}` });
     }
   }
 
@@ -3504,6 +3656,15 @@
     }
   }
 
+  async function refreshRunningCommands(): Promise<void> {
+    try {
+      const res = await fetch("/api/commands/running");
+      if (!res.ok) return;
+      const body = (await res.json()) as { running: { linkId: string }[] };
+      runningCommandIds = new Set(body.running.map((r) => r.linkId));
+    } catch {}
+  }
+
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
     es.addEventListener("change", (rawEvt: MessageEvent) => {
@@ -3586,10 +3747,11 @@
         void refreshMessages();
         return;
       }
+      if (payload.kind === "command_start" || payload.kind === "command_exit") {
+        void refreshRunningCommands();
+        return;
+      }
       if (payload.kind === "session_copied") {
-        // A session was just copied to a new worktree — refresh repos
-        // so the agent list + session counts update, then focus the
-        // copied session in its target strip.
         void load();
         return;
       }
@@ -4630,6 +4792,7 @@
     void loadEditors();
     void loadDefaultShell();
     void loadSystemInfo();
+    void refreshRunningCommands();
     void restoreLiveShells();
     // Background-poll the TUI count so the header button shows it
     // before the popover is opened. Switches to a faster cadence in
@@ -5694,6 +5857,21 @@
                             <span class="agent-title muted">{defaultShell}</span>
                           </button>
                         </li>
+                        <li>
+                          <button
+                            class="agent-row new-agent-row"
+                            on:click={() => {
+                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                              unfoldRowIfFolded(row.key);
+                              openFileBrowser(wt.path);
+                            }}
+                            title={`Browse files in ${wt.path}`}
+                          >
+                            <span class="agent-dot agent-files"></span>
+                            <span class="agent-row-name">Files</span>
+                            <span class="agent-title muted">browse</span>
+                          </button>
+                        </li>
                       </ul>
                     </Popover>
                   {/if}
@@ -6245,9 +6423,12 @@
             {#if rowFolded[row.key] && wt}
               <OpenInActions
                 path={wt.path}
+                repoId={repo.id}
                 {editors}
                 remotes={repo.remotes ?? []}
                 customLinks={repo.customLinks ?? []}
+                {runningCommandIds}
+                onCommandClick={(l) => handleCommandClick(wt.path, l)}
                 {openIn}
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
@@ -6434,9 +6615,12 @@
 
               <OpenInActions
                 path={wt.path}
+                repoId={repo.id}
                 {editors}
                 remotes={repo.remotes ?? []}
                 customLinks={repo.customLinks ?? []}
+                {runningCommandIds}
+                onCommandRun={(r) => handleCommandRun(wt.path, r)}
                 {openIn}
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
@@ -6508,7 +6692,15 @@
                         }}
                         out:closeColumn
                       >
-                        {#if s.source.startsWith("__transcript__:ollama:")}
+                        {#if s.source.startsWith("__files__:")}
+                          <FileBrowser
+                            wtPath={wt.path}
+                            source={s.source}
+                            onClose={() => closeSessionInWt(wt.path, s)}
+                            onDragStart={(e) =>
+                              handleSessionDragStart(e, wt.path, i)}
+                          />
+                        {:else if s.source.startsWith("__transcript__:ollama:")}
                           <!-- Read-mode column for a stopped (or live)
                                Ollama session. OllamaTranscriptView is a
                                thin wrapper around SessionView so the
@@ -6529,6 +6721,8 @@
                               wt={wt.path}
                               model={ollamaModelLabel}
                               sourcePath={ollamaSourcePath}
+                              onContinueWith={(targetAgent, ollamaModel) =>
+                                void continueSessionWith(wt.path, ollamaSourcePath, targetAgent, ollamaModel)}
                               on:close={() => closeSessionInWt(wt.path, s)}
                             />
                           {:else}
@@ -6779,6 +6973,8 @@
                                 [s.source]: a,
                               };
                             }}
+                            onContinueWith={(targetAgent, ollamaModel) =>
+                              void continueSessionWith(wt.path, s.source, targetAgent, ollamaModel)}
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}

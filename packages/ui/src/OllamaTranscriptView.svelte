@@ -34,6 +34,7 @@
    *  for freshly-created sessions). SessionView fetches it via
    *  `/api/session?source=<path>`. */
   export let sourcePath: string;
+  export let onContinueWith: ((targetAgent: "claude" | "codex" | "ollama", ollamaModel?: string) => void) | undefined = undefined;
 
   // termId is currently unused inside this shim; SessionView keys
   // off `source` (the JSONL path). Kept as a prop so callers don't
@@ -52,5 +53,6 @@
   wtPath={wt}
   initialMode="read"
   model={model}
+  {onContinueWith}
   onClose={() => dispatch("close")}
 />

@@ -108,6 +108,35 @@
   min-width: 11rem;
   max-width: min(28rem, 90vw);
   padding: 0.35rem;
+  /* Must be visible so hover-flyout submenus (Continue with → …)
+     can extend beyond the popover boundary. The parent .actions-popover
+     sets overflow: auto which would clip them. */
+  overflow: visible;
+}
+
+/* Submenu flyout inside .session-menu-popover (Continue with → …).
+   Positioned to the right of the parent item, flush with its top edge.
+   200ms hide-delay in JS keeps the flyout alive while the cursor
+   travels from the trigger to the child list. */
+.session-menu-popover .has-submenu {
+  position: relative;
+}
+.session-menu-popover .submenu-list {
+  position: absolute;
+  right: 100%;
+  top: -0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 10rem;
+  z-index: 1;
 }
 
 /* Events popover ("diagnostics"): wider than the actions default; the

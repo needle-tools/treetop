@@ -1,7 +1,7 @@
 import { join, resolve, normalize, sep, dirname } from "node:path";
 import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
-import { stat as fsStat, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
 import {
   listWorktrees,
@@ -169,6 +169,19 @@ const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
  *  one Ollama call covers the whole burst. */
 const repoSummaryInflight = new Map<string, Promise<void>>();
 const notes = await NotesStore.open(WORKSPACE_PATH);
+
+import type { Subprocess } from "bun";
+import { customLinkKind, type CommandRunMode } from "./workspace";
+
+interface RunningCommand {
+  proc: Subprocess;
+  linkId: string;
+  repoId: string;
+  pid: number;
+  startedAt: string;
+  cmd: string;
+}
+const runningCommands = new Map<string, RunningCommand>();
 
 /** Reused by every /api/session* route to keep ?source= from being
  *  an arbitrary file-read. Returns the agent kind (claude/codex/
@@ -491,7 +504,10 @@ function broadcast(event: string, data: unknown): void {
   // so we leave those.
   if (event === "change") {
     const kind = (data as { kind?: unknown } | null)?.kind;
-    if (kind !== "fs_change") invalidateReposCache();
+    if (kind !== "fs_change") {
+      invalidateReposCache();
+      invalidateAgentsCache();
+    }
   }
   const payload = sseEncoder.encode(
     `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
@@ -554,6 +570,35 @@ let claudeTopSessionsCache: {
   at: number;
   value: Awaited<ReturnType<typeof topClaudeSessionsByTokens>> | null;
 } = { at: 0, value: null };
+
+// detectAgents() walks ~/.claude + ~/.codex + workspaceStorage on every
+// call. Cache the result for 10s + single-flight so rapid-fire /api/repos
+// refreshes (SSE bursts, page reloads, mutations) share a single scan.
+import type { AgentSession } from "./agents";
+const AGENTS_CACHE_MS = 10_000;
+let agentsCache: { at: number; value: AgentSession[] } | null = null;
+let agentsInflight: Promise<AgentSession[]> | null = null;
+
+async function cachedDetectAgents(): Promise<AgentSession[]> {
+  const now = Date.now();
+  if (agentsCache && now - agentsCache.at < AGENTS_CACHE_MS) {
+    return agentsCache.value;
+  }
+  if (agentsInflight) return agentsInflight;
+  agentsInflight = detectAgents(WORKSPACE_PATH)
+    .then((result) => {
+      agentsCache = { at: Date.now(), value: result };
+      return result;
+    })
+    .finally(() => {
+      agentsInflight = null;
+    });
+  return agentsInflight;
+}
+
+function invalidateAgentsCache(): void {
+  agentsCache = null;
+}
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
   return {
@@ -641,7 +686,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const tPrelude = performance.now();
         const [repos, agents, titles] = await Promise.all([
           workspace.listRepos(),
-          detectAgents(WORKSPACE_PATH),
+          cachedDetectAgents(),
           workspace.listSessionTitles(),
         ]);
         const titled = agents.map((s) =>
@@ -1345,6 +1390,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
           { method: "GET", path: "/api/sessions/folder-suggestions", description: "list folders the user could add to the dashboard, derived from detected sessions' cwd. Groups sessions by folder, filters already-registered repos + their worktrees, enriches with `git remote get-url origin`. Sorted newest-active first. Returns [{path,name,repoUrl?,sessionCount,lastActive,agents:string[],exists:true}]." },
           { method: "GET", path: "/api/session", description: "?source=<file>: normalized message stream for a known session (Claude or Codex)" },
+          { method: "GET", path: "/api/session/context", description: "?source=<file>: sampled conversation text for handing off to another agent. Returns { context, agent, sessionId, cwd, totalMessages, includedMessages, estimatedTokens }." },
           { method: "POST", path: "/api/session/send", body: { agent: "claude", sessionId: "uuid", cwd: "string", text: "string" }, description: "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id." },
           { method: "POST", path: "/api/session/title", body: { source: "string", title: "string" }, description: "set a manual title for the session keyed by `source`. Empty title clears." },
           { method: "GET", path: "/api/session-titles", description: "return the full `{ [source]: title }` map of every saved manual title (including titles stored against synthetic `__new__:`/`__attached__:` sources)." },
@@ -1377,6 +1423,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/pick-folder", description: "open OS-native folder picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/pick-file", body: { prompt: "string?", startAt: "string? (file or dir to open the picker in)", fallback: "string? (used when startAt doesn't exist)" }, description: "open OS-native file picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/open-default", body: { path: "string" }, description: "open a file with the OS default application (same handler a Finder/Explorer double-click would route to). Used by file-flavoured custom links." },
+          { method: "GET", path: "/api/files", description: "?path=<dir> — list directory contents. Returns { entries: [{ name, type, size }] } where type is 'file' | 'directory' | 'symlink'. Used by the file browser panel." },
           { method: "GET", path: "/api/page-title", description: "?url= — best-effort `<title>` extractor for a remote URL. Used by the custom-link 'auto-fill label' path so chips get a friendlier name than the bare host. Returns { url, title } where title may be null." },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
@@ -1408,7 +1455,7 @@ const server = Bun.serve<TermWsData, never>({
 
     if (url.pathname === "/api/agents" && req.method === "GET") {
       const [agents, titles] = await Promise.all([
-        detectAgents(WORKSPACE_PATH),
+        cachedDetectAgents(),
         workspace.listSessionTitles(),
       ]);
       return json(
@@ -1438,7 +1485,7 @@ const server = Bun.serve<TermWsData, never>({
       ) {
         return json(agentUsageCache.value);
       }
-      const agents = await detectAgents(WORKSPACE_PATH);
+      const agents = await cachedDetectAgents();
       const report = await computeAgentUsage(agents, now, {
         skipClaudeTopSessions: true,
       });
@@ -1468,7 +1515,7 @@ const server = Bun.serve<TermWsData, never>({
       // Top-Sessions list shows whatever the user renamed sessions to
       // rather than the auto-derived first-prompt title.
       const [agents, titles] = await Promise.all([
-        detectAgents(WORKSPACE_PATH),
+        cachedDetectAgents(),
         workspace.listSessionTitles(),
       ]);
       const enriched = agents.map((s) =>
@@ -1491,7 +1538,7 @@ const server = Bun.serve<TermWsData, never>({
       req.method === "GET"
     ) {
       const [agents, repos] = await Promise.all([
-        detectAgents(WORKSPACE_PATH),
+        cachedDetectAgents(),
         workspace.listRepos(),
       ]);
       // Suppress already-registered repos AND every worktree they own,
@@ -1657,6 +1704,52 @@ const server = Bun.serve<TermWsData, never>({
       );
       return new Response(body, {
         headers: { "Content-Type": "application/json", ...CORS },
+      });
+    }
+
+    if (url.pathname === "/api/session/context" && req.method === "GET") {
+      const source = url.searchParams.get("source");
+      if (!source) {
+        return json(
+          { error: "?source=<session-file> required" },
+          { status: 400 },
+        );
+      }
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
+      }
+      const parsed = await parseSessionFile(resolved.agent, source);
+      const sampled = sampleSessionForSummary(parsed.messages, {
+        targetMessages: 60,
+        maxMsgChars: 4096,
+        budgetChars: 64 * 1024,
+      });
+      if (!sampled.prompt) {
+        return json({ error: "session has no text content" }, { status: 404 });
+      }
+      const ctxDir = join(WORKSPACE_PATH, "context-handoffs");
+      try { mkdirSync(ctxDir, { recursive: true }); } catch {}
+      const ctxId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ctxPath = join(ctxDir, `${ctxId}.md`);
+      const header =
+        `# Prior conversation context (${resolved.agent} session)\n` +
+        `<!-- source: ${source} -->\n` +
+        `<!-- ${sampled.includedMessages} of ${sampled.totalMessages} messages, ~${sampled.estimatedTokens} tokens -->\n\n` +
+        "Pick up where the previous conversation left off.\n\n---\n\n";
+      await fsWriteFile(ctxPath, header + sampled.prompt, "utf-8");
+      return json({
+        contextPath: ctxPath,
+        context: sampled.prompt,
+        agent: resolved.agent,
+        sessionId: parsed.sessionId || undefined,
+        cwd: parsed.cwd,
+        totalMessages: sampled.totalMessages,
+        includedMessages: sampled.includedMessages,
+        estimatedTokens: sampled.estimatedTokens,
       });
     }
 
@@ -3700,8 +3793,14 @@ const server = Bun.serve<TermWsData, never>({
         | { url: string; name?: string }
         | { kind: "url"; url: string; name?: string }
         | { kind: "file"; path: string; name?: string }
-        | { kind: "folder"; path: string; name?: string };
-      if (body?.kind === "file" || body?.kind === "folder") {
+        | { kind: "folder"; path: string; name?: string }
+        | { kind: "command"; cmd: string; cwd?: string; runMode?: string; name?: string };
+      if (body?.kind === "command") {
+        const rawCmd = typeof (body as any)?.cmd === "string" ? (body as any).cmd : "";
+        const rawCwd = typeof (body as any)?.cwd === "string" ? (body as any).cwd : undefined;
+        const rawRunMode = typeof (body as any)?.runMode === "string" ? (body as any).runMode : undefined;
+        input = { kind: "command", cmd: rawCmd, cwd: rawCwd, runMode: rawRunMode, name: rawName };
+      } else if (body?.kind === "file" || body?.kind === "folder") {
         const rawPath = typeof body?.path === "string" ? body.path : "";
         input = { kind: body.kind, path: rawPath, name: rawName };
       } else {
@@ -3768,14 +3867,18 @@ const server = Bun.serve<TermWsData, never>({
       const id = customLinkOneMatch[1]!;
       const linkId = customLinkOneMatch[2]!;
       const body = (await req.json().catch(() => null)) as
-        | { url?: unknown; path?: unknown; name?: unknown; kind?: unknown }
+        | { url?: unknown; path?: unknown; name?: unknown; kind?: unknown; cmd?: unknown; cwd?: unknown; runMode?: unknown }
         | null;
-      const input: { url?: string; path?: string; name?: string } = {};
+      const input: { url?: string; path?: string; name?: string; kind?: string; cmd?: string; cwd?: string; runMode?: string } = {};
       if (typeof body?.url === "string") input.url = body.url;
       if (typeof body?.path === "string") input.path = body.path;
       if (typeof body?.name === "string") input.name = body.name;
+      if (typeof body?.kind === "string") input.kind = body.kind;
+      if (typeof body?.cmd === "string") input.cmd = body.cmd;
+      if (typeof body?.cwd === "string") input.cwd = body.cwd;
+      if (typeof body?.runMode === "string") input.runMode = body.runMode;
       try {
-        const updated = await workspace.updateCustomLink(id, linkId, input);
+        const updated = await workspace.updateCustomLink(id, linkId, input as any);
         if (!updated) return json({ error: "link not found" }, { status: 404 });
         broadcast("change", { kind: "custom_link_update", id, linkId });
         return json({ id, link: updated });
@@ -3783,6 +3886,127 @@ const server = Bun.serve<TermWsData, never>({
         const msg = String(e instanceof Error ? e.message : e);
         return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
       }
+    }
+
+    // ── Command execution routes ──────────────────────────────────
+    // POST /api/command/run   — spawn a command-kind custom link
+    // POST /api/command/stop  — SIGTERM → 2s grace → SIGKILL
+    // GET  /api/commands/running — list running command link ids
+
+    if (url.pathname === "/api/command/run" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { linkId?: string; repoId?: string; repoPath?: string }
+        | null;
+      const linkId = body?.linkId;
+      const repoId = body?.repoId;
+      const repoPath = body?.repoPath;
+      if (!linkId || typeof linkId !== "string") {
+        return json({ error: "linkId required" }, { status: 400 });
+      }
+      if (!repoId || typeof repoId !== "string") {
+        return json({ error: "repoId required" }, { status: 400 });
+      }
+      if (runningCommands.has(linkId)) {
+        return json({ error: "already running", pid: runningCommands.get(linkId)!.pid }, { status: 409 });
+      }
+      const repos = await workspace.listRepos();
+      const repo = repos.find((r) => r.id === repoId);
+      if (!repo) return json({ error: "repo not found" }, { status: 404 });
+      const link = (repo.customLinks ?? []).find((l) => l.id === linkId);
+      if (!link || customLinkKind(link) !== "command") {
+        return json({ error: "command link not found" }, { status: 404 });
+      }
+      const cmdLink = link as { cmd: string; cwd?: string; runMode: CommandRunMode };
+      const cwd = cmdLink.cwd || (typeof repoPath === "string" ? repoPath : repo.path);
+      const runMode = cmdLink.runMode;
+
+      if (runMode === "external") {
+        try {
+          const result = await openIn(cwd, "terminal", cmdLink.cmd);
+          return json({ ok: true, mode: "external", via: result.via });
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+        }
+      }
+
+      if (runMode === "internal") {
+        try {
+          const shell = process.env.SHELL || "/bin/zsh";
+          const handle = await terminalBackend.spawn({
+            cmd: [shell, "-l", "-c", cmdLink.cmd],
+            cwd,
+            size: { cols: 120, rows: 30 },
+          });
+          return json({ ok: true, mode: "internal", termId: handle.id, pid: handle.pid });
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+        }
+      }
+
+      // runMode === "shell" — background child process
+      try {
+        const proc = Bun.spawn(["sh", "-c", cmdLink.cmd], {
+          cwd,
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        const entry: RunningCommand = {
+          proc,
+          linkId,
+          repoId,
+          pid: proc.pid,
+          startedAt: new Date().toISOString(),
+          cmd: cmdLink.cmd,
+        };
+        runningCommands.set(linkId, entry);
+        // Auto-clean when the process exits
+        void proc.exited.then(() => {
+          runningCommands.delete(linkId);
+          broadcast("change", { kind: "command_exit", linkId, repoId });
+        });
+        broadcast("change", { kind: "command_start", linkId, repoId, pid: proc.pid });
+        return json({ ok: true, mode: "shell", pid: proc.pid });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/command/stop" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { linkId?: string }
+        | null;
+      const linkId = body?.linkId;
+      if (!linkId || typeof linkId !== "string") {
+        return json({ error: "linkId required" }, { status: 400 });
+      }
+      const entry = runningCommands.get(linkId);
+      if (!entry) {
+        return json({ error: "not running" }, { status: 404 });
+      }
+      try {
+        entry.proc.kill("SIGTERM");
+      } catch {}
+      // Grace period: SIGKILL after 2 seconds if still alive
+      setTimeout(() => {
+        try {
+          if (runningCommands.has(linkId)) {
+            entry.proc.kill("SIGKILL");
+          }
+        } catch {}
+      }, 2000);
+      return json({ ok: true, pid: entry.pid });
+    }
+
+    if (url.pathname === "/api/commands/running" && req.method === "GET") {
+      const list = [...runningCommands.values()].map((e) => ({
+        linkId: e.linkId,
+        repoId: e.repoId,
+        pid: e.pid,
+        startedAt: e.startedAt,
+        cmd: e.cmd,
+      }));
+      return json({ running: list });
     }
 
     if (url.pathname === "/api/favicon" && req.method === "GET") {
@@ -4424,6 +4648,44 @@ const server = Bun.serve<TermWsData, never>({
           "X-Accel-Buffering": "no",
         },
       });
+    }
+
+    if (url.pathname === "/api/files" && req.method === "GET") {
+      const dirPath = url.searchParams.get("path");
+      if (!dirPath) {
+        return json({ error: "?path= is required" }, { status: 400 });
+      }
+      const resolved = resolve(dirPath);
+      try {
+        const dirents = await readdir(resolved, { withFileTypes: true });
+        const visible = dirents.filter((d) => !d.name.startsWith("."));
+        const entries = await Promise.all(
+          visible.map(async (d) => {
+            const type = d.isSymbolicLink() ? "symlink" as const
+              : d.isDirectory() ? "directory" as const
+              : "file" as const;
+            let size: number | undefined;
+            let mtime: string | undefined;
+            try {
+              const s = await fsStat(join(resolved, d.name));
+              if (type === "file") size = s.size;
+              mtime = s.mtime.toISOString();
+            } catch {}
+            return { name: d.name, type, size, mtime };
+          }),
+        );
+        entries.sort((a, b) => {
+          if (a.type === "directory" && b.type !== "directory") return -1;
+          if (a.type !== "directory" && b.type === "directory") return 1;
+          return a.name.localeCompare(b.name);
+        });
+        return json({ path: resolved, entries });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 500 },
+        );
+      }
     }
 
     if (url.pathname === "/api/pick-folder" && req.method === "POST") {

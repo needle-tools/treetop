@@ -41,6 +41,15 @@
         title?: string;
         icon?: string;
         iconSvg?: string[];
+      }
+    | {
+        kind: "submenu";
+        label: string;
+        children: SessionMenuItem[];
+        disabled?: boolean;
+        title?: string;
+        icon?: string;
+        iconSvg?: string[];
       };
 </script>
 
@@ -61,13 +70,42 @@
   /** Index of the item whose "Copied" flash is currently visible. */
   let copiedIndex: number | null = null;
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Index of the submenu item whose flyout is visible. */
+  let submenuIndex: number | null = null;
+  let submenuTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showSubmenu(index: number) {
+    if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null; }
+    submenuIndex = index;
+  }
+  function hideSubmenuDelayed() {
+    if (submenuTimer) clearTimeout(submenuTimer);
+    submenuTimer = setTimeout(() => {
+      submenuIndex = null;
+      submenuTimer = null;
+    }, 200);
+  }
+  function cancelSubmenuHide() {
+    if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null; }
+  }
 
   function toggle() {
     open = !open;
   }
 
+  function handleSubmenuChildClick(child: SessionMenuItem) {
+    if (child.disabled || child.kind !== "action") return;
+    open = false;
+    submenuIndex = null;
+    const rect =
+      triggerEl?.getBoundingClientRect() ??
+      new DOMRect(window.innerWidth / 2 - 10, window.innerHeight / 2 - 10, 20, 20);
+    child.onSelect(rect);
+  }
+
   function handleClick(item: SessionMenuItem, index: number) {
     if (item.disabled) return;
+    if (item.kind === "submenu") return;
     if (item.kind === "action") {
       open = false;
       // Hand the action the trigger button's bounding rect so it
@@ -102,6 +140,7 @@
   onDestroy(() => {
     document.removeEventListener("click", handleDocClick);
     if (copiedTimer) clearTimeout(copiedTimer);
+    if (submenuTimer) clearTimeout(submenuTimer);
   });
 </script>
 
@@ -121,7 +160,11 @@
       <ul class="menu-list">
         {#each items as item, i}
           {@const isCopied = copiedIndex === i}
-          <li>
+          <li
+            class:has-submenu={item.kind === "submenu"}
+            on:mouseenter={() => item.kind === "submenu" && !item.disabled ? showSubmenu(i) : undefined}
+            on:mouseleave={() => item.kind === "submenu" ? hideSubmenuDelayed() : undefined}
+          >
             <button
               type="button"
               class="menu-item"
@@ -148,8 +191,45 @@
                   <span class="icon icon-empty" aria-hidden="true"></span>
                 {/if}
                 <span class="label">{item.label}</span>
+                {#if item.kind === "submenu"}
+                  <span class="chevron" aria-hidden="true">▸</span>
+                {/if}
               {/if}
             </button>
+            {#if item.kind === "submenu" && submenuIndex === i}
+              <ul
+                class="submenu-list"
+                on:mouseenter={cancelSubmenuHide}
+                on:mouseleave={hideSubmenuDelayed}
+              >
+                {#each item.children as child}
+                  <li>
+                    <button
+                      type="button"
+                      class="menu-item"
+                      disabled={child.disabled}
+                      title={child.title ?? child.label}
+                      on:click={() => handleSubmenuChildClick(child)}
+                    >
+                      {#if child.iconSvg && child.iconSvg.length > 0}
+                        <span class="icon icon-svg" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" width="14" height="14">
+                            {#each child.iconSvg as d}
+                              <path {d} />
+                            {/each}
+                          </svg>
+                        </span>
+                      {:else if child.icon}
+                        <span class="icon" aria-hidden="true">{child.icon}</span>
+                      {:else}
+                        <span class="icon icon-empty" aria-hidden="true"></span>
+                      {/if}
+                      <span class="label">{child.label}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -261,5 +341,11 @@
     font-weight: 700;
     color: var(--status-clean);
     flex: 0 0 auto;
+  }
+  .menu-item .chevron {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-left: auto;
   }
 </style>
