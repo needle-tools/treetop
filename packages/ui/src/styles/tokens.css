@@ -126,11 +126,17 @@
  *   Firefox uses the standard scrollbar-* properties.
  *   WebKit/Blink uses the ::-webkit-scrollbar pseudo-elements.
  *
- * Both are set so behaviour matches in Safari, Chrome, and Firefox.
+ * WebKit (Chrome, Safari, WKWebView) uses ::-webkit-scrollbar.
+ * Firefox uses scrollbar-width/scrollbar-color (applied via @supports
+ * so it doesn't interfere with the WebKit pseudo-elements — Safari 16+
+ * supports both, and the standard property overrides the pseudo-element,
+ * causing native overlay scrollbars to win).
  */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
 }
 *::-webkit-scrollbar {
   width: 8px;

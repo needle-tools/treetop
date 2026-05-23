@@ -8,7 +8,7 @@
  * 4. Opens a native BrowserWindow pointed at localhost:<port>.
  */
 
-import { BrowserWindow } from "electrobun/bun";
+import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
 import { resolve, dirname, join } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -167,6 +167,41 @@ if (!gitAvailable()) {
   );
   process.exit(1);
 }
+
+// Strip the default Edit menu so WKWebView doesn't intercept Ctrl+A
+// (Select All), Ctrl+C, etc. before xterm.js sees them. Keep only
+// the app and window menus.
+ApplicationMenu.setApplicationMenu([
+  {
+    label: "Supergit",
+    submenu: [
+      { role: "about" },
+      { type: "separator" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "showAll" },
+      { type: "separator" },
+      { role: "quit" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { role: "copy" },
+      { role: "paste" },
+    ],
+  },
+  {
+    label: "Window",
+    submenu: [
+      { role: "minimize" },
+      { role: "zoom" },
+      { role: "close" },
+      { type: "separator" },
+      { role: "toggleFullScreen" },
+    ],
+  },
+]);
 
 await ensureDaemon();
 
