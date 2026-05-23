@@ -1,4 +1,4 @@
-import { join, resolve, normalize, sep } from "node:path";
+import { join, resolve, normalize, sep, dirname } from "node:path";
 import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
 import { stat as fsStat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -132,6 +132,10 @@ const UI_DIR = ((): string | null => {
   if (process.env.SUPERGIT_UI_DIR) {
     return resolve(process.cwd(), process.env.SUPERGIT_UI_DIR);
   }
+  // Compiled binary: look for ui/ next to the executable.
+  const exeAdj = resolve(dirname(process.execPath), "ui");
+  if (existsSync(exeAdj)) return exeAdj;
+  // Dev / uncompiled: sibling workspace package.
   const sibling = resolve(import.meta.dir, "../../ui/dist");
   return existsSync(sibling) ? sibling : null;
 })();
