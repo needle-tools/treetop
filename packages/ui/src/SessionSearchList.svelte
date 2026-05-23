@@ -53,7 +53,19 @@
   export let placeholder = "Search by title or message…";
 
   let query = "";
-  $: filtered = filterSessions(sessions, query);
+  let debouncedQuery = "";
+  const DEBOUNCE_MS = 200;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  $: {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    const q = query;
+    if (!q.trim()) {
+      debouncedQuery = q;
+    } else {
+      debounceTimer = setTimeout(() => { debouncedQuery = q; }, DEBOUNCE_MS);
+    }
+  }
+  $: filtered = filterSessions(sessions, debouncedQuery);
 
   /** Active rows above the divider, dismissed rows below. Computed
    *  off the same `filtered` list so search applies to both groups. */
