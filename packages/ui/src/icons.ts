@@ -201,6 +201,14 @@ export const ICONS: Record<string, IconDef> = {
             stroke-width="1.4" fill="none" stroke-linecap="round"/>
     `,
   },
+  info: {
+    paths: ["M12 16v-4", "M12 8h.01"],
+    circles: [{ cx: 12, cy: 12, r: 10 }],
+  },
+  user: {
+    paths: ["M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"],
+    circles: [{ cx: 12, cy: 7, r: 4 }],
+  },
   // Generic web-link glyph — feather-style chain. Used as the fallback
   // icon for user-defined "open in" links when the favicon proxy can't
   // resolve a brand mark for the target URL.

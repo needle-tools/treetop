@@ -11,6 +11,7 @@
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
+  import { ICONS } from "./icons";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -1343,8 +1344,9 @@
       <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>
         {#if summarySnippet || summaryRefreshing}
           <div class="tui-summary-box">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              {#each ICONS.info.paths ?? [] as d}<path {d}/>{/each}
+              {#each ICONS.info.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
             </svg>
             <div class="tui-summary-body">
               {#if summaryRefreshing}
@@ -1388,8 +1390,9 @@
         {/if}
         {#if lastUserMessage && lastUserMessage.trim().length > 0}
           <div class="pinned-last-msg">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
+              {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
             </svg>
             <span class="pinned-last-msg-text">{lastUserMessage}</span>
           </div>
@@ -2359,12 +2362,24 @@
     line-height: 1.5;
     color: var(--text-2);
     pointer-events: auto;
+    max-height: calc(4 * 1.5em + 0.6rem);
+    overflow: hidden;
+    transition: max-height 300ms 300ms ease, opacity 100ms ease;
+  }
+  .tui-summary-box:hover {
+    max-height: 50vh;
+    overflow: auto;
+    transition: max-height 150ms ease, opacity 100ms ease;
   }
   .tui-summary-body {
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 4;
     -webkit-box-orient: vertical;
+  }
+  .tui-summary-box:hover .tui-summary-body {
+    -webkit-line-clamp: unset;
+    display: block;
   }
   .tui-summary-refreshing {
     display: inline-flex;
@@ -2395,10 +2410,7 @@
     color: var(--text-1);
     opacity: 1;
   }
-  /* When both the summary and last-user-message overlays are
-     visible, push the message wrap down so they stack vertically
-     instead of overlapping. */
-  .tui-overlay-stack .pinned-last-msg {
-    pointer-events: auto;
+  .pinned-last-msg-text {
+    min-width: 0;
   }
 </style>
