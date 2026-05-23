@@ -1339,59 +1339,61 @@
         ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
-    {#if mode === "terminal" && (summarySnippet || summaryRefreshing)}
-      <div class="pinned-last-msg-wrap tui-summary-wrap" class:revealed={pinnedRevealed}>
-        <div class="tui-summary-box">
-          <div class="tui-summary-body" title={summarySnippet}>
-            {#if summaryRefreshing}
-              <span class="tui-summary-refreshing">
-                <LoadingSpinner size="0.65rem" thickness="2px" label="Refreshing summary" />
-                <span class="dim">refreshing{summaryModel ? ` with ${summaryModel}` : ""}…</span>
-              </span>
-            {:else}
-              {summarySnippet}
+    {#if mode === "terminal" && ((summarySnippet || summaryRefreshing) || (lastUserMessage && lastUserMessage.trim().length > 0))}
+      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>
+        {#if summarySnippet || summaryRefreshing}
+          <div class="tui-summary-box">
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            <div class="tui-summary-body">
+              {#if summaryRefreshing}
+                <span class="tui-summary-refreshing">
+                  <LoadingSpinner size="0.65rem" thickness="2px" label="Refreshing summary" />
+                  <span class="dim">refreshing{summaryModel ? ` with ${summaryModel}` : ""}…</span>
+                </span>
+              {:else}
+                {summarySnippet}
+              {/if}
+            </div>
+            {#if !summaryRefreshing}
+              <button
+                type="button"
+                class="tui-summary-refresh"
+                title={summaryModel
+                  ? `Refresh summary with ${summaryModel}`
+                  : "Refresh summary"}
+                on:click={() => void summarizeFromChip()}
+                aria-label="Refresh summary"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="10"
+                  height="10"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+                  <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
+                </svg>
+              </button>
             {/if}
           </div>
-          {#if !summaryRefreshing}
-            <button
-              type="button"
-              class="tui-summary-refresh"
-              title={summaryModel
-                ? `Refresh summary with ${summaryModel}`
-                : "Refresh summary"}
-              on:click={() => void summarizeFromChip()}
-              aria-label="Refresh summary"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="10"
-                height="10"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <polyline points="23 4 23 10 17 10" />
-                <polyline points="1 20 1 14 7 14" />
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
-                <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
-              </svg>
-            </button>
-          {/if}
-        </div>
-      </div>
-    {/if}
-    {#if mode === "terminal" && lastUserMessage && lastUserMessage.trim().length > 0}
-      <div
-        class="pinned-last-msg-wrap"
-        class:revealed={pinnedRevealed}
-        class:tui-has-summary={!!(summarySnippet || summaryRefreshing)}
-      >
-        <div class="pinned-last-msg" title={lastUserMessage}>
-          {lastUserMessage}
-        </div>
+        {/if}
+        {#if lastUserMessage && lastUserMessage.trim().length > 0}
+          <div class="pinned-last-msg">
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+            </svg>
+            <span class="pinned-last-msg-text">{lastUserMessage}</span>
+          </div>
+        {/if}
       </div>
     {/if}
     {#if mode === "read" && session && session.messages.length > 0}
@@ -1886,7 +1888,9 @@
        content so the user can read a longer burst in full without
        jumping into the chat. Both heights animate so the expand
        feels intentional rather than snapping. */
-    display: block;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
     overflow: hidden;
     word-break: break-word;
     max-height: calc(3lh + 0.5rem);
@@ -2327,12 +2331,22 @@
      transition, pointer-events:none). Override justify-content to
      left-align the summary box (the last-user-message is right-
      aligned). */
-  .tui-summary-wrap {
-    justify-content: flex-start;
+  .tui-overlay-stack {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
     pointer-events: auto;
+  }
+  .tui-overlay-icon {
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+    opacity: 0.5;
   }
   .tui-summary-box {
     position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
     max-width: 50%;
     box-sizing: border-box;
     padding: 0.3rem 2rem 0.3rem 0.6rem;
@@ -2384,7 +2398,7 @@
   /* When both the summary and last-user-message overlays are
      visible, push the message wrap down so they stack vertically
      instead of overlapping. */
-  .pinned-last-msg-wrap.tui-has-summary {
-    padding-top: 2.6rem;
+  .tui-overlay-stack .pinned-last-msg {
+    pointer-events: auto;
   }
 </style>
