@@ -7,9 +7,13 @@
  * funnel them through one shared queue and only generate for rows
  * that are actually on screen.
  *
- * Each job is wrapped with a 60s timeout. On timeout the abort
- * signal fires; the caller's fetch is responsible for honouring it
- * and surfacing the error to its own UI.
+ * Each job is wrapped with a 3-minute timeout. The first auto-run
+ * after Ollama loads a model into VRAM can take 60-120s (cold
+ * start); 60s was cutting that off and surfacing as a misleading
+ * "Stream interrupted" because some browsers throw TypeError instead
+ * of AbortError when a stream reader is aborted mid-read. 180s gives
+ * even a large model room to load without being aggressive enough
+ * to mask a genuinely hung job.
  */
 
 export type SummaryJob = (signal: AbortSignal) => Promise<void>;
@@ -23,7 +27,7 @@ interface QueueEntry {
 const queue: QueueEntry[] = [];
 let running = false;
 
-const JOB_TIMEOUT_MS = 60_000;
+const JOB_TIMEOUT_MS = 180_000;
 
 /**
  * Add a job to the back of the queue. Returns a cancel function:

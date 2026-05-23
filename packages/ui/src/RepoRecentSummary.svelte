@@ -294,12 +294,18 @@
         }
       }
     } catch (e) {
-      if ((e as Error).name === "AbortError") {
-        // The queue's 60s timeout fires its signal; distinguish it
-        // from a clean unmount-abort (we don't know which on its own).
-        // Show a short hint either way so a stuck summary is visible.
+      // Some browsers throw TypeError instead of AbortError when a
+      // stream reader is aborted mid-read. Check the signal itself
+      // rather than relying solely on the error name so we always
+      // route abort-caused errors to the right message.
+      const wasAborted =
+        (e as Error).name === "AbortError" ||
+        aborter?.signal.aborted ||
+        queueSignal?.aborted;
+
+      if (wasAborted) {
         if (queueSignal?.aborted) {
-          errorMsg = "timed out (60s)";
+          errorMsg = "timed out (3m)";
         }
         return;
       }
