@@ -11,11 +11,15 @@
  * plans/PLAN.md → "App.svelte refactor (componentization)".
  */
 
-/* Hide the top bar + non-focused rows when any row is in zen. */
-main.zen-row > header {
+/* Hide the top bar, menubar, dock, and non-focused rows in zen. */
+main.zen-row > header,
+main.zen-row > .menubar {
   display: none;
 }
 main.zen-row .row:not(.row-zen) {
+  display: none;
+}
+:has(main.zen-row) > .session-dock {
   display: none;
 }
 
@@ -52,6 +56,15 @@ main.zen-row .row:not(.row-zen) {
   box-sizing: border-box;
 }
 .row.row-zen > .row-content > * {
+  flex: 0 0 auto;
+}
+.row.row-zen .row-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.row.row-zen .row-body > * {
   flex: 0 0 auto;
 }
 .row.row-zen .sessions-strip {
