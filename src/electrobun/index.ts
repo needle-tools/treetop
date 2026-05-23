@@ -9,8 +9,9 @@
  */
 
 import { BrowserWindow } from "electrobun/bun";
-import { resolve, dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { spawnSync, spawn } from "node:child_process";
 
 const PORT = 27787;
@@ -129,11 +130,38 @@ process.on("exit", () => {
   }
 });
 
+// ── Window bounds persistence ────────────────────────────────────────
+
+type WindowBounds = { x: number; y: number; width: number; height: number };
+
+const BOUNDS_DIR = join(homedir(), ".config", "supergit");
+const BOUNDS_FILE = join(BOUNDS_DIR, "window.json");
+
+function loadBounds(): WindowBounds {
+  const fallback = { x: 100, y: 100, width: 1400, height: 900 };
+  try {
+    const raw = readFileSync(BOUNDS_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.x === "number" && typeof parsed.width === "number")
+      return parsed;
+  } catch {}
+  return fallback;
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveBounds(bounds: WindowBounds): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      mkdirSync(BOUNDS_DIR, { recursive: true });
+      writeFileSync(BOUNDS_FILE, JSON.stringify(bounds));
+    } catch {}
+  }, 500);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 if (!gitAvailable()) {
-  // TODO: once Electrobun has dialog support, show a native dialog here.
-  // For now, log and exit.
   console.error(
     "git is not installed. Install Xcode Command Line Tools:\n  xcode-select --install",
   );
@@ -142,9 +170,20 @@ if (!gitAvailable()) {
 
 await ensureDaemon();
 
+const bounds = loadBounds();
+
 const win = new BrowserWindow({
   title: "Supergit",
   url: DAEMON_URL,
-  width: 1400,
-  height: 900,
+  frame: bounds,
+});
+
+win.on("resize", (event: any) => {
+  const frame = win.getFrame();
+  saveBounds(frame);
+});
+
+win.on("move", (event: any) => {
+  const frame = win.getFrame();
+  saveBounds(frame);
 });
