@@ -9,10 +9,17 @@ import {
   splitInjectedTags,
   isMarker,
   parseSessionFile,
-  getSessionResponseJson,
+  getSessionResponseJson as _getSessionResponseJson,
   tailParseSessionFile,
   clearParseCache,
 } from "../src/sessions";
+
+async function getSessionResponseJson(
+  ...args: Parameters<typeof _getSessionResponseJson>
+): Promise<string> {
+  const { body } = await _getSessionResponseJson(...args);
+  return body;
+}
 
 describe("parseClaudeJsonl", () => {
   test("returns an empty session for empty input", () => {

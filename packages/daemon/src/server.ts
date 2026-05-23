@@ -507,6 +507,7 @@ function broadcast(event: string, data: unknown): void {
     if (kind !== "fs_change") {
       invalidateReposCache();
       invalidateAgentsCache();
+      worktreeDetailsCache.clear();
     }
   }
   const payload = sseEncoder.encode(
@@ -546,7 +547,7 @@ function broadcast(event: string, data: unknown): void {
 // per-worktree git fan-out completes. The stream closes when all
 // repos have flushed — there's no explicit "done" marker; EOF is
 // sufficient. Cache hits stream the same shape from memory.
-const REPOS_CACHE_MS = 500;
+const REPOS_CACHE_MS = 2500;
 type EnrichedRepo = Record<string, unknown> & { id: string };
 let reposInflight: Promise<EnrichedRepo[]> | null = null;
 let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
@@ -598,6 +599,34 @@ async function cachedDetectAgents(): Promise<AgentSession[]> {
 
 function invalidateAgentsCache(): void {
   agentsCache = null;
+}
+
+// Per-worktree git-status cache. Keyed by worktree path; invalidated
+// selectively when the fs watcher fires for that specific path. Without
+// this, /api/repos spawns 3 git subprocesses per worktree on every
+// refresh — a workspace with 5 repos × 3 worktrees = 45 processes.
+// With the cache, only worktrees that actually changed re-run git.
+import type { WorktreeDetails } from "./git";
+const worktreeDetailsCache = new Map<
+  string,
+  { at: number; value: WorktreeDetails }
+>();
+const WORKTREE_DETAILS_CACHE_MS = 5_000;
+
+function getCachedWorktreeDetails(
+  wtPath: string,
+): WorktreeDetails | null {
+  const cached = worktreeDetailsCache.get(wtPath);
+  if (!cached) return null;
+  if (Date.now() - cached.at > WORKTREE_DETAILS_CACHE_MS) {
+    worktreeDetailsCache.delete(wtPath);
+    return null;
+  }
+  return cached.value;
+}
+
+function invalidateWorktreeDetails(wtPath: string): void {
+  worktreeDetailsCache.delete(wtPath);
 }
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
@@ -713,7 +742,14 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
               const withDetails = await Promise.all(
                 worktrees.map(async (wt) => {
                   const tWt = performance.now();
-                  const details = await getWorktreeDetails(wt.path);
+                  let details = getCachedWorktreeDetails(wt.path);
+                  if (!details) {
+                    details = await getWorktreeDetails(wt.path);
+                    worktreeDetailsCache.set(wt.path, {
+                      at: Date.now(),
+                      value: details,
+                    });
+                  }
                   perWorktreeMs.push({ wt: wt.path, ms: performance.now() - tWt });
                   return {
                     ...wt,
@@ -1070,6 +1106,7 @@ async function reconcileWorktreeWatchers(): Promise<void> {
   for (const path of wanted) {
     if (worktreeWatchers.has(path)) continue;
     const stop = watchWorktree(path, () => {
+      invalidateWorktreeDetails(path);
       broadcast("change", { kind: "fs_change", path });
     });
     worktreeWatchers.set(path, stop);
@@ -1693,17 +1730,18 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
       const agentKind = resolved.agent;
-      // Use the JSON-string cache: on a cache hit this skips readFile,
-      // parsing, *and* JSON.stringify, which were the three large allocations
-      // that ballooned RSS for big (30k-message) Claude sessions.
       const titles = await workspace.listSessionTitles();
-      const body = await getSessionResponseJson(
+      const { body, etag } = await getSessionResponseJson(
         agentKind,
         source,
         titles[source],
       );
+      const clientEtag = req.headers.get("If-None-Match");
+      if (clientEtag && clientEtag === etag) {
+        return new Response(null, { status: 304, headers: { ETag: etag, ...CORS } });
+      }
       return new Response(body, {
-        headers: { "Content-Type": "application/json", ...CORS },
+        headers: { "Content-Type": "application/json", ETag: etag, ...CORS },
       });
     }
 
@@ -3936,38 +3974,6 @@ const server = Bun.serve<TermWsData, never>({
             cmd: [shell, "-l", "-c", cmdLink.cmd],
             cwd,
             size: { cols: 120, rows: 30 },
-            agent: "shell",
-          });
-          await shells
-            .writeHeader({
-              kind: "header",
-              termId: handle.id,
-              wt: cwd,
-              spawnCwd: cwd,
-              createdAt: new Date().toISOString(),
-            })
-            .catch((err) => {
-              console.error(
-                `supergit daemon: shells.writeHeader failed for command ${handle.id}: ${err}`,
-              );
-            });
-          shellTermIds.add(handle.id);
-          const cleanup = handle.subscribe({
-            onData() {},
-            onExit(info) {
-              shellTermIds.delete(handle.id);
-              clearShellInputBuffer(handle.id);
-              shellCwds.delete(handle.id);
-              void shells
-                .append(handle.id, {
-                  kind: "exit",
-                  ts: new Date().toISOString(),
-                  code: info.code,
-                  signal: info.signal,
-                })
-                .catch(() => {});
-              cleanup();
-            },
           });
           return json({ ok: true, mode: "internal", termId: handle.id, pid: handle.pid });
         } catch (e) {
@@ -4690,9 +4696,8 @@ const server = Bun.serve<TermWsData, never>({
       const resolved = resolve(dirPath);
       try {
         const dirents = await readdir(resolved, { withFileTypes: true });
-        const visible = dirents.filter((d) => !d.name.startsWith("."));
         const entries = await Promise.all(
-          visible.map(async (d) => {
+          dirents.map(async (d) => {
             const type = d.isSymbolicLink() ? "symlink" as const
               : d.isDirectory() ? "directory" as const
               : "file" as const;
@@ -4711,6 +4716,34 @@ const server = Bun.serve<TermWsData, never>({
           if (a.type !== "directory" && b.type === "directory") return 1;
           return a.name.localeCompare(b.name);
         });
+        const gitWt = url.searchParams.get("git");
+        if (gitWt) {
+          try {
+            const statusOut = await $`git -C ${gitWt} status --porcelain`.quiet().nothrow().text();
+            const gitMap = new Map<string, string>();
+            for (const line of statusOut.split("\n")) {
+              if (line.length < 4) continue;
+              const xy = line.slice(0, 2);
+              let filePath = line.slice(3);
+              const arrow = filePath.indexOf(" -> ");
+              if (arrow >= 0) filePath = filePath.slice(arrow + 4);
+              filePath = filePath.replace(/^"(.*)"$/, "$1");
+              const abs = resolve(gitWt, filePath);
+              const dirPrefix = resolved.endsWith("/") ? resolved : resolved + "/";
+              if (abs.startsWith(dirPrefix)) {
+                const rel = abs.slice(dirPrefix.length).split("/")[0]!;
+                const existing = gitMap.get(rel);
+                if (!existing || xy.trim().length > existing.trim().length) {
+                  gitMap.set(rel, xy);
+                }
+              }
+            }
+            for (const e of entries) {
+              const status = gitMap.get(e.name);
+              if (status) (e as any).git = status.trim();
+            }
+          } catch {}
+        }
         return json({ path: resolved, entries });
       } catch (e) {
         return json(

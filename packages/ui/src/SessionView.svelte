@@ -922,40 +922,31 @@
   // was already near the bottom (so polling can't snatch them away when
   // they've scrolled up to read history).
   let hasRenderedOnce = false;
-  /** Body of the previous /api/session response (raw text). The daemon's
-   *  `jsonNoTitle` cache returns byte-identical bodies while the session
-   *  file is idle, so we can skip JSON.parse, the messages-array
-   *  rebuild, and the downstream `{@html md(...)}` churn on every block.
-   *  This is the single biggest source of "the page is doing something
-   *  twitchy every 2s" feel — markdown re-renders, scroll-to-bottom
-   *  reactives, and (transitively) xterm refits in adjacent columns. */
+  /** ETag from the last /api/session response. Sent as If-None-Match on
+   *  subsequent polls so the daemon can return 304 when the session file
+   *  hasn't changed — skips body transfer, JSON.parse, and all downstream
+   *  markdown/reactivity churn. */
+  let lastEtag: string | null = null;
   let lastResponseBody: string | null = null;
 
   async function load() {
     if (loading) return;
-    // Don't overwrite session.messages while an Ollama stream is in
-    // flight. The disk-parsed view doesn't include the in-progress
-    // assistant bubble (the daemon only writes the turn entry on
-    // stream completion), so a poll mid-stream would wipe the
-    // optimistic bubble and make the chunks "vanish" until the
-    // generation finishes. sendOllamaMessage calls load() itself in
-    // its finally block to re-sync after the stream ends.
     if (ollamaStreamingIdx !== null) return;
     loading = true;
     error = "";
     try {
       const qs = new URLSearchParams({ source });
-      const res = await fetch(`/api/session?${qs.toString()}`);
+      const headers: Record<string, string> = {};
+      if (lastEtag) headers["If-None-Match"] = lastEtag;
+      const res = await fetch(`/api/session?${qs.toString()}`, { headers });
+      if (res.status === 304) return;
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
+      const etag = res.headers.get("ETag");
+      if (etag) lastEtag = etag;
       const bodyText = await res.text();
-      // Idle short-circuit: identical response → no work. The daemon
-      // already caches its stringified response (see sessions.ts
-      // `jsonNoTitle`) so this is the natural matching half on the
-      // client. pendingTimer still gets cleared below when relevant
-      // because we only short-circuit when *nothing* changed.
       if (bodyText === lastResponseBody) return;
       lastResponseBody = bodyText;
       const next = JSON.parse(bodyText) as NormalizedSession;

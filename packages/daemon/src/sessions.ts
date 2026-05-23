@@ -745,11 +745,13 @@ export async function getSessionResponseJson(
   agent: AgentKind,
   path: string,
   manualTitle?: string,
-): Promise<string> {
+): Promise<{ body: string; etag: string }> {
   const st = await stat(path).catch(() => null);
   if (!st) {
-    return injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
+    const body = injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
+    return { body, etag: `"0-0"` };
   }
+  const etag = `"${st.mtimeMs}-${st.size}"`;
 
   // Ollama: bypass the tail-cache. The captured PTY transcripts are
   // small (spinner braille is stripped at capture, conversations
@@ -762,7 +764,7 @@ export async function getSessionResponseJson(
     const text = await readFile(path, "utf-8").catch(() => "");
     const parsed = parseOllamaJsonl(text);
     trimMessages(parsed);
-    return injectManualTitle(JSON.stringify(parsed), manualTitle);
+    return { body: injectManualTitle(JSON.stringify(parsed), manualTitle), etag };
   }
 
   const cached = sessionCache.get(path);
@@ -771,7 +773,7 @@ export async function getSessionResponseJson(
   // parse, no stringify, no Buffer alloc — the cheapest possible path.
   if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
     touch(path, cached);
-    return injectManualTitle(cached.jsonNoTitle, manualTitle);
+    return { body: injectManualTitle(cached.jsonNoTitle, manualTitle), etag };
   }
 
   // Cache hit, file grew: incremental append. We don't gate on mtimeMs here
@@ -791,24 +793,17 @@ export async function getSessionResponseJson(
         cached.size = st.size;
         cached.mtimeMs = st.mtimeMs;
         trimMessages(cached.parsed);
-        // Re-stringify now while we're mutating, so future cache hits on
-        // this entry don't have to.
         cached.jsonNoTitle = JSON.stringify(cached.parsed);
         touch(path, cached);
-        return injectManualTitle(cached.jsonNoTitle, manualTitle);
+        return { body: injectManualTitle(cached.jsonNoTitle, manualTitle), etag };
       } finally {
         await fh.close();
       }
     }
-    // open() failed — fall through to full re-parse.
   }
 
   // Cache miss, or file shrank/got rewritten: tail-read only the last
-  // TAIL_BYTES and parse those lines. The cache stays consistent with
-  // disk for *subsequent* polls because tail-append reads from
-  // `cached.size` (= st.size after this set), and any future growth is
-  // appended onto the tail-parsed messages — we never need the
-  // discarded prefix again.
+  // TAIL_BYTES and parse those lines.
   const parsed = await tailParseSessionFile(agent, path);
   trimMessages(parsed);
   const jsonNoTitle = JSON.stringify(parsed);
@@ -820,5 +815,5 @@ export async function getSessionResponseJson(
     jsonNoTitle,
   });
   evictLRU();
-  return injectManualTitle(jsonNoTitle, manualTitle);
+  return { body: injectManualTitle(jsonNoTitle, manualTitle), etag };
 }
