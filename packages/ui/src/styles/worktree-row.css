@@ -1294,25 +1294,9 @@ body.platform-windows .sessions-strip::-webkit-scrollbar {
   /* Anchor the drag-drop preview pseudos (::before / ::after) so the
      dashed insertion line lines up with the column edges. */
   position: relative;
-  /* Smooth fade of the flash outline + smooth flex/width transitions
-     so the read-mode shrink (15% narrower) glides into place. */
-  transition:
-    outline-color 0.25s ease-out,
-    flex-basis 0.25s ease,
-    min-width 0.25s ease,
-    max-width 0.25s ease;
+  transition: outline-color 0.25s ease-out;
   outline: 2px solid transparent;
   outline-offset: 2px;
-}
-/* Read-mode (inactive) chat columns shrink to 85% of their normal
-   width so live TUI sessions visually dominate the strip while the
-   archived ones recede. Uses `:has()` so the modifier is driven by
-   the inner `.session.read-mode` flag (set by SessionView based on
-   its `mode`), keeping width control in one CSS place. */
-.session-col:has(> .session.read-mode) {
-  flex-basis: 68ch;
-  min-width: 65ch;
-  max-width: 85ch;
 }
 /* Drag-drop insertion preview: a brand-coloured dashed vertical line
    in the inter-column gap on the side the cursor is on. Anchored via
