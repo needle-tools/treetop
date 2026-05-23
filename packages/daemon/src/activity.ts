@@ -26,6 +26,35 @@ export interface ActivityEvent {
 
 export type ActivityListener = (e: ActivityEvent) => void;
 
+/** Read new bytes from `path` starting at `offset`. Returns the text
+ *  of the new chunk and the updated offset (= file size after read).
+ *  Returns null when there's nothing new to read: file is gone, hasn't
+ *  grown, or shrank (truncation). Exported for testing — the crash
+ *  this guards against is a race where `offset` advances past `size`
+ *  between two concurrent calls. */
+export async function readTailChunk(
+  path: string,
+  offset: number,
+): Promise<{ text: string; newOffset: number } | null> {
+  const stats = await stat(path).catch(() => null);
+  if (!stats) return null;
+  if (stats.size <= offset) {
+    return { text: "", newOffset: stats.size };
+  }
+  const readFrom = offset;
+  const fh = await open(path, "r").catch(() => null);
+  if (!fh) return null;
+  try {
+    const length = stats.size - readFrom;
+    if (length <= 0) return null;
+    const buf = Buffer.alloc(length);
+    await fh.read(buf, 0, length, readFrom);
+    return { text: buf.toString("utf-8"), newOffset: stats.size };
+  } finally {
+    await fh.close();
+  }
+}
+
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
 const REDISCOVER_INTERVAL_MS = 30_000;
 const MAX_TRACKED = 64;
@@ -179,44 +208,29 @@ async function rediscover(): Promise<void> {
 async function checkTail(path: string): Promise<void> {
   const t = tracked.get(path);
   if (!t) return;
-  const stats = await stat(path).catch(() => null);
-  if (!stats) return;
-  if (stats.size <= t.offset) {
-    // Truncation or no change.
-    t.offset = stats.size;
-    return;
-  }
+  const result = await readTailChunk(path, t.offset);
+  if (!result) return;
+  t.offset = result.newOffset;
+  if (!result.text) return;
 
-  const fh = await open(path, "r").catch(() => null);
-  if (!fh) return;
-  try {
-    const length = stats.size - t.offset;
-    const buf = Buffer.alloc(length);
-    await fh.read(buf, 0, length, t.offset);
-    t.offset = stats.size;
-
-    const text = buf.toString("utf-8");
-    for (const line of text.split("\n")) {
-      if (!line) continue;
-      let obj: unknown;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const summary = summarize(t.agent, obj);
-      if (!summary) continue;
-      emit({
-        agent: t.agent,
-        cwd: t.cwd,
-        sessionId: t.sessionId,
-        summary,
-        timestamp: new Date().toISOString(),
-        source: t.path,
-      });
+  for (const line of result.text.split("\n")) {
+    if (!line) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
     }
-  } finally {
-    await fh.close();
+    const summary = summarize(t.agent, obj);
+    if (!summary) continue;
+    emit({
+      agent: t.agent,
+      cwd: t.cwd,
+      sessionId: t.sessionId,
+      summary,
+      timestamp: new Date().toISOString(),
+      source: t.path,
+    });
   }
 }
 

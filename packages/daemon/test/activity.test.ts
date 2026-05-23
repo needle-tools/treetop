@@ -1,5 +1,8 @@
 import { test, expect, describe } from "bun:test";
-import { summarize } from "../src/activity";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { summarize, readTailChunk } from "../src/activity";
 
 describe("summarize (claude)", () => {
   test("returns null for non-objects", () => {
@@ -101,5 +104,52 @@ describe("summarize (codex)", () => {
 
   test("returns null when nothing matches", () => {
     expect(summarize("codex", { foo: 1 })).toBeNull();
+  });
+});
+
+describe("readTailChunk", () => {
+  async function tempFile(content: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-activity-"));
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, content);
+    return path;
+  }
+
+  test("returns null for a missing file", async () => {
+    expect(await readTailChunk("/no/such/file.jsonl", 0)).toBeNull();
+  });
+
+  test("reads new bytes appended after offset", async () => {
+    const path = await tempFile("line1\nline2\n");
+    const r = await readTailChunk(path, 6); // skip "line1\n"
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("line2\n");
+    expect(r!.newOffset).toBe(12);
+  });
+
+  test("returns empty text when file has not grown", async () => {
+    const path = await tempFile("hello\n");
+    const r = await readTailChunk(path, 6);
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("");
+    expect(r!.newOffset).toBe(6);
+  });
+
+  test("handles file truncation (offset > current size)", async () => {
+    const path = await tempFile("short");
+    const r = await readTailChunk(path, 9999);
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("");
+    expect(r!.newOffset).toBe(5);
+  });
+
+  test("does not crash with negative length (the race scenario)", async () => {
+    const path = await tempFile("ab");
+    // Simulate: offset was bumped past file size by a concurrent call.
+    // readTailChunk must not crash — it should return a reset offset.
+    const r = await readTailChunk(path, 5000);
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("");
+    expect(r!.newOffset).toBe(2);
   });
 });
