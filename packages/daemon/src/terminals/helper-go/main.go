@@ -64,6 +64,7 @@ func scrubEnv() []string {
 		}
 	}
 	out = append(out, "SHELL_SESSIONS_DISABLE=1")
+	out = append(out, "TERM=xterm-256color")
 	return out
 }
 
