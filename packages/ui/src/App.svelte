@@ -1198,6 +1198,16 @@
         await load();
         return;
       }
+      if (result.kind === "auth") {
+        addToast({
+          kind: "error",
+          title: "Git can't authenticate.",
+          message:
+            "Run `git config --global credential.helper osxkeychain` then `git fetch` in a terminal to store your credentials.",
+          ttlMs: 20_000,
+        });
+        return;
+      }
       if (result.kind === "dirty") {
         dirtyPull = {
           repoId,
@@ -1289,6 +1299,7 @@
         ok?: boolean;
         error?: string;
         message?: string;
+        kind?: string;
       };
       if (res.ok && body.ok) {
         addToast({
@@ -1297,6 +1308,16 @@
           ttlMs: 6_000,
         });
         await load();
+        return;
+      }
+      if (body.kind === "auth") {
+        addToast({
+          kind: "error",
+          title: "Git can't authenticate.",
+          message:
+            "Run `git config --global credential.helper osxkeychain` then `git fetch` in a terminal to store your credentials.",
+          ttlMs: 20_000,
+        });
         return;
       }
       addToast({

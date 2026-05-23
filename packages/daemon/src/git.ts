@@ -361,6 +361,8 @@ export async function checkoutBranch(
  *    the incoming commits (overlap), or `git pull` aborted because of
  *    uncommitted changes.
  *  - `no_upstream`: branch has no configured upstream.
+ *  - `auth`: git couldn't authenticate (no credential helper, bad
+ *    token, SSH key missing, etc.).
  *  - `error`: anything else (network failure, hook abort, etc.). */
 export type PullKind =
   | "updated"
@@ -368,6 +370,7 @@ export type PullKind =
   | "diverged"
   | "dirty"
   | "no_upstream"
+  | "auth"
   | "error";
 
 export interface PullResult {
@@ -425,6 +428,12 @@ export async function pullFastForward(
       return { ok: false, kind: "no_upstream", message: msg };
     }
     if (
+      /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i
+        .test(combined)
+    ) {
+      return { ok: false, kind: "auth", message: msg };
+    }
+    if (
       /Not possible to fast-forward|diverg(ed|ent)|non-fast-forward/i.test(
         combined,
       )
@@ -476,6 +485,7 @@ export async function pullFastForward(
 export interface PushResult {
   ok: boolean;
   message: string;
+  kind?: "auth";
 }
 
 /** Run `git push` in `worktreePath`, using whatever upstream the branch
@@ -495,6 +505,13 @@ export async function pushUpstream(worktreePath: string): Promise<PushResult> {
   const stdout = r.stdout.toString();
   const stderr = r.stderr.toString();
   const message = `${stdout}${stderr}`.trim();
+  if (
+    r.exitCode !== 0 &&
+    /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i
+      .test(message)
+  ) {
+    return { ok: false, message, kind: "auth" };
+  }
   return { ok: r.exitCode === 0, message };
 }
 

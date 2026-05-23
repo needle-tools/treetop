@@ -3572,7 +3572,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ ok: true, message: result.message });
         }
         return json(
-          { ok: false, error: result.message },
+          { ok: false, error: result.message, kind: result.kind },
           { status: 409 },
         );
       }
