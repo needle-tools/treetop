@@ -3868,7 +3868,10 @@ const server = Bun.serve<TermWsData, never>({
             send("meta", { joined: true });
             try { await existing; } catch {}
             send("done", { elapsedMs: Date.now() - startedAt, joined: true });
-            try { controller.close(); } catch {}
+            // Delay close so Bun's chunked-encoding layer can flush
+            // the last frame. Synchronous close drops the final chunk
+            // → ERR_INCOMPLETE_CHUNKED_ENCODING in the browser.
+            setTimeout(() => { try { controller.close(); } catch {} }, 200);
             return;
           }
 
@@ -4093,7 +4096,10 @@ const server = Bun.serve<TermWsData, never>({
             send("error", { kind, message: msg });
           } finally {
             repoSummaryInflight.delete(id);
-            try { controller.close(); } catch {}
+            // Delay close so Bun's chunked-encoding layer can flush
+            // the last frame. Synchronous close drops the final chunk
+            // → ERR_INCOMPLETE_CHUNKED_ENCODING in the browser.
+            setTimeout(() => { try { controller.close(); } catch {} }, 200);
           }
         },
         cancel() {
