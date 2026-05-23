@@ -167,7 +167,17 @@ func handleSpawn(msg map[string]any) {
 	emit(map[string]any{"ev": "spawned", "id": id, "pid": cmd.Process.Pid})
 	emit(map[string]any{"ev": "env-snapshot", "id": id, "env": envSnapshot(merged)})
 
-	// Read PTY output in a goroutine
+	// Wait for the child to exit in one goroutine, read PTY output in
+	// another. When the child exits, close the master fd so the read
+	// loop breaks — relying on EIO from the slave close alone isn't
+	// reliable when subprocesses keep the slave fd open.
+	exitCh := make(chan *os.ProcessState, 1)
+	go func() {
+		state, _ := cmd.Process.Wait()
+		exitCh <- state
+		ptmx.Close()
+	}()
+
 	go func() {
 		buf := make([]byte, 16384)
 		for {
@@ -184,8 +194,7 @@ func handleSpawn(msg map[string]any) {
 			}
 		}
 
-		// Wait for process to exit
-		state, _ := cmd.Process.Wait()
+		state := <-exitCh
 		code := 0
 		if state != nil {
 			code = state.ExitCode()
