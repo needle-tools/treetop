@@ -7,14 +7,15 @@
     "packages/*"
   ],
   "scripts": {
+    "start": "bun run build && bun run start.ts",
     "dev": "bun run dev.ts",
     "stop-dev": "bun run stop-dev.ts",
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
-    "build": "cd packages/ui && bun run build",
+    "build": "bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
     "build:native": "bun run scripts/build-native.ts",
-    "start": "bun run build && bun run start.ts"
+    "build:bun": "cd packages/ui && bun run build"
   },
   "devDependencies": {
     "@types/bun": "latest",

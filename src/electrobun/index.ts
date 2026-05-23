@@ -79,12 +79,12 @@ let daemonProc: ReturnType<typeof spawn> | null = null;
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return;
 
-  // Find the bundled daemon binary relative to this script.
-  // In dev: look in build/supergit-native/
-  // In production: look adjacent to process.execPath.
+  // Find the bundled daemon binary. Electrobun puts copied files in
+  // Contents/Resources/app/ — process.execPath is Contents/MacOS/bun.
   const candidates = [
-    resolve(dirname(process.execPath), "supergit"),
-    resolve(dirname(process.execPath), "..", "Resources", "supergit"),
+    // Electrobun bundle (both dev and stable after extraction)
+    resolve(dirname(process.execPath), "..", "Resources", "app", "supergit"),
+    // Flat native build (fallback for development)
     resolve(process.cwd(), "build", "supergit-native", "supergit"),
   ];
 

@@ -11,5 +11,10 @@ export default {
     mac: {
       icons: "icon.iconset",
     },
+    copy: {
+      "build/supergit-native/supergit": "supergit",
+      "build/supergit-native/pty-helper": "pty-helper",
+      "build/supergit-native/ui": "ui",
+    },
   },
 };

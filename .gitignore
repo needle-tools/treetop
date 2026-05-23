@@ -7,4 +7,5 @@ dist/
 .env.*.local
 .claude/*.lock
 build/
+artifacts/
 packages/daemon/src/terminals/helper-go/pty-helper
