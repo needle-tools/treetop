@@ -528,6 +528,28 @@
     prevMode = mode;
     onModeChange(mode);
   }
+
+  /** Auto-refresh the session summary every 5 minutes while the TUI
+   *  is active. Re-fires `summarizeFromChip()` (which picks the same
+   *  model as the last run) so the summary stays roughly in sync with
+   *  the live conversation. The interval is cleared when the TUI
+   *  exits or the component unmounts. */
+  const TUI_SUMMARY_INTERVAL_MS = 5 * 60_000;
+  let tuiSummaryTimer: ReturnType<typeof setInterval> | null = null;
+  $: {
+    if (mode === "terminal") {
+      if (!tuiSummaryTimer) {
+        tuiSummaryTimer = setInterval(() => {
+          if (!summaryRefreshing) void summarizeFromChip();
+        }, TUI_SUMMARY_INTERVAL_MS);
+      }
+    } else {
+      if (tuiSummaryTimer) {
+        clearInterval(tuiSummaryTimer);
+        tuiSummaryTimer = null;
+      }
+    }
+  }
   /** The daemon-assigned terminal id once TerminalView spawns the PTY.
    *  The Dispose button DELETEs against this. */
   let terminalId: string | null = null;
@@ -1239,6 +1261,7 @@
     if (pollTimer !== null) window.clearInterval(pollTimer);
     if (pendingTimer) clearTimeout(pendingTimer);
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
+    if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
     cancelPinHide();
     if (msgSettleTimer) clearTimeout(msgSettleTimer);
   });
@@ -1295,8 +1318,56 @@
         ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
+    {#if mode === "terminal" && (summarySnippet || summaryRefreshing)}
+      <div class="pinned-last-msg-wrap tui-summary-wrap" class:revealed={pinnedRevealed}>
+        <div class="tui-summary-box">
+          <div class="tui-summary-body" title={summarySnippet}>
+            {#if summaryRefreshing}
+              <span class="tui-summary-refreshing">
+                <LoadingSpinner size="0.65rem" thickness="2px" label="Refreshing summary" />
+                <span class="dim">refreshing{summaryModel ? ` with ${summaryModel}` : ""}…</span>
+              </span>
+            {:else}
+              {summarySnippet}
+            {/if}
+          </div>
+          {#if !summaryRefreshing}
+            <button
+              type="button"
+              class="tui-summary-refresh"
+              title={summaryModel
+                ? `Refresh summary with ${summaryModel}`
+                : "Refresh summary"}
+              on:click={() => void summarizeFromChip()}
+              aria-label="Refresh summary"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="10"
+                height="10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+                <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
+              </svg>
+            </button>
+          {/if}
+        </div>
+      </div>
+    {/if}
     {#if mode === "terminal" && lastUserMessage && lastUserMessage.trim().length > 0}
-      <div class="pinned-last-msg-wrap" class:revealed={pinnedRevealed}>
+      <div
+        class="pinned-last-msg-wrap"
+        class:revealed={pinnedRevealed}
+        class:tui-has-summary={!!(summarySnippet || summaryRefreshing)}
+      >
         <div class="pinned-last-msg" title={lastUserMessage}>
           {lastUserMessage}
         </div>
@@ -2227,5 +2298,72 @@
     font-style: italic;
     font-size: 0.75rem;
     color: var(--text-faint);
+  }
+
+  /* ── TUI summary overlay ────────────────────────────────────── */
+  /* The summary wrap reuses `.pinned-last-msg-wrap` for the base
+     absolute-positioned overlay behavior (top:100%, opacity
+     transition, pointer-events:none). Override justify-content to
+     left-align the summary box (the last-user-message is right-
+     aligned). */
+  .tui-summary-wrap {
+    justify-content: flex-start;
+    pointer-events: auto;
+  }
+  .tui-summary-box {
+    position: relative;
+    max-width: 50%;
+    box-sizing: border-box;
+    padding: 0.3rem 2rem 0.3rem 0.6rem;
+    background: rgba(26, 26, 27, 0.85);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    border-radius: var(--radius-sm);
+    font-size: 0.74rem;
+    line-height: 1.5;
+    color: var(--text-2);
+    pointer-events: auto;
+  }
+  .tui-summary-body {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+  }
+  .tui-summary-refreshing {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .tui-summary-refresh {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    color: var(--text-muted);
+    padding: 0.15rem;
+    border-radius: var(--radius-sm, 4px);
+    cursor: pointer;
+    opacity: 0.4;
+    transition: opacity 120ms ease;
+  }
+  .tui-summary-box:hover .tui-summary-refresh {
+    opacity: 1;
+  }
+  .tui-summary-refresh:hover {
+    background: var(--surface-3, var(--surface-2));
+    color: var(--text-1);
+    opacity: 1;
+  }
+  /* When both the summary and last-user-message overlays are
+     visible, push the message wrap down so they stack vertically
+     instead of overlapping. */
+  .pinned-last-msg-wrap.tui-has-summary {
+    padding-top: 2.6rem;
   }
 </style>
