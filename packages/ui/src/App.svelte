@@ -3560,6 +3560,13 @@
         void refreshMessages();
         return;
       }
+      if (payload.kind === "session_copied") {
+        // A session was just copied to a new worktree — refresh repos
+        // so the agent list + session counts update, then focus the
+        // copied session in its target strip.
+        void load();
+        return;
+      }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
       const wtPath = payload.path;
       fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };

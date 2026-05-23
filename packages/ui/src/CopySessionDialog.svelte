@@ -1,5 +1,6 @@
 <script lang="ts">
   import { activeCopy, closeCopy } from "./copy-session-dialog";
+  import { requestSessionFocus } from "./session-focus-store";
 
   interface Worktree {
     path: string;
@@ -63,6 +64,14 @@
         return;
       }
       result = { kind: "ok", copiedTo: body.copiedTo ?? wt.path };
+      // Auto-focus the copied session in its new worktree strip.
+      // focusSessionBySource does an await-load + retry if the session
+      // isn't in the cached repos yet (the SSE broadcast from the
+      // daemon's session_copied event triggers a repos refresh, but
+      // there's a race — the focus request may arrive first).
+      if (body?.copiedTo) {
+        requestSessionFocus(body.copiedTo);
+      }
       setTimeout(() => closeCopy(), 1500);
     } catch (e) {
       result = { kind: "error", message: e instanceof Error ? e.message : String(e) };
@@ -108,7 +117,10 @@
       </p>
 
       {#if loading}
-        <p class="copy-loading">Loading…</p>
+        <div class="copy-loading">
+          <span class="copy-spinner"></span>
+          <span>Loading worktrees…</span>
+        </div>
       {:else if targets.length === 0}
         <p class="copy-empty">No repos found in this workspace.</p>
       {:else}
@@ -126,6 +138,9 @@
                       on:click={() => copyTo(wt)}
                       title={wt.path}
                     >
+                      {#if copying}
+                        <span class="copy-spinner"></span>
+                      {/if}
                       <span class="copy-wt-branch">{wt.branch || shortPath(wt)}</span>
                       <span class="copy-wt-path">{shortPath(wt)}</span>
                     </button>
@@ -191,11 +206,31 @@
     color: var(--text-muted);
     line-height: 1.4;
   }
-  .copy-loading,
+  .copy-loading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
   .copy-empty {
     margin: 0;
     font-size: 0.8rem;
     color: var(--text-muted);
+  }
+  .copy-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 2px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    border-top-color: var(--text-muted);
+    border-radius: 50%;
+    animation: copy-spin 0.6s linear infinite;
+  }
+  @keyframes copy-spin {
+    to { transform: rotate(360deg); }
   }
   .copy-targets {
     display: flex;

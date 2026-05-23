@@ -2852,6 +2852,23 @@ const server = Bun.serve<TermWsData, never>({
       if (!result.ok) {
         return json({ error: result.error }, { status: 409 });
       }
+      // Broadcast so the UI refreshes its agent list + session counts.
+      // The copiedTo path is a new JSONL under the Claude projects dir
+      // for targetCwd — detectAgents will pick it up on the next
+      // /api/repos refresh.
+      await events.append({
+        type: "session_copied",
+        actor: "user",
+        payload: {
+          source,
+          targetCwd,
+          copiedTo: result.copiedTo,
+        },
+      });
+      broadcast("change", {
+        kind: "session_copied",
+        copiedTo: result.copiedTo,
+      });
       return json({ ok: true, copiedTo: result.copiedTo });
     }
 
