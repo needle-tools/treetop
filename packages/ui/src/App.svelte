@@ -1147,6 +1147,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath, ...options }),
+        signal: AbortSignal.timeout(90_000),
       });
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -1163,7 +1164,10 @@
         error: body.error ?? `HTTP ${res.status}`,
       };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      const msg = e instanceof DOMException && e.name === "TimeoutError"
+        ? "Pull timed out — the remote may be unreachable."
+        : e instanceof Error ? e.message : String(e);
+      return { ok: false, error: msg };
     }
   }
 
@@ -1279,6 +1283,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath }),
+        signal: AbortSignal.timeout(90_000),
       });
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -1301,10 +1306,13 @@
         ttlMs: 14_000,
       });
     } catch (e) {
+      const msg = e instanceof DOMException && e.name === "TimeoutError"
+        ? "Push timed out — the remote may be unreachable."
+        : e instanceof Error ? e.message : String(e);
       addToast({
         kind: "error",
         title: "Push failed.",
-        message: e instanceof Error ? e.message : String(e),
+        message: msg,
         ttlMs: 12_000,
       });
     } finally {

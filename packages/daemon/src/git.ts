@@ -2,6 +2,19 @@ import { $ } from "bun";
 import { access } from "node:fs/promises";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 
+const PUSH_PULL_TIMEOUT_MS = 60_000;
+
+function raceTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: Timer;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!));
+}
+
 /** Best-effort filesystem existence check. Returns false on any error so
  *  callers can use it as a pure boolean test. */
 async function fileExists(path: string): Promise<boolean> {
@@ -385,9 +398,16 @@ export async function pullFastForward(
   options: { preStash?: boolean } = {},
 ): Promise<PullResult> {
   const run = async (): Promise<PullResult> => {
-    const r = await $`git -C ${worktreePath} merge --ff-only @{u}`
-      .quiet()
-      .nothrow();
+    let r;
+    try {
+      r = await raceTimeout(
+        $`git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
+        PUSH_PULL_TIMEOUT_MS,
+        "git pull",
+      );
+    } catch (e) {
+      return { ok: false, kind: "error", message: e instanceof Error ? e.message : String(e) };
+    }
     const stdout = r.stdout.toString();
     const stderr = r.stderr.toString();
     const combined = `${stdout}\n${stderr}`;
@@ -423,10 +443,22 @@ export async function pullFastForward(
   let result = await run();
   if (!result.ok && result.kind === "dirty" && options.preStash) {
     const stashMsg = `supergit-auto ${new Date().toISOString()}`;
-    const stashRes =
-      await $`git -C ${worktreePath} stash push --include-untracked -m ${stashMsg}`
-        .quiet()
-        .nothrow();
+    let stashRes;
+    try {
+      stashRes = await raceTimeout(
+        $`git -C ${worktreePath} stash push --include-untracked -m ${stashMsg}`
+          .quiet()
+          .nothrow(),
+        PUSH_PULL_TIMEOUT_MS,
+        "git stash",
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
     if (stashRes.exitCode !== 0) {
       return {
         ok: false,
@@ -450,7 +482,16 @@ export interface PushResult {
  *  is configured to track. No `--force` — non-fast-forward failures
  *  surface to the caller verbatim so the UI can show them in a toast. */
 export async function pushUpstream(worktreePath: string): Promise<PushResult> {
-  const r = await $`git -C ${worktreePath} push`.quiet().nothrow();
+  let r;
+  try {
+    r = await raceTimeout(
+      $`git -C ${worktreePath} push`.quiet().nothrow(),
+      PUSH_PULL_TIMEOUT_MS,
+      "git push",
+    );
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
   const stdout = r.stdout.toString();
   const stderr = r.stderr.toString();
   const message = `${stdout}${stderr}`.trim();
