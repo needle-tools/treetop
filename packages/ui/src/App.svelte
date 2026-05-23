@@ -204,6 +204,8 @@
    *  affordance. Refreshed alongside /api/repos in `load()`. */
   let allShells: ShellRecord[] = [];
   let loading = false;
+  let loadingSlow = false;
+  let loadingSlowTimer: ReturnType<typeof setTimeout> | null = null;
   // Legacy single-string error slot — kept for code paths that still set
   // it directly. New code should call `addToast({ kind: "error", ... })`
   // instead. Anything assigned to `error` is mirrored into the toast
@@ -352,8 +354,13 @@
    *  clean. */
   let notesShownInZen = false;
   function toggleZenRow(key: string) {
-    zenRowKey = zenRowKey === key ? null : key;
+    const exiting = zenRowKey === key;
+    zenRowKey = exiting ? null : key;
     notesShownInZen = false;
+    if (exiting) {
+      const wtPath = key.split("|").slice(1).join("|");
+      if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
+    }
   }
   // toggleFullscreen() lives in NewSessionCol.svelte now (it's only
   // called from inside the new-session-column header).
@@ -2414,10 +2421,8 @@
       }
     }
     if (zenRowKey && zenRowKey !== entry.rowKey) {
-      // Zen mode is focused on a different row, so this row is in a
-      // `display: none` subtree (zen-row.css:18). Exit zen so the
-      // clicked row is back in the layout flow.
-      zenRowKey = null;
+      zenRowKey = entry.rowKey;
+      notesShownInZen = false;
     }
     revealSession(entry.rowKey, entry.wtPath, {
       agent: entry.agent,
@@ -2713,6 +2718,9 @@
    *  streams that race each other writing into `repos`. */
   const load = singleFlight(async () => {
     loading = true;
+    loadingSlow = false;
+    if (loadingSlowTimer) clearTimeout(loadingSlowTimer);
+    loadingSlowTimer = setTimeout(() => { loadingSlow = true; }, 5000);
     error = "";
     // Browser-side timing for the initial dashboard load. Pair with the
     // daemon's `/api/repos total=…` line — together they tell you
@@ -2809,6 +2817,8 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
+      loadingSlow = false;
+      if (loadingSlowTimer) { clearTimeout(loadingSlowTimer); loadingSlowTimer = null; }
       console.log(
         `[load] done after ${(performance.now() - tStart).toFixed(0)}ms ` +
         `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
@@ -4638,8 +4648,10 @@
     // fires Esc against fullscreen before document keydown ever sees it.
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
+        const wtPath = zenRowKey.split("|").slice(1).join("|");
         zenRowKey = null;
         notesShownInZen = false;
+        if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
       }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
       // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input
@@ -5125,9 +5137,12 @@
   {#if loading && repos.length === 0}
     <div class="loading-screen">
       <div class="loading-inline">
-        <LoadingSpinner size="0.85rem" label="Loading repos" />
-        <span>loading repos…</span>
+        <LoadingSpinner size="0.85rem" label="Loading" />
+        <span>loading…</span>
       </div>
+      {#if loadingSlow}
+        <p class="loading-slow">daemon is busy — scanning worktrees and agent sessions</p>
+      {/if}
     </div>
   {:else if rows.length === 0 || emptyReposDebug}
     <div class="empty-repos">

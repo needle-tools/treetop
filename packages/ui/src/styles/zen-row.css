@@ -11,7 +11,9 @@
  * plans/PLAN.md → "App.svelte refactor (componentization)".
  */
 
-/* Hide the top bar, menubar, dock, and non-focused rows in zen. */
+/* Hide the top bar, menubar, and non-focused rows in zen.
+   The activity dock stays visible; the row's extra left padding
+   (2.2rem) keeps content clear of the dot strip. */
 main.zen-row > header,
 main.zen-row > .menubar {
   display: none;
@@ -19,7 +21,7 @@ main.zen-row > .menubar {
 main.zen-row .row:not(.row-zen) {
   display: none;
 }
-:has(main.zen-row) > .session-dock {
+.row.row-zen .fold-toggle {
   display: none;
 }
 
@@ -34,7 +36,7 @@ main.zen-row .row:not(.row-zen) {
   margin: 0;
   border-radius: 0;
   overflow: hidden;
-  padding: 0.6rem 1rem;
+  padding: 0.6rem 1rem 0.6rem 2.2rem;
   box-sizing: border-box;
 }
 
