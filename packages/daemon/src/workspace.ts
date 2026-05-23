@@ -1,6 +1,7 @@
 import { join, basename } from "node:path";
 import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { $ } from "bun";
 
 /**
  * User-defined "open in" link. Three flavours:
@@ -124,6 +125,15 @@ interface ReposFile {
 
 const REPOS_FILE = "repos.json";
 const SESSION_TITLES_FILE = "session-titles.json";
+
+async function resolveGitToplevel(dir: string): Promise<string> {
+  try {
+    const top = await $`git -C ${dir} rev-parse --show-toplevel`.quiet().text();
+    return top.trim();
+  } catch {
+    return dir;
+  }
+}
 
 export class Workspace {
   private constructor(public readonly path: string) {}
@@ -267,14 +277,15 @@ export class Workspace {
   }
 
   async addRepo(repoPath: string): Promise<Repo> {
+    const resolved = await resolveGitToplevel(repoPath);
     const repos = await this.listRepos();
-    if (repos.some((r) => r.path === repoPath)) {
-      throw new Error(`Repo already registered: ${repoPath}`);
+    if (repos.some((r) => r.path === resolved)) {
+      throw new Error(`Repo already registered: ${resolved}`);
     }
-    const name = basename(repoPath) || repoPath;
+    const name = basename(resolved) || resolved;
     const repo: Repo = {
       id: randomUUID(),
-      path: repoPath,
+      path: resolved,
       name,
       addedAt: new Date().toISOString(),
     };

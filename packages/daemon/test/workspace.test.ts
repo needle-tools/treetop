@@ -1,7 +1,8 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, readdir, mkdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { $ } from "bun";
 import { Workspace } from "../src/workspace";
 
 async function tempDir(): Promise<string> {
@@ -42,6 +43,33 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await ws.addRepo("/tmp/foo");
     await expect(ws.addRepo("/tmp/foo")).rejects.toThrow(/already registered/);
+  });
+
+  test("addRepo resolves a subdirectory to the git toplevel", async () => {
+    const repoDir = await realpath(await tempDir());
+    await $`git init ${repoDir}`.quiet();
+    await writeFile(join(repoDir, "README"), "hi");
+    await $`git -C ${repoDir} add . && git -C ${repoDir} commit -m init`.quiet();
+    const subDir = join(repoDir, "deep", "nested");
+    await mkdir(subDir, { recursive: true });
+
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo(subDir);
+    expect(repo.path).toBe(repoDir);
+    expect(repo.name).toBe(repoDir.split("/").pop());
+  });
+
+  test("addRepo deduplicates when subdirectory resolves to already-registered root", async () => {
+    const repoDir = await realpath(await tempDir());
+    await $`git init ${repoDir}`.quiet();
+    await writeFile(join(repoDir, "README"), "hi");
+    await $`git -C ${repoDir} add . && git -C ${repoDir} commit -m init`.quiet();
+    const subDir = join(repoDir, "sub");
+    await mkdir(subDir, { recursive: true });
+
+    const ws = await Workspace.open(await tempDir());
+    await ws.addRepo(repoDir);
+    await expect(ws.addRepo(subDir)).rejects.toThrow(/already registered/);
   });
 
   test("removes a repo by id and returns true", async () => {
