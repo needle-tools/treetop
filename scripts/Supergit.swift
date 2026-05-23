@@ -6,11 +6,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var webView: WKWebView!
     var daemon: Process?
     let port: UInt16 = 27787
+    var ownsDaemon = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        startDaemon()
-        waitForPort {
-            DispatchQueue.main.async { self.openWindow() }
+        checkExistingDaemon { alreadyRunning in
+            if alreadyRunning {
+                // Reuse the existing daemon — sessions, PTYs, and all
+                // state are preserved.
+                DispatchQueue.main.async { self.openWindow() }
+            } else {
+                self.startDaemon()
+                self.waitForPort {
+                    DispatchQueue.main.async { self.openWindow() }
+                }
+            }
         }
     }
 
@@ -19,10 +28,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let d = daemon, d.isRunning {
+        // Only kill the daemon if we started it.
+        if ownsDaemon, let d = daemon, d.isRunning {
             d.terminate()
             d.waitUntilExit()
         }
+    }
+
+    // MARK: - Existing daemon check
+
+    private func checkExistingDaemon(completion: @escaping (Bool) -> Void) {
+        let url = URL(string: "http://localhost:\(port)/api/debug/mem")!
+        let task = URLSession.shared.dataTask(with: url) { _, response, _ in
+            let running = (response as? HTTPURLResponse)?.statusCode == 200
+            completion(running)
+        }
+        task.resume()
     }
 
     // MARK: - Daemon
@@ -50,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try proc.run()
             daemon = proc
+            ownsDaemon = true
         } catch {
             let alert = NSAlert()
             alert.messageText = "Failed to start supergit"

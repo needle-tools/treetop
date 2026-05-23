@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import { DismissedSessionsStore, ExpandedStore } from "./storage";
+  import { getDaemonKV } from "./daemon-kv";
   import { singleFlight } from "./single-flight";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
@@ -312,17 +313,17 @@
    *  their local edit state survives a hide/show round-trip. Keyed
    *  by the row's stable key (worktree path or "<repoId>|none"). */
   let notesHiddenByRow: Record<string, boolean> = {};
-  if (typeof window !== "undefined") {
+  {
     try {
-      const raw = window.localStorage.getItem("supergit:notesHidden");
+      const raw = getDaemonKV().getItem("supergit:notesHidden");
       if (raw) notesHiddenByRow = JSON.parse(raw) ?? {};
     } catch {
       notesHiddenByRow = {};
     }
   }
-  $: if (typeof window !== "undefined") {
+  $: {
     try {
-      window.localStorage.setItem(
+      getDaemonKV().setItem(
         "supergit:notesHidden",
         JSON.stringify(notesHiddenByRow),
       );
@@ -1599,7 +1600,7 @@
   const DISMISSED_KEY = "supergit:dismissedShells";
   let dismissedShells: Set<string> = (() => {
     try {
-      const raw = localStorage.getItem(DISMISSED_KEY);
+      const raw = getDaemonKV().getItem(DISMISSED_KEY);
       if (!raw) return new Set();
       const arr = JSON.parse(raw);
       return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
@@ -1609,10 +1610,8 @@
   })();
   function saveDismissedShells() {
     try {
-      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissedShells]));
-    } catch {
-      // localStorage full / disabled — best effort; runtime state stays consistent.
-    }
+      getDaemonKV().setItem(DISMISSED_KEY, JSON.stringify([...dismissedShells]));
+    } catch {}
   }
   function dismissShellSource(source: string): void {
     if (!source.startsWith("__attached__:shell:") && !source.startsWith("__transcript__:shell:")) return;
@@ -2137,15 +2136,11 @@
   let notesChangeKey = 0;
 
   const expandedStore = new ExpandedStore(
-    typeof window !== "undefined"
-      ? window.localStorage
-      : ({ getItem: () => null, setItem: () => {} }),
+    getDaemonKV(),
     "supergit:commitsExpanded",
   );
   const dismissedSessionsStore = new DismissedSessionsStore(
-    typeof window !== "undefined"
-      ? window.localStorage
-      : ({ getItem: () => null, setItem: () => {} }),
+    getDaemonKV(),
     "supergit:dismissedSessions",
   );
   /** Sources the user has dismissed from session pickers. Mutated via
@@ -2167,15 +2162,11 @@
     dismissedSessionsStore.save(next);
   }
   const openSessionsPersistence = new OpenSessionsStore(
-    typeof window !== "undefined"
-      ? window.localStorage
-      : ({ getItem: () => null, setItem: () => {} }),
+    getDaemonKV(),
     "supergit:openSessions",
   );
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
-    typeof window !== "undefined"
-      ? window.localStorage
-      : ({ getItem: () => null, setItem: () => {} }),
+    getDaemonKV(),
     "supergit:visibleWorktrees",
   );
   let visibleWorktreesByRepo: Record<string, string[]> = {};
@@ -2189,9 +2180,7 @@
   // Storage key was renamed from `foldedRepos` (repo-keyed) so stale
   // repo-id entries don't accidentally collapse rows on first load.
   const foldedRowsStore = new ExpandedStore(
-    typeof window !== "undefined"
-      ? window.localStorage
-      : ({ getItem: () => null, setItem: () => {} }),
+    getDaemonKV(),
     "supergit:foldedRows",
   );
   let rowFolded: Record<string, boolean> = {};

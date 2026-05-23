@@ -4662,6 +4662,26 @@ const server = Bun.serve<TermWsData, never>({
       }
     }
 
+    // ── UI preferences (shared across browser + native app) ──────────
+
+    if (url.pathname === "/api/prefs" && req.method === "GET") {
+      return json(await workspace.getPrefs());
+    }
+
+    if (url.pathname === "/api/prefs" && req.method === "PATCH") {
+      const body = await req.json().catch(() => null);
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return json({ error: "body must be a JSON object" }, { status: 400 });
+      }
+      const patch: Record<string, string | null> = {};
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (v === null) patch[k] = null;
+        else if (typeof v === "string") patch[k] = v;
+      }
+      const updated = await workspace.patchPrefs(patch);
+      return json(updated);
+    }
+
     if (url.pathname === "/api/notes" && req.method === "GET") {
       const anchorPrefix = url.searchParams.get("anchorPrefix") ?? undefined;
       const list = await notes.list(

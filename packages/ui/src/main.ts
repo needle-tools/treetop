@@ -1,4 +1,5 @@
 import { mount } from "svelte";
+import { initDaemonKV } from "./daemon-kv";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/popover.css";
@@ -54,6 +55,10 @@ document.addEventListener("visibilitychange", syncTabVisibilityClass);
 
 const target = document.getElementById("app");
 if (!target) throw new Error("#app element missing in index.html");
+
+// Seed localStorage from daemon prefs before mounting so all store
+// constructors see shared state (native app inherits browser layout).
+await initDaemonKV();
 
 const app = mount(App, { target });
 

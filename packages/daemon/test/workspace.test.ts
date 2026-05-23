@@ -520,4 +520,48 @@ describe("Workspace", () => {
       }),
     ).rejects.toThrow(/either url or path/);
   });
+
+  // ── Prefs ──────────────────────────────────────────────────────────
+
+  test("getPrefs returns empty object when no prefs.json exists", async () => {
+    const ws = await Workspace.open(await tempDir());
+    expect(await ws.getPrefs()).toEqual({});
+  });
+
+  test("patchPrefs creates prefs.json and returns merged result", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const result = await ws.patchPrefs({ "supergit:notes-offsets": '{"a":1}' });
+    expect(result).toEqual({ "supergit:notes-offsets": '{"a":1}' });
+    const raw = await readFile(join(dir, "prefs.json"), "utf-8");
+    expect(JSON.parse(raw)).toEqual({ "supergit:notes-offsets": '{"a":1}' });
+  });
+
+  test("patchPrefs merges with existing keys", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.patchPrefs({ a: "1", b: "2" });
+    const result = await ws.patchPrefs({ b: "3", c: "4" });
+    expect(result).toEqual({ a: "1", b: "3", c: "4" });
+  });
+
+  test("patchPrefs with null deletes a key", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.patchPrefs({ a: "1", b: "2" });
+    const result = await ws.patchPrefs({ a: null });
+    expect(result).toEqual({ b: "2" });
+  });
+
+  test("getPrefs round-trips through patchPrefs", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await ws.patchPrefs({ x: "hello", y: '{"nested":true}' });
+    const loaded = await ws.getPrefs();
+    expect(loaded).toEqual({ x: "hello", y: '{"nested":true}' });
+  });
+
+  test("getPrefs tolerates corrupt prefs.json", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    await writeFile(join(dir, "prefs.json"), "not json");
+    expect(await ws.getPrefs()).toEqual({});
+  });
 });

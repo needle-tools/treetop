@@ -45,6 +45,12 @@ a git repo (single-member at v0, invitable from v2). Two pillars:
 10. **Don't add features beyond the task.** A bug fix doesn't justify a
     refactor. A new feature doesn't justify a new abstraction. Three similar
     lines beats a premature helper.
+11. **No localStorage for shared UI state.** UI state that should be
+    consistent across browser and native app (open sessions, note
+    positions, visible worktrees, folded rows, etc.) goes in daemon
+    prefs (`/api/prefs` → `<workspace>/prefs.json`) via
+    `getDaemonKV()`. Direct `localStorage` is only for per-device
+    ephemeral preferences (last-used model, share-dialog peer, drafts).
 
 ## Anti-patterns we reject
 
@@ -55,6 +61,8 @@ a git repo (single-member at v0, invitable from v2). Two pillars:
 - Refactor + new behavior in one PR.
 - Adding error handling, fallbacks, or validation for scenarios that can't
   happen. Trust internal invariants; validate at system boundaries only.
+- New `localStorage.setItem` / `localStorage.getItem` calls for layout or
+  session state. Use `getDaemonKV()` from `daemon-kv.ts` instead.
 
 ## Stack (v0)
 
