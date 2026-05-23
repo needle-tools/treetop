@@ -1196,6 +1196,7 @@
           });
         }
         await load();
+        await load();
         return;
       }
       if (result.kind === "auth") {
@@ -1268,6 +1269,7 @@
           });
         }
         await load();
+        await load();
       } else {
         addToast({
           kind: "error",
@@ -1307,6 +1309,7 @@
           message: "Pushed to upstream.",
           ttlMs: 6_000,
         });
+        await load();
         await load();
         return;
       }

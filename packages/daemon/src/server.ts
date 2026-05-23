@@ -757,6 +757,7 @@ async function reposNDJSONResponse(
  *  just no longer eligible to satisfy a later request from the cache. */
 function invalidateReposCache(): void {
   reposCache = null;
+  reposInflight = null;
 }
 
 // In-memory favicon cache. Keyed by request URL; entries hold the bytes
