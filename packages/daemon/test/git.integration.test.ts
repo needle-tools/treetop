@@ -489,7 +489,10 @@ describe("resolveSubmoduleWorktreePaths", () => {
     expect(list.length).toBeGreaterThan(0);
     for (const wt of list) {
       expect(wt.path).not.toMatch(/[/\\]\.git[/\\]modules[/\\]/);
+      expect(wt.nonGit).toBeUndefined();
     }
+    expect(list[0]!.path).toBe(submoduleWorkdir);
+    expect(list[0]!.head.length).toBeGreaterThan(0);
   });
 });
 

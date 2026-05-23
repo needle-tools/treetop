@@ -85,12 +85,17 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
     const worktrees = parseWorktreeList(result);
     // Guard: git -C walks upward, so a plain dir inside a parent repo
     // succeeds but returns the PARENT's worktree. Reject when the
-    // returned root isn't the path we asked about.
+    // returned root isn't the path we asked about — BUT allow
+    // submodules through: their worktree path points at
+    // .git/modules/… which resolveSubmoduleWorktreePaths will fix.
     if (worktrees.length > 0 && worktrees[0]!.path !== normalRepo) {
-      if (await fileExists(repoPath)) {
-        return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+      const isSubmoduleGitdir = /[/\\]\.git[/\\]/.test(worktrees[0]!.path);
+      if (!isSubmoduleGitdir) {
+        if (await fileExists(repoPath)) {
+          return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+        }
+        return [];
       }
-      return [];
     }
     return resolveSubmoduleWorktreePaths(repoPath, worktrees);
   } catch {
