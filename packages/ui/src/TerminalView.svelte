@@ -359,11 +359,17 @@
     });
     fit = new FitAddon();
     xterm.loadAddon(fit);
-    // Cmd/Ctrl-click on URLs in terminal output opens them in the
-    // user's default browser, the same as in a real terminal. The
-    // addon's default handler calls `window.open(url, "_blank")`,
-    // which the browser routes to the OS default. No callback needed.
-    xterm.loadAddon(new WebLinksAddon());
+    // Open URLs via the daemon so it works in both browser and native
+    // app (WKWebView doesn't route window.open to the OS browser).
+    xterm.loadAddon(new WebLinksAddon((_event, uri) => {
+      fetch("/api/open-default", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: uri }),
+      }).catch(() => {
+        window.open(uri, "_blank");
+      });
+    }));
     xterm.open(containerEl);
     fit.fit();
 
