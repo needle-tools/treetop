@@ -108,6 +108,10 @@ describe("addIncomingMessage + getMessages", () => {
       body: "earlier",
       sentAt: "2026-05-22T10:00:00Z",
     });
+    // Small delay so the two messages get distinguishable receivedAt
+    // timestamps — sort is by receivedAt, not sentAt, and sub-ms
+    // resolution makes same-tick ordering unstable.
+    await new Promise((r) => setTimeout(r, 5));
     await addIncomingMessage(w, {
       from: { id: "peer-b", label: "Bob" },
       body: "later",

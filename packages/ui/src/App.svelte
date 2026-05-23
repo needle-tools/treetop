@@ -31,6 +31,7 @@
   import SummarizeDialog from "./SummarizeDialog.svelte";
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
+  import CopySessionDialog from "./CopySessionDialog.svelte";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
@@ -6945,6 +6946,7 @@
 <SummarizeDialog />
 <ShareSessionDialog />
 <ReceiveInviteDialog />
+<CopySessionDialog />
 
 {#if dirtyCheckout}
   <div

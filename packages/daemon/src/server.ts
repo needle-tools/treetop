@@ -88,6 +88,7 @@ import {
   type PeerIdentity,
 } from "./peer-identity";
 import { PeerDiscovery } from "./peer-discovery";
+import { listWorkspaces, copySessionToWorkspace } from "./session-copy";
 import { disambiguatePeerLabels } from "./peer-registry";
 import {
   addIncomingMessage,
@@ -1048,14 +1049,14 @@ async function recordServerError(
 // can reconnect without losing the agent. Closing the panel for real
 // just lets the timer fire and the PTY dies cleanly.
 //
-// 30s instead of 3s: with the Terminal-column reattach flow (GET
+// 60s instead of 3s: with the Terminal-column reattach flow (GET
 // /api/shells on mount, then attach via WS), the round-trip from
 // "reload pressed" to "WS open frame" is dominated by browser cache
 // behaviour and the SPA's JS evaluation — easily 5–10s on a cold
 // devtools-disabled reload. 3s killed every shell before the new tab
-// could attach. 30s is generous; a column the user actually closed
+// could attach. 60s is generous; a column the user actually closed
 // will linger for that long but cost nothing.
-const GRACE_MS = 30_000;
+const GRACE_MS = 60_000;
 const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Per-shell live cwd cache. We sample `lsof -p <pid> -d cwd` every
@@ -2800,6 +2801,62 @@ const server = Bun.serve<TermWsData, never>({
       await unmutePeer(workspace.path, peerId);
       broadcast("change", { kind: "message_unmute", peerId });
       return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/workspaces" && req.method === "GET") {
+      const ws = await listWorkspaces(workspace.path);
+      return json({ workspaces: ws });
+    }
+
+    if (url.pathname === "/api/sessions/copy-to-workspace" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { source?: unknown; targetWorkspace?: unknown }
+        | null;
+      const source = typeof body?.source === "string" ? body.source : "";
+      const targetWorkspace = typeof body?.targetWorkspace === "string" ? body.targetWorkspace : "";
+      if (!source || !targetWorkspace) {
+        return json({ error: "source and targetWorkspace required" }, { status: 400 });
+      }
+      // Resolve the source session's repo.
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json({ error: "unknown session source" }, { status: 404 });
+      }
+      const parsed = await parseSessionFile(resolved.agent, source);
+      const cwd = parsed.cwd ?? "";
+      if (!cwd) {
+        return json({ error: "session has no cwd — cannot identify its repo" }, { status: 400 });
+      }
+      const repos = await workspace.listRepos();
+      const matchesPrefix = (p: string) =>
+        cwd === p || cwd.startsWith(`${p}/`) || cwd.startsWith(`${p}\\`);
+      let repo: typeof repos[number] | undefined;
+      for (const r of repos) {
+        if (matchesPrefix(r.path)) { repo = r; break; }
+        const wts = await listWorktrees(r.path).catch(() => []);
+        if (wts.find((w) => matchesPrefix(w.path))) { repo = r; break; }
+      }
+      if (!repo) {
+        return json(
+          { error: `session cwd "${cwd}" is not inside any known repo` },
+          { status: 400 },
+        );
+      }
+      const remotes = await listRemotes(repo.path);
+      const remote = remotes[0]?.url ?? "";
+      if (!remote) {
+        return json({ error: "repo has no git remote" }, { status: 400 });
+      }
+      const result = await copySessionToWorkspace({
+        source,
+        sourceRepoPath: repo.path,
+        sourceRemote: normalizeRemote(remote),
+        targetWorkspaceDir: targetWorkspace,
+      });
+      if (!result.ok) {
+        return json({ error: result.error }, { status: 409 });
+      }
+      return json({ ok: true, copiedTo: result.copiedTo });
     }
 
     if (url.pathname === "/api/sessions/offer" && req.method === "POST") {

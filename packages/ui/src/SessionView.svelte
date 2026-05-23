@@ -10,6 +10,7 @@
   import { saveSessionAsLink } from "./save-session-as-link";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import { openShare } from "./share-session-dialog";
+  import { openCopy } from "./copy-session-dialog";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -775,6 +776,16 @@
           ? "Summarize this session with a local Ollama model"
           : "Session is empty — nothing to summarize",
         onSelect: () => openSummarize(source),
+      },
+      {
+        kind: "action",
+        label: "Copy to",
+        iconSvg: [
+          "M20 16V7a2 2 0 0 0-2-2H6",
+          "M14 2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z",
+        ],
+        title: "Copy this session to another workspace for resuming there",
+        onSelect: () => openCopy(source),
       },
       {
         kind: "action",
