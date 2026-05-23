@@ -137,6 +137,10 @@
   export let contextWindow: number | undefined = undefined;
   /** Model id so the chip can pick a context-window cap (200k vs 1M). */
   export let model: string | undefined = undefined;
+  /** When set, skip spawning a new PTY and reattach to this existing
+   *  daemon-side terminal. Used when a transient `__new__:` column
+   *  migrates to SessionView while the PTY is still alive. */
+  export let attachTermId: string | undefined = undefined;
   /** Resting-state line cap for the read-mode summary snippet pill.
    *  The pill hover-expands to 50vh same as the TUI pin; this prop
    *  controls the at-rest cap. Default 6 so a ~300-char one-paragraph
@@ -1446,24 +1450,36 @@
           </button>
         </div>
       {/if}
-      {#if summarySnippet}
-        <!-- The old snippet stays visible during a refresh — only
-             the chip spins. Two spinners felt redundant. The
-             `summary-stack` padding only applies when the Refresh
-             chip is also visible above; otherwise the pill sits
-             flush under the header and the chip slot is freed. -->
+      {#if summarySnippet || (lastUserMessage && lastUserMessage.trim().length > 0)}
         <div
-          class="pinned-last-msg-wrap"
+          class="pinned-last-msg-wrap tui-overlay-stack"
           class:summary-stack={shouldShowRefresh || summaryRefreshing}
           class:revealed={pinnedRevealed}
         >
-          <button
-            type="button"
-            class="pinned-last-msg pinned-summary"
-            aria-label="Open summary"
-            style="--summary-max-lines: {summaryMaxLines}"
-            on:click={() => openSummarize(source)}
-          >{summarySnippet}</button>
+          {#if summarySnippet}
+            <button
+              type="button"
+              class="tui-summary-box pinned-summary"
+              aria-label="Open summary"
+              style="--summary-max-lines: {summaryMaxLines}"
+              on:click={() => openSummarize(source)}
+            >
+              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                {#each ICONS.info.paths ?? [] as d}<path {d}/>{/each}
+                {#each ICONS.info.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+              </svg>
+              <span class="tui-summary-body">{summarySnippet}</span>
+            </button>
+          {/if}
+          {#if lastUserMessage && lastUserMessage.trim().length > 0}
+            <div class="pinned-last-msg">
+              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
+                {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+              </svg>
+              <span class="pinned-last-msg-text">{lastUserMessage}</span>
+            </div>
+          {/if}
         </div>
       {/if}
     {/if}
@@ -1497,6 +1513,7 @@
           ]}
       cwd={session.cwd}
       ownerId={session.sessionId}
+      {attachTermId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       onSpawn={(id) => (terminalId = id)}
       onAwaitingChange={(a) => {
@@ -1859,7 +1876,9 @@
     color: var(--text-1);
     text-align: left;
     cursor: pointer;
-    max-height: calc(var(--summary-max-lines, 6) * 1lh + 0.5rem);
+    border: 0;
+    max-height: none;
+    overflow: visible;
   }
   .pinned-summary:hover {
     background: rgba(26, 26, 27, 0.95);

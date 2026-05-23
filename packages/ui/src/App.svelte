@@ -2034,6 +2034,10 @@
      *  Claude gets `--append-system-prompt-file <path>`, Codex gets it
      *  as a positional prompt reference. Ephemeral — not persisted. */
     contextFilePath?: string;
+    /** Daemon-side PTY id to reattach to when a `__new__:` column
+     *  migrates to SessionView mid-flight. Set during the source swap
+     *  so SessionView reattaches instead of spawning a duplicate. */
+    attachTermId?: string;
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -3818,17 +3822,35 @@
         const { byWt: stamped, stampedSource } =
           stampDiscoveredSessionIdWithDetail(openSessionsByWt, ev);
         if (stamped !== openSessionsByWt) openSessionsByWt = stamped;
-        // Re-key any title the user typed against the synthetic source
-        // onto the agent's real JSONL path. Without this, a reload
-        // shows the column resuming the right conversation (via
-        // resumeSessionId) but the title we render lives on the
-        // disposable `__new__:claude:<rnd>` key — and if the user has
-        // multiple concurrent `__new__:` columns and the SSE order
-        // raced the open order, the title visible alongside the
-        // resumed chat can look like it belongs to a sibling column.
-        // Migrating to ev.source pins the title to the conversation.
+        // Once stamped AND we have a real JSONL source, promote the
+        // column from `__new__:` to the real source so it renders as
+        // SessionView (with full overlay, summary, menu) instead of
+        // the stripped-down NewSessionCol. Carry the daemon termId so
+        // SessionView reattaches to the live PTY instead of spawning.
         if (stampedSource && ev.source) {
-          void migrateSessionTitleOnServer(stampedSource, ev.source);
+          const termId = newTermIds[stampedSource];
+          const realSource = ev.source!;
+          openSessionsByWt = {
+            ...openSessionsByWt,
+            [ev.cwd]: (openSessionsByWt[ev.cwd] ?? []).map((x) =>
+              x.source === stampedSource
+                ? {
+                    ...x,
+                    source: realSource,
+                    mode: "terminal" as const,
+                    attachTermId: termId,
+                  }
+                : x,
+            ),
+          };
+          // Migrate transient state from the old synthetic key.
+          if (transientWorking[stampedSource] !== undefined) {
+            transientWorking = { ...transientWorking, [realSource]: transientWorking[stampedSource] };
+          }
+          if (transientAwaiting[stampedSource] !== undefined) {
+            transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[stampedSource] };
+          }
+          void migrateSessionTitleOnServer(stampedSource, realSource);
         }
       } catch {
         // ignore malformed
@@ -6973,6 +6995,7 @@
                             contextTokensExact={agentMeta?.contextTokensExact}
                             contextWindow={agentMeta?.contextWindow}
                             model={agentMeta?.model}
+                            attachTermId={(s as any).attachTermId}
                             initialMode={s.mode === "terminal" ? "terminal" : "read"}
                             onModeChange={(m) => {
                               // Persist so a reload restores the same view —
