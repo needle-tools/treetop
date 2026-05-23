@@ -9,10 +9,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var ownsDaemon = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if !gitAvailable() {
+            let alert = NSAlert()
+            alert.messageText = "git is not installed"
+            alert.informativeText = "Supergit requires git. Install Xcode Command Line Tools by running:\n\nxcode-select --install"
+            alert.addButton(withTitle: "Install…")
+            alert.addButton(withTitle: "Quit")
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+                proc.arguments = ["--install"]
+                try? proc.run()
+            }
+            NSApp.terminate(nil)
+            return
+        }
+
         checkExistingDaemon { alreadyRunning in
             if alreadyRunning {
-                // Reuse the existing daemon — sessions, PTYs, and all
-                // state are preserved.
                 DispatchQueue.main.async { self.openWindow() }
             } else {
                 self.startDaemon()
@@ -56,9 +71,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
 
-        // Clean env: strip inherited SUPERGIT_* so the binary uses its
-        // own bundled ui/ and picks a clean port.
+        // macOS .app bundles get a minimal PATH (/usr/bin:/bin:…) that
+        // doesn't include node, bun, or other tools the daemon needs.
+        // Grab the user's real PATH from a login shell.
         var env = ProcessInfo.processInfo.environment
+        if let shellPath = resolveLoginPath() {
+            env["PATH"] = shellPath
+        }
         for key in env.keys where key.hasPrefix("SUPERGIT_") {
             env.removeValue(forKey: key)
         }
@@ -78,6 +97,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = error.localizedDescription
             alert.runModal()
             NSApp.terminate(nil)
+        }
+    }
+
+    private func gitAvailable() -> Bool {
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        probe.arguments = ["git", "--version"]
+        probe.standardOutput = FileHandle.nullDevice
+        probe.standardError = FileHandle.nullDevice
+        probe.environment = resolveLoginPath().map { ["PATH": $0] }
+            ?? ProcessInfo.processInfo.environment
+        do {
+            try probe.run()
+            probe.waitUntilExit()
+            return probe.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func resolveLoginPath() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: shell)
+        probe.arguments = ["-l", "-c", "echo $PATH"]
+        let pipe = Pipe()
+        probe.standardOutput = pipe
+        probe.standardError = FileHandle.nullDevice
+        do {
+            try probe.run()
+            probe.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (path?.isEmpty == false) ? path : nil
+        } catch {
+            return nil
         }
     }
 

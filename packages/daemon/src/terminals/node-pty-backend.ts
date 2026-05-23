@@ -183,25 +183,39 @@ export class NodePtyBackend implements PtyBackend {
   private nextSeq = 1;
   private stdoutCarry = "";
 
-  private helperPath(): string {
-    // Compiled binary: helper.mjs lives next to the executable.
-    const exeAdj = pathResolve(pathDirname(process.execPath), "helper.mjs");
-    if (existsSync(exeAdj)) return exeAdj;
-    // Dev / uncompiled: same directory as this source file.
-    return pathResolve(import.meta.dir, "helper.mjs");
+  private helperCmd(): string[] {
+    // Prefer the Go binary (no Node dependency).
+    const goBinary = "pty-helper";
+    const goCandidates = [
+      pathResolve(pathDirname(process.execPath), goBinary),
+      pathResolve(import.meta.dir, "helper-go", goBinary),
+    ];
+    for (const p of goCandidates) {
+      if (existsSync(p)) return [p];
+    }
+    // Fall back to Node + helper.mjs.
+    const mjsCandidates = [
+      pathResolve(pathDirname(process.execPath), "helper.mjs"),
+      pathResolve(import.meta.dir, "helper.mjs"),
+    ];
+    for (const p of mjsCandidates) {
+      if (existsSync(p)) return ["node", p];
+    }
+    return ["node", pathResolve(import.meta.dir, "helper.mjs")];
   }
 
   private async startHelper(): Promise<void> {
     if (this.helperReady) return this.helperReady;
     fixSpawnHelperBit();
     this.helperReady = new Promise<void>((resolve, reject) => {
-      const path = this.helperPath();
+      const cmd = this.helperCmd();
+      const path = cmd[cmd.length - 1]!;
       if (!existsSync(path)) {
         reject(new Error(`helper not found at ${path}`));
         return;
       }
       const proc = bunSpawn({
-        cmd: ["node", path],
+        cmd,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "inherit",

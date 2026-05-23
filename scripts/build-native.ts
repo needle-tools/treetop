@@ -51,40 +51,16 @@ const binaryPath = join(FLAT, "supergit");
 await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${binaryPath}`.quiet();
 console.log("     ✓ Daemon binary compiled");
 
-// ── 3. Copy support files into flat layout ───────────────────────────
-console.log("3/6  Copying support files…");
+// ── 3. Build Go PTY helper + copy support files ─────────────────────
+console.log("3/6  Building Go helper + copying files…");
 
 await cp(distDir, join(FLAT, "ui"), { recursive: true });
 
-await cp(
-  resolve(ROOT, "packages/daemon/src/terminals/helper.mjs"),
-  join(FLAT, "helper.mjs"),
-);
+// Build the Go PTY helper — replaces Node + helper.mjs + node-pty.
+const goHelperDir = resolve(ROOT, "packages/daemon/src/terminals/helper-go");
+await $`cd ${goHelperDir} && go build -o ${join(FLAT, "pty-helper")} .`.quiet();
 
-const ptySrc = resolve(ROOT, "node_modules/node-pty");
-const ptyDst = join(FLAT, "node_modules", "node-pty");
-await mkdir(join(ptyDst, "lib"), { recursive: true });
-await cp(join(ptySrc, "package.json"), join(ptyDst, "package.json"));
-await cp(join(ptySrc, "lib"), join(ptyDst, "lib"), { recursive: true });
-
-const prebuildSrc = join(ptySrc, "prebuilds", platform);
-if (existsSync(prebuildSrc)) {
-  const prebuildDst = join(ptyDst, "prebuilds", platform);
-  await mkdir(prebuildDst, { recursive: true });
-  await cp(prebuildSrc, prebuildDst, { recursive: true });
-
-  const exeAdjDst = join(FLAT, "node-pty-prebuilds", platform);
-  await mkdir(exeAdjDst, { recursive: true });
-  await cp(prebuildSrc, exeAdjDst, { recursive: true });
-}
-
-for (const f of await readdir(join(ptyDst, "lib"))) {
-  if (f.endsWith(".test.js") || f.endsWith(".test.js.map") || f.endsWith(".js.map")) {
-    await rm(join(ptyDst, "lib", f));
-  }
-}
-
-console.log("     ✓ Support files copied");
+console.log("     ✓ Go helper + support files copied");
 
 // ── 4. Compile Swift launcher ────────────────────────────────────────
 console.log("4/6  Compiling Swift launcher…");
@@ -99,17 +75,12 @@ console.log("5/6  Assembling .app bundle…");
 
 await mkdir(RESOURCES, { recursive: true });
 
-// Copy everything from flat layout into Resources
+// Copy flat layout into Resources
 await cp(join(FLAT, "supergit"), join(RESOURCES, "supergit"));
 await cp(join(FLAT, "ui"), join(RESOURCES, "ui"), { recursive: true });
-await cp(join(FLAT, "helper.mjs"), join(RESOURCES, "helper.mjs"));
-await cp(join(FLAT, "node_modules"), join(RESOURCES, "node_modules"), { recursive: true });
-if (existsSync(join(FLAT, "node-pty-prebuilds"))) {
-  await cp(join(FLAT, "node-pty-prebuilds"), join(RESOURCES, "node-pty-prebuilds"), { recursive: true });
-}
+await cp(join(FLAT, "pty-helper"), join(RESOURCES, "pty-helper"));
 
-// Make the daemon binary executable
-await $`chmod +x ${join(RESOURCES, "supergit")}`.quiet();
+await $`chmod +x ${join(RESOURCES, "supergit")} ${join(RESOURCES, "pty-helper")}`.quiet();
 
 // Info.plist
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
