@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
  *  the lifecycle (anchors, undo, SSE) and the storage path —
  *  `<workspace>/notes/<id>.md` — so the layer code in the UI can route
  *  on `kind` rather than having two parallel stores. */
-export type AttachmentKind = "note" | "link";
+export type AttachmentKind = "note" | "link" | "emoji";
 
 /** Target a link points at. Five well-known shapes today; the schema
  *  stays open so future kinds (PR, issue, slack thread) can drop in
@@ -116,7 +116,7 @@ export function parseNoteFile(raw: string): Note {
   // is dropped silently — forward-compat with future kinds, and
   // defensive against hand-edits that fat-finger the field.
   const rawKind = fm.scalars.get("kind");
-  if (rawKind === "note" || rawKind === "link") note.kind = rawKind;
+  if (rawKind === "note" || rawKind === "link" || rawKind === "emoji") note.kind = rawKind;
   // Flat target fields. Both must be present and the type recognized;
   // otherwise we treat the file as if no target was set so the UI
   // falls back to plain-note rendering rather than a half-broken chip.

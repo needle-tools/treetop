@@ -410,7 +410,7 @@ const ALLOWED_ORIGINS = new Set([
  *  returns undefined — the store then treats it as "leave the existing
  *  kind alone" on PUT, and "default to note" on POST. */
 function parseKind(v: unknown): AttachmentKind | undefined {
-  return v === "note" || v === "link" ? v : undefined;
+  return v === "note" || v === "link" || v === "emoji" ? v : undefined;
 }
 
 import { clampCols, clampRows } from "./term-clamp";
@@ -4686,6 +4686,59 @@ const server = Bun.serve<TermWsData, never>({
           "X-Accel-Buffering": "no",
         },
       });
+    }
+
+    if (url.pathname === "/api/folder-stats" && req.method === "GET") {
+      const wt = url.searchParams.get("wt");
+      const folder = url.searchParams.get("folder");
+      if (!wt || !folder) {
+        return json({ error: "?wt=<worktree>&folder=<path> required" }, { status: 400 });
+      }
+      try {
+        const rel = folder.startsWith(wt)
+          ? folder.slice(wt.length).replace(/^\//, "")
+          : folder;
+        const [unstaged, staged, untracked] = await Promise.all([
+          $`git -C ${wt} diff --numstat -- ${rel}`.quiet().nothrow().text(),
+          $`git -C ${wt} diff --cached --numstat -- ${rel}`.quiet().nothrow().text(),
+          $`git -C ${wt} ls-files --others --exclude-standard -- ${rel}`.quiet().nothrow().text(),
+        ]);
+        const files: { path: string; added: number; removed: number; status: string }[] = [];
+        const seen = new Set<string>();
+        for (const line of unstaged.split("\n")) {
+          const t1 = line.indexOf("\t");
+          if (t1 < 0) continue;
+          const t2 = line.indexOf("\t", t1 + 1);
+          if (t2 < 0) continue;
+          const a = parseInt(line.slice(0, t1), 10) || 0;
+          const r = parseInt(line.slice(t1 + 1, t2), 10) || 0;
+          const p = line.slice(t2 + 1);
+          if (!p || seen.has(p)) continue;
+          seen.add(p);
+          files.push({ path: p, added: a, removed: r, status: "M" });
+        }
+        for (const line of staged.split("\n")) {
+          const t1 = line.indexOf("\t");
+          if (t1 < 0) continue;
+          const t2 = line.indexOf("\t", t1 + 1);
+          if (t2 < 0) continue;
+          const a = parseInt(line.slice(0, t1), 10) || 0;
+          const r = parseInt(line.slice(t1 + 1, t2), 10) || 0;
+          const p = line.slice(t2 + 1);
+          if (!p || seen.has(p)) continue;
+          seen.add(p);
+          files.push({ path: p, added: a, removed: r, status: "staged" });
+        }
+        for (const line of untracked.split("\n")) {
+          const p = line.trim();
+          if (!p || seen.has(p)) continue;
+          seen.add(p);
+          files.push({ path: p, added: 0, removed: 0, status: "?" });
+        }
+        return json({ files });
+      } catch (e) {
+        return json({ error: String(e instanceof Error ? e.message : e) }, { status: 500 });
+      }
     }
 
     if (url.pathname === "/api/files" && req.method === "GET") {

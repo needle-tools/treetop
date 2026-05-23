@@ -14,6 +14,7 @@
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
+  import GitHistory from "./GitHistory.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { statusSummary, type FileStatus } from "./status-summary";
@@ -26,6 +27,7 @@
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
+  import EmojiPicker from "./EmojiPicker.svelte";
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
@@ -765,6 +767,8 @@
   // unified worktree picker open? The picker lets you jump to a
   // worktree row, remove one, or create a new one.
   let wtPickerOpen: Record<string, boolean> = {};
+  // Per-row: is the emoji sticker picker open?
+  let emojiPickerOpen: Record<string, boolean> = {};
   // Agent CLIs we detected on PATH at the daemon. Loaded once on mount.
   let installedAgents: { name: string; path: string }[] = [];
   // Per-worktree: is the "+ new agent" popover open?
@@ -1685,6 +1689,18 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  function openGitHistory(wtPath: string) {
+    const id = `gh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__history__:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const entry: OpenSession = { agent: "history", source: synthetic };
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
+  }
+
   async function loadDefaultShell() {
     try {
       const res = await fetch("/api/shell-default");
@@ -2007,7 +2023,7 @@
   interface OpenSession {
     /** Includes `"shell"` for plain-terminal columns (no JSONL transcript;
      *  the daemon spawns the user's $SHELL as a PTY). */
-    agent: AgentSession["agent"] | "shell";
+    agent: AgentSession["agent"] | "shell" | "files" | "history";
     source: string;
     /** Optional. Stamped on `__new__:claude:` / `__new__:codex:` columns
      *  by the activity-SSE handler once the daemon surfaces a real
@@ -5673,40 +5689,24 @@
                   {/if}
                 </span>
               {/if}
-              {#if rowFolded[row.key] && wt && badgeAnimDebug}
-                <!-- `?badgeanim=1`: bypass the priority-pick + the
-                     real wt state and render both push and pull badges
-                     so the user can eyeball both border animations
-                     at once. Skips the Tooltip wrapper (preview only).
-                     `?pulsate=1` additionally toggles the opacity
-                     pulse on the push variant (no-op for ↓). -->
+              {#if wt && badgeAnimDebug}
                 <span class="status-badge-debug-row">
                   <StatusBadge ahead={1} behind={0} dirty={0} pulsate={pulsateDebug} />
                   <StatusBadge ahead={0} behind={1} dirty={0} />
                 </span>
-              {:else if rowFolded[row.key] && wt}
+              {:else if wt && !wt.nonGit}
                 {@const fAhead = wt.branchStatus?.ahead ?? 0}
                 {@const fBehind = wt.branchStatus?.behind ?? 0}
                 {@const fDirty = wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked}
+                {@const fDirtyWarn = fDirty > 3 || (wt.fileStatus.dirtyLines ?? 0) > 200}
                 {#if fAhead > 0 || fBehind > 0 || fDirty > 0}
-                  <!-- Folded rows only get one signal-pill. Priority:
-                       unpushed commits → behind upstream → dirty workdir.
-                       Tooltip content matches the equivalent expanded-row
-                       tooltip exactly (unpushed-commits list, behind-
-                       commits list, or staged/unstaged/untracked file
-                       lists) depending on which signal is showing. -->
                   <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                     <span slot="trigger" class="status-badge-trigger">
-                      <!-- Folded row's single pill. The priority-picker
-                           (status-badge.ts) decides whether ahead, behind,
-                           or dirty wins. Push/pull get wired up to the
-                           click handlers; dirty stays decorative because
-                           the row already exposes Source Control on
-                           expand for resolving dirty state. -->
                       <StatusBadge
                         ahead={fAhead}
                         behind={fBehind}
                         dirty={fDirty}
+                        warn={fDirtyWarn}
                         pulsate={fAhead > 0 && wt.branchStatus ? aheadAged(wt.branchStatus) : false}
                         onClick={fAhead > 0
                           ? () => tryPush(repo.id, wt.path)
@@ -5727,8 +5727,6 @@
                     </span>
                     <span slot="content" class="wt-tt-content">
                       {#if fAhead > 0 && wt.branchStatus}
-                        <!-- Mirror of the expanded ahead tooltip:
-                             aheadTooltip header + unpushed-commits grid. -->
                         <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
                         {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
                           <span class="muted small">Loading commits…</span>
@@ -5751,7 +5749,6 @@
                           {/if}
                         {/if}
                       {:else if fBehind > 0 && wt.branchStatus}
-                        <!-- Mirror of the expanded behind tooltip. -->
                         <div class="wt-tt-section-head">
                           {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
                         </div>
@@ -5776,12 +5773,14 @@
                           {/if}
                         {/if}
                       {:else}
-                        <!-- Mirror of the expanded summary.text tooltip:
-                             staged / unstaged / untracked file lists. -->
                         <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
                       {/if}
                     </span>
                   </Tooltip>
+                {:else if wt.branchStatus?.upstream}
+                  <span class="status-badge status-badge-sync" title="In sync with {wt.branchStatus.upstream}">
+                    <svg class="sync-check-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5"/></svg>
+                  </span>
                 {/if}
               {/if}
               {#if wt}
@@ -5930,6 +5929,21 @@
                             <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                             <span class="agent-row-name">Files</span>
                             <span class="agent-title muted">browse</span>
+                          </button>
+                        </li>
+                        <li>
+                          <button
+                            class="agent-row new-agent-row"
+                            on:click={() => {
+                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
+                              unfoldRowIfFolded(row.key);
+                              openGitHistory(wt.path);
+                            }}
+                            title={`Git commit history for ${wt.path}`}
+                          >
+                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/></svg>
+                            <span class="agent-row-name">History</span>
+                            <span class="agent-title muted">commits</span>
                           </button>
                         </li>
                       </ul>
@@ -6372,6 +6386,57 @@
                   <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                 </svg>
               </button>
+              <span class="emoji-picker-anchor">
+                <button
+                  class="new-wt notes-add notes-add-emoji"
+                  title="Add an emoji sticker"
+                  on:click|stopPropagation={() => {
+                    emojiPickerOpen = { ...emojiPickerOpen, [row.key]: !emojiPickerOpen[row.key] };
+                  }}
+                  aria-label="Add emoji sticker"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="11"
+                    height="11"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <circle cx="9" cy="9" r="1" />
+                    <circle cx="15" cy="9" r="1" />
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                  </svg>
+                </button>
+                {#if emojiPickerOpen[row.key]}
+                  <EmojiPicker
+                    on:pick={(e) => {
+                      emojiPickerOpen = { ...emojiPickerOpen, [row.key]: false };
+                      if (zenRowKey === row.key) {
+                        notesShownInZen = true;
+                      } else if (notesHiddenByRow[row.key]) {
+                        notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+                      }
+                      const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
+                      const btn = document.querySelector(`[data-wt-row="${CSS.escape(wt?.path ?? repo.id)}"] .notes-add-emoji`) as HTMLElement | null;
+                      const rect = btn?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
+                      void spawnNote({
+                        anchor,
+                        originRect: rect,
+                        kind: "emoji",
+                        body: e.detail,
+                      });
+                    }}
+                    on:cancel={() => {
+                      emojiPickerOpen = { ...emojiPickerOpen, [row.key]: false };
+                    }}
+                  />
+                {/if}
+              </span>
             </span>
             {/if}
             {#if !rowFolded[row.key]}
@@ -6558,119 +6623,12 @@
           {/if}
 
           {#if wt && summary}
-            {@const urgent =
-              wt.fileStatus.unstaged > 0 ||
-              wt.fileStatus.untracked > 0 ||
-              (wt.branchStatus?.ahead ?? 0) > 0}
             <div class="row-status">
-              {#if !wt.nonGit}
-              <span
-                class="status-dot"
-                class:clean={summary.clean}
-                title={summary.text}
-              ></span>
-              {#if summary.clean && !summary.submoduleText}
-                <span class="muted small">{summary.text}</span>
-              {:else if !summary.clean}
-                <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                  <span
-                    slot="trigger"
-                    class="small status-summary-trigger"
-                    class:status-urgent={urgent}
-                    class:muted={!urgent}
-                  >{summary.text}</span>
-                  <span slot="content" class="wt-tt-content">
-                    <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
-                  </span>
-                </Tooltip>
-              {/if}
-              {#if wt.branchStatus && wt.branchStatus.upstream}
-                {#if wt.branchStatus.ahead > 0 || wt.branchStatus.behind > 0}
-                  {#if wt.branchStatus.ahead > 0}
-                    <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                      <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge
-                          ahead={wt.branchStatus.ahead}
-                          pulsate={aheadAged(wt.branchStatus)}
-                          onClick={() => tryPush(repo.id, wt.path)}
-                          busy={!!pushBusy[wt.path]}
-                          title={`Push ${wt.branchStatus.ahead} commit${wt.branchStatus.ahead === 1 ? "" : "s"} to ${wt.branchStatus.upstream}`}
-                        />
-                      </span>
-                      <span slot="content" class="wt-tt-content">
-                        <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                                <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                              {/each}
-                            </div>
-                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
-                      </span>
-                    </Tooltip>
-                  {/if}
-                  {#if wt.branchStatus.behind > 0}
-                    <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                      <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge
-                          behind={wt.branchStatus.behind}
-                          onClick={() => tryPull(repo.id, wt.path)}
-                          busy={!!pullBusy[wt.path]}
-                          title={`Pull ${wt.branchStatus.behind} commit${wt.branchStatus.behind === 1 ? "" : "s"} from ${wt.branchStatus.upstream}`}
-                        />
-                      </span>
-                      <span slot="content" class="wt-tt-content">
-                        <div class="wt-tt-section-head">
-                          {wt.branchStatus.behind} commit{wt.branchStatus.behind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
-                        </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                                <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                              {/each}
-                            </div>
-                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
-                      </span>
-                    </Tooltip>
-                  {/if}
-                {:else}
-                  <span class="muted small">in sync</span>
-                {/if}
-              {:else if !wt.detached && !wt.bare && wt.branchStatus}
-                <span class="muted small">no upstream</span>
-              {/if}
-              {#if summary.submoduleText}
+              {#if !wt.nonGit && summary.submoduleText}
                 <span
                   class="muted small"
                   title="Submodule(s) have uncommitted edits inside, but this repo's recorded submodule SHA hasn't moved."
                 >+ {summary.submoduleText}</span>
-              {/if}
               {/if}
 
               <OpenInActions
@@ -6759,6 +6717,15 @@
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
+                          />
+                        {:else if s.source.startsWith("__history__:")}
+                          <GitHistory
+                            wtPath={wt.path}
+                            source={s.source}
+                            onClose={() => closeSessionInWt(wt.path, s)}
+                            onDragStart={(e) =>
+                              handleSessionDragStart(e, wt.path, i)}
+                            fsChangeKey={fsChangeKey[wt.path] ?? 0}
                           />
                         {:else if s.source.startsWith("__transcript__:ollama:")}
                           <!-- Read-mode column for a stopped (or live)

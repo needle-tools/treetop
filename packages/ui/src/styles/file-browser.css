@@ -112,6 +112,56 @@
   color: var(--brand);
   flex-shrink: 0;
 }
+.fb-git-tooltip {
+  min-width: 20ch;
+  max-width: min(72ch, 90vw);
+  max-height: 40vh;
+  overflow: auto;
+}
+.fb-folder-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+}
+.fb-folder-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.fb-folder-stat-file {
+  color: var(--text-1);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-stat-add {
+  color: var(--status-clean);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.fb-stat-rm {
+  color: #efaaaa;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.fb-stat-new {
+  color: var(--status-clean);
+  flex-shrink: 0;
+  font-style: italic;
+}
+.fb-git-diff {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-1);
+}
 .fb-selected {
   background: color-mix(in srgb, var(--text-muted) 15%, var(--surface-1));
 }

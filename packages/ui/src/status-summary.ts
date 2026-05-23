@@ -17,6 +17,7 @@ export interface FileStatus {
   /** Submodule-internal dirt (parent's recorded SHA unchanged). Shown
    *  as a muted "N submodule" trailer; never counted as parent dirty. */
   submodules?: number;
+  dirtyLines?: number;
 }
 
 /** Shape we need from a loaded wt-summary to override the badge counts.

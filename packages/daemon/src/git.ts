@@ -48,6 +48,8 @@ export interface FileStatus {
    *  HAS moved (sub field's commit-changed flag is 'C'), the entry
    *  counts toward staged/unstaged like any other file. */
   submodules: number;
+  /** Total insertions + deletions across staged + unstaged diffs. */
+  dirtyLines: number;
 }
 
 export interface BranchStatus {
@@ -766,17 +768,17 @@ export async function getWorktreeDetails(
     // Speculative third call: oldest local commit not on upstream. Errors
     // when there's no upstream — caught into "" and discarded. Running
     // it in parallel with status keeps the happy path one round-trip.
-    const [statusOut, logOut, aheadOldestOut] = await Promise.all([
+    const [statusOut, logOut, aheadOldestOut, shortstatOut] = await Promise.all([
       $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
       $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
         .quiet()
         .text()
         .catch(() => ""),
-      // `--reverse -1` doesn't work the way you'd hope — git applies
-      // `-1` *before* the reverse, so it returns the newest commit, not
-      // the oldest. Emit every unpushed commit's time in reverse-chrono
-      // order (oldest first) and take the first line.
       $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
+        .quiet()
+        .text()
+        .catch(() => ""),
+      $`git -C ${worktreePath} diff --shortstat HEAD`
         .quiet()
         .text()
         .catch(() => ""),
@@ -786,14 +788,16 @@ export async function getWorktreeDetails(
       const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
       if (oldest.length > 0) branchStatus.aheadOldestTime = oldest;
     }
+    const fileStatus = parseFileStatus(statusOut);
+    fileStatus.dirtyLines = parseShortstatLines(shortstatOut);
     return {
-      fileStatus: parseFileStatus(statusOut),
+      fileStatus,
       branchStatus,
       lastCommit: parseLastCommit(logOut),
     };
   } catch {
     return {
-      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0 },
+      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0, dirtyLines: 0 },
       branchStatus: null,
       lastCommit: null,
     };
@@ -835,7 +839,16 @@ export function parseFileStatus(porcelain: string): FileStatus {
       unstaged++;
     }
   }
-  return { staged, unstaged, untracked, submodules };
+  return { staged, unstaged, untracked, submodules, dirtyLines: 0 };
+}
+
+export function parseShortstatLines(shortstat: string): number {
+  let total = 0;
+  const ins = shortstat.match(/(\d+) insertion/);
+  const del = shortstat.match(/(\d+) deletion/);
+  if (ins) total += Number(ins[1]);
+  if (del) total += Number(del[1]);
+  return total;
 }
 
 export function parseBranchStatus(porcelain: string): BranchStatus | null {

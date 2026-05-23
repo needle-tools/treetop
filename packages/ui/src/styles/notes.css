@@ -1165,3 +1165,74 @@
   flex: 0 0 auto;
 }
 
+/* ── Emoji stickers ─────────────────────────────────────────────── */
+.sticky-emoji {
+  background: none;
+  box-shadow: none;
+  border: none;
+  min-width: unset;
+  padding: 0;
+  position: relative;
+  transform: none !important;
+}
+.sticky-emoji .sticky-header {
+  display: none;
+}
+.sticky-emoji::before {
+  display: none;
+}
+.sticky-emoji-glyph {
+  font-size: 10vw;
+  line-height: 1;
+  width: 1em;
+  height: 1em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  transition: transform 0.15s ease;
+}
+.sticky-emoji.dragging .sticky-emoji-glyph {
+  cursor: grabbing;
+}
+.sticky-emoji-delete {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  font-size: 12px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-surface, #222);
+  border: 1px solid var(--border, #444);
+  color: var(--text-muted, #888);
+  cursor: pointer;
+}
+.sticky-emoji:hover .sticky-emoji-delete {
+  opacity: 1;
+}
+.sticky-emoji-delete:hover {
+  color: var(--red, #e55);
+  background: var(--bg-hover, #333);
+}
+.sticky-emoji-delete.confirming {
+  opacity: 1;
+  color: var(--red, #e55);
+}
+
+/* Emoji picker popover */
+.emoji-picker-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.emoji-picker-popover {
+  min-width: 320px;
+  max-width: 340px;
+}
+

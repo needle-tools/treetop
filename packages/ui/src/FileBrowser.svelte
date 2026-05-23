@@ -361,6 +361,7 @@
             {copiedPaths}
             {gitStatusByDir}
             {showDotfiles}
+            {wtPath}
             onSelect={handleSelect}
             onDblClick={handleNodeDblClick}
             onToggleExpand={handleNodeToggleExpand}

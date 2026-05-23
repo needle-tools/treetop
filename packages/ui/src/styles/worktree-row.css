@@ -744,8 +744,8 @@ button.branch-button:hover {
 }
 
 .status-badge-behind {
-  color: var(--chip-orange-text);
-  background: var(--chip-orange-bg);
+  color: var(--chip-cyan-text);
+  background: var(--chip-cyan-bg);
   position: relative;
   overflow: hidden;
   isolation: isolate;
@@ -764,10 +764,10 @@ button.branch-button:hover {
   background: linear-gradient(
     180deg,
     transparent 0%,
-    rgba(245, 200, 100, 0.12) 20%,
-    rgba(245, 200, 100, 0.3) 45%,
-    rgba(245, 200, 100, 0.6) 70%,
-    rgba(255, 220, 150, 1) 88%,
+    color-mix(in srgb, var(--chip-cyan-text) 12%, transparent) 20%,
+    color-mix(in srgb, var(--chip-cyan-text) 30%, transparent) 45%,
+    color-mix(in srgb, var(--chip-cyan-text) 60%, transparent) 70%,
+    color-mix(in srgb, var(--chip-cyan-text) 100%, transparent) 88%,
     transparent 100%
   );
   animation: badge-edge-flow-down 2.4s linear infinite;
@@ -795,6 +795,21 @@ button.branch-button:hover {
 .status-badge-dirty {
   background: var(--surface-3);
   color: var(--text-3);
+}
+.status-badge-dirty-warn {
+  background: var(--chip-yellow-bg);
+  color: var(--chip-yellow-text);
+}
+.status-badge-sync {
+  background: var(--surface-3);
+  color: var(--status-clean);
+  padding: 0.05rem 0.3rem;
+  cursor: default;
+}
+.sync-check-icon {
+  width: 0.72rem;
+  height: 0.72rem;
+  display: block;
 }
 
 /* ------------------------------------------------------------------

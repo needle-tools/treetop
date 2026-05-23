@@ -51,6 +51,14 @@ a git repo (single-member at v0, invitable from v2). Two pillars:
     prefs (`/api/prefs` → `<workspace>/prefs.json`) via
     `getDaemonKV()`. Direct `localStorage` is only for per-device
     ephemeral preferences (last-used model, share-dialog peer, drafts).
+12. **NEVER touch the prod daemon.** Do not kill, restart, or
+    interfere with the production process (port `:27787`) under any
+    circumstances. No `kill`, no `lsof … | xargs kill`, no
+    `bun run start` on the prod port — nothing. The user will
+    restart prod themselves when they're ready. This applies even
+    if the user just asked you to build, deploy, or "try it" — building
+    the SPA is fine, restarting the process is not. Violations destroy
+    live TUI sessions the user is hosting.
 
 ## Anti-patterns we reject
 

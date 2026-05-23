@@ -730,6 +730,45 @@
     return collected.join("\n");
   })();
 
+  /** When the burst is very short (one word / <10 chars — e.g. "yes",
+   *  "commit"), prepend the previous user message so the overlay has
+   *  enough context to be useful. */
+  function extractUserText(m: NormalizedMessage): string {
+    return (m.blocks ?? [])
+      .filter((b) => b?.type === "text" && typeof b.text === "string")
+      .map((b) => (b as { text: string }).text)
+      .join("\n")
+      .trim();
+  }
+  $: lastUserMessageWithContext = ((): string | undefined => {
+    if (!lastUserMessage) return undefined;
+    if (lastUserMessage.length >= 10 && lastUserMessage.includes(" "))
+      return lastUserMessage;
+    const msgs = session?.messages;
+    if (!msgs) return lastUserMessage;
+    // Skip past the entire burst, then grab the next user message.
+    let pastBurst = false;
+    let prevTs: number | null = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.role !== "user") continue;
+      const text = extractUserText(m);
+      if (text.length === 0) continue;
+      const tsRaw = m.timestamp ? Date.parse(m.timestamp) : NaN;
+      const ts = Number.isNaN(tsRaw) ? null : tsRaw;
+      if (!pastBurst) {
+        if (prevTs !== null && ts !== null && prevTs - ts > BURST_GAP_MS) {
+          pastBurst = true;
+        } else {
+          if (ts !== null) prevTs = ts;
+          continue;
+        }
+      }
+      if (pastBurst) return `${text}\n[…]\n${lastUserMessage}`;
+    }
+    return lastUserMessage;
+  })();
+
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView
    *  uses (so a "Resume in external terminal" lands the user in the
@@ -1325,7 +1364,7 @@
       {contextWindow}
       {model}
       lastActivityIso={session?.endedAt}
-      {lastUserMessage}
+      {lastUserMessageWithContext}
       {pollCount}
       {lastLoadedAt}
       {inflight}
@@ -1398,7 +1437,7 @@
               {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
               {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
             </svg>
-            <span class="pinned-last-msg-text">{lastUserMessage}</span>
+            <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
           </div>
         {/if}
       </div>
@@ -1477,7 +1516,7 @@
                 {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
                 {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
               </svg>
-              <span class="pinned-last-msg-text">{lastUserMessage}</span>
+              <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
             </div>
           {/if}
         </div>

@@ -30,7 +30,10 @@
      *  clicked. */
     originRect: DOMRect;
     /** Which attachment to seed. Defaults to "note". */
-    kind?: "note" | "link";
+    kind?: "note" | "link" | "emoji";
+    /** Pre-filled body text. Used by emoji stickers to set the glyph
+     *  at creation time so the note auto-commits without an edit phase. */
+    body?: string;
     /** Pre-resolved link target. Set by callers (like the chat
      *  burger-menu) that already know the exact session/commit/url
      *  the user wants — the layer skips the picker, stages briefly
@@ -516,7 +519,8 @@
   async function handleSpawn(args: {
     anchor: string;
     originRect: DOMRect;
-    kind?: "note" | "link";
+    kind?: "note" | "link" | "emoji";
+    body?: string;
     target?: {
       type: "url" | "commit" | "session" | "file";
       value: string;
@@ -529,49 +533,31 @@
   }): Promise<void> {
     const kind = args.kind ?? "note";
     const hasTarget = !!args.target;
+    const autoCommit = hasTarget || kind === "emoji";
     try {
-      // POST with target up-front when the caller already knows it
-      // (Save-as-link path) — skips an extra PUT round-trip and
-      // means the server returns a fully-formed note we can drop
-      // straight into the fly animation.
       const res = await fetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          body: "",
+          body: args.body ?? "",
           anchors: [args.anchor],
-          ...(kind === "link" ? { kind: "link" } : {}),
+          ...(kind !== "note" ? { kind } : {}),
           ...(args.target ? { target: args.target } : {}),
         }),
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
-      // Park the new note as "staged" at originRect — same launching
-      // pad whether the user is about to pick from the dropdown OR
-      // we already have the target and are about to fly the chip
-      // straight into its slot. Centred horizontally on the trigger.
       const docX =
         args.originRect.left + args.originRect.width / 2 - NOTE_W / 2 + window.scrollX;
       const docY = args.originRect.bottom + 8 + window.scrollY;
       staging = { ...staging, [created.id]: { docX, docY, anchor: args.anchor } };
       notes = [created, ...notes];
-      // Bring to front so the new chip always sits above any
-      // previously-pinned attachments — both the picker case and
-      // the auto-commit case use the same z-order, which means
-      // Save-as-link is no longer hidden behind an older chip.
       bringToFront(created.id);
-      // Picker case: enter edit mode so the user can search. Auto-
-      // commit case: skip edit mode entirely — the target is set,
-      // we're just animating it home.
-      editingId = hasTarget ? null : created.id;
+      editingId = autoCommit ? null : created.id;
       tick++;
       await svelteTick();
       editingId = null;
-      if (hasTarget) {
-        // Same staging→pinned animation `handleSave` runs after a
-        // picker pick. Reusing it (rather than duplicating the
-        // offset/fly setup) keeps the two spawn paths visually
-        // identical, including the pendulum swing during travel.
+      if (autoCommit) {
         await flyStagedToPin(created.id);
       }
     } catch {}
@@ -1056,7 +1042,9 @@
       // at its real offset (screenPosFor reads offsetY directly);
       // only the row-spacer is capped.
       const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-      const kindMax = note.kind === "link" ? vh * 0.40 : vh * 0.70;
+      const kindMax = note.kind === "link" ? vh * 0.40
+                    : note.kind === "emoji" ? vh * 0.50
+                    : vh * 0.70;
       const wantUnclamped =
         stickyRect.bottom + ROW_SAFETY - liRect.bottom;
       const want = Math.max(0, Math.min(kindMax, wantUnclamped));

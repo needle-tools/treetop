@@ -5,7 +5,7 @@
    *  undo log, and SSE broadcast — only the rendering differs, so
    *  this component branches on `kind` rather than the layer routing
    *  to a sibling component. */
-  export type AttachmentKind = "note" | "link";
+  export type AttachmentKind = "note" | "link" | "emoji";
   export interface LinkTarget {
     type: "url" | "commit" | "session" | "file";
     value: string;
@@ -378,6 +378,7 @@
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
   $: isLink = note.kind === "link";
+  $: isEmoji = note.kind === "emoji";
   $: isSessionLink =
     isLink &&
     note.target?.type === "session" &&
@@ -1347,19 +1348,15 @@
   class:dragging
   class:editing
   class:sticky-link={isLink}
+  class:sticky-emoji={isEmoji}
   data-note-id={note.id}
-  data-kind={isLink ? "link" : "note"}
+  data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
   role="dialog"
-  aria-label={isLink ? "Sticky link" : "Sticky note"}
+  aria-label={isEmoji ? "Emoji sticker" : isLink ? "Sticky link" : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
   on:dblclick={() => {
-    // Whole-note dblclick enters edit mode. The buttons / textarea
-    // have their own click handlers and dblclick bubbles up here
-    // afterwards; the !editing guard skips us when we're already
-    // in edit mode (or the user double-clicked Edit / Cancel, which
-    // already flipped state on the first click).
-    if (!editing) startEdit();
+    if (!editing && !isEmoji) startEdit();
   }}
 >
   <header
@@ -1405,7 +1402,20 @@
     </div>
   </header>
 
-  {#if editing}
+  {#if isEmoji}
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <span
+      class="sticky-emoji-glyph"
+      on:mousedown={onMouseDownHeader}
+      title="Drag to move"
+    >{note.body}</span>
+    <button
+      class="sticky-emoji-delete sticky-btn danger"
+      on:click={onDeleteClick}
+      title={confirmingDelete ? "Click to cancel" : "Delete"}
+      aria-label={confirmingDelete ? "Cancel pending delete" : "Delete"}
+    >{confirmingDelete ? "■" : "×"}</button>
+  {:else if editing}
     {#if isLink}
       <!-- Link editor: fuzzy mention picker (sessions + commits +
            future providers). The picker IS the editor — there is no

@@ -238,6 +238,16 @@ export const ICONS: Record<string, IconDef> = {
       "M8 4h8",
     ],
   },
+  emoji: {
+    paths: [
+      "M8 14s1.5 2 4 2 4-2 4-2",
+    ],
+    circles: [
+      { cx: 12, cy: 12, r: 10 },
+      { cx: 9, cy: 9, r: 1 },
+      { cx: 15, cy: 9, r: 1 },
+    ],
+  },
 };
 
 export function iconFor(key: string | null | undefined): IconDef | null {

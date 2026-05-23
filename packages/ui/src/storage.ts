@@ -93,7 +93,7 @@ export class DismissedSessionsStore {
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.
  */
-export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell" | "files";
+export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell" | "files" | "history";
 
 export interface PersistedSession {
   agent: PersistedAgent;
@@ -139,6 +139,7 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   // disposed-terminal-column-disappears-after-reload bug.
   "shell",
   "files",
+  "history",
 ]);
 
 function sanitizeSession(item: unknown): PersistedSession | null {
@@ -245,6 +246,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   "__transcript__:",
   // File browser panel — entirely UI-owned, no daemon-side session.
   "__files__:",
+  // Git history panel — commit list + diff viewer, entirely UI-owned.
+  "__history__:",
 ] as const;
 
 /**

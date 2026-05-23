@@ -38,6 +38,8 @@
    *  an inline spinner and disable the button. Used to gate
    *  double-clicks while a pull/push request is in flight. */
   export let busy = false;
+  /** Escalate the dirty badge to yellow (>3 files or >200 lines). */
+  export let warn = false;
 
   $: kind = pickBadgeKind(ahead, behind, dirty);
   $: clickable = onClick !== null;
@@ -69,7 +71,7 @@
     <span class="status-badge status-badge-behind">↓{behind}</span>
   {/if}
 {:else if kind === "dirty"}
-  <span class="status-badge status-badge-dirty">~{dirty}</span>
+  <span class="status-badge" class:status-badge-dirty={!warn} class:status-badge-dirty-warn={warn}>~{dirty}</span>
 {/if}
 
 <!-- Styles live globally in packages/ui/src/styles/worktree-row.css so
