@@ -392,24 +392,33 @@
     xterm.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown" || ev.altKey) return true;
       const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+      // WKWebView (native app) intercepts Ctrl+key combos as Cocoa
+      // text editing commands before xterm.js sees them. Explicitly
+      // handle Ctrl+C (interrupt / ETX) and Ctrl+A (SOH / beginning
+      // of line) so they reach the PTY.
+      if (isMac && ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+        if (ev.code === "KeyC" && !xterm?.hasSelection()) {
+          ev.preventDefault();
+          ws?.send(new Uint8Array([0x03])); // ETX
+          return false;
+        }
+        if (ev.code === "KeyA") {
+          ev.preventDefault();
+          ws?.send(new Uint8Array([0x01])); // SOH
+          return false;
+        }
+      }
+
       const modOnly = isMac
         ? ev.metaKey && !ev.ctrlKey
         : ev.ctrlKey && !ev.metaKey;
       if (!modOnly) return true;
-      // Both Ctrl+V (Windows Terminal-style) and Ctrl+Shift+V (Linux
-      // terminal convention) trigger paste; xterm has no other binding
-      // for Ctrl+Shift+V so swallowing it is safe.
       if (ev.code === "KeyV") {
         ev.preventDefault();
         void doClipboardPaste();
         return false;
       }
-      // Ctrl/Cmd+C (with or without Shift) — copy selection if present.
-      // Without a selection, return true so xterm sends ETX (interrupt)
-      // for plain Ctrl+C on Win/Linux. Shift+C reaches us here only on
-      // platforms where it's bound to copy by convention (Linux
-      // terminals); we still gate on selection so we don't quietly
-      // intercept a user's Ctrl+Shift+C that meant something else.
       if (ev.code === "KeyC" && xterm?.hasSelection()) {
         ev.preventDefault();
         const sel = xterm.getSelection();
