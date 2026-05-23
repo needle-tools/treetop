@@ -1325,11 +1325,12 @@
   }
 
   /** Find the array index, in the worktree's current open-sessions list,
-   *  that lines up with the *leftmost column visible in the strip right
-   *  now*. The new session is inserted at this index so it lands just
-   *  to the left of what the user is looking at, instead of at position
-   *  0 (which is often scrolled off-screen). Falls back to 0 when the
-   *  strip isn't laid out yet (e.g. row currently folded). */
+   *  where a new session should be inserted so it lands in a visible
+   *  spot. If the leftmost visible column is cut off on the left edge,
+   *  insert *after* it (so the new column appears between the cutoff
+   *  column and the next fully visible one). Otherwise insert at that
+   *  column's index. Falls back to 0 when the strip isn't laid out yet
+   *  (e.g. row currently folded). */
   function visibleLeftInsertIndex(
     wtPath: string,
     list: OpenSession[],
@@ -1342,13 +1343,17 @@
     const cols = strip.querySelectorAll<HTMLElement>(".session-col");
     for (const col of cols) {
       const colRight = col.offsetLeft + col.offsetWidth;
-      // First column whose right edge is at least 50px past the current
-      // scroll offset is the leftmost meaningfully-visible column.
       if (colRight - scrollLeft >= 50) {
         const targetSource = col.dataset.sessionSource;
         if (targetSource) {
           const u = list.findIndex((x) => x.source === targetSource);
-          if (u >= 0) return u;
+          if (u >= 0) {
+            // If this column's left edge is before the scroll offset,
+            // it's partially cut off — insert after it so the new
+            // session lands in the visible area, not off-screen.
+            if (col.offsetLeft < scrollLeft) return u + 1;
+            return u;
+          }
         }
         break;
       }
