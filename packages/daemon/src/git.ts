@@ -70,6 +70,8 @@ export interface LastCommit {
   subject: string;
   author: string;
   time: string; // ISO
+  parents?: number;
+  refs?: string[];
 }
 
 export interface WorktreeDetails {
@@ -893,7 +895,7 @@ export async function listCommits(
   const limit = options.limit ?? 20;
   const ref = options.before ? `${options.before}^` : "HEAD";
   try {
-    const out = await $`git -C ${worktreePath} log --format=%H%x00%s%x00%an%x00%aI -n ${limit} ${ref}`
+    const out = await $`git -C ${worktreePath} log --format=%H%x00%s%x00%an%x00%aI%x00%P%x00%D -n ${limit} ${ref}`
       .quiet()
       .text();
     return parseCommitList(out);
@@ -906,7 +908,24 @@ export function parseCommitList(logOut: string): LastCommit[] {
   return logOut
     .split("\n")
     .filter((l) => l.length > 0)
-    .map(parseLastCommit)
+    .map((line) => {
+      const parts = line.trim().split("\0");
+      if (parts.length < 4) return null;
+      const sha = parts[0]!;
+      const parentStr = parts[4] ?? "";
+      const parentCount = parentStr.length === 0 ? 0 : parentStr.split(" ").length;
+      const refStr = parts[5] ?? "";
+      const refs = refStr.length === 0 ? [] : refStr.split(", ").map((r) => r.trim()).filter(Boolean);
+      return {
+        sha,
+        shortSha: sha.slice(0, 7),
+        subject: parts[1]!,
+        author: parts[2]!,
+        time: parts[3]!,
+        parents: parentCount,
+        refs,
+      } satisfies LastCommit;
+    })
     .filter((c): c is LastCommit => c !== null);
 }
 
