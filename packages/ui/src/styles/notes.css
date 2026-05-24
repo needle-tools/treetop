@@ -1237,7 +1237,7 @@
   display: inline-flex;
 }
 .emoji-picker-popover {
-  min-width: 320px;
-  max-width: 340px;
+  min-width: 390px;
+  max-width: 410px;
 }
 

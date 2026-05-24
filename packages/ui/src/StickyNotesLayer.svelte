@@ -166,6 +166,7 @@
      *  anchored to the same spot on the paper while it spins. */
     grabXFrac?: number;
     grabYFrac?: number;
+    emojiScale?: number;
   }
   let offsets: Record<string, NoteOffset & { offsetX?: number }> = {};
   let zOrder: string[] = [];
@@ -551,6 +552,12 @@
         args.originRect.left + args.originRect.width / 2 - NOTE_W / 2 + window.scrollX;
       const docY = args.originRect.bottom + 8 + window.scrollY;
       staging = { ...staging, [created.id]: { docX, docY, anchor: args.anchor } };
+      if (kind === "emoji") {
+        const scale = 0.85 + Math.random() * 0.3;
+        const prev = offsets[created.id] ?? {};
+        offsets = { ...offsets, [created.id]: { ...prev, emojiScale: scale } };
+        saveOffsets();
+      }
       notes = [created, ...notes];
       bringToFront(created.id);
       editingId = autoCommit ? null : created.id;
@@ -1245,6 +1252,7 @@
         rotation={offsets[note.id]?.rotation ?? 0}
         grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
         grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
+        emojiScale={offsets[note.id]?.emojiScale ?? 1}
         startEditing={editingId === note.id}
         removeIfEmpty={!!staging[note.id]}
         flying={!!flyingNotes[note.id]}
