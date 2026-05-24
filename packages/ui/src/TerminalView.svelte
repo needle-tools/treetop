@@ -373,43 +373,53 @@
     xterm.open(containerEl);
     fit.fit();
 
-    // Intercept the copy + paste shortcuts. xterm.js's built-in keydown
-    // maps Ctrl+V → 0x16 SYN and Ctrl+C → 0x03 ETX, then calls
-    // `event.preventDefault()` on the keydown — which suppresses the
-    // browser's native `paste` / `copy` events entirely, so neither
-    // pasting nor copying selected TUI text works via Ctrl+V/Ctrl+C on
-    // Windows/Linux. On Mac, Cmd+V's paste handler also `stopPropagation`s
-    // before our image-paste branch on `.xterm-host` can see it. We own
-    // both shortcuts via attachCustomKeyEventHandler so they work
-    // uniformly across platforms:
-    //   - Ctrl/Cmd+V → read clipboard via async Clipboard API. Images
-    //     route through /api/attach + path insertion (same as drag-drop);
-    //     text routes through `xterm.paste()` which preserves bracketed-
-    //     paste mode + line-ending normalization.
-    //   - Ctrl/Cmd+C with a TUI selection → write `xterm.getSelection()`
-    //     to the clipboard. With no selection, fall through to xterm's
-    //     default (Ctrl+C → ETX interrupt; Cmd+C → no-op).
-    xterm.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown" || ev.altKey) return true;
+    // Capture-phase listener on the xterm container intercepts
+    // Cmd/Ctrl shortcuts BEFORE the native Edit menu can claim them.
+    // When xterm is focused we handle copy/paste/interrupt ourselves;
+    // outside xterm (e.g. text inputs) the Edit menu works normally.
+    containerEl.addEventListener("keydown", (ev) => {
       const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 
-      // WKWebView (native app) intercepts Ctrl+key combos as Cocoa
-      // text editing commands before xterm.js sees them. Explicitly
-      // handle Ctrl+C (interrupt / ETX) and Ctrl+A (SOH / beginning
-      // of line) so they reach the PTY.
       if (isMac && ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
         if (ev.code === "KeyC" && !xterm?.hasSelection()) {
           ev.preventDefault();
-          ws?.send(new Uint8Array([0x03])); // ETX
-          return false;
+          ev.stopPropagation();
+          ws?.send(new Uint8Array([0x03]));
+          return;
         }
         if (ev.code === "KeyA") {
           ev.preventDefault();
-          ws?.send(new Uint8Array([0x01])); // SOH
-          return false;
+          ev.stopPropagation();
+          ws?.send(new Uint8Array([0x01]));
+          return;
         }
       }
 
+      if (isMac && ev.metaKey && !ev.ctrlKey) {
+        if (ev.code === "KeyV") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          void doClipboardPaste();
+          return;
+        }
+        if (ev.code === "KeyC" && xterm?.hasSelection()) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const sel = xterm.getSelection();
+          if (sel) void navigator.clipboard?.writeText(sel).catch(() => {});
+          return;
+        }
+        if (ev.code === "KeyA") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      }
+    }, true);
+
+    xterm.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown" || ev.altKey) return true;
+      const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
       const modOnly = isMac
         ? ev.metaKey && !ev.ctrlKey
         : ev.ctrlKey && !ev.metaKey;

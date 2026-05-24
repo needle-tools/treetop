@@ -171,9 +171,6 @@ if (!gitAvailable()) {
 // Strip the default Edit menu so WKWebView doesn't intercept Ctrl+A
 // (Select All), Ctrl+C, etc. before xterm.js sees them. Keep only
 // the app and window menus.
-// No Edit menu — copy/paste are handled in JavaScript by xterm.js's
-// custom key handler. Native Edit menu items (Copy, Paste, Select All)
-// intercept Cmd+C/V/A before JS sees the keydown, breaking TUI input.
 ApplicationMenu.setApplicationMenu([
   {
     label: "Supergit",
@@ -185,6 +182,18 @@ ApplicationMenu.setApplicationMenu([
       { role: "showAll" },
       { type: "separator" },
       { role: "quit" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "separator" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { role: "selectAll" },
     ],
   },
   {
