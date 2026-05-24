@@ -275,6 +275,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  max-width: 18ch;
 }
 /* Inline session title on the same row as the agent name + repo. Takes
    the flexible 1fr cell so it absorbs leftover width and ellipsizes
@@ -286,7 +287,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  min-width: 3ch;
+  max-width: 30ch;
 }
 /* Stats column. Each stat lives in its own grid cell so adjacent
    rows align: CPU sits under CPU, memory under memory, uptime under

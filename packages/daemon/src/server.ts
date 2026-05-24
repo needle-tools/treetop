@@ -2133,7 +2133,7 @@ const server = Bun.serve<TermWsData, never>({
         id: `ext-${ep.pid}`,
         pid: ep.pid,
         agent: undefined,
-        cmd: [ep.comm],
+        cmd: [ep.args],
         cwd: ep.cwd,
         ownerId: undefined,
         createdAt: undefined,

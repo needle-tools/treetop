@@ -164,6 +164,7 @@ export interface ProcUsage {
 export interface ExternalProc {
   pid: number;
   comm: string;
+  args: string;
   cwd: string;
   cpuPercent: number;
   memBytes: number;
@@ -186,33 +187,39 @@ export async function discoverRepoProcesses(
   if (matched.length === 0) return [];
   const pids = matched.map((m) => m.pid);
   const list = pids.join(",");
-  const comms = new Map<number, string>();
-  const usage = new Map<number, { cpu: number; mem: number }>();
+  const info = new Map<number, { comm: string; args: string; cpu: number; mem: number }>();
   try {
-    const result = await $`ps -o pid=,pcpu=,rss=,comm= -p ${list}`.quiet().nothrow();
+    const result = await $`ps -o pid=,pcpu=,rss=,args= -p ${list}`.quiet().nothrow();
     for (const line of result.stdout.toString().split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const parts = trimmed.split(/\s+/);
-      if (parts.length < 4) continue;
-      const pid = Number(parts[0]);
+      const m = trimmed.match(/^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.+)$/);
+      if (!m) continue;
+      const pid = Number(m[1]);
       if (!Number.isFinite(pid)) continue;
-      const cpu = Number(parts[1]) || 0;
-      const rssKb = Number(parts[2]) || 0;
-      const comm = parts.slice(3).join(" ").split("/").pop() || parts[3]!;
-      comms.set(pid, comm);
-      usage.set(pid, { cpu, mem: rssKb * 1024 });
+      const args = m[4]!;
+      const comm = args.split(/\s/)[0]!.split("/").pop() || args.split(/\s/)[0]!;
+      info.set(pid, {
+        comm,
+        args,
+        cpu: Number(m[2]) || 0,
+        mem: (Number(m[3]) || 0) * 1024,
+      });
     }
   } catch { /* best-effort */ }
   return matched
-    .filter((m) => comms.has(m.pid))
-    .map((m) => ({
-      pid: m.pid,
-      comm: comms.get(m.pid)!,
-      cwd: m.cwd,
-      cpuPercent: usage.get(m.pid)?.cpu ?? 0,
-      memBytes: usage.get(m.pid)?.mem ?? 0,
-    }));
+    .filter((m) => info.has(m.pid))
+    .map((m) => {
+      const i = info.get(m.pid)!;
+      return {
+        pid: m.pid,
+        comm: i.comm,
+        args: i.args,
+        cwd: m.cwd,
+        cpuPercent: i.cpu,
+        memBytes: i.mem,
+      };
+    });
 }
 
 async function allProcessCwds(): Promise<Map<number, string>> {

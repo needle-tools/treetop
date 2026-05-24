@@ -14,6 +14,7 @@
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import GitHistory from "./GitHistory.svelte";
+  import ProcessList from "./ProcessList.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { statusSummary, type FileStatus } from "./status-summary";
@@ -389,70 +390,8 @@
     await clearErrors();
   }
 
-  /** "TUIs" header popover — global view of every PTY supergit is
-   *  hosting right now (cpu/mem per row, click × to dispose). */
-  interface TuiProc {
-    id: string;
-    pid: number;
-    agent?: string;
-    cmd: string[];
-    cwd: string;
-    ownerId?: string;
-    createdAt?: string;
-    lastOutputAt?: string;
-    cpuPercent: number;
-    memBytes: number;
-    kind?: "tui" | "external";
-    comm?: string;
-  }
-  /** A TUI that hasn't written to its PTY in this many ms is treated
-   *  as idle — almost certainly waiting for input or done with the
-   *  current turn. Conservative: short enough that "done" feels
-   *  responsive, long enough that a normal Claude/Codex stream
-   *  pausing for a tool call doesn't flicker the indicator. */
-  const TUI_IDLE_MS = 2_000;
-  function isIdle(p: TuiProc): boolean {
-    if (!p.lastOutputAt) return false;
-    return Date.now() - Date.parse(p.lastOutputAt) > TUI_IDLE_MS;
-  }
-  let tuisOpen = false;
-  let tuiProcs: TuiProc[] = [];
-  let tuiPollTimer: ReturnType<typeof setInterval> | null = null;
-  /** A TUI's resource use surfaces on the TUIs button at two tiers:
-   *  - **warm** (orange, no animated border) — first hint that
-   *    something's working hard, before it's worth worrying about.
-   *  - **hot** (red + comet-trail border animation) — runaway
-   *    Claude/Codex; user should notice before it eats the machine.
-   *
-   *  Memory thresholds are *fractions of system RAM* (delivered by the
-   *  daemon via /api/health → totalMemBytes) so a 16 GB MacBook and a
-   *  96 GB workstation don't share the same hardcoded "500 MB is hot"
-   *  number. Until /api/health responds the UI falls back to absolute
-   *  byte ceilings so a runaway process on a slow-starting daemon
-   *  still trips the alert.
-   *
-   *  Forced state via URL: `?tuihot=1` or `?tuiwarm=1` for visual
-   *  testing without a real busy process. */
-  const TUI_HOT_MEM_FRACTION = 0.5;
-  const TUI_WARM_MEM_FRACTION = 0.3;
-  const TUI_HOT_CPU_PERCENT = 50;
-  const TUI_WARM_CPU_PERCENT = 30;
-  /** Absolute fallbacks when systemMemBytes isn't known yet. */
-  const TUI_HOT_MEM_FALLBACK = 500 * 1024 * 1024;
-  const TUI_WARM_MEM_FALLBACK = 300 * 1024 * 1024;
   let systemMemBytes: number | null = null;
-  $: tuiHotMemBytes = systemMemBytes
-    ? systemMemBytes * TUI_HOT_MEM_FRACTION
-    : TUI_HOT_MEM_FALLBACK;
-  $: tuiWarmMemBytes = systemMemBytes
-    ? systemMemBytes * TUI_WARM_MEM_FRACTION
-    : TUI_WARM_MEM_FALLBACK;
-  const tuiHotDebug =
-    typeof location !== "undefined" &&
-    new URLSearchParams(location.search).get("tuihot") === "1";
-  const tuiWarmDebug =
-    typeof location !== "undefined" &&
-    new URLSearchParams(location.search).get("tuiwarm") === "1";
+  let processListRef: ProcessList;
   /** Force the folded-row StatusBadge area to render BOTH the push
    *  (↑) and pull (↓) variants at every folded row, so you can
    *  preview both border-ring animations side-by-side without
@@ -475,188 +414,6 @@
   const emptyReposDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("emptyrepos") === "1";
-  $: tuisHot =
-    tuiHotDebug ||
-    tuiProcs.some(
-      (p) =>
-        p.memBytes > tuiHotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT,
-    );
-  // Warm is mutually exclusive with hot — if anything's already hot,
-  // the red comet ring is the user-facing signal; we don't tint the
-  // button orange underneath.
-  $: tuisWarm =
-    !tuisHot &&
-    (tuiWarmDebug ||
-      tuiProcs.some(
-        (p) =>
-          p.memBytes > tuiWarmMemBytes ||
-          p.cpuPercent > TUI_WARM_CPU_PERCENT,
-      ));
-  // `/api/processes` samples cpu/mem per pid and can take a beat on a
-  // busy machine. Without this flag the popover flashes "Nothing running"
-  // during the first fetch even when there are TUIs.
-  let tuisEverLoaded = false;
-  let tuisLoading = false;
-
-  async function refreshTuis() {
-    tuisLoading = true;
-    try {
-      const res = await fetch("/api/processes");
-      if (!res.ok) return;
-      tuiProcs = (await res.json()) as TuiProc[];
-      tuisEverLoaded = true;
-    } catch {
-      // ignore network blips; we'll catch up on the next tick
-    } finally {
-      tuisLoading = false;
-    }
-  }
-
-  /** TUI poll cadence: slow (10s) when only the count is on display in
-   *  the header button, fast (2s) when the popover is open and live
-   *  cpu/mem values are visible. `/api/processes` runs `ps` to sample
-   *  per-pid usage so 2s-always isn't free; 10s for the background
-   *  case is barely measurable and keeps the badge accurate enough. */
-  const TUI_SLOW_MS = 10_000;
-  const TUI_FAST_MS = 2_000;
-  function startTuiPolling(intervalMs: number) {
-    if (tuiPollTimer) clearInterval(tuiPollTimer);
-    void refreshTuis();
-    tuiPollTimer = setInterval(refreshTuis, intervalMs);
-  }
-  function stopTuiPolling() {
-    if (tuiPollTimer) {
-      clearInterval(tuiPollTimer);
-      tuiPollTimer = null;
-    }
-  }
-  function toggleTuisOpen() {
-    tuisOpen = !tuisOpen;
-    // Speed up while the popover is on screen so the cpu/mem rows feel
-    // live; otherwise drop back to the slow background cadence that
-    // keeps the header-button count fresh.
-    startTuiPolling(tuisOpen ? TUI_FAST_MS : TUI_SLOW_MS);
-  }
-  async function killTui(id: string) {
-    await fetch(`/api/terminals/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }).catch(() => {});
-    void refreshTuis();
-  }
-
-  function formatBytes(n: number): string {
-    if (!n) return "—";
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  }
-  /** Cross-reference a TUI's `cwd` and `ownerId` against the loaded
-   *  `repos` + `activityByCwd` so the popover can show, per row:
-   *
-   *  - which **repo** the PTY belongs to (and the worktree branch)
-   *  - the **session title** (manualTitle > derived title > last user
-   *    message), looked up via ownerId against the worktree's agent
-   *    sessions
-   *  - the **last activity summary** the daemon's tail observed in
-   *    that cwd (most-recent JSONL line summary)
-   *
-   *  All four fields are best-effort — shells have no ownerId or
-   *  title, brand-new claude TUIs predate the JSONL appearing, etc. */
-  function tuiContext(p: TuiProc): {
-    repoName: string | null;
-    repoColor: string | null;
-    wtBranch: string | null;
-    title: string | null;
-    lastActivity: string | null;
-  } {
-    let repoName: string | null = null;
-    let repoColor: string | null = null;
-    let wtBranch: string | null = null;
-    let title: string | null = null;
-    outer: for (const repo of repos) {
-      for (const wt of repo.worktrees ?? []) {
-        const match = p.cwd === wt.path || p.cwd.startsWith(wt.path + "/");
-        if (!match) continue;
-        repoName =
-          (repo as { name?: string }).name ??
-          repo.path.split("/").filter(Boolean).pop() ??
-          null;
-        repoColor = repo.color ?? null;
-        wtBranch = wt.branch ?? null;
-        if (p.ownerId) {
-          for (const a of wt.agents ?? []) {
-            if (a.sessionId === p.ownerId) {
-              title =
-                a.manualTitle ??
-                a.title ??
-                a.firstUserMessage ??
-                a.lastUserMessage ??
-                null;
-              break;
-            }
-          }
-        }
-        break outer;
-      }
-      if (!repoName && (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))) {
-        repoName =
-          (repo as { name?: string }).name ??
-          repo.path.split("/").filter(Boolean).pop() ??
-          null;
-        repoColor = repo.color ?? null;
-      }
-    }
-    const acts = activityByCwd[p.cwd] ?? [];
-    const lastActivity = acts.length > 0 ? (acts[0]?.summary ?? null) : null;
-    return { repoName, repoColor, wtBranch, title, lastActivity };
-  }
-
-  /** Map a tracked TUI PTY back to the session `source` string the
-   *  dashboard uses to address open session columns. Walks the same
-   *  cwd→worktree→agent path as `tuiContext`, matching the PTY's
-   *  `ownerId` against `agent.sessionId`. Returns null for shells (no
-   *  ownerId) and for orphan TUIs whose owning session has fallen out
-   *  of the loaded `repos` snapshot. */
-  function tuiSource(p: TuiProc): string | null {
-    if (!p.ownerId) return null;
-    for (const repo of repos) {
-      for (const wt of repo.worktrees ?? []) {
-        if (wt.path !== p.cwd) continue;
-        for (const a of wt.agents ?? []) {
-          if (a.sessionId === p.ownerId) return a.source ?? null;
-        }
-      }
-    }
-    return null;
-  }
-
-  /** Click handler for a row in the TUIs popover — closes the popover
-   *  and uses the shared `focusSessionBySource` pipeline to scroll the
-   *  matching session column into view and flash its outline. */
-  async function focusTui(p: TuiProc): Promise<void> {
-    const source = tuiSource(p);
-    if (!source) return;
-    tuisOpen = false;
-    startTuiPolling(TUI_SLOW_MS);
-    await focusSessionBySource(source);
-  }
-
-  function prettyTuiName(p: TuiProc): string {
-    if (p.agent === "claude") return "Claude";
-    if (p.agent === "codex") return "Codex";
-    if (p.agent === "copilot") return "Copilot";
-    if (p.agent === "ollama") return "Ollama";
-    // Fall through: show the actual executable basename (e.g. "bash",
-    // "zsh") for shell sessions, or whatever cmd[0] resolves to.
-    const head = p.cmd[0]?.split(/[\\/]/).pop();
-    return head || "tui";
-  }
-  function formatUptime(iso: string): string {
-    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
-    if (s < 60) return `${s}s`;
-    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-  }
-
   // Per worktree: is the "all sessions" popover next to the agent badge open?
   let agentsPopoverOpen: Record<string, boolean> = {};
   /** Per worktree: is the badge's "active TUIs" popover open? Distinct
@@ -4597,9 +4354,8 @@
     if (eventsOpen && !target?.closest(".events-anchor")) {
       eventsOpen = false;
     }
-    if (tuisOpen && !target?.closest(".tuis-anchor")) {
-      tuisOpen = false;
-      stopTuiPolling();
+    if (!target?.closest(".tuis-anchor")) {
+      processListRef?.closeIfOpen();
     }
     if (importSessionsOpen && !target?.closest(".import-sessions-anchor")) {
       importSessionsOpen = false;
@@ -4916,10 +4672,6 @@
     void loadSystemInfo();
     void refreshRunningCommands();
     void restoreLiveShells();
-    // Background-poll the TUI count so the header button shows it
-    // before the popover is opened. Switches to a faster cadence in
-    // `toggleTuisOpen` when the popover is on screen.
-    startTuiPolling(TUI_SLOW_MS);
     // Global focus listener — whenever the user puts focus into a
     // session column (typing, clicking into the terminal, etc.)
     // clear that column's "unread" pulse so it doesn't keep
@@ -5012,7 +4764,6 @@
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
-      stopTuiPolling();
       unsubStream();
       unsubErrors();
       unsubFocus();
@@ -5116,111 +4867,13 @@
          counts. AgentUsageChip iterates and emits the buttons here. -->
     <AgentUsageChip />
 
-    <div class="actions-anchor tuis-anchor">
-      <button
-        class="actions-btn tuis-btn"
-        class:open={tuisOpen}
-        class:warm={tuisWarm}
-        class:hot={tuisHot}
-        on:click={toggleTuisOpen}
-        title={tuisHot
-          ? "A process is using significant CPU or memory — open to inspect"
-          : tuisWarm
-            ? "A process is working hard — open to inspect"
-            : "Processes running in your repos"}
-      >
-        Procs
-        <span class="count">{tuiProcs.length}</span>
-      </button>
-      {#if tuisOpen}
-        <Popover variant="actions" extraClass="tuis-popover">
-          <svelte:fragment slot="head">
-            Processes
-            <span class="popover-spinner" class:popover-spinner-hidden={!tuisLoading} aria-label="loading" title="refreshing"></span>
-          </svelte:fragment>
-          {#if !tuisEverLoaded}
-            <p class="muted small nopad">Loading…</p>
-          {:else if tuiProcs.length === 0}
-            <p class="muted small nopad">Nothing running.</p>
-          {:else}
-            <ul class="agents-list">
-              {#each tuiProcs as p (p.id)}
-                {@const ctx = tuiContext(p)}
-                {@const source = p.kind !== "external" ? tuiSource(p) : null}
-                {@const isExternal = p.kind === "external"}
-                <li>
-                  <div
-                    class="agent-row brand-{isExternal ? 'external' : (p.agent ?? 'shell')} tui-row-static"
-                    class:tui-row-focusable={source !== null}
-                    role={source !== null ? "button" : undefined}
-                    tabindex={source !== null ? 0 : -1}
-                    on:click={() => { if (!isExternal) void focusTui(p); }}
-                    on:keydown={(e) => {
-                      if (source !== null && (e.key === "Enter" || e.key === " ")) {
-                        e.preventDefault();
-                        void focusTui(p);
-                      }
-                    }}
-                    title={isExternal
-                      ? `pid ${p.pid} — ${p.cwd}`
-                      : source !== null
-                        ? "Click to jump to this session in its worktree strip"
-                        : undefined}
-                  >
-                    {#if isExternal}
-                      <span class="agent-dot agent-external"></span>
-                    {:else if p.agent === "claude"}
-                      <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                    {:else if p.agent === "codex"}
-                      <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                    {:else if p.agent === "ollama"}
-                      <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
-                    {:else}
-                      <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
-                    {/if}
-                    <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyTuiName(p)}</span>
-                    {#if ctx.repoName}
-                      <span class="tui-repo muted small" title={p.cwd}>
-                        {ctx.repoName}{ctx.wtBranch ? ` – ${ctx.wtBranch}` : ""}
-                      </span>
-                    {/if}
-                    {#if ctx.title}
-                      <span class="tui-inline-title" title={ctx.title}>
-                        {ctx.title}
-                      </span>
-                    {/if}
-                    {#if isExternal && !ctx.title}
-                      <span class="tui-inline-title" title={p.cwd}>
-                        {p.cwd.split("/").slice(-2).join("/")}
-                      </span>
-                    {/if}
-                    <span
-                      class="tui-stat tui-cpu"
-                      title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
-                    >{p.cpuPercent.toFixed(1)}%</span>
-                    <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
-                    {#if p.createdAt}
-                      <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
-                    {/if}
-                    {#if !isExternal && p.lastOutputAt && isIdle(p)}
-                      <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
-                    {/if}
-                    {#if !isExternal}
-                      <button
-                        class="row-close tui-kill-x"
-                        on:click|stopPropagation={() => killTui(p.id)}
-                        title="Dispose (SIGTERM → SIGKILL)"
-                        aria-label="Kill terminal"
-                      >×</button>
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </Popover>
-      {/if}
-    </div>
+    <ProcessList
+      bind:this={processListRef}
+      {repos}
+      {activityByCwd}
+      {systemMemBytes}
+      on:focusSession={(e) => void focusSessionBySource(e.detail.source)}
+    />
 
     <!-- Notes tray. Pinned in the menubar (no longer conditional on
          `orphanNotes.length > 0`) so the affordance stays put across

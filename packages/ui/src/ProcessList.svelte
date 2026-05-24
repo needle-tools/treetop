@@ -1,0 +1,328 @@
+<script lang="ts">
+  import { onMount, onDestroy, createEventDispatcher } from "svelte";
+  import Popover from "./Popover.svelte";
+
+  interface Repo {
+    id: string;
+    path: string;
+    name?: string;
+    color?: string;
+    worktrees?: Worktree[];
+  }
+  interface Worktree {
+    path: string;
+    branch?: string;
+    agents?: Agent[];
+  }
+  interface Agent {
+    sessionId?: string;
+    source?: string;
+    manualTitle?: string;
+    title?: string;
+    firstUserMessage?: string;
+    lastUserMessage?: string;
+  }
+  interface ActivityEvent {
+    summary: string;
+  }
+
+  export interface TuiProc {
+    id: string;
+    pid: number;
+    agent?: string;
+    cmd: string[];
+    cwd: string;
+    ownerId?: string;
+    createdAt?: string;
+    lastOutputAt?: string;
+    cpuPercent: number;
+    memBytes: number;
+    kind?: "tui" | "external";
+    comm?: string;
+  }
+
+  export let repos: Repo[] = [];
+  export let activityByCwd: Record<string, ActivityEvent[]> = {};
+  export let systemMemBytes: number | null = null;
+
+  const dispatch = createEventDispatcher<{
+    focusSession: { source: string };
+  }>();
+
+  const TUI_IDLE_MS = 2_000;
+  function isIdle(p: TuiProc): boolean {
+    if (!p.lastOutputAt) return false;
+    return Date.now() - Date.parse(p.lastOutputAt) > TUI_IDLE_MS;
+  }
+
+  let open = false;
+  export let procs: TuiProc[] = [];
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let everLoaded = false;
+  let loading = false;
+
+  const TUI_HOT_MEM_FRACTION = 0.5;
+  const TUI_WARM_MEM_FRACTION = 0.3;
+  const TUI_HOT_CPU_PERCENT = 50;
+  const TUI_WARM_CPU_PERCENT = 30;
+  const TUI_HOT_MEM_FALLBACK = 500 * 1024 * 1024;
+  const TUI_WARM_MEM_FALLBACK = 300 * 1024 * 1024;
+
+  $: hotMemBytes = systemMemBytes
+    ? systemMemBytes * TUI_HOT_MEM_FRACTION
+    : TUI_HOT_MEM_FALLBACK;
+  $: warmMemBytes = systemMemBytes
+    ? systemMemBytes * TUI_WARM_MEM_FRACTION
+    : TUI_WARM_MEM_FALLBACK;
+
+  const hotDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("tuihot") === "1";
+  const warmDebug =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).get("tuiwarm") === "1";
+
+  $: isHot =
+    hotDebug ||
+    procs.some(
+      (p) => p.memBytes > hotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT,
+    );
+  $: isWarm =
+    !isHot &&
+    (warmDebug ||
+      procs.some(
+        (p) =>
+          p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT,
+      ));
+
+  async function refresh() {
+    loading = true;
+    try {
+      const res = await fetch("/api/processes");
+      if (!res.ok) return;
+      procs = (await res.json()) as TuiProc[];
+      everLoaded = true;
+    } catch {
+    } finally {
+      loading = false;
+    }
+  }
+
+  const SLOW_MS = 10_000;
+  const FAST_MS = 2_000;
+  function startPolling(intervalMs: number) {
+    if (pollTimer) clearInterval(pollTimer);
+    void refresh();
+    pollTimer = setInterval(refresh, intervalMs);
+  }
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+  function toggle() {
+    open = !open;
+    startPolling(open ? FAST_MS : SLOW_MS);
+  }
+  async function kill(id: string) {
+    await fetch(`/api/terminals/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => {});
+    void refresh();
+  }
+
+  function formatBytes(n: number): string {
+    if (!n) return "—";
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+  function formatUptime(iso: string): string {
+    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  }
+  function prettyName(p: TuiProc): string {
+    if (p.agent === "claude") return "Claude";
+    if (p.agent === "codex") return "Codex";
+    if (p.agent === "copilot") return "Copilot";
+    if (p.agent === "ollama") return "Ollama";
+    const head = p.cmd[0]?.split(/[\\/]/).pop();
+    return head || "tui";
+  }
+
+  function procContext(p: TuiProc): {
+    repoName: string | null;
+    repoColor: string | null;
+    wtBranch: string | null;
+    title: string | null;
+    lastActivity: string | null;
+  } {
+    let repoName: string | null = null;
+    let repoColor: string | null = null;
+    let wtBranch: string | null = null;
+    let title: string | null = null;
+    outer: for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        const match = p.cwd === wt.path || p.cwd.startsWith(wt.path + "/");
+        if (!match) continue;
+        repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
+        repoColor = repo.color ?? null;
+        wtBranch = wt.branch ?? null;
+        if (p.ownerId) {
+          for (const a of wt.agents ?? []) {
+            if (a.sessionId === p.ownerId) {
+              title = a.manualTitle ?? a.title ?? a.firstUserMessage ?? a.lastUserMessage ?? null;
+              break;
+            }
+          }
+        }
+        break outer;
+      }
+      if (!repoName && (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))) {
+        repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
+        repoColor = repo.color ?? null;
+      }
+    }
+    const acts = activityByCwd[p.cwd] ?? [];
+    const lastActivity = acts.length > 0 ? (acts[0]?.summary ?? null) : null;
+    return { repoName, repoColor, wtBranch, title, lastActivity };
+  }
+
+  function procSource(p: TuiProc): string | null {
+    if (!p.ownerId) return null;
+    for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        if (wt.path !== p.cwd) continue;
+        for (const a of wt.agents ?? []) {
+          if (a.sessionId === p.ownerId) return a.source ?? null;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function focusProc(p: TuiProc): Promise<void> {
+    const source = procSource(p);
+    if (!source) return;
+    open = false;
+    startPolling(SLOW_MS);
+    dispatch("focusSession", { source });
+  }
+
+  export function closeIfOpen() {
+    if (open) {
+      open = false;
+      startPolling(SLOW_MS);
+    }
+  }
+
+  onMount(() => startPolling(SLOW_MS));
+  onDestroy(() => stopPolling());
+</script>
+
+<div class="actions-anchor tuis-anchor">
+  <button
+    class="actions-btn tuis-btn"
+    class:open
+    class:warm={isWarm}
+    class:hot={isHot}
+    on:click={toggle}
+    title={isHot
+      ? "A process is using significant CPU or memory — open to inspect"
+      : isWarm
+        ? "A process is working hard — open to inspect"
+        : "Processes running in your repos"}
+  >
+    Procs
+    <span class="count">{procs.length}</span>
+  </button>
+  {#if open}
+    <Popover variant="actions" extraClass="tuis-popover">
+      <svelte:fragment slot="head">
+        Processes
+        <span class="popover-spinner" class:popover-spinner-hidden={!loading} aria-label="loading" title="refreshing"></span>
+      </svelte:fragment>
+      {#if !everLoaded}
+        <p class="muted small nopad">Loading…</p>
+      {:else if procs.length === 0}
+        <p class="muted small nopad">Nothing running.</p>
+      {:else}
+        <ul class="agents-list">
+          {#each procs as p (p.id)}
+            {@const ctx = procContext(p)}
+            {@const source = p.kind !== "external" ? procSource(p) : null}
+            {@const isExternal = p.kind === "external"}
+            <li>
+              <div
+                class="agent-row brand-{isExternal ? 'external' : (p.agent ?? 'shell')} tui-row-static"
+                class:tui-row-focusable={source !== null}
+                role={source !== null ? "button" : undefined}
+                tabindex={source !== null ? 0 : -1}
+                on:click={() => { if (!isExternal) void focusProc(p); }}
+                on:keydown={(e) => {
+                  if (source !== null && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    void focusProc(p);
+                  }
+                }}
+                title={isExternal
+                  ? `pid ${p.pid} — ${p.cmd.join(" ")}\n${p.cwd}`
+                  : source !== null
+                    ? "Click to jump to this session in its worktree strip"
+                    : undefined}
+              >
+                {#if isExternal}
+                  <span class="agent-dot agent-external"></span>
+                {:else if p.agent === "claude"}
+                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+                {:else if p.agent === "codex"}
+                  <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
+                {:else if p.agent === "ollama"}
+                  <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
+                {:else}
+                  <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
+                {/if}
+                <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyName(p)}</span>
+                {#if ctx.repoName}
+                  <span class="tui-repo muted small" title={p.cwd}>
+                    {ctx.repoName}{ctx.wtBranch ? ` – ${ctx.wtBranch}` : ""}
+                  </span>
+                {/if}
+                {#if ctx.title}
+                  <span class="tui-inline-title" title={ctx.title}>
+                    {ctx.title}
+                  </span>
+                {:else if isExternal}
+                  <span class="tui-inline-title tui-inline-args" title={p.cmd.join(" ")}>
+                    {p.cmd.join(" ")}
+                  </span>
+                {/if}
+                <span
+                  class="tui-stat tui-cpu"
+                  title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
+                >{p.cpuPercent.toFixed(1)}%</span>
+                <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
+                {#if p.createdAt}
+                  <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
+                {/if}
+                {#if !isExternal && p.lastOutputAt && isIdle(p)}
+                  <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
+                {/if}
+                {#if !isExternal}
+                  <button
+                    class="row-close tui-kill-x"
+                    on:click|stopPropagation={() => kill(p.id)}
+                    title="Dispose (SIGTERM → SIGKILL)"
+                    aria-label="Kill terminal"
+                  >×</button>
+                {/if}
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </Popover>
+  {/if}
+</div>
