@@ -426,7 +426,7 @@
     // (unlike navigator.clipboard.read()).
     containerEl.addEventListener("paste", (ev) => {
       ev.preventDefault();
-      ev.stopPropagation();
+      ev.stopImmediatePropagation();
       const text = ev.clipboardData?.getData("text/plain");
       if (text && xterm) xterm.paste(text);
     }, true);
