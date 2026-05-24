@@ -890,14 +890,15 @@ export function parseLastCommit(logOut: string): LastCommit | null {
 
 export async function listCommits(
   worktreePath: string,
-  options: { before?: string; limit?: number } = {},
+  options: { before?: string; limit?: number; all?: boolean } = {},
 ): Promise<LastCommit[]> {
   const limit = options.limit ?? 20;
-  const ref = options.before ? `${options.before}^` : "HEAD";
+  const args = ["-C", worktreePath, "log", `--format=%H%x00%s%x00%an%x00%aI%x00%P%x00%D`, "-n", String(limit)];
+  if (options.all) args.push("--all");
+  if (options.before) args.push(`${options.before}^`);
+  else if (!options.all) args.push("HEAD");
   try {
-    const out = await $`git -C ${worktreePath} log --format=%H%x00%s%x00%an%x00%aI%x00%P%x00%D -n ${limit} ${ref}`
-      .quiet()
-      .text();
+    const out = await $`git ${args}`.quiet().text();
     return parseCommitList(out);
   } catch {
     return [];

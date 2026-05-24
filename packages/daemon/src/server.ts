@@ -4656,7 +4656,8 @@ const server = Bun.serve<TermWsData, never>({
       if (!path) {
         return json({ error: "?path=<worktree-path> is required" }, { status: 400 });
       }
-      const commits = await listCommits(path, { before, limit });
+      const all = url.searchParams.get("all") === "1";
+      const commits = await listCommits(path, { before, limit, all });
       return json(commits);
     }
 

@@ -4,6 +4,7 @@
   import DiffViewer from "./DiffViewer.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
+  import { ICONS } from "./icons";
 
   export let wtPath: string;
   export let source: string;
@@ -35,6 +36,7 @@
   let fullFile = false;
 
   let showDiff = true;
+  let allBranches = false;
 
   function contextLines(): number {
     return fullFile ? FULL_FILE_CONTEXT : DEFAULT_CONTEXT;
@@ -54,6 +56,7 @@
       limit: String(COMMITS_BATCH),
     });
     if (before) qs.set("before", before);
+    if (allBranches) qs.set("all", "1");
     const res = await fetch(`/api/commits?${qs.toString()}`);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -74,6 +77,14 @@
     } finally {
       commitsLoading = false;
     }
+  }
+
+  async function reloadCommits() {
+    commits = undefined;
+    commitsExhausted = false;
+    openCommitSha = null;
+    commitDiff = {};
+    await loadCommitsInitial();
   }
 
   async function loadMoreCommits() {
@@ -140,6 +151,13 @@
   $: repoName = wtPath.split("/").pop() || wtPath;
 
   $: menuItems = [
+    {
+      kind: "action" as const,
+      label: allBranches ? "Current branch" : "All branches",
+      icon: allBranches ? "◎" : "⊕",
+      keepOpen: true,
+      onSelect: () => { allBranches = !allBranches; void reloadCommits(); },
+    },
     {
       kind: "action" as const,
       label: showDiff ? "Hide diffs" : "Show diffs",
@@ -212,7 +230,7 @@
               <span class="gh-subject">
                 {#if c.refs && c.refs.length > 0}
                   {#each c.refs as ref}
-                    <span class="gh-ref" class:gh-ref-head={ref.startsWith("HEAD")} class:gh-ref-tag={ref.startsWith("tag:")}>{ref.replace(/^tag: /, "")}</span>
+                    <span class="gh-ref" class:gh-ref-head={ref.startsWith("HEAD")} class:gh-ref-tag={ref.startsWith("tag:")}>{#if ref.startsWith("tag:")}<svg class="gh-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.tag.paths as d}<path {d}/>{/each}{#each ICONS.tag.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}</svg>{/if}{ref.replace(/^tag: /, "")}</span>
                   {/each}
                 {/if}
                 <span class="gh-subject-text">{c.subject}</span>
@@ -282,7 +300,7 @@
   }
   .gh-rail {
     position: absolute;
-    top: 0;
+    top: calc(0.25rem + 0.35rem + 4px);
     bottom: 0;
     left: 10px;
     width: 2.5px;
@@ -386,8 +404,17 @@
     color: var(--chip-orange-text);
   }
   .gh-ref-tag {
-    background: var(--surface-3);
-    color: var(--text-2);
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--surface-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+  .gh-tag-icon {
+    width: 0.7em;
+    height: 0.7em;
+    flex-shrink: 0;
   }
   .gh-diff {
     padding: 0.15rem 0 0.4rem 20px;
