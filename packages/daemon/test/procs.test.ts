@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { sampleCwds } from "../src/procs";
+import { sampleCwds, discoverRepoProcesses } from "../src/procs";
 
 const isWin = process.platform === "win32";
 
@@ -38,5 +38,54 @@ describe("sampleCwds", () => {
       expect(cwds.get(process.pid)).toBe(process.cwd());
       expect(cwds.has(99999999)).toBe(false);
     }
+  });
+});
+
+describe("discoverRepoProcesses", () => {
+  test("discovers this process when its cwd is listed as a repo path", async () => {
+    if (isWin) return;
+    const cwd = process.cwd();
+    const results = await discoverRepoProcesses([cwd], new Set());
+    const self = results.find((r) => r.pid === process.pid);
+    expect(self).toBeDefined();
+    expect(self!.cwd).toBe(cwd);
+    expect(self!.comm).toBeTruthy();
+    expect(typeof self!.cpuPercent).toBe("number");
+    expect(typeof self!.memBytes).toBe("number");
+  });
+
+  test("discovers processes in subfolders of repo paths", async () => {
+    if (isWin) return;
+    const cwd = process.cwd();
+    const parent = cwd.split("/").slice(0, -1).join("/");
+    if (!parent) return;
+    const results = await discoverRepoProcesses([parent], new Set());
+    const self = results.find((r) => r.pid === process.pid);
+    expect(self).toBeDefined();
+  });
+
+  test("excludes pids in the exclude set", async () => {
+    if (isWin) return;
+    const cwd = process.cwd();
+    const results = await discoverRepoProcesses(
+      [cwd],
+      new Set([process.pid]),
+    );
+    const self = results.find((r) => r.pid === process.pid);
+    expect(self).toBeUndefined();
+  });
+
+  test("returns empty for unrelated paths", async () => {
+    if (isWin) return;
+    const results = await discoverRepoProcesses(
+      ["/tmp/__nonexistent_repo_path_test__"],
+      new Set(),
+    );
+    expect(results.length).toBe(0);
+  });
+
+  test("returns empty for empty repo paths", async () => {
+    const results = await discoverRepoProcesses([], new Set());
+    expect(results.length).toBe(0);
   });
 });

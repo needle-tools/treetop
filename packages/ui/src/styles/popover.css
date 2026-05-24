@@ -185,7 +185,7 @@
      "4m 18s" jammed into "idle 3m 58s". Keeping idle at its
      natural width forces any overflow to the row's right edge,
      where `overflow-x: hidden` clips it cleanly. */
-  grid-template-columns: 16px auto minmax(0, auto) minmax(0, 1fr) 6ch 8ch 8ch auto 18px;
+  grid-template-columns: 16px minmax(6ch, 10ch) minmax(10ch, auto) minmax(10ch, 1fr) 6ch 8ch 8ch auto 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
      .agents-list — preserve the spacing between rows. The
      `column-gap` matches `.agent-row`'s default; without it set
@@ -232,8 +232,16 @@
   width: 100%;
 }
 .tuis-popover .tui-row-static > .agent-row-icon,
-.tuis-popover .tui-row-static > .agent-dot { grid-column: 1; }
-.tuis-popover .tui-row-static > .agent-row-name { grid-column: 2; }
+.tuis-popover .tui-row-static > .agent-dot {
+  grid-column: 1;
+  place-self: center;
+}
+.tuis-popover .tui-row-static > .agent-row-name {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tuis-popover .tui-row-static > .tui-repo { grid-column: 3; }
 .tuis-popover .tui-row-static > .tui-inline-title { grid-column: 4; }
 .tuis-popover .tui-row-static > .tui-cpu { grid-column: 5; }
@@ -324,6 +332,13 @@
 .tui-kill-x:hover {
   color: var(--error-text);
   background: var(--error-bg);
+}
+.agent-dot.agent-external {
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+.brand-external .agent-row-name {
+  color: var(--text-muted);
 }
 
 /* Worktree picker popover. */

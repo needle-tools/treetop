@@ -161,6 +161,80 @@ export interface ProcUsage {
   memBytes: number;
 }
 
+export interface ExternalProc {
+  pid: number;
+  comm: string;
+  cwd: string;
+  cpuPercent: number;
+  memBytes: number;
+}
+
+export async function discoverRepoProcesses(
+  repoPaths: string[],
+  excludePids: Set<number>,
+): Promise<ExternalProc[]> {
+  if (repoPaths.length === 0) return [];
+  if (process.platform === "win32") return [];
+  const allCwds = await allProcessCwds();
+  const matched: { pid: number; cwd: string }[] = [];
+  for (const [pid, cwd] of allCwds) {
+    if (excludePids.has(pid)) continue;
+    if (repoPaths.some((rp) => cwd === rp || cwd.startsWith(rp + "/"))) {
+      matched.push({ pid, cwd });
+    }
+  }
+  if (matched.length === 0) return [];
+  const pids = matched.map((m) => m.pid);
+  const list = pids.join(",");
+  const comms = new Map<number, string>();
+  const usage = new Map<number, { cpu: number; mem: number }>();
+  try {
+    const result = await $`ps -o pid=,pcpu=,rss=,comm= -p ${list}`.quiet().nothrow();
+    for (const line of result.stdout.toString().split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split(/\s+/);
+      if (parts.length < 4) continue;
+      const pid = Number(parts[0]);
+      if (!Number.isFinite(pid)) continue;
+      const cpu = Number(parts[1]) || 0;
+      const rssKb = Number(parts[2]) || 0;
+      const comm = parts.slice(3).join(" ").split("/").pop() || parts[3]!;
+      comms.set(pid, comm);
+      usage.set(pid, { cpu, mem: rssKb * 1024 });
+    }
+  } catch { /* best-effort */ }
+  return matched
+    .filter((m) => comms.has(m.pid))
+    .map((m) => ({
+      pid: m.pid,
+      comm: comms.get(m.pid)!,
+      cwd: m.cwd,
+      cpuPercent: usage.get(m.pid)?.cpu ?? 0,
+      memBytes: usage.get(m.pid)?.mem ?? 0,
+    }));
+}
+
+async function allProcessCwds(): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (process.platform === "win32") return out;
+  try {
+    const result = await $`lsof -d cwd -Fn`.quiet().nothrow();
+    const text = result.stdout.toString();
+    let curPid: number | null = null;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("p")) {
+        const pid = Number(line.slice(1));
+        curPid = Number.isFinite(pid) ? pid : null;
+      } else if (line.startsWith("n") && curPid !== null) {
+        out.set(curPid, line.slice(1));
+        curPid = null;
+      }
+    }
+  } catch { /* best-effort */ }
+  return out;
+}
+
 export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage>> {
   const out = new Map<number, ProcUsage>();
   if (pids.length === 0) return out;

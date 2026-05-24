@@ -399,10 +399,12 @@
     cmd: string[];
     cwd: string;
     ownerId?: string;
-    createdAt: string;
-    lastOutputAt: string;
+    createdAt?: string;
+    lastOutputAt?: string;
     cpuPercent: number;
     memBytes: number;
+    kind?: "tui" | "external";
+    comm?: string;
   }
   /** A TUI that hasn't written to its PTY in this many ms is treated
    *  as idle — almost certainly waiting for input or done with the
@@ -573,7 +575,8 @@
     let title: string | null = null;
     outer: for (const repo of repos) {
       for (const wt of repo.worktrees ?? []) {
-        if (wt.path !== p.cwd) continue;
+        const match = p.cwd === wt.path || p.cwd.startsWith(wt.path + "/");
+        if (!match) continue;
         repoName =
           (repo as { name?: string }).name ??
           repo.path.split("/").filter(Boolean).pop() ??
@@ -594,6 +597,13 @@
           }
         }
         break outer;
+      }
+      if (!repoName && (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))) {
+        repoName =
+          (repo as { name?: string }).name ??
+          repo.path.split("/").filter(Boolean).pop() ??
+          null;
+        repoColor = repo.color ?? null;
       }
     }
     const acts = activityByCwd[p.cwd] ?? [];
@@ -5115,20 +5125,18 @@
         class:hot={tuisHot}
         on:click={toggleTuisOpen}
         title={tuisHot
-          ? "A TUI is using significant CPU or memory — open to inspect"
+          ? "A process is using significant CPU or memory — open to inspect"
           : tuisWarm
-            ? "A TUI is working hard — open to inspect"
-            : "Active TUIs (terminals supergit is hosting)"}
+            ? "A process is working hard — open to inspect"
+            : "Processes running in your repos"}
       >
-        TUIs
-        <!-- Always-rendered so the button width stays stable whether
-             there are 0 TUIs or 12. -->
+        Procs
         <span class="count">{tuiProcs.length}</span>
       </button>
       {#if tuisOpen}
         <Popover variant="actions" extraClass="tuis-popover">
           <svelte:fragment slot="head">
-            Active TUIs
+            Processes
             {#if tuisLoading}
               <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
             {/if}
@@ -5141,25 +5149,30 @@
             <ul class="agents-list">
               {#each tuiProcs as p (p.id)}
                 {@const ctx = tuiContext(p)}
-                {@const source = tuiSource(p)}
+                {@const source = p.kind !== "external" ? tuiSource(p) : null}
+                {@const isExternal = p.kind === "external"}
                 <li>
                   <div
-                    class="agent-row brand-{p.agent ?? 'shell'} tui-row-static"
+                    class="agent-row brand-{isExternal ? 'external' : (p.agent ?? 'shell')} tui-row-static"
                     class:tui-row-focusable={source !== null}
                     role={source !== null ? "button" : undefined}
                     tabindex={source !== null ? 0 : -1}
-                    on:click={() => void focusTui(p)}
+                    on:click={() => { if (!isExternal) void focusTui(p); }}
                     on:keydown={(e) => {
                       if (source !== null && (e.key === "Enter" || e.key === " ")) {
                         e.preventDefault();
                         void focusTui(p);
                       }
                     }}
-                    title={source !== null
-                      ? "Click to jump to this session in its worktree strip"
-                      : undefined}
+                    title={isExternal
+                      ? `pid ${p.pid} — ${p.cwd}`
+                      : source !== null
+                        ? "Click to jump to this session in its worktree strip"
+                        : undefined}
                   >
-                    {#if p.agent === "claude"}
+                    {#if isExternal}
+                      <span class="agent-dot agent-external"></span>
+                    {:else if p.agent === "claude"}
                       <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
                     {:else if p.agent === "codex"}
                       <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
@@ -5168,17 +5181,8 @@
                     {:else}
                       <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
                     {/if}
-                    <span class="agent-row-name">{prettyTuiName(p)}</span>
+                    <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyTuiName(p)}</span>
                     {#if ctx.repoName}
-                      <!-- No per-repo color tint here: the dashboard's repo
-                           color is a high-saturation accent picked for the
-                           sidebar / chips on a darker surface, and on the
-                           muted popover background it reads as low-contrast.
-                           Keep the breadcrumb in the standard muted text
-                           color so it stays readable.
-                           Grid + column-gap handle separation between
-                           name / repo / title cells — no inline "·"
-                           bullets, the gutter is the separator. -->
                       <span class="tui-repo muted small" title={p.cwd}>
                         {ctx.repoName}{ctx.wtBranch ? ` – ${ctx.wtBranch}` : ""}
                       </span>
@@ -5188,31 +5192,30 @@
                         {ctx.title}
                       </span>
                     {/if}
-                    <!-- Per-stat cells live as DIRECT children of
-                         `.tui-row-static` so the parent's subgrid
-                         column placements (`> .tui-cpu { grid-column: 5; }`
-                         etc.) actually match and the columns line up
-                         across rows. A wrapping `<span class="tui-stats">`
-                         used to nest them, which broke the direct-child
-                         selectors and left every stat in one auto cell.
-                         The pid + cmd title rides on the leftmost stat
-                         (.tui-cpu) so you can still hover any of them
-                         to inspect the process. -->
+                    {#if isExternal && !ctx.title}
+                      <span class="tui-inline-title" title={p.cwd}>
+                        {p.cwd.split("/").slice(-2).join("/")}
+                      </span>
+                    {/if}
                     <span
                       class="tui-stat tui-cpu"
                       title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
                     >{p.cpuPercent.toFixed(1)}%</span>
                     <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
-                    <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
-                    {#if isIdle(p)}
+                    {#if p.createdAt}
+                      <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
+                    {/if}
+                    {#if !isExternal && p.lastOutputAt && isIdle(p)}
                       <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
                     {/if}
-                    <button
-                      class="row-close tui-kill-x"
-                      on:click|stopPropagation={() => killTui(p.id)}
-                      title="Dispose (SIGTERM → SIGKILL)"
-                      aria-label="Kill terminal"
-                    >×</button>
+                    {#if !isExternal}
+                      <button
+                        class="row-close tui-kill-x"
+                        on:click|stopPropagation={() => killTui(p.id)}
+                        title="Dispose (SIGTERM → SIGKILL)"
+                        aria-label="Kill terminal"
+                      >×</button>
+                    {/if}
                   </div>
                 </li>
               {/each}

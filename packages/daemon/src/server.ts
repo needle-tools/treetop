@@ -51,7 +51,7 @@ import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend"
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
-import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary } from "./procs";
+import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary, discoverRepoProcesses } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { SummariesStore, RepoSummariesStore } from "./summaries";
 import { sampleSessionForSummary } from "./ollama-summarize";
@@ -1440,7 +1440,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/shell-transcript", description: "?termId=<id> — full transcript: header, every captured command, exit info, last cwd. Used by ShellView for past-shell read mode + the Resume button." },
           { method: "DELETE", path: "/api/terminals/:id", description: "SIGTERM (then SIGKILL after 500ms) the PTY." },
           { method: "WS", path: "/api/terminals/:id/io", description: "bidirectional byte stream: binary frames are PTY bytes both ways; text frames are JSON control (e.g. {type:'resize',cols,rows})." },
-          { method: "GET", path: "/api/processes", description: "list of currently-alive PTYs with a live cpu%/memory sample per pid. Feeds the dashboard's TUIs popover." },
+          { method: "GET", path: "/api/processes", description: "list of supergit-spawned PTYs plus external processes discovered in tracked repo directories, each with a live cpu%/memory sample. kind='tui' for PTYs, kind='external' for discovered processes." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
@@ -2098,28 +2098,52 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/processes" && req.method === "GET") {
-      // Same set as /api/terminals, plus a live cpu/mem sample per pid.
-      // Used by the "TUIs" popover in the dashboard header to give a
-      // global view of everything supergit is running.
       const records = terminalBackend.list().filter((r) => !r.exitedAt);
       const samples = await sampleProcs(records.map((r) => r.pid));
-      return json(
-        records.map((r) => {
-          const s = samples.get(r.pid);
-          return {
-            id: r.id,
-            pid: r.pid,
-            agent: r.agent,
-            cmd: r.cmd,
-            cwd: r.cwd,
-            ownerId: r.ownerId,
-            createdAt: r.createdAt,
-            lastOutputAt: r.lastOutputAt,
-            cpuPercent: s?.cpuPercent ?? 0,
-            memBytes: s?.memBytes ?? 0,
-          };
-        }),
-      );
+      const tuis = records.map((r) => {
+        const s = samples.get(r.pid);
+        return {
+          id: r.id,
+          pid: r.pid,
+          agent: r.agent,
+          cmd: r.cmd,
+          cwd: r.cwd,
+          ownerId: r.ownerId,
+          createdAt: r.createdAt,
+          lastOutputAt: r.lastOutputAt,
+          cpuPercent: s?.cpuPercent ?? 0,
+          memBytes: s?.memBytes ?? 0,
+          kind: "tui" as const,
+        };
+      });
+      const repos = await workspace.listRepos();
+      const allPaths = new Set(repos.map((r) => r.path));
+      for (const repo of repos) {
+        try {
+          const wts = await listWorktrees(repo.path);
+          for (const wt of wts) allPaths.add(wt.path);
+        } catch { /* repo might be gone */ }
+      }
+      const excludePids = new Set([
+        process.pid,
+        ...records.map((r) => r.pid),
+      ]);
+      const external = await discoverRepoProcesses([...allPaths], excludePids);
+      const externalRows = external.map((ep) => ({
+        id: `ext-${ep.pid}`,
+        pid: ep.pid,
+        agent: undefined,
+        cmd: [ep.comm],
+        cwd: ep.cwd,
+        ownerId: undefined,
+        createdAt: undefined,
+        lastOutputAt: undefined,
+        cpuPercent: ep.cpuPercent,
+        memBytes: ep.memBytes,
+        kind: "external" as const,
+        comm: ep.comm,
+      }));
+      return json([...tuis, ...externalRows]);
     }
 
     if (url.pathname.startsWith("/api/terminals/") && req.method === "DELETE") {
