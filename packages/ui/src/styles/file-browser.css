@@ -116,7 +116,8 @@
   min-width: 20ch;
   max-width: min(72ch, 90vw);
   max-height: 40vh;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .fb-folder-stats {
   display: flex;
@@ -129,6 +130,18 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0.1rem 0.2rem;
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  text-align: left;
+}
+.fb-folder-stat-row:hover {
+  background: var(--surface-3);
 }
 .fb-folder-stat-file {
   color: var(--text-1);

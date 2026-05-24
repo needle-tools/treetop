@@ -2,7 +2,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchGitStatus, type FileEntry } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchGitStatus, NavHistory, type FileEntry } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -14,12 +14,12 @@
 
   const KV_KEY = "supergit:fileBrowser:state";
 
+  let nav = new NavHistory(wtPath);
   let currentDir: string = wtPath;
   let entries: FileEntry[] = [];
   let expanded: Record<string, FileEntry[]> = {};
   let loading = false;
   let error: string | null = null;
-  let dirHistory: string[] = [];
   let selected: Set<string> = new Set();
   let showDotfiles = true;
   let gitStatusByDir: Record<string, Map<string, string>> = {};
@@ -33,9 +33,12 @@
       const parsed = JSON.parse(raw);
       const state = parsed?.[source];
       if (!state) return;
-      if (typeof state.currentDir === "string") currentDir = state.currentDir;
-      if (typeof state.dirHistory === "object" && Array.isArray(state.dirHistory)) {
-        dirHistory = state.dirHistory.filter((x: unknown): x is string => typeof x === "string");
+      if (state.nav) {
+        nav = NavHistory.fromSerialized(state.nav);
+        currentDir = nav.current;
+      } else if (typeof state.currentDir === "string") {
+        nav = new NavHistory(state.currentDir);
+        currentDir = state.currentDir;
       }
       if (Array.isArray(state.expanded)) {
         savedExpandedPaths = state.expanded.filter((x: unknown): x is string => typeof x === "string");
@@ -53,7 +56,7 @@
       const all = raw ? JSON.parse(raw) : {};
       all[source] = {
         currentDir,
-        dirHistory,
+        nav: nav.serialize(),
         expanded: Object.keys(expanded),
         selected: [...selected],
         showDotfiles,
@@ -101,23 +104,27 @@
   }
 
   function enterDir(name: string) {
-    dirHistory = [...dirHistory, currentDir];
-    currentDir = joinPath(currentDir, name);
+    const next = joinPath(currentDir, name);
+    nav.push(next);
+    currentDir = next;
     expanded = {};
     void loadCurrentDir();
     persistState();
   }
 
-  function goUp() {
-    if (dirHistory.length > 0) {
-      currentDir = dirHistory[dirHistory.length - 1]!;
-      dirHistory = dirHistory.slice(0, -1);
-    } else {
-      const parent = currentDir.replace(/\/[^/]+\/?$/, "");
-      if (parent && parent !== currentDir) {
-        currentDir = parent || "/";
-      }
-    }
+  function goBack() {
+    const prev = nav.goBack();
+    if (!prev) return;
+    currentDir = prev;
+    expanded = {};
+    void loadCurrentDir();
+    persistState();
+  }
+
+  function goForward() {
+    const next = nav.goForward();
+    if (!next) return;
+    currentDir = next;
     expanded = {};
     void loadCurrentDir();
     persistState();
@@ -212,7 +219,7 @@
   }
 
   function navigateTo(path: string) {
-    dirHistory = [...dirHistory, currentDir];
+    nav.push(path);
     currentDir = path;
     expanded = {};
     void loadCurrentDir();
@@ -233,6 +240,17 @@
       clearTimeout(copiedTimer);
       copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
     });
+  }
+
+  function handleNavigateToFile(filePath: string) {
+    const parts = filePath.split("/");
+    parts.pop();
+    const dir = parts.join("/") || "/";
+    if (dir !== currentDir) {
+      navigateTo(dir);
+    }
+    selected = new Set([filePath]);
+    persistState();
   }
 
   function handleNodeDblClick(fullPath: string, type: string) {
@@ -304,11 +322,15 @@
 
   <nav class="fb-breadcrumbs">
     <button
-      class="fb-up-btn"
-      on:click={goUp}
-      disabled={currentDir === "/" || currentDir === wtPath}
-      title="Go up one level"
-    ><svg class="fb-back-tri" viewBox="0 0 8 8"><polygon points="6,1 1,4 6,7"/></svg></button>
+      class="fb-nav-btn"
+      on:click={goBack}
+      disabled={!nav.canGoBack()}
+    ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="6,1 1,4 6,7"/></svg></button>
+    <button
+      class="fb-nav-btn"
+      on:click={goForward}
+      disabled={!nav.canGoForward()}
+    ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="2,1 7,4 2,7"/></svg></button>
     <div
       class="fb-path"
       role="button"
@@ -365,6 +387,7 @@
             onSelect={handleSelect}
             onDblClick={handleNodeDblClick}
             onToggleExpand={handleNodeToggleExpand}
+            onNavigateToFile={handleNavigateToFile}
           />
         {/each}
       </ul>
@@ -400,7 +423,7 @@
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .fb-up-btn {
+  .fb-nav-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -412,15 +435,15 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  .fb-up-btn:hover:not(:disabled) {
+  .fb-nav-btn:hover:not(:disabled) {
     color: var(--text-1);
     background: var(--surface-3);
   }
-  .fb-up-btn:disabled {
+  .fb-nav-btn:disabled {
     opacity: 0.25;
     cursor: default;
   }
-  :global(.fb-back-tri) {
+  :global(.fb-nav-arrow) {
     width: 0.55rem;
     height: 0.55rem;
     fill: currentColor;

@@ -12,6 +12,10 @@
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
+  import {
+    lastUserMessageBurst,
+    lastUserMessageWithContext as buildLastUserMessageWithContext,
+  } from "./last-user-message";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -698,76 +702,11 @@
    *  single newline-joined preview in chronological order, so a
    *  rapid-fire "5 quick messages" sequence shows the whole thread
    *  of intent rather than only the last fragment. */
-  const BURST_GAP_MS = 30_000;
-  $: lastUserMessage = ((): string | undefined => {
-    const msgs = session?.messages;
-    if (!msgs || msgs.length === 0) return undefined;
-    const collected: string[] = [];
-    let prevTs: number | null = null;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (!m || m.role !== "user") continue;
-      const parts: string[] = [];
-      for (const b of m.blocks ?? []) {
-        if (b?.type === "text" && typeof b.text === "string" && b.text.length > 0) {
-          parts.push(b.text);
-        }
-      }
-      const text = parts.join("\n").trim();
-      if (text.length === 0) continue;
-      const tsRaw = m.timestamp ? Date.parse(m.timestamp) : NaN;
-      const ts = Number.isNaN(tsRaw) ? null : tsRaw;
-      // Stop walking back once we find a user message whose timestamp
-      // is more than BURST_GAP_MS older than the previous one we
-      // kept — that's the boundary of the most recent burst.
-      if (collected.length > 0 && prevTs !== null && ts !== null) {
-        if (prevTs - ts > BURST_GAP_MS) break;
-      }
-      collected.unshift(text);
-      if (ts !== null) prevTs = ts;
-    }
-    if (collected.length === 0) return undefined;
-    return collected.join("\n");
-  })();
-
-  /** When the burst is very short (one word / <10 chars — e.g. "yes",
-   *  "commit"), prepend the previous user message so the overlay has
-   *  enough context to be useful. */
-  function extractUserText(m: NormalizedMessage): string {
-    return (m.blocks ?? [])
-      .filter((b) => b?.type === "text" && typeof b.text === "string")
-      .map((b) => (b as { text: string }).text)
-      .join("\n")
-      .trim();
-  }
-  $: lastUserMessageWithContext = ((): string | undefined => {
-    if (!lastUserMessage) return undefined;
-    if (lastUserMessage.length >= 10 && lastUserMessage.includes(" "))
-      return lastUserMessage;
-    const msgs = session?.messages;
-    if (!msgs) return lastUserMessage;
-    // Skip past the entire burst, then grab the next user message.
-    let pastBurst = false;
-    let prevTs: number | null = null;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (!m || m.role !== "user") continue;
-      const text = extractUserText(m);
-      if (text.length === 0) continue;
-      const tsRaw = m.timestamp ? Date.parse(m.timestamp) : NaN;
-      const ts = Number.isNaN(tsRaw) ? null : tsRaw;
-      if (!pastBurst) {
-        if (prevTs !== null && ts !== null && prevTs - ts > BURST_GAP_MS) {
-          pastBurst = true;
-        } else {
-          if (ts !== null) prevTs = ts;
-          continue;
-        }
-      }
-      if (pastBurst) return `${text}\n[…]\n${lastUserMessage}`;
-    }
-    return lastUserMessage;
-  })();
+  $: lastUserMessage = lastUserMessageBurst(session?.messages ?? []);
+  $: lastUserMessageWithContext = buildLastUserMessageWithContext(
+    session?.messages ?? [],
+    lastUserMessage,
+  );
 
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView

@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -200,5 +200,108 @@ describe("file browser KV state", () => {
       parsed = null;
     }
     expect(parsed).toBeNull();
+  });
+});
+
+describe("NavHistory", () => {
+  test("starts at initial path with no back/forward", () => {
+    const h = new NavHistory("/repo");
+    expect(h.current).toBe("/repo");
+    expect(h.canGoBack()).toBe(false);
+    expect(h.canGoForward()).toBe(false);
+  });
+
+  test("push adds to history and enables back", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    expect(h.current).toBe("/repo/src");
+    expect(h.canGoBack()).toBe(true);
+    expect(h.canGoForward()).toBe(false);
+  });
+
+  test("back returns to previous path", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    h.push("/repo/src/lib");
+    const prev = h.goBack();
+    expect(prev).toBe("/repo/src");
+    expect(h.current).toBe("/repo/src");
+    expect(h.canGoBack()).toBe(true);
+    expect(h.canGoForward()).toBe(true);
+  });
+
+  test("forward returns to next path", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    h.goBack();
+    const next = h.goForward();
+    expect(next).toBe("/repo/src");
+    expect(h.current).toBe("/repo/src");
+    expect(h.canGoForward()).toBe(false);
+  });
+
+  test("push after back clears forward stack", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    h.push("/repo/docs");
+    h.goBack();
+    h.push("/repo/test");
+    expect(h.current).toBe("/repo/test");
+    expect(h.canGoForward()).toBe(false);
+    expect(h.canGoBack()).toBe(true);
+    // back should go to /repo/src, not /repo/docs
+    expect(h.goBack()).toBe("/repo/src");
+  });
+
+  test("back at start returns null", () => {
+    const h = new NavHistory("/repo");
+    expect(h.goBack()).toBeNull();
+    expect(h.current).toBe("/repo");
+  });
+
+  test("forward at end returns null", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    expect(h.goForward()).toBeNull();
+  });
+
+  test("multiple back/forward round-trips", () => {
+    const h = new NavHistory("/a");
+    h.push("/b");
+    h.push("/c");
+    h.push("/d");
+    expect(h.goBack()).toBe("/c");
+    expect(h.goBack()).toBe("/b");
+    expect(h.goForward()).toBe("/c");
+    expect(h.goForward()).toBe("/d");
+    expect(h.goForward()).toBeNull();
+    expect(h.current).toBe("/d");
+  });
+
+  test("push same path as current is a no-op", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo");
+    expect(h.canGoBack()).toBe(false);
+  });
+
+  test("serialize and restore round-trips", () => {
+    const h = new NavHistory("/repo");
+    h.push("/repo/src");
+    h.push("/repo/src/lib");
+    h.goBack();
+    const data = h.serialize();
+    const h2 = NavHistory.fromSerialized(data);
+    expect(h2.current).toBe("/repo/src");
+    expect(h2.canGoBack()).toBe(true);
+    expect(h2.canGoForward()).toBe(true);
+    expect(h2.goBack()).toBe("/repo");
+    expect(h2.goForward()).toBe("/repo/src");
+    expect(h2.goForward()).toBe("/repo/src/lib");
+  });
+
+  test("fromSerialized with garbage returns fallback", () => {
+    const h = NavHistory.fromSerialized(null as any);
+    expect(h.current).toBe("/");
+    expect(h.canGoBack()).toBe(false);
   });
 });

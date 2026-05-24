@@ -37,6 +37,76 @@ export async function fetchDir(path: string): Promise<FileEntry[]> {
   return data.entries ?? [];
 }
 
+export interface NavHistoryState {
+  back: string[];
+  forward: string[];
+  current: string;
+}
+
+export class NavHistory {
+  private back: string[] = [];
+  private forward: string[] = [];
+  private _current: string;
+
+  constructor(initial: string) {
+    this._current = initial;
+  }
+
+  get current(): string {
+    return this._current;
+  }
+
+  canGoBack(): boolean {
+    return this.back.length > 0;
+  }
+
+  canGoForward(): boolean {
+    return this.forward.length > 0;
+  }
+
+  push(path: string): void {
+    if (path === this._current) return;
+    this.back.push(this._current);
+    this._current = path;
+    this.forward = [];
+  }
+
+  goBack(): string | null {
+    if (this.back.length === 0) return null;
+    this.forward.push(this._current);
+    this._current = this.back.pop()!;
+    return this._current;
+  }
+
+  goForward(): string | null {
+    if (this.forward.length === 0) return null;
+    this.back.push(this._current);
+    this._current = this.forward.pop()!;
+    return this._current;
+  }
+
+  serialize(): NavHistoryState {
+    return { back: [...this.back], forward: [...this.forward], current: this._current };
+  }
+
+  static fromSerialized(data: unknown): NavHistory {
+    if (!data || typeof data !== "object") {
+      const h = new NavHistory("/");
+      return h;
+    }
+    const d = data as Record<string, unknown>;
+    const current = typeof d.current === "string" ? d.current : "/";
+    const h = new NavHistory(current);
+    if (Array.isArray(d.back)) {
+      h.back = d.back.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(d.forward)) {
+      h.forward = d.forward.filter((x): x is string => typeof x === "string");
+    }
+    return h;
+  }
+}
+
 export async function fetchGitStatus(path: string, gitWt: string): Promise<Map<string, string>> {
   try {
     const res = await fetch(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`);

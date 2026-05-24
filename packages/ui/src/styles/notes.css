@@ -1167,13 +1167,18 @@
 
 /* ── Emoji stickers ─────────────────────────────────────────────── */
 .sticky-emoji {
-  background: none;
-  box-shadow: none;
+  background: none !important;
+  background-image: none !important;
+  box-shadow: none !important;
   border: none;
+  border-radius: 0;
+  width: auto;
   min-width: unset;
+  min-height: unset;
   padding: 0;
   position: relative;
   transform: none !important;
+  aspect-ratio: 1 / 1;
 }
 .sticky-emoji .sticky-header {
   display: none;

@@ -977,11 +977,16 @@
         // stamped (the activity SSE has surfaced this sid) — without
         // it we have no way to map `__new__:claude:<random>` to a real
         // session on disk, so keep the dead xterm visible as before.
+        const pendingSrc = pendingRealSource[s.source];
         const sid = s.resumeSessionId;
-        const match = sid
-          ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
-          : undefined;
+        const match = pendingSrc
+          ? { source: pendingSrc }
+          : sid
+            ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
+            : undefined;
         if (match) {
+          const { [s.source]: _drop, ...restPending } = pendingRealSource;
+          pendingRealSource = restPending;
           openSessionsByWt = {
             ...openSessionsByWt,
             [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
@@ -1954,6 +1959,53 @@
   } else if (!hasTransientSessions && newSessionPollTimer) {
     clearInterval(newSessionPollTimer);
     newSessionPollTimer = null;
+  }
+
+  let pendingRealSource: Record<string, string> = {};
+
+  $: void discoverRealSources(hasTransientSessions, repos);
+  function discoverRealSources(hasTransient: boolean, repoList: Repo[]) {
+    if (!hasTransient || repoList.length === 0) return;
+    for (const [wtPath, sessions] of Object.entries(openSessionsByWt)) {
+      for (const s of sessions) {
+        if (!s.source.startsWith("__new__:") || !s.resumeSessionId) continue;
+        if (pendingRealSource[s.source]) continue;
+        for (const repo of repoList) {
+          for (const wt of repo.worktrees ?? []) {
+            if (wt.path !== wtPath) continue;
+            const match = (wt.agents ?? []).find(
+              (a: { agent: string; sessionId?: string; source: string }) =>
+                a.agent === s.agent && a.sessionId === s.resumeSessionId,
+            );
+            if (match) {
+              pendingRealSource = { ...pendingRealSource, [s.source]: match.source };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function applyPendingPromotion(syntheticSource: string, wtPath: string) {
+    const realSource = pendingRealSource[syntheticSource];
+    if (!realSource) return;
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
+        x.source === syntheticSource
+          ? { ...x, source: realSource }
+          : x,
+      ),
+    };
+    if (transientWorking[syntheticSource] !== undefined) {
+      transientWorking = { ...transientWorking, [realSource]: transientWorking[syntheticSource] };
+    }
+    if (transientAwaiting[syntheticSource] !== undefined) {
+      transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[syntheticSource] };
+    }
+    void migrateSessionTitleOnServer(syntheticSource, realSource);
+    const { [syntheticSource]: _, ...rest } = pendingRealSource;
+    pendingRealSource = rest;
   }
 
   function repoName(repo: Repo): string {
@@ -3838,35 +3890,12 @@
         const { byWt: stamped, stampedSource } =
           stampDiscoveredSessionIdWithDetail(openSessionsByWt, ev);
         if (stamped !== openSessionsByWt) openSessionsByWt = stamped;
-        // Once stamped AND we have a real JSONL source, promote the
-        // column from `__new__:` to the real source so it renders as
-        // SessionView (with full overlay, summary, menu) instead of
-        // the stripped-down NewSessionCol. Carry the daemon termId so
-        // SessionView reattaches to the live PTY instead of spawning.
-        if (stampedSource && ev.source) {
-          const termId = newTermIds[stampedSource];
-          const realSource = ev.source!;
-          openSessionsByWt = {
-            ...openSessionsByWt,
-            [ev.cwd]: (openSessionsByWt[ev.cwd] ?? []).map((x) =>
-              x.source === stampedSource
-                ? {
-                    ...x,
-                    source: realSource,
-                    mode: "terminal" as const,
-                    attachTermId: termId,
-                  }
-                : x,
-            ),
-          };
-          // Migrate transient state from the old synthetic key.
-          if (transientWorking[stampedSource] !== undefined) {
-            transientWorking = { ...transientWorking, [realSource]: transientWorking[stampedSource] };
-          }
-          if (transientAwaiting[stampedSource] !== undefined) {
-            transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[stampedSource] };
-          }
-          void migrateSessionTitleOnServer(stampedSource, realSource);
+        // Once stamped AND we have a real JSONL source, stash the
+        // real path for deferred promotion. The actual source rewrite
+        // happens when the PTY exits (on:exit in the template) so the
+        // xterm DOM isn't destroyed/recreated mid-session.
+        if (stampedSource && ev.source && !pendingRealSource[stampedSource]) {
+          pendingRealSource = { ...pendingRealSource, [stampedSource]: ev.source! };
         }
       } catch {
         // ignore malformed
@@ -4467,6 +4496,14 @@
             s.source.startsWith("__attached__:") ||
             s.mode === "terminal";
           const isLiveTui = isTuiSource && !transientExited[s.source];
+          // Utility panels (file browser, git history) are browsing
+          // views, not sessions — skip them in the activity dock.
+          // Agent and shell sessions appear regardless of mode
+          // (terminal or read-only).
+          if (
+            s.source.startsWith("__files__:") ||
+            s.source.startsWith("__history__:")
+          ) continue;
           // Same lookup precedence as the NewSessionCol render: once a
           // sid is stamped onto a `__new__:` column, prefer the matched
           // real-source agent's metadata so the dock shows the title
@@ -5615,17 +5652,13 @@
                 <span class="branch-anchor" data-branch-anchor={wt.path}>
                   <button
                     class="branch branch-button"
-                    class:branch-colored={!!repo.color}
-                    style={repo.color
-                      ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
-                      : ""}
                     title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
                     on:click|stopPropagation={() => {
                       const opening = !branchPickerOpen[wt.path];
                       branchPickerOpen = { ...branchPickerOpen, [wt.path]: opening };
                       if (opening) void loadBranchesFor(repo.id, wt.path);
                     }}
-                  >{wt.branch} <span class="branch-caret" aria-hidden="true">▾</span></button>
+                  ><svg class="branch-icon" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9c0 4-4 6-12 6"/></svg>{wt.branch} <span class="branch-caret" aria-hidden="true">▾</span></button>
                   {#if branchPickerOpen[wt.path]}
                     <Popover variant="agents" extraClass="branch-popover" headClass="branch-popover-head">
                       <svelte:fragment slot="head">
@@ -5699,85 +5732,90 @@
                 {@const fBehind = wt.branchStatus?.behind ?? 0}
                 {@const fDirty = wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked}
                 {@const fDirtyWarn = fDirty > 3 || (wt.fileStatus.dirtyLines ?? 0) > 200}
-                {#if fAhead > 0 || fBehind > 0 || fDirty > 0}
+                {#if fAhead > 0}
                   <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
                     <span slot="trigger" class="status-badge-trigger">
                       <StatusBadge
                         ahead={fAhead}
-                        behind={fBehind}
-                        dirty={fDirty}
-                        warn={fDirtyWarn}
-                        pulsate={fAhead > 0 && wt.branchStatus ? aheadAged(wt.branchStatus) : false}
-                        onClick={fAhead > 0
-                          ? () => tryPush(repo.id, wt.path)
-                          : fBehind > 0
-                            ? () => tryPull(repo.id, wt.path)
-                            : null}
-                        busy={fAhead > 0
-                          ? !!pushBusy[wt.path]
-                          : fBehind > 0
-                            ? !!pullBusy[wt.path]
-                            : false}
-                        title={fAhead > 0
-                          ? `Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`
-                          : fBehind > 0
-                            ? `Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`
-                            : ""}
+                        pulsate={wt.branchStatus ? aheadAged(wt.branchStatus) : false}
+                        onClick={() => tryPush(repo.id, wt.path)}
+                        busy={!!pushBusy[wt.path]}
+                        title={`Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`}
                       />
                     </span>
                     <span slot="content" class="wt-tt-content">
-                      {#if fAhead > 0 && wt.branchStatus}
-                        <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                                <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                              {/each}
-                            </div>
-                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
-                      {:else if fBehind > 0 && wt.branchStatus}
-                        <div class="wt-tt-section-head">
-                          {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus.upstream}
-                        </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                                <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                                <span class="wt-tt-date">{c.date ?? ""}</span>
-                                <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                              {/each}
-                            </div>
-                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
+                      <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
+                      {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                        <span class="muted small">Loading commits…</span>
                       {:else}
-                        <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
+                        {@const s = wtSummaryByPath[wt.path]}
+                        {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
+                          <div class="wt-tt-commits">
+                            {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                              <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                              <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
+                              <span class="wt-tt-date">{c.date ?? ""}</span>
+                              <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
+                            {/each}
+                          </div>
+                          {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                            <div class="wt-tt-more">
+                              +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
+                            </div>
+                          {/if}
+                        {/if}
                       {/if}
                     </span>
                   </Tooltip>
-                {:else if wt.branchStatus?.upstream}
+                {/if}
+                {#if fBehind > 0}
+                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
+                    <span slot="trigger" class="status-badge-trigger">
+                      <StatusBadge
+                        behind={fBehind}
+                        onClick={() => tryPull(repo.id, wt.path)}
+                        busy={!!pullBusy[wt.path]}
+                        title={`Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`}
+                      />
+                    </span>
+                    <span slot="content" class="wt-tt-content">
+                      <div class="wt-tt-section-head">
+                        {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus?.upstream ?? "upstream"}
+                      </div>
+                      {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                        <span class="muted small">Loading commits…</span>
+                      {:else}
+                        {@const s = wtSummaryByPath[wt.path]}
+                        {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
+                          <div class="wt-tt-commits">
+                            {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                              <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
+                              <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
+                              <span class="wt-tt-date">{c.date ?? ""}</span>
+                              <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
+                            {/each}
+                          </div>
+                          {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                            <div class="wt-tt-more">
+                              +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
+                            </div>
+                          {/if}
+                        {/if}
+                      {/if}
+                    </span>
+                  </Tooltip>
+                {/if}
+                {#if fDirty > 0}
+                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
+                    <span slot="trigger" class="status-badge-trigger">
+                      <StatusBadge dirty={fDirty} warn={fDirtyWarn} />
+                    </span>
+                    <span slot="content" class="wt-tt-content">
+                      <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
+                    </span>
+                  </Tooltip>
+                {/if}
+                {#if fAhead === 0 && fBehind === 0 && fDirty === 0 && wt.branchStatus?.upstream}
                   <span class="status-badge status-badge-sync" title="In sync with {wt.branchStatus.upstream}">
                     <svg class="sync-check-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5"/></svg>
                   </span>
@@ -6942,6 +6980,9 @@
                                   ...transientAwaiting,
                                   [s.source]: false,
                                 };
+                              }
+                              if (pendingRealSource[s.source]) {
+                                applyPendingPromotion(s.source, wt.path);
                               }
                             }}
                             on:titleSave={(e) =>

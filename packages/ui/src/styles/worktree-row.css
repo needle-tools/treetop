@@ -255,17 +255,14 @@ button.branch-button {
 button.branch-button:hover {
   filter: brightness(1.15);
 }
-/* When the repo has an accent colour, the branch button picks it up
-   too so a repo's worktree rows read as a visually grouped block.
-   Hover uses OKLCH to derive a perceptually-uniform lighter shade
-   (matches the repo-chip hover above). */
-.branch.branch-colored {
-  background: var(--repo-bg);
-  color: var(--repo-fg);
-}
-.branch.branch-colored:hover {
-  background: oklch(from var(--repo-bg) calc(l + 0.08) c h);
-  filter: none;
+.branch-icon {
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
 }
 .branch-caret {
   font-size: 0.65rem;
@@ -590,9 +587,9 @@ button.branch-button:hover {
   --status-badge-font-size: 0.72rem;
 }
 .status-badge {
-  padding: 0.05rem 0.45rem;
+  padding: 0.1rem 0.5rem;
   border-radius: var(--radius-sm);
-  font-size: var(--status-badge-font-size);
+  font-size: 0.78rem;
   font-weight: 600;
   font-family: ui-monospace, monospace;
   letter-spacing: 0.02em;
@@ -614,7 +611,7 @@ button.branch-button:hover {
   border: 0;
   margin: 0;
   font: inherit;
-  font-size: var(--status-badge-font-size);
+  font-size: 0.78rem;
 }
 .status-badge-clickable:hover {
   filter: brightness(1.15);

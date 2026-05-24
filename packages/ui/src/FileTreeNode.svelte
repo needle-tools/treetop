@@ -15,6 +15,7 @@
   export let onSelect: (path: string, e: MouseEvent) => void;
   export let onDblClick: (path: string, type: string) => void;
   export let onToggleExpand: (name: string, parentDir: string) => void;
+  export let onNavigateToFile: (path: string) => void;
 
   $: fullPath = joinPath(parentDir, entry.name);
   $: isExpanded = !!expanded[fullPath];
@@ -24,7 +25,7 @@
   $: myGitStatus = gitStatusByDir[parentDir]?.get(entry.name);
   $: isDir = entry.type === "directory";
 
-  // --- File diff tooltip (for git badge on files) ---
+  // --- File diff tooltip ---
   let diffText: string | null = null;
   let diffLoading = false;
 
@@ -65,10 +66,11 @@
     diffLoading = false;
   }
 
-  // --- Folder stats tooltip (for directories with changes) ---
+  // --- Folder stats tooltip ---
   interface FolderStat { path: string; added: number; removed: number; status: string }
   let folderStats: FolderStat[] | null = null;
   let folderStatsLoading = false;
+  let statDiffs: Record<string, { loading: boolean; text: string | null }> = {};
 
   async function loadFolderStats() {
     if (folderStats !== null || folderStatsLoading) return;
@@ -87,6 +89,29 @@
       folderStats = [];
     }
     folderStatsLoading = false;
+  }
+
+  async function loadStatDiff(filePath: string) {
+    if (statDiffs[filePath]) return;
+    statDiffs = { ...statDiffs, [filePath]: { loading: true, text: null } };
+    try {
+      let text = "";
+      for (const kind of ["workdir", "staged", "untracked"]) {
+        const res = await fetch(
+          `/api/file-diff?path=${encodeURIComponent(wtPath)}&file=${encodeURIComponent(filePath)}&kind=${kind}&context=3`,
+        );
+        if (res.ok) text = await res.text();
+        if (text) break;
+      }
+      statDiffs = { ...statDiffs, [filePath]: { loading: false, text: text || "" } };
+    } catch {
+      statDiffs = { ...statDiffs, [filePath]: { loading: false, text: "(failed)" } };
+    }
+  }
+
+  function handleStatFileClick(filePath: string) {
+    const abs = joinPath(wtPath, filePath);
+    onNavigateToFile(abs);
   }
 </script>
 
@@ -115,15 +140,32 @@
           {:else if folderStats !== null && folderStats.length > 0}
             <div class="fb-folder-stats">
               {#each folderStats as f}
-                <div class="fb-folder-stat-row">
-                  <span class="fb-folder-stat-file">{f.path}</span>
-                  {#if f.status === "?"}
-                    <span class="fb-stat-new">new</span>
-                  {:else}
-                    {#if f.added > 0}<span class="fb-stat-add">+{f.added}</span>{/if}
-                    {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
-                  {/if}
-                </div>
+                <Tooltip variant="wide" placement="bottom" showDelayMs={300} onShow={() => loadStatDiff(f.path)} escapeClip>
+                  <button
+                    slot="trigger"
+                    class="fb-folder-stat-row"
+                    on:click|stopPropagation={() => handleStatFileClick(f.path)}
+                  >
+                    <span class="fb-folder-stat-file">{f.path}</span>
+                    {#if f.status === "?"}
+                      <span class="fb-stat-new">new</span>
+                    {:else}
+                      {#if f.added > 0}<span class="fb-stat-add">+{f.added}</span>{/if}
+                      {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
+                    {/if}
+                  </button>
+                  <div slot="content" class="fb-git-tooltip">
+                    {#if statDiffs[f.path]?.loading}
+                      <LoadingSpinner size="0.9rem" />
+                    {:else if statDiffs[f.path]?.text !== null && statDiffs[f.path]?.text !== undefined}
+                      {#if statDiffs[f.path].text.length > 0}
+                        <pre class="fb-git-diff">{statDiffs[f.path].text}</pre>
+                      {:else}
+                        <span class="muted small">No diff</span>
+                      {/if}
+                    {/if}
+                  </div>
+                </Tooltip>
               {/each}
             </div>
           {:else if folderStats !== null}
@@ -153,7 +195,30 @@
         </div>
       </Tooltip>
     {:else if myGitStatus && isDir}
-      <span class="fb-git">{myGitStatus}</span>
+      <Tooltip variant="wide" placement="bottom" showDelayMs={300} onShow={loadFolderStats} escapeClip>
+        <span slot="trigger" class="fb-git">{myGitStatus}</span>
+        <div slot="content" class="fb-git-tooltip">
+          {#if folderStatsLoading}
+            <LoadingSpinner size="0.9rem" />
+          {:else if folderStats !== null && folderStats.length > 0}
+            <div class="fb-folder-stats">
+              {#each folderStats as f}
+                <div class="fb-folder-stat-row">
+                  <span class="fb-folder-stat-file">{f.path}</span>
+                  {#if f.status === "?"}
+                    <span class="fb-stat-new">new</span>
+                  {:else}
+                    {#if f.added > 0}<span class="fb-stat-add">+{f.added}</span>{/if}
+                    {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {:else if folderStats !== null}
+            <span class="muted small">No changes in this folder</span>
+          {/if}
+        </div>
+      </Tooltip>
     {/if}
     <span class="fb-mtime muted">{formatMtime(entry.mtime)}</span>
     <span class="fb-size muted">{isDir ? "" : formatSize(entry.size)}</span>
@@ -173,6 +238,7 @@
           {onSelect}
           {onDblClick}
           {onToggleExpand}
+          {onNavigateToFile}
         />
       {/each}
     </ul>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import DiffViewer from "./DiffViewer.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
@@ -16,6 +17,8 @@
     subject: string;
     author: string;
     time: string;
+    parents?: number;
+    refs?: string[];
   }
 
   const COMMITS_BATCH = 50;
@@ -153,6 +156,24 @@
     },
   ] satisfies SessionMenuItem[];
 
+  let sentinelEl: HTMLDivElement;
+  let observer: IntersectionObserver | null = null;
+
+  function setupObserver(node: HTMLDivElement) {
+    sentinelEl = node;
+    observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !commitsLoading && !commitsExhausted) {
+          void loadMoreCommits();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+  }
+
+  onDestroy(() => { observer?.disconnect(); });
+
   void loadCommitsInitial();
 </script>
 
@@ -180,34 +201,45 @@
     {:else if commits}
       <div class="gh-list">
         {#each commits as c (c.sha)}
-          <button
-            class="gh-commit"
-            class:open={openCommitSha === c.sha}
-            on:click={() => void openCommit(c.sha)}
-          >
-            <code class="gh-sha">{c.shortSha}</code>
-            <span class="gh-subject">{c.subject}</span>
-            <span class="gh-meta">
+          <div class="gh-row" class:open={openCommitSha === c.sha}>
+            <div class="gh-graph">
+              <div class="gh-line"></div>
+              <div class="gh-dot" class:gh-dot-merge={(c.parents ?? 1) > 1}></div>
+            </div>
+            <button
+              class="gh-commit"
+              class:open={openCommitSha === c.sha}
+              on:click={() => void openCommit(c.sha)}
+            >
+              <span class="gh-subject">
+                {#if c.refs && c.refs.length > 0}
+                  {#each c.refs as ref}
+                    <span class="gh-ref" class:gh-ref-head={ref.startsWith("HEAD")} class:gh-ref-tag={ref.startsWith("tag:")}>{ref.replace(/^tag: /, "")}</span>
+                  {/each}
+                {/if}
+                <span class="gh-subject-text">{c.subject}</span>
+              </span>
               <span class="gh-author">{c.author}</span>
               <span class="gh-time">{relTime(c.time)}</span>
-            </span>
-          </button>
-          {#if showDiff && openCommitSha === c.sha}
-            <div class="gh-diff">
-              {#if commitDiff[c.sha] !== undefined}
-                <DiffViewer text={commitDiff[c.sha]} />
-              {:else if diffLoading}
-                <div class="gh-diff-loading"><LoadingSpinner size="1rem" /></div>
-              {/if}
-            </div>
-          {/if}
+              <code class="gh-sha">{c.shortSha}</code>
+            </button>
+            {#if showDiff && openCommitSha === c.sha}
+              <div class="gh-diff">
+                {#if commitDiff[c.sha] !== undefined}
+                  <DiffViewer text={commitDiff[c.sha]} showCommitHeader={false} />
+                {:else if diffLoading}
+                  <div class="gh-diff-loading"><LoadingSpinner size="1rem" /></div>
+                {/if}
+              </div>
+            {/if}
+          </div>
         {/each}
         {#if !commitsExhausted}
-          <button
-            class="gh-load-more"
-            on:click={() => void loadMoreCommits()}
-            disabled={commitsLoading}
-          >{commitsLoading ? "Loading..." : "Load more"}</button>
+          <div class="gh-sentinel" use:setupObserver>
+            {#if commitsLoading}
+              <LoadingSpinner size="0.8rem" />
+            {/if}
+          </div>
         {:else}
           <span class="gh-end muted small">end of history</span>
         {/if}
@@ -243,12 +275,48 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding: 0.25rem;
+    padding: 0.25rem 0.25rem 0.25rem 0;
+  }
+  .gh-row {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    min-width: 0;
+  }
+  .gh-graph {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+  }
+  .gh-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2.5px;
+    background: var(--chip-purple-text);
+    opacity: 0.45;
+    transform: translateX(-50%);
+  }
+  .gh-dot {
+    position: relative;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--chip-purple-text);
+    border: 1.5px solid var(--surface-1);
+    flex-shrink: 0;
+    z-index: 1;
+  }
+  .gh-dot-merge {
+    width: 10px;
+    height: 10px;
+    background: var(--chip-orange-text);
   }
   .gh-commit {
     display: grid;
-    grid-template-columns: auto 1fr;
-    grid-template-rows: auto auto;
+    grid-template-columns: 1fr auto auto auto;
     gap: 0 0.5rem;
     align-items: baseline;
     padding: 0.35rem 0.5rem;
@@ -262,6 +330,7 @@
     text-align: left;
     width: 100%;
     flex-shrink: 0;
+    min-width: 0;
   }
   .gh-commit:hover {
     background: var(--surface-2);
@@ -271,64 +340,77 @@
     color: var(--text-2);
   }
   .gh-sha {
-    grid-row: 1;
-    grid-column: 1;
     font-family: ui-monospace, monospace;
-    color: var(--chip-purple-text);
+    color: var(--text-muted);
     font-size: var(--fs-sm);
     white-space: nowrap;
   }
   .gh-subject {
-    grid-row: 1;
-    grid-column: 2;
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    overflow: hidden;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .gh-subject-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
     color: var(--text-2);
   }
-  .gh-meta {
-    grid-row: 2;
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 0.5rem;
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
-  }
   .gh-author {
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
-    min-width: 0;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
   }
   .gh-time {
     white-space: nowrap;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+  }
+  .gh-ref {
     flex-shrink: 0;
+    font-size: var(--fs-xs);
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: var(--chip-purple-bg);
+    color: var(--chip-purple-text);
+    white-space: nowrap;
+    font-family: ui-monospace, monospace;
+  }
+  .gh-ref-head {
+    background: var(--chip-orange-bg);
+    color: var(--chip-orange-text);
+  }
+  .gh-ref-tag {
+    background: var(--surface-3);
+    color: var(--text-2);
   }
   .gh-diff {
-    padding: 0.15rem 0.25rem 0.4rem 1.2rem;
+    grid-column: 1 / -1;
+    padding: 0.15rem 0 0.4rem 20px;
+  }
+  .gh-diff :global(.diff) {
+    font-size: var(--fs-sm);
+    background: transparent;
+    border: none;
+  }
+  .gh-diff :global(.file-btn) {
+    font-size: var(--fs-sm);
+  }
+  .gh-diff :global(.file-list) {
+    font-size: var(--fs-sm);
   }
   .gh-diff-loading {
     padding: 0.5rem 0;
     text-align: center;
   }
-  .gh-load-more {
-    margin: 0.4rem 0.5rem;
-    padding: 0.3rem 0.8rem;
-    background: var(--surface-2);
-    color: var(--text-muted);
-    border: 0;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--fs-sm);
-    align-self: flex-start;
-  }
-  .gh-load-more:hover {
-    color: var(--text-2);
-  }
-  .gh-load-more:disabled {
-    opacity: 0.5;
-    cursor: default;
+  .gh-sentinel {
+    padding: 0.5rem;
+    text-align: center;
+    min-height: 1px;
   }
   .gh-end {
     padding: 0.3rem 0.5rem;
