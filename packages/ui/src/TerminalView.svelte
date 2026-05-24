@@ -396,12 +396,12 @@
       }
 
       if (isMac && ev.metaKey && !ev.ctrlKey) {
-        if (ev.code === "KeyV") {
-          ev.preventDefault();
-          ev.stopPropagation();
-          void doClipboardPaste();
-          return;
-        }
+        // Cmd+V: let the native paste event flow through — WKWebView
+        // fires a paste event without a confirmation popup when the
+        // shortcut triggers it. Calling navigator.clipboard.read()
+        // explicitly triggers the popup, so we avoid that path here.
+        // xterm.js handles the resulting paste event natively.
+        if (ev.code === "KeyV") return;
         if (ev.code === "KeyC" && xterm?.hasSelection()) {
           ev.preventDefault();
           ev.stopPropagation();
