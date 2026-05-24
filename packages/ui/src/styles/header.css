@@ -137,7 +137,7 @@ main > header > h1 {
   text-align: center;
 }
 .actions-btn.has-errors {
-  color: var(--error-text, #ffb4ad);
+  color: inherit;
 }
 /* TUIs button — warm tier (one tracked TUI process is using ≥ 30% of
    system RAM or ≥ 30% CPU). Orange tint + a slow pulsing amber glow

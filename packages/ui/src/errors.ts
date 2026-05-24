@@ -228,7 +228,8 @@ export function installFetchTracking(): void {
         : input.url;
     try {
       const res = await orig(input as RequestInfo, init);
-      if (!res.ok && !isExpectedClientError(res.status, method) &&
+      if (!res.ok && res.status !== 304 &&
+        !isExpectedClientError(res.status, method) &&
         !(route.includes("/api/errors") && method === "POST")
       ) {
         recordBrowserError({

@@ -250,4 +250,11 @@ describe("installFetchTracking — expected-client-error filter", () => {
     expect(getErrors().length).toBe(1);
     expect(getErrors()[0]?.status).toBe(400);
   });
+
+  test("skips recording 304 Not Modified responses", async () => {
+    stubResponse(304, "Not Modified");
+    const res = await fetch("/api/session?source=foo.jsonl");
+    expect(res.status).toBe(304);
+    expect(getErrors().length).toBe(0);
+  });
 });
