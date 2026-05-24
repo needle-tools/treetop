@@ -1274,11 +1274,11 @@
     {#each undoables as u (u.key)}
       <div class="undo-toast">
         <span class="undo-toast-text">
-          Note deleted{u.note.body
-            ? ` · “${u.note.body.split("\n")[0].slice(0, 32)}${
-                u.note.body.length > 32 ? "…" : ""
-              }”`
-            : ""}
+          Note deleted{u.body
+            ? ` · \u201C${u.body.split('\n')[0].slice(0, 32)}${
+                u.body.length > 32 ? '\u2026' : ''
+              }\u201D`
+            : ''}
         </span>
         <button class="undo-toast-btn" on:click={() => void undoDelete(u.key)}>
           Undo
