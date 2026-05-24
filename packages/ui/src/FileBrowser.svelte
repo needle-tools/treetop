@@ -15,6 +15,7 @@
   const KV_KEY = "supergit:fileBrowser:state";
 
   let nav = new NavHistory(wtPath);
+  let navTick = 0;
   let currentDir: string = wtPath;
   let entries: FileEntry[] = [];
   let expanded: Record<string, FileEntry[]> = {};
@@ -107,6 +108,7 @@
     const next = joinPath(currentDir, name);
     nav.push(next);
     currentDir = next;
+    navTick++;
     expanded = {};
     void loadCurrentDir();
     persistState();
@@ -116,6 +118,7 @@
     const prev = nav.goBack();
     if (!prev) return;
     currentDir = prev;
+    navTick++;
     expanded = {};
     void loadCurrentDir();
     persistState();
@@ -125,6 +128,7 @@
     const next = nav.goForward();
     if (!next) return;
     currentDir = next;
+    navTick++;
     expanded = {};
     void loadCurrentDir();
     persistState();
@@ -221,6 +225,7 @@
   function navigateTo(path: string) {
     nav.push(path);
     currentDir = path;
+    navTick++;
     expanded = {};
     void loadCurrentDir();
     persistState();
@@ -287,7 +292,10 @@
   }
 
   $: visibleEntries = showDotfiles ? entries : entries.filter((e) => !e.name.startsWith("."));
-  $: selectedNames = [...selected].map((p) => p.split("/").pop() ?? p);
+  $: canBack = (navTick, nav.canGoBack());
+  $: canForward = (navTick, nav.canGoForward());
+  $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
+  $: selectedNames = visibleSelected.map((p) => p.split("/").pop() ?? p);
 
   loadPersistedState();
   void loadCurrentDir();
@@ -324,13 +332,18 @@
     <button
       class="fb-nav-btn"
       on:click={goBack}
-      disabled={!nav.canGoBack()}
+      disabled={!canBack}
     ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="6,1 1,4 6,7"/></svg></button>
     <button
       class="fb-nav-btn"
       on:click={goForward}
-      disabled={!nav.canGoForward()}
+      disabled={!canForward}
     ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="2,1 7,4 2,7"/></svg></button>
+    <button
+      class="fb-nav-btn"
+      on:click={() => navigateTo(wtPath)}
+      disabled={currentDir === wtPath}
+    ><svg class="fb-nav-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></button>
     <div
       class="fb-path"
       role="button"
@@ -447,6 +460,11 @@
     width: 0.55rem;
     height: 0.55rem;
     fill: currentColor;
+  }
+  :global(.fb-nav-home) {
+    width: 0.6rem;
+    height: 0.6rem;
+    stroke: var(--text-1);
   }
   .fb-sep {
     color: var(--text-faint);

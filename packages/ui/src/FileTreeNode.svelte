@@ -2,6 +2,7 @@
   import { ICONS } from "./icons";
   import { joinPath, formatSize, formatMtime, type FileEntry } from "./file-browser-utils";
   import Tooltip from "./Tooltip.svelte";
+  import Diff from "./Diff.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
 
   export let entry: FileEntry;
@@ -71,6 +72,7 @@
   let folderStats: FolderStat[] | null = null;
   let folderStatsLoading = false;
   let statDiffs: Record<string, { loading: boolean; text: string | null }> = {};
+  let statExpanded: Set<string> = new Set();
 
   async function loadFolderStats() {
     if (folderStats !== null || folderStatsLoading) return;
@@ -109,7 +111,19 @@
     }
   }
 
-  function handleStatFileClick(filePath: string) {
+  function toggleStatDiff(filePath: string) {
+    const next = new Set(statExpanded);
+    if (next.has(filePath)) {
+      next.delete(filePath);
+    } else {
+      next.add(filePath);
+      loadStatDiff(filePath);
+    }
+    statExpanded = next;
+  }
+
+  function handleStatFileNavigate(e: MouseEvent, filePath: string) {
+    e.stopPropagation();
     const abs = joinPath(wtPath, filePath);
     onNavigateToFile(abs);
   }
@@ -144,7 +158,7 @@
                   <button
                     slot="trigger"
                     class="fb-folder-stat-row"
-                    on:click|stopPropagation={() => handleStatFileClick(f.path)}
+                    on:click={() => { const abs = joinPath(wtPath, f.path); onNavigateToFile(abs); }}
                   >
                     <span class="fb-folder-stat-file">{f.path}</span>
                     {#if f.status === "?"}
@@ -154,12 +168,12 @@
                       {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
                     {/if}
                   </button>
-                  <div slot="content" class="fb-git-tooltip">
+                  <div slot="content" class="fb-stat-diff-popup">
                     {#if statDiffs[f.path]?.loading}
                       <LoadingSpinner size="0.9rem" />
-                    {:else if statDiffs[f.path]?.text !== null && statDiffs[f.path]?.text !== undefined}
+                    {:else if statDiffs[f.path]?.text != null}
                       {#if statDiffs[f.path].text.length > 0}
-                        <pre class="fb-git-diff">{statDiffs[f.path].text}</pre>
+                        <Diff text={statDiffs[f.path].text} />
                       {:else}
                         <span class="muted small">No diff</span>
                       {/if}
@@ -187,7 +201,7 @@
             <LoadingSpinner size="0.9rem" />
           {:else if diffText !== null}
             {#if diffText.length > 0}
-              <pre class="fb-git-diff">{diffText}</pre>
+              <Diff text={diffText} />
             {:else}
               <span class="muted small">No changes to show</span>
             {/if}
@@ -203,15 +217,32 @@
           {:else if folderStats !== null && folderStats.length > 0}
             <div class="fb-folder-stats">
               {#each folderStats as f}
-                <div class="fb-folder-stat-row">
-                  <span class="fb-folder-stat-file">{f.path}</span>
-                  {#if f.status === "?"}
-                    <span class="fb-stat-new">new</span>
-                  {:else}
-                    {#if f.added > 0}<span class="fb-stat-add">+{f.added}</span>{/if}
-                    {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
-                  {/if}
-                </div>
+                <Tooltip variant="wide" placement="bottom" showDelayMs={300} onShow={() => loadStatDiff(f.path)} escapeClip>
+                  <button
+                    slot="trigger"
+                    class="fb-folder-stat-row"
+                    on:click={() => { const abs = joinPath(wtPath, f.path); onNavigateToFile(abs); }}
+                  >
+                    <span class="fb-folder-stat-file">{f.path}</span>
+                    {#if f.status === "?"}
+                      <span class="fb-stat-new">new</span>
+                    {:else}
+                      {#if f.added > 0}<span class="fb-stat-add">+{f.added}</span>{/if}
+                      {#if f.removed > 0}<span class="fb-stat-rm">-{f.removed}</span>{/if}
+                    {/if}
+                  </button>
+                  <div slot="content" class="fb-stat-diff-popup">
+                    {#if statDiffs[f.path]?.loading}
+                      <LoadingSpinner size="0.9rem" />
+                    {:else if statDiffs[f.path]?.text != null}
+                      {#if statDiffs[f.path].text.length > 0}
+                        <Diff text={statDiffs[f.path].text} />
+                      {:else}
+                        <span class="muted small">No diff</span>
+                      {/if}
+                    {/if}
+                  </div>
+                </Tooltip>
               {/each}
             </div>
           {:else if folderStats !== null}

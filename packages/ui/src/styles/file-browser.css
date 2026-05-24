@@ -113,11 +113,11 @@
   flex-shrink: 0;
 }
 .fb-git-tooltip {
-  min-width: 20ch;
   max-width: min(72ch, 90vw);
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 .fb-folder-stats {
   display: flex;
@@ -143,6 +143,9 @@
 .fb-folder-stat-row:hover {
   background: var(--surface-3);
 }
+.fb-folder-stat-row:hover .fb-folder-stat-file {
+  text-decoration: underline;
+}
 .fb-folder-stat-file {
   color: var(--text-1);
   flex: 1;
@@ -165,6 +168,13 @@
   color: var(--status-clean);
   flex-shrink: 0;
   font-style: italic;
+}
+.fb-stat-diff-popup {
+  max-width: min(72ch, 90vw);
+  max-height: 30vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 .fb-git-diff {
   margin: 0;

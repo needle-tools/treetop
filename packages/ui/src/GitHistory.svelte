@@ -200,12 +200,10 @@
       <div class="gh-status muted small">No commits yet.</div>
     {:else if commits}
       <div class="gh-list">
+        <div class="gh-rail"></div>
         {#each commits as c (c.sha)}
-          <div class="gh-row" class:open={openCommitSha === c.sha}>
-            <div class="gh-graph">
-              <div class="gh-line"></div>
-              <div class="gh-dot" class:gh-dot-merge={(c.parents ?? 1) > 1}></div>
-            </div>
+          <div class="gh-commit-row">
+            <div class="gh-dot" class:gh-dot-merge={(c.parents ?? 1) > 1}></div>
             <button
               class="gh-commit"
               class:open={openCommitSha === c.sha}
@@ -223,16 +221,16 @@
               <span class="gh-time">{relTime(c.time)}</span>
               <code class="gh-sha">{c.shortSha}</code>
             </button>
-            {#if showDiff && openCommitSha === c.sha}
-              <div class="gh-diff">
-                {#if commitDiff[c.sha] !== undefined}
-                  <DiffViewer text={commitDiff[c.sha]} showCommitHeader={false} />
-                {:else if diffLoading}
-                  <div class="gh-diff-loading"><LoadingSpinner size="1rem" /></div>
-                {/if}
-              </div>
-            {/if}
           </div>
+          {#if showDiff && openCommitSha === c.sha}
+            <div class="gh-diff">
+              {#if commitDiff[c.sha] !== undefined}
+                <DiffViewer text={commitDiff[c.sha]} showCommitHeader={false} />
+              {:else if diffLoading}
+                <div class="gh-diff-loading"><LoadingSpinner size="1rem" /></div>
+              {/if}
+            </div>
+          {/if}
         {/each}
         {#if !commitsExhausted}
           <div class="gh-sentinel" use:setupObserver>
@@ -241,7 +239,10 @@
             {/if}
           </div>
         {:else}
-          <span class="gh-end muted small">end of history</span>
+          <div class="gh-end-row">
+            <div class="gh-rail-cap"></div>
+            <span class="gh-end muted small">end of history</span>
+          </div>
         {/if}
       </div>
     {/if}
@@ -266,57 +267,57 @@
     overflow-x: hidden;
     min-height: 0;
     max-height: 50vh;
+    overscroll-behavior: contain;
   }
   .gh-status {
     padding: 1rem;
     text-align: center;
   }
   .gh-list {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0;
     padding: 0.25rem 0.25rem 0.25rem 0;
   }
-  .gh-row {
-    display: grid;
-    grid-template-columns: 20px 1fr;
-    min-width: 0;
-  }
-  .gh-graph {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-  }
-  .gh-line {
+  .gh-rail {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 50%;
+    left: 10px;
     width: 2.5px;
     background: var(--chip-purple-text);
     opacity: 0.45;
-    transform: translateX(-50%);
+    z-index: 0;
+  }
+  .gh-commit-row {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    position: relative;
+    z-index: 1;
   }
   .gh-dot {
-    position: relative;
     width: 8px;
     height: 8px;
     border-radius: 50%;
     background: var(--chip-purple-text);
     border: 1.5px solid var(--surface-1);
     flex-shrink: 0;
+    margin-left: 6px;
+    margin-right: 2px;
     z-index: 1;
   }
   .gh-dot-merge {
     width: 10px;
     height: 10px;
+    margin-left: 5px;
+    margin-right: 1px;
     background: var(--chip-orange-text);
   }
   .gh-commit {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 0 0.5rem;
     align-items: baseline;
     padding: 0.35rem 0.5rem;
@@ -389,8 +390,9 @@
     color: var(--text-2);
   }
   .gh-diff {
-    grid-column: 1 / -1;
     padding: 0.15rem 0 0.4rem 20px;
+    position: relative;
+    z-index: 1;
   }
   .gh-diff :global(.diff) {
     font-size: var(--fs-sm);
@@ -411,6 +413,23 @@
     padding: 0.5rem;
     text-align: center;
     min-height: 1px;
+  }
+  .gh-end-row {
+    display: flex;
+    align-items: center;
+    position: relative;
+    z-index: 1;
+  }
+  .gh-rail-cap {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--surface-1);
+    border: 2px solid var(--chip-purple-text);
+    opacity: 0.45;
+    flex-shrink: 0;
+    margin-left: 6px;
+    margin-right: 2px;
   }
   .gh-end {
     padding: 0.3rem 0.5rem;
