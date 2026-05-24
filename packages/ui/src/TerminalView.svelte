@@ -396,12 +396,14 @@
       }
 
       if (isMac && ev.metaKey && !ev.ctrlKey) {
-        // Cmd+V: let the native paste event flow through — WKWebView
-        // fires a paste event without a confirmation popup when the
-        // shortcut triggers it. Calling navigator.clipboard.read()
-        // explicitly triggers the popup, so we avoid that path here.
-        // xterm.js handles the resulting paste event natively.
-        if (ev.code === "KeyV") return;
+        if (ev.code === "KeyV") {
+          // Block xterm's handler (which calls navigator.clipboard.read
+          // and triggers the macOS "Paste" popup). Instead we listen for
+          // the native `paste` event below, which carries clipboardData
+          // inline without any popup.
+          ev.stopPropagation();
+          return;
+        }
         if (ev.code === "KeyC" && xterm?.hasSelection()) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -415,6 +417,18 @@
           return;
         }
       }
+    }, true);
+
+    // Handle native paste events directly. When Cmd+V fires and we
+    // stopPropagation in the capture handler above, the browser still
+    // dispatches a `paste` event with clipboardData inline — reading
+    // that is synchronous and does NOT trigger the macOS "Paste" popup
+    // (unlike navigator.clipboard.read()).
+    containerEl.addEventListener("paste", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const text = ev.clipboardData?.getData("text/plain");
+      if (text && xterm) xterm.paste(text);
     }, true);
 
     xterm.attachCustomKeyEventHandler((ev) => {
