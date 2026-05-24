@@ -9,7 +9,6 @@
   import ShellView from "./ShellView.svelte";
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
-  import SourceControlPane from "./SourceControlPane.svelte";
   import Tooltip from "./Tooltip.svelte";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
@@ -7123,22 +7122,8 @@
                 {/if}
               {/if}
 
-              <!-- "Topmost commit" row: chevron + last-commit summary,
-                   placed BELOW the sessions strip so the chat columns
-                   are the row's primary content. The chevron toggles
-                   the source-control panel (staging + history) below.
-                   Hidden for plain folders and empty git repos —
-                   no commits means no history to display. -->
-              {#if wt.lastCommit}
-                <SourceControlPane
-                  {wt}
-                  expanded={!!commitsExpanded[wt.path]}
-                  inZen={zenRowKey === row.key}
-                  fsChangeKey={fsChangeKey[wt.path] ?? 0}
-                  onError={(msg) => (error = msg)}
-                  on:toggle={() => toggleCommits(wt.path)}
-                />
-              {/if}
+              <!-- Source-control foldout removed — git history now lives
+                   in a session column (GitHistory.svelte). -->
             {/if}
           {/if}
           </div>
