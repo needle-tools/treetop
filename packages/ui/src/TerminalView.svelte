@@ -419,18 +419,6 @@
       }
     }, true);
 
-    // Handle native paste events directly. When Cmd+V fires and we
-    // stopPropagation in the capture handler above, the browser still
-    // dispatches a `paste` event with clipboardData inline — reading
-    // that is synchronous and does NOT trigger the macOS "Paste" popup
-    // (unlike navigator.clipboard.read()).
-    containerEl.addEventListener("paste", (ev) => {
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      const text = ev.clipboardData?.getData("text/plain");
-      if (text && xterm) xterm.paste(text);
-    }, true);
-
     xterm.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown" || ev.altKey) return true;
       const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
@@ -439,6 +427,13 @@
         : ev.ctrlKey && !ev.metaKey;
       if (!modOnly) return true;
       if (ev.code === "KeyV") {
+        if (isMac) {
+          // On Mac, the capture-phase keydown handler already
+          // stopPropagation'd, so this shouldn't fire. But if it
+          // does, just let native paste handle it — don't call the
+          // Clipboard API (triggers macOS paste popup).
+          return false;
+        }
         ev.preventDefault();
         void doClipboardPaste();
         return false;
