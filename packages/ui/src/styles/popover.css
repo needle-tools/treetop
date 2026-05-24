@@ -202,6 +202,24 @@
 .tuis-popover .agents-list > li {
   display: contents;
 }
+.tuis-popover .proc-header-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--surface-2);
+  margin-bottom: 0.15rem;
+}
+.tuis-popover .proc-header-row > span {
+  white-space: nowrap;
+}
+.tuis-popover .proc-header-row > span:nth-child(n+5) {
+  text-align: right;
+}
 /* IMPORTANT: every `.tui-row-static` rule below qualifies with
    `.tuis-popover` to bump specificity to (0,2,0). `.agent-row`
    (declared in agent-row.css, which loads AFTER popover.css in
@@ -274,7 +292,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  min-width: 4ch;
   max-width: 18ch;
 }
 /* Inline session title on the same row as the agent name + repo. Takes

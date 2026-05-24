@@ -250,6 +250,17 @@
         <p class="muted small nopad">Nothing running.</p>
       {:else}
         <ul class="agents-list">
+          <li class="proc-header-row">
+            <span></span>
+            <span>Name</span>
+            <span>Repo</span>
+            <span>Info</span>
+            <span>CPU</span>
+            <span>Mem</span>
+            <span>Up</span>
+            <span></span>
+            <span></span>
+          </li>
           {#each procs as p (p.id)}
             {@const ctx = procContext(p)}
             {@const source = p.kind !== "external" ? procSource(p) : null}
