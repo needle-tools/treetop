@@ -2335,6 +2335,8 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 0.35rem;
+  }
+  .tui-overlay-stack > * {
     pointer-events: auto;
   }
   .tui-overlay-icon {
