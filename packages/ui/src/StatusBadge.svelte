@@ -51,7 +51,7 @@
       type="button"
       class="status-badge status-badge-ahead status-badge-clickable"
       class:pulsate={pulsate && !busy}
-      title={title}
+      aria-label={title}
       disabled={busy}
       on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
     >{#if busy}<span class="status-badge-spinner" aria-label="pushing"></span>{:else}↑{ahead}{/if}</button>
@@ -63,7 +63,7 @@
     <button
       type="button"
       class="status-badge status-badge-behind status-badge-clickable"
-      title={title}
+      aria-label={title}
       disabled={busy}
       on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
     >{#if busy}<span class="status-badge-spinner" aria-label="pulling"></span>{:else}↓{behind}{/if}</button>
