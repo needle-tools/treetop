@@ -59,6 +59,7 @@
   } from "./preview-action";
   import { defaultProviders } from "./mention-providers";
   import { pushRecent } from "./mention-recents";
+  import { openUrl } from "./open-url";
   import type { PickItem } from "./mention-types";
   import { requestSessionFocus } from "./session-focus-store";
   import { sessionDisplayTitle, type AgentSession } from "./sessionSearch";
@@ -259,13 +260,13 @@
    *   file   : reserved for a future /api/open file path call. */
   function openTarget(t: LinkTarget): void {
     if (t.type === "url") {
-      window.open(t.value, "_blank", "noopener,noreferrer");
+      openUrl(t.value);
       return;
     }
     if (t.type === "commit") {
       // 1) Already a browser URL (legacy / hand-pasted) — just open it.
       if (/^https?:\/\//i.test(t.value)) {
-        window.open(t.value, "_blank", "noopener,noreferrer");
+        openUrl(t.value);
         return;
       }
       // 2) Build a browser URL from the repo's origin remote.
@@ -281,7 +282,7 @@
       if (origin?.webUrl) {
         const url = buildCommitWebUrl(origin.webUrl, origin.provider, t.value);
         if (url) {
-          window.open(url, "_blank", "noopener,noreferrer");
+          openUrl(url);
           return;
         }
       }
@@ -744,7 +745,7 @@
     }
     if (/^https?:\/\//i.test(href)) {
       e.preventDefault();
-      window.open(href, "_blank", "noopener,noreferrer");
+      openUrl(href);
     }
   }
 
@@ -854,6 +855,7 @@
    *  final rotation reads the same after release as it did mid-drag. */
   export let grabXFrac = 0;
   export let grabYFrac = 0;
+  export let emojiScale = 1;
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
@@ -1406,6 +1408,7 @@
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <span
       class="sticky-emoji-glyph"
+      style="font-size: calc(10vw * {emojiScale})"
       on:mousedown={onMouseDownHeader}
       title="Drag to move"
     >{note.body}</span>

@@ -63,6 +63,7 @@
   import { iconFor } from "./icons";
   import { confirmDialog } from "./confirm-dialog";
   import { flip } from "svelte/animate";
+  import { openUrl } from "./open-url";
 
   export let path: string;
   export let repoId: string = "";
@@ -705,11 +706,7 @@
       });
       return;
     }
-    window.open(
-      (link as { url: string }).url,
-      "_blank",
-      "noopener,noreferrer",
-    );
+    openUrl((link as { url: string }).url);
   }
 
   /** Quick-delete path used by shift-click and right-click on a chip

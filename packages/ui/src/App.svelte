@@ -3,6 +3,7 @@
   import { flip } from "svelte/animate";
   import { DismissedSessionsStore, ExpandedStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
+  import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
@@ -3510,7 +3511,7 @@
 
   function openRemote(remote: RemoteRef) {
     if (!remote.webUrl) return;
-    window.open(remote.webUrl, "_blank", "noopener,noreferrer");
+    openUrl(remote.webUrl);
   }
 
   /** Toggle the persisted "is the source-control foldout open" flag for
@@ -4396,6 +4397,14 @@
       const inSticky = target?.closest(".sticky");
       if (!anchor && !inSticky) {
         notesListOpen = { ...notesListOpen, [key]: false };
+      }
+    }
+    // Close any open emoji picker the click landed outside of.
+    for (const key of Object.keys(emojiPickerOpen)) {
+      if (!emojiPickerOpen[key]) continue;
+      const anchor = target?.closest(`[data-emoji-picker-anchor="${CSS.escape(key)}"]`);
+      if (!anchor) {
+        emojiPickerOpen = { ...emojiPickerOpen, [key]: false };
       }
     }
     // Any open agents popovers that the click landed outside of: close them.
@@ -6077,7 +6086,7 @@
                   <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                 </svg>
               </button>
-              <span class="emoji-picker-anchor">
+              <span class="emoji-picker-anchor" data-emoji-picker-anchor={row.key}>
                 <button
                   class="new-wt notes-add notes-add-emoji"
                   title="Add an emoji sticker"

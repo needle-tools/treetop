@@ -17,6 +17,7 @@
   import AgentIcon from "./AgentIcon.svelte";
   import { requestSessionFocus } from "./session-focus-store";
   import { ICONS } from "./icons";
+  import { openUrl } from "./open-url";
 
   /** Which agent's popover is currently visible — either from hover
    *  (temporary) or from a click (pinned). Only one at a time. */
@@ -441,7 +442,7 @@
   function openUsagePage(agent: string): void {
     const url = usageUrl(agent);
     if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
+    openUrl(url);
   }
 
   function errorHint(e: OAuthUsageError | CodexUsageError): string {
