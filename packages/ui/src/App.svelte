@@ -5137,9 +5137,7 @@
         <Popover variant="actions" extraClass="tuis-popover">
           <svelte:fragment slot="head">
             Processes
-            {#if tuisLoading}
-              <span class="popover-spinner" aria-label="loading" title="refreshing"></span>
-            {/if}
+            <span class="popover-spinner" class:popover-spinner-hidden={!tuisLoading} aria-label="loading" title="refreshing"></span>
           </svelte:fragment>
           {#if !tuisEverLoaded}
             <p class="muted small nopad">Loading…</p>
