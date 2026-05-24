@@ -285,7 +285,7 @@
     overflow-x: hidden;
     min-height: 0;
     max-height: 50vh;
-    overscroll-behavior: contain;
+    overscroll-behavior-y: contain;
   }
   .gh-status {
     padding: 1rem;
