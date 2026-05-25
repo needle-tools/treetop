@@ -46,6 +46,9 @@
     /** ISO timestamp of the session's most recent activity. Drives
      *  the "5 minutes ago" segment in the hover label. */
     lastActive?: string;
+    /** User + assistant turns in the last ~4 hours. Drives the
+     *  "hot session" activity badge in the dock label. */
+    recentMessageCount?: number;
     /** JSONL path the dock fetches on hover to render the last few
      *  user/assistant messages as a side preview. Undefined ⇒ no
      *  preview (shells, fresh `__new__:` columns). */
@@ -434,6 +437,22 @@
     if (s < 172800) return "yesterday";
     return `${Math.floor(s / 86400)} days ago`;
   }
+
+  /** Minimum recent-message count before we show the activity badge.
+   *  Below this the session isn't "hot" enough to badge. */
+  const RECENT_MIN = 5;
+  /** Only show badges for the top entries (above the 75th percentile
+   *  of all recent counts). Avoids badging every session when all
+   *  have similar low activity. */
+  $: recentThreshold = (() => {
+    const counts = entries
+      .map((e) => e.recentMessageCount ?? 0)
+      .filter((c) => c >= RECENT_MIN)
+      .sort((a, b) => b - a);
+    if (counts.length === 0) return Infinity;
+    const p75 = counts[Math.floor(counts.length * 0.25)] ?? RECENT_MIN;
+    return Math.max(RECENT_MIN, p75);
+  })();
 </script>
 
 {#if entries.length > 0}
@@ -506,6 +525,11 @@
           {#if freshestTimestamp(e)}
             <span class="dock-label-time">{relTime(freshestTimestamp(e))}</span>
           {/if}
+          <span class="dock-label-activity">
+            {#if (e.recentMessageCount ?? 0) >= recentThreshold}
+              <span class="dock-activity-badge" title="{e.recentMessageCount} messages in the last 4h">{e.recentMessageCount}</span>
+            {/if}
+          </span>
         </span>
       </button>
     {/each}
@@ -826,6 +850,23 @@
        row's time aligns in the same vertical column. */
     margin-left: auto;
     padding-left: 1em;
+  }
+  /* Fixed-width cell that always reserves space so the time column
+     doesn't shift when the badge appears/disappears on hover
+     refresh. The badge itself only renders for "hot" sessions. */
+  .dock-label-activity {
+    display: inline-block;
+    width: 2.4em;
+    text-align: right;
+    vertical-align: baseline;
+    flex: 0 0 auto;
+  }
+  .dock-activity-badge {
+    font-size: 0.62rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--brand, #60b74c);
+    padding: 0 0.25em;
   }
   .dock-label-title {
     display: inline-block;

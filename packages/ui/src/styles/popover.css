@@ -444,6 +444,44 @@
   font-weight: 400;
   font-size: 0.72rem;
 }
+.import-search-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+.import-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: inherit;
+  outline: none;
+  box-shadow: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.import-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+.import-search-input::placeholder {
+  color: inherit;
+  opacity: 1;
+}
+.import-search-input:placeholder-shown {
+  caret-color: transparent;
+}
+.import-search-count {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
 .import-list {
   list-style: none;
   padding: 0;

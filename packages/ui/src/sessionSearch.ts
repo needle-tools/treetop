@@ -28,6 +28,7 @@ export interface AgentSession {
   lastUserMessages?: string[];
   userMessageCount?: number;
   messageCount?: number;
+  recentMessageCount?: number;
   contextTokens?: number;
   contextTokensExact?: boolean;
   model?: string;

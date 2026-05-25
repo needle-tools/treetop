@@ -295,6 +295,7 @@ describe("scanClaudeUserMessages", () => {
       lastUserMessages: [],
       userMessageCount: 0,
       totalMessageCount: 0,
+      recentMessageCount: 0,
     });
   });
 

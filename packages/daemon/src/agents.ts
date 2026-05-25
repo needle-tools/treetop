@@ -54,6 +54,9 @@ export interface AgentSession {
    *  Codex. Surfaced as a cell in the agents popover so the user can
    *  tell at a glance how much conversation each session contains. */
   messageCount?: number;
+  /** User + assistant turns with timestamps in the last 4 hours.
+   *  Rough activity indicator for the dock's "hot session" badge. */
+  recentMessageCount?: number;
   /** Estimated tokens currently in the agent's context window before
    *  the next prompt. For Claude this is exact (last assistant turn's
    *  `usage.input + cache_read + cache_creation`). For Codex 0.130+
@@ -381,6 +384,11 @@ interface ClaudeUserScanResult {
   /** `message.model` from the same most-recent-usage assistant turn.
    *  The UI uses this to pick a context-window cap (200k vs 1M). */
   model?: string;
+  /** User + assistant turns whose `timestamp` falls within the last
+   *  RECENT_WINDOW_MS. Rough activity indicator — the count is fresh
+   *  whenever the JSONL changes (active sessions) but goes stale for
+   *  idle sessions whose file hasn't been touched since the last scan. */
+  recentMessageCount: number;
 }
 
 /** (path, mtimeMs) → previous scan result. JSONL session files don't change
@@ -418,6 +426,11 @@ export function clearClaudeUserScanCache(): void {
   claudeUserScanCache.clear();
 }
 
+/** Messages within this window from scan-time count toward
+ *  `recentMessageCount`. 4 hours matches the dock's "recent activity"
+ *  indicator granularity. */
+const RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;
+
 /** Parse JSONL lines and update a running ClaudeUserScanResult in
  *  place. Shared by the full-scan, tail-scan, and incremental paths. */
 function ingestUserScanLines(
@@ -425,6 +438,7 @@ function ingestUserScanLines(
   result: ClaudeUserScanResult,
   countLines: boolean,
 ): void {
+  const recentCutoff = Date.now() - RECENT_WINDOW_MS;
   for (const line of lines.split("\n")) {
     if (!line) continue;
     if (
@@ -440,7 +454,17 @@ function ingestUserScanLines(
     } catch {
       continue;
     }
+    // Recent-message counter: bump for any user/assistant turn whose
+    // timestamp falls within the window. Checked before the
+    // tool-result / isMeta filters so pure tool-result entries
+    // (which aren't real user turns) still count for the "raw
+    // throughput" indicator. isMeta records aren't counted because
+    // they're system-injected, not user activity.
+    const isRecent =
+      typeof obj.timestamp === "string" &&
+      Date.parse(obj.timestamp) >= recentCutoff;
     if (obj.type === "user") {
+      if (obj.isMeta === true) continue;
       const msg = obj.message as { content?: unknown } | undefined;
       const content = msg?.content;
       const isToolResultOnly = (() => {
@@ -455,6 +479,7 @@ function ingestUserScanLines(
       })();
       if (isToolResultOnly) continue;
       if (countLines) result.totalMessageCount++;
+      if (isRecent) result.recentMessageCount++;
       const raw = firstTextFromMessageContent(content);
       if (!raw) continue;
       const cleaned = cleanForTitle(raw);
@@ -466,6 +491,7 @@ function ingestUserScanLines(
       if (countLines) result.userMessageCount++;
     } else if (obj.type === "assistant") {
       if (countLines) result.totalMessageCount++;
+      if (isRecent) result.recentMessageCount++;
       const msg = obj.message as
         | { model?: unknown; usage?: unknown }
         | undefined;
@@ -529,6 +555,7 @@ async function processBackgroundScans(): Promise<void> {
           lastUserMessages: [],
           userMessageCount: 0,
           totalMessageCount: 0,
+          recentMessageCount: 0,
         };
         ingestUserScanLines(content, result, true);
         const entry: UserScanCacheEntry = {
@@ -596,6 +623,7 @@ export async function scanClaudeUserMessages(
     lastUserMessages: [],
     userMessageCount: 0,
     totalMessageCount: 0,
+    recentMessageCount: 0,
   };
   if (tailText) {
     ingestUserScanLines(tailText, result, isSmall);
@@ -852,6 +880,9 @@ async function claudeSessionFromFile(
       : undefined,
     messageCount: userStats.totalMessageCount > 0
       ? userStats.totalMessageCount
+      : undefined,
+    recentMessageCount: userStats.recentMessageCount > 0
+      ? userStats.recentMessageCount
       : undefined,
     contextTokens: userStats.lastContextTokens,
     contextTokensExact:
