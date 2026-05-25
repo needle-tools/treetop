@@ -39,11 +39,30 @@ async function stopExisting(): Promise<void> {
   //    to /api/shutdown), which can include our own PID. We once
   //    SIGKILL'd ourselves that way. We also explicitly exclude our own
   //    PID and our parent's PID as a second line of defence.
-  if (process.platform !== "win32") {
+  const self = String(process.pid);
+  const parent = String(process.ppid);
+  let pids: string[] = [];
+
+  if (process.platform === "win32") {
+    const result = await $`netstat -ano`.quiet().nothrow();
+    const seen = new Set<string>();
+    for (const line of result.stdout.toString().split("\n")) {
+      const m = line.match(/TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)/);
+      if (!m || m[1] !== port) continue;
+      const pid = m[2]!;
+      if (pid !== self && pid !== parent && pid !== "0") seen.add(pid);
+    }
+    pids = [...seen];
+    if (pids.length > 0) {
+      console.log(`supergit: port ${port} still held by ${pids.join(", ")} — killing`);
+      for (const pid of pids) {
+        await $`taskkill /F /PID ${pid}`.quiet().nothrow();
+      }
+      await Bun.sleep(300);
+    }
+  } else {
     const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`.quiet().nothrow();
-    const self = String(process.pid);
-    const parent = String(process.ppid);
-    const pids = result.stdout
+    pids = result.stdout
       .toString()
       .trim()
       .split("\n")
@@ -53,7 +72,6 @@ async function stopExisting(): Promise<void> {
       for (const pid of pids) {
         await $`kill -9 ${pid}`.quiet().nothrow();
       }
-      // Kernel needs a moment to release the socket after SIGKILL.
       await Bun.sleep(300);
     }
   }
