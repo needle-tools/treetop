@@ -501,11 +501,18 @@
     resizeObs.observe(containerEl);
 
     // WKWebView doesn't always fire ResizeObserver during fullscreen
-    // transitions. A window resize listener catches those.
+    // transitions. A window resize listener catches those. Same
+    // dimension gate as the ResizeObserver to avoid spurious resize
+    // events that make TUI apps redraw and duplicate output.
     const onWindowResize = () => {
       if (!fit || !xterm || phase === "exited") return;
       if (!containerEl || containerEl.clientWidth === 0) return;
-      try { fit.fit(); } catch {}
+      const before = { cols: xterm.cols, rows: xterm.rows };
+      let proposed: { cols: number; rows: number } | undefined;
+      try { proposed = fit.proposeDimensions(); } catch { return; }
+      if (!proposed) return;
+      if (proposed.cols === before.cols && proposed.rows === before.rows) return;
+      try { fit.fit(); } catch { return; }
       sendResize();
     };
     window.addEventListener("resize", onWindowResize);
