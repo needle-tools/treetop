@@ -243,6 +243,7 @@ export class NodePtyBackend implements PtyBackend {
             void cleanupZdotdir(t.zdotdir);
             t.zdotdir = undefined;
           }
+          this.scheduleForget(t.id);
         }
         this.helper = null;
         this.helperReady = null;
@@ -322,6 +323,7 @@ export class NodePtyBackend implements PtyBackend {
           void cleanupZdotdir(t.zdotdir);
           t.zdotdir = undefined;
         }
+        this.scheduleForget(evt.id as string);
         return;
       }
       case "error": {
@@ -417,6 +419,7 @@ export class NodePtyBackend implements PtyBackend {
       t.exitedAt = new Date().toISOString();
       t.exitCode = 1;
       t.lastError = e instanceof Error ? e.message : String(e);
+      this.scheduleForget(id);
       if (t.zdotdir) void cleanupZdotdir(t.zdotdir);
       throw e;
     }
@@ -517,10 +520,15 @@ export class NodePtyBackend implements PtyBackend {
     }));
   }
 
-  /** Removes a terminated terminal from the in-memory map. Called by the
-   *  daemon after dispatching the exit event. */
+  /** Removes a terminated terminal from the in-memory map. */
   forget(id: string) {
     this.terms.delete(id);
+  }
+
+  /** Schedule auto-removal of a dead terminal after a grace period so
+   *  the UI has time to read the exit status before it disappears. */
+  private scheduleForget(id: string, delayMs = 30_000) {
+    setTimeout(() => this.forget(id), delayMs);
   }
 
   async shutdown() {
