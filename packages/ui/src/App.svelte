@@ -2783,16 +2783,14 @@
         onManifest: (skel) => {
           tManifest = performance.now() - tStart;
           console.log(`[load] manifest after ${tManifest.toFixed(0)}ms (${skel.length} repos)`);
-          // First load: paint skeletons so the user sees structure
-          // immediately. Subsequent reloads: keep already-rendered
-          // rows in place and just sync add/remove from the manifest
-          // — replacing with skeletons would collapse worktrees to
-          // empty for a frame and flicker the whole dashboard.
+          const filtered = pendingRemoval.size > 0
+            ? skel.filter((s) => !pendingRemoval.has(s.id))
+            : skel;
           if (repos.length === 0) {
-            repos = skel;
+            repos = filtered;
           } else {
             const existingById = new Map(repos.map((r) => [r.id, r]));
-            repos = skel.map((s) => existingById.get(s.id) ?? s);
+            repos = filtered.map((s) => existingById.get(s.id) ?? s);
           }
           loading = false;
         },
@@ -2805,6 +2803,7 @@
           // daemon's snapshot of `color` is stale (the POST hasn't
           // persisted yet). Preserve the optimistic local value so the
           // UI doesn't flicker back to the old color.
+          if (pendingRemoval.has(full.id)) return;
           if (pendingRepoColor.has(full.id)) {
             const pending = pendingRepoColor.get(full.id);
             if (pending === null) delete (full as { color?: string }).color;
@@ -2815,8 +2814,6 @@
             const next = repos.slice();
             next[idx] = full;
             repos = next;
-          } else {
-            repos = [...repos, full];
           }
         },
       });
@@ -3136,6 +3133,12 @@
    *  preserves the local optimistic color for repos it contains. */
   const pendingRepoColor = new Map<string, string | null>();
 
+  /** Repo IDs whose DELETE is in flight. Stale NDJSON streams (started
+   *  before the deletion) would otherwise re-inject the removed repo via
+   *  onManifest / onRepo because singleFlight coalesces the post-delete
+   *  load() with the pre-delete one. Same guard pattern as pendingRepoColor. */
+  const pendingRemoval = new Set<string>();
+
   /** Push a new accent colour for the given repo to the daemon. The
    *  optimistic local mutation here is just for snappy UI; the SSE
    *  `change → repo_color` broadcast triggers a full /api/repos
@@ -3400,12 +3403,16 @@
 
   async function removeRepo(id: string) {
     error = "";
+    pendingRemoval.add(id);
+    repos = repos.filter((r) => r.id !== id);
     try {
       const res = await fetch(`/api/repos/${id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      pendingRemoval.delete(id);
     }
   }
 
