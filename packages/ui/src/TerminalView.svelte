@@ -6,6 +6,20 @@
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
+  import { cleanSelection } from "./clean-selection";
+
+  function getCleanedSelection(term: Terminal): string {
+    const raw = term.getSelection();
+    if (!raw) return "";
+    const sel = term.getSelectionPosition();
+    if (!sel) return raw;
+    const buf = term.buffer.active;
+    return cleanSelection(raw, (lineIndex) => {
+      const bufY = sel.start.y + lineIndex;
+      const line = buf.getLine(bufY);
+      return line?.isWrapped ?? false;
+    });
+  }
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
   export let cmd: string[];
@@ -407,7 +421,7 @@
         if (ev.code === "KeyC" && xterm?.hasSelection()) {
           ev.preventDefault();
           ev.stopPropagation();
-          const sel = xterm.getSelection();
+          const sel = getCleanedSelection(xterm);
           if (sel) void navigator.clipboard?.writeText(sel).catch(() => {});
           return;
         }
@@ -440,7 +454,7 @@
       }
       if (ev.code === "KeyC" && xterm?.hasSelection()) {
         ev.preventDefault();
-        const sel = xterm.getSelection();
+        const sel = getCleanedSelection(xterm);
         if (sel) {
           void navigator.clipboard?.writeText(sel).catch(() => {});
         }
