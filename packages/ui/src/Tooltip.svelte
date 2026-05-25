@@ -15,7 +15,7 @@
 </script>
 
 <script lang="ts">
-  import { setContext } from "svelte";
+  import { getContext, setContext } from "svelte";
   /** A lightweight hover tooltip: wraps a trigger and shows a popover
    *  with rich content (slot) after a brief mouseover delay. Doesn't
    *  attempt full positioning intelligence — anchored under the
@@ -165,14 +165,20 @@
     }
   }
 
-  // Expose hover control to descendants. A nested popup that
-  // portal's itself to <body> calls cancelHide() on its own
-  // mouseenter so this Tooltip doesn't auto-close while the user
-  // is interacting with the nested popup. scheduleHide on the
-  // nested mouseleave so this Tooltip closes at the same time.
+  const parentCtx = getContext<TooltipHoverCtx | undefined>(TOOLTIP_HOVER_CTX);
+
+  function popupEnter() {
+    cancelHide();
+    parentCtx?.cancelHide();
+  }
+  function popupLeave() {
+    stop();
+    parentCtx?.scheduleHide();
+  }
+
   setContext<TooltipHoverCtx>(TOOLTIP_HOVER_CTX, {
-    cancelHide,
-    scheduleHide: stop,
+    cancelHide() { cancelHide(); parentCtx?.cancelHide(); },
+    scheduleHide() { stop(); parentCtx?.scheduleHide(); },
   });
 </script>
 
@@ -200,8 +206,8 @@
         class="tt tt-{placement} tt-{variant} tt-portal"
         role="tooltip"
         use:portal
-        on:mouseenter={cancelHide}
-        on:mouseleave={stop}
+        on:mouseenter={popupEnter}
+        on:mouseleave={popupLeave}
       >
         <slot name="content" />
       </div>
@@ -209,8 +215,8 @@
       <div
         class="tt tt-{placement} tt-{variant}"
         role="tooltip"
-        on:mouseenter={cancelHide}
-        on:mouseleave={stop}
+        on:mouseenter={popupEnter}
+        on:mouseleave={popupLeave}
       >
         <slot name="content" />
       </div>
