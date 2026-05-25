@@ -1855,8 +1855,6 @@
     text-align: left;
     cursor: pointer;
     border: 0;
-    max-height: none;
-    overflow: visible;
   }
   .pinned-summary:hover {
     background: rgba(26, 26, 27, 0.95);
@@ -2016,7 +2014,7 @@
   }
   .messages {
     list-style: none;
-    padding: 0.4rem 0.5rem;
+    padding: 1.6rem 0.5rem 0.4rem;
     margin: 0;
     max-height: 50vh;
     overflow: auto;
