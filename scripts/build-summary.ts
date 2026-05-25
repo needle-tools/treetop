@@ -56,8 +56,11 @@ for (const [label, path] of Object.entries(paths)) {
   }
 }
 
+// Open / focus the output directory so the user can grab the installer.
 if (paths.app && existsSync(paths.app)) {
   console.log(`\n  open ${paths.app}\n`);
+  await $`open -R ${paths.app}`.nothrow().quiet();
 } else if (isWin && paths.setup && existsSync(paths.setup)) {
-  console.log(`\n  Run the installer:  ${paths.setup}\n`);
+  console.log(`\n  Opening:  ${paths.setup}\n`);
+  await $`explorer /select,${paths.setup}`.nothrow().quiet();
 }
