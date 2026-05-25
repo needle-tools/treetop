@@ -16,10 +16,18 @@ import { spawnSync, spawn } from "node:child_process";
 
 const PORT = 27787;
 const DAEMON_URL = `http://localhost:${PORT}`;
+const isWin = process.platform === "win32";
+const exe = isWin ? ".exe" : "";
 
 // ── Resolve user's login PATH ────────────────────────────────────────
+// On mac/linux, a .app bundle launched from Finder gets a minimal system
+// PATH (no Homebrew, no asdf, no /usr/local/bin extras). Shell out to a
+// login shell to pick up the user's real PATH so spawned tools (git,
+// claude, codex, node, etc.) resolve. On Windows the launcher inherits
+// the user's environment normally, so this is a no-op.
 
 function resolveLoginPath(): string | null {
+  if (isWin) return null;
   const shell = process.env.SHELL || "/bin/zsh";
   try {
     const result = spawnSync(shell, ["-l", "-c", "echo $PATH"], {
@@ -80,13 +88,24 @@ let daemonProc: ReturnType<typeof spawn> | null = null;
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return;
 
-  // Find the bundled daemon binary. Electrobun puts copied files in
-  // Contents/Resources/app/ — process.execPath is Contents/MacOS/bun.
+  // Find the bundled daemon binary. Layout differs per platform:
+  //   macOS:   process.execPath = …/Contents/MacOS/bun
+  //            copied files at  …/Contents/Resources/app/
+  //   Windows: process.execPath = …/Supergit/bin/launcher.exe
+  //            copied files at  …/Supergit/Resources/app.asar.unpacked/
+  //            (because electrobun.config.ts adds them to asarUnpack)
+  // We list every plausible path and use the first that exists.
+  const execDir = dirname(process.execPath);
+  const binName = `supergit${exe}`;
   const candidates = [
-    // Electrobun bundle (both dev and stable after extraction)
-    resolve(dirname(process.execPath), "..", "Resources", "app", "supergit"),
+    // macOS bundle
+    resolve(execDir, "..", "Resources", "app", binName),
+    // Windows bundle — asar-unpacked (entry kept its `app/` prefix)
+    resolve(execDir, "..", "Resources", "app.asar.unpacked", "app", binName),
+    // Windows bundle — asar-unpacked (entry stored at root)
+    resolve(execDir, "..", "Resources", "app.asar.unpacked", binName),
     // Flat native build (fallback for development)
-    resolve(process.cwd(), "build", "supergit-native", "supergit"),
+    resolve(process.cwd(), "build", "supergit-native", binName),
   ];
 
   let binary: string | null = null;
@@ -162,9 +181,13 @@ function saveBounds(bounds: WindowBounds): void {
 // ── Main ─────────────────────────────────────────────────────────────
 
 if (!gitAvailable()) {
-  console.error(
-    "git is not installed. Install Xcode Command Line Tools:\n  xcode-select --install",
-  );
+  if (isWin) {
+    console.error("git is not installed. Install from https://git-scm.com/download/win");
+  } else {
+    console.error(
+      "git is not installed. Install Xcode Command Line Tools:\n  xcode-select --install",
+    );
+  }
   process.exit(1);
 }
 

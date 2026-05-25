@@ -10,17 +10,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
 
-	"github.com/creack/pty"
+	"github.com/aymanbagabas/go-pty"
 )
 
 type term struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd *pty.Cmd
+	pty pty.Pty
 }
 
 var (
@@ -136,7 +135,22 @@ func handleSpawn(msg map[string]any) {
 		args[i] = fmt.Sprint(a)
 	}
 
-	cmd := exec.Command(args[0], args[1:]...)
+	// go-pty requires that we create the PTY first, then spawn through
+	// p.Command(...) — on Windows the ConPTY pseudoconsole has to be
+	// attached as a process attribute at CreateProcess time, which
+	// stdlib's os/exec can't do. Same code path works on unix too.
+	p, err := pty.New()
+	if err != nil {
+		fail("pty create failed: "+err.Error(), id)
+		return
+	}
+	if err := p.Resize(cols, rows); err != nil {
+		_ = p.Close()
+		fail("pty resize failed: "+err.Error(), id)
+		return
+	}
+
+	cmd := p.Command(args[0], args[1:]...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -152,14 +166,13 @@ func handleSpawn(msg map[string]any) {
 	merged := mergeEnv(base, extra)
 	cmd.Env = merged
 
-	winSize := &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}
-	ptmx, err := pty.StartWithSize(cmd, winSize)
-	if err != nil {
+	if err := cmd.Start(); err != nil {
+		_ = p.Close()
 		fail("spawn failed: "+err.Error(), id)
 		return
 	}
 
-	t := &term{cmd: cmd, ptmx: ptmx}
+	t := &term{cmd: cmd, pty: p}
 	termsMu.Lock()
 	terms[id] = t
 	termsMu.Unlock()
@@ -175,13 +188,13 @@ func handleSpawn(msg map[string]any) {
 	go func() {
 		state, _ := cmd.Process.Wait()
 		exitCh <- state
-		ptmx.Close()
+		p.Close()
 	}()
 
 	go func() {
 		buf := make([]byte, 16384)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := p.Read(buf)
 			if n > 0 {
 				emit(map[string]any{
 					"ev":      "data",
@@ -204,10 +217,8 @@ func handleSpawn(msg map[string]any) {
 		termsMu.Unlock()
 
 		ev := map[string]any{"ev": "exit", "id": id, "code": code}
-		if state != nil {
-			if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-				ev["signal"] = ws.Signal().String()
-			}
+		if sig := exitSignal(state); sig != "" {
+			ev["signal"] = sig
 		}
 		emit(ev)
 	}()
@@ -226,7 +237,7 @@ func handleWrite(msg map[string]any) {
 		fail("write: bad base64: "+err.Error(), id)
 		return
 	}
-	if _, err := t.ptmx.Write(data); err != nil {
+	if _, err := t.pty.Write(data); err != nil {
 		fail("write failed: "+err.Error(), id)
 	}
 }
@@ -241,7 +252,7 @@ func handleResize(msg map[string]any) {
 	}
 	cols := intOr(msg["cols"], 80)
 	rows := intOr(msg["rows"], 24)
-	_ = pty.Setsize(t.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	_ = t.pty.Resize(cols, rows)
 }
 
 func handleKill(msg map[string]any) {
@@ -252,19 +263,30 @@ func handleKill(msg map[string]any) {
 	if t == nil {
 		return
 	}
-	sig := syscall.SIGTERM
-	if s, ok := msg["signal"].(string); ok && s == "SIGKILL" {
-		sig = syscall.SIGKILL
-	}
-	_ = t.cmd.Process.Signal(sig)
+	killTerm(t, msg["signal"])
 }
 
 func killAll() {
 	termsMu.Lock()
 	defer termsMu.Unlock()
 	for _, t := range terms {
-		_ = t.cmd.Process.Signal(syscall.SIGTERM)
+		killTerm(t, nil)
 	}
+}
+
+// killTerm sends SIGTERM/SIGKILL on unix; on Windows, where neither
+// signal exists, it falls back to Process.Kill() (terminate). `sigArg`
+// is the raw value from the JSONL "signal" field — accepted strings
+// are "SIGTERM" (default) and "SIGKILL"; anything else maps to TERM.
+func killTerm(t *term, sigArg any) {
+	if t == nil || t.cmd == nil || t.cmd.Process == nil {
+		return
+	}
+	wantKill := false
+	if s, ok := sigArg.(string); ok && s == "SIGKILL" {
+		wantKill = true
+	}
+	sendSignal(t, wantKill)
 }
 
 func intOr(v any, fallback int) int {
