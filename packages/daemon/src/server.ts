@@ -3,6 +3,7 @@ import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "no
 import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile, readFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
+import { repairAllClaudeJson } from "./claude-json-repair";
 import {
   listWorktrees,
   getWorktreeDetails,
@@ -5864,6 +5865,19 @@ await reconcileWorktreeWatchers();
 console.log(
   `supergit daemon: watching ${worktreeWatchers.size} worktree(s) for FS changes`,
 );
+
+// Check for corrupted .claude.json files in all monitored repos.
+// Windows hard-kills Claude Code PTYs on shutdown, which can leave
+// .claude.json mid-write (double JSON, trailing garbage).
+{
+  const repos = await workspace.listRepos();
+  const repairs = await repairAllClaudeJson(repos.map((r) => r.path));
+  for (const r of repairs) {
+    console.log(
+      `supergit daemon: repaired corrupted .claude.json in ${r.repoPath} (backup: ${r.backupPath})`,
+    );
+  }
+}
 
 if (FETCH_INTERVAL_MS > 0) {
   // Kick off shortly after startup so the dashboard doesn't show stale
