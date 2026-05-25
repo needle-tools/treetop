@@ -114,9 +114,11 @@
 }
 .fb-git-tooltip {
   max-width: min(72ch, 90vw);
+}
+.fb-git-tooltip .diff {
   max-height: 40vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  border: none;
+  border-radius: 0;
   overscroll-behavior: contain;
 }
 .fb-folder-stats {
@@ -171,9 +173,11 @@
 }
 .fb-stat-diff-popup {
   max-width: min(72ch, 90vw);
+}
+.fb-stat-diff-popup .diff {
   max-height: 30vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  border: none;
+  border-radius: 0;
   overscroll-behavior: contain;
 }
 .fb-git-diff {
