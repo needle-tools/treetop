@@ -2837,6 +2837,18 @@
   let importSuggestions: FolderSuggestion[] = [];
   let importLoading = false;
   let importError = "";
+  let importQuery = "";
+  $: importFiltered = (() => {
+    const q = importQuery.trim().toLowerCase();
+    if (!q) return importSuggestions;
+    return importSuggestions.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.path.toLowerCase().includes(q) ||
+        (s.repoUrl && s.repoUrl.toLowerCase().includes(q)) ||
+        s.agents.some((a) => a.toLowerCase().includes(q)),
+    );
+  })();
   /** Paths currently being added — prevents double-clicks from spamming
    *  the daemon and lets the row render a spinner while the request is
    *  in flight. */
@@ -2882,6 +2894,7 @@
         importFlipUp =
           rect.top + rect.height / 2 > window.innerHeight / 2;
       }
+      importQuery = "";
       void openImportSessions();
     }
   }
@@ -4321,6 +4334,7 @@
               newSessionTitles[s.source],
             lastUserMessage: meta?.lastUserMessage,
             lastActive: meta?.lastActive,
+            recentMessageCount: meta?.recentMessageCount,
             transcriptSource:
               meta?.source && !meta.source.startsWith("__") ? meta.source : undefined,
             // Shells emit output continuously (log tails, dev-server
@@ -4748,6 +4762,13 @@
     // fires Esc against fullscreen before document keydown ever sees it.
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
+        const el = document.activeElement as HTMLElement | null;
+        const inInput =
+          el?.tagName === "INPUT" ||
+          el?.tagName === "TEXTAREA" ||
+          el?.isContentEditable ||
+          !!el?.closest(".xterm");
+        if (inInput) return;
         const wtPath = zenRowKey.split("|").slice(1).join("|");
         zenRowKey = null;
         notesShownInZen = false;
@@ -5191,10 +5212,21 @@
           {#if importSessionsOpen}
             <Popover variant="actions" extraClass="import-sessions-popover">
               <svelte:fragment slot="head">
-                <strong>Folders from detected sessions</strong>
-                <span class="muted small">
-                  Pick a folder you've already been working in with an AI agent.
-                </span>
+                <div class="import-search-head">
+                  <input
+                    type="search"
+                    class="import-search-input"
+                    bind:value={importQuery}
+                    placeholder="Folders from detected sessions"
+                    aria-label="Filter folders from detected sessions"
+                    use:focusOnMount
+                    on:click|stopPropagation
+                    on:keydown|stopPropagation
+                  />
+                  {#if importQuery.trim()}
+                    <span class="import-search-count">{importFiltered.length}/{importSuggestions.length}</span>
+                  {/if}
+                </div>
               </svelte:fragment>
               {#if importLoading}
                 <div class="import-empty">
@@ -5203,14 +5235,18 @@
                 </div>
               {:else if importError}
                 <div class="import-empty import-error">{importError}</div>
-              {:else if importSuggestions.length === 0}
+              {:else if importFiltered.length === 0}
                 <div class="import-empty muted">
-                  No new folders to suggest — every detected session's cwd is
-                  already in the dashboard.
+                  {#if importQuery.trim()}
+                    No folders match.
+                  {:else}
+                    No new folders to suggest — every detected session's cwd is
+                    already in the dashboard.
+                  {/if}
                 </div>
               {:else}
                 <ul class="import-list">
-                  {#each importSuggestions as sug (sug.path)}
+                  {#each importFiltered as sug (sug.path)}
                     {@const busy = importAdding.has(sug.path)}
                     <li>
                       <button
@@ -6896,10 +6932,21 @@
           {#if importSessionsOpen}
             <Popover variant="actions" extraClass="import-sessions-popover">
               <svelte:fragment slot="head">
-                <strong>Folders from detected sessions</strong>
-                <span class="muted small">
-                  Pick a folder you've already been working in with an AI agent.
-                </span>
+                <div class="import-search-head">
+                  <input
+                    type="search"
+                    class="import-search-input"
+                    bind:value={importQuery}
+                    placeholder="Folders from detected sessions"
+                    aria-label="Filter folders from detected sessions"
+                    use:focusOnMount
+                    on:click|stopPropagation
+                    on:keydown|stopPropagation
+                  />
+                  {#if importQuery.trim()}
+                    <span class="import-search-count">{importFiltered.length}/{importSuggestions.length}</span>
+                  {/if}
+                </div>
               </svelte:fragment>
               {#if importLoading}
                 <div class="import-empty">
@@ -6908,14 +6955,18 @@
                 </div>
               {:else if importError}
                 <div class="import-empty import-error">{importError}</div>
-              {:else if importSuggestions.length === 0}
+              {:else if importFiltered.length === 0}
                 <div class="import-empty muted">
-                  No new folders to suggest — every detected session's cwd is
-                  already in the dashboard.
+                  {#if importQuery.trim()}
+                    No folders match.
+                  {:else}
+                    No new folders to suggest — every detected session's cwd is
+                    already in the dashboard.
+                  {/if}
                 </div>
               {:else}
                 <ul class="import-list">
-                  {#each importSuggestions as sug (sug.path)}
+                  {#each importFiltered as sug (sug.path)}
                     {@const busy = importAdding.has(sug.path)}
                     <li>
                       <button
