@@ -71,6 +71,7 @@
   export let remotes: RemoteRef[] = [];
   export let customLinks: CustomLink[] = [];
   export let runningCommandIds: ReadonlySet<string> = new Set();
+  export let commandUrls: Record<string, string> = {};
   export let onCommandClick: ((link: CustomLink) => void) | null = null;
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
@@ -1058,6 +1059,7 @@
     {@const kind = customLinkKind(link)}
     {@const target = customLinkTarget(link)}
     {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
+    {@const cmdUrl = kind === "command" ? commandUrls[link.id] : undefined}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -1157,6 +1159,21 @@
           <span>{label}</span>
         {/if}
       </button>
+      {#if cmdUrl}
+        <button
+          type="button"
+          class="cmd-url-btn"
+          title={`Open ${cmdUrl}`}
+          aria-label={`Open ${cmdUrl}`}
+          on:click|stopPropagation={() => window.open(cmdUrl, "_blank", "noopener,noreferrer")}
+        >
+          <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </svg>
+        </button>
+      {/if}
       {#if onEditCustomLink && !iconOnly}
         <!-- Edit pencil — hover-revealed on the wrap. Opens a popover
              with URL + Label fields and a Delete button (confirmed via
@@ -1756,5 +1773,30 @@
   }
   @keyframes cmd-spin {
     to { transform: rotate(360deg); }
+  }
+  .cmd-url-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: var(--brand, #4a9);
+    cursor: pointer;
+    border-radius: 3px;
+    margin-left: -2px;
+    transition: background 0.12s;
+  }
+  .cmd-url-btn:hover {
+    background: color-mix(in srgb, var(--brand, #4a9) 15%, transparent);
+  }
+  .cmd-url-btn svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 </style>

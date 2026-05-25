@@ -183,6 +183,41 @@ interface RunningCommand {
 }
 const runningCommands = new Map<string, RunningCommand>();
 
+const commandDetectedUrls = new Map<string, string>();
+
+const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/;
+
+function detectCommandUrl(
+  handle: { subscribe: (sub: { onData: (chunk: Uint8Array) => void; onExit: () => void }) => () => void; id: string },
+  linkId: string,
+  repoId: string,
+): void {
+  const decoder = new TextDecoder();
+  let buf = "";
+  const timeout = setTimeout(() => { unsub(); }, 120_000);
+  const unsub = handle.subscribe({
+    onData(chunk: Uint8Array) {
+      if (commandDetectedUrls.has(linkId)) return;
+      buf += decoder.decode(chunk, { stream: true });
+      // Strip ANSI escape sequences before matching
+      const clean = buf.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+      const m = URL_RE.exec(clean);
+      if (m) {
+        const url = m[0].replace(/[.,;:]+$/, "");
+        commandDetectedUrls.set(linkId, url);
+        broadcast("change", { kind: "command_url", linkId, repoId, url });
+        clearTimeout(timeout);
+        unsub();
+      }
+      // Keep buffer bounded
+      if (buf.length > 8192) buf = buf.slice(-4096);
+    },
+    onExit() {
+      clearTimeout(timeout);
+    },
+  });
+}
+
 /** Reused by every /api/session* route to keep ?source= from being
  *  an arbitrary file-read. Returns the agent kind (claude/codex/
  *  ollama) when the path lives under a known agent root, null
@@ -3993,12 +4028,13 @@ const server = Bun.serve<TermWsData, never>({
 
       if (runMode === "internal") {
         try {
-          const shell = process.env.SHELL || "/bin/zsh";
           const handle = await terminalBackend.spawn({
-            cmd: [shell, "-l", "-c", cmdLink.cmd],
+            cmd: ["sh", "-c", cmdLink.cmd],
             cwd,
             size: { cols: 120, rows: 30 },
           });
+          // Scan PTY output for localhost/LAN URLs for up to 2 minutes
+          detectCommandUrl(handle, linkId, repoId);
           return json({ ok: true, mode: "internal", termId: handle.id, pid: handle.pid });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
@@ -4069,6 +4105,12 @@ const server = Bun.serve<TermWsData, never>({
         cmd: e.cmd,
       }));
       return json({ running: list });
+    }
+
+    if (url.pathname === "/api/commands/urls" && req.method === "GET") {
+      const urls: Record<string, string> = {};
+      for (const [k, v] of commandDetectedUrls) urls[k] = v;
+      return json({ urls });
     }
 
     if (url.pathname === "/api/favicon" && req.method === "GET") {
