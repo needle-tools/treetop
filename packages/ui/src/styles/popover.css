@@ -357,11 +357,13 @@
   color: var(--error-text);
   background: var(--error-bg);
 }
-.agent-dot.agent-external {
-  background: var(--text-muted);
-  opacity: 0.6;
+.tuis-popover .proc-warm {
+  color: var(--chip-orange-text);
 }
-.brand-external .agent-row-name {
+.tuis-popover .proc-hot {
+  color: var(--error-text);
+}
+.tuis-popover .proc-icon {
   color: var(--text-muted);
 }
 

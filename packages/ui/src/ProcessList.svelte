@@ -265,9 +265,13 @@
             {@const ctx = procContext(p)}
             {@const source = p.kind !== "external" ? procSource(p) : null}
             {@const isExternal = p.kind === "external"}
+            {@const procWarm = p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT}
+            {@const procHot = p.memBytes > hotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT}
             <li>
               <div
-                class="agent-row brand-{isExternal ? 'external' : (p.agent ?? 'shell')} tui-row-static"
+                class="agent-row tui-row-static"
+                class:proc-warm={procWarm && !procHot}
+                class:proc-hot={procHot}
                 class:tui-row-focusable={source !== null}
                 role={source !== null ? "button" : undefined}
                 tabindex={source !== null ? 0 : -1}
@@ -284,16 +288,16 @@
                     ? "Click to jump to this session in its worktree strip"
                     : undefined}
               >
-                {#if isExternal}
-                  <span class="agent-dot agent-external"></span>
-                {:else if p.agent === "claude"}
+                {#if p.agent === "claude"}
                   <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
                 {:else if p.agent === "codex"}
                   <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
                 {:else if p.agent === "ollama"}
                   <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
                 {:else}
-                  <span class="agent-dot agent-{p.agent ?? 'shell'}"></span>
+                  <svg class="agent-row-icon proc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 17l5-5-5-5" /><path d="M11 19h8" />
+                  </svg>
                 {/if}
                 <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyName(p)}</span>
                 {#if ctx.repoName}
