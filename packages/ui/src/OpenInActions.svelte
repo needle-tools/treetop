@@ -1167,7 +1167,7 @@
             on:click|stopPropagation={() => openUrl(cmdUrl)}
             on:keydown={(e) => { if (e.key === "Enter") openUrl(cmdUrl); }}
           >
-            <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
               <polyline points="15 3 21 3 21 9" />
               <line x1="10" y1="14" x2="21" y2="3" />
@@ -1532,7 +1532,7 @@
   .custom-link-edit {
     position: absolute;
     top: -8px;
-    right: -8px;
+    right: -11px;
     width: 22px;
     height: 22px;
     border: none;
@@ -1780,7 +1780,7 @@
     align-items: center;
     justify-content: center;
     padding: 1px 2px;
-    margin-left: 2px;
+    margin-left: 0;
     border-radius: 2px;
     color: var(--text-muted);
     cursor: pointer;
