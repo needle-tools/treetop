@@ -1112,10 +1112,15 @@ export async function scanCodex(
       rootExists = false;
     }
     if (!rootExists) continue;
+    const tScan = performance.now();
     const files = await collectCodexSessionFiles(root);
+    const tCollect = performance.now() - tScan;
     const sessions: AgentSession[] = [];
+    let slowestFile = "";
+    let slowestMs = 0;
     for (const sessionPath of files) {
       try {
+        const tFile = performance.now();
         const stats = await stat(sessionPath);
         const mt = stats.mtimeMs;
         const meta = await readCodexSessionMeta(sessionPath, mt);
@@ -1134,6 +1139,8 @@ export async function scanCodex(
             contextTokensExact = false;
           }
         }
+        const fileMs = performance.now() - tFile;
+        if (fileMs > slowestMs) { slowestMs = fileMs; slowestFile = sessionPath; }
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
@@ -1149,6 +1156,14 @@ export async function scanCodex(
       } catch {
         // skip
       }
+    }
+    const totalMs = performance.now() - tScan;
+    if (totalMs > 500) {
+      console.log(
+        `supergit daemon: scanCodex ${totalMs.toFixed(0)}ms — ` +
+        `collect=${tCollect.toFixed(0)}ms files=${files.length} sessions=${sessions.length}` +
+        (slowestFile ? ` slowest=${slowestMs.toFixed(0)}ms ${slowestFile.split("/").pop()}` : "")
+      );
     }
     return sessions;
   }
@@ -1373,6 +1388,7 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
 }
 
 export async function detectAgents(workspacePath?: string): Promise<AgentSession[]> {
+  const t0 = performance.now();
   const [claude, codex, copilot, ollama, imported] = await Promise.all([
     scanClaude().catch(() => []),
     scanCodex().catch(() => []),
@@ -1384,6 +1400,14 @@ export async function detectAgents(workspacePath?: string): Promise<AgentSession
       ? scanImported(workspacePath).catch(() => [])
       : Promise.resolve([] as AgentSession[]),
   ]);
+  const elapsed = performance.now() - t0;
+  if (elapsed > 500) {
+    console.log(
+      `supergit daemon: detectAgents ${elapsed.toFixed(0)}ms — ` +
+      `claude=${claude.length} codex=${codex.length} copilot=${copilot.length} ` +
+      `ollama=${ollama.length} imported=${imported.length}`
+    );
+  }
   // Imported claude sessions live under `~/.claude/projects/...` and so
   // also show up in `scanClaude` results. Dedupe by source: keep the
   // native entry (richer stats) and attach the sidecar's

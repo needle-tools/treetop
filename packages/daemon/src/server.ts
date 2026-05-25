@@ -780,31 +780,45 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
       const perWorktreeMs: { wt: string; ms: number }[] = [];
       try {
         const tPrelude = performance.now();
-        const [repos, agents, titles] = await Promise.all([
-          workspace.listRepos(),
-          cachedDetectAgents(),
-          workspace.listSessionTitles(),
-        ]);
-        const titled = agents.map((s) =>
-          titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-        );
+        // Flush the manifest as soon as repos are listed — don't wait
+        // for agent detection. The UI renders skeleton rows immediately.
+        const repos = await workspace.listRepos();
         tManifest = performance.now() - tPrelude;
         safeEnqueue(enc.encode(manifestLineFor(repos)));
 
+        // Agent detection + titles run in parallel with repo enrichment.
+        // The git operations (listWorktrees, getWorktreeDetails) overlap
+        // with agent scanning so the total wall time is max(git, agents)
+        // instead of git + agents.
+        const tAgentsStart = performance.now();
+        const titledP = Promise.all([
+          cachedDetectAgents(),
+          workspace.listSessionTitles(),
+        ]).then(([agents, titles]) => {
+          const agentsMs = performance.now() - tAgentsStart;
+          if (agentsMs > 200) {
+            console.log(`supergit daemon: agents=${agentsMs.toFixed(0)}ms (${agents.length} sessions)`);
+          }
+          return agents.map((s) =>
+            titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+          );
+        });
+
         const enriched: EnrichedRepo[] = [];
         tEnrichStart = performance.now();
-        // Each repo enriches in parallel; we flush its line the moment
-        // it resolves rather than waiting for the slowest one. Failed
-        // repos still emit an entry so the UI's skeleton doesn't dangle
-        // forever — they just carry an empty worktrees array.
         await Promise.all(
           repos.map(async (repo) => {
             const tRepo = performance.now();
             let result: EnrichedRepo;
             try {
-              const [worktrees, remotes] = await Promise.all([
-                listWorktrees(repo.path),
-                listRemotes(repo.path),
+              // Git ops + agent detection run concurrently. Await
+              // agents only after git finishes so the overlap is real.
+              const [[worktrees, remotes], titled] = await Promise.all([
+                Promise.all([
+                  listWorktrees(repo.path),
+                  listRemotes(repo.path),
+                ]),
+                titledP,
               ]);
               const withDetails = await Promise.all(
                 worktrees.map(async (wt) => {
@@ -827,9 +841,6 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
               );
               result = { ...repo, worktrees: withDetails, remotes } as EnrichedRepo;
             } catch {
-              // Repo path is gone, permissions broken, etc. Emit a
-              // shell record so the row still renders (the user can
-              // remove or recover it from the UI).
               result = { ...repo, worktrees: [], remotes: [] } as EnrichedRepo;
             }
             perRepoMs.set(repo.id, performance.now() - tRepo);
@@ -837,6 +848,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
             safeEnqueue(enc.encode(repoLineFor(result)));
           }),
         );
+        const agentsMs = performance.now() - tAgentsStart;
 
         // Stable ordering for the cached array so cache-hit replays
         // match the workspace.listRepos() order. The streaming path
@@ -855,7 +867,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
         console.log(
           `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
-          `prelude=${tManifest.toFixed(0)}ms (listRepos+detectAgents+titles) ` +
+          `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${agents.length}) ` +
           `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
           (slowestRepo ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms` : "") +
           (slowestWt ? ` slowestWt=${slowestWt.wt}:${slowestWt.ms.toFixed(0)}ms` : "")
