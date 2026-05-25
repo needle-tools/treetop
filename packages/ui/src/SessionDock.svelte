@@ -863,12 +863,16 @@
     flex: 0 0 auto;
   }
   .dock-activity-badge {
-    font-size: 0.62rem;
+    font-size: 0.58rem;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     color: var(--text-1, #e8e8e8);
-    opacity: 0.7;
-    padding: 0 0.25em;
+    background: color-mix(in oklch, var(--text-1, #e8e8e8) 12%, transparent);
+    border: 1px solid color-mix(in oklch, var(--text-1, #e8e8e8) 18%, transparent);
+    border-radius: var(--radius-sm, 4px);
+    padding: 0.1em 0.35em;
+    line-height: 1;
+    opacity: 0.75;
   }
   .dock-label-title {
     display: inline-block;
