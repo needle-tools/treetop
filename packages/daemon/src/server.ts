@@ -5017,13 +5017,15 @@ const server = Bun.serve<TermWsData, never>({
             await notes.remove(inv.note.id);
           } else if (original.type === "remove_note") {
             const inv = original.inverse as {
-              note: { id: string; body: string; anchors: string[]; tags: string[] };
+              note: { id: string; body: string; anchors: string[]; tags: string[]; kind?: AttachmentKind; target?: import("./notes").LinkTarget };
             };
             await notes.create({
               id: inv.note.id,
               body: inv.note.body,
               anchors: inv.note.anchors,
               tags: inv.note.tags,
+              kind: inv.note.kind,
+              target: inv.note.target,
             });
           } else {
             return json(
@@ -5052,13 +5054,15 @@ const server = Bun.serve<TermWsData, never>({
             await workspace.renameRepo(p.id, p.newName);
           } else if (original.type === "create_note") {
             const inv = original.inverse as {
-              note: { id: string; body: string; anchors: string[]; tags: string[] };
+              note: { id: string; body: string; anchors: string[]; tags: string[]; kind?: AttachmentKind; target?: import("./notes").LinkTarget };
             };
             await notes.create({
               id: inv.note.id,
               body: inv.note.body,
               anchors: inv.note.anchors,
               tags: inv.note.tags,
+              kind: inv.note.kind,
+              target: inv.note.target,
             });
           } else if (original.type === "remove_note") {
             const inv = original.inverse as { note: { id: string } };
