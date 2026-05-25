@@ -4345,6 +4345,25 @@ const server = Bun.serve<TermWsData, never>({
       }
     }
 
+    // GET /api/npm-scripts?dir=<abs-path> — read package.json scripts
+    if (url.pathname === "/api/npm-scripts" && req.method === "GET") {
+      const dir = url.searchParams.get("dir");
+      if (!dir || typeof dir !== "string") {
+        return json({ scripts: [] });
+      }
+      try {
+        const pkgPath = join(dir, "package.json");
+        const raw = await Bun.file(pkgPath).text();
+        const pkg = JSON.parse(raw);
+        const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts !== null
+          ? Object.keys(pkg.scripts)
+          : [];
+        return json({ scripts });
+      } catch {
+        return json({ scripts: [] });
+      }
+    }
+
     // ── Command execution routes ──────────────────────────────────
     // POST /api/command/run   — spawn a command-kind custom link
     // POST /api/command/stop  — SIGTERM → 2s grace → SIGKILL

@@ -208,6 +208,58 @@
   let urlInput: HTMLInputElement | undefined;
   let anchorEl: HTMLSpanElement | undefined;
 
+  // npm script autocomplete
+  let npmScripts: string[] = [];
+  let npmScriptsDir = "";
+  let showSuggestions = false;
+  let selectedSuggestionIdx = -1;
+  let suggestionsEl: HTMLUListElement | undefined;
+
+  async function fetchNpmScripts(dir: string) {
+    if (!dir || dir === npmScriptsDir) return;
+    npmScriptsDir = dir;
+    try {
+      const res = await fetch(`/api/npm-scripts?dir=${encodeURIComponent(dir)}`);
+      if (!res.ok) { npmScripts = []; return; }
+      const body = await res.json() as { scripts?: string[] };
+      npmScripts = body.scripts ?? [];
+    } catch {
+      npmScripts = [];
+    }
+  }
+
+  function effectiveCwd(cwd: string): string {
+    return cwd.trim() || path;
+  }
+
+  $: if (addOpen && newKind === "command") {
+    void fetchNpmScripts(effectiveCwd(newCwd));
+  }
+  $: if (editingLinkId && editKind === "command") {
+    void fetchNpmScripts(effectiveCwd(editCwd));
+  }
+
+  function filteredSuggestions(cmd: string, scripts: string[]): string[] {
+    if (scripts.length === 0) return [];
+    const trimmed = cmd.trimStart();
+    const npmRunPrefix = /^npm\s+run(\s+(\S*))?$/i;
+    const m = trimmed.match(npmRunPrefix);
+    if (!m) return [];
+    const typed = m[2] ?? "";
+    const matches = typed
+      ? scripts.filter(s => s.toLowerCase().startsWith(typed.toLowerCase()))
+      : scripts;
+    if (matches.length === 1 && matches[0] === typed) return [];
+    return matches.map(s => `npm run ${s}`);
+  }
+
+  $: addSuggestions = filteredSuggestions(newCmd, npmScripts);
+  $: editSuggestions = filteredSuggestions(editCmd, npmScripts);
+  let addSuggestions: string[] = [];
+  let editSuggestions: string[] = [];
+  let showEditSuggestions = false;
+  let selectedEditSuggestionIdx = -1;
+
   /** Per-link edit popover. Only one link can be in edit mode at a
    *  time — opening one closes any other. Anchor refs live in a map
    *  so the outside-click handler can scope its `contains()` check to
@@ -388,6 +440,7 @@
   function toggleAdd() {
     addOpen = !addOpen;
     if (addOpen) {
+      npmScriptsDir = "";
       const draft = readDraft();
       newKind = draft.kind ?? readLastKind();
       newUrl = draft.url ?? "";
@@ -910,17 +963,55 @@
             {#if newKind === "command"}
               <label class="custom-link-field">
                 <span class="custom-link-label">Command</span>
-                <input
-                  bind:this={urlInput}
-                  class="custom-link-input"
-                  type="text"
-                  placeholder="npm run dev"
-                  bind:value={newCmd}
-                  disabled={adding}
-                  on:keydown={(e) => {
-                    if (e.key === "Enter") submitAdd();
-                  }}
-                />
+                <div class="custom-link-suggest-wrap">
+                  <input
+                    bind:this={urlInput}
+                    class="custom-link-input"
+                    type="text"
+                    placeholder="npm run dev"
+                    bind:value={newCmd}
+                    disabled={adding}
+                    autocomplete="off"
+                    on:focus={() => { showSuggestions = true; selectedSuggestionIdx = -1; }}
+                    on:blur={() => { setTimeout(() => { showSuggestions = false; }, 150); }}
+                    on:input={() => { showSuggestions = true; selectedSuggestionIdx = -1; }}
+                    on:keydown={(e) => {
+                      if (showSuggestions && addSuggestions.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          selectedSuggestionIdx = (selectedSuggestionIdx + 1) % addSuggestions.length;
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          selectedSuggestionIdx = selectedSuggestionIdx <= 0 ? addSuggestions.length - 1 : selectedSuggestionIdx - 1;
+                          return;
+                        }
+                        if ((e.key === "Tab" || e.key === "Enter") && selectedSuggestionIdx >= 0) {
+                          e.preventDefault();
+                          newCmd = addSuggestions[selectedSuggestionIdx];
+                          showSuggestions = false;
+                          if (e.key === "Enter") submitAdd();
+                          return;
+                        }
+                      }
+                      if (e.key === "Escape") { showSuggestions = false; return; }
+                      if (e.key === "Enter") submitAdd();
+                    }}
+                  />
+                  {#if showSuggestions && addSuggestions.length > 0}
+                    <ul class="cmd-suggestions" bind:this={suggestionsEl}>
+                      {#each addSuggestions as s, i}
+                        <li
+                          class="cmd-suggestion"
+                          class:active={i === selectedSuggestionIdx}
+                          on:mousedown|preventDefault={() => { newCmd = s; showSuggestions = false; }}
+                          on:mouseenter={() => { selectedSuggestionIdx = i; }}
+                        >{s}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
               </label>
               <label class="custom-link-field">
                 <span class="custom-link-label">Working directory <span class="muted">(optional — defaults to repo dir)</span></span>
@@ -1265,16 +1356,54 @@
             {#if editKind === "command"}
               <label class="custom-link-field">
                 <span class="custom-link-label">Command</span>
-                <input
-                  bind:this={editUrlInput}
-                  class="custom-link-input"
-                  type="text"
-                  bind:value={editCmd}
-                  disabled={editing}
-                  on:keydown={(e) => {
-                    if (e.key === "Enter") submitEdit();
-                  }}
-                />
+                <div class="custom-link-suggest-wrap">
+                  <input
+                    bind:this={editUrlInput}
+                    class="custom-link-input"
+                    type="text"
+                    bind:value={editCmd}
+                    disabled={editing}
+                    autocomplete="off"
+                    on:focus={() => { showEditSuggestions = true; selectedEditSuggestionIdx = -1; }}
+                    on:blur={() => { setTimeout(() => { showEditSuggestions = false; }, 150); }}
+                    on:input={() => { showEditSuggestions = true; selectedEditSuggestionIdx = -1; }}
+                    on:keydown={(e) => {
+                      if (showEditSuggestions && editSuggestions.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          selectedEditSuggestionIdx = (selectedEditSuggestionIdx + 1) % editSuggestions.length;
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          selectedEditSuggestionIdx = selectedEditSuggestionIdx <= 0 ? editSuggestions.length - 1 : selectedEditSuggestionIdx - 1;
+                          return;
+                        }
+                        if ((e.key === "Tab" || e.key === "Enter") && selectedEditSuggestionIdx >= 0) {
+                          e.preventDefault();
+                          editCmd = editSuggestions[selectedEditSuggestionIdx];
+                          showEditSuggestions = false;
+                          if (e.key === "Enter") submitEdit();
+                          return;
+                        }
+                      }
+                      if (e.key === "Escape") { showEditSuggestions = false; return; }
+                      if (e.key === "Enter") submitEdit();
+                    }}
+                  />
+                  {#if showEditSuggestions && editSuggestions.length > 0}
+                    <ul class="cmd-suggestions">
+                      {#each editSuggestions as s, i}
+                        <li
+                          class="cmd-suggestion"
+                          class:active={i === selectedEditSuggestionIdx}
+                          on:mousedown|preventDefault={() => { editCmd = s; showEditSuggestions = false; }}
+                          on:mouseenter={() => { selectedEditSuggestionIdx = i; }}
+                        >{s}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
               </label>
               <label class="custom-link-field">
                 <span class="custom-link-label">Working directory <span class="muted">(optional)</span></span>
@@ -1795,5 +1924,38 @@
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+  .custom-link-suggest-wrap {
+    position: relative;
+  }
+  .cmd-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    margin: 2px 0 0;
+    padding: 3px 0;
+    list-style: none;
+    background: var(--bg-2, #1e1e1e);
+    border: 1px solid var(--border, #444);
+    border-radius: 4px;
+    max-height: 160px;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  .cmd-suggestion {
+    padding: 3px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-2, #ccc);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cmd-suggestion:hover,
+  .cmd-suggestion.active {
+    background: var(--accent, #2563eb);
+    color: #fff;
   }
 </style>
