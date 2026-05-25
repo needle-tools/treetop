@@ -799,7 +799,7 @@ button.branch-button:hover {
 }
 .status-badge-sync {
   background: transparent;
-  color: var(--text-muted);
+  color: var(--status-clean);
   outline: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
   outline-offset: -1px;
   cursor: default;
@@ -808,6 +808,10 @@ button.branch-button:hover {
   width: 0.72rem;
   height: 0.72rem;
   display: block;
+  /* Match the text-content height of sibling badges (font-size 0.78rem
+     × line-height 1.3 ≈ 1.014rem). Without this the icon-only badge
+     renders shorter than ↑N / ~N siblings. */
+  min-height: calc(0.78rem * 1.3);
 }
 
 /* ------------------------------------------------------------------
