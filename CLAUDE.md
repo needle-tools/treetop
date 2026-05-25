@@ -157,11 +157,17 @@ into every Vite/dev-server PTY supergit spawns, and Vite reads
 `process.env.PORT` with `strictPort: true` → refuses to start because
 "port already in use." Keep the scrub.
 
-### Debug endpoint
+### Debug endpoints
 
 `/api/debug/mem` returns `process.memoryUsage()`. `?gc=1` runs a sync
 full GC first and reports before+after — useful when triaging "is RSS
 high because of live data or V8 reservation?".
+
+`/api/peers?diag=1` appends mDNS discovery health to the normal peer
+list response. Returns `{ peers: [...], discovery: { enabled, interfaceAddress,
+port, initError, platform } }`. Use this to check whether bonjour
+initialized, which interface multicast is pinned to, and any swallowed
+init error — without tailing daemon logs.
 
 ## UI styles
 

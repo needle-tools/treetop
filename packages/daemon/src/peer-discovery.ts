@@ -66,6 +66,7 @@ export class PeerDiscovery {
    *  bonjour init failed (logged separately) so the UI could surface
    *  "mDNS unavailable" later if we want. */
   enabled = false;
+  private initError: string | null = null;
   readonly registry: PeerRegistry;
 
   constructor(private opts: DiscoveryOpts) {
@@ -198,10 +199,9 @@ export class PeerDiscovery {
         void this.runHealthCheck();
       }, 30_000);
     } catch (e) {
+      this.initError = e instanceof Error ? e.message : String(e);
       console.error(
-        `supergit daemon: mDNS discovery disabled (${process.platform}) — ${
-          e instanceof Error ? e.message : String(e)
-        }`,
+        `supergit daemon: mDNS discovery disabled (${process.platform}) — ${this.initError}`,
       );
     }
   }
@@ -268,6 +268,22 @@ export class PeerDiscovery {
 
   peers(): Peer[] {
     return this.registry.peers();
+  }
+
+  diagnostics(): {
+    enabled: boolean;
+    interfaceAddress: string | null;
+    port: number;
+    initError: string | null;
+    platform: string;
+  } {
+    return {
+      enabled: this.enabled,
+      interfaceAddress: this.opts.interfaceAddress ?? null,
+      port: this.opts.port,
+      initError: this.initError,
+      platform: process.platform,
+    };
   }
 
   private onUp(svc: ServiceType): void {
