@@ -153,7 +153,7 @@ const DAEMON_BUILD_TIME: string | undefined = process.env.SUPERGIT_BUILD_TIME ||
 // SUPERGIT_PROCESS_TITLE wins if set (handy for one-off runs).
 process.title =
   process.env.SUPERGIT_PROCESS_TITLE ??
-  (UI_DIR ? "supergit prod" : "supergit dev");
+  (UI_DIR ? "supergit-daemon" : "supergit-daemon dev");
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
