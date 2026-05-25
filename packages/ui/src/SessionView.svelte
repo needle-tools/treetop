@@ -1870,7 +1870,7 @@
     border: 0;
   }
   .pinned-summary:hover {
-    background: rgba(26, 26, 27, 0.95);
+    background: rgb(32, 32, 33);
   }
   .pinned-last-msg {
     /* Intrinsic text width, capped so a long message stays compact
@@ -1878,15 +1878,7 @@
     max-width: 50%;
     box-sizing: border-box;
     padding: 0.25rem 0.6rem;
-    /* Pill on the TUI's own background colour at 60% opacity —
-       matches the terminal underneath so the pill reads as a
-       translucent overlay rather than a contrasting chip. Soft
-       30%-alpha text-muted outline gives the edge enough definition
-       to read against either dark TUI content or empty terminal
-       space. Backdrop blur further softens the text behind. */
-    background: rgba(26, 26, 27, 0.85);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgb(26, 26, 27);
     border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
     border-radius: var(--radius-sm);
     color: var(--text-2);
@@ -2363,9 +2355,7 @@
     max-width: 50%;
     box-sizing: border-box;
     padding: 0.3rem 2rem 0.3rem 0.6rem;
-    background: rgba(26, 26, 27, 0.85);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgb(26, 26, 27);
     border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
     border-radius: var(--radius-sm);
     font-size: 0.74rem;
