@@ -6647,18 +6647,24 @@
                   on:click={() => startOnboarding(wt.path)}
                 >Retry</button>
               {:else if walkthroughByWt[wt.path] == null}
-                <button
-                  class="onboarding-btn"
-                  disabled={ob?.status === "loading"}
-                  on:click={() => startOnboarding(wt.path)}
-                >
-                  {#if ob?.status === "loading"}
-                    <LoadingSpinner size="0.8rem" />
-                    <span>Finding a provider…</span>
-                  {:else}
-                    Get Started
-                  {/if}
-                </button>
+                <div class="onboarding-cta-row">
+                  <button
+                    class="onboarding-btn"
+                    on:click={() => {
+                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: 0 };
+                    }}
+                  >Tour the UI</button>
+                  <button
+                    class="walkthrough-btn-skip"
+                    on:click={() => {
+                      newlyAddedRepoPaths.delete(wt.path);
+                      newlyAddedRepoPaths.delete(repo.path);
+                      markWalkthroughSeen(wt.path);
+                      delete onboardingByWt[wt.path];
+                      onboardingByWt = onboardingByWt;
+                    }}
+                  >Skip</button>
+                </div>
               {/if}
               {#if walkthroughByWt[wt.path] != null}
                 <OnboardingWalkthrough
