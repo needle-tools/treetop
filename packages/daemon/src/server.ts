@@ -5472,6 +5472,9 @@ const shutdown = async (signal: string) => {
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopActivity();
+    // De-advertise from mDNS so other peers drop us immediately
+    // instead of waiting for the TTL to expire (~60s).
+    await peerDiscovery?.stop().catch(() => {});
     await server.stop(true);
   } catch (err) {
     console.log(`supergit daemon: shutdown error: ${(err as Error).message}`);
