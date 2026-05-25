@@ -75,6 +75,30 @@ describe("decodeUsage", () => {
     expect(out.fiveHour).toBeUndefined();
     expect(out.sevenDay?.utilization).toBe(0.5);
   });
+
+  test("resets_at as unix timestamp (number) is converted to ISO", () => {
+    const raw = {
+      five_hour: { utilization: 10, resets_at: 1748311200 },
+    };
+    const out = _internal.decodeUsage(raw)!;
+    expect(out.fiveHour?.resetsAt).toBe(new Date(1748311200 * 1000).toISOString());
+  });
+
+  test("resets_at as bare ISO string without Z gets UTC suffix", () => {
+    const raw = {
+      five_hour: { utilization: 10, resets_at: "2026-05-27T02:00:00" },
+    };
+    const out = _internal.decodeUsage(raw)!;
+    expect(out.fiveHour?.resetsAt).toBe("2026-05-27T02:00:00Z");
+  });
+
+  test("resets_at as ISO string with Z is left as-is", () => {
+    const raw = {
+      five_hour: { utilization: 10, resets_at: "2026-05-27T02:00:00Z" },
+    };
+    const out = _internal.decodeUsage(raw)!;
+    expect(out.fiveHour?.resetsAt).toBe("2026-05-27T02:00:00Z");
+  });
 });
 
 describe("fetchClaudeOAuthUsage — injected fetcher", () => {

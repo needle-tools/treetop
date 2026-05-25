@@ -388,7 +388,26 @@ function decodeUsage(json: unknown): ClaudeOAuthUsage | null {
       const r = raw as Record<string, unknown>;
       const util = r.utilization;
       if (typeof util !== "number") continue;
-      const resetsAt = typeof r.resets_at === "string" ? r.resets_at : undefined;
+      // `resets_at` can arrive as an ISO string ("2026-05-27T02:00:00Z")
+      // OR a unix timestamp number (seconds since epoch). Normalize to
+      // an ISO string with explicit UTC suffix so the UI's Date.parse
+      // interprets it unambiguously regardless of browser timezone
+      // defaults. CodexBar's decoder handles the same ambiguity.
+      let resetsAt: string | undefined;
+      if (typeof r.resets_at === "number") {
+        resetsAt = new Date(r.resets_at * 1000).toISOString();
+      } else if (typeof r.resets_at === "string") {
+        // Ensure the string has a timezone — if it's bare like
+        // "2026-05-26T23:00:00" (no Z, no offset), Date.parse
+        // interprets it as local time in some engines and UTC in
+        // others. Append Z when no offset marker is present.
+        const s = r.resets_at;
+        if (/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/[Zz+\-]\d{0,4}$/.test(s)) {
+          resetsAt = s + "Z";
+        } else {
+          resetsAt = s;
+        }
+      }
       // Anthropic returns utilization as 0..100 (a percentage point,
       // not a fraction). Normalize here so every consumer can treat
       // `utilization` as 0..1 and the UI's "× 100 → %" is consistent
