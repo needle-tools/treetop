@@ -1632,7 +1632,7 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   border-radius: var(--radius-sm, 4px);
 }
 .walkthrough-btn-next:hover:not(:disabled) {
-  filter: brightness(0.9);
+  background: color-mix(in srgb, var(--brand, #5b9bf7) 80%, #000);
 }
 .walkthrough-btn-next:disabled {
   opacity: 0.5;

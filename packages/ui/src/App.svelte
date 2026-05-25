@@ -6646,7 +6646,7 @@
                   class="onboarding-btn"
                   on:click={() => startOnboarding(wt.path)}
                 >Retry</button>
-              {:else}
+              {:else if walkthroughByWt[wt.path] == null}
                 <button
                   class="onboarding-btn"
                   disabled={ob?.status === "loading"}

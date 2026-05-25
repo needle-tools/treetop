@@ -62,9 +62,12 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-wt-row="${CSS.escape(wt)}"] .notes-add-emoji`,
+      ) ??
+      document.querySelector<HTMLElement>(
+        `[data-wt-row="${CSS.escape(wt)}"] .notes-add`,
       ),
     message:
-      "Add an emoji sticker to mark a repo's status — ship it, WIP, on fire, whatever fits.",
+      "Add emoji stickers to mark a repo's status — ship it, WIP, on fire, whatever fits.",
     placement: "bottom",
   },
   {

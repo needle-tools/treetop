@@ -14,6 +14,26 @@
   let textVisible = false;
   let transitioning = false;
   let displayedStep = currentStep;
+  let typedText = "";
+  let typeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function stopTyping() {
+    if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
+  }
+
+  function typeOut(full: string): Promise<void> {
+    stopTyping();
+    typedText = "";
+    return new Promise<void>((resolve) => {
+      let i = 0;
+      function tick_() {
+        if (i >= full.length) { resolve(); return; }
+        typedText = full.slice(0, ++i);
+        typeTimer = setTimeout(tick_, 18);
+      }
+      tick_();
+    });
+  }
 
   function getTarget() {
     const step = WALKTHROUGH_STEPS[currentStep];
@@ -79,17 +99,18 @@
     positionHighlight(r);
     await wait(300);
 
-    // 2. show tooltip box (scale up from nothing)
+    // 2. show tooltip box (scale up)
     displayedStep = currentStep;
-    textVisible = false;
+    typedText = "";
+    textVisible = true;
     await tick();
     if (tooltipEl) {
       tooltipEl.classList.remove("walkthrough-hidden");
       tooltipEl.style.opacity = "0";
-      tooltipEl.style.transform = "scale(0.85)";
+      tooltipEl.style.transform = "scale(0.92)";
       positionTooltip(r);
       tooltipEl.style.opacity = "0";
-      tooltipEl.style.transform = "scale(0.85)";
+      tooltipEl.style.transform = "scale(0.92)";
     }
     await tick();
     await wait(30);
@@ -97,28 +118,23 @@
       tooltipEl.style.opacity = "1";
       tooltipEl.style.transform = "scale(1)";
     }
-    await wait(250);
+    await wait(200);
 
-    // 3. fade in text
-    textVisible = true;
+    // 3. typewrite the text
+    const step = WALKTHROUGH_STEPS[displayedStep];
+    if (step) await typeOut(step.message);
     transitioning = false;
   }
 
   async function animateTransition() {
     transitioning = true;
+    stopTyping();
 
-    // 1. fade out text
+    // 1. fade out text (tooltip box stays visible)
     textVisible = false;
     await wait(200);
 
-    // 2. shrink tooltip
-    if (tooltipEl) {
-      tooltipEl.style.opacity = "0";
-      tooltipEl.style.transform = "scale(0.85)";
-    }
-    await wait(200);
-
-    // 3. fly highlight + tooltip to new target
+    // 2. fly highlight + tooltip to new target
     const el = getTarget();
     if (!el) {
       targetMissing = true;
@@ -134,26 +150,16 @@
 
     const r = el.getBoundingClientRect();
     positionHighlight(r);
+    displayedStep = currentStep;
+    typedText = "";
+    textVisible = true;
+    await tick();
+    positionTooltip(r);
     await wait(350);
 
-    // 4. expand tooltip at new position
-    displayedStep = currentStep;
-    await tick();
-    if (tooltipEl) {
-      positionTooltip(r);
-      tooltipEl.style.opacity = "0";
-      tooltipEl.style.transform = "scale(0.85)";
-    }
-    await tick();
-    await wait(30);
-    if (tooltipEl) {
-      tooltipEl.style.opacity = "1";
-      tooltipEl.style.transform = "scale(1)";
-    }
-    await wait(250);
-
-    // 5. fade in text
-    textVisible = true;
+    // 3. typewrite the new text
+    const step = WALKTHROUGH_STEPS[displayedStep];
+    if (step) await typeOut(step.message);
     transitioning = false;
   }
 
@@ -178,6 +184,7 @@
   });
 
   onDestroy(() => {
+    stopTyping();
     window.removeEventListener("scroll", onScrollResize, true);
     window.removeEventListener("resize", onScrollResize);
     highlightEl?.remove();
@@ -198,7 +205,7 @@
     {#if targetMissing}
       Unfold the row to continue the tour.
     {:else}
-      <span class="walkthrough-emoji">{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span> {WALKTHROUGH_STEPS[displayedStep]?.message ?? ""}
+      <span class="walkthrough-emoji">{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span> {typedText}
     {/if}
   </div>
   <div class="walkthrough-tooltip-footer" class:walkthrough-text-visible={textVisible}>
