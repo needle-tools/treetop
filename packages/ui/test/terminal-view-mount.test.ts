@@ -119,7 +119,7 @@ describe("TerminalView clipboard copy + paste", () => {
     // (interrupt) — otherwise we'd silently break SIGINT in the TUI.
     expect(SOURCE).toMatch(/code\s*===\s*["']KeyC["']/);
     expect(SOURCE).toMatch(/xterm\??\.hasSelection\(\)/);
-    expect(SOURCE).toMatch(/xterm\.getSelection\(\)/);
+    expect(SOURCE).toMatch(/getCleanedSelection\(xterm\)/);
     expect(SOURCE).toContain("navigator.clipboard?.writeText");
   });
 
