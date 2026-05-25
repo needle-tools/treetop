@@ -1193,6 +1193,63 @@ describe("scanCodex", () => {
     expect(s.messageCount).toBe(7); // 4 user + 3 assistant (developer excluded)
   });
 
+  test("skips system-injected user messages for title (AGENTS.md, XML tags)", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-sysinjected-");
+    await writeFile(
+      join(root, "session.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "sys-test", cwd: "/proj" } }),
+        // System-injected "user" message (AGENTS.md instructions)
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /proj\n\n<INSTRUCTIONS>\nDo things\n</INSTRUCTIONS>" }] } }),
+        // System-injected "user" message (environment_context XML)
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>\nReal user prompt here" }] } }),
+        // Real user message
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the auth bug" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
+      ].join("\n"),
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0]!;
+    expect(s.title).toBe("Fix the auth bug");
+    expect(s.firstUserMessage).toBe("Fix the auth bug");
+  });
+
+  test("tags subagent sessions when multiple share a rollout timestamp", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-subagent-");
+    const dated = join(root, "2026", "04", "16");
+    await mkdir(dated, { recursive: true });
+    // Parent session (most messages)
+    await writeFile(
+      join(dated, "rollout-2026-04-16T13-29-16-parent-uuid.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "parent-uuid", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Build the feature" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "On it." }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Also add tests" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
+      ].join("\n"),
+    );
+    // Subagent session (fewer messages, same rollout timestamp)
+    await writeFile(
+      join(dated, "rollout-2026-04-16T13-29-16-sub-uuid.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "sub-uuid", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context><cwd>/proj</cwd></environment_context>" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Searched files." }] } }),
+      ].join("\n"),
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(2);
+    const parent = sessions.find((s) => s.sessionId === "parent-uuid")!;
+    const sub = sessions.find((s) => s.sessionId === "sub-uuid")!;
+    expect(parent.title).toBe("Build the feature");
+    // Subagent has no real user messages (all system-injected), gets tagged
+    expect(sub.title).toBe("subagent");
+  });
+
   test("pre-0.130 flat sessions also get title from first user message", async () => {
     clearCodexScanCache();
     const root = await tempDir("supergit-codex-flat-preview-");

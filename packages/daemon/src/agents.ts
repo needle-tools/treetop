@@ -790,7 +790,20 @@ async function ensureCodexScanCached(
   const MAX_LAST_USER = 3;
   const MSG_CAP = 200;
 
-  /** Extract a capped user-message text from a parsed line. */
+  /** True when the text looks like a Codex system-injected message
+   *  (AGENTS.md, environment_context, permissions) rather than a real
+   *  user prompt. These get role:"user" in the JSONL but shouldn't
+   *  surface as titles or previews. */
+  function isSystemInjected(text: string): boolean {
+    const t = text.trimStart();
+    if (t.startsWith("<")) return true;
+    if (t.startsWith("# AGENTS.md") || t.startsWith("# CLAUDE.md")) return true;
+    if (/^#\s+(Instructions|Context|System)\b/i.test(t)) return true;
+    return false;
+  }
+
+  /** Extract a capped user-message text from a parsed line, skipping
+   *  system-injected content that Codex wraps in role:"user". */
   function extractUserText(line: string): string | undefined {
     try {
       const obj = JSON.parse(line) as Record<string, unknown>;
@@ -801,7 +814,7 @@ async function ensureCodexScanCached(
           for (const block of p.content) {
             if (typeof block === "object" && block !== null) {
               const t = (block as { text?: unknown }).text;
-              if (typeof t === "string" && t.length > 0) {
+              if (typeof t === "string" && t.length > 0 && !isSystemInjected(t)) {
                 return t.length > MSG_CAP ? t.slice(0, MSG_CAP) + "…" : t;
               }
             }
@@ -809,7 +822,7 @@ async function ensureCodexScanCached(
         }
       }
       // Pre-0.130
-      if (obj.role === "user" && typeof obj.content === "string" && obj.content.length > 0) {
+      if (obj.role === "user" && typeof obj.content === "string" && obj.content.length > 0 && !isSystemInjected(obj.content)) {
         return obj.content.length > MSG_CAP ? obj.content.slice(0, MSG_CAP) + "…" : obj.content;
       }
     } catch { /* skip */ }
@@ -1220,6 +1233,27 @@ export async function scanCodex(
         `collect=${tCollect.toFixed(0)}ms files=${files.length} sessions=${sessions.length}` +
         (slowestFile ? ` slowest=${slowestMs.toFixed(0)}ms ${slowestFile.split("/").pop()}` : "")
       );
+    }
+    // Detect Codex subagent batches: multiple sessions sharing the
+    // same rollout timestamp were spawned together. Tag all but the
+    // largest (by messageCount) so the UI can show a "subagent" hint.
+    const rolloutRe = /rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-/;
+    const byRollout = new Map<string, AgentSession[]>();
+    for (const s of sessions) {
+      const m = rolloutRe.exec(s.source);
+      if (m) {
+        const arr = byRollout.get(m[1]!);
+        if (arr) arr.push(s);
+        else byRollout.set(m[1]!, [s]);
+      }
+    }
+    for (const group of byRollout.values()) {
+      if (group.length <= 1) continue;
+      group.sort((a, b) => (b.messageCount ?? 0) - (a.messageCount ?? 0));
+      for (let i = 1; i < group.length; i++) {
+        const s = group[i]!;
+        if (!s.title) s.title = "subagent";
+      }
     }
     return sessions;
   }
