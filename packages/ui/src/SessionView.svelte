@@ -427,16 +427,19 @@
       showSummarizeNotice("No Ollama model installed — click to install one.", "install");
       return;
     }
+    const isCloud = (n: string) => /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
     const remembered = localStorage.getItem("supergit:summarize:lastModel");
     let pick = "";
-    if (remembered && list.some((m) => m.name === remembered)) {
+    if (remembered && !isCloud(remembered) && list.some((m) => m.name === remembered)) {
       pick = remembered;
     } else if (list.some((m) => m.name === "llama3.2:3b")) {
       pick = "llama3.2:3b";
     } else {
       const usable = list.filter((m) => {
         const n = m.name.toLowerCase();
-        return !n.endsWith("-embed") && !n.endsWith(":embed");
+        if (n.endsWith("-embed") || n.endsWith(":embed")) return false;
+        if (isCloud(m.name)) return false;
+        return true;
       });
       usable.sort(
         (a, b) =>
