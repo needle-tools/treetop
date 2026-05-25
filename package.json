@@ -15,7 +15,8 @@
     "test:coverage": "bun test --coverage packages/",
     "build": "bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
     "build:native": "bun run scripts/build-native.ts",
-    "build:bun": "cd packages/ui && bun run build"
+    "build:bun": "cd packages/ui && bun run build",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "devDependencies": {
     "@types/bun": "latest",
