@@ -54,6 +54,8 @@ await mkdir(FLAT, { recursive: true });
 const binaryPath = join(FLAT, `supergit${exe}`);
 const buildTime = new Date().toISOString();
 await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
+// Write build-info.json so the Electrobun entry script knows our version.
+await writeFile(join(FLAT, "build-info.json"), JSON.stringify({ buildTime }));
 console.log("     ✓ Daemon binary compiled");
 
 // ── 3. Build Go PTY helper + copy support files ─────────────────────

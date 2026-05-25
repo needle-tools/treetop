@@ -112,16 +112,31 @@ async function shutdownDaemon(): Promise<void> {
   }
 }
 
+function loadMyBuildTime(): string | null {
+  // build-info.json is copied into the bundle by electrobun.config.ts
+  const execDir = dirname(process.execPath);
+  const candidates = [
+    resolve(execDir, "..", "Resources", "app", "build-info.json"),
+    resolve(process.cwd(), "build", "supergit-native", "build-info.json"),
+  ];
+  for (const p of candidates) {
+    try {
+      const raw = readFileSync(p, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.buildTime === "string") return parsed.buildTime;
+    } catch {}
+  }
+  return null;
+}
+
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) {
-    // Check if the running daemon is older than our bundled binary.
-    // SUPERGIT_BUILD_TIME is baked in at compile time by build-native.ts.
-    const myBuildTime = process.env.SUPERGIT_BUILD_TIME;
+    const myBuildTime = loadMyBuildTime();
     if (myBuildTime) {
       const remoteBuildTime = await getDaemonBuildTime();
       // No remote buildTime = dev daemon, assume newer. Only replace
       // when we can confirm the running daemon is strictly older.
-      if (remoteBuildTime && myBuildTime && remoteBuildTime < myBuildTime) {
+      if (remoteBuildTime && remoteBuildTime < myBuildTime) {
         console.log(
           `supergit: replacing older daemon (${remoteBuildTime}) with ${myBuildTime}`,
         );
@@ -131,7 +146,7 @@ async function ensureDaemon(): Promise<void> {
         return; // Running daemon is same age or newer
       }
     } else {
-      return; // Dev mode, no build time — reuse whatever's running
+      return; // Dev mode, no build-info.json — reuse whatever's running
     }
   }
 

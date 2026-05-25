@@ -42,6 +42,7 @@ export default {
       [`build/supergit-native/supergit${exe}`]: `supergit${exe}`,
       [`build/supergit-native/pty-helper${exe}`]: `pty-helper${exe}`,
       "build/supergit-native/ui": "ui",
+      "build/supergit-native/build-info.json": "build-info.json",
     },
   },
 };
