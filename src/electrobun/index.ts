@@ -306,38 +306,52 @@ const win = new BrowserWindow({
   frame: bounds,
 });
 
-// Set the window/taskbar icon on Windows via Win32 API. Electrobun
-// copies icon.ico to Resources/app.ico but never calls setWindowIcon,
-// so the taskbar shows the default bun icon. We load the ico directly
-// via LoadImage + SendMessage(WM_SETICON) using bun:ffi.
+// Windows: set taskbar icon + dark title bar via Win32 API.
+// Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,
+// so we do it ourselves via bun:ffi after the window is created.
 if (isWin) {
   try {
-    const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
-    if (existsSync(icoPath)) {
-      const user32 = dlopen("user32.dll", {
-        FindWindowW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-        SendMessageW: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-        LoadImageW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
-      });
-      const title16 = new Uint8Array(Buffer.from("Supergit\0", "utf-16le"));
-      const hwnd = user32.symbols.FindWindowW(null, ptr(title16));
-      if (hwnd) {
+    const user32 = dlopen("user32.dll", {
+      FindWindowW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+      SendMessageW: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+      LoadImageW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
+    });
+    const title16 = new Uint8Array(Buffer.from("Supergit\0", "utf-16le"));
+    const hwnd = user32.symbols.FindWindowW(null, ptr(title16));
+    if (hwnd) {
+      // ── Icon ──
+      const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
+      if (existsSync(icoPath)) {
         const ico16 = new Uint8Array(Buffer.from(icoPath + "\0", "utf-16le"));
-        const IMAGE_ICON = 1;
-        const LR_LOADFROMFILE = 0x0010;
-        const LR_DEFAULTSIZE = 0x0040;
-        const WM_SETICON = 0x0080;
-        const ICON_SMALL = 0;
-        const ICON_BIG = 1;
-        const hIcon = user32.symbols.LoadImageW(null, ptr(ico16), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+        const hIcon = user32.symbols.LoadImageW(null, ptr(ico16), 1, 0, 0, 0x0010 | 0x0040);
         if (hIcon) {
-          user32.symbols.SendMessageW(hwnd, WM_SETICON, ICON_SMALL as any, hIcon);
-          user32.symbols.SendMessageW(hwnd, WM_SETICON, ICON_BIG as any, hIcon);
+          user32.symbols.SendMessageW(hwnd, 0x0080, 0 as any, hIcon);
+          user32.symbols.SendMessageW(hwnd, 0x0080, 1 as any, hIcon);
         }
       }
+
+      // ── Dark title bar matching --surface-0: #23261d ──
+      // Uses DwmSetWindowAttribute with DWMWA_USE_IMMERSIVE_DARK_MODE (20),
+      // DWMWA_CAPTION_COLOR (35), and DWMWA_TEXT_COLOR (36).
+      // COLORREF is 0x00BBGGRR (little-endian BGR).
+      try {
+        const dwmapi = dlopen("dwmapi.dll", {
+          DwmSetWindowAttribute: {
+            args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32],
+            returns: FFIType.i32,
+          },
+        });
+        const setAttr = (attr: number, value: number) => {
+          const buf = new Uint32Array([value]);
+          dwmapi.symbols.DwmSetWindowAttribute(hwnd, attr, ptr(buf), 4);
+        };
+        setAttr(20, 1);          // DWMWA_USE_IMMERSIVE_DARK_MODE = true
+        setAttr(35, 0x001d2623); // DWMWA_CAPTION_COLOR = #23261d as BGR
+        setAttr(36, 0x00e8e8e8); // DWMWA_TEXT_COLOR = #e8e8e8 (--text-1)
+      } catch {}
     }
   } catch (e) {
-    console.warn("Failed to set window icon:", e);
+    console.warn("Failed to set window icon/style:", e);
   }
 }
 

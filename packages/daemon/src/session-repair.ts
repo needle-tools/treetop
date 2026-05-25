@@ -22,11 +22,24 @@ export interface BrokenLink {
   lineIndex: number;
 }
 
+export interface OrphanedTail {
+  /** 0-based line index where the orphaned region starts. */
+  startLineIndex: number;
+  /** Number of lines in the orphaned tail. */
+  lineCount: number;
+  /** messageCount before the drop (the last healthy turn). */
+  messageCountBefore: number;
+  /** messageCount after the drop (the first amnesiac turn). */
+  messageCountAfter: number;
+}
+
 export interface SessionDiagnosis {
   totalEntries: number;
   /** Entries with a uuid (chain participants). */
   chainEntries: number;
   brokenLinks: BrokenLink[];
+  /** Post-break messages where the model had severely reduced context. */
+  orphanedTail: OrphanedTail | null;
 }
 
 export interface RepairResult {
@@ -36,6 +49,8 @@ export interface RepairResult {
   backupPath: string;
   /** Details of each repair. */
   repairs: BrokenLink[];
+  /** Number of orphaned tail lines trimmed. */
+  trimmedLines: number;
 }
 
 /**
@@ -83,10 +98,71 @@ export function diagnoseClaudeSession(text: string): SessionDiagnosis {
     }
   }
 
+  // Detect orphaned tails: sequences of messages after a dramatic
+  // messageCount drop in turn_duration entries. These are messages
+  // generated while the chain was broken and the model had amnesia.
+  let orphanedTail: OrphanedTail | null = null;
+  const turnDurations: Array<{ lineIndex: number; messageCount: number }> =
+    [];
+  for (let i = 0; i < lines.length; i++) {
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(lines[i]!) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (
+      obj.type === "system" &&
+      obj.subtype === "turn_duration" &&
+      typeof obj.messageCount === "number"
+    ) {
+      turnDurations.push({ lineIndex: i, messageCount: obj.messageCount });
+    }
+  }
+  for (let i = 1; i < turnDurations.length; i++) {
+    const prev = turnDurations[i - 1]!;
+    const curr = turnDurations[i]!;
+    // A drop of >80% in messageCount signals the model lost its context.
+    if (
+      prev.messageCount > 50 &&
+      curr.messageCount < prev.messageCount * 0.2
+    ) {
+      // The orphaned region starts after the last healthy turn_duration.
+      // Find the first non-metadata line after it.
+      let startIdx = prev.lineIndex + 1;
+      for (let j = startIdx; j < lines.length; j++) {
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(lines[j]!) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        const t = obj.type as string;
+        if (
+          t === "last-prompt" ||
+          t === "ai-title" ||
+          t === "permission-mode"
+        ) {
+          startIdx = j;
+        } else {
+          break;
+        }
+      }
+      orphanedTail = {
+        startLineIndex: startIdx,
+        lineCount: lines.length - startIdx,
+        messageCountBefore: prev.messageCount,
+        messageCountAfter: curr.messageCount,
+      };
+      break;
+    }
+  }
+
   return {
     totalEntries: lines.length,
     chainEntries: chainEntries.length,
     brokenLinks,
+    orphanedTail,
   };
 }
 
@@ -108,8 +184,8 @@ export async function repairClaudeSession(
   const text = await readFile(filePath, "utf-8");
   const diag = diagnoseClaudeSession(text);
 
-  if (diag.brokenLinks.length === 0) {
-    return { repaired: 0, backupPath: "", repairs: [] };
+  if (diag.brokenLinks.length === 0 && !diag.orphanedTail) {
+    return { repaired: 0, backupPath: "", repairs: [], trimmedLines: 0 };
   }
 
   const backupPath = filePath + ".bak";
@@ -248,11 +324,26 @@ export async function repairClaudeSession(
     parsed.splice(broken.lineIndex, 0, synthetic);
   }
 
+  // Trim orphaned tail — messages generated while the chain was broken
+  // and the model had amnesia. These "I don't have history" messages
+  // actively poison the context on resume.
+  let trimmedLines = 0;
+  if (diag.orphanedTail) {
+    // Re-diagnose after chain repair to get updated line indices
+    const postRepairText = lines.join("\n");
+    const postDiag = diagnoseClaudeSession(postRepairText);
+    if (postDiag.orphanedTail) {
+      trimmedLines = lines.length - postDiag.orphanedTail.startLineIndex;
+      lines.length = postDiag.orphanedTail.startLineIndex;
+    }
+  }
+
   await writeFile(filePath, lines.join("\n") + "\n");
 
   return {
     repaired: diag.brokenLinks.length,
     backupPath,
     repairs: diag.brokenLinks,
+    trimmedLines,
   };
 }

@@ -119,6 +119,32 @@ describe("diagnoseClaudeSession", () => {
     const diag = diagnoseClaudeSession(text);
     expect(diag.brokenLinks).toHaveLength(0);
   });
+
+  test("detects orphaned tail after messageCount drop", () => {
+    const text = [
+      line({ type: "system", subtype: "turn_duration", uuid: "td1", messageCount: 500, timestamp: "2026-05-25T10:00:00Z" }),
+      line({ type: "user", uuid: "u1", parentUuid: "td1", message: { role: "user", content: "good msg" } }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td2", messageCount: 510, timestamp: "2026-05-25T10:01:00Z" }),
+      line({ type: "last-prompt", lastPrompt: "something" }),
+      line({ type: "ai-title", aiTitle: "test" }),
+      line({ type: "user", uuid: "u2", parentUuid: "td2", message: { role: "user", content: "amnesiac" } }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td3", messageCount: 5, timestamp: "2026-05-25T10:02:00Z" }),
+    ].join("\n");
+    const diag = diagnoseClaudeSession(text);
+    expect(diag.orphanedTail).not.toBeNull();
+    expect(diag.orphanedTail!.messageCountBefore).toBe(510);
+    expect(diag.orphanedTail!.messageCountAfter).toBe(5);
+    expect(diag.orphanedTail!.lineCount).toBeGreaterThan(0);
+  });
+
+  test("no orphaned tail when messageCount is stable", () => {
+    const text = [
+      line({ type: "system", subtype: "turn_duration", uuid: "td1", messageCount: 100, timestamp: "2026-05-25T10:00:00Z" }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td2", messageCount: 110, timestamp: "2026-05-25T10:01:00Z" }),
+    ].join("\n");
+    const diag = diagnoseClaudeSession(text);
+    expect(diag.orphanedTail).toBeNull();
+  });
 });
 
 describe("repairClaudeSession", () => {
@@ -171,6 +197,40 @@ describe("repairClaudeSession", () => {
     const result = await repairClaudeSession(file);
     expect(result.repaired).toBe(0);
     expect(result.backupPath).toBe("");
+    expect(result.trimmedLines).toBe(0);
+  });
+
+  test("trims orphaned tail after chain repair", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "repair-"));
+    const file = join(dir, "session.jsonl");
+    // Simulate: healthy session → break → amnesiac messages
+    const lines = [
+      line({ type: "user", uuid: "u1", message: { role: "user", content: "start" }, timestamp: "2026-05-25T10:00:00Z", sessionId: "S", cwd: "/r", slug: "s" }),
+      line({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] }, timestamp: "2026-05-25T10:00:01Z", sessionId: "S", cwd: "/r", slug: "s" }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td1", parentUuid: "a1", messageCount: 200, timestamp: "2026-05-25T10:00:02Z" }),
+      // Missing tool result (uuid=tr1, parentUuid=a1) — referenced by a2
+      line({ type: "assistant", uuid: "a2", parentUuid: "tr1", message: { role: "assistant", content: "disk space" }, timestamp: "2026-05-25T10:00:03Z", sessionId: "S", cwd: "/r", slug: "s" }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td2", parentUuid: "a2", messageCount: 210, timestamp: "2026-05-25T10:00:04Z" }),
+      // Amnesiac messages after the break
+      line({ type: "last-prompt", lastPrompt: "test" }),
+      line({ type: "user", uuid: "u2", parentUuid: "td2", message: { role: "user", content: "what" }, timestamp: "2026-05-25T10:01:00Z", sessionId: "S", cwd: "/r", slug: "s" }),
+      line({ type: "assistant", uuid: "a3", parentUuid: "u2", message: { role: "assistant", content: "I have no history" }, timestamp: "2026-05-25T10:01:01Z", sessionId: "S", cwd: "/r", slug: "s" }),
+      line({ type: "system", subtype: "turn_duration", uuid: "td3", parentUuid: "a3", messageCount: 5, timestamp: "2026-05-25T10:01:02Z" }),
+    ];
+    await writeFile(file, lines.join("\n") + "\n");
+
+    const result = await repairClaudeSession(file);
+    expect(result.repaired).toBe(1); // fixed broken chain
+    expect(result.trimmedLines).toBeGreaterThan(0); // trimmed amnesiac tail
+
+    const repaired = await readFile(file, "utf-8");
+    const repairedLines = repaired.split("\n").filter(Boolean);
+    // Should NOT contain the amnesiac messages
+    const hasAmnesiac = repairedLines.some((l) => {
+      try { return JSON.parse(l).uuid === "u2" || JSON.parse(l).uuid === "a3"; }
+      catch { return false; }
+    });
+    expect(hasAmnesiac).toBe(false);
   });
 
   test("repairs multiple broken links", async () => {

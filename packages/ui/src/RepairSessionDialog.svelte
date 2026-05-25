@@ -10,6 +10,11 @@
           totalEntries: number;
           chainEntries: number;
           brokenLinks: number;
+          orphanedTail: {
+            lineCount: number;
+            messageCountBefore: number;
+            messageCountAfter: number;
+          } | null;
           details: Array<{
             missingUuid: string;
             referencedBy: string;
@@ -18,7 +23,7 @@
         };
       }
     | { kind: "repairing" }
-    | { kind: "done"; repairedCount: number; backupPath: string }
+    | { kind: "done"; repairedCount: number; trimmedLines: number; backupPath: string }
     | { kind: "error"; message: string }
     | { kind: "healthy" };
 
@@ -59,13 +64,18 @@
         totalEntries: number;
         chainEntries: number;
         brokenLinks: number;
+        orphanedTail: {
+          lineCount: number;
+          messageCountBefore: number;
+          messageCountAfter: number;
+        } | null;
         details: Array<{
           missingUuid: string;
           referencedBy: string;
           lineIndex: number;
         }>;
       };
-      if (d.brokenLinks === 0) {
+      if (d.brokenLinks === 0 && !d.orphanedTail) {
         phase = { kind: "healthy" };
       } else {
         phase = { kind: "diagnosed", diagnosis: d };
@@ -96,12 +106,14 @@
       const body = (await res.json()) as {
         repaired: boolean;
         repairedCount?: number;
+        trimmedLines?: number;
         backupPath?: string;
       };
       if (body.repaired) {
         phase = {
           kind: "done",
           repairedCount: body.repairedCount ?? 0,
+          trimmedLines: body.trimmedLines ?? 0,
           backupPath: body.backupPath ?? "",
         };
       } else {
@@ -160,29 +172,40 @@
 
       {:else if phase.kind === "diagnosed"}
         <p class="repair-blurb">
-          Found <strong>{phase.diagnosis.brokenLinks}</strong> broken
-          parent {phase.diagnosis.brokenLinks === 1 ? "link" : "links"} in
-          a session with {phase.diagnosis.totalEntries} entries.
+          Session with {phase.diagnosis.totalEntries} entries —
+          {#if phase.diagnosis.brokenLinks > 0}
+            found <strong>{phase.diagnosis.brokenLinks}</strong> broken
+            parent {phase.diagnosis.brokenLinks === 1 ? "link" : "links"}.
+          {/if}
+          {#if phase.diagnosis.orphanedTail}
+            {#if phase.diagnosis.brokenLinks > 0}Also found{:else}Found{/if}
+            <strong>{phase.diagnosis.orphanedTail.lineCount}</strong>
+            orphaned lines where the model had amnesia
+            (context dropped from {phase.diagnosis.orphanedTail.messageCountBefore}
+            to {phase.diagnosis.orphanedTail.messageCountAfter} messages).
+          {/if}
         </p>
         <p class="repair-blurb">
           Claude Code traces messages by following parent UUIDs. When a
           link is missing, the loader can only see messages after the
-          break — which can drop a long session down to a handful of
-          messages.
+          break. The amnesiac messages that follow actively poison the
+          context ("I don't have history") and must be trimmed.
         </p>
-        <div class="repair-details">
-          {#each phase.diagnosis.details as d}
-            <div class="repair-detail">
-              <span class="repair-mono">Line {d.lineIndex}</span>
-              <span class="repair-sep">→</span>
-              <span class="repair-mono">{d.missingUuid}…</span> missing
-            </div>
-          {/each}
-        </div>
+        {#if phase.diagnosis.details.length > 0}
+          <div class="repair-details">
+            {#each phase.diagnosis.details as d}
+              <div class="repair-detail">
+                <span class="repair-mono">Line {d.lineIndex}</span>
+                <span class="repair-sep">→</span>
+                <span class="repair-mono">{d.missingUuid}…</span> missing
+              </div>
+            {/each}
+          </div>
+        {/if}
         <p class="repair-blurb repair-note">
           A <code>.bak</code> backup is created before any changes.
-          Synthetic bridge nodes are inserted so the chain is continuous
-          again.
+          {#if phase.diagnosis.brokenLinks > 0}Synthetic bridge nodes are inserted.{/if}
+          {#if phase.diagnosis.orphanedTail}Amnesiac tail is trimmed.{/if}
         </p>
 
       {:else if phase.kind === "repairing"}
@@ -193,8 +216,14 @@
 
       {:else if phase.kind === "done"}
         <p class="repair-result repair-ok">
-          Repaired {phase.repairedCount}
-          {phase.repairedCount === 1 ? "link" : "links"}.
+          {#if phase.repairedCount > 0}
+            Repaired {phase.repairedCount}
+            {phase.repairedCount === 1 ? "link" : "links"}.
+          {/if}
+          {#if phase.trimmedLines > 0}
+            Trimmed {phase.trimmedLines} amnesiac
+            {phase.trimmedLines === 1 ? "line" : "lines"}.
+          {/if}
           Resume the session to load full history.
         </p>
         <p class="repair-blurb repair-note">

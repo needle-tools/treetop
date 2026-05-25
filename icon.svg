@@ -41,7 +41,7 @@
   <!-- Three planes radiating from center, 120° apart.
        Each plane's back edge starts at x≈75, keeping
        a clear gap in the middle (no overlap). -->
-  <g transform="translate(256, 256)">
+  <g transform="translate(256, 256) scale(1.25)">
 
     <!-- Plane 1 — upper-right -->
     <g transform="rotate(-50)">

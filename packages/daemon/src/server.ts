@@ -2993,12 +2993,23 @@ const server = Bun.serve<TermWsData, never>({
       try {
         const text = await readFile(resolved.normalised, "utf-8");
         const diagnosis = diagnoseClaudeSession(text);
-        if (dryRun || diagnosis.brokenLinks.length === 0) {
+        const needsRepair =
+          diagnosis.brokenLinks.length > 0 || diagnosis.orphanedTail !== null;
+        if (dryRun || !needsRepair) {
           return json({
             diagnosis: {
               totalEntries: diagnosis.totalEntries,
               chainEntries: diagnosis.chainEntries,
               brokenLinks: diagnosis.brokenLinks.length,
+              orphanedTail: diagnosis.orphanedTail
+                ? {
+                    lineCount: diagnosis.orphanedTail.lineCount,
+                    messageCountBefore:
+                      diagnosis.orphanedTail.messageCountBefore,
+                    messageCountAfter:
+                      diagnosis.orphanedTail.messageCountAfter,
+                  }
+                : null,
               details: diagnosis.brokenLinks.map((b) => ({
                 missingUuid: b.missingUuid.slice(0, 8),
                 referencedBy: b.referencedBy.slice(0, 8),
@@ -3014,6 +3025,15 @@ const server = Bun.serve<TermWsData, never>({
             totalEntries: diagnosis.totalEntries,
             chainEntries: diagnosis.chainEntries,
             brokenLinks: diagnosis.brokenLinks.length,
+            orphanedTail: diagnosis.orphanedTail
+              ? {
+                  lineCount: diagnosis.orphanedTail.lineCount,
+                  messageCountBefore:
+                    diagnosis.orphanedTail.messageCountBefore,
+                  messageCountAfter:
+                    diagnosis.orphanedTail.messageCountAfter,
+                }
+              : null,
             details: diagnosis.brokenLinks.map((b) => ({
               missingUuid: b.missingUuid.slice(0, 8),
               referencedBy: b.referencedBy.slice(0, 8),
@@ -3022,6 +3042,7 @@ const server = Bun.serve<TermWsData, never>({
           },
           repaired: true,
           repairedCount: result.repaired,
+          trimmedLines: result.trimmedLines,
           backupPath: result.backupPath,
         });
       } catch (err) {
