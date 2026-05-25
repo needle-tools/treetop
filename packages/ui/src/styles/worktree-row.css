@@ -1528,3 +1528,113 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
 .onboarding-error {
   color: var(--error, #e55);
 }
+
+/* ------------------------------------------------------------------
+ * Walkthrough — step-by-step highlight ring + tooltip card
+ * ------------------------------------------------------------------ */
+.walkthrough-highlight {
+  position: fixed;
+  pointer-events: none;
+  z-index: 2800;
+  outline: 2.5px solid var(--brand, #5b9bf7);
+  outline-offset: 3px;
+  border-radius: var(--radius-md, 6px);
+  transition: top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: walkthrough-pulse 1.6s ease-in-out infinite;
+}
+.walkthrough-highlight.walkthrough-hidden {
+  display: none;
+}
+@keyframes walkthrough-pulse {
+  0%, 100% { outline-color: var(--brand, #5b9bf7); }
+  50% { outline-color: color-mix(in srgb, var(--brand, #5b9bf7) 40%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .walkthrough-highlight { animation: none; }
+}
+
+.walkthrough-tooltip {
+  position: fixed;
+  z-index: 2801;
+  max-width: 320px;
+  background: var(--surface-3, #333);
+  color: var(--text-1, #e0e0e0);
+  border: 1px solid var(--surface-2, #444);
+  border-radius: var(--radius-md, 6px);
+  padding: 0.65rem 0.85rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  transition: top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.22s ease,
+              transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: center top;
+}
+.walkthrough-tooltip.walkthrough-hidden {
+  display: none;
+}
+.walkthrough-msg {
+  margin: 0 0 0.5rem;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease 0.05s, transform 0.2s ease 0.05s;
+}
+.walkthrough-msg.walkthrough-text-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.walkthrough-emoji {
+  font-size: 1.1em;
+  margin-right: 0.15em;
+}
+.walkthrough-tooltip-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--surface-2, #444);
+  opacity: 0;
+  transition: opacity 0.2s ease 0.1s;
+}
+.walkthrough-tooltip-footer.walkthrough-text-visible {
+  opacity: 1;
+}
+.walkthrough-step-indicator {
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+}
+.walkthrough-btn-skip {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm, 4px);
+}
+.walkthrough-btn-skip:hover {
+  color: var(--text-1, #e0e0e0);
+  background: var(--surface-2, #444);
+}
+.walkthrough-btn-next {
+  background: var(--brand, #5b9bf7);
+  color: #111;
+  border: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.25rem 0.7rem;
+  border-radius: var(--radius-sm, 4px);
+}
+.walkthrough-btn-next:hover:not(:disabled) {
+  filter: brightness(0.9);
+}
+.walkthrough-btn-next:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
