@@ -16,6 +16,10 @@ import { access, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
+/** Absolute path to cmd.exe. Bare `"cmd"` fails under Bun.spawn when the
+ *  cwd is a repo directory — Bun resolves it relative to cwd first. */
+const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
+
 export interface EditorDescriptor {
   name: string; // display name, e.g. "VSCode"
   cmd: string; // logical key the UI sends back to openIn()
@@ -160,7 +164,7 @@ export async function openDefault(path: string): Promise<{ via: string }> {
     // `start` is a cmd builtin, not a binary on PATH. Wrap it in
     // `cmd /c`. The leading empty `""` is a quoted window title that
     // start eats so the rest of the line is treated as the target.
-    Bun.spawn(["cmd", "/c", "start", "", path], {
+    Bun.spawn([CMD_EXE, "/c", "start", "", path], {
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -372,11 +376,11 @@ export async function openIn(
       if (await which("wt")) {
         if (command) {
           Bun.spawn(
-            ["cmd", "/c", "wt", "-d", path, "powershell", "-NoExit", "-Command", command],
+            [CMD_EXE, "/c", "wt", "-d", path, "powershell", "-NoExit", "-Command", command],
             { stdout: "ignore", stderr: "ignore" },
           );
         } else {
-          Bun.spawn(["cmd", "/c", "wt", "-d", path], {
+          Bun.spawn([CMD_EXE, "/c", "wt", "-d", path], {
             stdout: "ignore",
             stderr: "ignore",
           });
@@ -388,14 +392,14 @@ export async function openIn(
       if (command) {
         Bun.spawn(
           [
-            "cmd", "/c", "start", "powershell", "-NoExit",
+            CMD_EXE, "/c", "start", "powershell", "-NoExit",
             "-Command", `Set-Location '${psPath}'; ${command}`,
           ],
           { stdout: "ignore", stderr: "ignore" },
         );
       } else {
         Bun.spawn(
-          ["cmd", "/c", "start", "powershell", "-NoExit", "-Command",
+          [CMD_EXE, "/c", "start", "powershell", "-NoExit", "-Command",
             `Set-Location '${psPath}'`],
           { stdout: "ignore", stderr: "ignore" },
         );

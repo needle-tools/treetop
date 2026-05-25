@@ -13,6 +13,9 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
+const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
+
 /**
  * Find the best on-disk binary for an agent CLI name.
  *
@@ -123,7 +126,7 @@ export function wrapWindowsCmd(cmd: string[]): string[] {
   const dot = head.lastIndexOf(".");
   const ext = dot >= 0 ? head.slice(dot).toLowerCase() : "";
   if (ext === ".cmd" || ext === ".bat") {
-    return ["cmd.exe", "/d", "/s", "/c", head, ...cmd.slice(1)];
+    return [CMD_EXE, "/d", "/s", "/c", head, ...cmd.slice(1)];
   }
   if (ext === ".ps1") {
     return [

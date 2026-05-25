@@ -644,11 +644,13 @@ describe.skipIf(!isWin)("resolveAgentBinary on Windows", () => {
 });
 
 describe("wrapWindowsCmd", () => {
+  const cmdExe = process.env.COMSPEC ?? "cmd.exe";
+
   test("wraps a .cmd file in cmd.exe /d /s /c", () => {
     expect(
       wrapWindowsCmd(["C:\\Users\\m\\AppData\\Roaming\\npm\\codex.cmd", "exec"]),
     ).toEqual([
-      "cmd.exe",
+      cmdExe,
       "/d",
       "/s",
       "/c",
@@ -659,7 +661,7 @@ describe("wrapWindowsCmd", () => {
 
   test("wraps a .bat file the same way", () => {
     expect(wrapWindowsCmd(["foo.bat", "a", "b"])).toEqual([
-      "cmd.exe", "/d", "/s", "/c", "foo.bat", "a", "b",
+      cmdExe, "/d", "/s", "/c", "foo.bat", "a", "b",
     ]);
   });
 
@@ -694,7 +696,7 @@ describe("wrapWindowsCmd", () => {
 
   test("ext check is case-insensitive (.CMD treated as .cmd)", () => {
     expect(wrapWindowsCmd(["C:\\Tools\\AGENT.CMD"])).toEqual([
-      "cmd.exe", "/d", "/s", "/c", "C:\\Tools\\AGENT.CMD",
+      cmdExe, "/d", "/s", "/c", "C:\\Tools\\AGENT.CMD",
     ]);
   });
 });

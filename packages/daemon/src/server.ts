@@ -207,7 +207,7 @@ function defaultLoginShell(): { shell: string; args: string[] } {
 /** Wrap a raw command string for execution via the platform's shell. */
 function shellExec(cmd: string): string[] {
   return process.platform === "win32"
-    ? ["cmd.exe", "/c", cmd]
+    ? [process.env.COMSPEC ?? "cmd.exe", "/c", cmd]
     : ["sh", "-c", cmd];
 }
 
