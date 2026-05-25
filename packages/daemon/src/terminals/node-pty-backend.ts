@@ -36,6 +36,7 @@ interface InternalTerm {
   exitedAt?: string;
   exitCode?: number;
   exitSignal?: string;
+  lastError?: string;
   buffer: Uint8Array[];
   bufferBytes: number;
   subs: Set<TerminalSubscriber>;
@@ -413,6 +414,9 @@ export class NodePtyBackend implements PtyBackend {
     try {
       t.pid = await pidPromise;
     } catch (e) {
+      t.exitedAt = new Date().toISOString();
+      t.exitCode = 1;
+      t.lastError = e instanceof Error ? e.message : String(e);
       if (t.zdotdir) void cleanupZdotdir(t.zdotdir);
       throw e;
     }
@@ -509,6 +513,7 @@ export class NodePtyBackend implements PtyBackend {
       exitedAt: t.exitedAt,
       exitCode: t.exitCode,
       exitSignal: t.exitSignal,
+      lastError: t.lastError,
     }));
   }
 
