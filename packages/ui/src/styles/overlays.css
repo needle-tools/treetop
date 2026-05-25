@@ -214,3 +214,6 @@
 .toast-close:hover {
   color: var(--text-1);
 }
+body.platform-windows .toast-stack {
+  bottom: 2rem;
+}

@@ -296,26 +296,12 @@ export function cmdForOpenSession(
     contextFilePath?: string;
   },
   defaultShell: string,
+  defaultShellArgs: string[] = ["-l"],
 ): string[] {
-  // Spawn the shell as a *login* shell (`-l`). Without `-l`, zsh is
-  // interactive (TTY detected) but doesn't source `.zprofile`/`.zlogin`,
-  // and on stock macOS that's where many users (or system defaults the
-  // user inherits from) set HISTFILE / HISTSIZE / SAVEHIST. The defaults
-  // when those are unset are brutal: HISTSIZE=10, SAVEHIST=0 → arrow-up
-  // shows nothing on a fresh column and the in-session commands are
-  // discarded on Dispose. Terminal.app and iTerm2 start the user's shell
-  // as a login shell for the same reason. The flag is recognized by zsh,
-  // bash, fish, and sh — the only shells supergit advertises support for.
-  // On Windows, PowerShell / cmd don't accept -l; spawn with -NoLogo
-  // (cleaner startup) for powershell, bare for cmd.exe.
-  if (s.agent === "shell") {
-    const base = defaultShell.toLowerCase().replace(/\\/g, "/");
-    if (base.includes("powershell") || base.includes("pwsh"))
-      return [defaultShell, "-NoLogo"];
-    if (base.includes("cmd"))
-      return [defaultShell];
-    return [defaultShell, "-l"];
-  }
+  // Shell path + flags come from the daemon via /api/shell-default
+  // (defaultLoginShell()). The daemon resolves $SHELL / COMSPEC with
+  // platform-appropriate flags so the UI doesn't duplicate that logic.
+  if (s.agent === "shell") return [defaultShell, ...defaultShellArgs];
   const sid = s.resumeSessionId;
   if (s.agent === "claude") {
     if (sid) {

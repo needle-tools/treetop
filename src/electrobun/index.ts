@@ -13,6 +13,7 @@ import { resolve, dirname, join } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync, spawn } from "node:child_process";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 
 const PORT = 27787;
 const DAEMON_URL = `http://localhost:${PORT}`;
@@ -253,45 +254,47 @@ if (!gitAvailable()) {
   process.exit(1);
 }
 
-// Strip the default Edit menu so WKWebView doesn't intercept Ctrl+A
-// (Select All), Ctrl+C, etc. before xterm.js sees them. Keep only
-// the app and window menus.
-ApplicationMenu.setApplicationMenu([
-  {
-    label: "Supergit",
-    submenu: [
-      { role: "about" },
-      { type: "separator" },
-      { role: "hide" },
-      { role: "hideOthers" },
-      { role: "showAll" },
-      { type: "separator" },
-      { role: "quit" },
-    ],
-  },
-  {
-    label: "Edit",
-    submenu: [
-      { role: "undo" },
-      { role: "redo" },
-      { type: "separator" },
-      { role: "cut" },
-      { role: "copy" },
-      { role: "paste" },
-      { role: "selectAll" },
-    ],
-  },
-  {
-    label: "Window",
-    submenu: [
-      { role: "minimize" },
-      { role: "zoom" },
-      { role: "close" },
-      { type: "separator" },
-      { role: "toggleFullScreen" },
-    ],
-  },
-]);
+// macOS: strip the default Edit menu so WKWebView doesn't intercept
+// Ctrl+A (Select All), Ctrl+C, etc. before xterm.js sees them.
+// Windows: no native menu bar — skip entirely.
+if (!isWin) {
+  ApplicationMenu.setApplicationMenu([
+    {
+      label: "Supergit",
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "showAll" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        { role: "close" },
+        { type: "separator" },
+        { role: "toggleFullScreen" },
+      ],
+    },
+  ]);
+}
 
 await ensureDaemon();
 
@@ -302,6 +305,41 @@ const win = new BrowserWindow({
   url: DAEMON_URL,
   frame: bounds,
 });
+
+// Set the window/taskbar icon on Windows via Win32 API. Electrobun
+// copies icon.ico to Resources/app.ico but never calls setWindowIcon,
+// so the taskbar shows the default bun icon. We load the ico directly
+// via LoadImage + SendMessage(WM_SETICON) using bun:ffi.
+if (isWin) {
+  try {
+    const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
+    if (existsSync(icoPath)) {
+      const user32 = dlopen("user32.dll", {
+        FindWindowW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+        SendMessageW: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+        LoadImageW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
+      });
+      const title16 = new Uint8Array(Buffer.from("Supergit\0", "utf-16le"));
+      const hwnd = user32.symbols.FindWindowW(null, ptr(title16));
+      if (hwnd) {
+        const ico16 = new Uint8Array(Buffer.from(icoPath + "\0", "utf-16le"));
+        const IMAGE_ICON = 1;
+        const LR_LOADFROMFILE = 0x0010;
+        const LR_DEFAULTSIZE = 0x0040;
+        const WM_SETICON = 0x0080;
+        const ICON_SMALL = 0;
+        const ICON_BIG = 1;
+        const hIcon = user32.symbols.LoadImageW(null, ptr(ico16), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+        if (hIcon) {
+          user32.symbols.SendMessageW(hwnd, WM_SETICON, ICON_SMALL as any, hIcon);
+          user32.symbols.SendMessageW(hwnd, WM_SETICON, ICON_BIG as any, hIcon);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to set window icon:", e);
+  }
+}
 
 win.on("resize", (event: any) => {
   const frame = win.getFrame();

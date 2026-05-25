@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="lead-top" x1="0%" y1="0%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#D7DB0A"/>
+      <stop offset="100%" stop-color="#62D399"/>
+    </linearGradient>
+    <linearGradient id="lead-bottom" x1="0%" y1="20%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#74AF52"/>
+      <stop offset="100%" stop-color="#0BA398"/>
+    </linearGradient>
+    <linearGradient id="lead-fold" x1="0%" y1="0%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#E8ED55"/>
+      <stop offset="100%" stop-color="#99CC33"/>
+    </linearGradient>
+    <linearGradient id="wing-top" x1="0%" y1="0%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#99CC33"/>
+      <stop offset="100%" stop-color="#62D399"/>
+    </linearGradient>
+    <linearGradient id="wing-bottom" x1="0%" y1="20%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4CA352"/>
+      <stop offset="100%" stop-color="#36A382"/>
+    </linearGradient>
+    <linearGradient id="wing-fold" x1="0%" y1="0%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#B8D94A"/>
+      <stop offset="100%" stop-color="#74AF52"/>
+    </linearGradient>
+    <linearGradient id="trail1" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#99CC33" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#62D399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="trail2" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#74AF52" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#0BA398" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- V formation of three paper planes, flying upper-right -->
+  <g transform="translate(355, 185) rotate(-38) scale(1.1)">
+
+    <!-- Feathered motion trails -->
+    <path d="M-155,0 L-380,-6 L-380,6 Z" fill="url(#trail1)" opacity="0.6"/>
+    <path d="M-225,-100 L-390,-100 L-390,-92 Z" fill="url(#trail2)" opacity="0.45"/>
+    <path d="M-225,100 L-390,100 L-390,92 Z" fill="url(#trail2)" opacity="0.45"/>
+
+    <!-- Left wingman -->
+    <g transform="translate(-130, -105) scale(0.65)">
+      <polygon points="0,0 -210,-78 -155,0" fill="url(#wing-top)"/>
+      <polygon points="0,0 -210,52 -155,0" fill="url(#wing-bottom)"/>
+      <polygon points="0,0 -155,-5 -155,5" fill="url(#wing-fold)"/>
+    </g>
+
+    <!-- Right wingman -->
+    <g transform="translate(-130, 105) scale(0.65)">
+      <polygon points="0,0 -210,-78 -155,0" fill="url(#wing-top)"/>
+      <polygon points="0,0 -210,52 -155,0" fill="url(#wing-bottom)"/>
+      <polygon points="0,0 -155,-5 -155,5" fill="url(#wing-fold)"/>
+    </g>
+
+    <!-- Lead plane (largest, in front) -->
+    <g>
+      <polygon points="0,0 -210,-78 -155,0" fill="url(#lead-top)"/>
+      <polygon points="0,0 -210,52 -155,0" fill="url(#lead-bottom)"/>
+      <polygon points="0,0 -155,-5 -155,5" fill="url(#lead-fold)"/>
+    </g>
+  </g>
+</svg>

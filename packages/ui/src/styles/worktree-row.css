@@ -1280,6 +1280,12 @@ body.platform-windows .sessions-strip {
 body.platform-windows .sessions-strip::-webkit-scrollbar {
   height: 24px;
 }
+body.platform-windows .sessions-strip::-webkit-scrollbar-thumb {
+  cursor: grab;
+}
+body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
+  cursor: grabbing;
+}
 /* Invisible trailing flex spacer at the end of `.sessions-strip`.
    We can't use `padding-right` here — browsers historically drop the
    trailing padding from a horizontally-scrolling flex container — so a
@@ -1443,4 +1449,82 @@ body.platform-windows .sessions-strip::-webkit-scrollbar {
   color: var(--text-muted);
   font-size: 0.72rem;
   padding: 0.4rem 0.2rem;
+}
+
+/* ------------------------------------------------------------------
+ * Onboarding — "Get Started" CTA + inline AI description
+ * ------------------------------------------------------------------ */
+.onboarding-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  padding: 1.2rem 1rem;
+  gap: 0.6rem;
+}
+.onboarding-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 1.1rem;
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--surface-3, #444);
+  background: var(--surface-2, #2a2a2a);
+  color: var(--text-primary, #e0e0e0);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.onboarding-btn:hover:not(:disabled) {
+  background: var(--surface-3, #333);
+  border-color: var(--text-muted, #888);
+}
+.onboarding-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.onboarding-response {
+  width: 100%;
+  max-width: 640px;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--surface-3, #444);
+  background: var(--surface-1, #1e1e1e);
+}
+.onboarding-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.onboarding-provider-icon {
+  width: 14px;
+  height: 14px;
+}
+.onboarding-text {
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-primary, #e0e0e0);
+}
+.onboarding-text p {
+  margin: 0 0 0.5rem;
+}
+.onboarding-text p:last-child {
+  margin-bottom: 0;
+}
+.onboarding-text code {
+  background: var(--surface-2, #2a2a2a);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+.onboarding-text ul,
+.onboarding-text ol {
+  margin: 0.3rem 0;
+  padding-left: 1.4em;
+}
+.onboarding-error {
+  color: var(--error, #e55);
 }

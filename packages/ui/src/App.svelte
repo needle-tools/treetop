@@ -41,6 +41,7 @@
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
+  import { marked } from "marked";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
@@ -1385,6 +1386,103 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  // --- Onboarding: "Get Started" inline AI description ----------------
+
+  interface OnboardingState {
+    status: "loading" | "streaming" | "done" | "error";
+    text: string;
+    provider?: string;
+    model?: string;
+    error?: string;
+  }
+  let onboardingByWt: Record<string, OnboardingState> = {};
+
+  async function startOnboarding(wtPath: string): Promise<void> {
+    onboardingByWt = {
+      ...onboardingByWt,
+      [wtPath]: { status: "loading", text: "" },
+    };
+    try {
+      const res = await fetch("/api/onboarding/describe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: wtPath }),
+      });
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => null);
+        throw new Error(
+          (body as { error?: string })?.error ?? `HTTP ${res.status}`,
+        );
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let collected = "";
+      let provider = "";
+      let model = "";
+
+      onboardingByWt = {
+        ...onboardingByWt,
+        [wtPath]: { status: "streaming", text: "" },
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let frameEnd: number;
+        while ((frameEnd = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, frameEnd);
+          buf = buf.slice(frameEnd + 2);
+          let event = "message";
+          let dataLine = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(dataLine) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (event === "meta") {
+            provider = (payload.provider as string) ?? "";
+            model = (payload.model as string) ?? "";
+            onboardingByWt = {
+              ...onboardingByWt,
+              [wtPath]: { status: "streaming", text: collected, provider, model },
+            };
+          } else if (event === "chunk" && typeof payload.delta === "string") {
+            collected += payload.delta;
+            onboardingByWt = {
+              ...onboardingByWt,
+              [wtPath]: { status: "streaming", text: collected, provider, model },
+            };
+          } else if (event === "error") {
+            throw new Error(
+              (payload.message as string) ?? "stream error",
+            );
+          } else if (event === "done") {
+            // done
+          }
+        }
+      }
+
+      onboardingByWt = {
+        ...onboardingByWt,
+        [wtPath]: { status: "done", text: collected, provider, model },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onboardingByWt = {
+        ...onboardingByWt,
+        [wtPath]: { status: "error", text: "", error: msg },
+      };
+    }
+  }
+
   async function continueSessionWith(
     wtPath: string,
     sessionSource: string,
@@ -1476,12 +1574,15 @@
     try {
       const res = await fetch("/api/shell-default");
       if (!res.ok) return;
-      const body = (await res.json()) as { shell?: unknown };
+      const body = (await res.json()) as { shell?: unknown; args?: unknown };
       if (typeof body.shell === "string" && body.shell.length > 0) {
         defaultShell = body.shell;
       }
+      if (Array.isArray(body.args)) {
+        defaultShellArgs = body.args as string[];
+      }
     } catch {
-      // best-effort — keeps the /bin/zsh fallback
+      // best-effort — keeps the platform fallback
     }
   }
 
@@ -1868,12 +1969,14 @@
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
-  /** The user's default login shell (env $SHELL), fetched once on mount
-   *  from /api/shell-default. Used when the user picks "Terminal" from
-   *  the new-session menu so we spawn the right shell instead of
-   *  hardcoding bash/zsh in the frontend. */
+  /** The user's default login shell + args, fetched once on mount from
+   *  /api/shell-default. The daemon resolves $SHELL / COMSPEC with
+   *  platform-appropriate flags so the UI doesn't need to know about
+   *  powershell vs zsh vs cmd. */
   let defaultShell: string =
     navigator.platform?.startsWith("Win") ? "powershell.exe" : "/bin/zsh";
+  let defaultShellArgs: string[] =
+    navigator.platform?.startsWith("Win") ? ["-NoLogo"] : ["-l"];
 
   function isOpenInWt(wtPath: string, source: string): boolean {
     return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
@@ -3650,7 +3753,7 @@
         }
         return;
       }
-      if (payload.kind === "session_copied") {
+      if (payload.kind === "session_copied" || payload.kind === "session_imported") {
         void load();
         return;
       }
@@ -4869,10 +4972,15 @@
       await load();
       ({ targetWtPath, agentName } = findInRepos());
     }
-    // Orphan session (no live worktree matches the saved source) —
-    // we'd need a separate "orphan strip" surface to render it. For
-    // now this is a no-op so the chip's hover-title still reads as
-    // "Open <path>" and the user can decide what to do.
+    if (!targetWtPath || !agentName) {
+      // On Windows the JSONL may not be visible to scanClaude
+      // immediately after writeFile returns (NTFS journal flush,
+      // antivirus scan-on-write). One more attempt after a short
+      // delay covers this without a heavy polling loop.
+      await new Promise((r) => setTimeout(r, 1500));
+      await load();
+      ({ targetWtPath, agentName } = findInRepos());
+    }
     if (!targetWtPath || !agentName) return;
     const existing = openSessionsByWt[targetWtPath] ?? [];
     if (!existing.some((s) => s.source === source)) {
@@ -6430,6 +6538,47 @@
             <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
           {/if}
 
+          {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) === 0 && (!wt.agents || wt.agents.length === 0)}
+            {@const ob = onboardingByWt[wt.path]}
+            <div class="onboarding-section">
+              {#if ob && (ob.status === "streaming" || ob.status === "done")}
+                <div class="onboarding-response">
+                  <span class="onboarding-provider-badge">
+                    {#if ob.provider === "ollama"}
+                      <img src="/agents/ollama.svg" alt="" class="onboarding-provider-icon" />
+                    {:else if ob.provider === "claude"}
+                      <img src="/agents/claude.svg" alt="" class="onboarding-provider-icon" />
+                    {/if}
+                    <span class="muted small">{ob.model ?? ob.provider}</span>
+                    {#if ob.status === "streaming"}
+                      <LoadingSpinner size="0.7rem" />
+                    {/if}
+                  </span>
+                  <div class="onboarding-text">{@html marked.parse(ob.text || "", { async: false, breaks: true, gfm: true })}</div>
+                </div>
+              {:else if ob && ob.status === "error"}
+                <div class="onboarding-error muted small">{ob.error}</div>
+                <button
+                  class="onboarding-btn"
+                  on:click={() => startOnboarding(wt.path)}
+                >Retry</button>
+              {:else}
+                <button
+                  class="onboarding-btn"
+                  disabled={ob?.status === "loading"}
+                  on:click={() => startOnboarding(wt.path)}
+                >
+                  {#if ob?.status === "loading"}
+                    <LoadingSpinner size="0.8rem" />
+                    <span>Finding a provider…</span>
+                  {:else}
+                    Get Started
+                  {/if}
+                </button>
+              {/if}
+            </div>
+          {/if}
+
           {#if wt && summary}
             {#if wt}
               {@const stripFilter = stripFilterByWt[wt.path]}
@@ -6570,7 +6719,7 @@
                             agent={s.agent}
                             source={titleSource}
                             wtPath={wt.path}
-                            cmd={cmdForOpenSession(s, defaultShell)}
+                            cmd={cmdForOpenSession(s, defaultShell, defaultShellArgs)}
                             cwd={shellResumeCwd[s.source] ?? wt.path}
                             procName={`supergit-tui-new-${s.agent}`}
                             attachTermId={s.source.startsWith("__attached__:")

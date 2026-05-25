@@ -53,6 +53,8 @@ import { watchWorktree } from "./worktree-watcher";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary, discoverRepoProcesses } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
+import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
+import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
 import { SummariesStore, RepoSummariesStore } from "./summaries";
 import { sampleSessionForSummary } from "./ollama-summarize";
 import {
@@ -188,10 +190,24 @@ interface RunningCommand {
 }
 const runningCommands = new Map<string, RunningCommand>();
 
+/** The user's default interactive shell with appropriate flags.
+ *  Used by /api/shell-default and cmdForOpenSession-equivalent logic. */
+function defaultLoginShell(): { shell: string; args: string[] } {
+  const shell = process.env.SHELL
+    || process.env.COMSPEC
+    || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
+  const base = shell.toLowerCase().replace(/\\/g, "/");
+  if (base.includes("powershell") || base.includes("pwsh"))
+    return { shell, args: ["-NoLogo"] };
+  if (base.includes("cmd"))
+    return { shell, args: [] };
+  return { shell, args: ["-l"] };
+}
+
 /** Wrap a raw command string for execution via the platform's shell. */
 function shellExec(cmd: string): string[] {
   return process.platform === "win32"
-    ? ["cmd", "/c", cmd]
+    ? ["cmd.exe", "/c", cmd]
     : ["sh", "-c", cmd];
 }
 
@@ -1336,15 +1352,12 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
-    // The user's default login shell — populated from $SHELL (Unix) or
-    // COMSPEC (Windows) with platform-aware fallbacks. The frontend hits
-    // this once on mount so the "Terminal" entry in the new-session
-    // picker can spawn the right shell without hardcoding bash/zsh.
+    // The user's default login shell with platform-appropriate flags.
+    // The frontend hits this once on mount so the "Terminal" entry in
+    // the new-session picker can spawn the right shell without
+    // hardcoding bash/zsh/powershell flags per platform.
     if (url.pathname === "/api/shell-default") {
-      const shell = process.env.SHELL
-        || process.env.COMSPEC
-        || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
-      return json({ shell });
+      return json(defaultLoginShell());
     }
 
     // Diagnostics: snapshot of the /api/session cache. Shows entries,
@@ -2482,6 +2495,226 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/onboarding/describe" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { path?: unknown }
+        | null;
+      const dirPath =
+        typeof body?.path === "string" ? body.path.trim() : "";
+      if (!dirPath) {
+        return json({ error: "path required" }, { status: 400 });
+      }
+      const resolved = resolve(dirPath);
+
+      let entries: { name: string; type: string }[] = [];
+      try {
+        const dirents = await readdir(resolved, { withFileTypes: true });
+        entries = dirents
+          .map((d) => ({
+            name: d.name,
+            type: d.isDirectory() ? "dir" : "file",
+          }))
+          .sort((a, b) => {
+            if (a.type === "dir" && b.type !== "dir") return -1;
+            if (a.type !== "dir" && b.type === "dir") return 1;
+            return a.name.localeCompare(b.name);
+          })
+          .slice(0, 80);
+      } catch {
+        // empty listing is fine — AI can still comment on the path name
+      }
+
+      const fileList = entries
+        .map((e) => `${e.type === "dir" ? "[dir]" : "     "} ${e.name}`)
+        .join("\n");
+      const prompt = [
+        `I just added this folder to my project dashboard.`,
+        `Describe what it contains and how to get started working on it.`,
+        `Be concise — 2 to 3 short paragraphs max. Use markdown.`,
+        ``,
+        `Folder: ${resolved}`,
+        entries.length > 0 ? `Contents:\n${fileList}` : `(empty folder)`,
+      ].join("\n");
+
+      // --- pick provider by lowest weekly usage (≥20% free) -----------
+      type Candidate = { provider: string; free: number };
+      const candidates: Candidate[] = [];
+
+      const hasClaude = !!(await resolveAgentBinary("claude"));
+      const hasCodex = !!(await resolveAgentBinary("codex"));
+
+      const [claudeResult, codexResult] = await Promise.all([
+        hasClaude
+          ? fetchClaudeOAuthUsage().catch(() => ({ usage: null, error: null }))
+          : Promise.resolve({ usage: null, error: null }),
+        hasCodex
+          ? fetchCodexOAuthUsage().catch(() => ({ usage: null, error: null }))
+          : Promise.resolve({ usage: null, error: null }),
+      ]);
+      if (claudeResult.usage?.sevenDay) {
+        const free = 1 - claudeResult.usage.sevenDay.utilization;
+        if (free >= 0.2) candidates.push({ provider: "claude", free });
+      }
+      if (codexResult.usage?.secondaryWindow) {
+        const free = 1 - codexResult.usage.secondaryWindow.utilization;
+        if (free >= 0.2) candidates.push({ provider: "codex", free });
+      }
+      candidates.sort((a, b) => b.free - a.free);
+
+      let provider = candidates[0]?.provider ?? null;
+      let ollamaModel: string | undefined;
+
+      if (!provider) {
+        // fallback: Ollama
+        try {
+          const models = await listOllamaModels();
+          if (models.length > 0) {
+            provider = "ollama";
+            ollamaModel = models[0]!.name;
+          }
+        } catch { /* no ollama */ }
+      } else if (provider === "codex") {
+        // codex has no non-interactive mode — demote to ollama
+        try {
+          const models = await listOllamaModels();
+          if (models.length > 0) {
+            provider = "ollama";
+            ollamaModel = models[0]!.name;
+          }
+        } catch {
+          // keep codex? no — we can't run it without a TUI. drop.
+          provider = null;
+        }
+      }
+
+      if (!provider && !ollamaModel) {
+        // last resort: use Claude even if > 80% utilized
+        if (hasClaude) provider = "claude";
+      }
+
+      if (!provider) {
+        return json(
+          { error: "no AI provider available (install Claude CLI or Ollama)" },
+          { status: 503 },
+        );
+      }
+
+      // If Ollama was picked but no model chosen yet, resolve now
+      if (provider === "ollama" && !ollamaModel) {
+        try {
+          const models = await listOllamaModels();
+          ollamaModel = models[0]?.name;
+        } catch { /* keep going */ }
+        if (!ollamaModel) {
+          return json({ error: "ollama has no models installed" }, { status: 503 });
+        }
+      }
+
+      // --- stream response as SSE ------------------------------------
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown): void => {
+            try {
+              controller.enqueue(
+                sseEncoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
+            } catch { /* controller closed */ }
+          };
+
+          const modelLabel =
+            provider === "ollama"
+              ? ollamaModel!
+              : provider === "claude"
+                ? "Claude"
+                : provider!;
+          send("meta", { provider, model: modelLabel });
+
+          try {
+            if (provider === "ollama") {
+              const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  model: ollamaModel,
+                  stream: true,
+                  messages: [{ role: "user", content: prompt }],
+                }),
+                signal: AbortSignal.timeout(120_000),
+              });
+              if (!res.ok || !res.body) {
+                let errMsg = `Ollama ${res.status}`;
+                try {
+                  const eb = await res.text();
+                  const parsed = JSON.parse(eb) as { error?: string };
+                  if (parsed.error) errMsg = parsed.error;
+                } catch {}
+                send("error", { message: errMsg });
+                try { controller.close(); } catch {}
+                return;
+              }
+              const reader = res.body.getReader();
+              const dec = new TextDecoder();
+              let buf = "";
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += dec.decode(value, { stream: true });
+                let nl: number;
+                while ((nl = buf.indexOf("\n")) !== -1) {
+                  const line = buf.slice(0, nl).trim();
+                  buf = buf.slice(nl + 1);
+                  if (!line) continue;
+                  try {
+                    const obj = JSON.parse(line) as {
+                      message?: { content?: string };
+                      done?: boolean;
+                    };
+                    const chunk = obj.message?.content ?? "";
+                    if (chunk) send("chunk", { delta: chunk });
+                    if (obj.done) break;
+                  } catch { /* skip */ }
+                }
+              }
+            } else if (provider === "claude") {
+              // claude -p streams to stdout in print mode
+              const claudeBin = (await resolveAgentBinary("claude")) ?? "claude";
+              const proc = Bun.spawn(
+                [claudeBin, "-p", "--output-format", "text", prompt],
+                { cwd: resolved, stdout: "pipe", stderr: "ignore" },
+              );
+              const reader = proc.stdout.getReader();
+              const dec = new TextDecoder();
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = dec.decode(value, { stream: true });
+                if (text) send("chunk", { delta: text });
+              }
+              await proc.exited;
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            send("error", { message: msg });
+          }
+
+          send("done", {});
+          try { controller.close(); } catch {}
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          ...CORS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
     }
 
     if (url.pathname === "/api/sessions/summarize" && req.method === "GET") {
