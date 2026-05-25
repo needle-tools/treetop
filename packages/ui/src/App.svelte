@@ -205,6 +205,7 @@
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
+  let commandUrls: Record<string, string> = {};
   /** Shells (Terminal columns the daemon is hosting / has hosted). Used
    *  by the worktree session picker so past + live shells appear next
    *  to Claude/Codex agent sessions instead of hiding under a separate
@@ -715,6 +716,17 @@
       delete next[s.source];
       newTermIds = next;
       if (s.agent === "shell") {
+        // Command PTYs (spawned via custom-link commands) have no
+        // shell header on disk — skip the transcript flip and just
+        // close the column.
+        let isCommandPty = false;
+        for (const [, entry] of commandTermSources) {
+          if (entry.source === s.source) { isCommandPty = true; break; }
+        }
+        if (isCommandPty) {
+          closeSessionInWt(wtPath, s);
+          return;
+        }
         // Shell: replace the source in place so the column survives
         // and flips to ShellView (command history + Resume).
         const transcriptSource = `__transcript__:shell:${termId}`;
@@ -726,15 +738,7 @@
               : x,
           ),
         };
-        // Carry the user's typed title across the source flip so the
-        // ShellView header stays named instead of reverting to the
-        // placeholder once the column moves to its transcript form.
         void migrateSessionTitleOnServer(s.source, transcriptSource);
-        // Mark the now-defunct `__attached__:shell:<id>` form as
-        // dismissed so a UI reload while the daemon's 30s grace timer
-        // is still alive doesn't have restoreLiveShells add the live
-        // attachment alongside the transcript — the duplicate-column +
-        // "always opens in TUI mode after reload" bug.
         dismissShellSource(`__attached__:shell:${termId}`);
       } else {
         // Claude / Codex / Copilot: flip to the read-only chat view by
@@ -3542,6 +3546,15 @@
     } catch {}
   }
 
+  async function refreshCommandUrls(): Promise<void> {
+    try {
+      const res = await fetch("/api/commands/urls");
+      if (!res.ok) return;
+      const body = (await res.json()) as { urls: Record<string, string> };
+      commandUrls = body.urls;
+    } catch {}
+  }
+
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
     es.addEventListener("change", (rawEvt: MessageEvent) => {
@@ -3626,6 +3639,13 @@
       }
       if (payload.kind === "command_start" || payload.kind === "command_exit") {
         void refreshRunningCommands();
+        return;
+      }
+      if (payload.kind === "command_url") {
+        const { linkId, url } = payload as { linkId?: string; url?: string };
+        if (linkId && url) {
+          commandUrls = { ...commandUrls, [linkId]: url };
+        }
         return;
       }
       if (payload.kind === "session_copied") {
@@ -4321,6 +4341,21 @@
         }
       }
     }
+    // Sort by activity: working sessions first, then awaiting, then
+    // by most-recent-activity (lastActive) descending. This keeps the
+    // dock's vertical strip stable enough to scan while surfacing the
+    // sessions the user is most likely looking for at the top.
+    out.sort((a, b) => {
+      // Working > awaiting > idle
+      const stateRank = (e: typeof a) =>
+        e.working ? 2 : e.awaiting ? 1 : 0;
+      const sr = stateRank(b) - stateRank(a);
+      if (sr !== 0) return sr;
+      // Within same state: most recent activity first.
+      const ta = a.lastActive ? Date.parse(a.lastActive) : 0;
+      const tb = b.lastActive ? Date.parse(b.lastActive) : 0;
+      return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
+    });
     return out as any;
   })();
 
@@ -4680,6 +4715,7 @@
     void loadDefaultShell();
     void loadSystemInfo();
     void refreshRunningCommands();
+    void refreshCommandUrls();
     void restoreLiveShells();
     // Global focus listener — whenever the user puts focus into a
     // session column (typing, clicking into the terminal, etc.)
@@ -5416,7 +5452,7 @@
                             {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
                               <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
                               <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                              <span class="wt-tt-date">{c.date ?? ""}</span>
+                              <span class="wt-tt-date">{c.date ? relTime(c.date) : ""}</span>
                               <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
                             {/each}
                           </div>
@@ -5453,7 +5489,7 @@
                             {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
                               <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
                               <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                              <span class="wt-tt-date">{c.date ?? ""}</span>
+                              <span class="wt-tt-date">{c.date ? relTime(c.date) : ""}</span>
                               <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
                             {/each}
                           </div>
@@ -6254,6 +6290,7 @@
                 customLinks={repo.customLinks ?? []}
                 {runningCommandIds}
                 onCommandClick={(l) => handleCommandClick(wt.path, l)}
+                {commandUrls}
                 {openIn}
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
@@ -6339,6 +6376,7 @@
                 customLinks={repo.customLinks ?? []}
                 {runningCommandIds}
                 onCommandClick={(l) => handleCommandClick(wt.path, l)}
+                {commandUrls}
                 {openIn}
                 {openRemote}
                 onAddCustomLink={(input) => addCustomLink(repo.id, input)}
