@@ -99,6 +99,12 @@ main > header > h1 {
   gap: 0.35rem;
   border: none;
 }
+.menubar .tutorial-btn {
+  font-weight: 700;
+  min-width: 1.6rem;
+  padding: 0.3rem 0.4rem;
+  text-align: center;
+}
 .menubar .actions-btn:hover,
 .menubar .actions-btn.open {
   border: none;

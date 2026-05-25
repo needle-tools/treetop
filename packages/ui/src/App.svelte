@@ -43,6 +43,13 @@
   import { refreshMessages } from "./messages-store";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import { marked } from "marked";
+  import OnboardingWalkthrough from "./OnboardingWalkthrough.svelte";
+  import {
+    WALKTHROUGH_STEPS,
+    walkthroughSeen,
+    markWalkthroughSeen,
+    clearWalkthroughSeen,
+  } from "./onboarding-walkthrough";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
@@ -1405,6 +1412,14 @@
     error?: string;
   }
   let onboardingByWt: Record<string, OnboardingState> = {};
+  let walkthroughByWt: Record<string, number | null> = {};
+
+  function restartTutorial(): void {
+    const firstWt = rows.find((r) => r.wt && !r.wt.nonGit)?.wt;
+    if (!firstWt) return;
+    clearWalkthroughSeen(firstWt.path);
+    walkthroughByWt = { ...walkthroughByWt, [firstWt.path]: 0 };
+  }
 
   async function startOnboarding(wtPath: string): Promise<void> {
     newlyAddedRepoPaths.delete(wtPath);
@@ -2778,33 +2793,28 @@
       // paints skeleton rows before the other fetches resolve. The
       // sibling fetches still run in parallel — we just don't await
       // them inside the stream pump.
-      console.log(`[load] start`);
       const reposStream = fetchReposNDJSON({
         onManifest: (skel) => {
           tManifest = performance.now() - tStart;
-          console.log(`[load] manifest after ${tManifest.toFixed(0)}ms (${skel.length} repos)`);
-          // First load: paint skeletons so the user sees structure
-          // immediately. Subsequent reloads: keep already-rendered
-          // rows in place and just sync add/remove from the manifest
-          // — replacing with skeletons would collapse worktrees to
-          // empty for a frame and flicker the whole dashboard.
+          const filtered = pendingRemoval.size > 0
+            ? skel.filter((s) => !pendingRemoval.has(s.id))
+            : skel;
           if (repos.length === 0) {
-            repos = skel;
+            repos = filtered;
           } else {
             const existingById = new Map(repos.map((r) => [r.id, r]));
-            repos = skel.map((s) => existingById.get(s.id) ?? s);
+            repos = filtered.map((s) => existingById.get(s.id) ?? s);
           }
           loading = false;
         },
         onRepo: (full) => {
           repoCount += 1;
-          const dt = performance.now() - tStart;
-          if (tFirstRepo === 0) tFirstRepo = dt;
-          console.log(`[load] repo ${repoCount} (${full.name}) after ${dt.toFixed(0)}ms`);
+          if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
           // If a color save is still in flight for this repo, the
           // daemon's snapshot of `color` is stale (the POST hasn't
           // persisted yet). Preserve the optimistic local value so the
           // UI doesn't flicker back to the old color.
+          if (pendingRemoval.has(full.id)) return;
           if (pendingRepoColor.has(full.id)) {
             const pending = pendingRepoColor.get(full.id);
             if (pending === null) delete (full as { color?: string }).color;
@@ -2815,8 +2825,6 @@
             const next = repos.slice();
             next[idx] = full;
             repos = next;
-          } else {
-            repos = [...repos, full];
           }
         },
       });
@@ -2825,7 +2833,6 @@
         fetch("/api/shells"),
         fetch("/api/session-titles"),
       ]);
-      console.log(`[load] sibling fetches resolved after ${(performance.now() - tStart).toFixed(0)}ms`);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
       // Wait for the stream to finish before reading sibling responses,
       // but DON'T reassign `repos` from the stream's return value — that
@@ -2834,7 +2841,6 @@
       // in-place updates by id). Reassigning would reorder the dashboard
       // on every refresh.
       await reposStream;
-      console.log(`[load] /api/repos stream complete after ${(performance.now() - tStart).toFixed(0)}ms`);
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.
@@ -2862,10 +2868,13 @@
       loading = false;
       loadingSlow = false;
       if (loadingSlowTimer) { clearTimeout(loadingSlowTimer); loadingSlowTimer = null; }
-      console.log(
-        `[load] done after ${(performance.now() - tStart).toFixed(0)}ms ` +
-        `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
-      );
+      const totalMs = performance.now() - tStart;
+      if (totalMs > 200) {
+        console.log(
+          `[load] slow: ${totalMs.toFixed(0)}ms ` +
+          `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
+        );
+      }
     }
   });
 
@@ -2885,8 +2894,11 @@
     }, 150);
   }
 
+  let addFolderBusy = false;
+
   async function pickAndAdd() {
     error = "";
+    addFolderBusy = true;
     try {
       const pick = await fetch("/api/pick-folder", { method: "POST" });
       if (pick.status === 204) return;
@@ -2909,6 +2921,8 @@
       await scrollToNewRepo();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      addFolderBusy = false;
     }
   }
 
@@ -3135,6 +3149,12 @@
    *  on-disk value. `fetchReposNDJSON.onRepo` checks this set and
    *  preserves the local optimistic color for repos it contains. */
   const pendingRepoColor = new Map<string, string | null>();
+
+  /** Repo IDs whose DELETE is in flight. Stale NDJSON streams (started
+   *  before the deletion) would otherwise re-inject the removed repo via
+   *  onManifest / onRepo because singleFlight coalesces the post-delete
+   *  load() with the pre-delete one. Same guard pattern as pendingRepoColor. */
+  const pendingRemoval = new Set<string>();
 
   /** Push a new accent colour for the given repo to the daemon. The
    *  optimistic local mutation here is just for snappy UI; the SSE
@@ -3400,12 +3420,16 @@
 
   async function removeRepo(id: string) {
     error = "";
+    pendingRemoval.add(id);
+    repos = repos.filter((r) => r.id !== id);
     try {
       const res = await fetch(`/api/repos/${id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      pendingRemoval.delete(id);
     }
   }
 
@@ -5274,6 +5298,12 @@
         </Popover>
       {/if}
     </div>
+
+    <button
+      class="actions-btn tutorial-btn"
+      on:click={restartTutorial}
+      title="Replay the UI walkthrough on the first visible repo"
+    ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
   </nav>
 
   {#if loading && repos.length === 0}
@@ -5292,25 +5322,31 @@
         <button
           class="add-folder-cta"
           on:click={pickAndAdd}
+          disabled={addFolderBusy}
           title="Pick a folder to register as a repo"
         >
-          <svg
-            class="add-folder-icon"
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            <path d="M12 11v6" />
-            <path d="M9 14h6" />
-          </svg>
-          <span>Add folder</span>
+          {#if addFolderBusy}
+            <LoadingSpinner size="0.85rem" />
+            <span>Adding…</span>
+          {:else}
+            <svg
+              class="add-folder-icon"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              <path d="M12 11v6" />
+              <path d="M9 14h6" />
+            </svg>
+            <span>Add folder</span>
+          {/if}
         </button>
         <div class="import-sessions-anchor" class:flip-up={importFlipUp}>
           <button
@@ -5387,7 +5423,11 @@
                         title={`Add ${sug.path} to the dashboard`}
                       >
                         <span class="import-row-main">
-                          <span class="import-row-name">{sug.name}</span>
+                          {#if busy}
+                            <span class="import-row-name"><LoadingSpinner size="0.75rem" /> Importing…</span>
+                          {:else}
+                            <span class="import-row-name">{sug.name}</span>
+                          {/if}
                           <span class="import-row-path muted small">{sug.path}</span>
                           {#if sug.repoUrl}
                             <span class="import-row-url muted small">{sug.repoUrl}</span>
@@ -6570,7 +6610,7 @@
             <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
           {/if}
 
-          {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path])}
+          {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path] || walkthroughByWt[wt.path] != null)}
             {@const ob = onboardingByWt[wt.path]}
             <div class="onboarding-section">
               {#if ob && (ob.status === "streaming" || ob.status === "done")}
@@ -6588,6 +6628,18 @@
                   </span>
                   <div class="onboarding-text">{@html marked.parse(ob.text || "", { async: false, breaks: true, gfm: true })}</div>
                 </div>
+                {#if ob.status === "done" && walkthroughByWt[wt.path] == null && !walkthroughSeen(wt.path)}
+                  <div class="onboarding-tour-buttons">
+                    <button class="onboarding-btn" on:click={() => {
+                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: 0 };
+                    }}>Tour the UI</button>
+                    <button class="walkthrough-btn-skip" on:click={() => {
+                      markWalkthroughSeen(wt.path);
+                      delete onboardingByWt[wt.path];
+                      onboardingByWt = onboardingByWt;
+                    }}>Skip onboarding</button>
+                  </div>
+                {/if}
               {:else if ob && ob.status === "error"}
                 <div class="onboarding-error muted small">{ob.error}</div>
                 <button
@@ -6607,6 +6659,29 @@
                     Get Started
                   {/if}
                 </button>
+              {/if}
+              {#if walkthroughByWt[wt.path] != null}
+                <OnboardingWalkthrough
+                  wtPath={wt.path}
+                  currentStep={walkthroughByWt[wt.path] ?? 0}
+                  on:next={() => {
+                    const s = (walkthroughByWt[wt.path] ?? 0) + 1;
+                    if (s >= WALKTHROUGH_STEPS.length) {
+                      markWalkthroughSeen(wt.path);
+                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: null };
+                      delete onboardingByWt[wt.path];
+                      onboardingByWt = onboardingByWt;
+                    } else {
+                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: s };
+                    }
+                  }}
+                  on:skip={() => {
+                    markWalkthroughSeen(wt.path);
+                    walkthroughByWt = { ...walkthroughByWt, [wt.path]: null };
+                    delete onboardingByWt[wt.path];
+                    onboardingByWt = onboardingByWt;
+                  }}
+                />
               {/if}
             </div>
           {/if}
@@ -7051,25 +7126,31 @@
         <button
           class="add-folder-cta add-folder-cta-compact"
           on:click={pickAndAdd}
+          disabled={addFolderBusy}
           title="Pick a folder to register as a repo"
         >
-          <svg
-            class="add-folder-icon"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            <path d="M12 11v6" />
-            <path d="M9 14h6" />
-          </svg>
-          <span>Add folder</span>
+          {#if addFolderBusy}
+            <LoadingSpinner size="0.8rem" />
+            <span>Adding…</span>
+          {:else}
+            <svg
+              class="add-folder-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              <path d="M12 11v6" />
+              <path d="M9 14h6" />
+            </svg>
+            <span>Add folder</span>
+          {/if}
         </button>
         <div class="import-sessions-anchor" class:flip-up={importFlipUp}>
           <button
@@ -7146,7 +7227,11 @@
                         title={`Add ${sug.path} to the dashboard`}
                       >
                         <span class="import-row-main">
-                          <span class="import-row-name">{sug.name}</span>
+                          {#if busy}
+                            <span class="import-row-name"><LoadingSpinner size="0.75rem" /> Importing…</span>
+                          {:else}
+                            <span class="import-row-name">{sug.name}</span>
+                          {/if}
                           <span class="import-row-path muted small">{sug.path}</span>
                           {#if sug.repoUrl}
                             <span class="import-row-url muted small">{sug.repoUrl}</span>

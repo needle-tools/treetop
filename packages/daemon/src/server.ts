@@ -616,6 +616,7 @@ const REPOS_CACHE_MS = 2500;
 type EnrichedRepo = Record<string, unknown> & { id: string };
 let reposInflight: Promise<EnrichedRepo[]> | null = null;
 let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
+let repsCacheGen = 0;
 
 // /api/agent-usage caches its (detectAgents + computeAgentUsage)
 // result for 60s. The data is for an at-a-glance hover tooltip — sub-
@@ -745,6 +746,7 @@ function reposNDJSONFromCache(value: EnrichedRepo[], cors: Record<string, string
  *  concurrent callers can share the work. */
 function reposNDJSONFresh(cors: Record<string, string>): Response {
   const enc = new TextEncoder();
+  const myGen = repsCacheGen;
   let resolveInflight: (v: EnrichedRepo[]) => void;
   let rejectInflight: (e: unknown) => void;
   reposInflight = new Promise<EnrichedRepo[]>((res, rej) => {
@@ -843,7 +845,9 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const ordered = repos
           .map((r) => byId.get(r.id))
           .filter((r): r is EnrichedRepo => r !== undefined);
-        reposCache = { at: Date.now(), value: ordered };
+        if (myGen === repsCacheGen) {
+          reposCache = { at: Date.now(), value: ordered };
+        }
         resolveInflight(ordered);
         const totalMs = performance.now() - t0;
         const enrichMs = performance.now() - tEnrichStart;
@@ -908,6 +912,7 @@ async function reposNDJSONResponse(
 function invalidateReposCache(): void {
   reposCache = null;
   reposInflight = null;
+  repsCacheGen++;
 }
 
 // In-memory favicon cache. Keyed by request URL; entries hold the bytes

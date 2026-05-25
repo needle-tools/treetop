@@ -58,10 +58,11 @@ for (const [label, path] of Object.entries(paths)) {
 
 // Open / focus the output directory so the user can grab the installer.
 if (paths.app && existsSync(paths.app)) {
-  console.log(`\n  open ${paths.app}\n`);
-  await $`open -R ${paths.app}`.nothrow().quiet();
+  const appDir = resolve(paths.app, "..");
+  console.log(`\n  Opening:  ${appDir}\n`);
+  Bun.spawn(["open", appDir], { stdio: ["ignore", "ignore", "ignore"] });
 } else if (isWin && paths.setup && existsSync(paths.setup)) {
   const setupDir = resolve(paths.setup, "..");
   console.log(`\n  Opening:  ${setupDir}\n`);
-  await $`explorer ${setupDir}`.nothrow().quiet();
+  Bun.spawn(["explorer.exe", setupDir], { stdio: ["ignore", "ignore", "ignore"] });
 }
