@@ -440,18 +440,19 @@
 
   /** Minimum recent-message count before we show the activity badge.
    *  Below this the session isn't "hot" enough to badge. */
-  const RECENT_MIN = 5;
-  /** Only show badges for the top entries (above the 75th percentile
-   *  of all recent counts). Avoids badging every session when all
-   *  have similar low activity. */
+  const RECENT_MIN = 3;
+  /** Only show badges for entries with meaningful recent activity.
+   *  Uses the median of all non-zero counts as the cutoff so the
+   *  badge surfaces the busier half and stays hidden for quiet
+   *  sessions. Falls back to RECENT_MIN when few entries qualify. */
   $: recentThreshold = (() => {
     const counts = entries
       .map((e) => e.recentMessageCount ?? 0)
       .filter((c) => c >= RECENT_MIN)
-      .sort((a, b) => b - a);
+      .sort((a, b) => a - b);
     if (counts.length === 0) return Infinity;
-    const p75 = counts[Math.floor(counts.length * 0.25)] ?? RECENT_MIN;
-    return Math.max(RECENT_MIN, p75);
+    const median = counts[Math.floor(counts.length / 2)] ?? RECENT_MIN;
+    return Math.max(RECENT_MIN, median);
   })();
 </script>
 
@@ -865,7 +866,8 @@
     font-size: 0.62rem;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
-    color: var(--brand, #60b74c);
+    color: var(--text-1, #e8e8e8);
+    opacity: 0.7;
     padding: 0 0.25em;
   }
   .dock-label-title {
