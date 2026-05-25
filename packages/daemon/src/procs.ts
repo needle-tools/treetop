@@ -9,7 +9,7 @@
  */
 
 import { $ } from "bun";
-import { stat } from "node:fs/promises";
+import { stat, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -46,6 +46,31 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
     "/usr/local/bin/" + name,
     "/usr/bin/" + name,
   ];
+  // nvm / fnm / volta / n — node version managers install global npm
+  // packages under their own prefix which may not be in the daemon's
+  // PATH (e.g. when launched via launchd / nohup without sourcing
+  // .zshrc). Probe the most common layouts.
+  const nvmDir = process.env.NVM_DIR || join(home, ".nvm");
+  try {
+    const nvmVersions = await readdir(join(nvmDir, "versions", "node")).catch(() => []);
+    for (const v of nvmVersions) {
+      wellKnown.push(join(nvmDir, "versions", "node", v, "bin", name));
+    }
+  } catch { /* nvm not installed */ }
+  // fnm
+  try {
+    const fnmDir = process.env.FNM_DIR || join(home, ".fnm");
+    const fnmVersions = await readdir(join(fnmDir, "node-versions")).catch(() => []);
+    for (const v of fnmVersions) {
+      wellKnown.push(join(fnmDir, "node-versions", v, "installation", "bin", name));
+    }
+  } catch { /* fnm not installed */ }
+  // volta
+  wellKnown.push(join(home, ".volta", "bin", name));
+  // n (tj/n)
+  wellKnown.push(join(home, "n", "bin", name));
+  // npm global (default prefix)
+  wellKnown.push(join(home, ".npm-global", "bin", name));
   const all = [...wellKnown];
   // Scan PATH manually — Bun's built-in `which` doesn't support `-a`,
   // so we'd only see the first hit. Walking PATH lets us find every

@@ -2223,29 +2223,18 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/agents/installed" && req.method === "GET") {
-      // Which interactive agent CLIs are available? Combines binary
-      // resolution (the CLI is on disk) with session detection (the
-      // agent has been used, so its CLI must be installed somewhere).
-      // This unifies the + session picker with the usage display: if
-      // sessions exist for an agent, it appears here even when the
-      // binary isn't in a well-known path.
-      const candidates = ["claude", "codex", "ollama"] as const;
+      // Which interactive agent CLIs are installed? Uses
+      // `resolveAgentBinary` so multi-install setups (e.g. homebrew
+      // codex + bun-installed codex from a self-update) report the
+      // newest binary, not whatever PATH order happens to pick.
+      // Also probes nvm / fnm / volta / n prefixes so agents
+      // installed via node version managers are found even when the
+      // daemon's PATH doesn't include them.
+      const candidates = ["claude", "codex", "ollama"];
       const installed: { name: string; path: string }[] = [];
-      const found = new Set<string>();
       for (const name of candidates) {
         const path = await resolveAgentBinary(name);
-        if (path) {
-          installed.push({ name, path });
-          found.add(name);
-        }
-      }
-      // Also include agents with detected sessions but no resolved binary.
-      const sessions = await cachedDetectAgents();
-      for (const s of sessions) {
-        if (found.has(s.agent)) continue;
-        if (s.agent === "copilot") continue; // copilot isn't a standalone CLI
-        found.add(s.agent);
-        installed.push({ name: s.agent, path: s.source });
+        if (path) installed.push({ name, path });
       }
       return json({ installed });
     }
