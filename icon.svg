@@ -25,42 +25,45 @@
       <stop offset="100%" stop-color="#74AF52"/>
     </linearGradient>
     <linearGradient id="trail1" x1="100%" y1="0%" x2="0%" y2="0%">
-      <stop offset="0%" stop-color="#99CC33" stop-opacity="0.45"/>
+      <stop offset="0%" stop-color="#99CC33" stop-opacity="0.5"/>
       <stop offset="100%" stop-color="#62D399" stop-opacity="0"/>
     </linearGradient>
     <linearGradient id="trail2" x1="100%" y1="0%" x2="0%" y2="0%">
-      <stop offset="0%" stop-color="#74AF52" stop-opacity="0.3"/>
+      <stop offset="0%" stop-color="#74AF52" stop-opacity="0.35"/>
       <stop offset="100%" stop-color="#0BA398" stop-opacity="0"/>
     </linearGradient>
   </defs>
 
-  <!-- V formation of three paper planes, flying upper-right -->
-  <g transform="translate(355, 185) rotate(-38) scale(1.1)">
+  <!-- V formation of three paper planes, flying upper-right.
+       Centered in 512×512: the group pivot is the lead tip;
+       translate places it so the formation's visual center
+       lands near (256,256) after rotation. -->
+  <g transform="translate(320, 230) rotate(-38) scale(1.0)">
 
-    <!-- Feathered motion trails -->
-    <path d="M-155,0 L-380,-6 L-380,6 Z" fill="url(#trail1)" opacity="0.6"/>
-    <path d="M-225,-100 L-390,-100 L-390,-92 Z" fill="url(#trail2)" opacity="0.45"/>
-    <path d="M-225,100 L-390,100 L-390,92 Z" fill="url(#trail2)" opacity="0.45"/>
+    <!-- Feathered motion trails — wider for visibility at small sizes -->
+    <path d="M-130,0 L-370,-10 L-370,10 Z" fill="url(#trail1)" opacity="0.55"/>
+    <path d="M-180,-90 L-370,-90 L-370,-76 Z" fill="url(#trail2)" opacity="0.4"/>
+    <path d="M-180,90 L-370,90 L-370,76 Z" fill="url(#trail2)" opacity="0.4"/>
 
     <!-- Left wingman -->
-    <g transform="translate(-130, -105) scale(0.65)">
-      <polygon points="0,0 -210,-78 -155,0" fill="url(#wing-top)"/>
-      <polygon points="0,0 -210,52 -155,0" fill="url(#wing-bottom)"/>
-      <polygon points="0,0 -155,-5 -155,5" fill="url(#wing-fold)"/>
+    <g transform="translate(-110, -92) scale(0.6)">
+      <polygon points="0,0 -165,-120 -120,0" fill="url(#wing-top)"/>
+      <polygon points="0,0 -165,95 -120,0" fill="url(#wing-bottom)"/>
+      <polygon points="0,0 -120,-11 -120,11" fill="url(#wing-fold)"/>
     </g>
 
     <!-- Right wingman -->
-    <g transform="translate(-130, 105) scale(0.65)">
-      <polygon points="0,0 -210,-78 -155,0" fill="url(#wing-top)"/>
-      <polygon points="0,0 -210,52 -155,0" fill="url(#wing-bottom)"/>
-      <polygon points="0,0 -155,-5 -155,5" fill="url(#wing-fold)"/>
+    <g transform="translate(-110, 92) scale(0.6)">
+      <polygon points="0,0 -165,-120 -120,0" fill="url(#wing-top)"/>
+      <polygon points="0,0 -165,95 -120,0" fill="url(#wing-bottom)"/>
+      <polygon points="0,0 -120,-11 -120,11" fill="url(#wing-fold)"/>
     </g>
 
     <!-- Lead plane (largest, in front) -->
     <g>
-      <polygon points="0,0 -210,-78 -155,0" fill="url(#lead-top)"/>
-      <polygon points="0,0 -210,52 -155,0" fill="url(#lead-bottom)"/>
-      <polygon points="0,0 -155,-5 -155,5" fill="url(#lead-fold)"/>
+      <polygon points="0,0 -165,-120 -120,0" fill="url(#lead-top)"/>
+      <polygon points="0,0 -165,95 -120,0" fill="url(#lead-bottom)"/>
+      <polygon points="0,0 -120,-11 -120,11" fill="url(#lead-fold)"/>
     </g>
   </g>
 </svg>
