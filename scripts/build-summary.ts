@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { resolve, join } from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { resolve, join, basename } from "node:path";
+import { existsSync, statSync, readdirSync, rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { $ } from "bun";
 
@@ -18,6 +18,44 @@ if (process.platform === "darwin") {
 if (isWin) {
   paths.setup = resolve(ROOT, "build/stable-win-x64/Supergit-Setup.exe");
   paths.archive = resolve(ROOT, "build/stable-win-x64/Supergit-Setup.tar.zst");
+}
+
+// Electrobun stable builds produce a self-extracting .app that decompresses on
+// first launch. We pre-extract it here so the build output is ready to run
+// immediately (no "open once to initialize" step needed for AirDrop/sharing).
+if (process.platform === "darwin" && paths.app && existsSync(paths.app)) {
+  const resources = join(paths.app, "Contents", "Resources");
+  const zstFile = readdirSync(resources).find(f => f.endsWith(".tar.zst"));
+  if (zstFile) {
+    console.log(`  Pre-extracting self-extracting bundle...`);
+    const buildDir = resolve(paths.app, "..");
+    const zstPath = join(resources, zstFile);
+    const tarPath = join(buildDir, "Supergit.app.tar");
+
+    // zig-zstd lives in electrobun's dist, not inside the self-extracting wrapper
+    const zigZstd = resolve(ROOT, "node_modules/electrobun/dist-macos-arm64/zig-zstd");
+    if (!existsSync(zigZstd)) {
+      console.warn(`  ⚠ zig-zstd not found at ${zigZstd}, skipping pre-extraction`);
+    } else {
+      const dec = Bun.spawnSync([zigZstd, "decompress", "-i", zstPath, "-o", tarPath], {
+        cwd: buildDir, stdout: "inherit", stderr: "inherit",
+      });
+      if (!dec.success) throw new Error("zig-zstd decompress failed");
+
+      // Remove the self-extracting wrapper
+      rmSync(paths.app, { recursive: true });
+
+      // Untar the real app bundle
+      const untar = Bun.spawnSync(["tar", "-xf", tarPath, "-C", buildDir], {
+        cwd: buildDir, stdout: "inherit", stderr: "inherit",
+      });
+      if (!untar.success) throw new Error("tar extract failed");
+
+      // Clean up
+      rmSync(tarPath, { force: true });
+      console.log(`  Extracted → ready-to-run app bundle (${await sizeOf(paths.app)})`);
+    }
+  }
 }
 
 // Cross-platform recursive size (avoids `du`, which doesn't exist on Windows).

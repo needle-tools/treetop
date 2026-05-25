@@ -27,11 +27,13 @@ const ICONSET_SIZES = [16, 32, 64, 128, 256, 512];
 // --- Windows ICO sizes ------------------------------------------------
 const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
 
-async function renderPng(svgBuf, size) {
-  return sharp(svgBuf, { density: Math.max(300, size * 2) })
-    .resize(size, size)
-    .png()
-    .toBuffer();
+const MAC_ICON_BG = "#2d2d28";
+
+async function renderPng(svgBuf, size, { background } = {}) {
+  let pipeline = sharp(svgBuf, { density: Math.max(300, size * 2) })
+    .resize(size, size);
+  if (background) pipeline = pipeline.flatten({ background });
+  return pipeline.png().toBuffer();
 }
 
 // ---- ICO encoder (BMP-in-ICO for ≤48px, embedded PNG for larger) -----
@@ -83,12 +85,12 @@ async function main() {
   const iconsetJobs = [];
   for (const s of ICONSET_SIZES) {
     iconsetJobs.push(
-      renderPng(svgBuf, s).then((buf) =>
+      renderPng(svgBuf, s, { background: MAC_ICON_BG }).then((buf) =>
         writeFile(join(ICONSET_DIR, `icon_${s}x${s}.png`), buf),
       ),
     );
     iconsetJobs.push(
-      renderPng(svgBuf, s * 2).then((buf) =>
+      renderPng(svgBuf, s * 2, { background: MAC_ICON_BG }).then((buf) =>
         writeFile(join(ICONSET_DIR, `icon_${s}x${s}@2x.png`), buf),
       ),
     );
