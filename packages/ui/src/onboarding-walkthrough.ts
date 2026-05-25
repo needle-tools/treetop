@@ -45,6 +45,37 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
       "Your agent sessions appear here as columns. Scroll horizontally to see them all.",
     placement: "top",
   },
+  {
+    id: "sticky-notes",
+    emoji: "\u{1F4CC}",
+    target: (wt) =>
+      document.querySelector<HTMLElement>(
+        `[data-wt-row="${CSS.escape(wt)}"] .notes-add`,
+      ),
+    message:
+      "Pin sticky notes to any repo or worktree — jot down TODOs, context, or reminders.",
+    placement: "bottom",
+  },
+  {
+    id: "emoji-sticker",
+    emoji: "\u{1F3A8}",
+    target: (wt) =>
+      document.querySelector<HTMLElement>(
+        `[data-wt-row="${CSS.escape(wt)}"] .notes-add-emoji`,
+      ),
+    message:
+      "Add an emoji sticker to mark a repo's status — ship it, WIP, on fire, whatever fits.",
+    placement: "bottom",
+  },
+  {
+    id: "menubar",
+    emoji: "\u{2699}\u{FE0F}",
+    target: () =>
+      document.querySelector<HTMLElement>(".menubar"),
+    message:
+      "The menubar gives you quick access to notes, actions, events, and this help button. You can replay this tour anytime from the \u{2753} icon.",
+    placement: "bottom",
+  },
 ];
 
 export function walkthroughHash(): string {
