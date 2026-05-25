@@ -37,6 +37,7 @@
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
   import CopySessionDialog from "./CopySessionDialog.svelte";
+  import RepairSessionDialog from "./RepairSessionDialog.svelte";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
@@ -587,6 +588,10 @@
    *  by NewSessionCol's on:workingChange (which TerminalView raises on
    *  PTY frames). Drives the rotating-gradient border on the agent pill. */
   let transientWorking: Record<string, boolean> = {};
+  /** Sources being promoted from `__new__:*` to a real JSONL path.
+   *  Checked by `closeColumn` to skip the outro — the column isn't
+   *  closing, it's upgrading to SessionView. */
+  const promotedSources = new Set<string>();
   /** ms timestamp of when each source last entered the "working" state.
    *  Used to filter out brief PTY output bursts (status-bar redraws,
    *  resize-triggered re-renders) that don't represent real agent work
@@ -731,6 +736,7 @@
         // Shell: replace the source in place so the column survives
         // and flips to ShellView (command history + Resume).
         const transcriptSource = `__transcript__:shell:${termId}`;
+        promotedSources.add(s.source);
         openSessionsByWt = {
           ...openSessionsByWt,
           [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
@@ -754,6 +760,7 @@
           ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
           : undefined;
         if (match) {
+          promotedSources.add(s.source);
           openSessionsByWt = {
             ...openSessionsByWt,
             [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
@@ -3787,6 +3794,7 @@
         // SessionView. Carry the daemon termId so SessionView
         // reattaches to the live PTY via attachTermId.
         if (stampedSource && ev.source) {
+          promotedSources.add(stampedSource);
           const termId = newTermIds[stampedSource];
           const realSource = ev.source!;
           openSessionsByWt = {
@@ -4594,6 +4602,10 @@
    *  `prefers-reduced-motion: reduce` short-circuits to a 0-duration
    *  removal — instant, but still semantically a transition. */
   function closeColumn(node: HTMLElement) {
+    const src = node.dataset.sessionSource ?? "";
+    if (promotedSources.delete(src)) {
+      return { duration: 0 };
+    }
     if (
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -6801,6 +6813,7 @@
                               // mechanism for reload continuity.
                               if (s.source.startsWith("__new__:shell:")) {
                                 const attachedSource = `__attached__:shell:${e.detail.id}`;
+                                promotedSources.add(s.source);
                                 openSessionsByWt = {
                                   ...openSessionsByWt,
                                   [wt.path]: (openSessionsByWt[wt.path] ?? []).map(
@@ -7166,6 +7179,7 @@
 <ShareSessionDialog />
 <ReceiveInviteDialog />
 <CopySessionDialog />
+<RepairSessionDialog />
 
 {#if dirtyCheckout}
   <div

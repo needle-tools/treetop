@@ -9,6 +9,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
+  import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
@@ -825,6 +826,18 @@
         // the fly animation launches from where the user actually
         // clicked, not from the whole session column.
         onSelect: (triggerRect: DOMRect) => void saveAsLink(triggerRect),
+      },
+      {
+        kind: "action",
+        label: "Repair session",
+        iconSvg: [
+          "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
+        ],
+        disabled: agent !== "claude",
+        title: agent === "claude"
+          ? "Diagnose and repair broken parent chains in the JSONL file"
+          : "Repair is only supported for Claude sessions",
+        onSelect: () => void openRepair(source),
       },
     ];
     if (onContinueWith && session && session.messages.length > 0) {

@@ -1,6 +1,6 @@
 import { join, resolve, normalize, sep, dirname } from "node:path";
 import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
-import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile, readFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
 import {
@@ -36,6 +36,7 @@ import {
 import { computeAgentUsage, topClaudeSessionsByTokens } from "./agent-usage";
 import { startActivityTail, onActivity } from "./activity";
 import { getSessionResponseJson, sessionCacheStats, parseSessionFile } from "./sessions";
+import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
 import { serveImage } from "./images";
 import { pickFolder, pickFile } from "./picker";
 import { openIn, openDefault, detectEditors } from "./open";
@@ -2960,6 +2961,75 @@ const server = Bun.serve<TermWsData, never>({
           "X-Accel-Buffering": "no",
         },
       });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Session repair — diagnose and fix broken parent chains in
+    // Claude Code JSONL files.
+    // ──────────────────────────────────────────────────────────────
+
+    if (url.pathname === "/api/sessions/repair" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { source?: unknown; dryRun?: unknown }
+        | null;
+      const source = typeof body?.source === "string" ? body.source : "";
+      const dryRun = body?.dryRun === true;
+      if (!source) {
+        return json({ error: "source required" }, { status: 400 });
+      }
+      const resolved = resolveSessionAgent(source);
+      if (!resolved) {
+        return json(
+          { error: "source is outside any known agent root" },
+          { status: 403 },
+        );
+      }
+      if (resolved.agent !== "claude") {
+        return json(
+          { error: "repair is only supported for Claude sessions" },
+          { status: 400 },
+        );
+      }
+      try {
+        const text = await readFile(resolved.normalised, "utf-8");
+        const diagnosis = diagnoseClaudeSession(text);
+        if (dryRun || diagnosis.brokenLinks.length === 0) {
+          return json({
+            diagnosis: {
+              totalEntries: diagnosis.totalEntries,
+              chainEntries: diagnosis.chainEntries,
+              brokenLinks: diagnosis.brokenLinks.length,
+              details: diagnosis.brokenLinks.map((b) => ({
+                missingUuid: b.missingUuid.slice(0, 8),
+                referencedBy: b.referencedBy.slice(0, 8),
+                lineIndex: b.lineIndex,
+              })),
+            },
+            repaired: false,
+          });
+        }
+        const result = await repairClaudeSession(resolved.normalised);
+        return json({
+          diagnosis: {
+            totalEntries: diagnosis.totalEntries,
+            chainEntries: diagnosis.chainEntries,
+            brokenLinks: diagnosis.brokenLinks.length,
+            details: diagnosis.brokenLinks.map((b) => ({
+              missingUuid: b.missingUuid.slice(0, 8),
+              referencedBy: b.referencedBy.slice(0, 8),
+              lineIndex: b.lineIndex,
+            })),
+          },
+          repaired: true,
+          repairedCount: result.repaired,
+          backupPath: result.backupPath,
+        });
+      } catch (err) {
+        return json(
+          { error: err instanceof Error ? err.message : "Repair failed" },
+          { status: 500 },
+        );
+      }
     }
 
     // ──────────────────────────────────────────────────────────────
