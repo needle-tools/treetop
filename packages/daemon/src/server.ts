@@ -4502,12 +4502,12 @@ const server = Bun.serve<TermWsData, never>({
           { status: 400 },
         );
       }
-      // %H<NUL>%s<NUL>%an<NUL>%ar — NUL between fields so subjects can
-      // contain any whitespace and survive round-trip. We fetch BOTH
-      // directions of the divergence: ahead (commits we haven't pushed)
-      // and behind (commits we'd get on the next fetch/pull). Each is
-      // capped at 20; the UI tooltip further caps at the first 10.
-      const fmt = "%H%x00%s%x00%an%x00%ar";
+      // %H<NUL>%s<NUL>%an<NUL>%aI — NUL between fields so subjects can
+      // contain any whitespace and survive round-trip. %aI gives an
+      // ISO-8601 author date so the UI can format its own relative
+      // timestamps with consistent thresholds (git's %ar uses odd
+      // breakpoints, e.g. "29 hours ago" instead of "1d ago").
+      const fmt = "%H%x00%s%x00%an%x00%aI";
       const [
         statusOut,
         aheadOut,

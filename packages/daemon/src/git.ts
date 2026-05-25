@@ -1013,7 +1013,7 @@ export function parseNumstat(out: string): Record<string, NumstatEntry> {
  *  yet (or, in the inbound direction, commits we haven't fetched/pulled
  *  yet). Drives the "↑N" / "↓N" hover tooltips. Input is the output of
  *
- *      git log <range> --pretty=format:%H%x00%s%x00%an%x00%ar -n <limit>
+ *      git log <range> --pretty=format:%H%x00%s%x00%an%x00%aI -n <limit>
  *
  *  using NUL bytes between fields so subjects with arbitrary whitespace
  *  / punctuation round-trip verbatim. Newlines separate commits. */

@@ -798,8 +798,8 @@ button.branch-button:hover {
   color: var(--chip-yellow-text);
 }
 .status-badge-sync {
-  background: var(--surface-3);
-  color: var(--status-clean);
+  background: var(--status-clean);
+  color: var(--surface-0);
   padding: 0.05rem 0.3rem;
   cursor: default;
 }
