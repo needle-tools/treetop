@@ -386,7 +386,16 @@
       });
     }));
     xterm.open(containerEl);
-    fit.fit();
+    // Defer the initial fit to rAF so the flex parent has settled its
+    // layout. A synchronous fit.fit() here races the browser's layout
+    // pass when the column is freshly mounted (e.g. after a source-key
+    // promotion) and can measure containerEl at near-zero width, giving
+    // xterm cols=2 and producing a 2-char-wide terminal.
+    requestAnimationFrame(() => {
+      if (fit && containerEl && containerEl.clientWidth > 0) {
+        try { fit.fit(); } catch { /* layout race; ResizeObserver will retry */ }
+      }
+    });
 
     // Capture-phase listener on the xterm container intercepts
     // Cmd/Ctrl shortcuts BEFORE the native Edit menu can claim them.

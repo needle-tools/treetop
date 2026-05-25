@@ -1395,6 +1395,8 @@
 
   // --- Onboarding: "Get Started" inline AI description ----------------
 
+  const newlyAddedRepoPaths = new Set<string>();
+
   interface OnboardingState {
     status: "loading" | "streaming" | "done" | "error";
     text: string;
@@ -1405,6 +1407,7 @@
   let onboardingByWt: Record<string, OnboardingState> = {};
 
   async function startOnboarding(wtPath: string): Promise<void> {
+    newlyAddedRepoPaths.delete(wtPath);
     onboardingByWt = {
       ...onboardingByWt,
       [wtPath]: { status: "loading", text: "" },
@@ -1794,7 +1797,6 @@
   ): Promise<void> {
     if (oldSource === newSource) return;
     const existing = newSessionTitles[oldSource];
-    if (!existing) return; // nothing to migrate
     try {
       const res = await fetch("/api/session/title/migrate", {
         method: "POST",
@@ -1804,9 +1806,7 @@
       if (!res.ok) return;
       const next = { ...newSessionTitles };
       delete next[oldSource];
-      // If the user already named the destination, the daemon kept its
-      // existing title; mirror that so we don't override on the client.
-      if (!next[newSource]) next[newSource] = existing;
+      if (existing && !next[newSource]) next[newSource] = existing;
       newSessionTitles = next;
     } catch {
       // best-effort
@@ -2904,6 +2904,7 @@
         const body = await add.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${add.status}`);
       }
+      newlyAddedRepoPaths.add(path);
       await load();
       await scrollToNewRepo();
     } catch (e) {
@@ -3015,6 +3016,7 @@
       // popover reflects the new state without a refetch round-trip,
       // then refresh the dashboard so the new row appears.
       importSuggestions = importSuggestions.filter((s) => s.path !== path);
+      newlyAddedRepoPaths.add(path);
       await load();
       // Close the popover when the list is empty — nothing left to do.
       if (importSuggestions.length === 0) importSessionsOpen = false;
@@ -3810,11 +3812,29 @@
                 : x,
             ),
           };
-          if (transientWorking[stampedSource] !== undefined) {
-            transientWorking = { ...transientWorking, [realSource]: transientWorking[stampedSource] };
+          {
+            const w = { ...transientWorking };
+            if (w[stampedSource] !== undefined) { w[realSource] = w[stampedSource]; delete w[stampedSource]; }
+            transientWorking = w;
           }
-          if (transientAwaiting[stampedSource] !== undefined) {
-            transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[stampedSource] };
+          {
+            const a = { ...transientAwaiting };
+            if (a[stampedSource] !== undefined) { a[realSource] = a[stampedSource]; delete a[stampedSource]; }
+            transientAwaiting = a;
+          }
+          if (transientExited[stampedSource] !== undefined) {
+            const e = { ...transientExited };
+            e[realSource] = e[stampedSource]; delete e[stampedSource];
+            transientExited = e;
+          }
+          if (transientFinishedAt[stampedSource] !== undefined) {
+            const f = { ...transientFinishedAt };
+            f[realSource] = f[stampedSource]; delete f[stampedSource];
+            transientFinishedAt = f;
+          }
+          if (workingStartedAt[stampedSource] !== undefined) {
+            workingStartedAt[realSource] = workingStartedAt[stampedSource];
+            workingStartedAt[stampedSource] = undefined;
           }
           void migrateSessionTitleOnServer(stampedSource, realSource);
         }
@@ -6550,7 +6570,7 @@
             <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
           {/if}
 
-          {#if wt && (openSessionsByWt[wt.path]?.length ?? 0) === 0 && (!wt.agents || wt.agents.length === 0)}
+          {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path])}
             {@const ob = onboardingByWt[wt.path]}
             <div class="onboarding-section">
               {#if ob && (ob.status === "streaming" || ob.status === "done")}

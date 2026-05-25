@@ -10,7 +10,7 @@
    * their local snapshot (since the daemon's title flows back via
    * /api/repos / /api/shells / /api/session on the next refresh).
    */
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
 
   /** Storage key for /api/session/title. Whatever string the daemon uses
    *  to index this entity's title (a JSONL path, `__new__:agent:id`,
@@ -85,6 +85,16 @@
       cancel();
     }
   }
+
+  onDestroy(() => {
+    if (editing && draft && draft !== current) {
+      fetch("/api/session/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, title: draft }),
+      }).catch(() => {});
+    }
+  });
 </script>
 
 {#if editing}
