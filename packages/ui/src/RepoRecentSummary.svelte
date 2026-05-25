@@ -390,10 +390,12 @@
     return `last ${Math.round(days / 30)}mo`;
   }
 
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
   onMount(() => {
-    void probe();
+    startupTimer = setTimeout(() => void probe(), 3000);
   });
   onDestroy(() => {
+    clearTimeout(startupTimer);
     io?.disconnect();
     cancelQueued?.();
     aborter?.abort();

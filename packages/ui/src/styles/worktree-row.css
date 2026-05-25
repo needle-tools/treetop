@@ -1478,8 +1478,10 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   transition: background 120ms ease, border-color 120ms ease;
 }
 .onboarding-btn:hover:not(:disabled) {
-  background: var(--surface-3, #333);
   border-color: var(--text-muted, #888);
+}
+.onboarding-cta-row .onboarding-btn:hover:not(:disabled) {
+  border-right: none;
 }
 .onboarding-btn:disabled {
   opacity: 0.6;
@@ -1526,9 +1528,29 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   padding-left: 1.4em;
 }
 .onboarding-cta-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  display: inline-flex;
+  align-items: stretch;
+}
+.onboarding-cta-row .onboarding-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+.onboarding-cta-row .walkthrough-btn-skip {
+  border: 1px solid var(--surface-3, #444);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: var(--radius-md, 6px);
+  border-bottom-right-radius: var(--radius-md, 6px);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
+  background: var(--surface-2, #2a2a2a);
+  color: var(--text-muted, #888);
+  transition: border-color 120ms ease;
+}
+.onboarding-cta-row .walkthrough-btn-skip:hover {
+  border-color: var(--text-muted, #888);
+  background: var(--surface-2, #2a2a2a);
 }
 .onboarding-error {
   color: var(--error, #e55);

@@ -1418,7 +1418,7 @@
     const firstWt = rows.find((r) => r.wt && !r.wt.nonGit)?.wt;
     if (!firstWt) return;
     clearWalkthroughSeen(firstWt.path);
-    walkthroughByWt = { ...walkthroughByWt, [firstWt.path]: 0 };
+    walkthroughByWt = { [firstWt.path]: 0 };
   }
 
   async function startOnboarding(wtPath: string): Promise<void> {
@@ -6531,7 +6531,7 @@
                 ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
                 : "Remove this folder from supergit's workspace. The folder on disk is NOT deleted."}
               on:click={() => {
-                if (wt && !wt.nonGit) {
+                if (wt && !wt.nonGit && repo.worktrees.length > 1) {
                   hideWorktreeRow(
                     repo.id,
                     wt.path,
@@ -6603,10 +6603,7 @@
             </div>
           {/if}
 
-          {#if isFirstOfRepo}
-            <!-- "What happened recently" — repo-level cached
-                 summary. Rendered below the row-status line. Only
-                 renders on the first row of each repo. -->
+          {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
             <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
           {/if}
 
@@ -6631,7 +6628,7 @@
                 {#if ob.status === "done" && walkthroughByWt[wt.path] == null && !walkthroughSeen(wt.path)}
                   <div class="onboarding-tour-buttons">
                     <button class="onboarding-btn" on:click={() => {
-                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: 0 };
+                      walkthroughByWt = { [wt.path]: 0 };
                     }}>Tour the UI</button>
                     <button class="walkthrough-btn-skip" on:click={() => {
                       markWalkthroughSeen(wt.path);
@@ -6651,7 +6648,7 @@
                   <button
                     class="onboarding-btn"
                     on:click={() => {
-                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: 0 };
+                      walkthroughByWt = { [wt.path]: 0 };
                     }}
                   >Tour the UI</button>
                   <button

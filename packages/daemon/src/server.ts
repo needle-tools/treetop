@@ -791,11 +791,13 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         // with agent scanning so the total wall time is max(git, agents)
         // instead of git + agents.
         const tAgentsStart = performance.now();
+        let titledAgentCount = 0;
         const titledP = Promise.all([
           cachedDetectAgents(),
           workspace.listSessionTitles(),
         ]).then(([agents, titles]) => {
           const agentsMs = performance.now() - tAgentsStart;
+          titledAgentCount = agents.length;
           if (agentsMs > 200) {
             console.log(`supergit daemon: agents=${agentsMs.toFixed(0)}ms (${agents.length} sessions)`);
           }
@@ -867,7 +869,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
         const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
         console.log(
           `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
-          `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${agents.length}) ` +
+          `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${titledAgentCount}) ` +
           `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
           (slowestRepo ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms` : "") +
           (slowestWt ? ` slowestWt=${slowestWt.wt}:${slowestWt.ms.toFixed(0)}ms` : "")

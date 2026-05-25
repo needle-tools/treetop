@@ -36,10 +36,16 @@
     });
   }
 
+  function getRowEl(): HTMLElement | null {
+    return document.querySelector<HTMLElement>(
+      `[data-wt-row="${CSS.escape(wtPath)}"]`,
+    );
+  }
+
   function getTarget() {
     const step = WALKTHROUGH_STEPS[currentStep];
     if (!step) return null;
-    const el = step.target(wtPath);
+    const el = step.target(wtPath, getRowEl());
     if (!el) return null;
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return null;
@@ -93,7 +99,8 @@
     targetMissing = false;
     transitioning = true;
 
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const row = el.closest("[data-wt-row]") ?? el;
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
     await wait(350);
 
     const r = el.getBoundingClientRect();
@@ -181,12 +188,13 @@
 
   let mounted = false;
 
-  onMount(() => {
+  onMount(async () => {
     document.body.appendChild(highlightEl!);
     document.body.appendChild(tooltipEl!);
     window.addEventListener("scroll", onScrollResize, true);
     window.addEventListener("resize", onScrollResize);
     mounted = true;
+    await wait(100);
     void animateEntrance();
   });
 

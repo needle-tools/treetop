@@ -6,7 +6,7 @@ export interface WalkthroughStep {
   id: string;
   emoji: string;
   emojiAnim?: EmojiAnim;
-  target: (wtPath: string) => HTMLElement | null;
+  target: (wtPath: string, rowEl?: HTMLElement | null) => HTMLElement | null;
   message: string;
   placement: "top" | "bottom";
 }
@@ -16,10 +16,8 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "new-session",
     emoji: "\u{1F680}",
     emojiAnim: "fly-up",
-    target: (wt) =>
-      document.querySelector<HTMLElement>(
-        `[data-new-agent-anchor="${CSS.escape(wt)}"]`,
-      ),
+    target: (_wt, row) =>
+      row?.querySelector<HTMLElement>("[data-new-agent-anchor]") ?? null,
     message:
       "Click the + button to start a new session — pick Claude, Codex, Ollama, or a plain terminal.",
     placement: "bottom",
@@ -28,10 +26,8 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "open-in-actions",
     emoji: "\u{1F517}",
     emojiAnim: "bounce",
-    target: (wt) =>
-      document.querySelector<HTMLElement>(
-        `[data-wt-row="${CSS.escape(wt)}"] .row-status`,
-      ),
+    target: (_wt, row) =>
+      row?.querySelector<HTMLElement>(".row-status") ?? null,
     message:
       "Open this repo in your editor, terminal, Fork, or add custom links to dashboards and staging URLs.",
     placement: "bottom",
@@ -40,13 +36,10 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "sessions-strip",
     emoji: "\u{1F4BB}",
     emojiAnim: "fly-left",
-    target: (wt) =>
-      document.querySelector<HTMLElement>(
-        `[data-wt-strip="${CSS.escape(wt)}"]`,
-      ) ??
-      document.querySelector<HTMLElement>(
-        `[data-wt-row="${CSS.escape(wt)}"] .row-body`,
-      ),
+    target: (_wt, row) =>
+      row?.querySelector<HTMLElement>("[data-wt-strip]") ??
+      row?.querySelector<HTMLElement>(".row-body") ??
+      null,
     message:
       "Your agent sessions appear here as columns. Scroll horizontally to see them all.",
     placement: "top",
@@ -55,10 +48,8 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "sticky-notes",
     emoji: "\u{1F4CC}",
     emojiAnim: "fly-down",
-    target: (wt) =>
-      document.querySelector<HTMLElement>(
-        `[data-wt-row="${CSS.escape(wt)}"] .notes-add`,
-      ),
+    target: (_wt, row) =>
+      row?.querySelector<HTMLElement>(".notes-add") ?? null,
     message:
       "Pin sticky notes to any repo or worktree — keep track of TODOs, context, or reminders.",
     placement: "bottom",
@@ -67,13 +58,10 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "emoji-sticker",
     emoji: "\u{1F3A8}",
     emojiAnim: "spin",
-    target: (wt) =>
-      document.querySelector<HTMLElement>(
-        `[data-wt-row="${CSS.escape(wt)}"] .notes-add-emoji`,
-      ) ??
-      document.querySelector<HTMLElement>(
-        `[data-wt-row="${CSS.escape(wt)}"] .notes-add`,
-      ),
+    target: (_wt, row) =>
+      row?.querySelector<HTMLElement>(".notes-add-emoji") ??
+      row?.querySelector<HTMLElement>(".notes-add") ??
+      null,
     message:
       "Add emoji stickers to mark a repo's status — ship it, WIP, on fire, whatever fits.",
     placement: "bottom",
