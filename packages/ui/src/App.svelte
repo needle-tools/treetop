@@ -1884,7 +1884,8 @@
    *  from /api/shell-default. Used when the user picks "Terminal" from
    *  the new-session menu so we spawn the right shell instead of
    *  hardcoding bash/zsh in the frontend. */
-  let defaultShell: string = "/bin/zsh";
+  let defaultShell: string =
+    navigator.platform?.startsWith("Win") ? "powershell.exe" : "/bin/zsh";
 
   function isOpenInWt(wtPath: string, source: string): boolean {
     return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);

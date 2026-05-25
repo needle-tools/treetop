@@ -183,6 +183,13 @@ interface RunningCommand {
 }
 const runningCommands = new Map<string, RunningCommand>();
 
+/** Wrap a raw command string for execution via the platform's shell. */
+function shellExec(cmd: string): string[] {
+  return process.platform === "win32"
+    ? ["cmd", "/c", cmd]
+    : ["sh", "-c", cmd];
+}
+
 const commandDetectedUrls = new Map<string, string>();
 
 const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/;
@@ -2819,8 +2826,24 @@ const server = Bun.serve<TermWsData, never>({
       // daemon on 7777 and the prod daemon on 27787) so the user can
       // tell sibling daemons apart in the UI without us having to
       // teach every consumer about ports.
+      //
+      // ?diag=1 appends mDNS health info (enabled, interface, errors)
+      // so the Share dialog or curl can surface why discovery isn't
+      // working without tailing daemon logs.
       const raw = peerDiscovery?.peers() ?? [];
-      return json({ peers: disambiguatePeerLabels(raw) });
+      const resp: Record<string, unknown> = {
+        peers: disambiguatePeerLabels(raw),
+      };
+      if (url.searchParams.get("diag") === "1") {
+        resp.discovery = peerDiscovery?.diagnostics() ?? {
+          enabled: false,
+          interfaceAddress: null,
+          port: PORT,
+          initError: "peer discovery not initialized",
+          platform: process.platform,
+        };
+      }
+      return json(resp);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -4029,7 +4052,7 @@ const server = Bun.serve<TermWsData, never>({
       if (runMode === "internal") {
         try {
           const handle = await terminalBackend.spawn({
-            cmd: ["sh", "-c", cmdLink.cmd],
+            cmd: shellExec(cmdLink.cmd),
             cwd,
             size: { cols: 120, rows: 30 },
           });
@@ -4043,7 +4066,7 @@ const server = Bun.serve<TermWsData, never>({
 
       // runMode === "shell" — background child process
       try {
-        const proc = Bun.spawn(["sh", "-c", cmdLink.cmd], {
+        const proc = Bun.spawn(shellExec(cmdLink.cmd), {
           cwd,
           stdout: "ignore",
           stderr: "ignore",

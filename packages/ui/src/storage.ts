@@ -306,7 +306,16 @@ export function cmdForOpenSession(
   // discarded on Dispose. Terminal.app and iTerm2 start the user's shell
   // as a login shell for the same reason. The flag is recognized by zsh,
   // bash, fish, and sh — the only shells supergit advertises support for.
-  if (s.agent === "shell") return [defaultShell, "-l"];
+  // On Windows, PowerShell / cmd don't accept -l; spawn with -NoLogo
+  // (cleaner startup) for powershell, bare for cmd.exe.
+  if (s.agent === "shell") {
+    const base = defaultShell.toLowerCase().replace(/\\/g, "/");
+    if (base.includes("powershell") || base.includes("pwsh"))
+      return [defaultShell, "-NoLogo"];
+    if (base.includes("cmd"))
+      return [defaultShell];
+    return [defaultShell, "-l"];
+  }
   const sid = s.resumeSessionId;
   if (s.agent === "claude") {
     if (sid) {
