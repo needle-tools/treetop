@@ -398,7 +398,10 @@
    *  notice with a click path into the dialog's install flow. */
   async function summarizeFromChip(): Promise<void> {
     if (summaryRefreshing) return;
-    if (!source) return;
+    if (!source) {
+      showSummarizeNotice("No session source available.");
+      return;
+    }
     dismissSummarizeNotice();
     // Refresh path: we already know which model the cached summary
     // used. Reuse it without probing.
@@ -457,7 +460,10 @@
    *  during the stream the chip spins, the old snippet stays. */
   async function runSummaryStream(targetModel: string): Promise<void> {
     if (summaryRefreshing) return;
-    if (!source || !targetModel) return;
+    if (!source || !targetModel) {
+      showSummarizeNotice("No session source to summarise.");
+      return;
+    }
     summaryRefreshing = true;
     const targetSource = source;
     let collected = "";
@@ -467,7 +473,15 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: targetSource, model: targetModel }),
       });
-      if (!res.ok || !res.body) return;
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null) as { error?: string } | null;
+        showSummarizeNotice(errBody?.error ?? `Summarise failed (HTTP ${res.status})`);
+        return;
+      }
+      if (!res.body) {
+        showSummarizeNotice("No response from summarise endpoint.");
+        return;
+      }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -490,26 +504,31 @@
             const payload = JSON.parse(data) as {
               delta?: string;
               message?: string;
+              kind?: string;
             };
             if (event === "chunk") {
-              // Buffer only — the pill renders a spinner while
-              // `summaryRefreshing` is true, so we don't show the
-              // partial text mid-stream. The final body lands on
-              // disk and refreshSummary() pulls it in one shot.
               collected += payload.delta ?? "";
             } else if (event === "error") {
-              // Re-pull the canonical (possibly unchanged) cache so the
-              // snippet doesn't end stuck on a partial body.
+              const label = payload.kind === "ollama_unreachable"
+                ? "Ollama unreachable"
+                : payload.kind === "ollama_model_missing"
+                  ? "Model not installed"
+                  : payload.kind === "empty"
+                    ? "Nothing to summarise"
+                    : "Summarise failed";
+              showSummarizeNotice(`${label}: ${payload.message ?? "unknown error"}`);
               await refreshSummary();
               return;
             }
           } catch {
-            // ignore malformed line
+            // ignore malformed SSE frame
           }
         }
       }
       await refreshSummary();
-    } catch {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showSummarizeNotice(`Summarise failed: ${msg}`);
       await refreshSummary();
     } finally {
       summaryRefreshing = false;
