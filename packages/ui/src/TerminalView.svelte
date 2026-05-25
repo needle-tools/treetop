@@ -500,6 +500,16 @@
     });
     resizeObs.observe(containerEl);
 
+    // WKWebView doesn't always fire ResizeObserver during fullscreen
+    // transitions. A window resize listener catches those.
+    const onWindowResize = () => {
+      if (!fit || !xterm || phase === "exited") return;
+      if (!containerEl || containerEl.clientWidth === 0) return;
+      try { fit.fit(); } catch {}
+      sendResize();
+    };
+    window.addEventListener("resize", onWindowResize);
+
     // Focus/blur on the xterm container (the inner textarea bubbles
     // focusin/focusout up) arms the activity suppressor so the
     // resulting status-bar redraw burst from a focus-reporting TUI
@@ -534,6 +544,7 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
+    window.removeEventListener("resize", onWindowResize);
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
     }
