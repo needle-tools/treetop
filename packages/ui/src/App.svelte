@@ -748,16 +748,11 @@
         // stamped (the activity SSE has surfaced this sid) — without
         // it we have no way to map `__new__:claude:<random>` to a real
         // session on disk, so keep the dead xterm visible as before.
-        const pendingSrc = pendingRealSource[s.source];
         const sid = s.resumeSessionId;
-        const match = pendingSrc
-          ? { source: pendingSrc }
-          : sid
-            ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
-            : undefined;
+        const match = sid
+          ? agents.find((a) => a.agent === s.agent && a.sessionId === sid)
+          : undefined;
         if (match) {
-          const { [s.source]: _drop, ...restPending } = pendingRealSource;
-          pendingRealSource = restPending;
           openSessionsByWt = {
             ...openSessionsByWt,
             [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
@@ -1732,15 +1727,14 @@
     newSessionPollTimer = null;
   }
 
-  let pendingRealSource: Record<string, string> = {};
-
-  $: void discoverRealSources(hasTransientSessions, repos);
-  function discoverRealSources(hasTransient: boolean, repoList: Repo[]) {
+  $: void promoteTransientSessions(hasTransientSessions, repos);
+  function promoteTransientSessions(hasTransient: boolean, repoList: Repo[]) {
     if (!hasTransient || repoList.length === 0) return;
-    for (const [wtPath, sessions] of Object.entries(openSessionsByWt)) {
+    let promoted = false;
+    let next = openSessionsByWt;
+    for (const [wtPath, sessions] of Object.entries(next)) {
       for (const s of sessions) {
         if (!s.source.startsWith("__new__:") || !s.resumeSessionId) continue;
-        if (pendingRealSource[s.source]) continue;
         for (const repo of repoList) {
           for (const wt of repo.worktrees ?? []) {
             if (wt.path !== wtPath) continue;
@@ -1748,35 +1742,29 @@
               (a: { agent: string; sessionId?: string; source: string }) =>
                 a.agent === s.agent && a.sessionId === s.resumeSessionId,
             );
-            if (match) {
-              pendingRealSource = { ...pendingRealSource, [s.source]: match.source };
+            if (!match) continue;
+            const termId = newTermIds[s.source];
+            next = {
+              ...next,
+              [wtPath]: next[wtPath]!.map((x) =>
+                x.source === s.source
+                  ? { ...x, source: match.source, mode: "terminal" as const, attachTermId: termId }
+                  : x,
+              ),
+            };
+            if (transientWorking[s.source] !== undefined) {
+              transientWorking = { ...transientWorking, [match.source]: transientWorking[s.source] };
             }
+            if (transientAwaiting[s.source] !== undefined) {
+              transientAwaiting = { ...transientAwaiting, [match.source]: transientAwaiting[s.source] };
+            }
+            void migrateSessionTitleOnServer(s.source, match.source);
+            promoted = true;
           }
         }
       }
     }
-  }
-
-  function applyPendingPromotion(syntheticSource: string, wtPath: string) {
-    const realSource = pendingRealSource[syntheticSource];
-    if (!realSource) return;
-    openSessionsByWt = {
-      ...openSessionsByWt,
-      [wtPath]: (openSessionsByWt[wtPath] ?? []).map((x) =>
-        x.source === syntheticSource
-          ? { ...x, source: realSource }
-          : x,
-      ),
-    };
-    if (transientWorking[syntheticSource] !== undefined) {
-      transientWorking = { ...transientWorking, [realSource]: transientWorking[syntheticSource] };
-    }
-    if (transientAwaiting[syntheticSource] !== undefined) {
-      transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[syntheticSource] };
-    }
-    void migrateSessionTitleOnServer(syntheticSource, realSource);
-    const { [syntheticSource]: _, ...rest } = pendingRealSource;
-    pendingRealSource = rest;
+    if (promoted) openSessionsByWt = next;
   }
 
   function repoName(repo: Repo): string {
@@ -3691,12 +3679,33 @@
         const { byWt: stamped, stampedSource } =
           stampDiscoveredSessionIdWithDetail(openSessionsByWt, ev);
         if (stamped !== openSessionsByWt) openSessionsByWt = stamped;
-        // Once stamped AND we have a real JSONL source, stash the
-        // real path for deferred promotion. The actual source rewrite
-        // happens when the PTY exits (on:exit in the template) so the
-        // xterm DOM isn't destroyed/recreated mid-session.
-        if (stampedSource && ev.source && !pendingRealSource[stampedSource]) {
-          pendingRealSource = { ...pendingRealSource, [stampedSource]: ev.source! };
+        // Once stamped AND we have a real JSONL source, promote the
+        // column from `__new__:` to the real source so it renders as
+        // SessionView. Carry the daemon termId so SessionView
+        // reattaches to the live PTY via attachTermId.
+        if (stampedSource && ev.source) {
+          const termId = newTermIds[stampedSource];
+          const realSource = ev.source!;
+          openSessionsByWt = {
+            ...openSessionsByWt,
+            [ev.cwd]: (openSessionsByWt[ev.cwd] ?? []).map((x) =>
+              x.source === stampedSource
+                ? {
+                    ...x,
+                    source: realSource,
+                    mode: "terminal" as const,
+                    attachTermId: termId,
+                  }
+                : x,
+            ),
+          };
+          if (transientWorking[stampedSource] !== undefined) {
+            transientWorking = { ...transientWorking, [realSource]: transientWorking[stampedSource] };
+          }
+          if (transientAwaiting[stampedSource] !== undefined) {
+            transientAwaiting = { ...transientAwaiting, [realSource]: transientAwaiting[stampedSource] };
+          }
+          void migrateSessionTitleOnServer(stampedSource, realSource);
         }
       } catch {
         // ignore malformed
@@ -6707,9 +6716,6 @@
                                   ...transientAwaiting,
                                   [s.source]: false,
                                 };
-                              }
-                              if (pendingRealSource[s.source]) {
-                                applyPendingPromotion(s.source, wt.path);
                               }
                             }}
                             on:titleSave={(e) =>

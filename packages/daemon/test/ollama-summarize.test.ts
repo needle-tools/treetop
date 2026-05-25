@@ -181,3 +181,56 @@ describe("sampleSessionForSummary", () => {
     expect(s.prompt).toBe("User: hello\n\nAssistant: hi");
   });
 });
+
+describe("sampleSessionForSummary with context-handoff budget", () => {
+  function txt(role: "user" | "assistant", text: string): NormalizedMessage {
+    return { role, blocks: [{ type: "text", text }] };
+  }
+
+  const CONTEXT_OPTS = {
+    targetMessages: 60,
+    maxMsgChars: 4096,
+    budgetChars: 64 * 1024,
+  };
+
+  test("includes up to 60 messages with larger budget", () => {
+    const msgs: NormalizedMessage[] = [];
+    for (let i = 0; i < 80; i++) {
+      msgs.push(txt(i % 2 === 0 ? "user" : "assistant", `message ${i}`));
+    }
+    const s = sampleSessionForSummary(msgs, CONTEXT_OPTS);
+    expect(s.totalMessages).toBe(80);
+    expect(s.includedMessages).toBeLessThanOrEqual(60);
+    expect(s.includedMessages).toBeGreaterThan(30);
+    expect(s.prompt).toContain("User:");
+    expect(s.prompt).toContain("Assistant:");
+  });
+
+  test("allows individual messages up to 4096 chars before truncation", () => {
+    const longText = "x".repeat(5000);
+    const msgs = [txt("user", longText), txt("assistant", "short")];
+    const s = sampleSessionForSummary(msgs, CONTEXT_OPTS);
+    expect(s.truncatedMessages).toBe(1);
+    expect(s.prompt).toContain("…<truncated>");
+    expect(s.prompt.length).toBeLessThan(5000);
+  });
+
+  test("fits within 64KB budget even with many long messages", () => {
+    const msgs: NormalizedMessage[] = [];
+    for (let i = 0; i < 100; i++) {
+      msgs.push(txt(i % 2 === 0 ? "user" : "assistant", "y".repeat(3000)));
+    }
+    const s = sampleSessionForSummary(msgs, CONTEXT_OPTS);
+    expect(s.prompt.length).toBeLessThanOrEqual(64 * 1024);
+    expect(s.includedMessages).toBeGreaterThan(0);
+  });
+
+  test("inserts gap markers for omitted messages", () => {
+    const msgs: NormalizedMessage[] = [];
+    for (let i = 0; i < 100; i++) {
+      msgs.push(txt(i % 2 === 0 ? "user" : "assistant", `turn ${i}`));
+    }
+    const s = sampleSessionForSummary(msgs, CONTEXT_OPTS);
+    expect(s.prompt).toContain("messages omitted");
+  });
+});

@@ -566,6 +566,68 @@ describe("cmdForOpenSession", () => {
   // API-driven chat mode"), so cmdForOpenSession is never called for
   // an Ollama OpenSession. The chat composer drives /api/ollama/chat
   // directly; there's no PTY to spawn.
+
+  test("claude with contextFilePath appends --append-system-prompt-file", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          preassignedSessionId: "aaaa-bbbb",
+          contextFilePath: "/tmp/supergit/context-handoffs/123.md",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--session-id",
+      "aaaa-bbbb",
+      "--append-system-prompt-file",
+      "/tmp/supergit/context-handoffs/123.md",
+    ]);
+  });
+
+  test("claude with contextFilePath but resumeSessionId ignores contextFilePath (resume wins)", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          resumeSessionId: "abc-123",
+          contextFilePath: "/tmp/ctx.md",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--resume",
+      "abc-123",
+      "--allow-dangerously-skip-permissions",
+    ]);
+  });
+
+  test("codex with contextFilePath passes file reference as positional prompt", () => {
+    const result = cmdForOpenSession(
+      {
+        agent: "codex",
+        contextFilePath: "/tmp/supergit/context-handoffs/456.md",
+      },
+      "/bin/zsh",
+    );
+    expect(result[0]).toBe("codex");
+    expect(result[1]).toContain("/tmp/supergit/context-handoffs/456.md");
+  });
+
+  test("codex with resumeSessionId ignores contextFilePath (resume wins)", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "codex",
+          resumeSessionId: "ses_99",
+          contextFilePath: "/tmp/ctx.md",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual(["codex", "resume", "ses_99"]);
+  });
 });
 
 describe("stampDiscoveredSessionId", () => {
