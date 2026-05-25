@@ -128,6 +128,7 @@
   let fit: FitAddon | null = null;
   let ws: WebSocket | null = null;
   let resizeObs: ResizeObserver | null = null;
+  let onWindowResize: (() => void) | null = null;
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
@@ -504,7 +505,7 @@
     // transitions. A window resize listener catches those. Same
     // dimension gate as the ResizeObserver to avoid spurious resize
     // events that make TUI apps redraw and duplicate output.
-    const onWindowResize = () => {
+    onWindowResize = () => {
       if (!fit || !xterm || phase === "exited") return;
       if (!containerEl || containerEl.clientWidth === 0) return;
       const before = { cols: xterm.cols, rows: xterm.rows };
@@ -551,7 +552,7 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
-    window.removeEventListener("resize", onWindowResize);
+    if (onWindowResize) window.removeEventListener("resize", onWindowResize);
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
     }
