@@ -1,8 +1,11 @@
 import { getDaemonKV } from "./daemon-kv";
 
+export type EmojiAnim = "bounce" | "fly-up" | "fly-down" | "fly-left" | "spin" | "heartbeat";
+
 export interface WalkthroughStep {
   id: string;
   emoji: string;
+  emojiAnim?: EmojiAnim;
   target: (wtPath: string) => HTMLElement | null;
   message: string;
   placement: "top" | "bottom";
@@ -12,6 +15,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
   {
     id: "new-session",
     emoji: "\u{1F680}",
+    emojiAnim: "fly-up",
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-new-agent-anchor="${CSS.escape(wt)}"]`,
@@ -23,6 +27,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
   {
     id: "open-in-actions",
     emoji: "\u{1F517}",
+    emojiAnim: "bounce",
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-wt-row="${CSS.escape(wt)}"] .row-status`,
@@ -34,6 +39,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
   {
     id: "sessions-strip",
     emoji: "\u{1F4BB}",
+    emojiAnim: "fly-left",
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-wt-strip="${CSS.escape(wt)}"]`,
@@ -48,17 +54,19 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
   {
     id: "sticky-notes",
     emoji: "\u{1F4CC}",
+    emojiAnim: "fly-down",
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-wt-row="${CSS.escape(wt)}"] .notes-add`,
       ),
     message:
-      "Pin sticky notes to any repo or worktree — jot down TODOs, context, or reminders.",
+      "Pin sticky notes to any repo or worktree — keep track of TODOs, context, or reminders.",
     placement: "bottom",
   },
   {
     id: "emoji-sticker",
     emoji: "\u{1F3A8}",
+    emojiAnim: "spin",
     target: (wt) =>
       document.querySelector<HTMLElement>(
         `[data-wt-row="${CSS.escape(wt)}"] .notes-add-emoji`,
@@ -73,10 +81,21 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
   {
     id: "menubar",
     emoji: "\u{2699}\u{FE0F}",
+    emojiAnim: "spin",
     target: () =>
       document.querySelector<HTMLElement>(".menubar"),
     message:
       "The menubar gives you quick access to notes, actions, events, and this help button. You can replay this tour anytime from the \u{2753} icon.",
+    placement: "bottom",
+  },
+  {
+    id: "finish",
+    emoji: "\u{1F49A}",
+    emojiAnim: "heartbeat",
+    target: () =>
+      document.querySelector<HTMLElement>(".menubar"),
+    message:
+      "You\u{2019}re all set! Thanks for using supergit by Needle. Happy shipping! \u{1F389}",
     placement: "bottom",
   },
 ];

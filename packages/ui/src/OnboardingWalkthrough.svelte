@@ -16,6 +16,7 @@
   let displayedStep = currentStep;
   let typedText = "";
   let typeTimer: ReturnType<typeof setTimeout> | null = null;
+  let showEmoji = false;
 
   function stopTyping() {
     if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
@@ -29,7 +30,7 @@
       function tick_() {
         if (i >= full.length) { resolve(); return; }
         typedText = full.slice(0, ++i);
-        typeTimer = setTimeout(tick_, 18);
+        typeTimer = setTimeout(tick_, 9);
       }
       tick_();
     });
@@ -39,7 +40,9 @@
     const step = WALKTHROUGH_STEPS[currentStep];
     if (!step) return null;
     const el = step.target(wtPath);
-    if (!el || !el.offsetParent) return null;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return null;
     return el;
   }
 
@@ -102,6 +105,7 @@
     // 2. show tooltip box (scale up)
     displayedStep = currentStep;
     typedText = "";
+    showEmoji = false;
     textVisible = true;
     await tick();
     if (tooltipEl) {
@@ -120,15 +124,17 @@
     }
     await wait(200);
 
-    // 3. typewrite the text
+    // 3. typewrite the text, then pop emoji
     const step = WALKTHROUGH_STEPS[displayedStep];
     if (step) await typeOut(step.message);
+    showEmoji = true;
     transitioning = false;
   }
 
   async function animateTransition() {
     transitioning = true;
     stopTyping();
+    showEmoji = false;
 
     // 1. fade out text (tooltip box stays visible)
     textVisible = false;
@@ -157,9 +163,10 @@
     positionTooltip(r);
     await wait(350);
 
-    // 3. typewrite the new text
+    // 3. typewrite the new text, then pop emoji
     const step = WALKTHROUGH_STEPS[displayedStep];
     if (step) await typeOut(step.message);
+    showEmoji = true;
     transitioning = false;
   }
 
@@ -205,20 +212,26 @@
     {#if targetMissing}
       Unfold the row to continue the tour.
     {:else}
-      <span class="walkthrough-emoji">{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span> {typedText}
+      {typedText}{#if showEmoji} <span
+        class="walkthrough-emoji walkthrough-emoji-enter walkthrough-emoji-{WALKTHROUGH_STEPS[displayedStep]?.emojiAnim ?? 'bounce'}"
+      >{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span>{/if}
     {/if}
   </div>
   <div class="walkthrough-tooltip-footer" class:walkthrough-text-visible={textVisible}>
-    <button class="walkthrough-btn-skip" on:click={() => dispatch("skip")}
-            disabled={transitioning}>
-      Skip
-    </button>
+    {#if displayedStep < total - 1}
+      <button class="walkthrough-btn-skip" on:click={() => dispatch("skip")}
+              disabled={transitioning}>
+        Skip
+      </button>
+    {:else}
+      <span></span>
+    {/if}
     <span class="walkthrough-step-indicator">
       {displayedStep + 1} of {total}
     </span>
     <button class="walkthrough-btn-next" on:click={() => dispatch("next")}
             disabled={targetMissing || transitioning}>
-      {displayedStep >= total - 1 ? "Done" : "Next"}
+      {displayedStep >= total - 1 ? "Finish" : "Next"}
     </button>
   </div>
 </div>
