@@ -1158,22 +1158,23 @@
         {#if !iconOnly}
           <span>{label}</span>
         {/if}
+        {#if cmdUrl}
+          <span
+            class="cmd-url-inner"
+            role="link"
+            tabindex="-1"
+            title={`Open ${cmdUrl}`}
+            on:click|stopPropagation={() => openUrl(cmdUrl)}
+            on:keydown={(e) => { if (e.key === "Enter") openUrl(cmdUrl); }}
+          >
+            <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+          </span>
+        {/if}
       </button>
-      {#if cmdUrl}
-        <button
-          type="button"
-          class="cmd-url-btn"
-          title={`Open ${cmdUrl}`}
-          aria-label={`Open ${cmdUrl}`}
-          on:click|stopPropagation={() => window.open(cmdUrl, "_blank", "noopener,noreferrer")}
-        >
-          <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-            <polyline points="15 3 21 3 21 9" />
-            <line x1="10" y1="14" x2="21" y2="3" />
-          </svg>
-        </button>
-      {/if}
       {#if onEditCustomLink && !iconOnly}
         <!-- Edit pencil — hover-revealed on the wrap. Opens a popover
              with URL + Label fields and a Delete button (confirmed via
@@ -1774,25 +1775,21 @@
   @keyframes cmd-spin {
     to { transform: rotate(360deg); }
   }
-  .cmd-url-btn {
+  .cmd-url-inner {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
-    border: none;
-    padding: 0;
-    background: transparent;
-    color: var(--brand, #4a9);
+    padding: 1px 2px;
+    margin-left: 2px;
+    border-radius: 2px;
+    color: var(--text-muted);
     cursor: pointer;
-    border-radius: 3px;
-    margin-left: -2px;
-    transition: background 0.12s;
+    transition: color 0.12s;
   }
-  .cmd-url-btn:hover {
-    background: color-mix(in srgb, var(--brand, #4a9) 15%, transparent);
+  .cmd-url-inner:hover {
+    color: var(--text-1, #fff);
   }
-  .cmd-url-btn svg {
+  .cmd-url-inner svg {
     fill: none;
     stroke: currentColor;
     stroke-width: 2;
