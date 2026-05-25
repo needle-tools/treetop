@@ -85,8 +85,55 @@ async function waitForDaemon(attempts = 0): Promise<void> {
 let ownsDaemon = false;
 let daemonProc: ReturnType<typeof spawn> | null = null;
 
+async function getDaemonBuildTime(): Promise<string | null> {
+  try {
+    const res = await fetch(`${DAEMON_URL}/api/identity`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { buildTime?: string };
+    return body.buildTime ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function shutdownDaemon(): Promise<void> {
+  try {
+    await fetch(`${DAEMON_URL}/api/shutdown`, {
+      method: "POST",
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {}
+  // Wait for port to be released
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (!(await isDaemonRunning())) return;
+  }
+}
+
 async function ensureDaemon(): Promise<void> {
-  if (await isDaemonRunning()) return;
+  if (await isDaemonRunning()) {
+    // Check if the running daemon is older than our bundled binary.
+    // SUPERGIT_BUILD_TIME is baked in at compile time by build-native.ts.
+    const myBuildTime = process.env.SUPERGIT_BUILD_TIME;
+    if (myBuildTime) {
+      const remoteBuildTime = await getDaemonBuildTime();
+      // No remote buildTime = dev daemon, assume newer. Only replace
+      // when we can confirm the running daemon is strictly older.
+      if (remoteBuildTime && myBuildTime && remoteBuildTime < myBuildTime) {
+        console.log(
+          `supergit: replacing older daemon (${remoteBuildTime}) with ${myBuildTime}`,
+        );
+        await shutdownDaemon();
+        // Fall through to start our own
+      } else {
+        return; // Running daemon is same age or newer
+      }
+    } else {
+      return; // Dev mode, no build time — reuse whatever's running
+    }
+  }
 
   // Find the bundled daemon binary. Layout differs per platform:
   //   macOS:   process.execPath = …/Contents/MacOS/bun

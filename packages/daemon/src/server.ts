@@ -141,6 +141,11 @@ const UI_DIR = ((): string | null => {
 })();
 if (UI_DIR) console.log(`supergit daemon: serving UI from ${UI_DIR}`);
 
+// Build timestamp — set at compile time by build-native.ts via --define.
+// Absent in dev mode (uncompiled). The native app uses this to detect
+// whether a running daemon is older than its bundled binary.
+const DAEMON_BUILD_TIME: string | undefined = process.env.SUPERGIT_BUILD_TIME || undefined;
+
 // Set a readable process title so `ps`, `top`, `htop`, and macOS
 // Activity Monitor's command column show "supergit dev" / "supergit
 // prod" instead of "bun run src/server.ts". Dev = no built UI in
@@ -2779,7 +2784,7 @@ const server = Bun.serve<TermWsData, never>({
       if (!peerIdentity) {
         return json({ error: "identity not ready" }, { status: 503 });
       }
-      return json(peerIdentity);
+      return json({ ...peerIdentity, buildTime: DAEMON_BUILD_TIME });
     }
 
     if (url.pathname === "/api/identity" && req.method === "PATCH") {
