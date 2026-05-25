@@ -1161,6 +1161,56 @@ describe("scanCodex", () => {
     expect(sessions[0]?.cwd).toBe(resolve("/proj"));
     expect(sessions[0]?.sessionId).toBe("flat");
   });
+
+  test("extracts title, firstUserMessage, and lastUserMessages for session previews", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-preview-");
+    await writeFile(
+      join(root, "session.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "preview-test", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions>sandbox policy</permissions>" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the login bug in auth.ts" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "I'll fix that." }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Now add tests for it" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Also update the README" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Updated." }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Ship it!" }] } }),
+      ].join("\n"),
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0]!;
+    expect(s.title).toBe("Fix the login bug in auth.ts");
+    expect(s.firstUserMessage).toBe("Fix the login bug in auth.ts");
+    expect(s.lastUserMessage).toBe("Ship it!");
+    expect(s.lastUserMessages).toEqual([
+      "Now add tests for it",
+      "Also update the README",
+      "Ship it!",
+    ]);
+    expect(s.messageCount).toBe(7); // 4 user + 3 assistant (developer excluded)
+  });
+
+  test("pre-0.130 flat sessions also get title from first user message", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-flat-preview-");
+    await writeFile(
+      join(root, "old.jsonl"),
+      [
+        JSON.stringify({ cwd: "/proj", role: "user", content: "Refactor the database layer" }),
+        JSON.stringify({ role: "assistant", content: "Sure." }),
+        JSON.stringify({ role: "user", content: "Add connection pooling" }),
+      ].join("\n"),
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0]!;
+    expect(s.title).toBe("Refactor the database layer");
+    expect(s.firstUserMessage).toBe("Refactor the database layer");
+    expect(s.lastUserMessage).toBe("Add connection pooling");
+  });
 });
 
 describe("scanCopilot", () => {

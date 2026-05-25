@@ -663,6 +663,8 @@ interface CodexScanCacheEntry {
   contextChars: number;
   usage: CodexTokenUsage;
   meta: { cwd?: string; id?: string };
+  firstUserMessage?: string;
+  lastUserMessages: string[];
 }
 
 const codexScanCache = new Map<string, CodexScanCacheEntry>();
@@ -701,6 +703,7 @@ async function ensureCodexScanCached(
       contextChars: 0,
       usage: { lastInputTokens: undefined, modelContextWindow: undefined, model: undefined },
       meta: {},
+      lastUserMessages: [],
     };
     codexScanCache.set(path, empty);
     return empty;
@@ -776,10 +779,51 @@ async function ensureCodexScanCached(
   ingestMetaAndUsage(head);
   if (tail) ingestMetaAndUsage(tail);
 
-  // Streaming message count + context chars via Bun.file().stream().
+  // Streaming message count + context chars + user message extraction
+  // via Bun.file().stream(). Extracts first user message and last 3
+  // user messages for session previews.
   let messageCount = 0;
   let contextChars = 0;
   const needContextChars = lastInputTokens === undefined;
+  let firstUserMessage: string | undefined;
+  const lastUserMessages: string[] = [];
+  const MAX_LAST_USER = 3;
+  const MSG_CAP = 200;
+
+  /** Extract a capped user-message text from a parsed line. */
+  function extractUserText(line: string): string | undefined {
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      // 0.130+
+      if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+        const p = obj.payload as Record<string, unknown>;
+        if (p.type === "message" && p.role === "user" && Array.isArray(p.content)) {
+          for (const block of p.content) {
+            if (typeof block === "object" && block !== null) {
+              const t = (block as { text?: unknown }).text;
+              if (typeof t === "string" && t.length > 0) {
+                return t.length > MSG_CAP ? t.slice(0, MSG_CAP) + "…" : t;
+              }
+            }
+          }
+        }
+      }
+      // Pre-0.130
+      if (obj.role === "user" && typeof obj.content === "string" && obj.content.length > 0) {
+        return obj.content.length > MSG_CAP ? obj.content.slice(0, MSG_CAP) + "…" : obj.content;
+      }
+    } catch { /* skip */ }
+    return undefined;
+  }
+
+  function trackUserMessage(line: string): void {
+    if (!line.includes('"user"')) return;
+    const text = extractUserText(line);
+    if (!text) return;
+    if (!firstUserMessage) firstUserMessage = text;
+    lastUserMessages.push(text);
+    if (lastUserMessages.length > MAX_LAST_USER) lastUserMessages.shift();
+  }
 
   try {
     const stream = Bun.file(path).stream();
@@ -796,6 +840,7 @@ async function ensureCodexScanCached(
         if (line.includes('"response_item"')) {
           if (line.includes('"user"') || line.includes('"assistant"')) {
             messageCount++;
+            if (line.includes('"user"')) trackUserMessage(line);
             if (needContextChars) {
               try {
                 const obj = JSON.parse(line) as Record<string, unknown>;
@@ -821,6 +866,7 @@ async function ensureCodexScanCached(
         }
         if (line.includes('"role"') && (line.includes('"user"') || line.includes('"assistant"'))) {
           messageCount++;
+          if (line.includes('"user"')) trackUserMessage(line);
           if (needContextChars) {
             try {
               const obj = JSON.parse(line) as Record<string, unknown>;
@@ -833,6 +879,7 @@ async function ensureCodexScanCached(
     if (leftover && (leftover.includes('"response_item"') || leftover.includes('"role"'))) {
       if (leftover.includes('"user"') || leftover.includes('"assistant"')) {
         messageCount++;
+        if (leftover.includes('"user"')) trackUserMessage(leftover);
         if (needContextChars) {
           try {
             const obj = JSON.parse(leftover) as Record<string, unknown>;
@@ -868,6 +915,8 @@ async function ensureCodexScanCached(
     contextChars,
     usage,
     meta,
+    firstUserMessage,
+    lastUserMessages,
   };
 
   codexScanCache.set(path, entry);
@@ -1141,12 +1190,19 @@ export async function scanCodex(
         }
         const fileMs = performance.now() - tFile;
         if (fileMs > slowestMs) { slowestMs = fileMs; slowestFile = sessionPath; }
+        const cached = codexScanCache.get(sessionPath);
+        const lastMsgs = cached?.lastUserMessages ?? [];
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
           lastActive: stats.mtime.toISOString(),
           sessionId: meta.id ?? sessionPath.split(/[/\\]/).pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
+          title: cached?.firstUserMessage,
+          firstUserMessage: cached?.firstUserMessage,
+          lastUserMessage: lastMsgs[lastMsgs.length - 1],
+          lastUserMessages: lastMsgs.length > 0 ? lastMsgs : undefined,
+          userMessageCount: messageCount > 0 ? Math.ceil(messageCount / 2) : undefined,
           messageCount: messageCount > 0 ? messageCount : undefined,
           contextTokens,
           contextTokensExact,
