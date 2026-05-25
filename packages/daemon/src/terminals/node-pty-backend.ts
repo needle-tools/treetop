@@ -185,7 +185,7 @@ export class NodePtyBackend implements PtyBackend {
 
   private helperCmd(): string[] {
     // Prefer the Go binary (no Node dependency).
-    const goBinary = "pty-helper";
+    const goBinary = process.platform === "win32" ? "pty-helper.exe" : "pty-helper";
     const goCandidates = [
       pathResolve(pathDirname(process.execPath), goBinary),
       pathResolve(import.meta.dir, "helper-go", goBinary),

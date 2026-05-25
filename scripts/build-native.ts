@@ -29,6 +29,9 @@ const CONTENTS = join(APP, "Contents");
 const MACOS = join(CONTENTS, "MacOS");
 const RESOURCES = join(CONTENTS, "Resources");
 const platform = `${process.platform}-${process.arch}`;
+const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
+const exe = isWin ? ".exe" : "";
 
 console.log(`\n=== supergit native build (${platform}) ===\n`);
 
@@ -47,8 +50,9 @@ console.log("2/6  Compiling daemon…");
 await rm(FLAT, { recursive: true, force: true });
 await rm(APP, { recursive: true, force: true });
 await mkdir(FLAT, { recursive: true });
-const binaryPath = join(FLAT, "supergit");
-await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${binaryPath}`.quiet();
+// On Windows `bun build --compile` auto-appends `.exe`; on mac/linux it doesn't.
+const binaryPath = join(FLAT, `supergit${exe}`);
+await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")}`.quiet();
 console.log("     ✓ Daemon binary compiled");
 
 // ── 3. Build Go PTY helper + copy support files ─────────────────────
@@ -57,33 +61,42 @@ console.log("3/6  Building Go helper + copying files…");
 await cp(distDir, join(FLAT, "ui"), { recursive: true });
 
 // Build the Go PTY helper — replaces Node + helper.mjs + node-pty.
+// Explicit `.exe` on Windows; `go build` doesn't add it when -o has no extension.
 const goHelperDir = resolve(ROOT, "packages/daemon/src/terminals/helper-go");
-await $`cd ${goHelperDir} && go build -o ${join(FLAT, "pty-helper")} .`.quiet();
+const ptyHelperPath = join(FLAT, `pty-helper${exe}`);
+await $`cd ${goHelperDir} && go build -o ${ptyHelperPath} .`.quiet();
 
 console.log("     ✓ Go helper + support files copied");
 
-// ── 4. Compile Swift launcher ────────────────────────────────────────
-console.log("4/6  Compiling Swift launcher…");
-const swiftSrc = resolve(ROOT, "scripts/Supergit.swift");
-const launcherBin = join(MACOS, "Supergit");
-await mkdir(MACOS, { recursive: true });
-await $`swiftc -O -o ${launcherBin} ${swiftSrc} -framework Cocoa -framework WebKit`.quiet();
-console.log("     ✓ Swift launcher compiled");
+// ── 4. Compile Swift launcher (macOS only) ──────────────────────────
+// On Windows/Linux, electrobun ships its own native launcher per platform,
+// so the Swift step is mac-specific and skipped elsewhere.
+if (isMac) {
+  console.log("4/6  Compiling Swift launcher…");
+  const swiftSrc = resolve(ROOT, "scripts/Supergit.swift");
+  const launcherBin = join(MACOS, "Supergit");
+  await mkdir(MACOS, { recursive: true });
+  await $`swiftc -O -o ${launcherBin} ${swiftSrc} -framework Cocoa -framework WebKit`.quiet();
+  console.log("     ✓ Swift launcher compiled");
+} else {
+  console.log("4/6  Compiling Swift launcher… (skipped, not macOS)");
+}
 
-// ── 5. Assemble .app bundle ──────────────────────────────────────────
-console.log("5/6  Assembling .app bundle…");
+// ── 5. Assemble .app bundle (macOS only) ────────────────────────────
+if (isMac) {
+  console.log("5/6  Assembling .app bundle…");
 
-await mkdir(RESOURCES, { recursive: true });
+  await mkdir(RESOURCES, { recursive: true });
 
-// Copy flat layout into Resources
-await cp(join(FLAT, "supergit"), join(RESOURCES, "supergit"));
-await cp(join(FLAT, "ui"), join(RESOURCES, "ui"), { recursive: true });
-await cp(join(FLAT, "pty-helper"), join(RESOURCES, "pty-helper"));
+  // Copy flat layout into Resources
+  await cp(join(FLAT, "supergit"), join(RESOURCES, "supergit"));
+  await cp(join(FLAT, "ui"), join(RESOURCES, "ui"), { recursive: true });
+  await cp(join(FLAT, "pty-helper"), join(RESOURCES, "pty-helper"));
 
-await $`chmod +x ${join(RESOURCES, "supergit")} ${join(RESOURCES, "pty-helper")}`.quiet();
+  await $`chmod +x ${join(RESOURCES, "supergit")} ${join(RESOURCES, "pty-helper")}`.quiet();
 
-// Info.plist
-const plist = `<?xml version="1.0" encoding="UTF-8"?>
+  // Info.plist
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -116,9 +129,12 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   </dict>
 </dict>
 </plist>`;
-await writeFile(join(CONTENTS, "Info.plist"), plist);
+  await writeFile(join(CONTENTS, "Info.plist"), plist);
 
-console.log("     ✓ .app bundle assembled");
+  console.log("     ✓ .app bundle assembled");
+} else {
+  console.log("5/6  Assembling .app bundle… (skipped, not macOS)");
+}
 
 // ── 6. Smoke test (headless, flat binary) ────────────────────────────
 const smokePort = "17779";
@@ -175,12 +191,28 @@ try {
 }
 
 // ── Summary ──────────────────────────────────────────────────────────
-const { stdout: flatSize } = await $`du -sh ${FLAT}`.quiet();
-const { stdout: appSize } = await $`du -sh ${APP}`.quiet();
+async function dirSize(dir: string): Promise<string> {
+  // Cross-platform recursive size in MB. Avoids `du` (unix-only).
+  const { readdir, stat } = await import("node:fs/promises");
+  async function walk(p: string): Promise<number> {
+    const s = await stat(p);
+    if (!s.isDirectory()) return s.size;
+    let total = 0;
+    for (const entry of await readdir(p)) total += await walk(join(p, entry));
+    return total;
+  }
+  const bytes = await walk(dir);
+  return `${(bytes / 1024 / 1024).toFixed(1)}M`;
+}
+
 console.log(`\n  Done!\n`);
-console.log(`  Flat:    ${FLAT}  (${flatSize.toString().trim().split("\t")[0]})`);
-console.log(`  App:     ${APP}  (${appSize.toString().trim().split("\t")[0]})`);
-console.log(`\n  Double-click ${APP} or run:`);
-console.log(`    open ${APP}\n`);
+console.log(`  Flat:    ${FLAT}  (${await dirSize(FLAT)})`);
+if (isMac && existsSync(APP)) {
+  console.log(`  App:     ${APP}  (${await dirSize(APP)})`);
+  console.log(`\n  Double-click ${APP} or run:`);
+  console.log(`    open ${APP}\n`);
+} else {
+  console.log(`\n  Next: run \`electrobun build --env=stable\` to wrap the flat layout into a native app bundle.\n`);
+}
 
 if (!ok) process.exit(1);
