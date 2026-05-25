@@ -99,6 +99,24 @@ describe("decodeUsage", () => {
     const out = _internal.decodeUsage(raw)!;
     expect(out.fiveHour?.resetsAt).toBe("2026-05-27T02:00:00Z");
   });
+
+  test("resets_at with +HH:MM offset is left as-is (not double-Z'd)", () => {
+    const raw = {
+      five_hour: { utilization: 10, resets_at: "2026-05-27T04:00:00+02:00" },
+    };
+    const out = _internal.decodeUsage(raw)!;
+    expect(out.fiveHour?.resetsAt).toBe("2026-05-27T04:00:00+02:00");
+    // Must be parseable — the old regex appended Z making it invalid.
+    expect(Number.isNaN(Date.parse(out.fiveHour!.resetsAt!))).toBe(false);
+  });
+
+  test("resets_at with +HHMM offset (no colon) is left as-is", () => {
+    const raw = {
+      five_hour: { utilization: 10, resets_at: "2026-05-27T04:00:00+0200" },
+    };
+    const out = _internal.decodeUsage(raw)!;
+    expect(out.fiveHour?.resetsAt).toBe("2026-05-27T04:00:00+0200");
+  });
 });
 
 describe("fetchClaudeOAuthUsage — injected fetcher", () => {

@@ -388,25 +388,23 @@ function decodeUsage(json: unknown): ClaudeOAuthUsage | null {
       const r = raw as Record<string, unknown>;
       const util = r.utilization;
       if (typeof util !== "number") continue;
-      // `resets_at` can arrive as an ISO string ("2026-05-27T02:00:00Z")
+      // `resets_at` can arrive as an ISO string ("2026-05-27T02:00:00Z",
+      // "2026-05-27T04:00:00+02:00", or bare "2026-05-27T02:00:00")
       // OR a unix timestamp number (seconds since epoch). Normalize to
-      // an ISO string with explicit UTC suffix so the UI's Date.parse
-      // interprets it unambiguously regardless of browser timezone
-      // defaults. CodexBar's decoder handles the same ambiguity.
+      // an ISO string with explicit UTC so the UI's Date.parse is
+      // unambiguous regardless of browser timezone defaults.
       let resetsAt: string | undefined;
       if (typeof r.resets_at === "number") {
         resetsAt = new Date(r.resets_at * 1000).toISOString();
       } else if (typeof r.resets_at === "string") {
-        // Ensure the string has a timezone — if it's bare like
-        // "2026-05-26T23:00:00" (no Z, no offset), Date.parse
-        // interprets it as local time in some engines and UTC in
-        // others. Append Z when no offset marker is present.
         const s = r.resets_at;
-        if (/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/[Zz+\-]\d{0,4}$/.test(s)) {
-          resetsAt = s + "Z";
-        } else {
-          resetsAt = s;
-        }
+        // Check for a timezone indicator in the last 6 chars. Handles
+        // "Z", "+02:00", "+0200", "-05:00" etc. If absent, the string
+        // is bare ISO which V8 treats as local time — append Z so it's
+        // unambiguously UTC.
+        const tail = s.slice(-6);
+        const hasTZ = /[Zz]|[+\-]\d{2}/.test(tail);
+        resetsAt = hasTZ ? s : s + "Z";
       }
       // Anthropic returns utilization as 0..100 (a percentage point,
       // not a fraction). Normalize here so every consumer can treat
