@@ -61,6 +61,7 @@ if (paths.app && existsSync(paths.app)) {
   console.log(`\n  open ${paths.app}\n`);
   await $`open -R ${paths.app}`.nothrow().quiet();
 } else if (isWin && paths.setup && existsSync(paths.setup)) {
-  console.log(`\n  Opening:  ${paths.setup}\n`);
-  await $`explorer /select,${paths.setup}`.nothrow().quiet();
+  const setupDir = resolve(paths.setup, "..");
+  console.log(`\n  Opening:  ${setupDir}\n`);
+  await $`explorer ${setupDir}`.nothrow().quiet();
 }
