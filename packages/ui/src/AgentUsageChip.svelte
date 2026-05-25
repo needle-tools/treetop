@@ -218,8 +218,17 @@
   const AGENT_ORDER = ["claude", "codex", "ollama", "copilot"] as const;
 
   $: agentsList = report
-    ? AGENT_ORDER.filter((a) => report!.agents[a]).map(
-        (a) => [a, report!.agents[a]!] as const,
+    ? AGENT_ORDER.filter(
+        (a) =>
+          report!.agents[a] ||
+          (a === "claude" && report!.claudeLiveUsage) ||
+          (a === "codex" && report!.codexLiveUsage),
+      ).map(
+        (a) =>
+          [
+            a,
+            report!.agents[a] ?? { today: { sessions: 0, messages: 0 }, week: { sessions: 0, messages: 0 }, peakDay: 0, peakWeek: 0 },
+          ] as const,
       )
     : [];
 

@@ -383,7 +383,7 @@ describe("computeAgentUsage — Claude live usage from OAuth endpoint", () => {
     expect(r.claudeLiveUsageError).toEqual({ kind: "expired" });
   });
 
-  test("fetcher is not called when no claude agent is present", async () => {
+  test("fetcher is called even when no claude agent sessions are present", async () => {
     const now = Date.now();
     let called = 0;
     const r = await computeAgentUsage(
@@ -404,7 +404,7 @@ describe("computeAgentUsage — Claude live usage from OAuth endpoint", () => {
         },
       },
     );
-    expect(called).toBe(0);
-    expect(r.claudeLiveUsage).toBeUndefined();
+    expect(called).toBe(1);
+    expect(r.claudeLiveUsage).toBeNull();
   });
 });

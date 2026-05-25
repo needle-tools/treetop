@@ -599,7 +599,11 @@ export async function computeAgentUsage(
   let codexLiveUsage: CodexOAuthUsage | null | undefined;
   let codexLiveUsageError: CodexOAuthUsageError | undefined;
 
-  if (!opts.skipClaudeLiveUsage && agents.claude) {
+  // Fetch live plan-utilization from each provider's OAuth endpoint
+  // regardless of whether local sessions exist — the user may be using
+  // the agent on other machines / via web and still wants to see their
+  // rate-limit status in the chip.
+  if (!opts.skipClaudeLiveUsage) {
     const fetcher = opts.claudeLiveUsageFetcher ?? fetchClaudeOAuthUsage;
     fetches.push(
       fetcher().then((result) => {
@@ -608,7 +612,7 @@ export async function computeAgentUsage(
       }),
     );
   }
-  if (!opts.skipCodexLiveUsage && agents.codex) {
+  if (!opts.skipCodexLiveUsage) {
     const fetcher = opts.codexLiveUsageFetcher ?? fetchCodexOAuthUsage;
     fetches.push(
       fetcher().then((result) => {

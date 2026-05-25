@@ -645,177 +645,262 @@ export async function scanClaudeUserMessages(
   return result;
 }
 
-/** Total chat-turn count for a Codex JSONL. Counts `response_item`
- *  lines where payload.type is "message" — the 0.130+ message shape —
- *  with role being user or assistant only. Developer/system injected
- *  messages don't count. Falls back to top-level role+content lines
- *  for older flat-format sessions. */
-export async function scanCodexMessageCount(path: string): Promise<number> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf-8");
-  } catch {
-    return 0;
-  }
-  let count = 0;
-  for (const line of content.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
-      const p = obj.payload as Record<string, unknown>;
-      if (p.type !== "message") continue;
-      if (p.role === "user" || p.role === "assistant") count++;
-      continue;
-    }
-    // Pre-0.130 flat form.
-    if (
-      typeof obj.role === "string" &&
-      (obj.role === "user" || obj.role === "assistant")
-    ) {
-      count++;
-    }
-  }
-  return count;
-}
+// ---------------------------------------------------------------------------
+// Codex scan cache — mirrors Claude's mtime-keyed LRU so unchanged session
+// files never get re-read.  All four per-file Codex helpers write into this
+// combined cache entry so a single mtime check guards all of them.
+// ---------------------------------------------------------------------------
 
-/** Exact token-usage readings from a Codex JSONL.
- *
- *  Codex (0.130+) emits `event_msg` lines with `payload.type ===
- *  "token_count"`. The payload's `info` block carries:
- *    - last_token_usage.input_tokens — what the model saw on the
- *      previous turn (≈ "current context size before next turn")
- *    - model_context_window — the cap (in tokens) for the model that
- *      handled this session, no heuristic required
- *  We also pick up the most recent `turn_context.payload.model` so the
- *  UI can show the model name alongside the chip.
- *
- *  Unlike Claude's `usage.input_tokens` / `cache_read_input_tokens` /
- *  `cache_creation_input_tokens` (which are disjoint slices of the
- *  request that we sum), OpenAI's `cached_input_tokens` is a *subset*
- *  of `input_tokens` — informational about cache hits — so we do NOT
- *  add it on top.
- *
- *  Returns undefined for any field that wasn't present in the file, so
- *  fresh sessions (no token_count event yet) or old logs degrade
- *  gracefully back to the chars/4 estimator. */
 export interface CodexTokenUsage {
   lastInputTokens?: number;
   modelContextWindow?: number;
   model?: string;
 }
 
-export async function scanCodexTokenUsage(
+interface CodexScanCacheEntry {
+  mtimeMs: number;
+  messageCount: number;
+  contextChars: number;
+  usage: CodexTokenUsage;
+  meta: { cwd?: string; id?: string };
+}
+
+const codexScanCache = new Map<string, CodexScanCacheEntry>();
+const MAX_CODEX_SCAN_CACHE = 5000;
+
+export function clearCodexScanCache(): void {
+  codexScanCache.clear();
+}
+
+/** Head bytes for session_meta (Codex 0.130+ embeds 20KB+ system prompt). */
+const CODEX_HEAD_BYTES = 64 * 1024;
+/** Tail bytes for token_count / turn_context. */
+const CODEX_TAIL_BYTES = 64 * 1024;
+
+async function ensureCodexScanCached(
   path: string,
-): Promise<CodexTokenUsage> {
-  const empty: CodexTokenUsage = {
-    lastInputTokens: undefined,
-    modelContextWindow: undefined,
-    model: undefined,
-  };
-  let content: string;
+  mtimeMs?: number,
+): Promise<CodexScanCacheEntry> {
+  if (mtimeMs !== undefined) {
+    const cached = codexScanCache.get(path);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      codexScanCache.delete(path);
+      codexScanCache.set(path, cached);
+      return cached;
+    }
+  }
+
+  let fileSize = 0;
   try {
-    content = await readFile(path, "utf-8");
+    const st = await stat(path);
+    fileSize = st.size;
   } catch {
+    const empty: CodexScanCacheEntry = {
+      mtimeMs: mtimeMs ?? 0,
+      messageCount: 0,
+      contextChars: 0,
+      usage: { lastInputTokens: undefined, modelContextWindow: undefined, model: undefined },
+      meta: {},
+    };
+    codexScanCache.set(path, empty);
     return empty;
   }
+
+  const head = await readHead(path, CODEX_HEAD_BYTES);
+  const tail = fileSize > CODEX_HEAD_BYTES
+    ? await readTail(path, CODEX_TAIL_BYTES)
+    : null;
+
+  let meta: { cwd?: string; id?: string } = {};
   let lastInputTokens: number | undefined;
   let modelContextWindow: number | undefined;
   let model: string | undefined;
-  for (const line of content.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (
-      obj.type === "turn_context" &&
-      typeof obj.payload === "object" &&
-      obj.payload
-    ) {
-      const p = obj.payload as Record<string, unknown>;
-      if (typeof p.model === "string") model = p.model;
-      continue;
-    }
-    if (
-      obj.type === "event_msg" &&
-      typeof obj.payload === "object" &&
-      obj.payload
-    ) {
-      const p = obj.payload as Record<string, unknown>;
-      if (p.type !== "token_count") continue;
-      const info = p.info;
-      if (!info || typeof info !== "object") continue;
-      const infoObj = info as Record<string, unknown>;
-      const last = infoObj.last_token_usage as
-        | { input_tokens?: unknown }
-        | undefined;
-      if (last && typeof last.input_tokens === "number") {
-        lastInputTokens = last.input_tokens;
-      }
-      if (typeof infoObj.model_context_window === "number") {
-        modelContextWindow = infoObj.model_context_window;
-      }
-    }
-  }
-  return { lastInputTokens, modelContextWindow, model };
-}
 
-/** Rough char-based estimate (chars/4) of the total tokens currently in
- *  a Codex session's context. Codex's JSONL doesn't carry an `input_tokens`
- *  field per turn the way Claude does, so we approximate by summing the
- *  character length of every user/assistant message and dividing by 4
- *  — the same heuristic OpenAI's own tokenizer docs use as a rule of
- *  thumb. Developer / system / event lines don't count. */
-export async function scanCodexContextTokens(path: string): Promise<number> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf-8");
-  } catch {
-    return 0;
-  }
-  let chars = 0;
-  for (const line of content.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    // 0.130+: response_item → payload.{type:"message", role, content[]}
-    if (
-      obj.type === "response_item" &&
-      typeof obj.payload === "object" &&
-      obj.payload
-    ) {
-      const p = obj.payload as Record<string, unknown>;
-      if (p.type !== "message") continue;
-      if (p.role !== "user" && p.role !== "assistant") continue;
-      if (Array.isArray(p.content)) {
-        for (const block of p.content) {
-          if (typeof block === "object" && block !== null) {
-            const t = (block as { text?: unknown }).text;
-            if (typeof t === "string") chars += t.length;
+  function ingestMetaAndUsage(text: string): void {
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (
+        !meta.cwd &&
+        obj.type === "session_meta" &&
+        typeof obj.payload === "object" &&
+        obj.payload
+      ) {
+        const p = obj.payload as Record<string, unknown>;
+        meta = {
+          cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+          id: typeof p.id === "string" ? p.id : undefined,
+        };
+      }
+      if (!meta.cwd && typeof obj.cwd === "string") {
+        meta = { cwd: obj.cwd };
+      }
+      if (
+        obj.type === "turn_context" &&
+        typeof obj.payload === "object" &&
+        obj.payload
+      ) {
+        const p = obj.payload as Record<string, unknown>;
+        if (typeof p.model === "string") model = p.model;
+      }
+      if (
+        obj.type === "event_msg" &&
+        typeof obj.payload === "object" &&
+        obj.payload
+      ) {
+        const p = obj.payload as Record<string, unknown>;
+        if (p.type === "token_count") {
+          const info = p.info;
+          if (info && typeof info === "object") {
+            const infoObj = info as Record<string, unknown>;
+            const last = infoObj.last_token_usage as
+              | { input_tokens?: unknown }
+              | undefined;
+            if (last && typeof last.input_tokens === "number") {
+              lastInputTokens = last.input_tokens;
+            }
+            if (typeof infoObj.model_context_window === "number") {
+              modelContextWindow = infoObj.model_context_window;
+            }
           }
         }
-      } else if (typeof p.content === "string") {
-        chars += p.content.length;
       }
-      continue;
-    }
-    // Pre-0.130 flat form: top-level role + content.
-    if (obj.role === "user" || obj.role === "assistant") {
-      if (typeof obj.content === "string") chars += obj.content.length;
     }
   }
-  return Math.floor(chars / 4);
+
+  ingestMetaAndUsage(head);
+  if (tail) ingestMetaAndUsage(tail);
+
+  // Streaming message count + context chars via Bun.file().stream().
+  let messageCount = 0;
+  let contextChars = 0;
+  const needContextChars = lastInputTokens === undefined;
+
+  try {
+    const stream = Bun.file(path).stream();
+    const decoder = new TextDecoder();
+    let leftover = "";
+
+    for await (const chunk of stream) {
+      const text = leftover + decoder.decode(chunk, { stream: true });
+      const lines = text.split("\n");
+      leftover = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line) continue;
+        if (line.includes('"response_item"')) {
+          if (line.includes('"user"') || line.includes('"assistant"')) {
+            messageCount++;
+            if (needContextChars) {
+              try {
+                const obj = JSON.parse(line) as Record<string, unknown>;
+                if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+                  const p = obj.payload as Record<string, unknown>;
+                  if (p.type === "message") {
+                    if (Array.isArray(p.content)) {
+                      for (const block of p.content) {
+                        if (typeof block === "object" && block !== null) {
+                          const t = (block as { text?: unknown }).text;
+                          if (typeof t === "string") contextChars += t.length;
+                        }
+                      }
+                    } else if (typeof p.content === "string") {
+                      contextChars += (p.content as string).length;
+                    }
+                  }
+                }
+              } catch { /* count stands */ }
+            }
+          }
+          continue;
+        }
+        if (line.includes('"role"') && (line.includes('"user"') || line.includes('"assistant"'))) {
+          messageCount++;
+          if (needContextChars) {
+            try {
+              const obj = JSON.parse(line) as Record<string, unknown>;
+              if (typeof obj.content === "string") contextChars += obj.content.length;
+            } catch { /* skip */ }
+          }
+        }
+      }
+    }
+    if (leftover && (leftover.includes('"response_item"') || leftover.includes('"role"'))) {
+      if (leftover.includes('"user"') || leftover.includes('"assistant"')) {
+        messageCount++;
+        if (needContextChars) {
+          try {
+            const obj = JSON.parse(leftover) as Record<string, unknown>;
+            if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+              const p = obj.payload as Record<string, unknown>;
+              if (p.type === "message") {
+                if (Array.isArray(p.content)) {
+                  for (const block of p.content) {
+                    if (typeof block === "object" && block !== null) {
+                      const t = (block as { text?: unknown }).text;
+                      if (typeof t === "string") contextChars += t.length;
+                    }
+                  }
+                } else if (typeof p.content === "string") {
+                  contextChars += (p.content as string).length;
+                }
+              }
+            } else if (typeof obj.content === "string") {
+              contextChars += obj.content.length;
+            }
+          } catch { /* partial line */ }
+        }
+      }
+    }
+  } catch {
+    // File unreadable — keep whatever we got from head/tail.
+  }
+
+  const usage: CodexTokenUsage = { lastInputTokens, modelContextWindow, model };
+  const entry: CodexScanCacheEntry = {
+    mtimeMs: mtimeMs ?? 0,
+    messageCount,
+    contextChars,
+    usage,
+    meta,
+  };
+
+  codexScanCache.set(path, entry);
+  if (codexScanCache.size > MAX_CODEX_SCAN_CACHE) {
+    const oldest = codexScanCache.keys().next().value;
+    if (oldest !== undefined) codexScanCache.delete(oldest);
+  }
+
+  return entry;
+}
+
+export async function scanCodexMessageCount(
+  path: string,
+  mtimeMs?: number,
+): Promise<number> {
+  const entry = await ensureCodexScanCached(path, mtimeMs);
+  return entry.messageCount;
+}
+
+export async function scanCodexTokenUsage(
+  path: string,
+  mtimeMs?: number,
+): Promise<CodexTokenUsage> {
+  const entry = await ensureCodexScanCached(path, mtimeMs);
+  return entry.usage;
+}
+
+export async function scanCodexContextTokens(
+  path: string,
+  mtimeMs?: number,
+): Promise<number> {
+  const entry = await ensureCodexScanCached(path, mtimeMs);
+  return Math.floor(entry.contextChars / 4);
 }
 
 /** UUID pattern — Claude uses v4 UUIDs for session directories. */
@@ -1007,35 +1092,10 @@ async function collectCodexSessionFiles(
  *  callers can fall back to the filename basename. */
 async function readCodexSessionMeta(
   path: string,
+  mtimeMs?: number,
 ): Promise<{ cwd?: string; id?: string }> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf-8");
-  } catch {
-    return {};
-  }
-  let topCwd: string | undefined;
-  for (const line of content.split("\n")) {
-    if (!line) continue;
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    // 0.130+ form: { type: "session_meta", payload: { id, cwd, ... } }
-    if (obj.type === "session_meta" && typeof obj.payload === "object" && obj.payload !== null) {
-      const p = obj.payload as Record<string, unknown>;
-      const cwd = typeof p.cwd === "string" ? p.cwd : undefined;
-      const id = typeof p.id === "string" ? p.id : undefined;
-      if (cwd || id) return { cwd, id };
-    }
-    // Pre-0.130 / fixture form: top-level cwd somewhere in the file.
-    if (!topCwd && typeof obj.cwd === "string") {
-      topCwd = obj.cwd;
-    }
-  }
-  return { cwd: topCwd };
+  const entry = await ensureCodexScanCached(path, mtimeMs);
+  return entry.meta;
 }
 
 export async function scanCodex(
@@ -1057,20 +1117,18 @@ export async function scanCodex(
     for (const sessionPath of files) {
       try {
         const stats = await stat(sessionPath);
-        const meta = await readCodexSessionMeta(sessionPath);
+        const mt = stats.mtimeMs;
+        const meta = await readCodexSessionMeta(sessionPath, mt);
         if (!meta.cwd) continue;
-        const messageCount = await scanCodexMessageCount(sessionPath);
-        // Exact reading wins; chars/4 estimate is the fallback for
-        // brand-new sessions (no token_count event yet) and pre-0.130
-        // logs that never wrote the field at all.
-        const usage = await scanCodexTokenUsage(sessionPath);
+        const messageCount = await scanCodexMessageCount(sessionPath, mt);
+        const usage = await scanCodexTokenUsage(sessionPath, mt);
         let contextTokens: number | undefined;
         let contextTokensExact: boolean | undefined;
         if (usage.lastInputTokens !== undefined && usage.lastInputTokens > 0) {
           contextTokens = usage.lastInputTokens;
           contextTokensExact = true;
         } else {
-          const estimate = await scanCodexContextTokens(sessionPath);
+          const estimate = await scanCodexContextTokens(sessionPath, mt);
           if (estimate > 0) {
             contextTokens = estimate;
             contextTokensExact = false;
@@ -1080,9 +1138,6 @@ export async function scanCodex(
           agent: "codex",
           cwd: resolve(meta.cwd),
           lastActive: stats.mtime.toISOString(),
-          // Prefer the in-file id (what `codex resume <id>` expects)
-          // over the filename basename, since the filename includes a
-          // `rollout-<iso>-` prefix that's not a valid id.
           sessionId: meta.id ?? sessionPath.split(/[/\\]/).pop()!.replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
           messageCount: messageCount > 0 ? messageCount : undefined,

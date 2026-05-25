@@ -2218,15 +2218,29 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/agents/installed" && req.method === "GET") {
-      // Which interactive agent CLIs are installed? Uses
-      // `resolveAgentBinary` so multi-install setups (e.g. homebrew
-      // codex + bun-installed codex from a self-update) report the
-      // newest binary, not whatever PATH order happens to pick.
-      const candidates = ["claude", "codex", "ollama"];
+      // Which interactive agent CLIs are available? Combines binary
+      // resolution (the CLI is on disk) with session detection (the
+      // agent has been used, so its CLI must be installed somewhere).
+      // This unifies the + session picker with the usage display: if
+      // sessions exist for an agent, it appears here even when the
+      // binary isn't in a well-known path.
+      const candidates = ["claude", "codex", "ollama"] as const;
       const installed: { name: string; path: string }[] = [];
+      const found = new Set<string>();
       for (const name of candidates) {
         const path = await resolveAgentBinary(name);
-        if (path) installed.push({ name, path });
+        if (path) {
+          installed.push({ name, path });
+          found.add(name);
+        }
+      }
+      // Also include agents with detected sessions but no resolved binary.
+      const sessions = await cachedDetectAgents();
+      for (const s of sessions) {
+        if (found.has(s.agent)) continue;
+        if (s.agent === "copilot") continue; // copilot isn't a standalone CLI
+        found.add(s.agent);
+        installed.push({ name: s.agent, path: s.source });
       }
       return json({ installed });
     }
@@ -2852,10 +2866,9 @@ const server = Bun.serve<TermWsData, never>({
                   { role: "user", content: "Now summarise the conversation above." },
                 ],
                 options: {
-                  // Size the KV cache so the prompt fits; bump above
-                  // the model's default 2K to avoid silent truncation.
                   num_ctx: Math.max(8192, Math.ceil(sampled.estimatedTokens * 1.5) + 2048),
                 },
+                think: false,
               }),
               signal: abort.signal,
             });
@@ -4651,6 +4664,7 @@ const server = Bun.serve<TermWsData, never>({
                   options: {
                     num_ctx: Math.max(8192, estimatedTokens * 2 + 2048),
                   },
+                  think: false,
                 }),
                 signal: abort.signal,
               });

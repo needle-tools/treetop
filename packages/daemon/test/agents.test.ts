@@ -19,6 +19,7 @@ import {
   scanCodexMessageCount,
   scanCodexContextTokens,
   scanCodexTokenUsage,
+  clearCodexScanCache,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -748,6 +749,115 @@ describe("scanCodexMessageCount", () => {
     );
     expect(await scanCodexMessageCount(file)).toBe(3);
   });
+
+  test("handles developer messages with XML-like permission tags (not counted)", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "x", cwd: "/p" } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{
+              type: "input_text",
+              text: '<permissions instructions>\nFilesystem sandboxing defines which files can be read or written.\n</permissions>',
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{
+              type: "input_text",
+              text: '<app-context>\n# Codex desktop context\n- You are running inside the Codex desktop app\n</app-context>',
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{
+              type: "input_text",
+              text: '<environment_context>\n  <cwd>/Users/test/proj</cwd>\n  <shell>zsh</shell>\n</environment_context>\nFix the bug in main.ts',
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "I'll fix that bug now." }],
+          },
+        }),
+      ].join("\n"),
+    );
+    // Only user + assistant count; developer messages with XML tags are skipped.
+    expect(await scanCodexMessageCount(file)).toBe(2);
+  });
+
+  test("handles messages containing 'user' or 'assistant' as text without false positives", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "x", cwd: "/p" } }),
+        // An event_msg that happens to contain "user" and "assistant" in its data
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "tool_result", data: 'The user said hello to the assistant.' },
+        }),
+        // A real user message
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexMessageCount(file)).toBe(1);
+  });
+
+  test("counts messages with large base_instructions in session_meta", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    // Simulate a 25KB session_meta (like real Codex 0.130+)
+    const bigMeta = JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id: "big-meta",
+        cwd: "/proj",
+        base_instructions: { text: "System prompt: " + "x".repeat(25_000) },
+      },
+    });
+    await writeFile(
+      file,
+      [
+        bigMeta,
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodexMessageCount(file)).toBe(2);
+  });
 });
 
 describe("scanCodexContextTokens", () => {
@@ -1350,5 +1460,239 @@ describe("groupSessionsByFolder", () => {
 
   test("returns empty when no sessions", () => {
     expect(groupSessionsByFolder([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex scan cache: regression tests to prevent full-file-read memory bloat.
+// The old implementation read entire multi-hundred-MB JSONL files into memory
+// on every 10s poll cycle with no caching.  These tests verify:
+// 1. Repeated calls with the same mtime don't re-read the file.
+// 2. Large files produce correct results from head/tail + streaming.
+// 3. Cache invalidates when mtime changes.
+//
+// The large fixture is generated at test startup (never committed) and
+// mirrors real Codex 0.130+ structure including XML-like tags in
+// developer/user messages and a 20KB+ session_meta with base_instructions.
+// ---------------------------------------------------------------------------
+
+/** Build a realistic large Codex 0.130+ session JSONL in `dir`.
+ *  Returns the path and the exact number of user+assistant messages. */
+async function synthesizeLargeCodexSession(
+  dir: string,
+  opts: { messageCount: number; fillerEvents?: number } = { messageCount: 100 },
+): Promise<{ path: string; expectedMessages: number }> {
+  const file = join(dir, "rollout-2026-05-25T10-00-00-synth-large-test.jsonl");
+  const lines: string[] = [];
+
+  // session_meta with a realistic 20KB+ base_instructions (like real Codex)
+  const baseInstructions = "You are Codex, a coding agent.\n" + "x".repeat(20_000);
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T10:00:00.000Z",
+    type: "session_meta",
+    payload: {
+      id: "synth-large-test",
+      timestamp: "2026-05-25T10:00:00.000Z",
+      cwd: "/Users/test/git/large-project",
+      originator: "Codex Desktop",
+      cli_version: "0.130.0",
+      source: "vscode",
+      model_provider: "openai",
+      base_instructions: { text: baseInstructions },
+    },
+  }));
+
+  // event_msg: task_started
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T10:00:01.000Z",
+    type: "event_msg",
+    payload: { type: "task_started" },
+  }));
+
+  // developer message with XML-like permission tags (real Codex does this)
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T10:00:01.100Z",
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "<permissions instructions>\nFilesystem sandboxing policy…\n</permissions>" }],
+    },
+  }));
+
+  // turn_context with model
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T10:00:01.200Z",
+    type: "turn_context",
+    payload: {
+      turn_id: "turn-001",
+      cwd: "/Users/test/git/large-project",
+      model: "gpt-5.5",
+    },
+  }));
+
+  // User + assistant message pairs with XML-like environment_context tags
+  let msgCount = 0;
+  for (let i = 0; i < opts.messageCount; i++) {
+    // User message with XML tags (like real sessions)
+    lines.push(JSON.stringify({
+      timestamp: new Date(Date.parse("2026-05-25T10:00:02.000Z") + i * 60_000).toISOString(),
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{
+          type: "input_text",
+          text: `<environment_context>\n  <cwd>/Users/test/git/large-project</cwd>\n</environment_context>\nUser prompt number ${i + 1}: ${"lorem ipsum ".repeat(20)}`,
+        }],
+      },
+    }));
+    msgCount++;
+
+    // Assistant response
+    lines.push(JSON.stringify({
+      timestamp: new Date(Date.parse("2026-05-25T10:00:32.000Z") + i * 60_000).toISOString(),
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{
+          type: "output_text",
+          text: `Response ${i + 1}: ${"The quick brown fox jumps. ".repeat(30)}`,
+        }],
+      },
+    }));
+    msgCount++;
+
+    // Sprinkle filler event_msg lines between turns (tool calls, etc.)
+    for (let j = 0; j < (opts.fillerEvents ?? 3); j++) {
+      lines.push(JSON.stringify({
+        timestamp: new Date(Date.parse("2026-05-25T10:00:33.000Z") + i * 60_000 + j * 100).toISOString(),
+        type: "event_msg",
+        payload: { type: "tool_call", data: { tool: "shell", args: "ls -la ".repeat(50) } },
+      }));
+    }
+  }
+
+  // Final turn_context (model might change mid-session)
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T12:00:00.000Z",
+    type: "turn_context",
+    payload: { turn_id: "turn-final", cwd: "/Users/test/git/large-project", model: "gpt-5.5" },
+  }));
+
+  // token_count event near the end
+  lines.push(JSON.stringify({
+    timestamp: "2026-05-25T12:00:01.000Z",
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: { input_tokens: 200_000, output_tokens: 50_000 },
+        last_token_usage: { input_tokens: 185_000, output_tokens: 3_000 },
+        model_context_window: 258_400,
+      },
+    },
+  }));
+
+  await writeFile(file, lines.join("\n") + "\n");
+  return { path: file, expectedMessages: msgCount };
+}
+
+describe("Codex scan cache (memory regression)", () => {
+  test("second call with same mtime returns cached result (no re-read)", async () => {
+    clearCodexScanCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "yo" }] } }),
+      ].join("\n"),
+    );
+    const { statSync } = await import("node:fs");
+    const mt = statSync(file).mtimeMs;
+
+    const count1 = await scanCodexMessageCount(file, mt);
+    expect(count1).toBe(2);
+
+    // Overwrite with different content but pass stale mtime — cache hit.
+    await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }) + "\n");
+    const count2 = await scanCodexMessageCount(file, mt);
+    expect(count2).toBe(2); // cached, not re-read
+  });
+
+  test("cache invalidates when mtime changes", async () => {
+    clearCodexScanCache();
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
+      ].join("\n"),
+    );
+    const { statSync } = await import("node:fs");
+    const mt1 = statSync(file).mtimeMs;
+
+    expect(await scanCodexMessageCount(file, mt1)).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 10));
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "yo" }] } }),
+      ].join("\n"),
+    );
+    const mt2 = statSync(file).mtimeMs;
+    expect(mt2).not.toBe(mt1);
+    expect(await scanCodexMessageCount(file, mt2)).toBe(2);
+  });
+
+  test("large synthesized session: correct meta, usage, and message count", async () => {
+    clearCodexScanCache();
+    const dir = await tempDir();
+    const { path: file, expectedMessages } = await synthesizeLargeCodexSession(dir, {
+      messageCount: 200,
+      fillerEvents: 5,
+    });
+
+    const { statSync } = await import("node:fs");
+    const st = statSync(file);
+    // Verify the file is large enough to exercise the head+tail split.
+    expect(st.size).toBeGreaterThan(64 * 1024);
+
+    const mt = st.mtimeMs;
+    const usage = await scanCodexTokenUsage(file, mt);
+    expect(usage.lastInputTokens).toBe(185_000);
+    expect(usage.modelContextWindow).toBe(258_400);
+    expect(usage.model).toBe("gpt-5.5");
+
+    const count = await scanCodexMessageCount(file, mt);
+    expect(count).toBe(expectedMessages);
+  });
+
+  test("large session: session_meta with 20KB+ base_instructions parses correctly", async () => {
+    clearCodexScanCache();
+    const dir = await tempDir();
+    const { path: file } = await synthesizeLargeCodexSession(dir, { messageCount: 10 });
+    const { statSync } = await import("node:fs");
+
+    // Scan through scanCodex to exercise the full pipeline including
+    // readCodexSessionMeta → ensureCodexScanCached.
+    const sessions = await scanCodex([dir]);
+    // collectCodexSessionFiles only picks up .jsonl at depth 0 of `dir`.
+    expect(sessions.length).toBeGreaterThanOrEqual(1);
+    const s = sessions.find((s) => s.sessionId === "synth-large-test");
+    expect(s).toBeDefined();
+    expect(s!.cwd).toBe(resolve("/Users/test/git/large-project"));
+    expect(s!.model).toBe("gpt-5.5");
+    expect(s!.contextTokens).toBe(185_000);
+    expect(s!.contextTokensExact).toBe(true);
   });
 });
