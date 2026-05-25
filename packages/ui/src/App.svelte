@@ -4341,21 +4341,31 @@
         }
       }
     }
-    // Sort by activity: working sessions first, then awaiting, then
-    // by most-recent-activity (lastActive) descending. This keeps the
-    // dock's vertical strip stable enough to scan while surfacing the
-    // sessions the user is most likely looking for at the top.
-    out.sort((a, b) => {
-      // Working > awaiting > idle
+    // Sort WITHIN each repo group: working first, then awaiting,
+    // then by lastActive descending. The outer iteration order
+    // (repos × worktrees) already mirrors the dashboard's vertical
+    // layout — a global sort would scramble the per-repo grouping
+    // and the dock dots would no longer line up with their repo rows.
+    const activitySort = (a: (typeof out)[number], b: (typeof out)[number]) => {
       const stateRank = (e: typeof a) =>
         e.working ? 2 : e.awaiting ? 1 : 0;
       const sr = stateRank(b) - stateRank(a);
       if (sr !== 0) return sr;
-      // Within same state: most recent activity first.
       const ta = a.lastActive ? Date.parse(a.lastActive) : 0;
       const tb = b.lastActive ? Date.parse(b.lastActive) : 0;
       return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
-    });
+    };
+    let i = 0;
+    while (i < out.length) {
+      const repoId = out[i]!.repoId;
+      let j = i + 1;
+      while (j < out.length && out[j]!.repoId === repoId) j++;
+      if (j - i > 1) {
+        const slice = out.slice(i, j).sort(activitySort);
+        for (let k = 0; k < slice.length; k++) out[i + k] = slice[k]!;
+      }
+      i = j;
+    }
     return out as any;
   })();
 

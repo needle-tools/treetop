@@ -306,7 +306,6 @@
           class:dismissed-row={item.dismissed}
           class:orphan-row={orphanSources.has(sess.source)}
           class:preview-open={hoveredSess?.source === sess.source}
-          title={isOpen(sess) ? "Already open — click to close" : tooltipFor(sess)}
           on:click={() => dispatch("pick", sess)}
           on:mouseenter={(ev) => onRowEnter(ev, sess)}
           on:mouseleave={onRowLeave}
