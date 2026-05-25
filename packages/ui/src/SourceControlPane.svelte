@@ -284,6 +284,7 @@
 
   function relTime(iso: string): string {
     const d = (Date.now() - Date.parse(iso)) / 1000;
+    if (Number.isNaN(d)) return "";
     if (d < 60) return `${Math.floor(d)}s ago`;
     if (d < 3600) return `${Math.floor(d / 60)}m ago`;
     if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
