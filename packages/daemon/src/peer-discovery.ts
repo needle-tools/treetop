@@ -299,11 +299,17 @@ export class PeerDiscovery {
       const n = Number(txt.frontendPort);
       if (Number.isInteger(n) && n > 0 && n < 65536) frontendPort = n;
     }
-    const host =
+    let host =
       (Array.isArray(svc.addresses) &&
         svc.addresses.find((a: string) => !a.includes(":"))) ||
       svc.host ||
       "";
+    // Bonjour/mDNS returns bare hostnames (e.g. "DESKTOP-PC") that
+    // don't resolve via unicast DNS. Append ".local" so the OS
+    // routes the lookup through mDNS.
+    if (host && !host.includes(".") && !/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+      host = host + ".local";
+    }
     if (!id || !host) return;
     this.registry.addPeer({
       id,
