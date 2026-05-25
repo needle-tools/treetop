@@ -76,7 +76,7 @@ function buildCustomLink(
     const mode: CommandRunMode =
       typeof input.runMode === "string" && VALID_RUN_MODES.has(input.runMode)
         ? input.runMode
-        : "shell";
+        : "internal";
     const link: CustomLink = { id, kind: "command", cmd: rawCmd, runMode: mode };
     if (rawCwd.length > 0) link.cwd = rawCwd;
     if (typeof input.name === "string") {
@@ -463,7 +463,7 @@ export class Workspace {
     if (input.kind === "command" || (input.cmd !== undefined && currentKind === "command")) {
       const rawCmd = input.cmd ?? (currentKind === "command" ? (current as { cmd: string }).cmd : "");
       const rawCwd = input.cwd ?? (currentKind === "command" ? (current as { cwd?: string }).cwd : undefined);
-      const rawMode = input.runMode ?? (currentKind === "command" ? (current as { runMode: CommandRunMode }).runMode : "shell");
+      const rawMode = input.runMode ?? (currentKind === "command" ? (current as { runMode: CommandRunMode }).runMode : "internal");
       merged = { kind: "command", cmd: rawCmd, cwd: rawCwd, runMode: rawMode };
     } else if (input.url !== undefined && input.path !== undefined) {
       throw new Error("pass either url or path, not both");

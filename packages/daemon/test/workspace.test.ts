@@ -573,7 +573,7 @@ describe("Workspace", () => {
     expect(persisted.customLinks).toEqual([link]);
   });
 
-  test("addCustomLink command defaults runMode to shell", async () => {
+  test("addCustomLink command defaults runMode to internal", async () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo("/tmp/foo");
     const link = await ws.addCustomLink(repo.id, {
@@ -581,7 +581,7 @@ describe("Workspace", () => {
       cmd: "echo hello",
     });
     expect(link.kind).toBe("command");
-    expect((link as any).runMode).toBe("shell");
+    expect((link as any).runMode).toBe("internal");
   });
 
   test("addCustomLink command omits cwd when empty", async () => {

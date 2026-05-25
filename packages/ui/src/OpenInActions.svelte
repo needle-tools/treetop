@@ -201,7 +201,7 @@
   let newPath = "";
   let newCmd = "";
   let newCwd = "";
-  let newRunMode: CommandRunMode = "shell";
+  let newRunMode: CommandRunMode = "internal";
   let newName = "";
   let adding = false;
   let addError = "";
@@ -394,7 +394,7 @@
       newPath = draft.path ?? "";
       newCmd = draft.cmd ?? "";
       newCwd = draft.cwd ?? "";
-      newRunMode = draft.runMode ?? "shell";
+      newRunMode = draft.runMode ?? "internal";
       newName = draft.name ?? "";
       addError = "";
       setTimeout(() => urlInput?.focus(), 0);
@@ -424,7 +424,7 @@
           addOpen = false;
           newCmd = "";
           newCwd = "";
-          newRunMode = "shell";
+          newRunMode = "internal";
           newUrl = "";
           newPath = "";
           newName = "";
