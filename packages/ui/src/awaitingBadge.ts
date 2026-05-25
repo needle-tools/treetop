@@ -751,6 +751,15 @@ export function updateTabIndicator(sessions: TabSession[]): void {
     setMeta("og:description", desc, true);
   }
 
+  // Native app dock badge (macOS). setAppBadge works in Safari/WKWebView
+  // and sets the red badge on the dock icon — same as Discord/Slack.
+  // clearAppBadge removes it when nothing needs attention.
+  const badgeCount = counts.awaiting + counts.unread;
+  try {
+    if (badgeCount > 0) (navigator as any).setAppBadge?.(badgeCount);
+    else (navigator as any).clearAppBadge?.();
+  } catch {}
+
   const needsAnimation =
     counts.awaiting > 0 || counts.working > 0 || counts.unread > 0;
   if (!needsAnimation) {
