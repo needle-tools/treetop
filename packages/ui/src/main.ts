@@ -33,6 +33,25 @@ window.addEventListener("popstate", () => {
   history.pushState(null, "", location.href);
 });
 
+// Intercept clicks on <a> links to external URLs and route them through
+// the daemon so they open in the OS browser. In WKWebView (native app),
+// clicking an <a href> would navigate the webview itself instead.
+document.addEventListener("click", (ev) => {
+  const a = (ev.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
+  if (!a) return;
+  const href = a.href;
+  if (!href || !href.startsWith("http")) return;
+  if (new URL(href).origin === location.origin) return;
+  ev.preventDefault();
+  fetch("/api/open-default", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: href }),
+  }).catch(() => {
+    window.open(href, "_blank", "noopener,noreferrer");
+  });
+});
+
 // Mark Windows clients so CSS can target them. Used by worktree-row.css
 // to give the horizontal sessions-strip scrollbar a taller hit-target on
 // Windows, where the default 8px scrollbar feels noticeably harder to
