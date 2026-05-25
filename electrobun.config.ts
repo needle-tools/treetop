@@ -21,6 +21,9 @@ export default {
     mac: {
       icons: "icon.iconset",
     },
+    win: {
+      icon: "icon.ico",
+    },
     // Keep native executables AND the UI directory on disk (extracted
     // from asar). `*.exe` is for the Windows daemon + pty-helper; `ui/**`
     // is so the daemon can serve static SPA files via existsSync/read

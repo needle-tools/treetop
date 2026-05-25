@@ -136,6 +136,28 @@ if (isMac) {
   console.log("5/6  Assembling .app bundle… (skipped, not macOS)");
 }
 
+// ── 5b. Stamp Windows icon + metadata onto electrobun binaries ───────
+// Electrobun's built-in rcedit call fails (hardcoded CI paths), so we
+// stamp the source bun.exe and launcher.exe BEFORE `electrobun build`
+// compresses them into the archive. This way the installed app shows
+// the Needle icon in the taskbar, Task Manager, and Alt+Tab.
+if (isWin) {
+  const rcedit = resolve(ROOT, "node_modules/rcedit/bin/rcedit-x64.exe");
+  const ico = resolve(ROOT, "icon.ico");
+  const ebDist = resolve(ROOT, "node_modules/electrobun/dist-win-x64");
+  const targets = ["bun.exe", "launcher.exe"]
+    .map((f) => join(ebDist, f))
+    .filter((p) => existsSync(p));
+
+  if (existsSync(rcedit) && existsSync(ico) && targets.length > 0) {
+    console.log("5b/6 Stamping icon + metadata onto electrobun binaries…");
+    for (const exe of targets) {
+      await $`${rcedit} ${exe} --set-icon ${ico} --set-version-string ProductName Supergit --set-version-string FileDescription Supergit --set-file-version 0.1.0 --set-product-version 0.1.0`.quiet();
+    }
+    console.log("     ✓ Icon + version info stamped");
+  }
+}
+
 // ── 6. Smoke test (headless, flat binary) ────────────────────────────
 const smokePort = "17779";
 console.log(`6/6  Smoke test on :${smokePort}…`);
