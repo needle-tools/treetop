@@ -633,7 +633,7 @@
               rs?.staged ? `${rs.staged} staged` : "",
               rs?.unstaged ? `${rs.unstaged} mod` : "",
               rs?.untracked ? `${rs.untracked} new` : "",
-            ].filter(Boolean).join(" · ")}</span>
+            ].filter(Boolean).join(" – ")}</span>
           </span>
         </span>
       {/if}
@@ -723,7 +723,7 @@
               rs?.staged ? `${rs.staged} staged` : "",
               rs?.unstaged ? `${rs.unstaged} mod` : "",
               rs?.untracked ? `${rs.untracked} new` : "",
-            ].filter(Boolean).join(" · ")}</span>
+            ].filter(Boolean).join(" – ")}</span>
           </span>
         </span>
       {/if}
