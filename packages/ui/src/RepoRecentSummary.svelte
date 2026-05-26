@@ -716,7 +716,6 @@
     align-items: center;
     gap: 0.3rem;
     min-width: 10ch;
-    max-width: 35ch;
     font-size: 0.72rem;
     color: var(--text-muted);
   }
