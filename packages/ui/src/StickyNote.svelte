@@ -46,6 +46,7 @@
    */
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import AnchorPicker from "./AnchorPicker.svelte";
   import Popover from "./Popover.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -1267,7 +1268,7 @@
     _scopeToken: typeof pickerScope,
   ): string {
     if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
-    const raw = marked.parse(body, { async: false }) as string;
+    const raw = DOMPurify.sanitize(marked.parse(body, { async: false }) as string);
     // `[^>]*` between the closing-quote of href and the `>` lets
     // marked-added attributes (target="_blank", rel="noopener ...")
     // pass through. Without this the regex matched only the bare

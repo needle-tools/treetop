@@ -18,6 +18,7 @@ import {
   acceptOffer,
   declineOffer,
   gcStaleOffers,
+  sanitizeJsonl,
   type RepoLookup,
 } from "../src/session-share-store";
 import type { SessionShareManifest } from "../src/session-share";
@@ -501,5 +502,81 @@ describe("gcStaleOffers", () => {
   test("returns 0 when the directory does not exist", async () => {
     const ws = await tempWorkspace();
     expect(await gcStaleOffers(ws, 1)).toBe(0);
+  });
+});
+
+describe("sanitizeJsonl", () => {
+  test("strips HTML tags from text blocks", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: 'Hello <img src=x onerror="alert(1)"> world' },
+        ],
+      },
+    });
+    const result = sanitizeJsonl(line);
+    const parsed = JSON.parse(result);
+    expect(parsed.message.content[0].text).toBe("Hello  world");
+    expect(parsed.message.content[0].text).not.toContain("<");
+  });
+
+  test("strips HTML from thinking blocks", () => {
+    const line = JSON.stringify({
+      message: {
+        content: [
+          { type: "thinking", text: "<script>steal()</script>plan step" },
+        ],
+      },
+    });
+    const result = sanitizeJsonl(line);
+    const parsed = JSON.parse(result);
+    expect(parsed.message.content[0].text).toBe("steal()plan step");
+  });
+
+  test("preserves lines without HTML", () => {
+    const line = JSON.stringify({
+      message: { content: [{ type: "text", text: "clean markdown **bold**" }] },
+    });
+    expect(sanitizeJsonl(line)).toBe(line);
+  });
+
+  test("preserves non-message JSONL lines", () => {
+    const line = JSON.stringify({ cwd: "/Users/marcel/git/bar" });
+    expect(sanitizeJsonl(line)).toBe(line);
+  });
+
+  test("handles multi-line JSONL", () => {
+    const lines = [
+      JSON.stringify({ cwd: "/tmp" }),
+      JSON.stringify({
+        message: {
+          content: [{ type: "text", text: "<b>bold</b> text" }],
+        },
+      }),
+      JSON.stringify({
+        message: {
+          content: [{ type: "text", text: "no html here" }],
+        },
+      }),
+    ].join("\n");
+    const result = sanitizeJsonl(lines);
+    const parsed = result.split("\n").map((l) => JSON.parse(l));
+    expect(parsed[1].message.content[0].text).toBe("bold text");
+    expect(parsed[2].message.content[0].text).toBe("no html here");
+  });
+
+  test("storePendingOffer sanitizes JSONL on ingest", async () => {
+    const ws = await tempWorkspace();
+    const malicious = JSON.stringify({
+      message: {
+        content: [{ type: "text", text: '<img src=x onerror="fetch(\\"/api/shutdown\\")"> hello' }],
+      },
+    });
+    await storePendingOffer(ws, manifest(), malicious);
+    const loaded = await loadPendingOffer(ws, "offer-aaa");
+    const parsed = JSON.parse(loaded!.jsonl);
+    expect(parsed.message.content[0].text).not.toContain("<img");
+    expect(parsed.message.content[0].text).toContain("hello");
   });
 });

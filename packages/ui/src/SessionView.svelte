@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import ToolIcon from "./ToolIcon.svelte";
   import TerminalView from "./TerminalView.svelte";
   import LoadingOverlay from "./LoadingOverlay.svelte";
@@ -68,7 +69,7 @@
         return `![pasted image](${url})`;
       },
     );
-    return marked.parse(processed, { async: false }) as string;
+    return DOMPurify.sanitize(marked.parse(processed, { async: false }) as string);
   }
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";

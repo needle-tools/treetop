@@ -40,6 +40,30 @@ import { claudeProjectDirForCwd, CLAUDE_ROOT } from "./agents";
 const INVITES_DIR = "session-invites";
 const IMPORTED_DIR = "imported-sessions";
 
+const HTML_TAG_RE = /<\/?[a-z][^>]*>/gi;
+
+/** Strip HTML tags from text fields inside JSONL content blocks.
+ *  Prevents stored XSS when shared sessions are rendered with {@html}. */
+export function sanitizeJsonl(jsonl: string): string {
+  return jsonl
+    .split("\n")
+    .map((line) => {
+      if (!line.trim()) return line;
+      let obj: any;
+      try { obj = JSON.parse(line); } catch { return line; }
+      if (!obj?.message?.content || !Array.isArray(obj.message.content)) return line;
+      let changed = false;
+      for (const block of obj.message.content) {
+        if ((block.type === "text" || block.type === "thinking") && typeof block.text === "string" && HTML_TAG_RE.test(block.text)) {
+          block.text = block.text.replace(HTML_TAG_RE, "");
+          changed = true;
+        }
+      }
+      return changed ? JSON.stringify(obj) : line;
+    })
+    .join("\n");
+}
+
 export interface PendingOffer {
   manifest: SessionShareManifest;
   jsonl: string;
@@ -100,7 +124,7 @@ export async function storePendingOffer(
   const path = join(dir, `${manifest.offerId}.json`);
   const body: PendingOffer = {
     manifest,
-    jsonl,
+    jsonl: sanitizeJsonl(jsonl),
     receivedAt: new Date().toISOString(),
   };
   await writeFile(path, JSON.stringify(body, null, 2));
