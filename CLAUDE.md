@@ -60,6 +60,16 @@ a git repo (single-member at v0, invitable from v2). Two pillars:
     the SPA is fine, restarting the process is not. Violations destroy
     live TUI sessions the user is hosting.
 
+## Multi-session safety
+
+Multiple AI agent sessions often work on this repo concurrently.
+**Never** perform destructive git operations (`git stash`, `git reset`,
+`git revert`, `git checkout -- .`, `git clean`) without explicit user
+permission. If you encounter merge conflicts, mangled files, or
+uncommittable state — do nothing and ask the user to resolve it in
+Fork or another git client. When committing, only stage files you
+changed; never batch-commit unrelated changes from other sessions.
+
 ## Anti-patterns we reject
 
 - Mocking the thing under test, or mocking the database.
