@@ -34,15 +34,18 @@ export async function killOnPort(port: number): Promise<void> {
     });
     if (res.ok) {
       const body = (await res.json().catch(() => ({}))) as { pid?: number };
-      console.log(`dev: asked daemon on :${port} (pid ${body.pid ?? "?"}) to shut down`);
+      const pid = body.pid ?? "?";
+      console.log(`dev: asked daemon on :${port} (pid ${pid}) to shut down`);
       await Bun.sleep(1500);
       // Check if it actually stopped.
       try {
         await fetch(`http://localhost:${port}/api/health`, {
           signal: AbortSignal.timeout(500),
         });
+        console.log(`dev: daemon on :${port} (pid ${pid}) did not stop — will force-kill`);
         // Still alive — fall through to force-kill below.
       } catch {
+        console.log(`dev: daemon on :${port} (pid ${pid}) stopped`);
         return; // Gone — port is free.
       }
     }
@@ -84,11 +87,12 @@ export async function killOnPort(port: number): Promise<void> {
       .split("\n")
       .filter((p) => p && p !== self && p !== parent);
     if (pids.length === 0) return;
-    console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
+    console.log(`dev: port ${port} held by pid ${pids.join(", ")} — force-killing`);
     for (const pid of pids) {
       await $`kill -9 ${pid}`.quiet().nothrow();
     }
     await Bun.sleep(200);
+    console.log(`dev: port ${port} freed`);
   }
 }
 

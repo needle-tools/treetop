@@ -18,7 +18,7 @@
   /** Callback to focus/scroll to the terminal that spawned this remote browser. */
   export let onFocusTerminal: (() => void) | undefined = undefined;
 
-  $: isRemote = remoteTermId !== null;
+  $: isRemote = !!remoteTermId;
   let followTerminal = true;
 
   $: if (followTerminal && remoteCwd && remoteCwd !== currentDir) {
@@ -346,17 +346,17 @@
   $: selectedNames = visibleSelected.map((p) => p.split("/").pop() ?? p);
 
   loadPersistedState();
-  if (isRemote && remoteTermId) {
-    // Fetch remote home dir as initial path
+  if (remoteTermId) {
+    // Remote mode: fetch home dir first, then load
+    loading = true;
     void fetchSshHome(remoteTermId).then((home) => {
-      if (home && home !== "/" && currentDir === wtPath) {
-        currentDir = home;
-        nav = new NavHistory(home);
-        void loadCurrentDir();
-      }
+      currentDir = home;
+      nav = new NavHistory(home);
+      void loadCurrentDir();
     });
+  } else {
+    void loadCurrentDir();
   }
-  void loadCurrentDir();
 
   $: displayName = currentDir.split("/").pop() || currentDir;
 </script>
