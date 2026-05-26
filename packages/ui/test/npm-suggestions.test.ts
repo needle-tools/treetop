@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { filterNpmSuggestions, npmScriptsPlaceholder } from "../src/npm-suggestions";
 
-const SCRIPTS = ["start", "dev", "build", "test", "test:watch", "test:coverage", "stop-dev"];
+const SCRIPTS = [
+  "start",
+  "dev",
+  "build",
+  "build:launch",
+  "test",
+  "test:watch",
+  "test:coverage",
+  "stop-dev",
+];
 
 describe("filterNpmSuggestions", () => {
   test("returns empty for empty scripts list", () => {
@@ -217,6 +226,9 @@ describe("filterNpmSuggestions", () => {
       "npm run build",
       "yarn build",
       "bun build",
+      "npm run build:launch",
+      "yarn build:launch",
+      "bun build:launch",
     ]);
   });
 
@@ -255,6 +267,18 @@ describe("filterNpmSuggestions", () => {
       "npm run stop-dev",
       "yarn stop-dev",
       "bun stop-dev",
+    ]);
+  });
+
+  test("limits suggestions to package managers detected for the repo", () => {
+    expect(filterNpmSuggestions("build", SCRIPTS, { packageManagers: ["bun"] })).toEqual([
+      "bun build",
+      "bun build:launch",
+    ]);
+    expect(filterNpmSuggestions("npm run build", SCRIPTS, { packageManagers: ["bun"] })).toEqual([]);
+    expect(filterNpmSuggestions("bun run build", SCRIPTS, { packageManagers: ["bun"] })).toEqual([
+      "bun run build",
+      "bun run build:launch",
     ]);
   });
 

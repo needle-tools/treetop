@@ -64,7 +64,11 @@
   import { confirmDialog } from "./confirm-dialog";
   import { flip } from "svelte/animate";
   import { openUrl } from "./open-url";
-  import { filterNpmSuggestions, npmScriptsPlaceholder } from "./npm-suggestions";
+  import {
+    filterNpmSuggestions,
+    npmScriptsPlaceholder,
+    type PackageManager,
+  } from "./npm-suggestions";
 
   export let path: string;
   export let repoId: string = "";
@@ -211,6 +215,7 @@
 
   // npm script autocomplete
   let npmScripts: string[] = [];
+  let npmPackageManagers: PackageManager[] = [];
   let npmScriptsDir = "";
   let showSuggestions = false;
   let selectedSuggestionIdx = -1;
@@ -221,11 +226,16 @@
     npmScriptsDir = dir;
     try {
       const res = await fetch(`/api/npm-scripts?dir=${encodeURIComponent(dir)}`);
-      if (!res.ok) { npmScripts = []; return; }
-      const body = await res.json() as { scripts?: string[] };
+      if (!res.ok) { npmScripts = []; npmPackageManagers = []; return; }
+      const body = await res.json() as {
+        scripts?: string[];
+        packageManagers?: PackageManager[];
+      };
       npmScripts = body.scripts ?? [];
+      npmPackageManagers = body.packageManagers ?? [];
     } catch {
       npmScripts = [];
+      npmPackageManagers = [];
     }
   }
 
@@ -241,7 +251,7 @@
   }
 
   function filteredSuggestions(cmd: string, scripts: string[]): string[] {
-    return filterNpmSuggestions(cmd, scripts);
+    return filterNpmSuggestions(cmd, scripts, { packageManagers: npmPackageManagers });
   }
 
   $: addSuggestions = filteredSuggestions(newCmd, npmScripts);

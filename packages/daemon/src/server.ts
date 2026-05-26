@@ -214,7 +214,92 @@ function shellExec(cmd: string): string[] {
     : ["sh", "-c", cmd];
 }
 
+async function readInteractiveShellPath(): Promise<string | undefined> {
+  if (process.platform === "win32") return undefined;
+  const shell = process.env.SHELL || "/bin/zsh";
+  try {
+    const proc = Bun.spawn(
+      [shell, "-lic", "printf '\\n__SUPERGIT_PATH__%s\\n' \"$PATH\""],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+        env: process.env,
+      },
+    );
+    const timeout = setTimeout(() => {
+      try { proc.kill(); } catch {}
+    }, 2000);
+    const [stdout, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timeout);
+    if (code !== 0) return undefined;
+    const line = stdout
+      .split("\n")
+      .filter((x) => x.startsWith("__SUPERGIT_PATH__"))
+      .at(-1);
+    const path = line?.slice("__SUPERGIT_PATH__".length).trim();
+    return path && path.includes(":") ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const INTERACTIVE_SHELL_PATH = await readInteractiveShellPath();
+const COMMAND_PATH = INTERACTIVE_SHELL_PATH ?? process.env.PATH;
+
+function terminalSpawnEnv(): Record<string, string> | undefined {
+  return COMMAND_PATH && COMMAND_PATH !== process.env.PATH
+    ? { PATH: COMMAND_PATH }
+    : undefined;
+}
+
+function backgroundCommandEnv(): Record<string, string> {
+  const env = {
+    ...process.env,
+    ...(COMMAND_PATH ? { PATH: COMMAND_PATH } : {}),
+  };
+  delete env.PORT;
+  delete env.PORTLESS_URL;
+  delete env.NODE_EXTRA_CA_CERTS;
+  return env;
+}
+
 const commandDetectedUrls = new Map<string, string[]>();
+
+type DetectedPackageManager = "npm" | "yarn" | "bun";
+
+async function detectPackageManagers(
+  dir: string,
+  pkg: unknown,
+): Promise<DetectedPackageManager[]> {
+  const found = new Set<DetectedPackageManager>();
+  if (pkg && typeof pkg === "object") {
+    const packageManager = (pkg as Record<string, unknown>).packageManager;
+    if (typeof packageManager === "string") {
+      const name = packageManager.split("@", 1)[0];
+      if (name === "npm" || name === "yarn" || name === "bun") found.add(name);
+    }
+  }
+
+  const locks: Array<[DetectedPackageManager, string]> = [
+    ["npm", "package-lock.json"],
+    ["npm", "npm-shrinkwrap.json"],
+    ["yarn", "yarn.lock"],
+    ["bun", "bun.lock"],
+    ["bun", "bun.lockb"],
+  ];
+  for (const [manager, file] of locks) {
+    if (await Bun.file(join(dir, file)).exists().catch(() => false)) {
+      found.add(manager);
+    }
+  }
+
+  if (found.size === 0) found.add("npm");
+  return (["npm", "yarn", "bun"] as const).filter((manager) => found.has(manager));
+}
 
 const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/g;
 
@@ -2090,6 +2175,7 @@ const server = Bun.serve<TermWsData, never>({
           cwd: body.cwd,
           ownerId: body.ownerId,
           agent: agentHint,
+          env: agentHint === "shell" ? undefined : terminalSpawnEnv(),
           // Clamp absurd dims to a sane floor. The frontend reads
           // xterm.cols/rows in onMount; if the container hasn't laid out
           // yet (clientWidth ≈ 0), the FitAddon proposes 2 cols and zsh
@@ -4428,7 +4514,7 @@ const server = Bun.serve<TermWsData, never>({
     if (url.pathname === "/api/npm-scripts" && req.method === "GET") {
       const dir = url.searchParams.get("dir");
       if (!dir || typeof dir !== "string") {
-        return json({ scripts: [] });
+        return json({ scripts: [], packageManagers: [] });
       }
       try {
         const pkgPath = join(dir, "package.json");
@@ -4437,9 +4523,10 @@ const server = Bun.serve<TermWsData, never>({
         const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts !== null
           ? Object.keys(pkg.scripts)
           : [];
-        return json({ scripts });
+        const packageManagers = await detectPackageManagers(dir, pkg);
+        return json({ scripts, packageManagers });
       } catch {
-        return json({ scripts: [] });
+        return json({ scripts: [], packageManagers: [] });
       }
     }
 
@@ -4490,6 +4577,7 @@ const server = Bun.serve<TermWsData, never>({
             cmd: shellExec(cmdLink.cmd),
             cwd,
             size: { cols: 120, rows: 30 },
+            env: terminalSpawnEnv(),
           });
           // Scan PTY output for localhost/LAN URLs for up to 2 minutes
           detectCommandUrl(handle, linkId, repoId);
@@ -4506,6 +4594,7 @@ const server = Bun.serve<TermWsData, never>({
           stdout: "ignore",
           stderr: "ignore",
           stdin: "ignore",
+          env: backgroundCommandEnv(),
         });
         const entry: RunningCommand = {
           proc,

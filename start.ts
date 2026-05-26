@@ -77,7 +77,9 @@ async function stopExisting(): Promise<void> {
   }
 }
 
-await stopExisting();
+if (process.env.SUPERGIT_SKIP_STOP_EXISTING !== "1") {
+  await stopExisting();
+}
 
 console.log(`supergit prod: API     → ${url}/api/`);
 console.log(`supergit prod: UI      → ${url}`);

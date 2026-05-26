@@ -95,11 +95,12 @@ for (const [label, path] of Object.entries(paths)) {
 }
 
 // Open / focus the output directory so the user can grab the installer.
-if (paths.app && existsSync(paths.app)) {
+const shouldOpenOutput = process.env.SUPERGIT_BUILD_OPEN_OUTPUT !== "0";
+if (shouldOpenOutput && paths.app && existsSync(paths.app)) {
   const appDir = resolve(paths.app, "..");
   console.log(`\n  Opening:  ${appDir}\n`);
   Bun.spawn(["open", appDir], { stdio: ["ignore", "ignore", "ignore"] });
-} else if (isWin && paths.setup && existsSync(paths.setup)) {
+} else if (shouldOpenOutput && isWin && paths.setup && existsSync(paths.setup)) {
   const setupDir = resolve(paths.setup, "..");
   console.log(`\n  Opening:  ${setupDir}\n`);
   Bun.spawn(["explorer.exe", setupDir], { stdio: ["ignore", "ignore", "ignore"] });
