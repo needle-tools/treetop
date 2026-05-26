@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
+  appendInlineAttachmentRef,
   expandNoteBodyForCopyAsync,
   expandNoteBodyForCopy,
   extractNoteClipboardPayloadFromHtml,
@@ -8,9 +9,15 @@ import {
   noteBodyToEditText,
   makeNoteClipboardHtml,
   makeNoteClipboardPayload,
+  makeEmojiAttachmentRef,
   makeImageAttachmentRef,
+  makeLinkAttachmentRef,
+  makeNoteAttachmentRef,
   makeTextAttachmentRef,
+  moveInlineAttachmentRefBefore,
+  moveInlineAttachmentRefToEnd,
   parseInlineAttachments,
+  removeInlineAttachmentRef,
   restoreEditTextAttachments,
   shouldAttachPastedText,
   trailingImageAttachmentIndexes,
@@ -73,15 +80,53 @@ describe("note inline attachments", () => {
     }
   });
 
+  test("round-trips note, emoji, and link attachment references", () => {
+    const noteRef = makeNoteAttachmentRef({ body: "nested note\nbody" });
+    const emojiRef = makeEmojiAttachmentRef({ body: "✨" });
+    const linkRef = makeLinkAttachmentRef({
+      target: {
+        type: "session",
+        value: "/tmp/session.jsonl",
+        label: "Session title",
+        agent: "codex",
+      },
+    });
+    const parts = parseInlineAttachments(`${noteRef} ${emojiRef} ${linkRef}`);
+
+    expect(parts.filter((part) => part.kind === "attachment")).toHaveLength(3);
+    if (parts[0]?.kind === "attachment") {
+      expect(parts[0].attachment).toEqual({
+        kind: "note",
+        body: "nested note\nbody",
+      });
+    }
+    if (parts[2]?.kind === "attachment") {
+      expect(parts[2].attachment).toEqual({ kind: "emoji", body: "✨" });
+    }
+    if (parts[4]?.kind === "attachment") {
+      expect(parts[4].attachment).toEqual({
+        kind: "link",
+        target: {
+          type: "session",
+          value: "/tmp/session.jsonl",
+          label: "Session title",
+          agent: "codex",
+        },
+      });
+    }
+  });
+
   test("copy expansion restores hidden paste payloads and image paths", () => {
     const paste = makeTextAttachmentRef({
       path: "/tmp/paste.txt",
       charCount: 16,
     });
     const image = makeImageAttachmentRef({ path: "/tmp/a.png" });
+    const emoji = makeEmojiAttachmentRef({ body: "✨" });
+    const note = makeNoteAttachmentRef({ body: "nested" });
 
-    expect(expandNoteBodyForCopy(`A ${paste} B ${image}`)).toBe(
-      "A /tmp/paste.txt B /tmp/a.png",
+    expect(expandNoteBodyForCopy(`A ${paste} B ${image} C ${emoji} D ${note}`)).toBe(
+      "A /tmp/paste.txt B /tmp/a.png C ✨ D nested",
     );
   });
 
@@ -171,6 +216,70 @@ describe("note inline attachments", () => {
   test("ignores malformed attachment references as plain text", () => {
     const body = "before [broken](supergit://attachment/not-base64) after";
     expect(parseInlineAttachments(body)).toEqual([{ kind: "text", text: body }]);
+  });
+
+  test("removes a moved inline attachment ref from its source note body", () => {
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+      mimeType: "image/png",
+    });
+    const second = makeTextAttachmentRef({
+      path: "/tmp/paste.txt",
+      filename: "paste.txt",
+      mimeType: "text/plain",
+      charCount: 12,
+    });
+
+    expect(removeInlineAttachmentRef(`before ${first} middle ${second} after`, first))
+      .toBe(`before  middle ${second} after`);
+    expect(removeInlineAttachmentRef(first, first)).toBe("");
+    expect(removeInlineAttachmentRef("unchanged", first)).toBe("unchanged");
+  });
+
+  test("moves an inline attachment ref within a note body", () => {
+    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const second = makeTextAttachmentRef({
+      path: "/tmp/paste.txt",
+      filename: "paste.txt",
+      charCount: 12,
+    });
+    const third = makeEmojiAttachmentRef({ body: "✨" });
+
+    expect(moveInlineAttachmentRefToEnd(`A ${first} B ${second}`, first))
+      .toBe(`A  B ${second}\n${first}`);
+    expect(moveInlineAttachmentRefBefore(`A ${first} B ${second} C ${third}`, third, second))
+      .toBe(`A ${first} B ${third}${second} C `);
+    expect(moveInlineAttachmentRefBefore("unchanged", first, second)).toBe("unchanged");
+  });
+
+  test("appends a session reference without deleting the note body", () => {
+    const sessionRef = makeLinkAttachmentRef({
+      target: {
+        type: "session",
+        value: "/tmp/codex-session.jsonl",
+        label: "Fix terminal colors",
+        agent: "codex",
+      },
+    });
+    const body = appendInlineAttachmentRef("keep this note", sessionRef);
+    const parts = parseInlineAttachments(body);
+
+    expect(body.startsWith("keep this note\n")).toBe(true);
+    expect(parts[0]).toEqual({ kind: "text", text: "keep this note\n" });
+    expect(parts[1]).toEqual({
+      kind: "attachment",
+      raw: sessionRef,
+      attachment: {
+        kind: "link",
+        target: {
+          type: "session",
+          value: "/tmp/codex-session.jsonl",
+          label: "Fix terminal colors",
+          agent: "codex",
+        },
+      },
+    });
   });
 
   test("detects image attachments trailing at the end of note content", () => {

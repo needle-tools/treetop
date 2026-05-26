@@ -1536,6 +1536,7 @@
           ]}
       cwd={session.cwd}
       ownerId={session.sessionId}
+      sessionSource={source}
       {attachTermId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       onSpawn={(id) => (terminalId = id)}

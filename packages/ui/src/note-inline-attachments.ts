@@ -1,4 +1,9 @@
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
+export const INLINE_ATTACHMENT_DRAG_MIME =
+  "application/x-supergit-inline-attachment+json";
+export const SESSION_LINK_DRAG_MIME =
+  "application/x-supergit-session-link+json";
+export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
 
 const ATTACHMENT_LINK_RE = /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
 
@@ -27,7 +32,37 @@ export interface ImageInlineAttachment {
   source?: AttachmentSource;
 }
 
-export type InlineAttachment = TextInlineAttachment | ImageInlineAttachment;
+export interface NoteInlineAttachment {
+  kind: "note";
+  body: string;
+}
+
+export interface EmojiInlineAttachment {
+  kind: "emoji";
+  body: string;
+}
+
+export interface InlineLinkTarget {
+  type: "url" | "commit" | "session" | "file";
+  value: string;
+  label?: string;
+  subtitle?: string;
+  meta?: string;
+  agent?: string;
+  provider?: string;
+}
+
+export interface LinkInlineAttachment {
+  kind: "link";
+  target: InlineLinkTarget;
+}
+
+export type InlineAttachment =
+  | TextInlineAttachment
+  | ImageInlineAttachment
+  | NoteInlineAttachment
+  | EmojiInlineAttachment
+  | LinkInlineAttachment;
 
 export type InlineAttachmentPart =
   | { kind: "text"; text: string }
@@ -89,6 +124,18 @@ export function makeImageAttachmentRef(input: {
   });
 }
 
+export function makeNoteAttachmentRef(input: { body: string }): string {
+  return makeAttachmentRef({ kind: "note", body: input.body });
+}
+
+export function makeEmojiAttachmentRef(input: { body: string }): string {
+  return makeAttachmentRef({ kind: "emoji", body: input.body });
+}
+
+export function makeLinkAttachmentRef(input: { target: InlineLinkTarget }): string {
+  return makeAttachmentRef({ kind: "link", target: input.target });
+}
+
 export function parseInlineAttachments(body: string): InlineAttachmentPart[] {
   const parts: InlineAttachmentPart[] = [];
   const matches = attachmentMatches(body);
@@ -124,11 +171,59 @@ export function trailingImageAttachmentIndexes(
   return new Set(indexes.reverse());
 }
 
+export function removeInlineAttachmentRef(body: string, raw: string): string {
+  if (!raw) return body;
+  const parts = parseInlineAttachments(body);
+  let removed = false;
+  return parts
+    .map((part) => {
+      if (!removed && part.kind === "attachment" && part.raw === raw) {
+        removed = true;
+        return "";
+      }
+      return part.kind === "text" ? part.text : part.raw;
+    })
+    .join("");
+}
+
+export function moveInlineAttachmentRefToEnd(body: string, raw: string): string {
+  const without = removeInlineAttachmentRef(body, raw);
+  if (without === body) return body;
+  return appendInlineAttachmentRef(without, raw);
+}
+
+export function moveInlineAttachmentRefBefore(
+  body: string,
+  raw: string,
+  beforeRaw: string,
+): string {
+  if (!raw || !beforeRaw || raw === beforeRaw) return body;
+  const without = removeInlineAttachmentRef(body, raw);
+  if (without === body) return body;
+  const parts = parseInlineAttachments(without);
+  let inserted = false;
+  const moved = parts
+    .map((part) => {
+      if (part.kind === "attachment" && part.raw === beforeRaw) {
+        inserted = true;
+        return `${raw}${part.raw}`;
+      }
+      return part.kind === "text" ? part.text : part.raw;
+    })
+    .join("");
+  return inserted ? moved : appendInlineAttachmentRef(without, raw);
+}
+
+export function appendInlineAttachmentRef(body: string, raw: string): string {
+  const sep = body && !body.endsWith("\n") ? "\n" : "";
+  return `${body}${sep}${raw}`;
+}
+
 export function expandNoteBodyForCopy(body: string): string {
   return parseInlineAttachments(body)
     .map((part) => {
       if (part.kind === "text") return part.text;
-      return part.attachment.path;
+      return inlineAttachmentCopyText(part.attachment);
     })
     .join("");
 }
@@ -143,8 +238,10 @@ export async function expandNoteBodyForCopyAsync(
       chunks.push(part.text);
     } else if (part.attachment.kind === "text") {
       chunks.push(await readTextAttachment(part.attachment.path));
-    } else {
+    } else if (part.attachment.kind === "image") {
       chunks.push(part.attachment.path);
+    } else {
+      chunks.push(inlineAttachmentCopyText(part.attachment));
     }
   }
   return chunks.join("");
@@ -160,7 +257,15 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
   if (attachment.kind === "text") {
     return `Pasted Content, ${attachment.charCount} chars`;
   }
-  return attachment.filename ?? attachment.path.split("/").pop() ?? "Image attachment";
+  if (attachment.kind === "image") {
+    return attachment.filename ?? attachment.path.split("/").pop() ?? "Image attachment";
+  }
+  if (attachment.kind === "emoji") return attachment.body || "Emoji";
+  if (attachment.kind === "note") {
+    const firstLine = attachment.body.trim().split(/\r?\n/)[0]?.trim();
+    return firstLine ? `Note: ${firstLine.slice(0, 40)}` : "Note";
+  }
+  return attachment.target.label ?? attachment.target.value;
 }
 
 export function noteBodyToEditText(
@@ -299,10 +404,56 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
         ...(source ? { source } : {}),
       };
     }
+    if (obj.kind === "note" && typeof obj.body === "string") {
+      return { kind: "note", body: obj.body };
+    }
+    if (obj.kind === "emoji" && typeof obj.body === "string") {
+      return { kind: "emoji", body: obj.body };
+    }
+    if (obj.kind === "link") {
+      const target = parseLinkTarget(obj.target);
+      if (target) return { kind: "link", target };
+    }
   } catch {
     return null;
   }
   return null;
+}
+
+function parseLinkTarget(value: unknown): InlineLinkTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  if (
+    obj.type !== "url" &&
+    obj.type !== "commit" &&
+    obj.type !== "session" &&
+    obj.type !== "file"
+  ) {
+    return null;
+  }
+  if (typeof obj.value !== "string" || obj.value.length === 0) return null;
+  return {
+    type: obj.type,
+    value: obj.value,
+    ...(typeof obj.label === "string" ? { label: obj.label } : {}),
+    ...(typeof obj.subtitle === "string" ? { subtitle: obj.subtitle } : {}),
+    ...(typeof obj.meta === "string" ? { meta: obj.meta } : {}),
+    ...(typeof obj.agent === "string" ? { agent: obj.agent } : {}),
+    ...(typeof obj.provider === "string" ? { provider: obj.provider } : {}),
+  };
+}
+
+function inlineAttachmentCopyText(attachment: InlineAttachment): string {
+  switch (attachment.kind) {
+    case "text":
+    case "image":
+      return attachment.path;
+    case "note":
+    case "emoji":
+      return attachment.body;
+    case "link":
+      return attachment.target.label ?? attachment.target.value;
+  }
 }
 
 function parseSource(value: unknown): AttachmentSource | undefined {

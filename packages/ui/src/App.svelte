@@ -57,6 +57,8 @@
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
+  import { relativeAge } from "./mention-providers";
+  import { SESSION_LINK_DRAG_MIME } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
   import {
     OpenSessionsStore,
@@ -2333,6 +2335,44 @@
    *  drop, dragend, and dragleave-from-strip. */
   let dragOverTarget: { wtPath: string; index: number; side: "left" | "right" } | null = null;
 
+  function sessionDragLinkTarget(wtPath: string, index: number): {
+    type: "session";
+    value: string;
+    label: string;
+    agent?: string;
+    subtitle?: string;
+    meta?: string;
+  } | null {
+    const session = openSessionsByWt[wtPath]?.[index];
+    if (!session || session.agent === "files" || session.agent === "history") {
+      return null;
+    }
+    let label = "(session)";
+    let agent = session.agent;
+    let subtitle = "";
+    let meta = "";
+    const row = rows.find((r) => r.wt?.path === wtPath);
+    const found = row?.wt?.agents?.find((a) => a.source === session.source);
+    if (found) {
+      agent = found.agent;
+      label =
+        found.manualTitle?.trim() ||
+        found.title?.trim() ||
+        found.firstUserMessage?.trim() ||
+        (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : label);
+      subtitle = found.messageCount ? `${found.messageCount} msg` : "";
+      meta = relativeAge(found.lastActive);
+    }
+    return {
+      type: "session",
+      value: session.source,
+      label,
+      ...(agent ? { agent } : {}),
+      ...(subtitle ? { subtitle } : {}),
+      ...(meta ? { meta } : {}),
+    };
+  }
+
   function handleSessionDragStart(
     e: DragEvent,
     wtPath: string,
@@ -2343,6 +2383,13 @@
       e.dataTransfer.effectAllowed = "move";
       // Must set some data for Firefox to honour the drag.
       e.dataTransfer.setData("text/plain", `${wtPath}|${index}`);
+      const target = sessionDragLinkTarget(wtPath, index);
+      if (target) {
+        e.dataTransfer.setData(
+          SESSION_LINK_DRAG_MIME,
+          JSON.stringify({ target }),
+        );
+      }
     }
   }
 

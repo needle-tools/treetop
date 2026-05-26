@@ -125,6 +125,23 @@
   import StickyNote, { type NoteShape } from "./StickyNote.svelte";
   import { notesCountByAnchor, notesAll } from "./notes-counts";
   import { getDaemonKV } from "./daemon-kv";
+  import { relativeAge } from "./mention-providers";
+  import {
+    INLINE_ATTACHMENT_DRAG_MIME,
+    SESSION_LINK_DRAG_MIME,
+    STAGE_PROMPT_EVENT,
+    appendInlineAttachmentRef,
+    expandNoteBodyForCopyAsync,
+    fetchTextAttachment,
+    makeEmojiAttachmentRef,
+    makeLinkAttachmentRef,
+    makeNoteAttachmentRef,
+    moveInlineAttachmentRefBefore,
+    moveInlineAttachmentRefToEnd,
+    parseInlineAttachments,
+    removeInlineAttachmentRef,
+    type InlineAttachment,
+  } from "./note-inline-attachments";
 
   /** Bumped by App.svelte on any SSE `change` event so the layer
    *  refetches if a note was created/updated/deleted via another tab
@@ -133,7 +150,20 @@
   /** Live repos snapshot — passed down to each StickyNote so the
    *  in-edit Move-to / Copy-to picker can list all anchorable
    *  destinations without each note re-fetching /api/repos. */
-  interface AnchorableWorktree { path: string; branch: string; }
+  interface AnchorableWorktree {
+    path: string;
+    branch: string;
+    agents?: Array<{
+      source: string;
+      agent: string;
+      title?: string;
+      manualTitle?: string;
+      firstUserMessage?: string;
+      sessionId?: string;
+      messageCount?: number;
+      lastActive?: string;
+    }>;
+  }
   interface AnchorableRepo {
     id: string;
     name?: string;
@@ -323,6 +353,168 @@
       }
     }
     return null;
+  }
+
+  function visibleWorktreeRows(): HTMLElement[] {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "[data-wt-row]:not(.row-folded):not(.row-notes-hidden)",
+      ),
+    );
+  }
+
+  function anchorFromRow(li: HTMLElement): string | null {
+    const path = li.dataset.wtRow;
+    return path ? `worktree:${path}` : null;
+  }
+
+  function dropTargetAt(
+    clientX: number,
+    clientY: number,
+  ): { anchor: string; li: HTMLElement } | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const li = (el as HTMLElement).closest<HTMLElement>("[data-wt-row]");
+      if (!li || li.classList.contains("row-folded") || li.classList.contains("row-notes-hidden")) {
+        continue;
+      }
+      const anchor = anchorFromRow(li);
+      if (anchor) return { anchor, li };
+    }
+
+    let best: { li: HTMLElement; dist: number } | null = null;
+    for (const li of visibleWorktreeRows()) {
+      const r = li.getBoundingClientRect();
+      const dy =
+        clientY < r.top ? r.top - clientY :
+        clientY > r.bottom ? clientY - r.bottom :
+        0;
+      const dx =
+        clientX < r.left ? r.left - clientX :
+        clientX > r.right ? clientX - r.right :
+        0;
+      const dist = dy * dy + dx * dx * 0.15;
+      if (!best || dist < best.dist) best = { li, dist };
+    }
+    if (!best) return null;
+    const anchor = anchorFromRow(best.li);
+    return anchor ? { anchor, li: best.li } : null;
+  }
+
+  function noteAtPoint(clientX: number, clientY: number, excludeId?: string): NoteShape | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const sticky = (el as HTMLElement).closest<HTMLElement>(".sticky[data-note-id]");
+      const id = sticky?.dataset.noteId;
+      if (!id || id === excludeId) continue;
+      const note = notes.find((n) => n.id === id);
+      if (note) return note;
+    }
+    return null;
+  }
+
+  function inlineAttachmentRawAtPoint(
+    clientX: number,
+    clientY: number,
+    sourceRaw: string,
+  ): string | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const chip = (el as HTMLElement).closest<HTMLElement>("[data-inline-attachment-raw]");
+      const raw = chip?.dataset.inlineAttachmentRaw;
+      if (raw && raw !== sourceRaw) return raw;
+    }
+    return null;
+  }
+
+  function sessionColumnAtPoint(clientX: number, clientY: number): HTMLElement | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const col = (el as HTMLElement).closest<HTMLElement>(
+        ".session-col[data-session-source]",
+      );
+      if (col?.dataset.sessionSource) return col;
+    }
+    return null;
+  }
+
+  function sessionLinkTargetAtPoint(
+    clientX: number,
+    clientY: number,
+  ): NoteShape["target"] | null {
+    const col = sessionColumnAtPoint(clientX, clientY);
+    const source = col?.dataset.sessionSource;
+    if (!source) return null;
+
+    let label = "(session)";
+    let agent = "";
+    let subtitle = "";
+    let meta = "";
+    outer: for (const repo of repos) {
+      for (const wt of repo.worktrees ?? []) {
+        const found = wt.agents?.find((a) => a.source === source);
+        if (!found) continue;
+        agent = found.agent;
+        label =
+          found.manualTitle?.trim() ||
+          found.title?.trim() ||
+          found.firstUserMessage?.trim() ||
+          (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : label);
+        subtitle = found.messageCount ? `${found.messageCount} msg` : "";
+        meta = found.lastActive ? relativeAge(found.lastActive) : "";
+        break outer;
+      }
+    }
+
+    return {
+      type: "session",
+      value: source,
+      label,
+      ...(agent ? { agent } : {}),
+      ...(subtitle ? { subtitle } : {}),
+      ...(meta ? { meta } : {}),
+    };
+  }
+
+  function notePayloadForInlineAttachment(
+    raw: string,
+    attachment: InlineAttachment,
+  ): {
+    body: string;
+    kind?: "note" | "link" | "emoji";
+    target?: NoteShape["target"];
+  } {
+    if (attachment.kind === "emoji") {
+      return { body: attachment.body, kind: "emoji" };
+    }
+    if (attachment.kind === "link") {
+      return { body: "", kind: "link", target: attachment.target };
+    }
+    if (attachment.kind === "note") {
+      return { body: attachment.body };
+    }
+    return { body: raw };
+  }
+
+  function setDroppedOffset(
+    id: string,
+    li: HTMLElement,
+    clientX: number,
+    clientY: number,
+  ): void {
+    const rowRect = li.getBoundingClientRect();
+    const rowDocLeft = rowRect.left + window.scrollX;
+    const rowDocBottom = rowRect.bottom + window.scrollY;
+    const desiredX = clientX + window.scrollX - NOTE_W / 2;
+    const desiredY = clientY + window.scrollY - 28;
+    const offsetXFrac = rowRect.width > 0
+      ? Math.min(1, Math.max(0, (desiredX - rowDocLeft) / rowRect.width))
+      : DEFAULT_OFFSET_X_FRAC;
+    const baseY = rowDocBottom - NOTE_OVERLAP;
+    const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
+    const offsetY = Math.min(
+      NOTE_WIGGLE_DOWN_PX,
+      Math.max(-wiggleUp, desiredY - baseY),
+    );
+    const prev = offsets[id] ?? {};
+    offsets = { ...offsets, [id]: { ...prev, offsetXFrac, offsetY } };
+    saveOffsets();
   }
 
   /** Screen position for one note. Pure — every reactive input is read
@@ -567,6 +759,269 @@
       if (autoCommit) {
         await flyStagedToPin(created.id);
       }
+    } catch {}
+  }
+
+  interface InlineAttachmentDragPayload {
+    sourceNoteId: string;
+    raw: string;
+    attachment: InlineAttachment;
+  }
+
+  function hasInlineAttachmentDrag(e: DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes(INLINE_ATTACHMENT_DRAG_MIME);
+  }
+
+  function parseInlineAttachmentDrag(e: DragEvent): InlineAttachmentDragPayload | null {
+    const raw = e.dataTransfer?.getData(INLINE_ATTACHMENT_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!value || typeof value !== "object") return null;
+      const obj = value as Partial<InlineAttachmentDragPayload>;
+      if (
+        typeof obj.sourceNoteId !== "string" ||
+        typeof obj.raw !== "string" ||
+        !obj.attachment ||
+        typeof obj.attachment !== "object"
+      ) {
+        return null;
+      }
+      return {
+        sourceNoteId: obj.sourceNoteId,
+        raw: obj.raw,
+        attachment: obj.attachment,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function hasSessionLinkDrag(e: DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes(SESSION_LINK_DRAG_MIME);
+  }
+
+  function parseSessionLinkDrag(e: DragEvent): NoteShape["target"] | null {
+    const raw = e.dataTransfer?.getData(SESSION_LINK_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!value || typeof value !== "object") return null;
+      const target = (value as { target?: unknown }).target;
+      if (!target || typeof target !== "object") return null;
+      const obj = target as Record<string, unknown>;
+      if (obj.type !== "session" || typeof obj.value !== "string" || !obj.value) {
+        return null;
+      }
+      return {
+        type: "session",
+        value: obj.value,
+        ...(typeof obj.label === "string" ? { label: obj.label } : {}),
+        ...(typeof obj.agent === "string" ? { agent: obj.agent } : {}),
+        ...(typeof obj.subtitle === "string" ? { subtitle: obj.subtitle } : {}),
+        ...(typeof obj.meta === "string" ? { meta: obj.meta } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function onWindowDragOver(e: DragEvent): void {
+    if (hasInlineAttachmentDrag(e)) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      return;
+    }
+    if (hasSessionLinkDrag(e) && noteAtPoint(e.clientX, e.clientY)) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  async function onWindowDrop(e: DragEvent): Promise<void> {
+    const hasInline = hasInlineAttachmentDrag(e);
+    const hasSession = hasSessionLinkDrag(e);
+    if (!hasInline && !hasSession) return;
+    const targetNote = noteAtPoint(e.clientX, e.clientY);
+    if (hasSession && targetNote) {
+      e.preventDefault();
+      const target = parseSessionLinkDrag(e);
+      if (target) await appendSessionLinkToNote(targetNote, target);
+      return;
+    }
+    if (!hasInline) return;
+    e.preventDefault();
+    const payload = parseInlineAttachmentDrag(e);
+    if (payload && targetNote) {
+      await moveInlineAttachmentIntoNote(
+        payload,
+        targetNote,
+        inlineAttachmentRawAtPoint(e.clientX, e.clientY, payload.raw),
+      );
+      return;
+    }
+    const target = dropTargetAt(e.clientX, e.clientY);
+    if (!payload || !target) return;
+    await detachInlineAttachment(payload, target, e.clientX, e.clientY);
+  }
+
+  function onWindowDropEvent(e: DragEvent): void {
+    void onWindowDrop(e);
+  }
+
+  async function detachInlineAttachment(
+    payload: InlineAttachmentDragPayload,
+    target: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    const source = notes.find((n) => n.id === payload.sourceNoteId);
+    if (!source) return;
+    const nextSourceBody = removeInlineAttachmentRef(source.body, payload.raw);
+    if (nextSourceBody === source.body) return;
+    const sourceParts = parseInlineAttachments(source.body);
+
+    if (
+      sourceParts.length === 1 &&
+      sourceParts[0]?.kind === "attachment" &&
+      sourceParts[0].raw === payload.raw
+    ) {
+      const auxiliaryAnchors = source.anchors.filter(
+        (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+      );
+      try {
+        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: [target.anchor, ...auxiliaryAnchors] }),
+        });
+        if (!res.ok) return;
+        const updated = (await res.json()) as NoteShape;
+        setDroppedOffset(updated.id, target.li, clientX, clientY);
+        notes = notes.map((n) => (n.id === updated.id ? updated : n));
+        bringToFront(updated.id);
+        tick++;
+      } catch {}
+      return;
+    }
+
+    try {
+      const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: nextSourceBody }),
+      });
+      if (!sourceRes.ok) return;
+      const updatedSource = (await sourceRes.json()) as NoteShape;
+      notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
+
+      const createRes = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...notePayloadForInlineAttachment(payload.raw, payload.attachment),
+          anchors: [target.anchor],
+          tags: source.tags,
+        }),
+      });
+      if (!createRes.ok) {
+        await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: source.body }),
+        }).catch(() => {});
+        notes = notes.map((n) => (n.id === source.id ? source : n));
+        return;
+      }
+      const created = (await createRes.json()) as NoteShape;
+      setDroppedOffset(created.id, target.li, clientX, clientY);
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      tick++;
+    } catch {}
+  }
+
+  async function moveInlineAttachmentIntoNote(
+    payload: InlineAttachmentDragPayload,
+    targetNote: NoteShape,
+    beforeRaw: string | null = null,
+  ): Promise<void> {
+    const source = notes.find((n) => n.id === payload.sourceNoteId);
+    if (!source) return;
+    if (payload.sourceNoteId === targetNote.id) {
+      const nextBody = beforeRaw
+        ? moveInlineAttachmentRefBefore(source.body, payload.raw, beforeRaw)
+        : moveInlineAttachmentRefToEnd(source.body, payload.raw);
+      if (nextBody === source.body) return;
+      try {
+        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: nextBody }),
+        });
+        if (!res.ok) return;
+        const updated = (await res.json()) as NoteShape;
+        notes = notes.map((n) => (n.id === updated.id ? updated : n));
+        bringToFront(updated.id);
+        tick++;
+      } catch {}
+      return;
+    }
+    const nextTargetBody = appendInlineAttachmentRef(targetNote.body, payload.raw);
+    const sourceParts = parseInlineAttachments(source.body);
+    const sourceIsStandalone =
+      sourceParts.length === 1 &&
+      sourceParts[0]?.kind === "attachment" &&
+      sourceParts[0].raw === payload.raw;
+    const nextSourceBody = sourceIsStandalone
+      ? ""
+      : removeInlineAttachmentRef(source.body, payload.raw);
+    if (!sourceIsStandalone && nextSourceBody === source.body) return;
+
+    try {
+      const targetRes = await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: nextTargetBody }),
+      });
+      if (!targetRes.ok) return;
+      const updatedTarget = (await targetRes.json()) as NoteShape;
+      notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
+
+      if (sourceIsStandalone) {
+        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) {
+          await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: targetNote.body }),
+          }).catch(() => {});
+          notes = notes.map((n) => (n.id === targetNote.id ? targetNote : n));
+          return;
+        }
+        notes = notes.filter((n) => n.id !== source.id);
+      } else {
+        const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: nextSourceBody }),
+        });
+        if (!sourceRes.ok) {
+          await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: targetNote.body }),
+          }).catch(() => {});
+          notes = notes.map((n) => (n.id === targetNote.id ? targetNote : n));
+          return;
+        }
+        const updatedSource = (await sourceRes.json()) as NoteShape;
+        notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
+      }
+      bringToFront(targetNote.id);
+      tick++;
     } catch {}
   }
 
@@ -901,6 +1356,99 @@
     saveOffsets();
   }
 
+  function inlineRefForPinnedNote(note: NoteShape): string | null {
+    if (note.kind === "emoji") {
+      return makeEmojiAttachmentRef({ body: note.body });
+    }
+    if (note.kind === "link") {
+      return note.target ? makeLinkAttachmentRef({ target: note.target }) : null;
+    }
+    const parts = parseInlineAttachments(note.body);
+    if (parts.length === 1 && parts[0]?.kind === "attachment") {
+      return parts[0].raw;
+    }
+    return makeNoteAttachmentRef({ body: note.body });
+  }
+
+  async function appendSessionLinkToNote(
+    note: NoteShape,
+    target: NonNullable<NoteShape["target"]>,
+  ): Promise<void> {
+    if (note.kind === "link" || note.kind === "emoji") return;
+    const raw = makeLinkAttachmentRef({ target });
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: appendInlineAttachmentRef(note.body, raw) }),
+      });
+      if (!res.ok) return;
+      const updated = (await res.json()) as NoteShape;
+      notes = notes.map((n) => (n.id === updated.id ? updated : n));
+      bringToFront(updated.id);
+      tick++;
+    } catch {}
+  }
+
+  async function stageNoteBodyIntoSessionPrompt(
+    note: NoteShape,
+    sessionSource: string,
+  ): Promise<void> {
+    if (note.kind === "link" || note.kind === "emoji") return;
+    try {
+      const text = await expandNoteBodyForCopyAsync(note.body, fetchTextAttachment);
+      if (!text.trim()) return;
+      window.dispatchEvent(
+        new CustomEvent(STAGE_PROMPT_EVENT, {
+          detail: { source: sessionSource, text },
+        }),
+      );
+    } catch {}
+  }
+
+  async function handleDragDrop(
+    e: CustomEvent<{ id: string; clientX: number; clientY: number }>,
+  ): Promise<void> {
+    const source = notes.find((n) => n.id === e.detail.id);
+    if (!source) return;
+    const sessionCol = sessionColumnAtPoint(e.detail.clientX, e.detail.clientY);
+    const sessionSource = sessionCol?.dataset.sessionSource;
+    if (sessionSource) {
+      await stageNoteBodyIntoSessionPrompt(source, sessionSource);
+      return;
+    }
+    const target = noteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
+    if (!target || target.kind === "link" || target.kind === "emoji") return;
+    const raw = inlineRefForPinnedNote(source);
+    if (!raw) return;
+    try {
+      const targetRes = await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: appendInlineAttachmentRef(target.body, raw) }),
+      });
+      if (!targetRes.ok) return;
+      const updatedTarget = (await targetRes.json()) as NoteShape;
+      notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
+
+      const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        method: "DELETE",
+      });
+      if (!sourceRes.ok) {
+        await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: target.body }),
+        }).catch(() => {});
+        notes = notes.map((n) => (n.id === target.id ? target : n));
+        return;
+      }
+      notes = notes.filter((n) => n.id !== source.id);
+      bringToFront(target.id);
+      tick++;
+    } catch {}
+  }
+
   /** "Move…" or "Copy…" inside a sticky's edit mode. Move rewrites
    *  the note's anchors via PUT; Copy POSTs a fresh note with the
    *  same body/tags but the new anchor. Both go through the daemon's
@@ -1175,6 +1723,8 @@
     // bookkeeping. Resize still needs a tick because the row positions
     // relative to the document change when the viewport resizes.
     window.addEventListener("resize", scheduleTick);
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("drop", onWindowDropEvent);
 
     // MutationObserver picks up row add/remove, fold/unfold, picker
     // open (which changes the row's layout). We deliberately exclude
@@ -1209,6 +1759,8 @@
     _unregisterLayer();
     _unregisterFlyRestore();
     window.removeEventListener("resize", scheduleTick);
+    window.removeEventListener("dragover", onWindowDragOver);
+    window.removeEventListener("drop", onWindowDropEvent);
     mutationObs?.disconnect();
     resizeObs?.disconnect();
     noteResizeObs?.disconnect();
@@ -1264,6 +1816,7 @@
         on:reassign={handleReassign}
         on:rotate={handleRotate}
         on:grab={handleGrab}
+        on:dragdrop={handleDragDrop}
       />
     </div>
   {/each}

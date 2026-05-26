@@ -61,9 +61,11 @@
     type PreviewMsg,
   } from "./preview-action";
   import {
+    INLINE_ATTACHMENT_DRAG_MIME,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
+    inlineAttachmentLabel,
     makeNoteClipboardHtml,
     makeNoteClipboardPayload,
     makeImageAttachmentRef,
@@ -262,6 +264,7 @@
     reassign: { id: string; anchor: string; mode: "move" | "duplicate" };
     rotate: { id: string; rotation: number };
     grab: { id: string; grabXFrac: number; grabYFrac: number };
+    dragdrop: { id: string; clientX: number; clientY: number };
   }>();
 
   /** Open the target in whatever app makes sense for its type.
@@ -998,10 +1001,15 @@
 
   function openInlineAttachment(raw: string, attachment: InlineAttachment): void {
     openAttachmentRaw = raw;
-    openAttachmentDraft =
-      attachment.kind === "text"
-        ? ""
-        : attachment.path;
+    if (attachment.kind === "note" || attachment.kind === "emoji") {
+      openAttachmentDraft = attachment.body;
+      return;
+    }
+    if (attachment.kind === "link") {
+      openAttachmentDraft = attachment.target.label ?? attachment.target.value;
+      return;
+    }
+    openAttachmentDraft = attachment.kind === "text" ? "" : attachment.path;
     if (attachment.kind === "text") {
       void textForAttachment(attachment)
         .then((text) => {
@@ -1022,6 +1030,21 @@
     dispatch("save", { id: note.id, body });
   }
 
+  function onInlineAttachmentDragStart(
+    e: DragEvent,
+    raw: string,
+    attachment: InlineAttachment,
+  ): void {
+    if (!e.dataTransfer) return;
+    e.stopPropagation();
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(
+      INLINE_ATTACHMENT_DRAG_MIME,
+      JSON.stringify({ sourceNoteId: note.id, raw, attachment }),
+    );
+    e.dataTransfer.setData("text/plain", inlineAttachmentLabel(attachment));
+  }
+
   async function mergeTextAttachment(raw: string, attachment: InlineAttachment): Promise<void> {
     if (attachment.kind !== "text") return;
     try {
@@ -1029,6 +1052,11 @@
     } catch (err) {
       console.warn("Could not read text attachment", err);
     }
+  }
+
+  function mergeNoteAttachment(raw: string, attachment: InlineAttachment): void {
+    if (attachment.kind !== "note") return;
+    mergeInlineAttachment(raw, attachment.body);
   }
 
   /** Two-step delete: clicking × arms a 3-second countdown (rather
@@ -1208,51 +1236,22 @@
     const h = stickyEl?.offsetHeight || 1;
     const cxDoc = e.clientX + window.scrollX;
     const cyDoc = e.clientY + window.scrollY;
-
-    // Re-anchoring math: the note may already have a persisted
-    // rotation `R` from a prior drag, pivoting around the previous
-    // grab point. The cursor's screen-coord offset from that previous
-    // pivot is NOT the same as the box-coord offset (the paper has
-    // been rotated). To find which fiber of paper the cursor is
-    // actually touching, inverse-rotate the screen offset by `-R`.
-    const oldGx = grabXFrac * w;
-    const oldGy = grabYFrac * h;
-    const oldPivotDocX = x + oldGx;
-    const oldPivotDocY = y + oldGy;
-    const cdx = cxDoc - oldPivotDocX;
-    const cdy = cyDoc - oldPivotDocY;
-    const R = (rotation * Math.PI) / 180;
-    const cosR = Math.cos(R);
-    const sinR = Math.sin(R);
-    // Rotate by -R: (cos -sin; sin cos) with negated sin
-    const bdx = cosR * cdx + sinR * cdy;
-    const bdy = -sinR * cdx + cosR * cdy;
-    const newGx = oldGx + bdx;
-    const newGy = oldGy + bdy;
-    const newGxFrac = Math.max(0, Math.min(1, newGx / w));
-    const newGyFrac = Math.max(0, Math.min(1, newGy / h));
-
-    // `dragDx/Dy` are now the box-coord position of the cursor (=
-    // the new transform-origin). mousemove uses these to compute the
-    // new doc top-left as `cursor_doc - dragD`, which keeps the
-    // cursor anchored on top of the pivot.
-    dragDx = newGx;
-    dragDy = newGy;
+    dragDx = cxDoc - x;
+    dragDy = cyDoc - y;
+    const newGxFrac = Math.max(0, Math.min(1, dragDx / w));
+    const newGyFrac = Math.max(0, Math.min(1, dragDy / h));
     lastMouseX = e.clientX;
     // Kick off the pendulum tick. If a previous gesture's pendulum is
     // still settling, leave its current angle/velocity intact — the
     // new motion just composes on top.
     startPendulum();
 
-    // Persist the new pivot. Also dispatch a move so the note shifts
-    // its left/top to compensate for the transform-origin change —
-    // changing the pivot under a rotated box would otherwise visibly
-    // jump the note. The math (algebra in the comment above on
-    // re-pivoting math) guarantees that with newLeft = cxDoc - newGx
-    // and newTop = cyDoc - newGy, the visual position is unchanged
-    // across the re-anchor.
+    // Persist the approximate grab point for the swing origin, but
+    // do not dispatch an immediate move: the first movement should
+    // start from the note's actual stored left/top, otherwise a
+    // clamped transform-origin can make the note twitch before the
+    // user has really dragged it.
     dispatch("grab", { id: note.id, grabXFrac: newGxFrac, grabYFrac: newGyFrac });
-    dispatch("move", { id: note.id, x: cxDoc - newGx, y: cyDoc - newGy });
     dispatch("focus", { id: note.id });
 
     window.addEventListener("mousemove", onMouseMove);
@@ -1272,10 +1271,11 @@
     dispatch("move", { id: note.id, x: nx, y: ny });
   }
 
-  function onMouseUp(): void {
+  function onMouseUp(e: MouseEvent): void {
     dragging = false;
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
+    dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
     // Freeze the final rotation: roll the in-flight `dragRotation`
     // into the persisted `rotation` so the note holds whatever angle
     // it was at when the user released. The clamp on every move
@@ -1625,6 +1625,10 @@
     }
   }
 
+  $: detachedAttachmentPart =
+    !editing && bodyParts.length === 1 && bodyParts[0]?.kind === "attachment"
+      ? bodyParts[0]
+      : null;
   $: trailingImageIndexes = trailingImageAttachmentIndexes(bodyParts);
 
   /** Svelte action: keep a textarea's height in lockstep with its
@@ -1931,58 +1935,112 @@
       </div>
     {/if}
   {:else}
-    <div
-      class="sticky-body"
-      role="textbox"
-      tabindex="0"
-      aria-readonly="true"
-      title="Double-click to edit"
-      on:click={onBodyClick}
-    >
-      {#each bodyParts as part, i}
-        {#if part.kind === "text"}
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-          {@html bodyParts.length === 1
-            ? renderBody(part.text, repos, pickerScope)
-            : renderInlineBody(part.text)}
-        {:else if part.attachment.kind === "image" && trailingImageIndexes.has(i)}
-          <button
-            type="button"
-            class="sticky-trailing-image"
-            draggable="true"
-            title="View attachment"
-            on:dragstart={(e) =>
-              onInlineAttachmentDragStart(e, part.raw, part.attachment)}
-            on:click|stopPropagation={() =>
-              openInlineAttachment(part.raw, part.attachment)}
-            on:dblclick|stopPropagation
-          >
-            <span class="sticky-photo-frame">
-              <img
-                src={`/api/image?path=${encodeURIComponent(part.attachment.path)}`}
-                alt={part.attachment.filename ?? "Attached image"}
-              />
-            </span>
-            <span class="sticky-photo-caption">
-              {part.attachment.filename
-                ?? part.attachment.path.split("/").pop()
-                ?? "Image attachment"}
-            </span>
-          </button>
+    {#if detachedAttachmentPart}
+      <button
+        type="button"
+        class="sticky-detached-attachment"
+        class:sticky-detached-image={detachedAttachmentPart.attachment.kind === "image"}
+        class:sticky-detached-text={detachedAttachmentPart.attachment.kind === "text"}
+        draggable="true"
+        title="View attachment"
+        on:dragstart={(e) =>
+          onInlineAttachmentDragStart(
+            e,
+            detachedAttachmentPart.raw,
+            detachedAttachmentPart.attachment,
+          )}
+        on:click={() =>
+          openInlineAttachment(
+            detachedAttachmentPart.raw,
+            detachedAttachmentPart.attachment,
+          )}
+        on:dblclick|stopPropagation
+      >
+        {#if detachedAttachmentPart.attachment.kind === "image"}
+          <span class="sticky-photo-frame">
+            <img
+              src={`/api/image?path=${encodeURIComponent(detachedAttachmentPart.attachment.path)}`}
+              alt={detachedAttachmentPart.attachment.filename ?? "Attached image"}
+            />
+          </span>
+          <span class="sticky-photo-caption">
+            {detachedAttachmentPart.attachment.filename
+              ?? detachedAttachmentPart.attachment.path.split("/").pop()
+              ?? "Image attachment"}
+          </span>
+        {:else if detachedAttachmentPart.attachment.kind === "text"}
+          <span class="sticky-detached-text-icon" aria-hidden="true">T</span>
+          <span>{`Pasted Content, ${detachedAttachmentPart.attachment.charCount} chars`}</span>
+        {:else if detachedAttachmentPart.attachment.kind === "emoji"}
+          <span class="sticky-detached-emoji">{detachedAttachmentPart.attachment.body}</span>
+        {:else if detachedAttachmentPart.attachment.kind === "note"}
+          <span class="sticky-detached-text-icon" aria-hidden="true">✎</span>
+          <span>{inlineAttachmentLabel(detachedAttachmentPart.attachment)}</span>
         {:else}
-          <InlineAttachmentChip
-            attachment={part.attachment}
-            selected={openAttachmentRaw === part.raw}
-            onOpen={() => openInlineAttachment(part.raw, part.attachment)}
-            onMerge={() => {
-              if (part.attachment.kind === "text") {
-                void mergeTextAttachment(part.raw, part.attachment);
-              }
-            }}
-          />
+          <span class="sticky-detached-text-icon" aria-hidden="true">↗</span>
+          <span>{inlineAttachmentLabel(detachedAttachmentPart.attachment)}</span>
         {/if}
-      {/each}
-    </div>
+      </button>
+    {:else}
+      <div
+        class="sticky-body"
+        role="textbox"
+        tabindex="0"
+        aria-readonly="true"
+        title="Double-click to edit"
+        on:click={onBodyClick}
+      >
+        {#each bodyParts as part, i}
+          {#if part.kind === "text"}
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            {@html bodyParts.length === 1
+              ? renderBody(part.text, repos, pickerScope)
+              : renderInlineBody(part.text)}
+          {:else if part.attachment.kind === "image" && trailingImageIndexes.has(i)}
+            <button
+              type="button"
+              class="sticky-trailing-image"
+              draggable="true"
+              title="View attachment"
+              on:dragstart={(e) =>
+                onInlineAttachmentDragStart(e, part.raw, part.attachment)}
+              on:click|stopPropagation={() =>
+                openInlineAttachment(part.raw, part.attachment)}
+              on:dblclick|stopPropagation
+            >
+              <span class="sticky-photo-frame">
+                <img
+                  src={`/api/image?path=${encodeURIComponent(part.attachment.path)}`}
+                  alt={part.attachment.filename ?? "Attached image"}
+                />
+              </span>
+              <span class="sticky-photo-caption">
+                {part.attachment.filename
+                  ?? part.attachment.path.split("/").pop()
+                  ?? "Image attachment"}
+              </span>
+            </button>
+          {:else}
+            <InlineAttachmentChip
+              attachment={part.attachment}
+              raw={part.raw}
+              selected={openAttachmentRaw === part.raw}
+              draggable={true}
+              onDragStart={(e) =>
+                onInlineAttachmentDragStart(e, part.raw, part.attachment)}
+              onOpen={() => openInlineAttachment(part.raw, part.attachment)}
+              onMerge={() => {
+                if (part.attachment.kind === "text") {
+                  void mergeTextAttachment(part.raw, part.attachment);
+                } else if (part.attachment.kind === "note") {
+                  mergeNoteAttachment(part.raw, part.attachment);
+                }
+              }}
+            />
+          {/if}
+        {/each}
+      </div>
+    {/if}
     {#if openAttachmentRaw}
       {@const openPart = bodyParts.find((part) =>
         part.kind === "attachment" && part.raw === openAttachmentRaw
@@ -1995,9 +2053,7 @@
         >
           <header class="inline-attachment-editor-head">
             <span>
-              {openPart.attachment.kind === "text"
-                ? `Pasted Content, ${openPart.attachment.charCount} chars`
-                : openPart.attachment.filename ?? "Image attachment"}
+              {inlineAttachmentLabel(openPart.attachment)}
             </span>
             <button
               type="button"
@@ -2006,7 +2062,7 @@
               on:click={closeInlineAttachment}
             >×</button>
           </header>
-          {#if openPart.attachment.kind === "text"}
+          {#if openPart.attachment.kind === "text" || openPart.attachment.kind === "note"}
             <textarea
               class="inline-attachment-textarea"
               bind:value={openAttachmentDraft}
@@ -2021,13 +2077,17 @@
                   mergeInlineAttachment(openAttachmentRaw, openAttachmentDraft)}
               >merge in</button>
             </div>
-          {:else}
+          {:else if openPart.attachment.kind === "image"}
             <img
               class="inline-attachment-image"
               src={`/api/image?path=${encodeURIComponent(openPart.attachment.path)}`}
               alt={openPart.attachment.filename ?? "Attached image"}
             />
             <code class="inline-attachment-path">{openPart.attachment.path}</code>
+          {:else if openPart.attachment.kind === "emoji"}
+            <div class="inline-attachment-emoji">{openPart.attachment.body}</div>
+          {:else}
+            <code class="inline-attachment-path">{openPart.attachment.target.value}</code>
           {/if}
         </section>
       {/if}

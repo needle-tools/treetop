@@ -814,6 +814,12 @@
   background: rgba(255, 255, 255, 0.48);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
 }
+.inline-attachment-chip[draggable="true"] {
+  cursor: grab;
+}
+.inline-attachment-chip[draggable="true"]:active {
+  cursor: grabbing;
+}
 .inline-attachment-chip.selected {
   border-color: rgba(42, 37, 22, 0.55);
   background: rgba(255, 255, 255, 0.7);
@@ -837,9 +843,9 @@
   text-align: left;
   user-select: text;
 }
-.inline-attachment-main:hover,
-.inline-attachment-action:hover {
-  background: rgba(0, 0, 0, 0.08);
+.sticky .inline-attachment-main:hover:not(:disabled),
+.sticky .inline-attachment-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.42);
 }
 .inline-attachment-icon {
   display: inline-flex;
@@ -921,6 +927,28 @@
   word-break: break-all;
 }
 
+.sticky-detached-attachment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0 0;
+}
+.sticky .sticky-detached-attachment:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.32);
+}
+.sticky-detached-attachment[draggable="true"] {
+  cursor: grab;
+}
+.sticky-detached-attachment[draggable="true"]:active {
+  cursor: grabbing;
+}
 .sticky-trailing-image {
   display: flex;
   flex-direction: column;
@@ -968,6 +996,42 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sticky-detached-text {
+  flex-direction: row;
+  justify-content: flex-start;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid rgba(42, 37, 22, 0.18);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.34);
+}
+.sticky-detached-text-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 3px;
+  background: rgba(42, 37, 22, 0.1);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.sticky-detached-emoji {
+  display: block;
+  width: 100%;
+  text-align: center;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", emoji, sans-serif;
+  font-size: clamp(3rem, 12vw, 7rem);
+  line-height: 1;
+}
+.inline-attachment-emoji {
+  padding: 0.5rem 0;
+  text-align: center;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", emoji, sans-serif;
+  font-size: 4rem;
+  line-height: 1;
 }
 
 .sticky-meta {

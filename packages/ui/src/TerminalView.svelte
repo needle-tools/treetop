@@ -12,6 +12,7 @@
     expandNoteBodyForCopyAsync,
     extractNoteClipboardPayloadFromHtml,
     fetchTextAttachment,
+    STAGE_PROMPT_EVENT,
   } from "./note-inline-attachments";
 
   function getCleanedSelection(term: Terminal): string {
@@ -70,6 +71,8 @@
    *  prior cmd history (visible in ShellView next time the column is
    *  closed and reopened in read mode). */
   export let resumeFromTermId: string | undefined = undefined;
+  /** Open-session source for drag-staging note text into this TUI. */
+  export let sessionSource: string | undefined = undefined;
   /** @deprecated — kept as a no-op prop so existing callers don't
    *  break. Context injection now goes through the cmd array
    *  (--append-system-prompt-file for Claude, positional prompt for
@@ -575,6 +578,7 @@
       sendResize();
     };
     window.addEventListener("resize", onWindowResize);
+    window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
 
     // Focus/blur on the xterm container (the inner textarea bubbles
     // focusin/focusout up) arms the activity suppressor so the
@@ -639,6 +643,7 @@
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
+    window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (ws && ws.readyState <= WebSocket.OPEN) {
       try { ws.close(1000, "unmount"); } catch {}
     }
@@ -648,6 +653,13 @@
 
   function focusTerminal() {
     xterm?.focus();
+  }
+
+  function onStagePrompt(e: Event): void {
+    const detail = (e as CustomEvent<{ source?: string; text?: string }>).detail;
+    if (!detail || detail.source !== sessionSource || !detail.text || !xterm) return;
+    xterm.focus();
+    xterm.paste(detail.text);
   }
 
   /** Upload a Blob/File to /api/attach and write the returned absolute

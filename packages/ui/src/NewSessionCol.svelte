@@ -237,6 +237,7 @@
     {procName}
     {attachTermId}
     {resumeFromTermId}
+    sessionSource={source}
     {initialPrompt}
     {prefillCmd}
     onSpawn={(id) => dispatch("spawn", { id })}
