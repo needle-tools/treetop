@@ -4156,6 +4156,8 @@ const server = Bun.serve<TermWsData, never>({
               stashed: result.stashed === true,
             },
           });
+          invalidateWorktreeDetails(wtPath);
+          invalidateReposCache();
           broadcast("change", { kind: "pull", path: wtPath });
           return json({
             ok: true,
@@ -4199,6 +4201,8 @@ const server = Bun.serve<TermWsData, never>({
             actor: "user",
             payload: { repoId: id, path: wtPath },
           });
+          invalidateWorktreeDetails(wtPath);
+          invalidateReposCache();
           broadcast("change", { kind: "push", path: wtPath });
           return json({ ok: true, message: result.message });
         }
@@ -4250,6 +4254,8 @@ const server = Bun.serve<TermWsData, never>({
               stashed: result.stashed,
             },
           });
+          invalidateWorktreeDetails(wtPath);
+          invalidateReposCache();
           broadcast("change", { kind: "checkout_branch", path: wtPath });
           return json({ ok: true, stashed: result.stashed });
         } catch (e) {
