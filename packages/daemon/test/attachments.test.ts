@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { saveAttachment } from "../src/attachments";
+import { saveAttachment, serveAttachment } from "../src/attachments";
 
 async function tempAttachmentsDir(): Promise<string> {
   // Real temp dir, no .supergit nesting — saveAttachment treats the
@@ -34,6 +34,17 @@ describe("saveAttachment", () => {
     expect(path.startsWith(join(dir, "paste-"))).toBe(true);
     expect(path.endsWith(".png")).toBe(true);
     expect((await stat(path)).size).toBe(8);
+  });
+
+  test("uses a text extension for pasted text blobs", async () => {
+    const dir = await tempAttachmentsDir();
+    const { path } = await saveAttachment(dir, bytes("long paste"), {
+      mimeType: "text/plain",
+    });
+
+    expect(path.startsWith(join(dir, "paste-"))).toBe(true);
+    expect(path.endsWith(".txt")).toBe(true);
+    expect((await readFile(path)).toString()).toBe("long paste");
   });
 
   test("adds a short suffix on filename collision instead of overwriting", async () => {
@@ -70,5 +81,20 @@ describe("saveAttachment", () => {
     });
     expect((await stat(path)).isFile()).toBe(true);
     expect(path.startsWith(nested + sep)).toBe(true);
+  });
+
+  test("serves only files inside the attachments directory", async () => {
+    const dir = await tempAttachmentsDir();
+    const saved = await saveAttachment(dir, bytes("visible"), {
+      filename: "paste.txt",
+      mimeType: "text/plain",
+    });
+
+    const ok = await serveAttachment(dir, saved.path);
+    expect(ok.status).toBe(200);
+    if (ok.status === 200) {
+      expect(await ok.file.text()).toBe("visible");
+    }
+    expect((await serveAttachment(dir, join(dir, "..", "secret.txt"))).status).toBe(403);
   });
 });

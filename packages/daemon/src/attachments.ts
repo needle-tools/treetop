@@ -1,5 +1,5 @@
 import { mkdir, writeFile, stat } from "node:fs/promises";
-import { join, basename, extname } from "node:path";
+import { join, basename, extname, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 
 export interface SaveAttachmentOpts {
@@ -14,6 +14,13 @@ export interface SaveAttachmentResult {
    *  stdin so the agent sees a file reference. */
   path: string;
 }
+
+export type ServeAttachmentResult =
+  | { status: 400; error: string }
+  | { status: 403; error: string }
+  | { status: 404; error: string }
+  | { status: 500; error: string }
+  | { status: 200; file: ReturnType<typeof Bun.file> };
 
 /**
  * Persist a pasted / dropped attachment under `attachmentsDir` and
@@ -42,6 +49,29 @@ export async function saveAttachment(
   return { path };
 }
 
+export async function serveAttachment(
+  attachmentsDir: string,
+  path: string | null | undefined,
+): Promise<ServeAttachmentResult> {
+  if (typeof path !== "string" || path.length === 0) {
+    return { status: 400, error: "?path required" };
+  }
+  const root = resolve(attachmentsDir);
+  const resolved = resolve(path);
+  if (!resolved.startsWith(root + sep)) {
+    return { status: 403, error: "outside attachments directory" };
+  }
+  try {
+    const file = Bun.file(resolved);
+    if (!(await file.exists())) {
+      return { status: 404, error: "not found" };
+    }
+    return { status: 200, file };
+  } catch {
+    return { status: 500, error: "cannot read file" };
+  }
+}
+
 function sanitizeName(filename: string | undefined, mimeType: string | undefined): string {
   if (filename) {
     // basename() strips any path component a malicious or naive caller
@@ -66,6 +96,9 @@ function extFromMime(mimeType: string | undefined): string {
   if (m === "image/webp") return ".webp";
   if (m === "image/svg+xml") return ".svg";
   if (m === "image/bmp") return ".bmp";
+  if (m === "text/plain") return ".txt";
+  if (m === "text/markdown") return ".md";
+  if (m === "application/json") return ".json";
   return ".bin";
 }
 
