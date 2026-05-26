@@ -1680,12 +1680,19 @@
     const id = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__remote__:${termId}:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
+    // Don't open a duplicate for the same terminal
+    if (existing.some((s) => s.source.startsWith(`__remote__:${termId}:`))) {
+      scrollNewColIntoView(wtPath, existing.find((s) => s.source.startsWith(`__remote__:${termId}:`))!.source);
+      return;
+    }
     const entry: OpenSession = { agent: "files", source: synthetic };
-    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    // Insert right after the terminal column that spawned us
+    const termSource = `__attached__:shell:${termId}`;
+    const termIdx = existing.findIndex((s) => s.source === termSource);
+    const insertAt = termIdx >= 0 ? termIdx + 1 : existing.length;
     const next = [...existing];
     next.splice(insertAt, 0, entry);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
-    console.debug("[App] openRemoteBrowser: wtPath=", wtPath, "source=", synthetic, "insertAt=", insertAt, "total=", next.length);
     scrollNewColIntoView(wtPath, synthetic);
   }
 
@@ -6884,11 +6891,17 @@
                       >
                         {#if s.source.startsWith("__remote__:")}
                           {@const remoteTermId = parseRemoteSource(s.source) ?? ""}
+                          {@const termSource = `__attached__:shell:${remoteTermId}`}
                           <FileBrowser
                             wtPath="/"
                             source={s.source}
                             {remoteTermId}
                             onClose={() => closeSessionInWt(wt.path, s)}
+                            onFocusTerminal={() => {
+                              focusedSource = termSource;
+                              const el = document.querySelector(`[data-session-source="${termSource}"]`);
+                              el?.scrollIntoView({ behavior: "smooth", inline: "center" });
+                            }}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
                           />

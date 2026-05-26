@@ -5919,6 +5919,26 @@ const server = Bun.serve<TermWsData, never>({
       }
     }
 
+    if (url.pathname === "/api/ssh/home" && req.method === "GET") {
+      const termId = url.searchParams.get("term");
+      if (!termId) return json({ error: "term required" }, { status: 400 });
+      const session = termSshSessions.get(termId);
+      if (!session) return json({ error: "no SSH session for this terminal" }, { status: 404 });
+      try {
+        await sshPool.connect(session.user, session.host, session.port);
+        const homeProbe = await sshPool.exec(session.user, session.host, session.port, "echo %USERPROFILE%");
+        let home = homeProbe.trim();
+        if (home === "%USERPROFILE%") {
+          home = (await sshPool.exec(session.user, session.host, session.port, "echo $HOME")).trim() || "/";
+        }
+        home = home.replace(/\\/g, "/");
+        return json({ home });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json({ error: msg }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/api/ssh/status" && req.method === "GET") {
       const termId = url.searchParams.get("term");
       if (!termId) return json({ error: "term required" }, { status: 400 });

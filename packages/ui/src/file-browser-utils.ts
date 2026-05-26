@@ -172,6 +172,17 @@ export async function fetchRemoteDir(termId: string, path: string): Promise<File
   return data.entries ?? [];
 }
 
+export async function fetchSshHome(termId: string): Promise<string> {
+  try {
+    const res = await fetch(`/api/ssh/home?term=${encodeURIComponent(termId)}`);
+    if (!res.ok) return "/";
+    const data = await res.json();
+    return data.home ?? "/";
+  } catch {
+    return "/";
+  }
+}
+
 export async function openRemoteFile(termId: string, remotePath: string): Promise<void> {
   const res = await fetch("/api/ssh/open", {
     method: "POST",

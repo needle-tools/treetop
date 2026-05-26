@@ -2,7 +2,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile, fetchSshHome } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -15,6 +15,8 @@
   export let remoteTermId: string | null = null;
   /** Remote cwd from the terminal — file browser follows when followTerminal is true. */
   export let remoteCwd: string | null = null;
+  /** Callback to focus/scroll to the terminal that spawned this remote browser. */
+  export let onFocusTerminal: (() => void) | undefined = undefined;
 
   $: isRemote = remoteTermId !== null;
   let followTerminal = true;
@@ -344,6 +346,16 @@
   $: selectedNames = visibleSelected.map((p) => p.split("/").pop() ?? p);
 
   loadPersistedState();
+  if (isRemote && remoteTermId) {
+    // Fetch remote home dir as initial path
+    void fetchSshHome(remoteTermId).then((home) => {
+      if (home && home !== "/" && currentDir === wtPath) {
+        currentDir = home;
+        nav = new NavHistory(home);
+        void loadCurrentDir();
+      }
+    });
+  }
   void loadCurrentDir();
 
   $: displayName = currentDir.split("/").pop() || currentDir;
@@ -390,17 +402,6 @@
       on:click={() => navigateTo(wtPath)}
       disabled={currentDir === wtPath}
     ><svg class="fb-nav-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></button>
-    {#if isRemote}
-      <button
-        class="fb-follow-btn"
-        class:fb-follow-btn-active={followTerminal}
-        on:click={toggleFollow}
-        title={followTerminal ? "Stop following terminal cwd" : "Follow terminal cwd"}
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-        {followTerminal ? "Follow" : "Unfollow"}
-      </button>
-    {/if}
     <div
       class="fb-path"
       role="button"
@@ -433,6 +434,27 @@
         <span class="fb-copied">copied</span>
       {/if}
     </div>
+    {#if isRemote}
+      {#if onFocusTerminal}
+        <button
+          class="fb-header-btn"
+          on:click={onFocusTerminal}
+          title="Go to terminal"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Terminal
+        </button>
+      {/if}
+      <button
+        class="fb-follow-btn"
+        class:fb-follow-btn-active={followTerminal}
+        on:click={toggleFollow}
+        title={followTerminal ? "Stop following terminal cwd" : "Follow terminal cwd"}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+        {followTerminal ? "Follow" : "Unfollow"}
+      </button>
+    {/if}
   </nav>
 
   <div class="fb-content">
