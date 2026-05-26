@@ -5563,6 +5563,7 @@
             ? zenRowKey !== row.key || !notesShownInZen
             : !!notesHiddenByRow[row.key]}
           data-wt-row={wt ? wt.path : `${repo.id}|none`}
+          data-repo-id={repo.id}
           use:rowVisibility={{ repoId: repo.id, rowKey: row.key }}
         >
           <div class="row-content">
@@ -7371,6 +7372,12 @@
   {dockRepoStatuses}
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
+  on:scrollToRepo={(e) => {
+    const el = document.querySelector(
+      `.row[data-repo-id="${CSS.escape(e.detail.repoId)}"]`,
+    );
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }}
 />
 
 <StickyNotesLayer changeKey={notesChangeKey} {repos} />

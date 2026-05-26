@@ -95,7 +95,10 @@
    *  restored — the zen override is purely transient. */
   export let zen = false;
 
-  const dispatch = createEventDispatcher<{ pick: DockEntry }>();
+  const dispatch = createEventDispatcher<{
+    pick: DockEntry;
+    scrollToRepo: { repoId: string };
+  }>();
 
   /** User's persistent toggle preference (survives zen enter/exit). */
   let userShowInactive = true;
@@ -616,6 +619,7 @@
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
           on:mouseenter={onArrowEnter}
+          on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
             {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
@@ -705,6 +709,7 @@
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
           on:mouseenter={onArrowEnter}
+          on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
             {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
@@ -776,6 +781,8 @@
       <span
         class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
         style:--arrow-color={brightenIfDark(rs.repoColor)}
+        on:mouseenter={onArrowEnter}
+        on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
       >
         <span class="dock-dot-inner dock-arrow-inner">
           {#if rs.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
@@ -930,7 +937,7 @@
      visually separates per-repo stacks. Applied via a class set in
      the markup using a prev-entry-vs-current-entry repoId compare. */
   .dock-dot.dock-dot-repo-first {
-    margin-top: 0.5rem;
+    margin-top: 0.6rem;
   }
   /* Center toggle: a small circle that sits between the top and
      bottom halves of the dock. Clicking it filters exited/read-mode
@@ -991,8 +998,23 @@
     background: transparent !important;
     border: 0 !important;
   }
+  /* Pull ↑↓ pair tight when both are present. Split the negative
+     margin equally: first glyph shifts right, second shifts left,
+     so the pair stays centered in the 10px box. */
+  .dock-arrow-inner .dock-arrow-glyph + .dock-arrow-glyph {
+    margin-left: -1px;
+  }
+  .dock-arrow-inner .dock-arrow-glyph:first-child:not(:last-child) {
+    margin-right: -1px;
+  }
   .dock-repo-arrow {
-    cursor: default;
+    cursor: pointer;
+    /* Arrows are the topmost element of a repo group — increase
+       the gap above them so repos are visually separated. */
+    margin-top: 0.6rem;
+  }
+  .dock-repo-arrow:first-child {
+    margin-top: 0;
   }
   .dock-repo-arrow-orphan {
     margin-top: 0.3rem;
