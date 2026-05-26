@@ -27,6 +27,49 @@ import {
   access,
   stat,
 } from "node:fs/promises";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from "node:crypto";
+
+const ENC_PREFIX = "enc:v1:";
+
+async function getEncryptionKey(workspacePath: string): Promise<Buffer> {
+  try {
+    const raw = await readFile(join(workspacePath, "peer-identity.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { id?: string };
+    if (typeof parsed.id === "string" && parsed.id.length > 0) {
+      return createHash("sha256").update(`supergit-shell:${parsed.id}`).digest();
+    }
+  } catch {
+    // identity not yet created
+  }
+  return createHash("sha256").update("supergit-shell:fallback").digest();
+}
+
+function encryptStr(plaintext: string, key: Buffer): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${ENC_PREFIX}${iv.toString("hex")}:${Buffer.concat([ct, tag]).toString("hex")}`;
+}
+
+function decryptStr(stored: string, key: Buffer): string {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  const rest = stored.slice(ENC_PREFIX.length);
+  const colonIdx = rest.indexOf(":");
+  if (colonIdx < 0) return stored;
+  const iv = Buffer.from(rest.slice(0, colonIdx), "hex");
+  const ctAndTag = Buffer.from(rest.slice(colonIdx + 1), "hex");
+  const ct = ctAndTag.subarray(0, ctAndTag.length - 16);
+  const tag = ctAndTag.subarray(ctAndTag.length - 16);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  return decipher.update(ct).toString("utf-8") + decipher.final("utf-8");
+}
 
 const SHELLS_DIR = "shells";
 
@@ -103,7 +146,10 @@ interface CmdSummaryCacheEntry {
 export class ShellsLog {
   private cmdSummaryCache = new Map<string, CmdSummaryCacheEntry>();
 
-  private constructor(public readonly dir: string) {}
+  private constructor(
+    public readonly dir: string,
+    private readonly workspacePath: string,
+  ) {}
 
   /** Open (and lazily create) `<workspace>/shells/`. Idempotent — call on
    *  daemon start. */
@@ -114,7 +160,7 @@ export class ShellsLog {
     } catch {
       await mkdir(dir, { recursive: true });
     }
-    return new ShellsLog(dir);
+    return new ShellsLog(dir, workspacePath);
   }
 
   private pathFor(termId: string): string {
@@ -147,8 +193,13 @@ export class ShellsLog {
     if (previousTermId) {
       const carry = await this.collectCarryOver(previousTermId);
       if (carry.length > 0) {
+        const key = await getEncryptionKey(this.workspacePath);
+        const encrypted = carry.map((e) => {
+          if (e.kind === "cmd") return { ...e, line: encryptStr(e.line, key) };
+          return e;
+        });
         const body =
-          carry.map((e) => JSON.stringify(e)).join("\n") + "\n" +
+          encrypted.map((e) => JSON.stringify(e)).join("\n") + "\n" +
           JSON.stringify({
             kind: "resume",
             ts: new Date().toISOString(),
@@ -181,12 +232,16 @@ export class ShellsLog {
     } catch {
       return [];
     }
+    const key = await getEncryptionKey(this.workspacePath);
     const out: ShellEntry[] = [];
     for (const line of text.split("\n")) {
       if (!line) continue;
       try {
         const obj = JSON.parse(line) as ShellEntry;
-        if (obj.kind === "cmd" || obj.kind === "resume") {
+        if (obj.kind === "cmd") {
+          (obj as ShellCmdEntry).line = decryptStr((obj as ShellCmdEntry).line, key);
+          out.push(obj);
+        } else if (obj.kind === "resume") {
           out.push(obj);
         }
       } catch {
@@ -198,7 +253,12 @@ export class ShellsLog {
 
   /** Append an arbitrary entry to a shell's JSONL. */
   async append(termId: string, entry: ShellEntry): Promise<void> {
-    await appendFile(this.pathFor(termId), JSON.stringify(entry) + "\n");
+    let toWrite = entry;
+    if (entry.kind === "cmd") {
+      const key = await getEncryptionKey(this.workspacePath);
+      toWrite = { ...entry, line: encryptStr(entry.line, key) };
+    }
+    await appendFile(this.pathFor(termId), JSON.stringify(toWrite) + "\n");
   }
 
   /** Read the header line of a single shell file. Returns null if the file
@@ -279,6 +339,7 @@ export class ShellsLog {
       this.cmdSummaryCache.delete(termId);
       return { count: 0 };
     }
+    const encKey = await getEncryptionKey(this.workspacePath);
     let count = 0;
     let lastLine: string | undefined;
     let lastTs: string | undefined;
@@ -292,7 +353,7 @@ export class ShellsLog {
         };
         if (obj.kind !== "cmd") continue;
         count++;
-        if (typeof obj.line === "string") lastLine = obj.line;
+        if (typeof obj.line === "string") lastLine = decryptStr(obj.line, encKey);
         if (typeof obj.ts === "string") lastTs = obj.ts;
       } catch {
         // skip malformed
@@ -324,6 +385,7 @@ export class ShellsLog {
     }
     const lines = text.split("\n").filter((l) => l.length > 0);
     if (lines.length === 0) return null;
+    const encKey = await getEncryptionKey(this.workspacePath);
     let header: ShellHeader | null = null;
     const cmds: ShellCmdEntry[] = [];
     let exit: ShellExitEntry | null = null;
@@ -337,7 +399,9 @@ export class ShellsLog {
       if (obj.kind === "header" && header === null) {
         header = obj as ShellHeader;
       } else if (obj.kind === "cmd") {
-        cmds.push(obj as ShellCmdEntry);
+        const cmd = obj as ShellCmdEntry;
+        cmd.line = decryptStr(cmd.line, encKey);
+        cmds.push(cmd);
       } else if (obj.kind === "exit") {
         exit = obj as ShellExitEntry;
       }

@@ -1,11 +1,16 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ShellsLog } from "../src/shells";
 
 async function tempWorkspace(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "supergit-shells-"));
+  const dir = await mkdtemp(join(tmpdir(), "supergit-shells-"));
+  await writeFile(
+    join(dir, "peer-identity.json"),
+    JSON.stringify({ id: "test-shell-identity", label: "Test" }),
+  );
+  return dir;
 }
 
 describe("ShellsLog", () => {
@@ -272,8 +277,8 @@ describe("ShellsLog", () => {
         "resume",
         "header",
       ]);
-      expect(lines[0].line).toBe("ls");
-      expect(lines[1].line).toBe("pwd");
+      expect(lines[0].line).toStartWith("enc:v1:");
+      expect(lines[1].line).toStartWith("enc:v1:");
       expect(lines[2].fromTermId).toBe("t-prev");
       expect(lines[3].termId).toBe("t-new");
     });
@@ -406,6 +411,90 @@ describe("ShellsLog", () => {
       await log.append("B", { kind: "cmd", ts: "b1", line: "echo B", cwd: "/w" });
       // Seeding C from B should yield A's + B's commands.
       expect(await log.getCarryOverCmdLines("B")).toEqual(["echo A", "echo B"]);
+    });
+  });
+
+  describe("encryption at rest", () => {
+    test("cmd lines are encrypted on disk, not plaintext", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header",
+        termId: "t",
+        wt: "/wt",
+        spawnCwd: "/wt",
+        createdAt: "t0",
+      });
+      await log.append("t", { kind: "cmd", ts: "t1", line: "secret-command --key=abc123", cwd: "/wt" });
+      const raw = await readFile(join(log.dir, "t.jsonl"), "utf-8");
+      expect(raw).not.toContain("secret-command");
+      expect(raw).toContain("enc:v1:");
+    });
+
+    test("encrypted cmd lines are decrypted on readTranscript", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header",
+        termId: "t",
+        wt: "/wt",
+        spawnCwd: "/wt",
+        createdAt: "t0",
+      });
+      await log.append("t", { kind: "cmd", ts: "t1", line: "secret-command", cwd: "/wt" });
+      const tr = await log.readTranscript("t");
+      expect(tr!.cmds[0]!.line).toBe("secret-command");
+    });
+
+    test("encrypted cmd lines are decrypted in cmdSummary", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header",
+        termId: "t",
+        wt: "/wt",
+        spawnCwd: "/wt",
+        createdAt: "t0",
+      });
+      await log.append("t", { kind: "cmd", ts: "t1", line: "my-secret-cmd", cwd: "/wt" });
+      const sum = await log.cmdSummary("t");
+      expect(sum.lastLine).toBe("my-secret-cmd");
+    });
+
+    test("legacy plaintext cmd lines are still readable", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await writeFile(
+        join(log.dir, "legacy.jsonl"),
+        [
+          JSON.stringify({ kind: "header", termId: "legacy", wt: "/w", spawnCwd: "/w", createdAt: "t0" }),
+          JSON.stringify({ kind: "cmd", ts: "t1", line: "old-plaintext-cmd", cwd: "/w" }),
+        ].join("\n") + "\n",
+      );
+      const tr = await log.readTranscript("legacy");
+      expect(tr!.cmds[0]!.line).toBe("old-plaintext-cmd");
+    });
+
+    test("resume carry-over re-encrypts cmd lines in the new file", async () => {
+      const ws = await tempWorkspace();
+      const log = await ShellsLog.open(ws);
+      await log.writeHeader({
+        kind: "header",
+        termId: "t-prev",
+        wt: "/w",
+        spawnCwd: "/w",
+        createdAt: "t0",
+      });
+      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "carried-secret", cwd: "/w" });
+      await log.writeHeader(
+        { kind: "header", termId: "t-new", wt: "/w", spawnCwd: "/w", createdAt: "t2" },
+        "t-prev",
+      );
+      const raw = await readFile(join(log.dir, "t-new.jsonl"), "utf-8");
+      expect(raw).not.toContain("carried-secret");
+      expect(raw).toContain("enc:v1:");
+      const tr = await log.readTranscript("t-new");
+      expect(tr!.cmds[0]!.line).toBe("carried-secret");
     });
   });
 

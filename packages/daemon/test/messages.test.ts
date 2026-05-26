@@ -16,6 +16,7 @@ import {
   unmutePeer,
   isPeerMuted,
   MAX_PER_PEER,
+  MESSAGE_TTL_MS,
 } from "../src/messages";
 
 async function ws(): Promise<string> {
@@ -279,6 +280,7 @@ describe("encryption at rest", () => {
   test("plaintext legacy bodies are still readable (migration)", async () => {
     const w = await ws();
     const { writeFile } = await import("node:fs/promises");
+    const now = new Date().toISOString();
     await writeFile(
       join(w, "messages.json"),
       JSON.stringify({
@@ -290,8 +292,8 @@ describe("encryption at rest", () => {
               {
                 id: "old-msg",
                 body: "legacy plaintext",
-                sentAt: "2026-05-22T10:00:00Z",
-                receivedAt: "2026-05-22T10:00:01Z",
+                sentAt: now,
+                receivedAt: now,
                 direction: "in",
               },
             ],
@@ -318,5 +320,54 @@ describe("encryption at rest", () => {
     const raw = JSON.parse(await readFile(join(w, "messages.json"), "utf-8"));
     const bodies = raw.byPeer["peer-a"].messages.map((m: { body: string }) => m.body);
     expect(bodies[0]).not.toBe(bodies[1]);
+  });
+});
+
+describe("auto-expire messages older than MESSAGE_TTL_MS", () => {
+  test("messages older than 4 hours are pruned on read", async () => {
+    const w = await ws();
+    const { writeFile } = await import("node:fs/promises");
+    const oldTime = new Date(Date.now() - MESSAGE_TTL_MS - 60_000).toISOString();
+    const freshTime = new Date().toISOString();
+    await writeFile(
+      join(w, "messages.json"),
+      JSON.stringify({
+        version: 1,
+        byPeer: {
+          "peer-a": {
+            label: "Alice",
+            messages: [
+              { id: "fresh", body: "new", sentAt: freshTime, receivedAt: freshTime, direction: "in" },
+              { id: "old", body: "expired", sentAt: oldTime, receivedAt: oldTime, direction: "in" },
+            ],
+          },
+        },
+      }),
+    );
+    const got = await getMessages(w);
+    expect(got[0]?.messages).toHaveLength(1);
+    expect(got[0]?.messages[0]?.id).toBe("fresh");
+  });
+
+  test("peer entry is removed when all messages expire", async () => {
+    const w = await ws();
+    const { writeFile } = await import("node:fs/promises");
+    const oldTime = new Date(Date.now() - MESSAGE_TTL_MS - 60_000).toISOString();
+    await writeFile(
+      join(w, "messages.json"),
+      JSON.stringify({
+        version: 1,
+        byPeer: {
+          "peer-a": {
+            label: "Alice",
+            messages: [
+              { id: "old", body: "expired", sentAt: oldTime, receivedAt: oldTime, direction: "in" },
+            ],
+          },
+        },
+      }),
+    );
+    const got = await getMessages(w);
+    expect(got).toHaveLength(0);
   });
 });

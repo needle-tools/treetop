@@ -21,6 +21,7 @@ const MESSAGES_FILE = "messages.json";
 const MUTES_FILE = "peer-mutes.json";
 
 export const MAX_PER_PEER = 5;
+export const MESSAGE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 /** Hard cap on a single message body. The UI shows everything in
  *  monospace so anything bigger is almost certainly an attached-file
  *  attempt — which this feature explicitly doesn't support. */
@@ -107,13 +108,27 @@ async function loadStore(workspaceDir: string): Promise<OnDisk> {
     const raw = await readFile(join(workspaceDir, MESSAGES_FILE), "utf-8");
     const parsed = JSON.parse(raw) as Partial<OnDisk>;
     if (parsed && typeof parsed === "object" && parsed.byPeer) {
-      for (const entry of Object.values(parsed.byPeer)) {
+      const now = Date.now();
+      let pruned = false;
+      for (const [peerId, entry] of Object.entries(parsed.byPeer)) {
         for (const m of entry.messages) {
           if (!m.direction) m.direction = "in";
           m.body = decryptBody(m.body, key);
         }
+        const before = entry.messages.length;
+        entry.messages = entry.messages.filter((m) => {
+          const ts = Date.parse(m.receivedAt);
+          return Number.isFinite(ts) && now - ts < MESSAGE_TTL_MS;
+        });
+        if (entry.messages.length !== before) pruned = true;
+        if (entry.messages.length === 0) {
+          delete parsed.byPeer[peerId];
+          pruned = true;
+        }
       }
-      return { version: 1, byPeer: parsed.byPeer };
+      const store: OnDisk = { version: 1, byPeer: parsed.byPeer };
+      if (pruned) await saveStore(workspaceDir, store);
+      return store;
     }
   } catch {
     // file missing or unreadable — fall through to empty
