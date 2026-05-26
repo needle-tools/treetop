@@ -51,13 +51,32 @@
   import Popover from "./Popover.svelte";
   import MentionPicker from "./MentionPicker.svelte";
   import AttachmentIcon from "./AttachmentIcon.svelte";
+  import InlineAttachmentChip from "./InlineAttachmentChip.svelte";
   import ChatPreview from "./ChatPreview.svelte";
+  import { shrinkImageBlob } from "./image-shrink";
   import {
     fetchPreviewItems,
     type PreviewAction,
     type PreviewGap,
     type PreviewMsg,
   } from "./preview-action";
+  import {
+    extractNoteClipboardPayloadFromHtml,
+    expandNoteBodyForCopyAsync,
+    fetchTextAttachment,
+    makeNoteClipboardHtml,
+    makeNoteClipboardPayload,
+    makeImageAttachmentRef,
+    makeTextAttachmentRef,
+    noteBodyToEditText,
+    parseInlineAttachments,
+    restoreEditTextAttachments,
+    shouldAttachPastedText,
+    trailingImageAttachmentIndexes,
+    type InlineAttachment,
+    type InlineAttachmentEditRef,
+    type InlineAttachmentPart,
+  } from "./note-inline-attachments";
   import { defaultProviders } from "./mention-providers";
   import { pushRecent } from "./mention-recents";
   import { openUrl } from "./open-url";
@@ -376,6 +395,11 @@
 
   let editing = startEditing;
   let draft = note.body;
+  let editAttachmentRefs: InlineAttachmentEditRef[] = [];
+  let copied = false;
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+  let openAttachmentRaw: string | null = null;
+  let openAttachmentDraft = "";
   /** Convenience flag — once derived it gets used a few places (CSS
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
@@ -480,7 +504,10 @@
     }
   }
 
-  onDestroy(() => clearPreviewTimers());
+  onDestroy(() => {
+    clearPreviewTimers();
+    if (copiedTimer) clearTimeout(copiedTimer);
+  });
 
   /** Move a node to document.body on mount so it escapes any
    *  transformed ancestor (the sticky's `transform: rotate(...)`
@@ -750,6 +777,260 @@
     }
   }
 
+  function textSourceFromClipboardData(cd: DataTransfer | null): { kind: "clipboard"; types: string[] } {
+    return {
+      kind: "clipboard",
+      types: cd ? Array.from(cd.types) : [],
+    };
+  }
+
+  function insertIntoDraft(text: string): void {
+    if (!textareaEl) {
+      draft += text;
+      return;
+    }
+    const start = textareaEl.selectionStart ?? draft.length;
+    const end = textareaEl.selectionEnd ?? start;
+    draft = draft.slice(0, start) + text + draft.slice(end);
+    const caret = start + text.length;
+    queueMicrotask(() => {
+      if (!textareaEl) return;
+      textareaEl.focus();
+      textareaEl.setSelectionRange(caret, caret);
+      textareaEl.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function prepareBodyForEdit(body: string): string {
+    const edit = noteBodyToEditText(body);
+    editAttachmentRefs = edit.refs;
+    return edit.text;
+  }
+
+  function bodyFragmentToEditText(body: string): string {
+    const edit = noteBodyToEditText(body, {
+      existingRefs: editAttachmentRefs,
+      usedText: draft,
+    });
+    editAttachmentRefs = [...editAttachmentRefs, ...edit.refs];
+    return edit.text;
+  }
+
+  function insertBodyIntoDraft(body: string): void {
+    insertIntoDraft(bodyFragmentToEditText(body));
+  }
+
+  function insertAttachmentRef(ref: string): void {
+    const part = parseInlineAttachments(ref)[0];
+    if (editing && !isLink && part?.kind === "attachment") {
+      insertBodyIntoDraft(ref);
+      return;
+    }
+    insertIntoNoteBody(ref);
+  }
+
+  function insertIntoNoteBody(text: string): void {
+    if (editing && !isLink) {
+      insertIntoDraft(text);
+      return;
+    }
+    const sep = note.body && !note.body.endsWith("\n") ? "\n" : "";
+    dispatch("save", { id: note.id, body: `${note.body}${sep}${text}` });
+  }
+
+  async function uploadImageAttachment(
+    blob: Blob,
+    opts: { filename?: string; source: { kind: "clipboard" | "drop"; types: string[] } },
+  ): Promise<void> {
+    try {
+      const shrunk = await shrinkImageBlob(blob);
+      const form = new FormData();
+      form.append(
+        "file",
+        opts.filename ? new File([shrunk], opts.filename, { type: shrunk.type }) : shrunk,
+      );
+      const res = await fetch("/api/attach", { method: "POST", body: form });
+      if (!res.ok) throw new Error(`attach failed: ${res.status}`);
+      const { path } = (await res.json()) as { path: string };
+      const ref = makeImageAttachmentRef({
+        path,
+        filename: opts.filename,
+        mimeType: shrunk.type || blob.type || undefined,
+        size: shrunk.size,
+        source: {
+          ...opts.source,
+          ...(opts.filename ? { filename: opts.filename } : {}),
+        },
+      });
+      insertAttachmentRef(ref);
+    } catch (err) {
+      console.warn("Could not save image attachment", err);
+    }
+  }
+
+  async function uploadTextAttachment(
+    text: string,
+    source: { kind: "clipboard"; types: string[] },
+  ): Promise<void> {
+    try {
+      const blob = new Blob([text], { type: "text/plain" });
+      const file = new File([blob], "pasted-content.txt", { type: "text/plain" });
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/attach", { method: "POST", body: form });
+      if (!res.ok) throw new Error(`attach failed: ${res.status}`);
+      const { path } = (await res.json()) as { path: string };
+      insertAttachmentRef(makeTextAttachmentRef({
+        path,
+        filename: "pasted-content.txt",
+        mimeType: "text/plain",
+        size: blob.size,
+        charCount: Array.from(text).length,
+        source,
+      }));
+    } catch (err) {
+      console.warn("Could not save text attachment", err);
+    }
+  }
+
+  function insertClipboardNotePayloadFromHtml(html: string): boolean {
+    const payload = extractNoteClipboardPayloadFromHtml(html);
+    if (!payload) return false;
+    insertBodyIntoDraft(payload.body);
+    return true;
+  }
+
+  function onTextareaPaste(e: ClipboardEvent): void {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    if (insertClipboardNotePayloadFromHtml(cd.getData("text/html"))) {
+      e.preventDefault();
+      return;
+    }
+    for (const item of cd.items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (!file) continue;
+        e.preventDefault();
+        void uploadImageAttachment(file, {
+          filename: file.name && file.name !== "blob" ? file.name : undefined,
+          source: { kind: "clipboard", types: Array.from(cd.types) },
+        });
+        return;
+      }
+    }
+    const text = cd.getData("text/plain");
+    if (text && shouldAttachPastedText(text)) {
+      e.preventDefault();
+      void uploadTextAttachment(text, textSourceFromClipboardData(cd));
+    }
+  }
+
+  function onNoteDragOver(e: DragEvent): void {
+    if (isLink || isEmoji) return;
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function onNoteDrop(e: DragEvent): void {
+    if (isLink || isEmoji) return;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    const image = files.find((file) => file.type.startsWith("image/"));
+    if (!image) return;
+    e.preventDefault();
+    void uploadImageAttachment(image, {
+      filename: image.name,
+      source: { kind: "drop", types: e.dataTransfer ? Array.from(e.dataTransfer.types) : [] },
+    });
+  }
+
+  async function copyNote(): Promise<void> {
+    let text: string;
+    let payload: ReturnType<typeof makeNoteClipboardPayload>;
+    try {
+      text = await expandNoteBodyForCopyAsync(note.body, fetchTextAttachment);
+      payload = makeNoteClipboardPayload({ id: note.id, body: note.body, text });
+    } catch (err) {
+      console.warn("Could not read note attachments for copy", err);
+      return;
+    }
+
+    try {
+      const ClipboardItemCtor = (globalThis as typeof globalThis & {
+        ClipboardItem?: typeof ClipboardItem;
+      }).ClipboardItem;
+      if (navigator.clipboard?.write && ClipboardItemCtor) {
+        await navigator.clipboard.write([
+          new ClipboardItemCtor({
+            "text/plain": new Blob([text], { type: "text/plain" }),
+            "text/html": new Blob(
+              [makeNoteClipboardHtml(payload, text)],
+              { type: "text/html" },
+            ),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      copied = true;
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copied = false), 1200);
+    } catch (err) {
+      console.warn("Could not copy note", err);
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+        if (copiedTimer) clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => (copied = false), 1200);
+      } catch {
+        // Clipboard denial is already visible: the button simply
+        // doesn't flip to "copied".
+      }
+    }
+  }
+
+  async function textForAttachment(attachment: InlineAttachment): Promise<string> {
+    if (attachment.kind !== "text") return "";
+    return fetchTextAttachment(attachment.path);
+  }
+
+  function openInlineAttachment(raw: string, attachment: InlineAttachment): void {
+    openAttachmentRaw = raw;
+    openAttachmentDraft =
+      attachment.kind === "text"
+        ? ""
+        : attachment.path;
+    if (attachment.kind === "text") {
+      void textForAttachment(attachment)
+        .then((text) => {
+          if (openAttachmentRaw === raw) openAttachmentDraft = text;
+        })
+        .catch((err) => console.warn("Could not read text attachment", err));
+    }
+  }
+
+  function closeInlineAttachment(): void {
+    openAttachmentRaw = null;
+    openAttachmentDraft = "";
+  }
+
+  function mergeInlineAttachment(raw: string, replacement: string): void {
+    const body = note.body.replace(raw, replacement);
+    closeInlineAttachment();
+    dispatch("save", { id: note.id, body });
+  }
+
+  async function mergeTextAttachment(raw: string, attachment: InlineAttachment): Promise<void> {
+    if (attachment.kind !== "text") return;
+    try {
+      mergeInlineAttachment(raw, await textForAttachment(attachment));
+    } catch (err) {
+      console.warn("Could not read text attachment", err);
+    }
+  }
+
   /** Two-step delete: clicking × arms a 3-second countdown (rather
    *  than firing immediately) so the user has a generous window to
    *  back out. The button glyph swaps to ■ while armed; a second
@@ -860,12 +1141,17 @@
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
+      draft = prepareBodyForEdit(note.body);
       // Note-kind edit: textarea gets caret-at-end so re-edits feel
       // like "append" rather than "overwrite". Link-kind delegates
       // focus to MentionPicker, which manages its own input.
-      textareaEl.focus();
-      const end = textareaEl.value.length;
-      textareaEl.setSelectionRange(end, end);
+      queueMicrotask(() => {
+        if (!textareaEl) return;
+        textareaEl.focus();
+        const end = textareaEl.value.length;
+        textareaEl.setSelectionRange(end, end);
+        textareaEl.dispatchEvent(new Event("input", { bubbles: true }));
+      });
     }
     // Click-outside-to-save: when the note is in edit mode and the
     // user mousedowns anywhere outside this sticky's box (including
@@ -1044,7 +1330,7 @@
     // cancel any in-flight delete so the user doesn't see their
     // freshly-typed text vanish 3 seconds later.
     cancelPendingDelete();
-    draft = note.body;
+    draft = isLink ? note.body : prepareBodyForEdit(note.body);
     editing = true;
     if (!isLink) {
       queueMicrotask(() => {
@@ -1061,6 +1347,7 @@
   function cancelEdit(): void {
     editing = false;
     draft = note.body;
+    editAttachmentRefs = [];
     // "Discard if empty" applies to both kinds, but the emptiness
     // test differs: for notes it's the markdown body, for links it's
     // the target value (the user spawned a chip and never typed a URL).
@@ -1112,7 +1399,8 @@
       }
       return;
     }
-    const trimmed = draft;
+    const trimmed = restoreEditTextAttachments(draft, editAttachmentRefs);
+    editAttachmentRefs = [];
     if (removeIfEmpty && !trimmed.trim()) {
       dispatch("remove", { id: note.id });
       return;
@@ -1262,13 +1550,7 @@
    *       characters with an ellipsis — the markdown source keeps the
    *       full label so the user can copy it verbatim, but the
    *       rendered chip stays a single readable token. */
-  function renderBody(
-    body: string,
-    _reposToken: AnchorableRepo[],
-    _scopeToken: typeof pickerScope,
-  ): string {
-    if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
-    const raw = DOMPurify.sanitize(marked.parse(body, { async: false }) as string);
+  function enhanceSupergitLinks(raw: string): string {
     // `[^>]*` between the closing-quote of href and the `>` lets
     // marked-added attributes (target="_blank", rel="noopener ...")
     // pass through. Without this the regex matched only the bare
@@ -1308,18 +1590,42 @@
     );
   }
 
+  function renderBody(
+    body: string,
+    _reposToken: AnchorableRepo[],
+    _scopeToken: typeof pickerScope,
+  ): string {
+    if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
+    const raw = DOMPurify.sanitize(marked.parse(body, { async: false }) as string);
+    return enhanceSupergitLinks(raw);
+  }
+
+  function renderInlineBody(body: string): string {
+    if (!body) return "";
+    const raw = DOMPurify.sanitize(marked.parseInline(body) as string);
+    return enhanceSupergitLinks(raw);
+  }
+
   /** Reactive HTML used by the body. Re-derives whenever the note's
    *  body changes, the live `repos` snapshot updates (so renaming a
    *  session flows into every inline mention pointing at it), or
    *  `pickerScope` changes (so a commit chip in a new note picks up
    *  the right provider brand mark on its first render). */
-  let bodyHtml = "";
+  let bodyParts: InlineAttachmentPart[] = [];
   $: {
     void note;
     void repos;
     void pickerScope;
-    bodyHtml = renderBody(note.body, repos, pickerScope);
+    bodyParts = parseInlineAttachments(note.body);
+    if (
+      openAttachmentRaw &&
+      !bodyParts.some((part) => part.kind === "attachment" && part.raw === openAttachmentRaw)
+    ) {
+      closeInlineAttachment();
+    }
   }
+
+  $: trailingImageIndexes = trailingImageAttachmentIndexes(bodyParts);
 
   /** Svelte action: keep a textarea's height in lockstep with its
    *  content so the user never sees a scrollbar or has to grab the
@@ -1356,8 +1662,11 @@
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
   role="dialog"
+  tabindex="-1"
   aria-label={isEmoji ? "Emoji sticker" : isLink ? "Sticky link" : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
+  on:dragover={onNoteDragOver}
+  on:drop={onNoteDrop}
   on:dblclick={() => {
     if (!editing && !isEmoji) startEdit();
   }}
@@ -1365,6 +1674,7 @@
   <header
     class="sticky-header"
     role="toolbar"
+    tabindex="-1"
     aria-label="Note actions"
     on:mousedown={onMouseDownHeader}
     title="Drag to move"
@@ -1386,6 +1696,14 @@
              already handles, and the empty toolbar gives the
              picker more room to breathe. -->
       {:else}
+        {#if !isEmoji}
+          <button
+            class="sticky-btn"
+            on:click={() => void copyNote()}
+            title={copied ? "Copied" : "Copy note for pasting into a session"}
+            aria-label="Copy note"
+          >{copied ? "✓" : "⧉"}</button>
+        {/if}
         <button
           class="sticky-btn"
           on:click={startEdit}
@@ -1441,6 +1759,7 @@
           bind:value={draft}
           placeholder="Write something… markdown OK. Type @ to link a session or commit. Enter saves, Shift+Enter newline, Esc reverts."
           on:keydown={onKey}
+          on:paste={onTextareaPaste}
           on:input={onTextareaInput}
           use:autosize
         ></textarea>
@@ -1612,7 +1931,6 @@
       </div>
     {/if}
   {:else}
-    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
     <div
       class="sticky-body"
       role="textbox"
@@ -1620,7 +1938,100 @@
       aria-readonly="true"
       title="Double-click to edit"
       on:click={onBodyClick}
-    >{@html bodyHtml}</div>
+    >
+      {#each bodyParts as part, i}
+        {#if part.kind === "text"}
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+          {@html bodyParts.length === 1
+            ? renderBody(part.text, repos, pickerScope)
+            : renderInlineBody(part.text)}
+        {:else if part.attachment.kind === "image" && trailingImageIndexes.has(i)}
+          <button
+            type="button"
+            class="sticky-trailing-image"
+            draggable="true"
+            title="View attachment"
+            on:dragstart={(e) =>
+              onInlineAttachmentDragStart(e, part.raw, part.attachment)}
+            on:click|stopPropagation={() =>
+              openInlineAttachment(part.raw, part.attachment)}
+            on:dblclick|stopPropagation
+          >
+            <span class="sticky-photo-frame">
+              <img
+                src={`/api/image?path=${encodeURIComponent(part.attachment.path)}`}
+                alt={part.attachment.filename ?? "Attached image"}
+              />
+            </span>
+            <span class="sticky-photo-caption">
+              {part.attachment.filename
+                ?? part.attachment.path.split("/").pop()
+                ?? "Image attachment"}
+            </span>
+          </button>
+        {:else}
+          <InlineAttachmentChip
+            attachment={part.attachment}
+            selected={openAttachmentRaw === part.raw}
+            onOpen={() => openInlineAttachment(part.raw, part.attachment)}
+            onMerge={() => {
+              if (part.attachment.kind === "text") {
+                void mergeTextAttachment(part.raw, part.attachment);
+              }
+            }}
+          />
+        {/if}
+      {/each}
+    </div>
+    {#if openAttachmentRaw}
+      {@const openPart = bodyParts.find((part) =>
+        part.kind === "attachment" && part.raw === openAttachmentRaw
+      )}
+      {#if openPart?.kind === "attachment"}
+        <section
+          class="inline-attachment-editor"
+          role="group"
+          on:dblclick|stopPropagation
+        >
+          <header class="inline-attachment-editor-head">
+            <span>
+              {openPart.attachment.kind === "text"
+                ? `Pasted Content, ${openPart.attachment.charCount} chars`
+                : openPart.attachment.filename ?? "Image attachment"}
+            </span>
+            <button
+              type="button"
+              class="sticky-btn tiny"
+              title="Close"
+              on:click={closeInlineAttachment}
+            >×</button>
+          </header>
+          {#if openPart.attachment.kind === "text"}
+            <textarea
+              class="inline-attachment-textarea"
+              bind:value={openAttachmentDraft}
+              spellcheck="false"
+            ></textarea>
+            <div class="inline-attachment-editor-actions">
+              <button
+                type="button"
+                class="sticky-btn primary"
+                on:click={() =>
+                  openAttachmentRaw &&
+                  mergeInlineAttachment(openAttachmentRaw, openAttachmentDraft)}
+              >merge in</button>
+            </div>
+          {:else}
+            <img
+              class="inline-attachment-image"
+              src={`/api/image?path=${encodeURIComponent(openPart.attachment.path)}`}
+              alt={openPart.attachment.filename ?? "Attached image"}
+            />
+            <code class="inline-attachment-path">{openPart.attachment.path}</code>
+          {/if}
+        </section>
+      {/if}
+    {/if}
   {/if}
 
   {#if isSessionLink && previewOpen}

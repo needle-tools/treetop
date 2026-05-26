@@ -8,6 +8,11 @@
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
   import { cleanSelection } from "./clean-selection";
+  import {
+    expandNoteBodyForCopyAsync,
+    extractNoteClipboardPayloadFromHtml,
+    fetchTextAttachment,
+  } from "./note-inline-attachments";
 
   function getCleanedSelection(term: Terminal): string {
     const raw = term.getSelection();
@@ -703,8 +708,23 @@
             }
           }
         }
-        // No image — pull plain text out of the same items rather than
-        // making a second clipboard fetch.
+        // No image — preserve Supergit note attachments when the rich
+        // HTML flavor is present, then fall back to plain text from
+        // the same clipboard read.
+        for (const item of items) {
+          if (item.types.includes("text/html")) {
+            const blob = await item.getType("text/html");
+            const payload = extractNoteClipboardPayloadFromHtml(await blob.text());
+            if (payload) {
+              try {
+                xterm?.paste(await expandNoteBodyForCopyAsync(payload.body, fetchTextAttachment));
+              } catch (err) {
+                console.warn("Could not read note attachments for paste", err);
+              }
+              return;
+            }
+          }
+        }
         for (const item of items) {
           if (item.types.includes("text/plain")) {
             const blob = await item.getType("text/plain");
@@ -742,6 +762,15 @@
   function onPaste(e: ClipboardEvent): void {
     const cd = e.clipboardData;
     if (!cd) return;
+    const payload = extractNoteClipboardPayloadFromHtml(cd.getData("text/html"));
+    if (payload && xterm) {
+      e.preventDefault();
+      e.stopPropagation();
+      void expandNoteBodyForCopyAsync(payload.body, fetchTextAttachment)
+        .then((text) => xterm?.paste(text))
+        .catch((err) => console.warn("Could not read note attachments for paste", err));
+      return;
+    }
     for (const it of cd.items) {
       if (it.kind === "file" && it.type.startsWith("image/")) {
         const blob = it.getAsFile();
