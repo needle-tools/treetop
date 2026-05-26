@@ -1300,6 +1300,14 @@ const server = Bun.serve<TermWsData, never>({
   // Bun's default is also 0.0.0.0 but we set it explicitly so a future
   // Bun change can't silently flip us to localhost-only.
   hostname: "0.0.0.0",
+  // Bun's default maxRequestBodySize is too low for session-share
+  // offers — a stripped Claude JSONL wrapped in JSON easily exceeds
+  // it for longer sessions (2-5 MB is common, 20+ MB for marathon
+  // sessions). Without this the receiver returns 413 before our
+  // route handler ever sees the request, so no toast fires and the
+  // sender gets an opaque "peer rejected offer (413)" error.
+  // 50 MB matches MAX_OFFER_BYTES from session-share.ts.
+  maxRequestBodySize: 50 * 1024 * 1024,
   // Bun's default per-request idle timeout is 10s. Some of our routes —
   // /api/diff on a large changeset, /api/session priming the cache on a
   // 100 MB+ JSONL, /api/fetch over a slow network — can legitimately
