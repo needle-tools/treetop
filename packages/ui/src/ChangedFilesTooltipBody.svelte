@@ -240,6 +240,16 @@
   // reactive statement that touches `hovered` / `anchorEl` so the
   // action's `update` fires.
   $: hovered, anchorEl;
+
+  function openFileDefault(relPath: string) {
+    if (!worktreePath) return;
+    const abs = worktreePath.replace(/\/$/, "") + "/" + relPath;
+    fetch("/api/open-default", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: abs }),
+    }).catch(() => {});
+  }
 </script>
 
 {#if summary === undefined || summary === "loading"}
@@ -267,6 +277,7 @@
               on:mouseenter={(e) =>
                 onRowEnter(col.kind, row.path, row.stat, e.currentTarget as HTMLElement)}
               on:mouseleave={onRowLeave}
+              on:dblclick={() => openFileDefault(row.path)}
             >
               <span class="wt-tt-path" title={row.path}>{row.path}</span>
               <span class="wt-tt-added"
