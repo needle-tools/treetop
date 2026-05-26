@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  expandNoteBodyForTerminalPasteChunks,
   expandNoteBodyForCopyAsync,
   expandNoteBodyForCopy,
   extractNoteClipboardPayloadFromHtml,
   fetchTextAttachment,
+  inlineAttachmentLabel,
   noteBodyToEditText,
   makeNoteClipboardHtml,
   makeNoteClipboardPayload,
@@ -22,6 +24,7 @@ import {
   shouldAttachPastedText,
   trailingImageAttachmentIndexes,
   trailingVisualAttachmentIndexes,
+  visualAttachmentIndexes,
 } from "../src/note-inline-attachments";
 
 describe("note inline attachments", () => {
@@ -38,6 +41,7 @@ describe("note inline attachments", () => {
       mimeType: "text/plain",
       size: 1016,
       charCount: 1016,
+      lineCount: 45,
       source: {
         kind: "clipboard",
         types: ["text/plain", "text/html"],
@@ -45,7 +49,7 @@ describe("note inline attachments", () => {
     });
     const parts = parseInlineAttachments(`before ${ref} after`);
 
-    expect(ref).toMatch(/^\[@Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//);
+    expect(ref).toMatch(/^\[Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//);
     expect(ref).not.toContain("{{supergit:attachment:");
     expect(parts).toHaveLength(3);
     expect(parts[0]).toEqual({ kind: "text", text: "before " });
@@ -55,6 +59,7 @@ describe("note inline attachments", () => {
       expect(parts[1].attachment.kind).toBe("text");
       expect(parts[1].attachment.path).toBe("/tmp/supergit/attachments/paste.txt");
       expect(parts[1].attachment.charCount).toBe(1016);
+      expect(parts[1].attachment.lineCount).toBe(45);
       expect(parts[1].attachment.source?.types).toEqual(["text/plain", "text/html"]);
     }
   });
@@ -69,7 +74,7 @@ describe("note inline attachments", () => {
     });
     const parts = parseInlineAttachments(ref);
 
-    expect(ref).toMatch(/^\[@shot\.png\]\(supergit:\/\/attachment\//);
+    expect(ref).toMatch(/^\[shot\.png\]\(supergit:\/\/attachment\//);
     expect(parts).toHaveLength(1);
     expect(parts[0]?.kind).toBe("attachment");
     if (parts[0]?.kind === "attachment") {
@@ -78,6 +83,21 @@ describe("note inline attachments", () => {
       expect(parts[0].attachment.filename).toBe("shot.png");
       expect(parts[0].attachment.mimeType).toBe("image/png");
       expect(parts[0].attachment.size).toBe(123);
+    }
+  });
+
+  test("uses image filenames instead of absolute paths for attachment labels", () => {
+    const ref = makeImageAttachmentRef({
+      path: "/Users/herbst/supergit/workspaces/default/attachments/events-overlay-sheet.jpg",
+      mimeType: "image/jpeg",
+      size: 123,
+      source: { kind: "drop", types: ["Files"] },
+    });
+    const parts = parseInlineAttachments(ref);
+
+    expect(parts[0]?.kind).toBe("attachment");
+    if (parts[0]?.kind === "attachment") {
+      expect(inlineAttachmentLabel(parts[0].attachment)).toBe("events-overlay-sheet.jpg");
     }
   });
 
@@ -131,6 +151,21 @@ describe("note inline attachments", () => {
     );
   });
 
+  test("copy expansion keeps session links as explicit session references", () => {
+    const session = makeLinkAttachmentRef({
+      target: {
+        type: "session",
+        value: "/Users/me/.codex/sessions/abc123.jsonl",
+        label: "Fix the thing",
+        agent: "codex",
+      },
+    });
+
+    expect(expandNoteBodyForCopy(`See ${session}`)).toBe(
+      "See Session: /Users/me/.codex/sessions/abc123.jsonl",
+    );
+  });
+
   test("path-backed text attachments expand through the provided reader", async () => {
     const paste = makeTextAttachmentRef({
       path: "/tmp/supergit/attachments/paste.txt",
@@ -149,6 +184,33 @@ describe("note inline attachments", () => {
         return "hidden long text";
       }),
     ).resolves.toBe("A hidden long text");
+  });
+
+  test("terminal paste keeps text and images as separate chunks", async () => {
+    const paste = makeTextAttachmentRef({
+      path: "/tmp/supergit/attachments/paste.txt",
+      filename: "paste.txt",
+      mimeType: "text/plain",
+      size: 16,
+      charCount: 16,
+    });
+    const image = makeImageAttachmentRef({
+      path: "/tmp/supergit/attachments/shot.png",
+      filename: "shot.png",
+    });
+
+    await expect(
+      expandNoteBodyForTerminalPasteChunks(`A ${paste}\n${image}\nthanks`, async (path) => {
+        expect(path).toBe("/tmp/supergit/attachments/paste.txt");
+        return "hidden long text";
+      }),
+    ).resolves.toEqual([
+      "A ",
+      "hidden long text",
+      "\n",
+      "/tmp/supergit/attachments/shot.png",
+      "\nthanks",
+    ]);
   });
 
   test("text attachment reads fail instead of substituting another payload", async () => {
@@ -176,7 +238,7 @@ describe("note inline attachments", () => {
 
     const edit = noteBodyToEditText(body);
 
-    expect(edit.text).toBe("A @Pasted Content, 16 chars\nB @shot.png");
+    expect(edit.text).toBe("A [Pasted Content, 16 chars]\nB [shot.png]");
     expect(edit.refs).toHaveLength(2);
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
@@ -186,12 +248,12 @@ describe("note inline attachments", () => {
       path: "/tmp/supergit/attachments/paste.txt",
       charCount: 16,
     });
-    const body = `@Pasted Content, 16 chars\n${paste}`;
+    const body = `[Pasted Content, 16 chars]\n${paste}`;
 
     const edit = noteBodyToEditText(body);
 
     expect(edit.text).toBe(
-      "@Pasted Content, 16 chars\n@Pasted Content, 16 chars #2",
+      "[Pasted Content, 16 chars]\n[Pasted Content, 16 chars] #2",
     );
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
@@ -314,5 +376,24 @@ describe("note inline attachments", () => {
 
     const blocked = parseInlineAttachments(`body ${first}\n${paste}\n${emoji}\n`);
     expect([...trailingVisualAttachmentIndexes(blocked)]).toEqual([5]);
+  });
+
+  test("detects visual attachments anywhere in note content", () => {
+    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const paste = makeTextAttachmentRef({
+      path: "/tmp/paste.txt",
+      filename: "paste.txt",
+      charCount: 12,
+    });
+    const emoji = makeEmojiAttachmentRef({ body: "✨" });
+    const note = makeNoteAttachmentRef({ body: "nested note" });
+    const session = makeLinkAttachmentRef({
+      target: { type: "session", value: "/tmp/session.jsonl", label: "Session title" },
+    });
+    const parts = parseInlineAttachments(
+      `body ${first}\n${paste}\n${emoji}\n${note}\n${session}\ncaption`,
+    );
+
+    expect([...visualAttachmentIndexes(parts)]).toEqual([1, 3, 5, 7, 9]);
   });
 });

@@ -5,7 +5,7 @@ export const SESSION_LINK_DRAG_MIME =
   "application/x-supergit-session-link+json";
 export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
 
-const ATTACHMENT_LINK_RE = /\[@((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
+const ATTACHMENT_LINK_RE = /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
 
 export interface AttachmentSource {
   kind: "clipboard" | "drop" | "copy";
@@ -20,6 +20,7 @@ export interface TextInlineAttachment {
   mimeType?: string;
   size?: number;
   charCount: number;
+  lineCount?: number;
   source?: AttachmentSource;
 }
 
@@ -93,6 +94,7 @@ export function makeTextAttachmentRef(
     mimeType?: string;
     size?: number;
     charCount: number;
+    lineCount?: number;
     source?: AttachmentSource;
   },
 ): string {
@@ -103,6 +105,7 @@ export function makeTextAttachmentRef(
     ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     ...(typeof input.size === "number" ? { size: input.size } : {}),
     charCount: input.charCount,
+    ...(typeof input.lineCount === "number" ? { lineCount: input.lineCount } : {}),
     ...(input.source ? { source: input.source } : {}),
   });
 }
@@ -172,6 +175,25 @@ export function trailingVisualAttachmentIndexes(
 }
 
 export const trailingImageAttachmentIndexes = trailingVisualAttachmentIndexes;
+
+export function visualAttachmentIndexes(
+  parts: readonly InlineAttachmentPart[],
+): Set<number> {
+  const indexes: number[] = [];
+  parts.forEach((part, i) => {
+    if (
+      part.kind === "attachment" &&
+      (part.attachment.kind === "image" ||
+        part.attachment.kind === "text" ||
+        part.attachment.kind === "emoji" ||
+        part.attachment.kind === "note" ||
+        part.attachment.kind === "link")
+    ) {
+      indexes.push(i);
+    }
+  });
+  return new Set(indexes);
+}
 
 export function removeInlineAttachmentRef(body: string, raw: string): string {
   if (!raw) return body;
@@ -249,6 +271,35 @@ export async function expandNoteBodyForCopyAsync(
   return chunks.join("");
 }
 
+export async function expandNoteBodyForTerminalPasteChunks(
+  body: string,
+  readTextAttachment: (path: string) => Promise<string>,
+): Promise<string[]> {
+  const chunks: string[] = [];
+  let text = "";
+  const flushText = () => {
+    if (!text) return;
+    chunks.push(text);
+    text = "";
+  };
+
+  for (const part of parseInlineAttachments(body)) {
+    if (part.kind === "text") {
+      text += part.text;
+    } else if (part.attachment.kind === "text") {
+      flushText();
+      chunks.push(await readTextAttachment(part.attachment.path));
+    } else if (part.attachment.kind === "image") {
+      flushText();
+      chunks.push(part.attachment.path);
+    } else {
+      text += inlineAttachmentCopyText(part.attachment);
+    }
+  }
+  flushText();
+  return chunks;
+}
+
 export async function fetchTextAttachment(path: string): Promise<string> {
   const res = await fetch(`/api/attachment?path=${encodeURIComponent(path)}`);
   if (!res.ok) throw new Error(`attachment read failed: ${res.status}`);
@@ -286,7 +337,7 @@ export function noteBodyToEditText(
         usedText += part.text;
         return part.text;
       }
-      const base = `@${inlineAttachmentLabel(part.attachment)}`;
+      const base = `[${inlineAttachmentLabel(part.attachment)}]`;
       const placeholder = uniquePlaceholder(base, usedText, existingRefs, refs);
       refs.push({ placeholder, raw: part.raw });
       usedText += placeholder;
@@ -357,7 +408,7 @@ export function extractNoteClipboardPayloadFromHtml(
 
 function makeAttachmentRef(attachment: InlineAttachment): string {
   const payload = encodeBase64Url(JSON.stringify(attachment));
-  return `[@${escapeMarkdownLabel(inlineAttachmentLabel(attachment))}](supergit://attachment/${payload})`;
+  return `[${escapeMarkdownLabel(inlineAttachmentLabel(attachment))}](supergit://attachment/${payload})`;
 }
 
 function attachmentMatches(body: string): Array<{
@@ -393,6 +444,7 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
         ...(typeof obj.mimeType === "string" && obj.mimeType ? { mimeType: obj.mimeType } : {}),
         ...(typeof obj.size === "number" ? { size: obj.size } : {}),
         charCount,
+        ...(typeof obj.lineCount === "number" ? { lineCount: obj.lineCount } : {}),
         ...(source ? { source } : {}),
       };
     }
@@ -454,6 +506,9 @@ function inlineAttachmentCopyText(attachment: InlineAttachment): string {
     case "emoji":
       return attachment.body;
     case "link":
+      if (attachment.target.type === "session") {
+        return `Session: ${attachment.target.value}`;
+      }
       return attachment.target.label ?? attachment.target.value;
   }
 }

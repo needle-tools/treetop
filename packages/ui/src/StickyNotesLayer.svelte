@@ -126,14 +126,16 @@
   import { notesCountByAnchor, notesAll } from "./notes-counts";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
+  import { shrinkImageBlob } from "./image-shrink";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
     SESSION_LINK_DRAG_MIME,
     STAGE_PROMPT_EVENT,
     appendInlineAttachmentRef,
-    expandNoteBodyForCopyAsync,
+    expandNoteBodyForTerminalPasteChunks,
     fetchTextAttachment,
     makeEmojiAttachmentRef,
+    makeImageAttachmentRef,
     makeLinkAttachmentRef,
     makeNoteAttachmentRef,
     moveInlineAttachmentRefBefore,
@@ -215,10 +217,7 @@
   }
   let staging: Record<string, Staging> = {};
   /** Notes mid-fly (staging → pinned). Position is driven by a rAF
-   *  loop in this layer (not a CSS transition) — so the per-frame
-   *  `x` updates that StickyNote receives feed its pendulum physics,
-   *  which produces the same drag-style swing the user gets when
-   *  moving the note by hand. */
+   *  loop in this layer rather than a CSS transition. */
   interface FlyingState {
     fromX: number;
     fromY: number;
@@ -230,6 +229,7 @@
   let flyingNotes: Record<string, FlyingState> = {};
   /** Notes mid-fade-out animation before delete. */
   let removingIds = new Set<string>();
+  let lastPointer = { clientX: 0, clientY: 0 };
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
@@ -394,12 +394,27 @@
       if (anchor) return { anchor, li };
     }
 
+    for (const li of visibleWorktreeRows()) {
+      const r = li.getBoundingClientRect();
+      const ownedBottom = r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
+      if (
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= ownedBottom
+      ) {
+        const anchor = anchorFromRow(li);
+        if (anchor) return { anchor, li };
+      }
+    }
+
     let best: { li: HTMLElement; dist: number } | null = null;
     for (const li of visibleWorktreeRows()) {
       const r = li.getBoundingClientRect();
+      const ownedBottom = r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
       const dy =
         clientY < r.top ? r.top - clientY :
-        clientY > r.bottom ? clientY - r.bottom :
+        clientY > ownedBottom ? clientY - ownedBottom :
         0;
       const dx =
         clientX < r.left ? r.left - clientX :
@@ -422,6 +437,26 @@
       if (note) return note;
     }
     return null;
+  }
+
+  function noteFromEventTarget(target: EventTarget | null): NoteShape | null {
+    if (!(target instanceof Element)) return null;
+    const sticky = target.closest<HTMLElement>(".sticky[data-note-id]");
+    const id = sticky?.dataset.noteId;
+    return id ? notes.find((n) => n.id === id) ?? null : null;
+  }
+
+  function isTerminalEventTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest(".xterm-host, .terminal-wrap");
+  }
+
+  function isAttachmentModalEventTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest(".attachment-media-scrim");
+  }
+
+  function isEditableEventTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest("input, textarea, [contenteditable='true']");
   }
 
   function inlineAttachmentRawAtPoint(
@@ -561,10 +596,7 @@
       const maxX = Math.max(0, viewportRight - w);
       return { x: Math.min(Math.max(0, st.docX), maxX), y: st.docY };
     }
-    // Mid-fly: ease-out cubic between captured from/to. The pendulum
-    // in StickyNote reads the changing `x` prop and swings accordingly,
-    // so the note tilts during the flight exactly the way it would if
-    // the user were dragging it across by hand.
+    // Mid-fly: ease-out cubic between captured from/to.
     const fly = flyingNotes[note.id];
     if (fly) {
       const t = Math.min(1, (performance.now() - fly.startMs) / fly.durationMs);
@@ -814,6 +846,113 @@
     return Array.from(e.dataTransfer?.types ?? []).includes(SESSION_LINK_DRAG_MIME);
   }
 
+  function imageFileFromTransfer(dt: DataTransfer | null): File | null {
+    if (!dt) return null;
+    for (const file of Array.from(dt.files ?? [])) {
+      if (file.type.startsWith("image/")) return file;
+    }
+    for (const item of Array.from(dt.items ?? [])) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+    return null;
+  }
+
+  function hasFileTransfer(dt: DataTransfer | null): boolean {
+    if (!dt) return false;
+    return (
+      Array.from(dt.types ?? []).includes("Files") ||
+      Array.from(dt.items ?? []).some((item) => item.kind === "file")
+    );
+  }
+
+  async function uploadDroppedImageAttachment(
+    file: File,
+    source: { kind: "clipboard" | "drop"; types: string[] },
+  ): Promise<string | null> {
+    try {
+      const shrunk = await shrinkImageBlob(file);
+      const filename = file.name && file.name !== "blob" ? file.name : undefined;
+      const form = new FormData();
+      form.append(
+        "file",
+        filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
+      );
+      const res = await fetch("/api/attach", { method: "POST", body: form });
+      if (!res.ok) return null;
+      const { path } = (await res.json()) as { path: string };
+      return makeImageAttachmentRef({
+        path,
+        ...(filename ? { filename } : {}),
+        mimeType: shrunk.type || file.type || undefined,
+        size: shrunk.size,
+        source: {
+          ...source,
+          ...(filename ? { filename } : {}),
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function appendImageAttachmentToNote(note: NoteShape, raw: string): Promise<void> {
+    if (note.kind === "link" || note.kind === "emoji") return;
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: appendInlineAttachmentRef(note.body, raw) }),
+      });
+      if (!res.ok) return;
+      const updated = (await res.json()) as NoteShape;
+      notes = notes.map((n) => (n.id === updated.id ? updated : n));
+      bringToFront(updated.id);
+      tick++;
+    } catch {}
+  }
+
+  async function createImageAttachmentNote(
+    raw: string,
+    rowTarget: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: raw,
+          anchors: [rowTarget.anchor],
+          tags: [],
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as NoteShape;
+      setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      tick++;
+    } catch {}
+  }
+
+  async function placeImageAttachment(
+    raw: string,
+    clientX: number,
+    clientY: number,
+    eventTarget: EventTarget | null,
+  ): Promise<void> {
+    const targetNote = noteFromEventTarget(eventTarget) || noteAtPoint(clientX, clientY);
+    if (targetNote && targetNote.kind !== "link" && targetNote.kind !== "emoji") {
+      await appendImageAttachmentToNote(targetNote, raw);
+      return;
+    }
+    const rowTarget = dropTargetAt(clientX, clientY);
+    if (rowTarget) await createImageAttachmentNote(raw, rowTarget, clientX, clientY);
+  }
+
   function parseSessionLinkDrag(e: DragEvent): NoteShape["target"] | null {
     const raw = e.dataTransfer?.getData(SESSION_LINK_DRAG_MIME);
     if (!raw) return null;
@@ -840,31 +979,70 @@
   }
 
   function onWindowDragOver(e: DragEvent): void {
+    if (isTerminalEventTarget(e.target) || isAttachmentModalEventTarget(e.target)) return;
     if (hasInlineAttachmentDrag(e)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
       return;
     }
-    if (hasSessionLinkDrag(e) && noteAtPoint(e.clientX, e.clientY)) {
+    if (
+      hasSessionLinkDrag(e) &&
+      (noteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
+    ) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      return;
+    }
+    if (hasFileTransfer(e.dataTransfer) && dropTargetAt(e.clientX, e.clientY)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     }
   }
 
   async function onWindowDrop(e: DragEvent): Promise<void> {
+    if (
+      e.defaultPrevented ||
+      isTerminalEventTarget(e.target) ||
+      isAttachmentModalEventTarget(e.target)
+    ) {
+      return;
+    }
     const hasInline = hasInlineAttachmentDrag(e);
     const hasSession = hasSessionLinkDrag(e);
-    if (!hasInline && !hasSession) return;
-    const targetNote = noteAtPoint(e.clientX, e.clientY);
+    const image = imageFileFromTransfer(e.dataTransfer);
+    if (!hasInline && !hasSession && !image) return;
+    const payload = hasInline ? parseInlineAttachmentDrag(e) : null;
+    const targetNote = noteAtPoint(
+      e.clientX,
+      e.clientY,
+      payload?.sourceNoteId,
+    );
     if (hasSession && targetNote) {
       e.preventDefault();
       const target = parseSessionLinkDrag(e);
       if (target) await appendSessionLinkToNote(targetNote, target);
       return;
     }
+    if (hasSession) {
+      const target = parseSessionLinkDrag(e);
+      const rowTarget = dropTargetAt(e.clientX, e.clientY);
+      if (target && rowTarget) {
+        e.preventDefault();
+        await createSessionLinkNote(target, rowTarget, e.clientX, e.clientY);
+      }
+      return;
+    }
+    if (image && !hasInline) {
+      e.preventDefault();
+      const raw = await uploadDroppedImageAttachment(image, {
+        kind: "drop",
+        types: e.dataTransfer ? Array.from(e.dataTransfer.types) : [],
+      });
+      if (raw) await placeImageAttachment(raw, e.clientX, e.clientY, e.target);
+      return;
+    }
     if (!hasInline) return;
     e.preventDefault();
-    const payload = parseInlineAttachmentDrag(e);
     if (payload && targetNote) {
       await moveInlineAttachmentIntoNote(
         payload,
@@ -880,6 +1058,31 @@
 
   function onWindowDropEvent(e: DragEvent): void {
     void onWindowDrop(e);
+  }
+
+  function onWindowPointerMove(e: PointerEvent): void {
+    lastPointer = { clientX: e.clientX, clientY: e.clientY };
+  }
+
+  function onWindowPaste(e: ClipboardEvent): void {
+    if (
+      e.defaultPrevented ||
+      isTerminalEventTarget(e.target) ||
+      isAttachmentModalEventTarget(e.target) ||
+      isEditableEventTarget(e.target)
+    ) {
+      return;
+    }
+    const image = imageFileFromTransfer(e.clipboardData);
+    if (!image) return;
+    e.preventDefault();
+    void uploadDroppedImageAttachment(image, {
+      kind: "clipboard",
+      types: e.clipboardData ? Array.from(e.clipboardData.types) : [],
+    }).then(async (raw) => {
+      if (!raw) return;
+      await placeImageAttachment(raw, lastPointer.clientX, lastPointer.clientY, e.target);
+    });
   }
 
   async function detachInlineAttachment(
@@ -1407,17 +1610,53 @@
     } catch {}
   }
 
+  async function createSessionLinkNote(
+    target: NonNullable<NoteShape["target"]>,
+    rowTarget: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: "",
+          kind: "link",
+          target,
+          anchors: [rowTarget.anchor],
+          tags: [],
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as NoteShape;
+      setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      tick++;
+    } catch {}
+  }
+
   async function stageNoteBodyIntoSessionPrompt(
     note: NoteShape,
     sessionSource: string,
   ): Promise<void> {
-    if (note.kind === "link" || note.kind === "emoji") return;
-    try {
-      const text = await expandNoteBodyForCopyAsync(note.body, fetchTextAttachment);
-      if (!text.trim()) return;
+    if (note.kind === "emoji") return;
+    if (note.kind === "link") {
+      if (note.target?.type !== "session") return;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {
-          detail: { source: sessionSource, text },
+          detail: { source: sessionSource, chunks: [`Session: ${note.target.value}`] },
+        }),
+      );
+      return;
+    }
+    try {
+      const chunks = await expandNoteBodyForTerminalPasteChunks(note.body, fetchTextAttachment);
+      if (!chunks.some((chunk) => chunk.trim())) return;
+      window.dispatchEvent(
+        new CustomEvent(STAGE_PROMPT_EVENT, {
+          detail: { source: sessionSource, chunks },
         }),
       );
     } catch {}
@@ -1435,10 +1674,24 @@
       return;
     }
     const target = noteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
-    if (!target || target.kind === "link" || target.kind === "emoji") return;
-    if (!notesShareDropAnchor(source, target)) return;
-    const raw = inlineRefForPinnedNote(source);
-    if (!raw) return;
+    if (target && target.kind !== "link" && target.kind !== "emoji") {
+      if (!notesShareDropAnchor(source, target)) return;
+      const raw = inlineRefForPinnedNote(source);
+      if (!raw) return;
+      await movePinnedNoteIntoNote(source, target, raw);
+      return;
+    }
+    const rowTarget = dropTargetAt(e.detail.clientX, e.detail.clientY);
+    if (rowTarget) {
+      await movePinnedNoteToRow(source, rowTarget, e.detail.clientX, e.detail.clientY);
+    }
+  }
+
+  async function movePinnedNoteIntoNote(
+    source: NoteShape,
+    target: NoteShape,
+    raw: string,
+  ): Promise<void> {
     try {
       const targetRes = await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
         method: "PUT",
@@ -1463,6 +1716,31 @@
       }
       notes = notes.filter((n) => n.id !== source.id);
       bringToFront(target.id);
+      tick++;
+    } catch {}
+  }
+
+  async function movePinnedNoteToRow(
+    note: NoteShape,
+    rowTarget: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    if (!noteCanDropOnAnchor(note, rowTarget.anchor)) return;
+    const auxiliaryAnchors = note.anchors.filter(
+      (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
+    );
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anchors: [rowTarget.anchor, ...auxiliaryAnchors] }),
+      });
+      if (!res.ok) return;
+      const updated = (await res.json()) as NoteShape;
+      setDroppedOffset(updated.id, rowTarget.li, clientX, clientY);
+      notes = notes.map((n) => (n.id === updated.id ? updated : n));
+      bringToFront(updated.id);
       tick++;
     } catch {}
   }
@@ -1608,19 +1886,9 @@
       // "constant breathing room between chip and next row"
       // regardless of how far the user pulled the chip.
       //
-      // Per-kind cap: links 40vh, notes 70vh. The row's actual
-      // margin is the MAX across attachments (`need.set` below),
-      // so a row with both kinds picks whichever pushes further
-      // — bounded by its kind. The chip itself is still rendered
-      // at its real offset (screenPosFor reads offsetY directly);
-      // only the row-spacer is capped.
-      const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-      const kindMax = note.kind === "link" ? vh * 0.40
-                    : note.kind === "emoji" ? vh * 0.50
-                    : vh * 0.70;
       const wantUnclamped =
         stickyRect.bottom + ROW_SAFETY - liRect.bottom;
-      const want = Math.max(0, Math.min(kindMax, wantUnclamped));
+      const want = Math.max(0, wantUnclamped);
       const prev = need.get(li) ?? 0;
       if (want > prev) need.set(li, want);
     }
@@ -1731,6 +1999,7 @@
 
   onMount(() => {
     loadOffsets();
+    lastPointer = { clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 };
     _registerLayer(handleSpawn);
     _registerFlyRestore(handleFlyRestore);
     void refresh();
@@ -1741,8 +2010,10 @@
     // bookkeeping. Resize still needs a tick because the row positions
     // relative to the document change when the viewport resizes.
     window.addEventListener("resize", scheduleTick);
+    window.addEventListener("pointermove", onWindowPointerMove);
     window.addEventListener("dragover", onWindowDragOver);
     window.addEventListener("drop", onWindowDropEvent);
+    window.addEventListener("paste", onWindowPaste);
 
     // MutationObserver picks up row add/remove, fold/unfold, picker
     // open (which changes the row's layout). We deliberately exclude
@@ -1777,8 +2048,10 @@
     _unregisterLayer();
     _unregisterFlyRestore();
     window.removeEventListener("resize", scheduleTick);
+    window.removeEventListener("pointermove", onWindowPointerMove);
     window.removeEventListener("dragover", onWindowDragOver);
     window.removeEventListener("drop", onWindowDropEvent);
+    window.removeEventListener("paste", onWindowPaste);
     mutationObs?.disconnect();
     resizeObs?.disconnect();
     noteResizeObs?.disconnect();

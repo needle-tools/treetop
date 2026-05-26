@@ -9,7 +9,7 @@
   import { shrinkImageBlob } from "./image-shrink";
   import { cleanSelection } from "./clean-selection";
   import {
-    expandNoteBodyForCopyAsync,
+    expandNoteBodyForTerminalPasteChunks,
     extractNoteClipboardPayloadFromHtml,
     fetchTextAttachment,
     STAGE_PROMPT_EVENT,
@@ -656,10 +656,28 @@
   }
 
   function onStagePrompt(e: Event): void {
-    const detail = (e as CustomEvent<{ source?: string; text?: string }>).detail;
-    if (!detail || detail.source !== sessionSource || !detail.text || !xterm) return;
+    const detail = (e as CustomEvent<{ source?: string; text?: string; chunks?: string[] }>).detail;
+    if (!detail || detail.source !== sessionSource || !xterm) return;
+    const chunks = detail.chunks ?? (detail.text ? [detail.text] : []);
+    if (chunks.length === 0) return;
     xterm.focus();
-    xterm.paste(detail.text);
+    void pasteChunks(chunks);
+  }
+
+  async function pasteChunks(chunks: string[]): Promise<void> {
+    for (const chunk of chunks) {
+      if (!chunk) continue;
+      pasteChunkAsBracketedPaste(chunk);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  function pasteChunkAsBracketedPaste(chunk: string): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      xterm?.paste(chunk);
+      return;
+    }
+    ws.send(new TextEncoder().encode(`\x1b[200~${chunk}\x1b[201~`));
   }
 
   /** Upload a Blob/File to /api/attach and write the returned absolute
@@ -729,7 +747,9 @@
             const payload = extractNoteClipboardPayloadFromHtml(await blob.text());
             if (payload) {
               try {
-                xterm?.paste(await expandNoteBodyForCopyAsync(payload.body, fetchTextAttachment));
+                await pasteChunks(
+                  await expandNoteBodyForTerminalPasteChunks(payload.body, fetchTextAttachment),
+                );
               } catch (err) {
                 console.warn("Could not read note attachments for paste", err);
               }
@@ -778,8 +798,8 @@
     if (payload && xterm) {
       e.preventDefault();
       e.stopPropagation();
-      void expandNoteBodyForCopyAsync(payload.body, fetchTextAttachment)
-        .then((text) => xterm?.paste(text))
+      void expandNoteBodyForTerminalPasteChunks(payload.body, fetchTextAttachment)
+        .then((chunks) => pasteChunks(chunks))
         .catch((err) => console.warn("Could not read note attachments for paste", err));
       return;
     }

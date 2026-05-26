@@ -69,12 +69,13 @@
     makeNoteClipboardHtml,
     makeNoteClipboardPayload,
     makeImageAttachmentRef,
+    makeNoteAttachmentRef,
     makeTextAttachmentRef,
     noteBodyToEditText,
     parseInlineAttachments,
     restoreEditTextAttachments,
     shouldAttachPastedText,
-    trailingVisualAttachmentIndexes,
+    visualAttachmentIndexes,
     type InlineAttachment,
     type InlineAttachmentEditRef,
     type InlineAttachmentPart,
@@ -237,10 +238,7 @@
    *  user clicked "+", thought twice, and clicked away. */
   export let removeIfEmpty = false;
   /** When true, the layer is currently driving this note's `x`/`y`
-   *  with a per-frame rAF loop (staging → pin slot fly). We kick the
-   *  pendulum on so it samples the changing `x` and tilts the note
-   *  during travel — the exact same swing-by-physics motion the user
-   *  gets from a manual drag. */
+   *  with a per-frame rAF loop (staging → pin slot fly). */
   export let flying = false;
   /** Used by the in-note "Move to…" / "Copy to…" picker to enumerate
    *  all anchorable rows. Threaded down from the StickyNotesLayer's
@@ -403,6 +401,9 @@
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   let openAttachmentRaw: string | null = null;
   let openAttachmentDraft = "";
+  let openAttachmentEditRefs: InlineAttachmentEditRef[] = [];
+  let openAttachmentNoteEditing = false;
+  let attachmentTextareaEl: HTMLTextAreaElement | null = null;
   /** Convenience flag — once derived it gets used a few places (CSS
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
@@ -588,6 +589,7 @@
    *  exported handles below. Picking inserts a markdown link with a
    *  `supergit://` href that `onBodyClick` later resolves and opens. */
   let mentionOpen = false;
+  let mentionEditor: "note" | "attachment" = "note";
   let mentionStart = -1;
   let mentionQuery = "";
   let mentionPickerRef: {
@@ -635,9 +637,26 @@
     recomputeChipMaxWidth();
   }
 
+  function editorTextarea(target: "note" | "attachment"): HTMLTextAreaElement | null {
+    return target === "note" ? textareaEl : attachmentTextareaEl;
+  }
+
+  function editorText(target: "note" | "attachment"): string {
+    return target === "note" ? draft : openAttachmentDraft;
+  }
+
+  function setEditorText(target: "note" | "attachment", value: string): void {
+    if (target === "note") {
+      draft = value;
+    } else {
+      openAttachmentDraft = value;
+    }
+  }
+
   function repositionMentionPopover(): void {
-    if (!mentionOpen || !textareaEl) return;
-    const r = textareaEl.getBoundingClientRect();
+    const activeTextarea = editorTextarea(mentionEditor);
+    if (!mentionOpen || !activeTextarea) return;
+    const r = activeTextarea.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     // Cap horizontal space against the viewport edges, with a small
@@ -676,6 +695,7 @@
 
   function closeMention(): void {
     mentionOpen = false;
+    mentionEditor = "note";
     mentionStart = -1;
     mentionQuery = "";
   }
@@ -688,6 +708,7 @@
   $: if (mentionOpen) {
     void mentionQuery;
     void draft;
+    void openAttachmentDraft;
     // popoverEl in the dep list so the reposition re-runs once the
     // popover element has actually been mounted — first call uses
     // the height estimate, the follow-up uses the real measurement
@@ -696,11 +717,13 @@
     queueMicrotask(repositionMentionPopover);
   }
 
-  function onTextareaInput(): void {
-    if (!textareaEl) return;
-    const caret = textareaEl.selectionStart ?? 0;
-    const text = draft;
+  function onTextareaInput(target: "note" | "attachment" = "note"): void {
+    const activeTextarea = editorTextarea(target);
+    if (!activeTextarea) return;
+    const caret = activeTextarea.selectionStart ?? 0;
+    const text = editorText(target);
     if (mentionOpen) {
+      if (mentionEditor !== target) return;
       // Track the live query span between the `@` and the caret.
       // Close if the user erased the `@`, moved the caret behind it,
       // or typed whitespace (mentions are single-token by design).
@@ -723,12 +746,15 @@
         mentionStart = caret - 1;
         mentionQuery = "";
         mentionOpen = true;
+        mentionEditor = target;
       }
     }
   }
 
   function onMentionPick(e: CustomEvent<PickItem>): void {
-    if (!mentionOpen || !textareaEl) return;
+    const targetEditor = mentionEditor;
+    const activeTextarea = editorTextarea(targetEditor);
+    if (!mentionOpen || !activeTextarea) return;
     const item = e.detail;
     const target: LinkTarget = {
       type: item.targetType,
@@ -742,19 +768,21 @@
     const label = (item.label || item.value).replace(/[\[\]]/g, "");
     const href = linkTargetToHref(target);
     const insertion = `[@${label}](${href})`;
-    const caret = textareaEl.selectionStart ?? mentionStart + 1;
-    const before = draft.slice(0, mentionStart);
-    const after = draft.slice(caret);
-    draft = before + insertion + after;
+    const text = editorText(targetEditor);
+    const caret = activeTextarea.selectionStart ?? mentionStart + 1;
+    const before = text.slice(0, mentionStart);
+    const after = text.slice(caret);
+    setEditorText(targetEditor, before + insertion + after);
     pushRecent(item);
     const newCaret = before.length + insertion.length;
     closeMention();
     queueMicrotask(() => {
-      if (!textareaEl) return;
-      textareaEl.focus();
-      textareaEl.setSelectionRange(newCaret, newCaret);
+      const nextTextarea = editorTextarea(targetEditor);
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(newCaret, newCaret);
       // Re-run autosize so the textarea re-measures with the inserted text.
-      textareaEl.dispatchEvent(new Event("input", { bubbles: true }));
+      nextTextarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
 
@@ -787,20 +815,23 @@
     };
   }
 
-  function insertIntoDraft(text: string): void {
-    if (!textareaEl) {
-      draft += text;
+  function insertIntoDraft(text: string, target: "note" | "attachment" = "note"): void {
+    const activeTextarea = editorTextarea(target);
+    const current = editorText(target);
+    if (!activeTextarea) {
+      setEditorText(target, current + text);
       return;
     }
-    const start = textareaEl.selectionStart ?? draft.length;
-    const end = textareaEl.selectionEnd ?? start;
-    draft = draft.slice(0, start) + text + draft.slice(end);
+    const start = activeTextarea.selectionStart ?? current.length;
+    const end = activeTextarea.selectionEnd ?? start;
+    setEditorText(target, current.slice(0, start) + text + current.slice(end));
     const caret = start + text.length;
     queueMicrotask(() => {
-      if (!textareaEl) return;
-      textareaEl.focus();
-      textareaEl.setSelectionRange(caret, caret);
-      textareaEl.dispatchEvent(new Event("input", { bubbles: true }));
+      const nextTextarea = editorTextarea(target);
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(caret, caret);
+      nextTextarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
 
@@ -810,21 +841,37 @@
     return edit.text;
   }
 
-  function bodyFragmentToEditText(body: string): string {
+  function bodyFragmentToEditText(
+    body: string,
+    target: "note" | "attachment" = "note",
+  ): string {
+    const existingRefs = target === "note" ? editAttachmentRefs : openAttachmentEditRefs;
+    const usedText = target === "note" ? draft : openAttachmentDraft;
     const edit = noteBodyToEditText(body, {
-      existingRefs: editAttachmentRefs,
-      usedText: draft,
+      existingRefs,
+      usedText,
     });
-    editAttachmentRefs = [...editAttachmentRefs, ...edit.refs];
+    if (target === "note") {
+      editAttachmentRefs = [...editAttachmentRefs, ...edit.refs];
+    } else {
+      openAttachmentEditRefs = [...openAttachmentEditRefs, ...edit.refs];
+    }
     return edit.text;
   }
 
-  function insertBodyIntoDraft(body: string): void {
-    insertIntoDraft(bodyFragmentToEditText(body));
+  function insertBodyIntoDraft(
+    body: string,
+    target: "note" | "attachment" = "note",
+  ): void {
+    insertIntoDraft(bodyFragmentToEditText(body, target), target);
   }
 
-  function insertAttachmentRef(ref: string): void {
+  function insertAttachmentRef(ref: string, target: "note" | "attachment" = "note"): void {
     const part = parseInlineAttachments(ref)[0];
+    if (target === "attachment") {
+      insertBodyIntoDraft(ref, "attachment");
+      return;
+    }
     if (editing && !isLink && part?.kind === "attachment") {
       insertBodyIntoDraft(ref);
       return;
@@ -844,6 +891,7 @@
   async function uploadImageAttachment(
     blob: Blob,
     opts: { filename?: string; source: { kind: "clipboard" | "drop"; types: string[] } },
+    target: "note" | "attachment" = "note",
   ): Promise<void> {
     try {
       const shrunk = await shrinkImageBlob(blob);
@@ -865,7 +913,7 @@
           ...(opts.filename ? { filename: opts.filename } : {}),
         },
       });
-      insertAttachmentRef(ref);
+      insertAttachmentRef(ref, target);
     } catch (err) {
       console.warn("Could not save image attachment", err);
     }
@@ -874,6 +922,7 @@
   async function uploadTextAttachment(
     text: string,
     source: { kind: "clipboard"; types: string[] },
+    target: "note" | "attachment" = "note",
   ): Promise<void> {
     try {
       const blob = new Blob([text], { type: "text/plain" });
@@ -889,24 +938,31 @@
         mimeType: "text/plain",
         size: blob.size,
         charCount: Array.from(text).length,
+        lineCount: text.split(/\r\n|\r|\n/).length,
         source,
-      }));
+      }), target);
     } catch (err) {
       console.warn("Could not save text attachment", err);
     }
   }
 
-  function insertClipboardNotePayloadFromHtml(html: string): boolean {
+  function insertClipboardNotePayloadFromHtml(
+    html: string,
+    target: "note" | "attachment" = "note",
+  ): boolean {
     const payload = extractNoteClipboardPayloadFromHtml(html);
     if (!payload) return false;
-    insertBodyIntoDraft(payload.body);
+    insertBodyIntoDraft(payload.body, target);
     return true;
   }
 
-  function onTextareaPaste(e: ClipboardEvent): void {
+  function onTextareaPaste(
+    e: ClipboardEvent,
+    target: "note" | "attachment" = "note",
+  ): void {
     const cd = e.clipboardData;
     if (!cd) return;
-    if (insertClipboardNotePayloadFromHtml(cd.getData("text/html"))) {
+    if (insertClipboardNotePayloadFromHtml(cd.getData("text/html"), target)) {
       e.preventDefault();
       return;
     }
@@ -918,14 +974,14 @@
         void uploadImageAttachment(file, {
           filename: file.name && file.name !== "blob" ? file.name : undefined,
           source: { kind: "clipboard", types: Array.from(cd.types) },
-        });
+        }, target);
         return;
       }
     }
     const text = cd.getData("text/plain");
     if (text && shouldAttachPastedText(text)) {
       e.preventDefault();
-      void uploadTextAttachment(text, textSourceFromClipboardData(cd));
+      void uploadTextAttachment(text, textSourceFromClipboardData(cd), target);
     }
   }
 
@@ -949,12 +1005,12 @@
     });
   }
 
-  async function copyNote(): Promise<void> {
+  async function copyNoteBody(body: string, id?: string): Promise<void> {
     let text: string;
     let payload: ReturnType<typeof makeNoteClipboardPayload>;
     try {
-      text = await expandNoteBodyForCopyAsync(note.body, fetchTextAttachment);
-      payload = makeNoteClipboardPayload({ id: note.id, body: note.body, text });
+      text = await expandNoteBodyForCopyAsync(body, fetchTextAttachment);
+      payload = makeNoteClipboardPayload({ ...(id ? { id } : {}), body, text });
     } catch (err) {
       console.warn("Could not read note attachments for copy", err);
       return;
@@ -994,6 +1050,10 @@
     }
   }
 
+  async function copyNote(): Promise<void> {
+    await copyNoteBody(note.body, note.id);
+  }
+
   async function textForAttachment(attachment: InlineAttachment): Promise<string> {
     if (attachment.kind !== "text") return "";
     return fetchTextAttachment(attachment.path);
@@ -1001,7 +1061,13 @@
 
   function openInlineAttachment(raw: string, attachment: InlineAttachment): void {
     openAttachmentRaw = raw;
-    if (attachment.kind === "note" || attachment.kind === "emoji") {
+    openAttachmentEditRefs = [];
+    openAttachmentNoteEditing = false;
+    if (attachment.kind === "note") {
+      openAttachmentDraft = attachment.body;
+      return;
+    }
+    if (attachment.kind === "emoji") {
       openAttachmentDraft = attachment.body;
       return;
     }
@@ -1013,21 +1079,117 @@
     if (attachment.kind === "text") {
       void textForAttachment(attachment)
         .then((text) => {
-          if (openAttachmentRaw === raw) openAttachmentDraft = text;
+          if (openAttachmentRaw !== raw) return;
+          openAttachmentDraft = text;
+          openAttachmentEditRefs = [];
+          queueMicrotask(() => {
+            attachmentTextareaEl?.dispatchEvent(new Event("input", { bubbles: true }));
+          });
         })
         .catch((err) => console.warn("Could not read text attachment", err));
     }
   }
 
   function closeInlineAttachment(): void {
+    if (mentionEditor === "attachment") closeMention();
     openAttachmentRaw = null;
     openAttachmentDraft = "";
+    openAttachmentEditRefs = [];
+    openAttachmentNoteEditing = false;
+  }
+
+  function openAttachmentByStep(step: number): void {
+    if (!openAttachmentRaw || attachmentParts.length < 2) return;
+    const index = attachmentParts.findIndex((part) => part.raw === openAttachmentRaw);
+    if (index < 0) return;
+    const next = attachmentParts[
+      (index + step + attachmentParts.length) % attachmentParts.length
+    ];
+    if (next) openInlineAttachment(next.raw, next.attachment);
+  }
+
+  function onAttachmentModalKeydown(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeInlineAttachment();
+      return;
+    }
+    if (
+      (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+      !(e.target instanceof HTMLTextAreaElement) &&
+      !(e.target instanceof HTMLInputElement) &&
+      !(e.target instanceof HTMLElement && e.target.isContentEditable)
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      openAttachmentByStep(e.key === "ArrowLeft" ? -1 : 1);
+    }
+  }
+
+  function onAttachmentWindowKeydown(e: KeyboardEvent): void {
+    if (!openAttachmentRaw) return;
+    if (
+      e.key !== "Escape" &&
+      e.key !== "ArrowLeft" &&
+      e.key !== "ArrowRight"
+    ) {
+      return;
+    }
+    const target = e.target;
+    if (
+      (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+      (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      )
+    ) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (e.key === "Escape") {
+      closeInlineAttachment();
+    } else {
+      openAttachmentByStep(e.key === "ArrowLeft" ? -1 : 1);
+    }
   }
 
   function mergeInlineAttachment(raw: string, replacement: string): void {
     const body = note.body.replace(raw, replacement);
     closeInlineAttachment();
     dispatch("save", { id: note.id, body });
+  }
+
+  function openAttachmentKind(): InlineAttachment["kind"] | null {
+    if (!openAttachmentRaw) return null;
+    return attachmentParts.find((part) => part.raw === openAttachmentRaw)?.attachment.kind ?? null;
+  }
+
+  function mergeOpenTextAttachment(): void {
+    if (!openAttachmentRaw) return;
+    const body = restoreEditTextAttachments(openAttachmentDraft, openAttachmentEditRefs);
+    mergeInlineAttachment(openAttachmentRaw, body);
+  }
+
+  function saveOpenNoteAttachment(): void {
+    if (!openAttachmentRaw) return;
+    const body = restoreEditTextAttachments(openAttachmentDraft, openAttachmentEditRefs);
+    const replacement = makeNoteAttachmentRef({ body });
+    const nextBody = note.body.replace(openAttachmentRaw, replacement);
+    closeInlineAttachment();
+    if (nextBody === note.body) return;
+    dispatch("save", { id: note.id, body: nextBody });
+  }
+
+  function startOpenNoteAttachmentEdit(attachment: InlineAttachment): void {
+    if (attachment.kind !== "note") return;
+    const edit = noteBodyToEditText(attachment.body);
+    openAttachmentDraft = edit.text;
+    openAttachmentEditRefs = edit.refs;
+    openAttachmentNoteEditing = true;
   }
 
   function onInlineAttachmentDragStart(
@@ -1075,86 +1237,51 @@
   let textareaEl: HTMLTextAreaElement | null = null;
   let stickyEl: HTMLDivElement;
   let lastMouseX = 0;
+  let dragStartClientX = 0;
+  let dragStartClientY = 0;
+  let dragMoved = false;
+  let suppressNextClick = false;
 
-  /** Pendulum physics. The note's drag-tilt is modelled as a bob
-   *  hanging from the grab point: when the pivot (cursor) accelerates
-   *  horizontally, the bob lags due to inertia; gravity pulls it
-   *  back toward vertical when the pivot moves at constant velocity
-   *  or stops. So:
-   *    - steady drag → no acceleration → bob hangs straight (no tilt);
-   *    - cursor speeds up / slows down / stops → acceleration spikes
-   *      → bob swings, then gravity restores it, oscillating with
-   *      damping until settled.
-   *  Each frame samples the pivot's doc-X (note.x + grab fraction ×
-   *  width), derives velocity and acceleration, and feeds the
-   *  acceleration into the pendulum equation
-   *    α = -GRAVITY · angle  −  INERTIA · pivotAccel
-   *  followed by a per-frame damping multiplier on ω. */
-  const GRAVITY = 0.01;            // restoring force per degree
-  const INERTIA = -0.2;            // angular accel per px/frame² of pivot
-  const PEND_DAMP = 0.8;          // per-frame velocity multiplier
-  const PEND_SETTLE = .5;        // angle AND velocity both below → stop rAF
-  /** Hard cap on the pendulum displacement so an absurd flick doesn't
-   *  send the note past the +90° / −90° point where small-angle
-   *  approximations stop making sense. */
-  const PEND_CAP = 25;
-  let pendulumAngle = 0;
-  let pendulumVelocity = 0;
-  let pivotXPrev = 0;
-  let pivotVelPrev = 0;
-  let pendulumActive = false;
-  let pendulumRaf: number | null = null;
+  /** Drag-tilt physics: rotation added to the base `--tilt` while the
+   *  user is dragging horizontally, so the note feels like a piece of
+   *  paper trailing behind the cursor. We accumulate each horizontal
+   *  pixel into a small rotation delta, then hand the release velocity
+   *  to a simple spring swing on mouseup. */
+  let dragRotation = 0;
+  const DRAG_SCALE = 0.1;
+  const DRAG_ROTATION_MAX = 10;
+  let velocityEma = 0;
+  let swingAngle = 0;
+  let swingVelocity = 0;
+  let swingRaf: number | null = null;
+  const VELOCITY_ALPHA = 0.4;
+  const SPRING_K = 0.06;
+  const SPRING_DAMPING = 0.85;
+  const SPRING_SETTLE = 0.05;
 
-  function tickPendulum(): void {
-    const w = stickyEl?.offsetWidth ?? 240;
-    const pivotX = x + grabXFrac * w;
-    const pivotV = pivotX - pivotXPrev;
-    const pivotA = pivotV - pivotVelPrev;
-    pivotXPrev = pivotX;
-    pivotVelPrev = pivotV;
-    const accel = -GRAVITY * pendulumAngle - INERTIA * pivotA;
-    pendulumVelocity += accel;
-    pendulumVelocity *= PEND_DAMP;
-    pendulumAngle = Math.max(
-      -PEND_CAP,
-      Math.min(PEND_CAP, pendulumAngle + pendulumVelocity),
-    );
+  function tickSwing(): void {
+    swingVelocity += -SPRING_K * swingAngle;
+    swingVelocity *= SPRING_DAMPING;
+    swingAngle += swingVelocity;
     if (
-      !dragging &&
-      Math.abs(pendulumAngle) < PEND_SETTLE &&
-      Math.abs(pendulumVelocity) < PEND_SETTLE
+      Math.abs(swingAngle) < SPRING_SETTLE &&
+      Math.abs(swingVelocity) < SPRING_SETTLE
     ) {
-      pendulumAngle = 0;
-      pendulumVelocity = 0;
-      pendulumActive = false;
-      pendulumRaf = null;
+      swingAngle = 0;
+      swingVelocity = 0;
+      swingRaf = null;
       return;
     }
-    pendulumRaf = requestAnimationFrame(tickPendulum);
+    swingRaf = requestAnimationFrame(tickSwing);
   }
 
-  function startPendulum(): void {
-    if (!pendulumActive) {
-      pendulumActive = true;
-      // Seed pivot tracking from the current state so the first frame
-      // doesn't fire a spurious acceleration spike from x ↔ 0.
-      const w = stickyEl?.offsetWidth ?? 240;
-      pivotXPrev = x + grabXFrac * w;
-      pivotVelPrev = 0;
+  function stopSwing(): void {
+    if (swingRaf !== null) {
+      cancelAnimationFrame(swingRaf);
+      swingRaf = null;
     }
-    if (pendulumRaf === null) {
-      pendulumRaf = requestAnimationFrame(tickPendulum);
-    }
-  }
-
-  function stopPendulum(): void {
-    if (pendulumRaf !== null) {
-      cancelAnimationFrame(pendulumRaf);
-      pendulumRaf = null;
-    }
-    pendulumActive = false;
-    pendulumAngle = 0;
-    pendulumVelocity = 0;
+    swingAngle = 0;
+    swingVelocity = 0;
   }
   /** Grab point inside the note as a fraction of the box (0..1). Set
    *  on mousedown and used as the `transform-origin` so the rotation
@@ -1221,37 +1348,57 @@
       window.removeEventListener("keydown", onWindowKey);
       window.removeEventListener("scroll", onWindowReflow, true);
       window.removeEventListener("resize", onWindowReflow);
-      stopPendulum();
+      stopSwing();
       cancelPendingDelete();
     };
   });
 
   function onMouseDownHeader(e: MouseEvent): void {
+    startMouseDrag(e, false);
+  }
+
+  function onMouseDownCard(e: MouseEvent): void {
+    startMouseDrag(e, true);
+  }
+
+  function startMouseDrag(e: MouseEvent, allowButtonTarget: boolean): void {
     // Only drag with primary button; ignore clicks on buttons inside header.
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("button")) return;
+    if (!allowButtonTarget && (e.target as HTMLElement).closest("button")) return;
     dragging = true;
+    dragMoved = false;
 
     const w = stickyEl?.offsetWidth || 240;
     const h = stickyEl?.offsetHeight || 1;
     const cxDoc = e.clientX + window.scrollX;
     const cyDoc = e.clientY + window.scrollY;
-    dragDx = cxDoc - x;
-    dragDy = cyDoc - y;
-    const newGxFrac = Math.max(0, Math.min(1, dragDx / w));
-    const newGyFrac = Math.max(0, Math.min(1, dragDy / h));
-    lastMouseX = e.clientX;
-    // Kick off the pendulum tick. If a previous gesture's pendulum is
-    // still settling, leave its current angle/velocity intact — the
-    // new motion just composes on top.
-    startPendulum();
 
-    // Persist the approximate grab point for the swing origin, but
-    // do not dispatch an immediate move: the first movement should
-    // start from the note's actual stored left/top, otherwise a
-    // clamped transform-origin can make the note twitch before the
-    // user has really dragged it.
+    const oldGx = grabXFrac * w;
+    const oldGy = grabYFrac * h;
+    const oldPivotDocX = x + oldGx;
+    const oldPivotDocY = y + oldGy;
+    const cdx = cxDoc - oldPivotDocX;
+    const cdy = cyDoc - oldPivotDocY;
+    const R = (rotation * Math.PI) / 180;
+    const cosR = Math.cos(R);
+    const sinR = Math.sin(R);
+    const bdx = cosR * cdx + sinR * cdy;
+    const bdy = -sinR * cdx + cosR * cdy;
+    const newGx = Math.max(0, Math.min(w, oldGx + bdx));
+    const newGy = Math.max(0, Math.min(h, oldGy + bdy));
+    const newGxFrac = w > 0 ? newGx / w : 0;
+    const newGyFrac = h > 0 ? newGy / h : 0;
+    dragDx = newGx;
+    dragDy = newGy;
+    lastMouseX = e.clientX;
+    dragStartClientX = e.clientX;
+    dragStartClientY = e.clientY;
+    dragRotation = 0;
+    stopSwing();
+    velocityEma = 0;
+
     dispatch("grab", { id: note.id, grabXFrac: newGxFrac, grabYFrac: newGyFrac });
+    dispatch("move", { id: note.id, x: cxDoc - newGx, y: cyDoc - newGy });
     dispatch("focus", { id: note.id });
 
     window.addEventListener("mousemove", onMouseMove);
@@ -1261,11 +1408,18 @@
 
   function onMouseMove(e: MouseEvent): void {
     if (!dragging) return;
-    // Note tilt is now driven by the pendulum sampling `x` per rAF
-    // tick — there's no per-mousemove cumulative input. The bob
-    // hangs straight during steady drag and only swings when the
-    // cursor accelerates or decelerates.
+    const dx = e.clientX - lastMouseX;
     lastMouseX = e.clientX;
+    velocityEma = velocityEma * (1 - VELOCITY_ALPHA) + dx * VELOCITY_ALPHA;
+    const proposed = dragRotation + dx * DRAG_SCALE;
+    const minDelta = -DRAG_ROTATION_MAX - rotation;
+    const maxDelta = DRAG_ROTATION_MAX - rotation;
+    dragRotation = Math.max(minDelta, Math.min(maxDelta, proposed));
+    if (
+      Math.hypot(e.clientX - dragStartClientX, e.clientY - dragStartClientY) > 3
+    ) {
+      dragMoved = true;
+    }
     const nx = Math.max(0, e.clientX + window.scrollX - dragDx);
     const ny = Math.max(0, e.clientY + window.scrollY - dragDy);
     dispatch("move", { id: note.id, x: nx, y: ny });
@@ -1275,34 +1429,46 @@
     dragging = false;
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
-    dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
-    // Freeze the final rotation: roll the in-flight `dragRotation`
-    // into the persisted `rotation` so the note holds whatever angle
-    // it was at when the user released. The clamp on every move
-    // means `rotation + dragRotation` is already inside ±30, so the
-    // outer clamp here is just defensive.
-    // Nothing to persist — pendulum is purely transient and decays
-    // to 0 on its own. The rAF loop self-terminates once angle and
-    // velocity are both under PEND_SETTLE.
+    if (dragMoved) {
+      suppressNextClick = true;
+      setTimeout(() => (suppressNextClick = false), 0);
+      dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
+    }
+    if (dragRotation !== 0) {
+      const next = Math.max(
+        -DRAG_ROTATION_MAX,
+        Math.min(DRAG_ROTATION_MAX, rotation + dragRotation),
+      );
+      dispatch("rotate", { id: note.id, rotation: next });
+    }
+    const initialKick = velocityEma * DRAG_SCALE;
+    if (Math.abs(initialKick) > 0.3) {
+      stopSwing();
+      swingVelocity = initialKick;
+      swingAngle = 0;
+      swingRaf = requestAnimationFrame(tickSwing);
+    }
+    dragRotation = 0;
+    velocityEma = 0;
   }
 
-  /** Composite tilt rendered in CSS = persisted user rotation (from
-   *  the rotation prop, set externally — undo restore, etc.) + the
-   *  static per-note jitter (`tilt`) + the live pendulum
-   *  displacement. Pendulum is transient and decays to 0; the
-   *  rotation prop is the long-term rest angle. Applies to both
-   *  paper notes and link cards — both swing on drag and carry a
-   *  small static jitter so the row looks alive. */
-  $: displayedTilt = tilt + rotation + pendulumAngle;
+  function onLinkBodyClick(): void {
+    if (suppressNextClick || !note.target) return;
+    openTarget(note.target);
+  }
 
-  /** Layer-driven fly hook: while `flying` is true the parent is
-   *  pumping fresh `x` values into us each frame, so kick the
-   *  pendulum on. The pendulum's settle check (angle + velocity both
-   *  near zero AND not dragging) keeps it ticking as long as the
-   *  pivot's acceleration stays non-zero — which is the case for the
-   *  whole eased fly — and then it decays naturally once the layer
-   *  stops moving the note. */
-  $: if (flying) startPendulum();
+  function onDetachedAttachmentClick(
+    raw: string,
+    attachment: InlineAttachment,
+  ): void {
+    if (suppressNextClick) return;
+    openInlineAttachment(raw, attachment);
+  }
+
+  $: displayedTilt = tilt + Math.max(
+    -DRAG_ROTATION_MAX - 8,
+    Math.min(DRAG_ROTATION_MAX + 8, rotation + dragRotation + swingAngle),
+  );
 
   function cancelPendingDelete(): void {
     if (deleteTimerId !== null) {
@@ -1409,25 +1575,28 @@
     dispatch("save", { id: note.id, body: trimmed });
   }
 
-  function onKey(e: KeyboardEvent): void {
+  function onKey(e: KeyboardEvent, target: "note" | "attachment" = "note"): void {
     // While the @-mention picker is open, the textarea forwards
     // navigation/commit keys into it. The picker decides whether the
     // current cursor maps to a real pick; if not, fall through so
     // Enter still saves the note.
-    if (mentionOpen && mentionPickerRef) {
+    if (mentionOpen && mentionPickerRef && mentionEditor === target) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        e.stopPropagation();
         mentionPickerRef.moveCursor(1);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
+        e.stopPropagation();
         mentionPickerRef.moveCursor(-1);
         return;
       }
       if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if (mentionPickerRef.hasResults()) {
           e.preventDefault();
+          e.stopPropagation();
           mentionPickerRef.commitCurrent();
           return;
         }
@@ -1435,6 +1604,7 @@
       }
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopPropagation();
         closeMention();
         return;
       }
@@ -1445,10 +1615,22 @@
     // (insert newline). Esc reverts.
     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      saveEdit();
+      e.stopPropagation();
+      if (target === "note") {
+        saveEdit();
+      } else if (openAttachmentKind() === "text") {
+        mergeOpenTextAttachment();
+      } else {
+        saveOpenNoteAttachment();
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
-      cancelEdit();
+      e.stopPropagation();
+      if (target === "note") {
+        cancelEdit();
+      } else {
+        closeInlineAttachment();
+      }
     }
   }
 
@@ -1606,6 +1788,75 @@
     return enhanceSupergitLinks(raw);
   }
 
+  function pastedTextTitle(attachment: InlineAttachment): string {
+    if (attachment.kind !== "text") return inlineAttachmentLabel(attachment);
+    const mime = (attachment.mimeType ?? "text/plain").toLowerCase();
+    if (mime.includes("javascript") || mime.includes("ecmascript")) return "Pasted Javascript";
+    if (mime.includes("typescript")) return "Pasted TypeScript";
+    if (mime.includes("html")) return "Pasted HTML";
+    if (mime.includes("css")) return "Pasted CSS";
+    if (mime.includes("json")) return "Pasted JSON";
+    if (mime.includes("markdown")) return "Pasted Markdown";
+    if (mime.includes("xml")) return "Pasted XML";
+    return "Pasted Text";
+  }
+
+  function humanBytes(bytes: number): string {
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function pastedTextMeta(attachment: InlineAttachment): string {
+    if (attachment.kind !== "text") return "";
+    const lines = typeof attachment.lineCount === "number"
+      ? `${attachment.lineCount.toLocaleString()} ${attachment.lineCount === 1 ? "line" : "lines"}`
+      : "";
+    if (typeof attachment.size === "number") {
+      const size = humanBytes(attachment.size);
+      return lines ? `${lines}, ${size}` : size;
+    }
+    if (lines) return lines;
+    return `${attachment.charCount.toLocaleString()} chars`;
+  }
+
+  function noteAttachmentTitle(attachment: InlineAttachment): string {
+    if (attachment.kind !== "note") return inlineAttachmentLabel(attachment);
+    return attachment.body.trim().split(/\r?\n/)[0]?.trim() || "Note";
+  }
+
+  function linkAttachmentTitle(attachment: InlineAttachment): string {
+    if (attachment.kind !== "link") return inlineAttachmentLabel(attachment);
+    if (attachment.target.type === "session") {
+      const found = findSessionAgent(attachment.target.value);
+      if (found) return sessionDisplayTitle(found);
+    }
+    return attachment.target.label ?? displayLabel(attachment.target);
+  }
+
+  function linkAttachmentMeta(attachment: InlineAttachment): string {
+    if (attachment.kind !== "link") return "";
+    const parts = [attachment.target.meta, attachment.target.subtitle].filter(Boolean);
+    return parts.length ? parts.join(" · ") : attachment.target.type;
+  }
+
+  type AttachmentPart = Extract<InlineAttachmentPart, { kind: "attachment" }>;
+
+  function visualPartsFor(
+    parts: readonly InlineAttachmentPart[],
+  ): AttachmentPart[] {
+    const visualIndexes = visualAttachmentIndexes(parts);
+    return parts.filter(
+      (part, i): part is AttachmentPart =>
+        part.kind === "attachment" && visualIndexes.has(i),
+    );
+  }
+
   /** Reactive HTML used by the body. Re-derives whenever the note's
    *  body changes, the live `repos` snapshot updates (so renaming a
    *  session flows into every inline mention pointing at it), or
@@ -1629,12 +1880,13 @@
     !editing && bodyParts.length === 1 && bodyParts[0]?.kind === "attachment"
       ? bodyParts[0]
       : null;
-  $: trailingVisualIndexes = trailingVisualAttachmentIndexes(bodyParts);
-  $: trailingVisualParts = bodyParts.filter(
-    (part, i): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
-      part.kind === "attachment" && trailingVisualIndexes.has(i),
+  $: isDetachedAttachment = !!detachedAttachmentPart;
+  $: visualAttachmentIndexesInBody = visualAttachmentIndexes(bodyParts);
+  $: attachmentParts = bodyParts.filter(
+    (part): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
+      part.kind === "attachment",
   );
-  $: trailingVisualFirstIndex = [...trailingVisualIndexes][0] ?? -1;
+  $: bottomVisualParts = visualPartsFor(bodyParts);
 
   /** Svelte action: keep a textarea's height in lockstep with its
    *  content so the user never sees a scrollbar or has to grab the
@@ -1660,6 +1912,191 @@
   }
 </script>
 
+<svelte:window on:keydown|capture={onAttachmentWindowKeydown} />
+
+{#snippet noteMentionPopover()}
+  <div
+    bind:this={popoverEl}
+    use:portal
+    class="sticky-mention-popover"
+    style:top="{popoverTop}px"
+    style:left="{popoverLeft}px"
+    style:max-width="{popoverMaxWidth}px"
+    style:min-width="{popoverMinWidth}px"
+  >
+    <MentionPicker
+      bind:this={mentionPickerRef}
+      providers={defaultProviders}
+      scope={pickerScope}
+      hideInput={true}
+      externalQuery={mentionQuery}
+      autofocus={false}
+      on:pick={onMentionPick}
+      on:cancel={closeMention}
+    />
+  </div>
+{/snippet}
+
+{#snippet noteEditorSurface(target: "note" | "attachment")}
+  <div class="sticky-textarea-wrap">
+    {#if target === "note"}
+      <textarea
+        bind:this={textareaEl}
+        class="sticky-textarea"
+        bind:value={draft}
+        placeholder="Write something… markdown OK. Type @ to link a session or commit. Enter saves, Shift+Enter newline, Esc reverts."
+        on:keydown={(e) => onKey(e, "note")}
+        on:paste={(e) => onTextareaPaste(e, "note")}
+        on:input={() => onTextareaInput("note")}
+        use:autosize
+      ></textarea>
+    {:else}
+      <textarea
+        bind:this={attachmentTextareaEl}
+        class="sticky-textarea"
+        bind:value={openAttachmentDraft}
+        placeholder="Write something… markdown OK. Type @ to link a session or commit. Enter saves, Shift+Enter newline, Esc reverts."
+        on:keydown={(e) => onKey(e, "attachment")}
+        on:paste={(e) => onTextareaPaste(e, "attachment")}
+        on:input={() => onTextareaInput("attachment")}
+        use:autosize
+      ></textarea>
+    {/if}
+    {#if mentionOpen && mentionEditor === target}
+      {@render noteMentionPopover()}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet renderedNoteBody(
+  parts: InlineAttachmentPart[],
+  visualIndexes: Set<number>,
+  visualParts: AttachmentPart[],
+  interactive: boolean,
+)}
+  {#each parts as part, i}
+    {#if part.kind === "text"}
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      {@html parts.length === 1
+        ? renderBody(part.text, repos, pickerScope)
+        : renderInlineBody(part.text)}
+    {:else if !visualIndexes.has(i)}
+      <InlineAttachmentChip
+        attachment={part.attachment}
+        raw={part.raw}
+        selected={interactive && openAttachmentRaw === part.raw}
+        draggable={interactive}
+        onDragStart={(e) => {
+          if (interactive) onInlineAttachmentDragStart(e, part.raw, part.attachment);
+        }}
+        onOpen={() => {
+          if (interactive) openInlineAttachment(part.raw, part.attachment);
+        }}
+        onMerge={() => {
+          if (!interactive) return;
+          if (part.attachment.kind === "text") {
+            void mergeTextAttachment(part.raw, part.attachment);
+          } else if (part.attachment.kind === "note") {
+            mergeNoteAttachment(part.raw, part.attachment);
+          }
+        }}
+      />
+    {/if}
+  {/each}
+  {#if visualParts.length > 0}
+    <div
+      class="sticky-trailing-attachments"
+      class:stacked={visualParts.length > 1}
+    >
+      {#each visualParts as visual, j}
+        <button
+          type="button"
+          class={`sticky-trailing-card tilt-${j % 5}`}
+          class:sticky-trailing-card-emoji={visual.attachment.kind === "emoji"}
+          class:sticky-trailing-card-image={visual.attachment.kind === "image"}
+          class:sticky-trailing-card-text={visual.attachment.kind === "text"}
+          class:sticky-trailing-card-note={visual.attachment.kind === "note"}
+          class:sticky-trailing-card-link={visual.attachment.kind === "link"}
+          draggable={interactive}
+          title="View attachment"
+          style:--stack-index={j}
+          style:--stack-count={visualParts.length}
+          on:dragstart={(e) => {
+            if (interactive) onInlineAttachmentDragStart(e, visual.raw, visual.attachment);
+          }}
+          on:click|stopPropagation={() => {
+            if (interactive) openInlineAttachment(visual.raw, visual.attachment);
+          }}
+          on:dblclick|stopPropagation
+        >
+          {@render attachmentPreview(visual.attachment, "stack")}
+        </button>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet attachmentPreview(attachment: InlineAttachment, mode: "detached" | "stack" | "media")}
+  {#if attachment.kind === "image"}
+    <span
+      class="sticky-photo-frame"
+      class:sticky-photo-frame-media={mode === "media"}
+    >
+      <img
+        src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
+        alt={attachment.filename ?? "Attached image"}
+        draggable={mode === "media" ? "true" : "false"}
+      />
+    </span>
+    {#if mode !== "media"}
+      <span class="sticky-photo-caption">
+        {attachment.filename
+          ?? attachment.path.split("/").pop()
+          ?? "Image attachment"}
+      </span>
+    {/if}
+  {:else if attachment.kind === "text"}
+    <span class="sticky-snippet-card" class:sticky-snippet-card-media={mode === "media"}>
+      <span class="sticky-snippet-icon" aria-hidden="true">T</span>
+      <span class="sticky-snippet-title">{pastedTextTitle(attachment)}</span>
+      <span class="sticky-snippet-meta">{pastedTextMeta(attachment)}</span>
+    </span>
+  {:else if attachment.kind === "emoji"}
+    <span
+      class={mode === "stack" ? "sticky-trailing-emoji" : "sticky-detached-emoji"}
+    >{attachment.body}</span>
+  {:else if attachment.kind === "note"}
+    <span
+      class="sticky-mini-note-card"
+      class:sticky-mini-note-card-media={mode === "media"}
+    >
+      <span class="sticky-mini-note-icon" aria-hidden="true">✎</span>
+      <span class="sticky-mini-note-title">Note</span>
+      <span class="sticky-mini-note-body">{noteAttachmentTitle(attachment)}</span>
+    </span>
+  {:else if attachment.kind === "link"}
+    <span
+      class="attachment-link-card attach-card"
+      class:attachment-link-card-stack={mode === "stack"}
+      class:attachment-link-card-media={mode === "media"}
+    >
+      <span class="attach-card-icon" aria-hidden="true">
+        <AttachmentIcon
+          agent={attachment.target.agent ?? ""}
+          provider={attachment.target.provider
+            ?? (attachment.target.type === "commit"
+              ? pickerScope.currentRepoProvider ?? ""
+              : "")}
+          glyph={targetIcon(attachment.target)}
+          size={mode === "stack" ? 30 : 56}
+        />
+      </span>
+      <span class="attach-card-label">{linkAttachmentTitle(attachment)}</span>
+      <span class="attach-card-meta">{linkAttachmentMeta(attachment)}</span>
+    </span>
+  {/if}
+{/snippet}
+
 <div
   bind:this={stickyEl}
   class="sticky"
@@ -1667,6 +2104,7 @@
   class:editing
   class:sticky-link={isLink}
   class:sticky-emoji={isEmoji}
+  class:sticky-detached={isDetachedAttachment}
   data-note-id={note.id}
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
@@ -1761,50 +2199,11 @@
         placeholder="Find a session or commit…"
       />
     {:else}
-      <div class="sticky-textarea-wrap">
-        <textarea
-          bind:this={textareaEl}
-          class="sticky-textarea"
-          bind:value={draft}
-          placeholder="Write something… markdown OK. Type @ to link a session or commit. Enter saves, Shift+Enter newline, Esc reverts."
-          on:keydown={onKey}
-          on:paste={onTextareaPaste}
-          on:input={onTextareaInput}
-          use:autosize
-        ></textarea>
-        {#if mentionOpen}
-          <!-- Inline @-mention popover. Portaled to <body> so we
-               can position it with viewport-fixed coords clamped to
-               the screen — the sticky's `transform: rotate(...)`
-               would otherwise make it the containing block for
-               `position: fixed` descendants and the popover would
-               inherit the rotation and clipping. Embedded mode:
-               the picker hides its own input and is driven by
-               `externalQuery` + our forwarded arrow/enter
-               keystrokes, so the textarea stays focused while the
-               user keeps typing. -->
-          <div
-            bind:this={popoverEl}
-            use:portal
-            class="sticky-mention-popover"
-            style:top="{popoverTop}px"
-            style:left="{popoverLeft}px"
-            style:max-width="{popoverMaxWidth}px"
-            style:min-width="{popoverMinWidth}px"
-          >
-            <MentionPicker
-              bind:this={mentionPickerRef}
-              providers={defaultProviders}
-              scope={pickerScope}
-              hideInput={true}
-              externalQuery={mentionQuery}
-              autofocus={false}
-              on:pick={onMentionPick}
-              on:cancel={closeMention}
-            />
-          </div>
-        {/if}
-      </div>
+      <!-- Inline @-mention popover is portaled to <body> so viewport-fixed
+           coords are not skewed by the sticky's rotation. Embedded mode:
+           the picker hides its own input and is driven by the textarea's
+           query + forwarded arrow/enter keystrokes. -->
+      {@render noteEditorSurface("note")}
     {/if}
     <!-- Footer-row of ancillary edit actions. Move-to / Copy-to live
          here (rather than the header toolbar) so the textarea — the
@@ -1891,8 +2290,8 @@
         class="sticky-link-body attach-card"
         type="button"
         title="Click to open"
-        on:mousedown|stopPropagation
-        on:click={() => note.target && openTarget(note.target)}
+        on:mousedown|stopPropagation={onMouseDownCard}
+        on:click={onLinkBodyClick}
         on:dblclick|stopPropagation
         on:mouseenter={onLinkCardEnter}
         on:mouseleave={onLinkCardLeave}
@@ -1946,45 +2345,18 @@
         class="sticky-detached-attachment"
         class:sticky-detached-image={detachedAttachmentPart.attachment.kind === "image"}
         class:sticky-detached-text={detachedAttachmentPart.attachment.kind === "text"}
-        draggable="true"
+        class:sticky-detached-note={detachedAttachmentPart.attachment.kind === "note"}
+        class:sticky-detached-link={detachedAttachmentPart.attachment.kind === "link"}
         title="View attachment"
-        on:dragstart={(e) =>
-          onInlineAttachmentDragStart(
-            e,
-            detachedAttachmentPart.raw,
-            detachedAttachmentPart.attachment,
-          )}
+        on:mousedown={onMouseDownCard}
         on:click={() =>
-          openInlineAttachment(
+          onDetachedAttachmentClick(
             detachedAttachmentPart.raw,
             detachedAttachmentPart.attachment,
           )}
         on:dblclick|stopPropagation
       >
-        {#if detachedAttachmentPart.attachment.kind === "image"}
-          <span class="sticky-photo-frame">
-            <img
-              src={`/api/image?path=${encodeURIComponent(detachedAttachmentPart.attachment.path)}`}
-              alt={detachedAttachmentPart.attachment.filename ?? "Attached image"}
-            />
-          </span>
-          <span class="sticky-photo-caption">
-            {detachedAttachmentPart.attachment.filename
-              ?? detachedAttachmentPart.attachment.path.split("/").pop()
-              ?? "Image attachment"}
-          </span>
-        {:else if detachedAttachmentPart.attachment.kind === "text"}
-          <span class="sticky-detached-text-icon" aria-hidden="true">T</span>
-          <span>{`Pasted Content, ${detachedAttachmentPart.attachment.charCount} chars`}</span>
-        {:else if detachedAttachmentPart.attachment.kind === "emoji"}
-          <span class="sticky-detached-emoji">{detachedAttachmentPart.attachment.body}</span>
-        {:else if detachedAttachmentPart.attachment.kind === "note"}
-          <span class="sticky-detached-text-icon" aria-hidden="true">✎</span>
-          <span>{inlineAttachmentLabel(detachedAttachmentPart.attachment)}</span>
-        {:else}
-          <span class="sticky-detached-text-icon" aria-hidden="true">↗</span>
-          <span>{inlineAttachmentLabel(detachedAttachmentPart.attachment)}</span>
-        {/if}
+        {@render attachmentPreview(detachedAttachmentPart.attachment, "detached")}
       </button>
     {:else}
       <div
@@ -1995,87 +2367,64 @@
         title="Double-click to edit"
         on:click={onBodyClick}
       >
-        {#each bodyParts as part, i}
-          {#if part.kind === "text"}
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            {@html bodyParts.length === 1
-              ? renderBody(part.text, repos, pickerScope)
-              : renderInlineBody(part.text)}
-          {:else if trailingVisualIndexes.has(i)}
-            {#if i === trailingVisualFirstIndex}
-              <div
-                class="sticky-trailing-attachments"
-                class:stacked={trailingVisualParts.length > 1}
-              >
-                {#each trailingVisualParts as visual, j}
-                  <button
-                    type="button"
-                    class={`sticky-trailing-card tilt-${j % 5}`}
-                    class:sticky-trailing-card-emoji={visual.attachment.kind === "emoji"}
-                    class:sticky-trailing-card-image={visual.attachment.kind === "image"}
-                    draggable="true"
-                    title="View attachment"
-                    style:--stack-index={j}
-                    style:--stack-count={trailingVisualParts.length}
-                    on:dragstart={(e) =>
-                      onInlineAttachmentDragStart(e, visual.raw, visual.attachment)}
-                    on:click|stopPropagation={() =>
-                      openInlineAttachment(visual.raw, visual.attachment)}
-                    on:dblclick|stopPropagation
-                  >
-                    {#if visual.attachment.kind === "image"}
-                      <span class="sticky-photo-frame">
-                        <img
-                          src={`/api/image?path=${encodeURIComponent(visual.attachment.path)}`}
-                          alt={visual.attachment.filename ?? "Attached image"}
-                        />
-                      </span>
-                      <span class="sticky-photo-caption">
-                        {visual.attachment.filename
-                          ?? visual.attachment.path.split("/").pop()
-                          ?? "Image attachment"}
-                      </span>
-                    {:else if visual.attachment.kind === "emoji"}
-                      <span class="sticky-trailing-emoji">{visual.attachment.body}</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          {:else}
-            <InlineAttachmentChip
-              attachment={part.attachment}
-              raw={part.raw}
-              selected={openAttachmentRaw === part.raw}
-              draggable={true}
-              onDragStart={(e) =>
-                onInlineAttachmentDragStart(e, part.raw, part.attachment)}
-              onOpen={() => openInlineAttachment(part.raw, part.attachment)}
-              onMerge={() => {
-                if (part.attachment.kind === "text") {
-                  void mergeTextAttachment(part.raw, part.attachment);
-                } else if (part.attachment.kind === "note") {
-                  mergeNoteAttachment(part.raw, part.attachment);
-                }
-              }}
-            />
-          {/if}
-        {/each}
+        {@render renderedNoteBody(
+          bodyParts,
+          visualAttachmentIndexesInBody,
+          bottomVisualParts,
+          true,
+        )}
       </div>
     {/if}
-    {#if openAttachmentRaw}
-      {@const openPart = bodyParts.find((part) =>
-        part.kind === "attachment" && part.raw === openAttachmentRaw
-      )}
-      {#if openPart?.kind === "attachment"}
-        <section
-          class="inline-attachment-editor"
-          role="group"
+  {/if}
+
+  {#if openAttachmentRaw}
+    {@const openIndex = attachmentParts.findIndex((part) => part.raw === openAttachmentRaw)}
+    {@const openPart = openIndex >= 0 ? attachmentParts[openIndex] : null}
+    {#if openPart}
+      <section
+        use:portal
+        class="attachment-media-scrim"
+        role="presentation"
+        tabindex="-1"
+        on:click={closeInlineAttachment}
+        on:keydown={onAttachmentModalKeydown}
+      >
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div
+          class="attachment-media-modal"
+          class:attachment-media-modal-image={openPart.attachment.kind === "image"}
+          class:attachment-media-modal-note={openPart.attachment.kind === "note"}
+          class:attachment-media-modal-text={openPart.attachment.kind === "text"}
+          class:attachment-media-modal-card={openPart.attachment.kind === "link" || openPart.attachment.kind === "emoji"}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Attachment"
+          tabindex="-1"
+          on:click|stopPropagation
           on:dblclick|stopPropagation
         >
-          <header class="inline-attachment-editor-head">
-            <span>
+          <header class="attachment-media-head">
+            <span class="attachment-media-title">
               {inlineAttachmentLabel(openPart.attachment)}
+            </span>
+            {#if attachmentParts.length > 1}
+              <button
+                type="button"
+                class="attachment-media-nav"
+                aria-label="Previous attachment"
+                title="Previous attachment"
+                on:click={() => openAttachmentByStep(-1)}
+              >‹</button>
+              <button
+                type="button"
+                class="attachment-media-nav"
+                aria-label="Next attachment"
+                title="Next attachment"
+                on:click={() => openAttachmentByStep(1)}
+              >›</button>
+            {/if}
+            <span class="attachment-media-count">
+              {openIndex + 1} / {attachmentParts.length}
             </span>
             <button
               type="button"
@@ -2084,35 +2433,96 @@
               on:click={closeInlineAttachment}
             >×</button>
           </header>
-          {#if openPart.attachment.kind === "text" || openPart.attachment.kind === "note"}
-            <textarea
-              class="inline-attachment-textarea"
-              bind:value={openAttachmentDraft}
-              spellcheck="false"
-            ></textarea>
-            <div class="inline-attachment-editor-actions">
-              <button
-                type="button"
-                class="sticky-btn primary"
-                on:click={() =>
-                  openAttachmentRaw &&
-                  mergeInlineAttachment(openAttachmentRaw, openAttachmentDraft)}
-              >merge in</button>
+
+          <div
+            class="attachment-media-shell"
+            class:attachment-media-shell-image={openPart.attachment.kind === "image"}
+            class:attachment-media-shell-note={openPart.attachment.kind === "note"}
+            class:attachment-media-shell-text={openPart.attachment.kind === "text"}
+            class:attachment-media-shell-card={openPart.attachment.kind === "link" || openPart.attachment.kind === "emoji"}
+          >
+            <div class="attachment-media-body">
+              {#if openPart.attachment.kind === "text"}
+                <div class="attachment-text-editor">
+                  <textarea
+                    bind:this={attachmentTextareaEl}
+                    class="attachment-textarea"
+                    bind:value={openAttachmentDraft}
+                    on:keydown={(e) => onKey(e, "attachment")}
+                    use:autosize
+                  ></textarea>
+                  <footer class="attachment-text-editor-footer">
+                    <button
+                      type="button"
+                      class="sticky-btn primary"
+                      on:click={mergeOpenTextAttachment}
+                    >merge in</button>
+                    <button
+                      type="button"
+                      class="sticky-btn"
+                      on:click={closeInlineAttachment}
+                    >Cancel</button>
+                  </footer>
+                </div>
+              {:else if openPart.attachment.kind === "note"}
+                {#if openAttachmentNoteEditing}
+                  <div class="attachment-note-editor">
+                    {@render noteEditorSurface("attachment")}
+                    <footer class="sticky-edit-footer attachment-note-editor-footer">
+                      <button
+                        type="button"
+                        class="sticky-btn primary"
+                        on:click={saveOpenNoteAttachment}
+                      >Save</button>
+                      <button
+                        type="button"
+                        class="sticky-btn"
+                        on:click={closeInlineAttachment}
+                      >Cancel</button>
+                    </footer>
+                  </div>
+                {:else}
+                  {@const noteParts = parseInlineAttachments(openPart.attachment.body)}
+                  {@const noteVisualIndexes = visualAttachmentIndexes(noteParts)}
+                  {@const noteVisualParts = visualPartsFor(noteParts)}
+                  <div class="attachment-note-view">
+                    <div
+                      class="sticky-body"
+                      role="textbox"
+                      tabindex="0"
+                      aria-readonly="true"
+                      on:click={onBodyClick}
+                    >
+                      {@render renderedNoteBody(
+                        noteParts,
+                        noteVisualIndexes,
+                        noteVisualParts,
+                        false,
+                      )}
+                    </div>
+                    <footer class="attachment-note-view-footer">
+                      <button
+                        type="button"
+                        class="sticky-btn"
+                        title={copied ? "Copied" : "Copy note"}
+                        on:click={() => void copyNoteBody(openPart.attachment.body)}
+                      >{copied ? "✓" : "⧉"}</button>
+                      <button
+                        type="button"
+                        class="sticky-btn"
+                        title="Edit"
+                        on:click={() => startOpenNoteAttachmentEdit(openPart.attachment)}
+                      >✎</button>
+                    </footer>
+                  </div>
+                {/if}
+              {:else}
+                {@render attachmentPreview(openPart.attachment, "media")}
+              {/if}
             </div>
-          {:else if openPart.attachment.kind === "image"}
-            <img
-              class="inline-attachment-image"
-              src={`/api/image?path=${encodeURIComponent(openPart.attachment.path)}`}
-              alt={openPart.attachment.filename ?? "Attached image"}
-            />
-            <code class="inline-attachment-path">{openPart.attachment.path}</code>
-          {:else if openPart.attachment.kind === "emoji"}
-            <div class="inline-attachment-emoji">{openPart.attachment.body}</div>
-          {:else}
-            <code class="inline-attachment-path">{openPart.attachment.target.value}</code>
-          {/if}
-        </section>
-      {/if}
+          </div>
+        </div>
+      </section>
     {/if}
   {/if}
 
