@@ -4576,6 +4576,39 @@
     return out as any;
   })();
 
+  /** Per-repo push/pull/dirty status for the dock's arrow indicators.
+   *  Aggregates across all worktrees in each repo. Only repos with
+   *  ahead > 0 or behind > 0 render an arrow; the dirty/staged/
+   *  unstaged counts surface in the hover label. */
+  $: dockRepoStatuses = repos.map((repo) => {
+    let ahead = 0;
+    let behind = 0;
+    let staged = 0;
+    let unstaged = 0;
+    let untracked = 0;
+    for (const wt of repo.worktrees ?? []) {
+      if (wt.branchStatus) {
+        ahead += wt.branchStatus.ahead;
+        behind += wt.branchStatus.behind;
+      }
+      if (wt.fileStatus) {
+        staged += wt.fileStatus.staged;
+        unstaged += wt.fileStatus.unstaged;
+        untracked += wt.fileStatus.untracked;
+      }
+    }
+    return {
+      repoId: repo.id,
+      repoColor: repo.color,
+      repoName: repo.name ?? repoName(repo),
+      ahead,
+      behind,
+      staged,
+      unstaged,
+      untracked,
+    };
+  });
+
   /** Browser-tab indicator: animates the favicon (pulsing dot when
    *  waiting, rotating arc when working) and sets the title + meta
    *  description to a per-session breakdown (with names + agents)
@@ -7335,6 +7368,7 @@
 <SessionDock
   entries={dockEntries}
   {focusedSource}
+  {dockRepoStatuses}
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
 />

@@ -74,6 +74,21 @@
    *  the column they're currently looking at. `null` ⇒ no row is
    *  marked as focused. */
   export let focusedSource: string | null = null;
+
+  export interface DockRepoStatus {
+    repoId: string;
+    repoColor?: string;
+    repoName: string;
+    ahead: number;
+    behind: number;
+    staged: number;
+    unstaged: number;
+    untracked: number;
+  }
+  /** Per-repo push/pull status. Repos with ahead or behind > 0 get
+   *  an animated arrow; all counts show in the hover label. */
+  export let dockRepoStatuses: DockRepoStatus[] = [];
+
   /** Whether the dashboard is in zen mode. When true, inactive
    *  dots are hidden by default (the user can still override via
    *  the toggle). When zen exits, the pre-zen toggle state is
@@ -112,6 +127,27 @@
   }
 
   $: split = splitDockEntries(entries, showInactive);
+
+  /** Quick lookup: repoId → status. Used in the template to render
+   *  arrows at repo-group boundaries. */
+  $: repoStatusMap = new Map(
+    dockRepoStatuses
+      .filter((s) => s.ahead > 0 || s.behind > 0)
+      .map((s) => [s.repoId, s]),
+  );
+
+  /** Repos that have push/pull arrows but no session dots — they
+   *  still need a row in the dock. Built from repoStatuses minus
+   *  any repoId that appears in the current split. */
+  $: orphanRepoArrows = (() => {
+    const inDock = new Set([
+      ...split.top.map((e) => e.repoId),
+      ...split.bottom.map((e) => e.repoId),
+    ]);
+    return dockRepoStatuses.filter(
+      (s) => (s.ahead > 0 || s.behind > 0) && !inDock.has(s.repoId),
+    );
+  })();
 
   /** How long the "unread" pulse stays on after the AI finishes
    *  a turn (working → idle). Caps the noise so a long-ignored
@@ -389,6 +425,13 @@
     }
   }
 
+  function onArrowEnter() {
+    cancelDismiss();
+    cancelShowPreview();
+    hoveredEntry = null;
+    stopPreviewPoll();
+  }
+
   function onRowEnter(ev: Event, entry: DockEntry) {
     cancelDismiss();
     cancelShowPreview();
@@ -567,6 +610,29 @@
          toggle rather than the viewport top. -->
     <div class="dock-half dock-top">
     {#each split.top as e, i (e.source)}
+      {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+        {@const rs = repoStatusMap.get(e.repoId)}
+        <span
+          class="dock-dot dock-repo-arrow"
+          style:--arrow-color={brightenIfDark(rs?.repoColor)}
+          on:mouseenter={onArrowEnter}
+        >
+          <span class="dock-dot-inner dock-arrow-inner">
+            {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
+            {#if rs?.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+          </span>
+          <span class="dock-label">
+            <span class="dock-label-repo">{rs?.repoName}</span>
+            <span class="dock-label-title dock-arrow-label">{[
+              rs?.ahead ? `↑${rs.ahead} push` : "",
+              rs?.behind ? `↓${rs.behind} pull` : "",
+              rs?.staged ? `${rs.staged} staged` : "",
+              rs?.unstaged ? `${rs.unstaged} mod` : "",
+              rs?.untracked ? `${rs.untracked} new` : "",
+            ].filter(Boolean).join(" · ")}</span>
+          </span>
+        </span>
+      {/if}
       <button
         type="button"
         class="dock-dot agent-{e.agent}"
@@ -575,7 +641,7 @@
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-focused={focusedSource === e.source}
-        class:dock-dot-repo-first={i > 0 && split.top[i - 1].repoId !== e.repoId}
+        class:dock-dot-repo-first={i > 0 && split.top[i - 1].repoId !== e.repoId && !repoStatusMap.has(e.repoId)}
         style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
         on:click={() => handlePick(e)}
@@ -583,10 +649,6 @@
         on:focusin={(ev) => onRowEnter(ev, e)}
       >
         {#if focusedSource === e.source}
-          <!-- Focus marker: tall slim outlined triangle pointing at
-               the dot. SVG (rather than the older CSS border-trick)
-               lets us draw a hollow shape with rounded joins; the
-               border-trick can only produce filled triangles. -->
           <svg
             class="dock-dot-arrow"
             viewBox="0 0 5 10"
@@ -596,13 +658,6 @@
           </svg>
         {/if}
         <span class="dock-dot-inner">
-          <!-- Working: a thick partial-arc SVG stroke rotates around
-               the dot's centre. SVG (rather than the old conic-
-               gradient + mask trick) lets us use
-               `stroke-linecap: round` so the visible arc's head
-               and tail are clean rounded caps. Always rendered so
-               the opacity can fade in/out on working state changes
-               — `{#if e.working}` would snap it on/off. -->
           <svg
             class="dock-dot-spinner"
             viewBox="0 0 24 24"
@@ -630,10 +685,6 @@
 
     </div>
 
-    <!-- Center toggle: always at viewport vertical center because
-         dock-top and dock-bottom are equal flex:1 halves of the
-         full-height dock. The toggle never moves regardless of how
-         many dots are above or below it. -->
     <button
       class="dock-toggle"
       type="button"
@@ -648,6 +699,29 @@
     <!-- Bottom half: dots stack top-down from the toggle. -->
     <div class="dock-half dock-bottom">
     {#each split.bottom as e, i (e.source)}
+      {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+        {@const rs = repoStatusMap.get(e.repoId)}
+        <span
+          class="dock-dot dock-repo-arrow"
+          style:--arrow-color={brightenIfDark(rs?.repoColor)}
+          on:mouseenter={onArrowEnter}
+        >
+          <span class="dock-dot-inner dock-arrow-inner">
+            {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
+            {#if rs?.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+          </span>
+          <span class="dock-label">
+            <span class="dock-label-repo">{rs?.repoName}</span>
+            <span class="dock-label-title dock-arrow-label">{[
+              rs?.ahead ? `↑${rs.ahead} push` : "",
+              rs?.behind ? `↓${rs.behind} pull` : "",
+              rs?.staged ? `${rs.staged} staged` : "",
+              rs?.unstaged ? `${rs.unstaged} mod` : "",
+              rs?.untracked ? `${rs.untracked} new` : "",
+            ].filter(Boolean).join(" · ")}</span>
+          </span>
+        </span>
+      {/if}
       <button
         type="button"
         class="dock-dot agent-{e.agent}"
@@ -656,7 +730,7 @@
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-focused={focusedSource === e.source}
-        class:dock-dot-repo-first={i > 0 && split.bottom[i - 1].repoId !== e.repoId}
+        class:dock-dot-repo-first={i > 0 && split.bottom[i - 1].repoId !== e.repoId && !repoStatusMap.has(e.repoId)}
         style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
         on:click={() => handlePick(e)}
@@ -696,6 +770,28 @@
           </span>
         </span>
       </button>
+    {/each}
+    <!-- Orphan arrows: repos with push/pull but no session dots. -->
+    {#each orphanRepoArrows as rs (rs.repoId)}
+      <span
+        class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
+        style:--arrow-color={brightenIfDark(rs.repoColor)}
+      >
+        <span class="dock-dot-inner dock-arrow-inner">
+          {#if rs.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
+          {#if rs.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+        </span>
+        <span class="dock-label">
+          <span class="dock-label-repo">{rs.repoName}</span>
+          <span class="dock-label-title dock-arrow-label">{[
+            rs.ahead ? `↑${rs.ahead} push` : "",
+            rs.behind ? `↓${rs.behind} pull` : "",
+            rs.staged ? `${rs.staged} staged` : "",
+            rs.unstaged ? `${rs.unstaged} mod` : "",
+            rs.untracked ? `${rs.untracked} new` : "",
+          ].filter(Boolean).join(" · ")}</span>
+        </span>
+      </span>
     {/each}
     </div>
     {#if hoveredEntry?.transcriptSource}
@@ -878,6 +974,66 @@
   }
   .dock-toggle:hover .dock-toggle-inner {
     border-color: var(--text-1, #e8e8e8);
+  }
+
+  /* Push/pull arrow rows per repo group. Rendered as dock-dot-shaped
+     rows (same padding, same alignment) so arrows sit in the list
+     alongside session dots. The arrow SVGs are thick-body ↑↓ shapes
+     matching the git badge style. */
+  /* Arrow row: the dock-dot-inner slot holds ↑/↓ text glyphs instead
+     of a coloured disc. Same 10px box as a real dot, transparent
+     background so only the glyph reads. */
+  .dock-arrow-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    background: transparent !important;
+    border: 0 !important;
+  }
+  .dock-repo-arrow {
+    cursor: default;
+  }
+  .dock-repo-arrow-orphan {
+    margin-top: 0.3rem;
+  }
+  .dock-arrow-glyph {
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--arrow-color, var(--text-muted, #9a9aa0));
+  }
+  /* Two quick bounces in the first ~20% of the cycle, then idle for
+     the remaining ~80% (~3s pause at 4s total). The 2× speed comes
+     from cramming both bounces into the first 800ms of the 4s loop. */
+  .dock-arrow-up {
+    animation: dock-arrow-bounce-up 4s ease-in-out infinite;
+  }
+  .dock-arrow-down {
+    animation: dock-arrow-bounce-down 4s ease-in-out infinite;
+  }
+  @keyframes dock-arrow-bounce-up {
+    0% { transform: translateY(0); }
+    5% { transform: translateY(-3px); }
+    10% { transform: translateY(0); }
+    15% { transform: translateY(-3px); }
+    20% { transform: translateY(0); }
+    100% { transform: translateY(0); }
+  }
+  @keyframes dock-arrow-bounce-down {
+    0% { transform: translateY(0); }
+    5% { transform: translateY(3px); }
+    10% { transform: translateY(0); }
+    15% { transform: translateY(3px); }
+    20% { transform: translateY(0); }
+    100% { transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dock-arrow-up,
+    .dock-arrow-down { animation: none; }
+  }
+  .dock-arrow-label {
+    text-decoration: none;
   }
   /* Shell sessions render as a small terminal-styled square instead
      of the agent's round dot: dark center + repo-coloured border,
