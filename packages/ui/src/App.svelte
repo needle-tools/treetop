@@ -216,7 +216,7 @@
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
-  let commandUrls: Record<string, string> = {};
+  let commandUrls: Record<string, string[]> = {};
   /** Shells (Terminal columns the daemon is hosting / has hosted). Used
    *  by the worktree session picker so past + live shells appear next
    *  to Claude/Codex agent sessions instead of hiding under a separate
@@ -3702,7 +3702,7 @@
     try {
       const res = await fetch("/api/commands/urls");
       if (!res.ok) return;
-      const body = (await res.json()) as { urls: Record<string, string> };
+      const body = (await res.json()) as { urls: Record<string, string[]> };
       commandUrls = body.urls;
     } catch {}
   }
@@ -3794,9 +3794,9 @@
         return;
       }
       if (payload.kind === "command_url") {
-        const { linkId, url } = payload as { linkId?: string; url?: string };
-        if (linkId && url) {
-          commandUrls = { ...commandUrls, [linkId]: url };
+        const { linkId, urls } = payload as { linkId?: string; urls?: string[] };
+        if (linkId && urls) {
+          commandUrls = { ...commandUrls, [linkId]: urls };
         }
         return;
       }

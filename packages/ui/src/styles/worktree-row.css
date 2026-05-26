@@ -1253,6 +1253,7 @@ button.branch-button:hover {
   gap: 0.6rem;
   overflow-x: auto;
   overflow-y: hidden;
+  overscroll-behavior-x: contain;
   /* Vertical padding leaves room for the `.session-col-flash` outline
      (2px width + 2px offset = 4px outward). Without it, overflow-y:
      hidden clips the outline at the strip's top/bottom edges. */
