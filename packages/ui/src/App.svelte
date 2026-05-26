@@ -33,6 +33,7 @@
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { confirmDialog } from "./confirm-dialog";
   import SummarizeDialog from "./SummarizeDialog.svelte";
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
@@ -114,6 +115,7 @@
     lastUserMessages?: string[];
     userMessageCount?: number;
     messageCount?: number;
+    recentMessageCount?: number;
     contextTokens?: number;
     contextTokensExact?: boolean;
     contextWindow?: number;
@@ -1414,7 +1416,19 @@
   let onboardingByWt: Record<string, OnboardingState> = {};
   let walkthroughByWt: Record<string, number | null> = {};
 
-  function restartTutorial(): void {
+  $: tourRunning = Object.values(walkthroughByWt).some((v) => v != null);
+
+  async function restartTutorial(): Promise<void> {
+    if (tourRunning) {
+      walkthroughByWt = {};
+      return;
+    }
+    const ok = await confirmDialog({
+      title: "Start the UI walkthrough?",
+      message: "Highlights each part of the dashboard step by step.",
+      confirmLabel: "Start tour",
+    });
+    if (!ok) return;
     const firstWt = rows.find((r) => r.wt && !r.wt.nonGit)?.wt;
     if (!firstWt) return;
     clearWalkthroughSeen(firstWt.path);
@@ -5301,8 +5315,9 @@
 
     <button
       class="actions-btn tutorial-btn"
+      class:tour-active={tourRunning}
       on:click={restartTutorial}
-      title="Replay the UI walkthrough on the first visible repo"
+      title={tourRunning ? "Stop the walkthrough" : "Start the UI walkthrough"}
     ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
   </nav>
 
