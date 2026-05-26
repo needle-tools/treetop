@@ -169,7 +169,7 @@
       const r = starBtnEl.getBoundingClientRect();
       starFixedStyle = `position:fixed;left:${r.left}px;top:${r.top}px;z-index:9999;`;
       starJumping = true;
-      setTimeout(() => { starJumping = false; starFixedStyle = ""; }, 7000);
+      setTimeout(() => { starJumping = false; starFixedStyle = ""; }, 1800);
     }
   }
 
@@ -620,8 +620,8 @@
     align-items: center;
     width: 16px;
     height: 16px;
-    margin-left: 0.25rem;
-    margin-right: 2px;
+    margin-left: 6px;
+    margin-right: 0;
     flex: 0 0 auto;
   }
   .star-btn {
@@ -647,63 +647,31 @@
     color: #c99e28;
   }
   .star-btn.jump {
-    animation: star-jump 7s cubic-bezier(0.2, 0.6, 0.35, 1);
+    animation: star-jump 1.8s cubic-bezier(0.2, 0.6, 0.35, 1);
   }
   @keyframes star-jump {
     /* spin up */
-    0%   { transform: translate(0, 0)        scale(1)    rotate(0deg); }
-    1%   { transform: translate(0, 0)        scale(1)    rotate(180deg); }
-    2%   { transform: translate(0, 0)        scale(1)    rotate(540deg); }
-    4%   { transform: translate(0, 0)        scale(1)    rotate(1080deg); }
+    0%   { transform: scale(1)   rotate(0deg); }
+    4%   { transform: scale(1)   rotate(180deg); }
+    8%   { transform: scale(1)   rotate(540deg); }
+    14%  { transform: scale(1)   rotate(1080deg); }
     /* pump — catching air */
-    5%   { transform: translate(0, 0)        scale(1.9)  rotate(1080deg); }
-    6%   { transform: translate(0, 0)        scale(0.7)  rotate(1080deg); }
-    7%   { transform: translate(0, 0)        scale(2.2)  rotate(1080deg); }
-    8%   { transform: translate(0, 0)        scale(0.6)  rotate(1080deg); }
-    9%   { transform: translate(0, 0)        scale(2.5)  rotate(1080deg); }
-    /* LAUNCH — straight up */
-    11%  { transform: translate(0, -65px)    scale(1.2)  rotate(1080deg); }
-    12%  { transform: translate(0, -90px)    scale(1)    rotate(1080deg); }
-    /* hang at apex */
-    13%  { transform: translate(0, -95px)    scale(1)    rotate(1080deg); }
-    14%  { transform: translate(0, -94px)    scale(1)    rotate(1080deg); }
-    /* Z-shaped leaf glide — tilt follows travel direction */
-    /* drift right + dip */
-    17%  { transform: translate(15px, -91px)  scale(1.05) rotate(1100deg); }
-    20%  { transform: translate(35px, -86px)  scale(1.03) rotate(1115deg); }
-    23%  { transform: translate(45px, -80px)  scale(1)    rotate(1110deg); }
-    /* cross left + dip */
-    26%  { transform: translate(30px, -77px)  scale(0.96) rotate(1085deg); }
-    29%  { transform: translate(10px, -73px)  scale(0.94) rotate(1060deg); }
-    32%  { transform: translate(-10px, -68px) scale(0.93) rotate(1040deg); }
-    35%  { transform: translate(-30px, -62px) scale(0.95) rotate(1035deg); }
-    /* drift right + dip */
-    38%  { transform: translate(-15px, -59px) scale(0.98) rotate(1055deg); }
-    41%  { transform: translate(8px, -54px)   scale(1.04) rotate(1095deg); }
-    44%  { transform: translate(30px, -48px)  scale(1.05) rotate(1115deg); }
-    47%  { transform: translate(40px, -42px)  scale(1.02) rotate(1110deg); }
-    /* cross left + dip */
-    50%  { transform: translate(25px, -39px)  scale(0.97) rotate(1088deg); }
-    53%  { transform: translate(5px, -35px)   scale(0.94) rotate(1060deg); }
-    56%  { transform: translate(-15px, -30px) scale(0.93) rotate(1040deg); }
-    59%  { transform: translate(-25px, -25px) scale(0.95) rotate(1038deg); }
-    /* drift right + dip (smaller) */
-    62%  { transform: translate(-12px, -22px) scale(0.98) rotate(1058deg); }
-    65%  { transform: translate(5px, -18px)   scale(1.03) rotate(1092deg); }
-    68%  { transform: translate(20px, -14px)  scale(1.03) rotate(1105deg); }
-    71%  { transform: translate(25px, -11px)  scale(1)    rotate(1098deg); }
-    /* cross left + dip (smaller) */
-    74%  { transform: translate(15px, -9px)   scale(0.98) rotate(1082deg); }
-    77%  { transform: translate(2px, -7px)    scale(0.97) rotate(1065deg); }
-    80%  { transform: translate(-8px, -5px)   scale(0.98) rotate(1058deg); }
-    /* settle */
-    83%  { transform: translate(-3px, -4px)   scale(1)    rotate(1072deg); }
-    86%  { transform: translate(4px, -3px)    scale(1.01) rotate(1082deg); }
-    89%  { transform: translate(6px, -2px)    scale(1)    rotate(1080deg); }
-    92%  { transform: translate(3px, -1px)    scale(1)    rotate(1080deg); }
-    95%  { transform: translate(1px, -0.5px)  scale(1)    rotate(1080deg); }
-    /* land */
-    100% { transform: translate(0, 0)        scale(1)    rotate(1080deg); }
+    18%  { transform: scale(1.9) rotate(1080deg); }
+    22%  { transform: scale(0.7) rotate(1080deg); }
+    26%  { transform: scale(2.2) rotate(1080deg); }
+    30%  { transform: scale(0.6) rotate(1080deg); }
+    34%  { transform: scale(2.5) rotate(1080deg); }
+    38%  { transform: scale(1)   rotate(1080deg); }
+    /* happy bounces */
+    46%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
+    52%  { transform: scale(1.1) translateY(-10px) rotate(1080deg); }
+    58%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
+    66%  { transform: scale(1.1) translateY(-7px)  rotate(1080deg); }
+    72%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
+    80%  { transform: scale(1.05) translateY(-4px) rotate(1080deg); }
+    86%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
+    93%  { transform: scale(1.02) translateY(-2px) rotate(1080deg); }
+    100% { transform: scale(1)   translateY(0)    rotate(1080deg); }
   }
   @media (prefers-reduced-motion: reduce) {
     .star-btn.jump { animation: none; }
