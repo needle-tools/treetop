@@ -235,26 +235,20 @@ function detectCommandUrl(
   let buf = "";
   const seen = new Set<string>();
   let urls: string[] = [];
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  let emitted = false;
 
-  function emit() {
-    if (emitted || urls.length === 0) return;
-    emitted = true;
-    urls.sort((a, b) => urlPriority(b) - urlPriority(a));
-    commandDetectedUrls.set(linkId, urls);
-    broadcast("change", { kind: "command_url", linkId, repoId, urls });
-    clearTimeout(timeout);
-    unsub();
+  function publish() {
+    const sorted = [...urls].sort((a, b) => urlPriority(b) - urlPriority(a));
+    commandDetectedUrls.set(linkId, sorted);
+    broadcast("change", { kind: "command_url", linkId, repoId, urls: sorted });
   }
 
-  const timeout = setTimeout(() => { emit(); if (!emitted) unsub(); }, 120_000);
+  const timeout = setTimeout(() => unsub(), 120_000);
   const unsub = handle.subscribe({
     onData(chunk: Uint8Array) {
-      if (emitted) return;
       buf += decoder.decode(chunk, { stream: true });
       const clean = buf.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
       let m: RegExpExecArray | null;
+      let added = false;
       URL_RE.lastIndex = 0;
       while ((m = URL_RE.exec(clean)) !== null) {
         const url = m[0].replace(/[.,;:]+$/, "");
@@ -262,15 +256,12 @@ function detectCommandUrl(
         if (seen.has(url)) continue;
         seen.add(url);
         urls.push(url);
+        added = true;
       }
-      if (urls.length > 0 && !settleTimer) {
-        settleTimer = setTimeout(emit, 1500);
-      }
+      if (added) publish();
       if (buf.length > 8192) buf = buf.slice(-4096);
     },
     onExit() {
-      if (settleTimer) clearTimeout(settleTimer);
-      emit();
       clearTimeout(timeout);
     },
   });
