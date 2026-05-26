@@ -226,7 +226,7 @@
       ? "Close this column and dispose the terminal.\nThe transcript is kept on disk and can be reopened from the worktree's session picker."
       : "Close this column and stop the agent.\nOnce the agent has written its first message you can also reopen the session later from the worktree's picker."}
     sshConnected={!!sshSession}
-    onSshBrowse={() => dispatch("sshBrowse", sshSession)}
+    onSshBrowse={() => { console.debug("[NewSessionCol] onSshBrowse → dispatching sshBrowse, sshSession=", sshSession); dispatch("sshBrowse", sshSession); }}
   />
 
   <TerminalView

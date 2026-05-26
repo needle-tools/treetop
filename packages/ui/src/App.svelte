@@ -1685,6 +1685,7 @@
     const next = [...existing];
     next.splice(insertAt, 0, entry);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    console.debug("[App] openRemoteBrowser: wtPath=", wtPath, "source=", synthetic, "insertAt=", insertAt, "total=", next.length);
     scrollNewColIntoView(wtPath, synthetic);
   }
 
@@ -7132,7 +7133,9 @@
                             }}
                             on:sshBrowse={() => {
                               const termId = resolveTermIdFromSource(s.source, newTermIds);
+                              console.debug("[App] on:sshBrowse fired! source=", s.source, "termId=", termId);
                               if (termId) openRemoteBrowser(wt.path, termId, "");
+                              else console.warn("[App] no termId resolved for source", s.source);
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}

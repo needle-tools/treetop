@@ -285,6 +285,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   "__transcript__:",
   // File browser panel — entirely UI-owned, no daemon-side session.
   "__files__:",
+  // Remote SSH file browser — UI-owned, backed by /api/ssh/* routes.
+  "__remote__:",
   // Git history panel — commit list + diff viewer, entirely UI-owned.
   "__history__:",
 ] as const;
