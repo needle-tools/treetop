@@ -265,6 +265,114 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
   return out;
 }
 
+function codexTimestamp(obj: Record<string, unknown>): string | undefined {
+  return typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+}
+
+function pushCodexMessage(
+  out: NormalizedSession,
+  role: NormalizedRole,
+  blocks: NormalizedBlock[],
+  timestamp?: string,
+): void {
+  if (blocks.length === 0) return;
+  if (timestamp && !out.startedAt) out.startedAt = timestamp;
+  if (timestamp) out.endedAt = timestamp;
+  out.messages.push({ role, blocks, timestamp });
+}
+
+function codexToolInput(input: unknown): unknown {
+  if (typeof input !== "string") return clipToolInput(input);
+  try {
+    return clipToolInput(JSON.parse(input));
+  } catch {
+    return clipToolInput(input);
+  }
+}
+
+function codexProtocolMarkerText(name: string, rawAttrs: string): string {
+  const attrs: Record<string, string> = {};
+  const attrRe = /([A-Za-z_][\w-]*)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(rawAttrs)) !== null) {
+    attrs[match[1]!] = match[2]!;
+  }
+  if (name === "git-create-branch" && attrs.branch) {
+    return `[Codex git create branch: ${attrs.branch}]`;
+  }
+  if (name === "git-push" && attrs.branch) {
+    return `[Codex git push: ${attrs.branch}]`;
+  }
+  const label = name.replace(/^git-/, "git ").replace(/-/g, " ");
+  return `[Codex ${label}]`;
+}
+
+function codexTextBlocks(text: string): NormalizedBlock[] {
+  const blocks: NormalizedBlock[] = [];
+  let pending = "";
+  const lines = text.split("\n");
+  const flushPending = () => {
+    const cleaned = pending.replace(/\n{2,}$/g, "\n");
+    pending = "";
+    if (cleaned) blocks.push({ type: "text", text: clipText(cleaned) });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const marker = line.match(/^::([A-Za-z][\w-]*)\{(.*)\}$/);
+    if (marker) {
+      flushPending();
+      blocks.push({
+        type: "marker",
+        text: codexProtocolMarkerText(marker[1]!, marker[2]!),
+      });
+      continue;
+    }
+    pending += line;
+    if (i < lines.length - 1) pending += "\n";
+  }
+  flushPending();
+  return blocks;
+}
+
+function codexEventMarker(payload: Record<string, unknown>): string | null {
+  switch (payload.type) {
+    case "task_started":
+      return "[Codex task started]";
+    case "task_complete":
+      return "[Codex task complete]";
+    case "context_compacted":
+      return "[Codex context compacted]";
+    case "turn_aborted": {
+      const reason =
+        typeof payload.reason === "string" && payload.reason.trim()
+          ? `: ${payload.reason.trim()}`
+          : "";
+      return `[Codex turn aborted${reason}]`;
+    }
+    default:
+      return null;
+  }
+}
+
+function codexPatchApplyText(payload: Record<string, unknown>): string {
+  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+  const text = [stdout, stderr].filter(Boolean).join("\n");
+  if (text) return text;
+  return payload.success === false ? "Patch apply failed" : "Patch applied";
+}
+
+function codexWebSearchText(payload: Record<string, unknown>): string {
+  const query = typeof payload.query === "string" ? payload.query : "";
+  const action =
+    payload.action && typeof payload.action === "object"
+      ? JSON.stringify(payload.action)
+      : "";
+  const text = [query, action].filter(Boolean).join("\n");
+  return text || "Web search completed";
+}
+
 /** Per-line Codex parser, used by the batch + tail variants. */
 function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   if (!line) return;
@@ -296,6 +404,56 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   }
   if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
     const p = obj.payload as Record<string, unknown>;
+    const ts = codexTimestamp(obj);
+    if (p.type === "function_call" || p.type === "custom_tool_call") {
+      const name =
+        typeof p.name === "string"
+          ? p.name
+          : p.type === "custom_tool_call"
+            ? "custom_tool"
+            : "function_call";
+      const input =
+        p.type === "function_call"
+          ? codexToolInput(p.arguments)
+          : clipToolInput(p.input);
+      pushCodexMessage(out, "assistant", [
+        {
+          type: "tool_use",
+          toolName: name,
+          toolInput: input,
+          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+        },
+      ], ts);
+      return;
+    }
+    if (
+      p.type === "function_call_output" ||
+      p.type === "custom_tool_call_output"
+    ) {
+      const text = typeof p.output === "string" ? p.output : "";
+      pushCodexMessage(out, "tool", [
+        {
+          type: "tool_result",
+          text: clipText(text),
+          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+        },
+      ], ts);
+      return;
+    }
+    if (p.type === "web_search_call") {
+      pushCodexMessage(out, "assistant", [
+        {
+          type: "tool_use",
+          toolName: "web_search",
+          toolInput: clipToolInput({
+            status: p.status,
+            action: p.action,
+          }),
+          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+        },
+      ], ts);
+      return;
+    }
     if (p.type !== "message") return;
     const role: NormalizedRole = (() => {
       if (typeof p.role !== "string") return "user";
@@ -309,18 +467,49 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
-          blocks.push({ type: "text", text: clipText(b.text) });
+          blocks.push(...codexTextBlocks(b.text));
         }
       }
     } else if (typeof p.content === "string") {
-      blocks.push({ type: "text", text: clipText(p.content) });
+      blocks.push(...codexTextBlocks(p.content));
     }
-    if (blocks.length === 0) return;
-    const ts =
-      typeof obj.timestamp === "string" ? obj.timestamp : undefined;
-    if (ts && !out.startedAt) out.startedAt = ts;
-    if (ts) out.endedAt = ts;
-    out.messages.push({ role, blocks, timestamp: ts });
+    pushCodexMessage(out, role, blocks, ts);
+    return;
+  }
+  if (obj.type === "compacted") {
+    pushCodexMessage(out, "system", [
+      { type: "marker", text: "[Codex context compacted]" },
+    ], codexTimestamp(obj));
+    return;
+  }
+  if (obj.type === "event_msg" && obj.payload && typeof obj.payload === "object") {
+    const p = obj.payload as Record<string, unknown>;
+    const ts = codexTimestamp(obj);
+    const marker = codexEventMarker(p);
+    if (marker) {
+      pushCodexMessage(out, "system", [{ type: "marker", text: marker }], ts);
+      return;
+    }
+    if (p.type === "patch_apply_end") {
+      pushCodexMessage(out, "tool", [
+        {
+          type: "tool_result",
+          text: clipText(codexPatchApplyText(p)),
+          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+        },
+      ], ts);
+      return;
+    }
+    if (p.type === "web_search_end") {
+      pushCodexMessage(out, "tool", [
+        {
+          type: "tool_result",
+          text: clipText(codexWebSearchText(p)),
+          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+        },
+      ], ts);
+      return;
+    }
     return;
   }
   if (obj.type === "event_msg" || obj.type === "turn_context") {
@@ -355,7 +544,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   if (role && text) {
     out.messages.push({
       role,
-      blocks: [{ type: "text", text: clipText(text) }],
+      blocks: codexTextBlocks(text),
       timestamp: ts,
     });
     return;

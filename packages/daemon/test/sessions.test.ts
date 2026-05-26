@@ -477,9 +477,163 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[1]?.blocks[0]).toEqual({ type: "text", text: "world" });
   });
 
-  test("event_msg and turn_context lines are skipped (not rendered as messages)", () => {
+  test("splits Codex protocol markers out of assistant output text", () => {
+    const text = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: [
+              "Done.",
+              "",
+              "::git-create-branch{cwd=\"/Users/me/proj\" branch=\"codex/demo\"}",
+              "::git-commit{cwd=\"/Users/me/proj\"}",
+              "::git-push{cwd=\"/Users/me/proj\" branch=\"codex/demo\"}",
+            ].join("\n"),
+          },
+        ],
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages[0]?.blocks).toEqual([
+      { type: "text", text: "Done.\n" },
+      { type: "marker", text: "[Codex git create branch: codex/demo]" },
+      { type: "marker", text: "[Codex git commit]" },
+      { type: "marker", text: "[Codex git push: codex/demo]" },
+    ]);
+  });
+
+  test("renders Codex response_item tool calls and outputs", () => {
     const text = [
-      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "pwd" }),
+          call_id: "call-1",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "Output:\n/Users/me/proj",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "apply_patch",
+          input: "*** Begin Patch\n...",
+          call_id: "call-2",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-2",
+          output: "Success",
+        },
+      }),
+    ].join("\n");
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((m) => m.role)).toEqual([
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+    ]);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "pwd" },
+      toolUseId: "call-1",
+    });
+    expect(s.messages[1]?.blocks[0]).toEqual({
+      type: "tool_result",
+      toolUseId: "call-1",
+      text: "Output:\n/Users/me/proj",
+    });
+    expect(s.messages[2]?.blocks[0]).toEqual({
+      type: "tool_use",
+      toolName: "apply_patch",
+      toolInput: "*** Begin Patch\n...",
+      toolUseId: "call-2",
+    });
+    expect(s.messages[3]?.blocks[0]).toEqual({
+      type: "tool_result",
+      toolUseId: "call-2",
+      text: "Success",
+    });
+  });
+
+  test("renders Codex event markers and result events", () => {
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_started" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "patch_apply_end",
+          call_id: "call-patch",
+          stdout: "Success. Updated files\n",
+          stderr: "",
+          success: true,
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "turn_aborted", reason: "interrupted" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:03.000Z",
+        type: "compacted",
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count", info: {} },
+      }),
+      JSON.stringify({ type: "turn_context", payload: { cwd: "/x" } }),
+    ].join("\n");
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((m) => m.blocks[0]?.type)).toEqual([
+      "marker",
+      "tool_result",
+      "marker",
+      "marker",
+    ]);
+    expect(s.messages[0]?.blocks[0]?.text).toContain("task started");
+    expect(s.messages[1]?.role).toBe("tool");
+    expect(s.messages[1]?.blocks[0]).toEqual({
+      type: "tool_result",
+      toolUseId: "call-patch",
+      text: "Success. Updated files\n",
+    });
+    expect(s.messages[2]?.blocks[0]?.text).toContain("interrupted");
+    expect(s.messages[3]?.blocks[0]?.text).toContain("context compacted");
+  });
+
+  test("still skips duplicate Codex message events and metadata noise", () => {
+    const text = [
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "agent_message" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "token_count" } }),
       JSON.stringify({ type: "turn_context", payload: { cwd: "/x" } }),
     ].join("\n");
     expect(parseCodexJsonl(text).messages).toEqual([]);
