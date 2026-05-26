@@ -2266,6 +2266,19 @@ const server = Bun.serve<TermWsData, never>({
       return json({ ok: true });
     }
 
+    if (url.pathname.match(/^\/api\/processes\/\d+\/kill$/) && req.method === "POST") {
+      const pid = Number(url.pathname.split("/")[3]);
+      const body = await req.json().catch(() => ({})) as { signal?: string };
+      const sig = body.signal === "SIGKILL" ? "SIGKILL" : "SIGTERM";
+      try {
+        process.kill(pid, sig);
+      } catch (e: any) {
+        if (e?.code === "ESRCH") return json({ error: "process not found" }, { status: 404 });
+        return json({ error: e?.message ?? "kill failed" }, { status: 500 });
+      }
+      return json({ ok: true, signal: sig });
+    }
+
     if (url.pathname === "/api/agents/installed" && req.method === "GET") {
       // Which interactive agent CLIs are installed? Uses
       // `resolveAgentBinary` so multi-install setups (e.g. homebrew

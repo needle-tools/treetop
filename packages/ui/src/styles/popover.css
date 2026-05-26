@@ -190,7 +190,7 @@
      "4m 18s" jammed into "idle 3m 58s". Keeping idle at its
      natural width forces any overflow to the row's right edge,
      where `overflow-x: hidden` clips it cleanly. */
-  grid-template-columns: 16px minmax(6ch, 10ch) minmax(10ch, auto) minmax(10ch, 1fr) 6ch 8ch 8ch auto 18px;
+  grid-template-columns: 16px minmax(6ch, 10ch) minmax(10ch, 1fr) 6ch 8ch 8ch auto 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
      .agents-list — preserve the spacing between rows. The
      `column-gap` matches `.agent-row`'s default; without it set
@@ -203,7 +203,7 @@
 .tuis-popover .agents-list > li {
   display: contents;
 }
-.tuis-popover .proc-header-row {
+.tuis-popover .proc-col-header {
   display: grid;
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
@@ -211,14 +211,13 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid var(--surface-2);
-  margin-bottom: 0.15rem;
+  padding-bottom: 0.15rem;
+  margin-bottom: 0.1rem;
 }
-.tuis-popover .proc-header-row > span {
+.tuis-popover .proc-col-header > span {
   white-space: nowrap;
 }
-.tuis-popover .proc-header-row > span:nth-child(n+5) {
+.tuis-popover .proc-col-header > span:nth-child(n+4) {
   text-align: right;
 }
 /* IMPORTANT: every `.tui-row-static` rule below qualifies with
@@ -233,21 +232,15 @@
    `.tuis-popover` prefix on these rules. */
 .tuis-popover .tui-row-static {
   cursor: default;
-  /* Inherit the 9 column tracks declared on `.tuis-popover .agents-list`
-     so adjacent rows share track widths and columns align vertically.
-     `grid-column: 1 / -1` makes this row span every track. The
-     column placements on individual cells (`> .tui-cpu { grid-column: 5; }`
-     etc.) still apply to subgrid items.
-     Columns (defined on the parent ul):
+  /* Columns (defined on the parent ul):
        1. icon            16px
-       2. name            auto
-       3. repo            auto (optional)
-       4. title           1fr  (absorbs leftover; ellipsises long titles)
-       5. cpu             6ch  ("100.0%")
-       6. mem             8ch  ("999.9 MB" / "1.23 GB")
-       7. uptime          8ch  ("999h 59m")
-       8. idle            auto (only present on idle rows)
-       9. ×               18px */
+       2. name            minmax(6ch, 10ch)
+       3. info/title      1fr
+       4. cpu             6ch
+       5. mem             8ch
+       6. uptime          8ch
+       7. idle            auto
+       8. ×               18px */
   display: grid;
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
@@ -265,13 +258,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tuis-popover .tui-row-static > .tui-repo { grid-column: 3; }
-.tuis-popover .tui-row-static > .tui-inline-title { grid-column: 4; }
-.tuis-popover .tui-row-static > .tui-cpu { grid-column: 5; }
-.tuis-popover .tui-row-static > .tui-mem { grid-column: 6; }
-.tuis-popover .tui-row-static > .tui-uptime { grid-column: 7; }
-.tuis-popover .tui-row-static > .tui-idle { grid-column: 8; }
-.tuis-popover .tui-row-static > .tui-kill-x { grid-column: 9; }
+.tuis-popover .tui-row-static > .tui-inline-title { grid-column: 3; }
+.tuis-popover .tui-row-static > .tui-cpu { grid-column: 4; }
+.tuis-popover .tui-row-static > .tui-mem { grid-column: 5; }
+.tuis-popover .tui-row-static > .tui-uptime { grid-column: 6; }
+.tuis-popover .tui-row-static > .tui-idle { grid-column: 7; }
+.tuis-popover .tui-row-static > .tui-kill-x { grid-column: 8; }
 .tuis-popover .tui-row-static:hover {
   background: var(--surface-2);
 }
@@ -366,6 +358,64 @@
 }
 .tuis-popover .proc-icon {
   color: var(--text-muted);
+}
+.proc-groups {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.proc-group {
+  position: relative;
+}
+.proc-group + .proc-group {
+  margin-top: 0.35rem;
+}
+.proc-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.25rem 0.3rem;
+  border: none;
+  border-bottom: 1px solid var(--surface-2);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+}
+.proc-group-header:hover {
+  background: var(--surface-2);
+}
+.proc-group-toggle {
+  font-size: 0.6rem;
+  width: 1ch;
+  flex-shrink: 0;
+}
+.proc-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proc-group-count {
+  font-size: 0.6rem;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.proc-group-spacer {
+  flex: 1;
+}
+.proc-group-stat {
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 6ch;
+  text-align: right;
 }
 
 /* Worktree picker popover. */
