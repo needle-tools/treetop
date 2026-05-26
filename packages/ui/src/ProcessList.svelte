@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
-  import { processStore } from "./process-store";
+  import { processStore, recordSamples } from "./process-store";
 
   interface Repo {
     id: string;
@@ -142,6 +142,7 @@
       if (!res.ok) return;
       procs = (await res.json()) as TuiProc[];
       processStore.set(procs);
+      recordSamples(procs);
       everLoaded = true;
       const liveIds = new Set(procs.map((p) => p.id));
       for (const id of Object.keys(pendingKill)) {
