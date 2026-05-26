@@ -5394,6 +5394,54 @@ const server = Bun.serve<TermWsData, never>({
       }
     }
 
+    if (url.pathname === "/api/config-fix" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { file?: unknown }
+        | null;
+      const filePath = typeof body?.file === "string" ? body.file : null;
+      if (!filePath) {
+        return json({ error: "body.file is required" }, { status: 400 });
+      }
+      try {
+        const { readFileSync, writeFileSync, copyFileSync, existsSync: fsExists } = await import("node:fs");
+        if (!fsExists(filePath)) {
+          return json({ error: "file not found" }, { status: 404 });
+        }
+        const raw = readFileSync(filePath, "utf-8");
+        const backupPath = filePath + ".bak";
+        copyFileSync(filePath, backupPath);
+
+        // Attempt repair: strip trailing commas, truncation recovery
+        let fixed = raw
+          .replace(/,\s*([\]}])/g, "$1")   // trailing commas
+          .replace(/\}\s*\{/g, "},{");      // missing comma between objects
+        // If still invalid, try truncating to last valid '}'
+        try {
+          JSON.parse(fixed);
+        } catch {
+          const lastBrace = fixed.lastIndexOf("}");
+          if (lastBrace > 0) {
+            fixed = fixed.slice(0, lastBrace + 1);
+            try {
+              JSON.parse(fixed);
+            } catch {
+              // Last resort: empty object
+              fixed = "{}";
+            }
+          } else {
+            fixed = "{}";
+          }
+        }
+        writeFileSync(filePath, fixed, "utf-8");
+        return json({ ok: true, backup: backupPath });
+      } catch (e) {
+        return json(
+          { error: String(e instanceof Error ? e.message : e) },
+          { status: 500 },
+        );
+      }
+    }
+
     if (url.pathname === "/api/page-title" && req.method === "GET") {
       const target = url.searchParams.get("url");
       if (!target) {

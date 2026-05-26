@@ -132,6 +132,7 @@
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
+  let configError: { file: string } | null = null;
   let exitInfo: { code: number; signal?: string } | null = null;
   let focused = false;
   /** Hard ceiling on how long we sit in `phase === "starting"`. POST
@@ -292,6 +293,7 @@
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
+              configError = obj.configError ?? null;
             }
           } catch {
             // ignore
@@ -691,6 +693,38 @@
     }
   }
 
+  async function configErrorOpen(): Promise<void> {
+    if (!configError) return;
+    await fetch("/api/open-default", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: configError.file }),
+    }).catch(() => {});
+  }
+
+  async function configErrorRestart(): Promise<void> {
+    if (!terminalId) return;
+    // Press "1" + Enter to choose "Exit and fix manually", then the
+    // parent's onExit will handle respawn if applicable.
+    const handle = ws;
+    if (handle && handle.readyState === WebSocket.OPEN) {
+      const encoder = new TextEncoder();
+      handle.send(encoder.encode("1\r"));
+    }
+  }
+
+  async function configErrorAutofix(): Promise<void> {
+    if (!configError) return;
+    const res = await fetch("/api/config-fix", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: configError.file }),
+    }).catch(() => null);
+    if (!res || !res.ok) return;
+    // Fixed — now send "1" + Enter to exit, then parent respawns.
+    configErrorRestart();
+  }
+
   function onDragOver(e: DragEvent): void {
     if (e.dataTransfer?.types.includes("Files")) {
       e.preventDefault();
@@ -745,6 +779,15 @@
     on:focusout={() => (focused = false)}
     role="presentation"
   ></div>
+
+  {#if configError}
+    <div class="config-error-pill">
+      <span class="config-error-label">Config error: {configError.file.split(/[\\/]/).pop()}</span>
+      <button type="button" class="pill-btn" on:click={configErrorOpen}>Open</button>
+      <button type="button" class="pill-btn" on:click={configErrorAutofix}>Autofix</button>
+      <button type="button" class="pill-btn" on:click={configErrorRestart}>Dismiss</button>
+    </div>
+  {/if}
 
 </div>
 
@@ -822,6 +865,48 @@
     border-color: color-mix(in srgb, currentColor 65%, transparent);
   }
   .retry-btn:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+  }
+  .config-error-pill {
+    position: absolute;
+    bottom: 0.75rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--surface-1, #2a2a2b);
+    border: 1px solid var(--warning, #e8a735);
+    border-radius: 999px;
+    padding: 0.25rem 0.55rem 0.25rem 0.75rem;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+    font-size: 0.78rem;
+    color: var(--text-1, #e8e8e8);
+    white-space: nowrap;
+  }
+  .config-error-label {
+    opacity: 0.85;
+    margin-right: 0.15rem;
+  }
+  .pill-btn {
+    appearance: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--text-1, #e8e8e8);
+    background: color-mix(in srgb, currentColor 10%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    transition: background 100ms ease, border-color 100ms ease;
+  }
+  .pill-btn:hover {
+    background: color-mix(in srgb, currentColor 20%, transparent);
+    border-color: color-mix(in srgb, currentColor 55%, transparent);
+  }
+  .pill-btn:focus-visible {
     outline: 2px solid currentColor;
     outline-offset: 1px;
   }
