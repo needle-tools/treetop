@@ -213,9 +213,18 @@ function shellExec(cmd: string): string[] {
     : ["sh", "-c", cmd];
 }
 
-const commandDetectedUrls = new Map<string, string>();
+const commandDetectedUrls = new Map<string, string[]>();
 
-const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/;
+const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/g;
+
+function urlPriority(url: string): number {
+  try {
+    const host = new URL(url).hostname;
+    if (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) return 2;
+    if (host === "localhost" || host === "127.0.0.1") return 1;
+  } catch {}
+  return 0;
+}
 
 function detectCommandUrl(
   handle: { subscribe: (sub: { onData: (chunk: Uint8Array) => void; onExit: () => void }) => () => void; id: string },
@@ -224,25 +233,44 @@ function detectCommandUrl(
 ): void {
   const decoder = new TextDecoder();
   let buf = "";
-  const timeout = setTimeout(() => { unsub(); }, 120_000);
+  const seen = new Set<string>();
+  let urls: string[] = [];
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  let emitted = false;
+
+  function emit() {
+    if (emitted || urls.length === 0) return;
+    emitted = true;
+    urls.sort((a, b) => urlPriority(b) - urlPriority(a));
+    commandDetectedUrls.set(linkId, urls);
+    broadcast("change", { kind: "command_url", linkId, repoId, urls });
+    clearTimeout(timeout);
+    unsub();
+  }
+
+  const timeout = setTimeout(() => { emit(); if (!emitted) unsub(); }, 120_000);
   const unsub = handle.subscribe({
     onData(chunk: Uint8Array) {
-      if (commandDetectedUrls.has(linkId)) return;
+      if (emitted) return;
       buf += decoder.decode(chunk, { stream: true });
-      // Strip ANSI escape sequences before matching
       const clean = buf.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-      const m = URL_RE.exec(clean);
-      if (m) {
+      let m: RegExpExecArray | null;
+      URL_RE.lastIndex = 0;
+      while ((m = URL_RE.exec(clean)) !== null) {
         const url = m[0].replace(/[.,;:]+$/, "");
-        commandDetectedUrls.set(linkId, url);
-        broadcast("change", { kind: "command_url", linkId, repoId, url });
-        clearTimeout(timeout);
-        unsub();
+        try { if (Number(new URL(url).port) === PORT) continue; } catch { continue; }
+        if (seen.has(url)) continue;
+        seen.add(url);
+        urls.push(url);
       }
-      // Keep buffer bounded
+      if (urls.length > 0 && !settleTimer) {
+        settleTimer = setTimeout(emit, 1500);
+      }
       if (buf.length > 8192) buf = buf.slice(-4096);
     },
     onExit() {
+      if (settleTimer) clearTimeout(settleTimer);
+      emit();
       clearTimeout(timeout);
     },
   });
@@ -4501,7 +4529,7 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     if (url.pathname === "/api/commands/urls" && req.method === "GET") {
-      const urls: Record<string, string> = {};
+      const urls: Record<string, string[]> = {};
       for (const [k, v] of commandDetectedUrls) urls[k] = v;
       return json({ urls });
     }

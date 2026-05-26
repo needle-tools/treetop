@@ -64,6 +64,7 @@
   import { confirmDialog } from "./confirm-dialog";
   import { flip } from "svelte/animate";
   import { openUrl } from "./open-url";
+  import { filterNpmSuggestions, npmScriptsPlaceholder } from "./npm-suggestions";
 
   export let path: string;
   export let repoId: string = "";
@@ -71,7 +72,7 @@
   export let remotes: RemoteRef[] = [];
   export let customLinks: CustomLink[] = [];
   export let runningCommandIds: ReadonlySet<string> = new Set();
-  export let commandUrls: Record<string, string> = {};
+  export let commandUrls: Record<string, string[]> = {};
   export let onCommandClick: ((link: CustomLink) => void) | null = null;
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
@@ -240,17 +241,7 @@
   }
 
   function filteredSuggestions(cmd: string, scripts: string[]): string[] {
-    if (scripts.length === 0) return [];
-    const trimmed = cmd.trimStart();
-    const npmRunPrefix = /^npm\s+run(\s+(\S*))?$/i;
-    const m = trimmed.match(npmRunPrefix);
-    if (!m) return [];
-    const typed = m[2] ?? "";
-    const matches = typed
-      ? scripts.filter(s => s.toLowerCase().startsWith(typed.toLowerCase()))
-      : scripts;
-    if (matches.length === 1 && matches[0] === typed) return [];
-    return matches.map(s => `npm run ${s}`);
+    return filterNpmSuggestions(cmd, scripts);
   }
 
   $: addSuggestions = filteredSuggestions(newCmd, npmScripts);
@@ -264,6 +255,7 @@
    *  time — opening one closes any other. Anchor refs live in a map
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
+  let cmdUrlDropdown: string | null = null;
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
@@ -878,6 +870,11 @@
       const anchor = editAnchorEls.get(editingLinkId);
       if (anchor && !anchor.contains(target)) closeEdit();
     }
+    if (cmdUrlDropdown) {
+      if (!(target instanceof Element && target.closest(".cmd-url-wrap"))) {
+        cmdUrlDropdown = null;
+      }
+    }
   }
 </script>
 
@@ -968,7 +965,7 @@
                     bind:this={urlInput}
                     class="custom-link-input"
                     type="text"
-                    placeholder="npm run dev"
+                    placeholder={npmScriptsPlaceholder(npmScripts)}
                     bind:value={newCmd}
                     disabled={adding}
                     autocomplete="off"
@@ -1005,7 +1002,7 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedSuggestionIdx}
-                          on:mousedown|preventDefault={() => { newCmd = s; showSuggestions = false; }}
+                          on:mousedown|preventDefault={() => { newCmd = s; }}
                           on:mouseenter={() => { selectedSuggestionIdx = i; }}
                         >{s}</li>
                       {/each}
@@ -1150,7 +1147,8 @@
     {@const kind = customLinkKind(link)}
     {@const target = customLinkTarget(link)}
     {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
-    {@const cmdUrl = kind === "command" ? commandUrls[link.id] : undefined}
+    {@const cmdUrls = kind === "command" ? commandUrls[link.id] : undefined}
+    {@const cmdUrl = cmdUrls?.[0]}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -1250,19 +1248,50 @@
           <span>{label}</span>
         {/if}
         {#if cmdUrl}
-          <span
-            class="cmd-url-inner"
-            role="link"
-            tabindex="-1"
-            title={`Open ${cmdUrl}`}
-            on:click|stopPropagation={() => openUrl(cmdUrl)}
-            on:keydown={(e) => { if (e.key === "Enter") openUrl(cmdUrl); }}
-          >
-            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
+          <span class="cmd-url-wrap">
+            <span
+              class="cmd-url-inner"
+              role="link"
+              tabindex="-1"
+              title={`Open ${cmdUrl}`}
+              on:click|stopPropagation={() => openUrl(cmdUrl)}
+              on:keydown={(e) => { if (e.key === "Enter") openUrl(cmdUrl); }}
+            >
+              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </span>
+            {#if cmdUrls && cmdUrls.length > 1}
+              <span
+                class="cmd-url-caret"
+                role="button"
+                tabindex="-1"
+                title="More URLs"
+                on:click|stopPropagation={() => {
+                  cmdUrlDropdown = cmdUrlDropdown === link.id ? null : link.id;
+                }}
+              >
+                <svg viewBox="0 0 24 24" width="8" height="8" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </span>
+            {/if}
+            {#if cmdUrlDropdown === link.id && cmdUrls}
+              <div class="cmd-url-dropdown">
+                {#each cmdUrls as u}
+                  <button
+                    type="button"
+                    class="cmd-url-option"
+                    class:active={u === cmdUrl}
+                    on:click|stopPropagation={() => { openUrl(u); cmdUrlDropdown = null; }}
+                  >
+                    {new URL(u).host}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </span>
         {/if}
       </button>
@@ -1397,7 +1426,7 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedEditSuggestionIdx}
-                          on:mousedown|preventDefault={() => { editCmd = s; showEditSuggestions = false; }}
+                          on:mousedown|preventDefault={() => { editCmd = s; }}
                           on:mouseenter={() => { selectedEditSuggestionIdx = i; }}
                         >{s}</li>
                       {/each}
@@ -1924,6 +1953,61 @@
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+  .cmd-url-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .cmd-url-caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 1px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+  .cmd-url-caret:hover { color: var(--text-1, #fff); }
+  .cmd-url-caret svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .cmd-url-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 200;
+    margin-top: 2px;
+    padding: 3px 0;
+    background: var(--bg-2, #1e1e1e);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 120px;
+    white-space: nowrap;
+  }
+  .cmd-url-option {
+    display: block;
+    width: 100%;
+    padding: 3px 10px;
+    border: none;
+    background: none;
+    color: var(--text-2, #ccc);
+    font: inherit;
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cmd-url-option:hover {
+    background: var(--bg-hover, #2a2a2a);
+    color: var(--text-1, #fff);
+  }
+  .cmd-url-option.active {
+    color: var(--accent, #58a6ff);
   }
   .custom-link-suggest-wrap {
     position: relative;
