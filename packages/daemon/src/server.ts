@@ -52,6 +52,10 @@ import { pingSubscribers } from "./sse-heartbeat";
 import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
+import { detectSshChildren, type SshSession } from "./ssh-detect";
+import { SshPool } from "./ssh-pool";
+import { listRemoteDir, downloadFile, uploadFile, cachePathFor } from "./ssh-files";
+import { SyncTracker } from "./ssh-sync";
 import { saveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary, discoverRepoProcesses } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
@@ -179,6 +183,19 @@ const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
  *  one Ollama call covers the whole burst. */
 const repoSummaryInflight = new Map<string, Promise<void>>();
 const notes = await NotesStore.open(WORKSPACE_PATH);
+
+const sshPool = new SshPool();
+const sshSyncTracker = new SyncTracker(async (hostKey, remotePath, localCachePath) => {
+  const [userHost, portStr] = hostKey.split(":");
+  const port = Number(portStr) || 22;
+  const at = userHost!.indexOf("@");
+  const user = at !== -1 ? userHost!.slice(0, at) : undefined;
+  const host = at !== -1 ? userHost!.slice(at + 1) : userHost!;
+  const sftp = await sshPool.connect(user, host, port);
+  await uploadFile(sftp, localCachePath, remotePath);
+});
+/** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
+const termSshSessions = new Map<string, SshSession>();
 
 import type { Subprocess } from "bun";
 import { customLinkKind, type CommandRunMode } from "./workspace";
@@ -425,6 +442,42 @@ void migrateOllamaImportsToWorkspace(WORKSPACE_PATH)
 // during the brief startup window.
 let peerIdentity: PeerIdentity | null = null;
 let peerDiscovery: PeerDiscovery | null = null;
+let peerModeEnabled = false;
+
+function peerDiscoveryFrontendPort(): number {
+  return UI_DIR
+    ? PORT
+    : Number(process.env.SUPERGIT_FRONTEND_PORT ?? 7779);
+}
+
+async function startPeerDiscovery(): Promise<void> {
+  if (!peerIdentity) return;
+  if (peerDiscovery) await peerDiscovery.stop();
+  peerDiscovery = new PeerDiscovery({
+    port: PORT,
+    id: peerIdentity.id,
+    label: peerIdentity.label,
+    interfaceAddress: findLocalIp() ?? undefined,
+    frontendPort: peerDiscoveryFrontendPort(),
+  });
+  peerDiscovery.start();
+  peerModeEnabled = true;
+  console.log(`supergit daemon: peer discovery started`);
+}
+
+async function stopPeerDiscovery(): Promise<void> {
+  if (peerDiscovery) {
+    await peerDiscovery.stop();
+    peerDiscovery = null;
+  }
+  peerModeEnabled = false;
+  console.log(`supergit daemon: peer discovery stopped`);
+}
+
+function isLoopback(addr: string): boolean {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
 void (async () => {
   try {
     const username = process.env.USER || process.env.USERNAME || "user";
@@ -432,33 +485,15 @@ void (async () => {
     peerIdentity = await loadOrCreatePeerIdentity(WORKSPACE_PATH, {
       defaultLabel,
     });
-    // Where to point a browser to open this daemon's dashboard.
-    //   - prod (UI_DIR set): daemon serves the SPA itself, frontend
-    //     == daemon port.
-    //   - dev (UI_DIR null): Vite serves the SPA on a separate port,
-    //     conventionally 7779. SUPERGIT_FRONTEND_PORT env can
-    //     override (matches our vite.config.ts behaviour).
-    const FRONTEND_PORT = UI_DIR
-      ? PORT
-      : Number(process.env.SUPERGIT_FRONTEND_PORT ?? 7779);
-    peerDiscovery = new PeerDiscovery({
-      port: PORT,
-      id: peerIdentity.id,
-      label: peerIdentity.label,
-      // Pin the multicast socket to the LAN IPv4 so we don't end
-      // up advertising over a WSL2 / Hyper-V virtual switch on
-      // Windows. findLocalIp() returns null when the host has no
-      // usable private IPv4 (rare — laptop offline); bonjour then
-      // falls back to its default interface selection.
-      interfaceAddress: findLocalIp() ?? undefined,
-      frontendPort: FRONTEND_PORT,
-    });
-    peerDiscovery.start();
+    const prefs = await workspace.getPrefs();
+    if (prefs.peerDiscovery === "on") {
+      await startPeerDiscovery();
+    }
     console.log(
       `supergit daemon: peer identity = ${peerIdentity.label} (${peerIdentity.id.slice(
         0,
         8,
-      )})`,
+      )}) — peer mode ${peerModeEnabled ? "on" : "off"}`,
     );
   } catch (e) {
     console.error(
@@ -1358,6 +1393,15 @@ const server = Bun.serve<TermWsData, never>({
 
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
+    }
+
+    // When peer mode is off, reject non-loopback requests. This gates
+    // all LAN access behind the explicit user toggle.
+    if (!peerModeEnabled) {
+      const addr = srv.requestIP(req)?.address;
+      if (addr && !isLoopback(addr)) {
+        return json({ error: "peer mode is off" }, { status: 403 });
+      }
     }
 
     // WebSocket upgrade for terminal I/O — /api/terminals/:id/io.
@@ -3187,20 +3231,7 @@ const server = Bun.serve<TermWsData, never>({
       }
       try {
         peerIdentity = await setPeerLabel(workspace.path, body.label);
-        // Restart discovery so the mDNS advert carries the new label.
-        if (peerDiscovery) {
-          await peerDiscovery.stop();
-          peerDiscovery = new PeerDiscovery({
-            port: PORT,
-            id: peerIdentity.id,
-            label: peerIdentity.label,
-            interfaceAddress: findLocalIp() ?? undefined,
-            frontendPort: UI_DIR
-              ? PORT
-              : Number(process.env.SUPERGIT_FRONTEND_PORT ?? 7779),
-          });
-          peerDiscovery.start();
-        }
+        if (peerModeEnabled) await startPeerDiscovery();
         return json(peerIdentity);
       } catch (e) {
         return json(
@@ -3208,6 +3239,26 @@ const server = Bun.serve<TermWsData, never>({
           { status: 400 },
         );
       }
+    }
+
+    if (url.pathname === "/api/peer-discovery" && req.method === "GET") {
+      return json({ enabled: peerModeEnabled });
+    }
+
+    if (url.pathname === "/api/peer-discovery" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { enabled?: unknown }
+        | null;
+      const enabled = body?.enabled === true;
+      if (enabled && !peerModeEnabled) {
+        await startPeerDiscovery();
+        await workspace.patchPrefs({ peerDiscovery: "on" });
+      } else if (!enabled && peerModeEnabled) {
+        await stopPeerDiscovery();
+        await workspace.patchPrefs({ peerDiscovery: "off" });
+      }
+      broadcast("peerDiscovery", { enabled: peerModeEnabled });
+      return json({ enabled: peerModeEnabled });
     }
 
     if (url.pathname === "/api/peers" && req.method === "GET") {
@@ -5815,6 +5866,68 @@ const server = Bun.serve<TermWsData, never>({
       return json(result);
     }
 
+    // ── SSH remote filesystem routes ──────────────────────────────
+
+    if (url.pathname === "/api/ssh/sessions" && req.method === "GET") {
+      const out: Record<string, { user: string | undefined; host: string; port: number }> = {};
+      for (const [termId, s] of termSshSessions) {
+        out[termId] = { user: s.user, host: s.host, port: s.port };
+      }
+      return json(out);
+    }
+
+    if (url.pathname === "/api/ssh/files" && req.method === "GET") {
+      const termId = url.searchParams.get("term");
+      const dirPath = url.searchParams.get("path");
+      if (!termId || !dirPath) return json({ error: "term and path required" }, { status: 400 });
+      const session = termSshSessions.get(termId);
+      if (!session) return json({ error: "no SSH session for this terminal" }, { status: 404 });
+      try {
+        const sftp = await sshPool.connect(session.user, session.host, session.port);
+        const entries = await listRemoteDir(sftp, dirPath);
+        const tracked = sshSyncTracker.getTracked(sshPool.hostKey(session.user, session.host, session.port));
+        for (const e of entries) {
+          const remoteFull = dirPath.endsWith("/") ? dirPath + e.name : dirPath + "/" + e.name;
+          const t = tracked.find((f) => f.remotePath === remoteFull);
+          if (t) (e as Record<string, unknown>).sync = t.state;
+        }
+        return json({ path: dirPath, entries });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json({ error: msg }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/ssh/open" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body.termId !== "string" || typeof body.remotePath !== "string") {
+        return json({ error: "termId and remotePath required" }, { status: 400 });
+      }
+      const session = termSshSessions.get(body.termId);
+      if (!session) return json({ error: "no SSH session for this terminal" }, { status: 404 });
+      try {
+        const hostKey = sshPool.hostKey(session.user, session.host, session.port);
+        const localPath = cachePathFor(WORKSPACE_PATH, hostKey, body.remotePath);
+        const sftp = await sshPool.connect(session.user, session.host, session.port);
+        await downloadFile(sftp, body.remotePath, localPath);
+        sshSyncTracker.startTracking(hostKey, body.remotePath, localPath);
+        await openDefault(localPath);
+        return json({ localPath, state: "editing" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json({ error: msg }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/ssh/status" && req.method === "GET") {
+      const termId = url.searchParams.get("term");
+      if (!termId) return json({ error: "term required" }, { status: 400 });
+      const session = termSshSessions.get(termId);
+      if (!session) return json({ files: [] });
+      const hostKey = sshPool.hostKey(session.user, session.host, session.port);
+      return json({ files: sshSyncTracker.getTracked(hostKey) });
+    }
+
     // Production UI fallback: when SUPERGIT_UI_DIR is set, serve the
     // built SPA from there for any GET request that didn't match an
     // /api/* route. In dev mode UI_DIR is unset and Vite handles UI
@@ -5963,6 +6076,8 @@ const shutdown = async (signal: string) => {
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopActivity();
+    sshSyncTracker.dispose();
+    sshPool.disconnectAll();
     // De-advertise from mDNS so other peers drop us immediately
     // instead of waiting for the TTL to expire (~60s).
     await peerDiscovery?.stop().catch(() => {});
@@ -6087,4 +6202,41 @@ async function sampleShellCwds(): Promise<void> {
 }
 setInterval(() => {
   void sampleShellCwds();
+  void sampleSshSessions();
 }, SHELL_CWD_INTERVAL_MS);
+
+async function sampleSshSessions(): Promise<void> {
+  if (sseSubscribers.size === 0) return;
+  const shellRecords = terminalBackend
+    .list()
+    .filter((r) => r.agent === "shell" && !r.exitedAt);
+  if (shellRecords.length === 0) {
+    if (termSshSessions.size > 0) {
+      termSshSessions.clear();
+      broadcast("ssh_change", {});
+    }
+    return;
+  }
+  const pids = shellRecords.map((r) => r.pid);
+  const sshMap = await detectSshChildren(pids);
+  let changed = false;
+  for (const r of shellRecords) {
+    const session = sshMap.get(r.pid);
+    const prev = termSshSessions.get(r.id);
+    if (session && !prev) {
+      termSshSessions.set(r.id, session);
+      changed = true;
+    } else if (!session && prev) {
+      termSshSessions.delete(r.id);
+      changed = true;
+    }
+  }
+  // Prune exited terminals
+  for (const termId of [...termSshSessions.keys()]) {
+    if (!shellRecords.some((r) => r.id === termId)) {
+      termSshSessions.delete(termId);
+      changed = true;
+    }
+  }
+  if (changed) broadcast("ssh_change", {});
+}
