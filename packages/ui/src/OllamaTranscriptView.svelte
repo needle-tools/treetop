@@ -35,6 +35,8 @@
    *  `/api/session?source=<path>`. */
   export let sourcePath: string;
   export let onContinueWith: ((targetAgent: "claude" | "codex" | "ollama", ollamaModel?: string) => void) | undefined = undefined;
+  export let starred: boolean = false;
+  export let onToggleStar: () => void = () => {};
 
   // termId is currently unused inside this shim; SessionView keys
   // off `source` (the JSONL path). Kept as a prop so callers don't
@@ -53,6 +55,8 @@
   wtPath={wt}
   initialMode="read"
   model={model}
+  {starred}
+  {onToggleStar}
   {onContinueWith}
   onClose={() => dispatch("close")}
 />

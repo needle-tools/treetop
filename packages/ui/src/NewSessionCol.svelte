@@ -82,6 +82,8 @@
   /** Context text to seed into the PTY on first awaiting signal.
    *  Forwarded straight to TerminalView's initialPrompt. */
   export let initialPrompt: string | undefined = undefined;
+  export let starred: boolean = false;
+  export let onToggleStar: () => void = () => {};
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -205,6 +207,8 @@
     messageCountFallback={agent === "shell" ? "starting…" : "no messages yet"}
     {menuItems}
     {onDragStart}
+    {starred}
+    {onToggleStar}
     onTitleSaved={(next) => dispatch("titleSave", { title: next })}
     onEndSession={handleEndSession}
     {disposing}

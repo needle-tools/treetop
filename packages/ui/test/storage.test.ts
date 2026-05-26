@@ -3,6 +3,7 @@ import {
   DismissedSessionsStore,
   ExpandedStore,
   OpenSessionsStore,
+  StarredSessionsStore,
   VisibleWorktreesStore,
   cmdForOpenSession,
   effectiveVisibleWorktrees,
@@ -99,6 +100,54 @@ describe("ExpandedStore", () => {
   test("returns empty set when storage throws on read", () => {
     const s = new ExpandedStore(new ThrowingStore(), KEY);
     expect([...s.load()]).toEqual([]);
+  });
+});
+
+describe("StarredSessionsStore", () => {
+  const SK = "supergit:starredSessions";
+
+  test("returns empty set when nothing is stored", () => {
+    const s = new StarredSessionsStore(new MemStore(), SK);
+    expect([...s.load()]).toEqual([]);
+  });
+
+  test("save then load round-trips sources", () => {
+    const m = new MemStore();
+    const s = new StarredSessionsStore(m, SK);
+    s.save(["/a.jsonl", "/b.jsonl"]);
+    expect([...s.load()]).toEqual(["/a.jsonl", "/b.jsonl"]);
+  });
+
+  test("save replaces, not merges", () => {
+    const m = new MemStore();
+    const s = new StarredSessionsStore(m, SK);
+    s.save(["a", "b"]);
+    s.save(["c"]);
+    expect([...s.load()]).toEqual(["c"]);
+  });
+
+  test("tolerates corrupt JSON", () => {
+    const m = new MemStore();
+    m.setItem(SK, "{not json");
+    expect([...new StarredSessionsStore(m, SK).load()]).toEqual([]);
+  });
+
+  test("tolerates non-array values", () => {
+    const m = new MemStore();
+    m.setItem(SK, JSON.stringify({ a: 1 }));
+    expect([...new StarredSessionsStore(m, SK).load()]).toEqual([]);
+  });
+
+  test("drops non-string entries", () => {
+    const m = new MemStore();
+    m.setItem(SK, JSON.stringify(["a", 1, null, "b"]));
+    expect([...new StarredSessionsStore(m, SK).load()]).toEqual(["a", "b"]);
+  });
+
+  test("storage exceptions don't propagate", () => {
+    const s = new StarredSessionsStore(new ThrowingStore(), SK);
+    expect([...s.load()]).toEqual([]);
+    expect(() => s.save(["a"])).not.toThrow();
   });
 });
 

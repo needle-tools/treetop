@@ -151,6 +151,8 @@
    *  controls the at-rest cap. Default 6 so a ~300-char one-paragraph
    *  summary fits without truncation. */
   export let summaryMaxLines: number = 6;
+  export let starred: boolean = false;
+  export let onToggleStar: () => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -1344,6 +1346,8 @@
       {inflight}
       {menuItems}
       titleTooltipExtra={summarySnippet || undefined}
+      {starred}
+      {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
       onResume={() => {
         if (onCustomResume) onCustomResume();

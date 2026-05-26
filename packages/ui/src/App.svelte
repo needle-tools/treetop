@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { DismissedSessionsStore, ExpandedStore } from "./storage";
+  import { DismissedSessionsStore, ExpandedStore, StarredSessionsStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
@@ -2262,6 +2262,18 @@
     next.delete(source);
     dismissedSessions = next;
     dismissedSessionsStore.save(next);
+  }
+  const starredSessionsStore = new StarredSessionsStore(
+    getDaemonKV(),
+    "supergit:starredSessions",
+  );
+  let starredSessions: Set<string> = starredSessionsStore.load();
+  function toggleStarSession(source: string): void {
+    const next = new Set(starredSessions);
+    if (next.has(source)) next.delete(source);
+    else next.add(source);
+    starredSessions = next;
+    starredSessionsStore.save(next);
   }
   const openSessionsPersistence = new OpenSessionsStore(
     getDaemonKV(),
@@ -5966,6 +5978,7 @@
                       sessions={activeTuis}
                       headText={`${activeTuis.length} active TUIs in this worktree`}
                       dismissedSources={dismissedSessions}
+                      starredSources={starredSessions}
                       isOpen={(s) => isOpenInWt(wt.path, s.source)}
                       tooltipFor={(s) => sessionTooltip(s)}
                       on:pick={(e) => {
@@ -6065,6 +6078,7 @@
                         sessions={pickerSessions}
                         headText={`${pickerSessions.length} sessions in this worktree`}
                         dismissedSources={dismissedSessions}
+                        starredSources={starredSessions}
                         isOpen={(s) => isOpenInWt(wt.path, s.source)}
                         tooltipFor={(s) => sessionTooltip(s)}
                         on:pick={(e) => {
@@ -6789,6 +6803,8 @@
                               wt={wt.path}
                               model={ollamaModelLabel}
                               sourcePath={ollamaSourcePath}
+                              starred={starredSessions.has(ollamaSourcePath)}
+                              onToggleStar={() => toggleStarSession(ollamaSourcePath)}
                               onContinueWith={(targetAgent, ollamaModel) =>
                                 void continueSessionWith(wt.path, ollamaSourcePath, targetAgent, ollamaModel)}
                               on:close={() => closeSessionInWt(wt.path, s)}
@@ -6856,6 +6872,8 @@
                             model={newAgentMeta?.model}
                             lastActivityIso={newAgentMeta?.lastActive}
                             lastUserMessage={newAgentMeta?.lastUserMessage}
+                            starred={starredSessions.has(titleSource) || starredSessions.has(s.source)}
+                            onToggleStar={() => toggleStarSession(titleSource)}
                             on:close={() => closeSessionInWt(wt.path, s)}
                             on:dispose={() =>
                               disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}
@@ -7043,6 +7061,8 @@
                                 [s.source]: a,
                               };
                             }}
+                            starred={starredSessions.has(s.source)}
+                            onToggleStar={() => toggleStarSession(s.source)}
                             onContinueWith={(targetAgent, ollamaModel) =>
                               void continueSessionWith(wt.path, s.source, targetAgent, ollamaModel)}
                             onClose={() => closeSessionInWt(wt.path, s)}

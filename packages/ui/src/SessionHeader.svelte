@@ -88,6 +88,11 @@
    *  the column. */
   export let titleTooltipExtra: string | undefined = undefined;
 
+  /** Whether this session is starred (favorite). Only meaningful for
+   *  agent sessions (claude/codex/copilot/ollama). */
+  export let starred: boolean = false;
+  export let onToggleStar: () => void = () => {};
+
   // Callbacks
   export let onTitleSaved: (next: string) => void = () => {};
   export let onResume: () => void = () => {};
@@ -152,6 +157,22 @@
    *  entry on top of whatever the parent passed in. Keeps the action
    *  reachable for keyboard users (the burger is focusable) and trims
    *  the right-side button cluster down to just Stop Session + ×. */
+  $: isAgentSession = agent === "claude" || agent === "codex" || agent === "copilot" || agent === "ollama";
+
+  let starJumping = false;
+  let starFixedStyle = "";
+  let starBtnEl: HTMLButtonElement | null = null;
+  function handleStarClick() {
+    const wasStarred = starred;
+    onToggleStar();
+    if (!wasStarred && starBtnEl) {
+      const r = starBtnEl.getBoundingClientRect();
+      starFixedStyle = `position:fixed;left:${r.left}px;top:${r.top}px;z-index:9999;`;
+      starJumping = true;
+      setTimeout(() => { starJumping = false; starFixedStyle = ""; }, 7000);
+    }
+  }
+
   $: effectiveMenuItems = mode === "terminal"
     ? ([
         {
@@ -176,6 +197,29 @@
         class="sleep-slot"
         title={!working ? "Idle — waiting for input" : ""}
       ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
+    {#if isAgentSession}
+      <span class="star-slot">
+        <button
+          bind:this={starBtnEl}
+          class="star-btn"
+          class:starred
+          class:jump={starJumping}
+          style={starFixedStyle}
+          type="button"
+          title={starred ? "Unstar this session" : "Star this session — pinned to the top of the session picker"}
+          on:click|stopPropagation={handleStarClick}
+          aria-label={starred ? "Unstar session" : "Star session"}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            {#if starred}
+              <path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+            {:else}
+              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+            {/if}
+          </svg>
+        </button>
+      </span>
+    {/if}
   </div>
   <div class="hdr-col col-name">
     <ManualTitle
@@ -570,6 +614,99 @@
     .agent-pill.working::before {
       animation: none;
     }
+  }
+  .star-slot {
+    display: inline-flex;
+    align-items: center;
+    width: 16px;
+    height: 16px;
+    margin-left: 0.25rem;
+    margin-right: 2px;
+    flex: 0 0 auto;
+  }
+  .star-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--text-faint);
+    transition: color 120ms ease;
+    line-height: 1;
+  }
+  .star-btn:hover {
+    color: var(--text-muted);
+  }
+  .star-btn.starred {
+    color: #e8b931;
+  }
+  .star-btn.starred:hover {
+    color: #c99e28;
+  }
+  .star-btn.jump {
+    animation: star-jump 7s cubic-bezier(0.2, 0.6, 0.35, 1);
+  }
+  @keyframes star-jump {
+    /* spin up */
+    0%   { transform: translate(0, 0)        scale(1)    rotate(0deg); }
+    1%   { transform: translate(0, 0)        scale(1)    rotate(180deg); }
+    2%   { transform: translate(0, 0)        scale(1)    rotate(540deg); }
+    4%   { transform: translate(0, 0)        scale(1)    rotate(1080deg); }
+    /* pump — catching air */
+    5%   { transform: translate(0, 0)        scale(1.9)  rotate(1080deg); }
+    6%   { transform: translate(0, 0)        scale(0.7)  rotate(1080deg); }
+    7%   { transform: translate(0, 0)        scale(2.2)  rotate(1080deg); }
+    8%   { transform: translate(0, 0)        scale(0.6)  rotate(1080deg); }
+    9%   { transform: translate(0, 0)        scale(2.5)  rotate(1080deg); }
+    /* LAUNCH — straight up */
+    11%  { transform: translate(0, -65px)    scale(1.2)  rotate(1080deg); }
+    12%  { transform: translate(0, -90px)    scale(1)    rotate(1080deg); }
+    /* hang at apex */
+    13%  { transform: translate(0, -95px)    scale(1)    rotate(1080deg); }
+    14%  { transform: translate(0, -94px)    scale(1)    rotate(1080deg); }
+    /* Z-shaped leaf glide — tilt follows travel direction */
+    /* drift right + dip */
+    17%  { transform: translate(15px, -91px)  scale(1.05) rotate(1100deg); }
+    20%  { transform: translate(35px, -86px)  scale(1.03) rotate(1115deg); }
+    23%  { transform: translate(45px, -80px)  scale(1)    rotate(1110deg); }
+    /* cross left + dip */
+    26%  { transform: translate(30px, -77px)  scale(0.96) rotate(1085deg); }
+    29%  { transform: translate(10px, -73px)  scale(0.94) rotate(1060deg); }
+    32%  { transform: translate(-10px, -68px) scale(0.93) rotate(1040deg); }
+    35%  { transform: translate(-30px, -62px) scale(0.95) rotate(1035deg); }
+    /* drift right + dip */
+    38%  { transform: translate(-15px, -59px) scale(0.98) rotate(1055deg); }
+    41%  { transform: translate(8px, -54px)   scale(1.04) rotate(1095deg); }
+    44%  { transform: translate(30px, -48px)  scale(1.05) rotate(1115deg); }
+    47%  { transform: translate(40px, -42px)  scale(1.02) rotate(1110deg); }
+    /* cross left + dip */
+    50%  { transform: translate(25px, -39px)  scale(0.97) rotate(1088deg); }
+    53%  { transform: translate(5px, -35px)   scale(0.94) rotate(1060deg); }
+    56%  { transform: translate(-15px, -30px) scale(0.93) rotate(1040deg); }
+    59%  { transform: translate(-25px, -25px) scale(0.95) rotate(1038deg); }
+    /* drift right + dip (smaller) */
+    62%  { transform: translate(-12px, -22px) scale(0.98) rotate(1058deg); }
+    65%  { transform: translate(5px, -18px)   scale(1.03) rotate(1092deg); }
+    68%  { transform: translate(20px, -14px)  scale(1.03) rotate(1105deg); }
+    71%  { transform: translate(25px, -11px)  scale(1)    rotate(1098deg); }
+    /* cross left + dip (smaller) */
+    74%  { transform: translate(15px, -9px)   scale(0.98) rotate(1082deg); }
+    77%  { transform: translate(2px, -7px)    scale(0.97) rotate(1065deg); }
+    80%  { transform: translate(-8px, -5px)   scale(0.98) rotate(1058deg); }
+    /* settle */
+    83%  { transform: translate(-3px, -4px)   scale(1)    rotate(1072deg); }
+    86%  { transform: translate(4px, -3px)    scale(1.01) rotate(1082deg); }
+    89%  { transform: translate(6px, -2px)    scale(1)    rotate(1080deg); }
+    92%  { transform: translate(3px, -1px)    scale(1)    rotate(1080deg); }
+    95%  { transform: translate(1px, -0.5px)  scale(1)    rotate(1080deg); }
+    /* land */
+    100% { transform: translate(0, 0)        scale(1)    rotate(1080deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .star-btn.jump { animation: none; }
   }
   /* Thin wrapper around <SleepIndicationAnimation>. The component owns
      its own layout reservation + animation; we only set the colour so

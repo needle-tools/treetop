@@ -42,6 +42,9 @@
    *  separate "Dismissed" group at the bottom so the active list stays
    *  clean. Persisted by the parent; we just consume the set. */
   export let dismissedSources: Set<string> = new Set();
+  /** Sources the user has starred (favorited). Starred sessions float
+   *  to the top of the active list when no search query is active. */
+  export let starredSources: Set<string> = new Set();
   /** Whether each row is already open as a column. Rows that are NOT
    *  open render dimmed so the already-open (active) ones stand out;
    *  open rows additionally reveal the inline close affordance. */
@@ -68,8 +71,19 @@
   $: filtered = filterSessions(sessions, debouncedQuery);
 
   /** Active rows above the divider, dismissed rows below. Computed
-   *  off the same `filtered` list so search applies to both groups. */
-  $: activeFiltered = filtered.filter((s) => !dismissedSources.has(s.source));
+   *  off the same `filtered` list so search applies to both groups.
+   *  When no search query is active, starred sessions float to top. */
+  $: activeFiltered = (() => {
+    const active = filtered.filter((s) => !dismissedSources.has(s.source));
+    if (debouncedQuery.trim() || starredSources.size === 0) return active;
+    const starred: AgentSession[] = [];
+    const rest: AgentSession[] = [];
+    for (const s of active) {
+      if (starredSources.has(s.source)) starred.push(s);
+      else rest.push(s);
+    }
+    return [...starred, ...rest];
+  })();
   $: dismissedFiltered = filtered.filter((s) => dismissedSources.has(s.source));
   /** One flat array of `{kind, ...}` so a single each-block can
    *  `animate:flip` rows as they move between the active and
@@ -347,6 +361,11 @@
                 ? "Codex"
                 : sess.agent}
           </span>
+          {#if starredSources.has(sess.source)}
+            <svg class="row-star" viewBox="0 0 24 24" width="10" height="10" aria-hidden="true" aria-label="Starred">
+              <path fill="#e8b931" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+            </svg>
+          {/if}
           {#if sess.manualTitle && sess.manualTitle.trim().length > 0}
             <span class="agent-title manual">{sess.manualTitle}</span>
           {:else if sess.agent === "shell" && sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
@@ -604,7 +623,7 @@
   /* In this popover we want columns that align ACROSS rows — not
      just within each row — so a long title in one row doesn't push
      "msgs · time · hash" of OTHER rows around. Pattern:
-       1. `.agents-list` is the actual grid (8 columns).
+       1. `.agents-list` is the actual grid (9 columns).
        2. Each `<li>` is a subgrid that spans every column.
        3. Each `.agent-row` is itself a subgrid so the button's
           children can pin to those same columns.
@@ -614,17 +633,19 @@
      Columns:
        1  logo / agent dot       fixed 16px
        2  provider name          auto
-       3  title / last-msg       1fr (the flexible cell)
-       4  message / cmd count    auto
-       5  time passed            auto
-       6  short sid hash         auto
-       7  close × (open only)    fixed 18px
-       8  dismiss / restore      fixed 18px */
+       3  star indicator          fixed 10px
+       4  title / last-msg       1fr (the flexible cell)
+       5  message / cmd count    auto
+       6  time passed            auto
+       7  short sid hash         auto
+       8  close × (open only)    fixed 18px
+       9  dismiss / restore      fixed 18px */
   :global(.session-search-popover .agents-list) {
     display: grid;
     grid-template-columns:
       16px
       auto
+      10px
       minmax(0, 1fr)
       auto
       auto
@@ -653,8 +674,8 @@
     gap: 0.4rem;
   }
   /* The agent-row button itself is also a subgrid so its children
-     (icon · name · title · …) pin to columns 1–8. Override the
-     default per-row grid-template-columns from agent-row.css. */
+     (icon · name · star · title · …) pin to columns 1–9. Override
+     the default per-row grid-template-columns from agent-row.css. */
   :global(.session-search-popover .agent-row) {
     display: grid;
     grid-template-columns: subgrid;
@@ -669,30 +690,34 @@
   :global(.session-search-popover .agent-row > .agent-row-name) {
     grid-column: 2;
   }
-  :global(.session-search-popover .agent-row > .agent-title) {
+  :global(.session-search-popover .agent-row > .row-star) {
     grid-column: 3;
+    justify-self: center;
+  }
+  :global(.session-search-popover .agent-row > .agent-title) {
+    grid-column: 4;
   }
   /* Orphan tag (rare) shares the title column, pinned to the right
      edge of that cell. Inline rendering would otherwise push the
      msgs / time columns rightward and break the alignment. */
   :global(.session-search-popover .agent-row > .orphan-tag) {
-    grid-column: 3;
+    grid-column: 4;
     justify-self: end;
   }
   :global(.session-search-popover .agent-row > .agent-msgs) {
-    grid-column: 4;
-  }
-  :global(.session-search-popover .agent-row > .agent-time) {
     grid-column: 5;
   }
-  :global(.session-search-popover .agent-row > .agent-sid) {
+  :global(.session-search-popover .agent-row > .agent-time) {
     grid-column: 6;
   }
-  :global(.session-search-popover .agent-row > .row-close) {
+  :global(.session-search-popover .agent-row > .agent-sid) {
     grid-column: 7;
   }
-  :global(.session-search-popover .agent-row > .row-action) {
+  :global(.session-search-popover .agent-row > .row-close) {
     grid-column: 8;
+  }
+  :global(.session-search-popover .agent-row > .row-action) {
+    grid-column: 9;
   }
 
   /* Dismiss / restore affordances on each row. Same 18px hit-zone
