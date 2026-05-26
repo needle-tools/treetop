@@ -187,24 +187,22 @@ input[type="checkbox"]:disabled {
   color: var(--text-muted);
 }
 
-/* Header tagline + LAN URL. LAN line sits below the tagline on its
-   own row, small + monospace so it reads as machine-targetable
-   rather than prose. Hidden gracefully when /api/health doesn't
-   surface a localIp (offline, only loopback present). */
+/* Header tagline + build info. Build line sits below the tagline on
+   its own row, small + monospace so it reads as metadata. Hidden
+   when the daemon reports neither version nor buildTime. */
 .tagline-text {
   margin: 0;
 }
-.tagline-lan {
+.tagline-build {
   margin: 0.15rem 0 0;
   font-size: 0.72rem;
   color: var(--text-muted);
 }
-.tagline-lan code {
+.tagline-build code {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 0.7rem;
   background: transparent;
   color: inherit;
-  user-select: all;
 }
 .small {
   font-size: 0.8rem;

@@ -1398,6 +1398,8 @@ const server = Bun.serve<TermWsData, never>({
         totalMemBytes: totalmem(),
         localIp: findLocalIp(),
         port: PORT,
+        buildTime: DAEMON_BUILD_TIME,
+        version: "0.1.0",
       });
     }
 

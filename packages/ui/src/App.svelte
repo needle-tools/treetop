@@ -4928,12 +4928,8 @@
     repoFetchStates.clear();
   });
 
-  /** URL teammates / other machines on the LAN should hit when they
-   *  receive a Share-locally invite from this dashboard. Resolved
-   *  from /api/health (localIp + port) on mount. Null while the
-   *  request is in flight or when the host has no usable private
-   *  IPv4 (laptop offline). Shown right-aligned next to the tagline. */
-  let localLanUrl: string | null = null;
+  let daemonBuildTime: string | null = null;
+  let daemonVersion: string | null = null;
 
   /** Fetch system memory from the daemon (via /api/health) so the TUI
    *  hot/warm thresholds scale to a fraction of total RAM. Static for
@@ -4945,14 +4941,17 @@
       if (!res.ok) return;
       const body = (await res.json()) as {
         totalMemBytes?: unknown;
-        localIp?: unknown;
-        port?: unknown;
+        buildTime?: unknown;
+        version?: unknown;
       };
       if (typeof body.totalMemBytes === "number" && body.totalMemBytes > 0) {
         systemMemBytes = body.totalMemBytes;
       }
-      if (typeof body.localIp === "string" && typeof body.port === "number") {
-        localLanUrl = `http://${body.localIp}:${body.port}`;
+      if (typeof body.buildTime === "string") {
+        daemonBuildTime = body.buildTime;
+      }
+      if (typeof body.version === "string") {
+        daemonVersion = body.version;
       }
     } catch {
       // best-effort — we fall back to TUI_*_MEM_FALLBACK byte ceilings.
@@ -5156,12 +5155,11 @@
       </span>
     </h1>
     <p class="muted tagline-text">multi-repo, multi-agent, worktree-first dashboard</p>
-    {#if localLanUrl}
-      <p
-        class="tagline-lan"
-        title="Teammates on your LAN can reach this dashboard at this URL — use it as the peer address when accepting a 'Share session in local network' invite."
-      >
-        <code>{localLanUrl}</code>
+    {#if daemonVersion || daemonBuildTime}
+      <p class="tagline-build">
+        {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
+        {#if daemonVersion && daemonBuildTime} · {/if}
+        {#if daemonBuildTime}<code>built {new Date(daemonBuildTime).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</code>{/if}
       </p>
     {/if}
   </header>
