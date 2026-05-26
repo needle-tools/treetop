@@ -95,6 +95,7 @@
 
   // Callbacks
   export let onTitleSaved: (next: string) => void = () => {};
+  export let onTitleEditingChange: (editing: boolean) => void = () => {};
   export let onResume: () => void = () => {};
   export let onEndSession: () => void = () => {};
   export let onCancelInflight: () => void = () => {};
@@ -227,6 +228,7 @@
       value={manualTitle}
       extraTooltip={titleTooltipExtra}
       on:saved={(e) => onTitleSaved(e.detail.title)}
+      onEditingChange={onTitleEditingChange}
     />
     {#if ctxChip}
       <Tooltip variant="wide" placement="bottom" escapeClip>

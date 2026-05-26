@@ -94,6 +94,7 @@
     workingChange: { working: boolean };
     exit: void;
     titleSave: { title: string };
+    titleEditingChange: { editing: boolean };
   }>();
 
   /** Mirrors the Stop Session UX from SessionView's resume-in-terminal
@@ -210,6 +211,7 @@
     {starred}
     {onToggleStar}
     onTitleSaved={(next) => dispatch("titleSave", { title: next })}
+    onTitleEditingChange={(e) => dispatch("titleEditingChange", { editing: e })}
     onEndSession={handleEndSession}
     {disposing}
     onClose={() => dispatch("close")}

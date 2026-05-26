@@ -601,6 +601,63 @@
    *  Checked by `closeColumn` to skip the outro — the column isn't
    *  closing, it's upgrading to SessionView. */
   const promotedSources = new Set<string>();
+  /** Sources whose ManualTitle is currently being edited. Promotions
+   *  are deferred while the user is mid-edit so the input isn't ripped
+   *  away. Queued promotions fire when editing stops. */
+  const editingTitleSources = new Set<string>();
+  type DeferredPromotion = { stampedSource: string; realSource: string; cwd: string };
+  let deferredPromotions: DeferredPromotion[] = [];
+
+  function executePromotion(stampedSource: string, realSource: string, cwd: string) {
+    promotedSources.add(stampedSource);
+    const termId = newTermIds[stampedSource];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [cwd]: (openSessionsByWt[cwd] ?? []).map((x) =>
+        x.source === stampedSource
+          ? {
+              ...x,
+              source: realSource,
+              mode: "terminal" as const,
+              attachTermId: termId,
+            }
+          : x,
+      ),
+    };
+    {
+      const w = { ...transientWorking };
+      if (w[stampedSource] !== undefined) { w[realSource] = w[stampedSource]; delete w[stampedSource]; }
+      transientWorking = w;
+    }
+    {
+      const a = { ...transientAwaiting };
+      if (a[stampedSource] !== undefined) { a[realSource] = a[stampedSource]; delete a[stampedSource]; }
+      transientAwaiting = a;
+    }
+    if (transientExited[stampedSource] !== undefined) {
+      const e = { ...transientExited };
+      e[realSource] = e[stampedSource]; delete e[stampedSource];
+      transientExited = e;
+    }
+    if (transientFinishedAt[stampedSource] !== undefined) {
+      const f = { ...transientFinishedAt };
+      f[realSource] = f[stampedSource]; delete f[stampedSource];
+      transientFinishedAt = f;
+    }
+    if (workingStartedAt[stampedSource] !== undefined) {
+      workingStartedAt[realSource] = workingStartedAt[stampedSource];
+      workingStartedAt[stampedSource] = undefined;
+    }
+    void migrateSessionTitleOnServer(stampedSource, realSource);
+  }
+
+  function flushDeferredPromotions(source: string) {
+    const pending = deferredPromotions.filter((p) => p.stampedSource === source);
+    deferredPromotions = deferredPromotions.filter((p) => p.stampedSource !== source);
+    for (const p of pending) {
+      executePromotion(p.stampedSource, p.realSource, p.cwd);
+    }
+  }
   /** ms timestamp of when each source last entered the "working" state.
    *  Used to filter out brief PTY output bursts (status-bar redraws,
    *  resize-triggered re-renders) that don't represent real agent work
@@ -3846,47 +3903,12 @@
         // SessionView. Carry the daemon termId so SessionView
         // reattaches to the live PTY via attachTermId.
         if (stampedSource && ev.source) {
-          promotedSources.add(stampedSource);
-          const termId = newTermIds[stampedSource];
           const realSource = ev.source!;
-          openSessionsByWt = {
-            ...openSessionsByWt,
-            [ev.cwd]: (openSessionsByWt[ev.cwd] ?? []).map((x) =>
-              x.source === stampedSource
-                ? {
-                    ...x,
-                    source: realSource,
-                    mode: "terminal" as const,
-                    attachTermId: termId,
-                  }
-                : x,
-            ),
-          };
-          {
-            const w = { ...transientWorking };
-            if (w[stampedSource] !== undefined) { w[realSource] = w[stampedSource]; delete w[stampedSource]; }
-            transientWorking = w;
+          if (editingTitleSources.has(stampedSource)) {
+            deferredPromotions.push({ stampedSource, realSource, cwd: ev.cwd });
+          } else {
+            executePromotion(stampedSource, realSource, ev.cwd);
           }
-          {
-            const a = { ...transientAwaiting };
-            if (a[stampedSource] !== undefined) { a[realSource] = a[stampedSource]; delete a[stampedSource]; }
-            transientAwaiting = a;
-          }
-          if (transientExited[stampedSource] !== undefined) {
-            const e = { ...transientExited };
-            e[realSource] = e[stampedSource]; delete e[stampedSource];
-            transientExited = e;
-          }
-          if (transientFinishedAt[stampedSource] !== undefined) {
-            const f = { ...transientFinishedAt };
-            f[realSource] = f[stampedSource]; delete f[stampedSource];
-            transientFinishedAt = f;
-          }
-          if (workingStartedAt[stampedSource] !== undefined) {
-            workingStartedAt[realSource] = workingStartedAt[stampedSource];
-            workingStartedAt[stampedSource] = undefined;
-          }
-          void migrateSessionTitleOnServer(stampedSource, realSource);
         }
       } catch {
         // ignore malformed
@@ -7006,6 +7028,14 @@
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}
+                            on:titleEditingChange={(e) => {
+                              if (e.detail.editing) {
+                                editingTitleSources.add(s.source);
+                              } else {
+                                editingTitleSources.delete(s.source);
+                                flushDeferredPromotions(s.source);
+                              }
+                            }}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
                           />

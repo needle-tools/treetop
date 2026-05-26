@@ -30,6 +30,8 @@
    *  in `title` render as actual line breaks in native tooltips. */
   export let extraTooltip: string | undefined = undefined;
 
+  export let onEditingChange: (editing: boolean) => void = () => {};
+
   const dispatch = createEventDispatcher<{ saved: { title: string } }>();
 
   let editing = false;
@@ -42,6 +44,7 @@
   function startEdit() {
     draft = current;
     editing = true;
+    onEditingChange(true);
     requestAnimationFrame(() => {
       inputEl?.focus();
       inputEl?.select();
@@ -52,6 +55,7 @@
     const next = draft;
     if (next === current) {
       editing = false;
+      onEditingChange(false);
       return;
     }
     saving = true;
@@ -68,11 +72,13 @@
     } finally {
       saving = false;
       editing = false;
+      onEditingChange(false);
     }
   }
 
   function cancel() {
     editing = false;
+    onEditingChange(false);
     draft = "";
   }
 
