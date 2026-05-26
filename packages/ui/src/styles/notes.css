@@ -801,6 +801,126 @@
   opacity: 0.6;
 }
 
+.inline-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  margin: 0 2px;
+  vertical-align: baseline;
+  user-select: text;
+  border: 1px solid rgba(42, 37, 22, 0.22);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+.inline-attachment-chip.selected {
+  border-color: rgba(42, 37, 22, 0.55);
+  background: rgba(255, 255, 255, 0.7);
+}
+.inline-attachment-main,
+.inline-attachment-action {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.inline-attachment-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px;
+  text-align: left;
+  user-select: text;
+}
+.inline-attachment-main:hover,
+.inline-attachment-action:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+.inline-attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(42, 37, 22, 0.7);
+}
+.inline-attachment-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inline-attachment-meta {
+  color: rgba(42, 37, 22, 0.58);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.inline-attachment-action {
+  align-self: stretch;
+  padding: 0 5px;
+  border-left: 1px solid rgba(42, 37, 22, 0.16);
+}
+
+.inline-attachment-editor {
+  margin-top: 0.5rem;
+  padding: 0.45rem;
+  border: 1px solid rgba(42, 37, 22, 0.18);
+  border-radius: 5px;
+  background: rgba(255, 250, 223, 0.88);
+  box-shadow: 0 3px 10px -8px rgba(0, 0, 0, 0.5);
+}
+.inline-attachment-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  color: rgba(42, 37, 22, 0.72);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.inline-attachment-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 9rem;
+  max-height: 42vh;
+  resize: vertical;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(42, 37, 22, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.5);
+  color: inherit;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, monospace;
+}
+.inline-attachment-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
+}
+.inline-attachment-image {
+  display: block;
+  max-width: 100%;
+  max-height: 38vh;
+  object-fit: contain;
+  border-radius: 4px;
+  border: 1px solid rgba(42, 37, 22, 0.16);
+}
+.inline-attachment-path {
+  display: block;
+  margin-top: 0.4rem;
+  color: rgba(42, 37, 22, 0.72);
+  word-break: break-all;
+}
+
 .sticky-meta {
   margin-top: 0.4rem;
   padding-top: 0.3rem;
@@ -1240,4 +1360,3 @@
   min-width: 390px;
   max-width: 410px;
 }
-

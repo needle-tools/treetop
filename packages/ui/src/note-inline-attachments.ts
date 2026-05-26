@@ -1,0 +1,351 @@
+export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
+
+const ATTACHMENT_LINK_RE = /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
+
+export interface AttachmentSource {
+  kind: "clipboard" | "drop" | "copy";
+  types?: string[];
+  filename?: string;
+}
+
+export interface TextInlineAttachment {
+  kind: "text";
+  path: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  charCount: number;
+  source?: AttachmentSource;
+}
+
+export interface ImageInlineAttachment {
+  kind: "image";
+  path: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  source?: AttachmentSource;
+}
+
+export type InlineAttachment = TextInlineAttachment | ImageInlineAttachment;
+
+export type InlineAttachmentPart =
+  | { kind: "text"; text: string }
+  | { kind: "attachment"; raw: string; attachment: InlineAttachment };
+
+export interface InlineAttachmentEditRef {
+  placeholder: string;
+  raw: string;
+}
+
+export interface NoteClipboardPayload {
+  type: "supergit-note";
+  id?: string;
+  body: string;
+  text: string;
+  copiedAt: string;
+  attachments: InlineAttachment[];
+}
+
+export function shouldAttachPastedText(text: string): boolean {
+  return Array.from(text).length > LARGE_PASTE_CHAR_THRESHOLD;
+}
+
+export function makeTextAttachmentRef(
+  input: {
+    path: string;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+    charCount: number;
+    source?: AttachmentSource;
+  },
+): string {
+  return makeAttachmentRef({
+    kind: "text",
+    path: input.path,
+    ...(input.filename ? { filename: input.filename } : {}),
+    ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+    ...(typeof input.size === "number" ? { size: input.size } : {}),
+    charCount: input.charCount,
+    ...(input.source ? { source: input.source } : {}),
+  });
+}
+
+export function makeImageAttachmentRef(input: {
+  path: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  source?: AttachmentSource;
+}): string {
+  return makeAttachmentRef({
+    kind: "image",
+    path: input.path,
+    ...(input.filename ? { filename: input.filename } : {}),
+    ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+    ...(typeof input.size === "number" ? { size: input.size } : {}),
+    ...(input.source ? { source: input.source } : {}),
+  });
+}
+
+export function parseInlineAttachments(body: string): InlineAttachmentPart[] {
+  const parts: InlineAttachmentPart[] = [];
+  const matches = attachmentMatches(body);
+  let last = 0;
+  for (const match of matches) {
+    if (match.start < last) continue;
+    if (match.start > last) parts.push({ kind: "text", text: body.slice(last, match.start) });
+    parts.push({ kind: "attachment", raw: match.raw, attachment: match.attachment });
+    last = match.start + match.raw.length;
+  }
+  if (last < body.length) parts.push({ kind: "text", text: body.slice(last) });
+  return parts.length > 0 ? parts : [{ kind: "text", text: body }];
+}
+
+export function expandNoteBodyForCopy(body: string): string {
+  return parseInlineAttachments(body)
+    .map((part) => {
+      if (part.kind === "text") return part.text;
+      return part.attachment.path;
+    })
+    .join("");
+}
+
+export async function expandNoteBodyForCopyAsync(
+  body: string,
+  readTextAttachment: (path: string) => Promise<string>,
+): Promise<string> {
+  const chunks: string[] = [];
+  for (const part of parseInlineAttachments(body)) {
+    if (part.kind === "text") {
+      chunks.push(part.text);
+    } else if (part.attachment.kind === "text") {
+      chunks.push(await readTextAttachment(part.attachment.path));
+    } else {
+      chunks.push(part.attachment.path);
+    }
+  }
+  return chunks.join("");
+}
+
+export async function fetchTextAttachment(path: string): Promise<string> {
+  const res = await fetch(`/api/attachment?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`attachment read failed: ${res.status}`);
+  return res.text();
+}
+
+export function inlineAttachmentLabel(attachment: InlineAttachment): string {
+  if (attachment.kind === "text") {
+    return `Pasted Content, ${attachment.charCount} chars`;
+  }
+  return attachment.filename ?? attachment.path.split("/").pop() ?? "Image attachment";
+}
+
+export function noteBodyToEditText(
+  body: string,
+  opts: {
+    existingRefs?: InlineAttachmentEditRef[];
+    usedText?: string;
+  } = {},
+): { text: string; refs: InlineAttachmentEditRef[] } {
+  let usedText = opts.usedText ?? "";
+  const refs: InlineAttachmentEditRef[] = [];
+  const existingRefs = opts.existingRefs ?? [];
+  const text = parseInlineAttachments(body)
+    .map((part) => {
+      if (part.kind === "text") {
+        usedText += part.text;
+        return part.text;
+      }
+      const base = `[${inlineAttachmentLabel(part.attachment)}]`;
+      const placeholder = uniquePlaceholder(base, usedText, existingRefs, refs);
+      refs.push({ placeholder, raw: part.raw });
+      usedText += placeholder;
+      return placeholder;
+    })
+    .join("");
+  return { text, refs };
+}
+
+export function restoreEditTextAttachments(
+  text: string,
+  refs: InlineAttachmentEditRef[],
+): string {
+  let body = text;
+  for (const ref of refs) {
+    body = body.replace(ref.placeholder, ref.raw);
+  }
+  return body;
+}
+
+export function makeNoteClipboardPayload(input: {
+  id?: string;
+  body: string;
+  text?: string;
+  copiedAt?: string;
+}): NoteClipboardPayload {
+  return {
+    type: "supergit-note",
+    ...(input.id ? { id: input.id } : {}),
+    body: input.body,
+    text: input.text ?? expandNoteBodyForCopy(input.body),
+    copiedAt: input.copiedAt ?? new Date().toISOString(),
+    attachments: parseInlineAttachments(input.body)
+      .filter((part): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
+        part.kind === "attachment",
+      )
+      .map((part) => part.attachment),
+  };
+}
+
+export function makeNoteClipboardHtml(
+  payload: NoteClipboardPayload,
+  visibleText: string,
+): string {
+  return `<span data-supergit-note="${encodeBase64Url(JSON.stringify(payload))}">${escapeHtml(visibleText)}</span>`;
+}
+
+export function extractNoteClipboardPayloadFromHtml(
+  html: string,
+): NoteClipboardPayload | null {
+  const match = html.match(/\bdata-supergit-note="([^"]+)"/);
+  if (!match) return null;
+  try {
+    const value = JSON.parse(decodeBase64Url(match[1]!)) as unknown;
+    if (!value || typeof value !== "object") return null;
+    const obj = value as Record<string, unknown>;
+    if (obj.type !== "supergit-note" || typeof obj.body !== "string") return null;
+    return makeNoteClipboardPayload({
+      ...(typeof obj.id === "string" ? { id: obj.id } : {}),
+      body: obj.body,
+      text: typeof obj.text === "string" ? obj.text : undefined,
+      copiedAt: typeof obj.copiedAt === "string" ? obj.copiedAt : undefined,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function makeAttachmentRef(attachment: InlineAttachment): string {
+  const payload = encodeBase64Url(JSON.stringify(attachment));
+  return `[${escapeMarkdownLabel(inlineAttachmentLabel(attachment))}](supergit://attachment/${payload})`;
+}
+
+function attachmentMatches(body: string): Array<{
+  start: number;
+  raw: string;
+  attachment: InlineAttachment;
+}> {
+  const matches: Array<{ start: number; raw: string; attachment: InlineAttachment }> = [];
+  for (const match of body.matchAll(ATTACHMENT_LINK_RE)) {
+    const attachment = parseAttachmentPayload(match[2]!);
+    if (attachment) {
+      matches.push({ start: match.index ?? 0, raw: match[0]!, attachment });
+    }
+  }
+  return matches.sort((a, b) => a.start - b.start);
+}
+
+function parseAttachmentPayload(payload: string): InlineAttachment | null {
+  try {
+    const value = JSON.parse(decodeBase64Url(payload)) as unknown;
+    if (!value || typeof value !== "object") return null;
+    const obj = value as Record<string, unknown>;
+    const source = parseSource(obj.source);
+    if (obj.kind === "text" && typeof obj.path === "string" && obj.path) {
+      const charCount =
+        typeof obj.charCount === "number"
+          ? obj.charCount
+          : 0;
+      return {
+        kind: "text",
+        path: obj.path,
+        ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
+        ...(typeof obj.mimeType === "string" && obj.mimeType ? { mimeType: obj.mimeType } : {}),
+        ...(typeof obj.size === "number" ? { size: obj.size } : {}),
+        charCount,
+        ...(source ? { source } : {}),
+      };
+    }
+    if (obj.kind === "image" && typeof obj.path === "string" && obj.path) {
+      return {
+        kind: "image",
+        path: obj.path,
+        ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
+        ...(typeof obj.mimeType === "string" && obj.mimeType ? { mimeType: obj.mimeType } : {}),
+        ...(typeof obj.size === "number" ? { size: obj.size } : {}),
+        ...(source ? { source } : {}),
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function parseSource(value: unknown): AttachmentSource | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  if (obj.kind !== "clipboard" && obj.kind !== "drop" && obj.kind !== "copy") {
+    return undefined;
+  }
+  return {
+    kind: obj.kind,
+    ...(Array.isArray(obj.types)
+      ? { types: obj.types.filter((x): x is string => typeof x === "string") }
+      : {}),
+    ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
+  };
+}
+
+function uniquePlaceholder(
+  base: string,
+  usedText: string,
+  existingRefs: InlineAttachmentEditRef[],
+  refs: InlineAttachmentEditRef[],
+): string {
+  let placeholder = base;
+  let suffix = 2;
+  const hasPlaceholder = (value: string) =>
+    usedText.includes(value) ||
+    existingRefs.some((ref) => ref.placeholder === value) ||
+    refs.some((ref) => ref.placeholder === value);
+  while (hasPlaceholder(placeholder)) {
+    placeholder = `${base} #${suffix++}`;
+  }
+  return placeholder;
+}
+
+function encodeBase64Url(s: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(s)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function decodeBase64Url(s: string): string {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+    Math.ceil(s.length / 4) * 4,
+    "=",
+  );
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeMarkdownLabel(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+}
