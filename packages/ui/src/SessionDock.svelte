@@ -74,13 +74,42 @@
    *  the column they're currently looking at. `null` ⇒ no row is
    *  marked as focused. */
   export let focusedSource: string | null = null;
+  /** Whether the dashboard is in zen mode. When true, inactive
+   *  dots are hidden by default (the user can still override via
+   *  the toggle). When zen exits, the pre-zen toggle state is
+   *  restored — the zen override is purely transient. */
+  export let zen = false;
 
   const dispatch = createEventDispatcher<{ pick: DockEntry }>();
 
-  /** Toggle: when false, exited (read-mode / ended) dots are hidden
-   *  and only live TUI sessions are visible. Persisted in-memory
-   *  only — resets to "show all" on page load. */
-  let showInactive = true;
+  /** User's persistent toggle preference (survives zen enter/exit). */
+  let userShowInactive = true;
+  /** Per-zen-session override. `null` means "use zen default (hide)".
+   *  Set to a boolean when the user clicks the toggle during zen. */
+  let zenOverride: boolean | null = null;
+
+  // Reset the zen override whenever zen mode is entered/exited so
+  // the next zen session starts fresh (hidden) and leaving zen
+  // restores the user's original preference.
+  let prevZen = false;
+  $: if (zen !== prevZen) {
+    prevZen = zen;
+    zenOverride = null;
+  }
+
+  /** Effective visibility: zen forces hidden unless the user
+   *  explicitly overrides via the toggle during that zen session. */
+  $: showInactive = zen
+    ? (zenOverride ?? false)
+    : userShowInactive;
+
+  function toggleInactive() {
+    if (zen) {
+      zenOverride = zenOverride === null ? true : !zenOverride;
+    } else {
+      userShowInactive = !userShowInactive;
+    }
+  }
 
   $: split = splitDockEntries(entries, showInactive);
 
@@ -610,7 +639,7 @@
       type="button"
       title={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
       aria-label={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
-      on:click|stopPropagation={() => (showInactive = !showInactive)}
+      on:click|stopPropagation={toggleInactive}
       on:mousedown|stopPropagation
     >
       <span class="dock-toggle-inner" class:filtering={!showInactive}></span>

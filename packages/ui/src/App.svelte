@@ -7285,6 +7285,7 @@
 <SessionDock
   entries={dockEntries}
   {focusedSource}
+  zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
 />
 
