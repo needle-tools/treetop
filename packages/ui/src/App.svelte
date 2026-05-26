@@ -5146,20 +5146,13 @@
     <h1>
       <img src="/needle-logo.svg" alt="" class="brand-mark" />
       supergit
-      <span
-        class="live"
-        class:on={streamConnected}
-        title={streamConnected ? "connected (SSE stream live)" : "offline (SSE disconnected)"}
-      >
-        {streamConnected ? "● connected" : "○ offline"}
-      </span>
     </h1>
     <p class="muted tagline-text">multi-repo, multi-agent, worktree-first dashboard</p>
     {#if daemonVersion || daemonBuildTime}
       <p class="tagline-build">
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
         {#if daemonVersion && daemonBuildTime} · {/if}
-        {#if daemonBuildTime}<code>built {new Date(daemonBuildTime).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</code>{/if}
+        {#if daemonBuildTime}<code>built {new Date(daemonBuildTime).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</code>{/if}
       </p>
     {/if}
   </header>

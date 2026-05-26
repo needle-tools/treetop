@@ -31,17 +31,6 @@ main > header > h1 {
   width: auto;
   display: inline-block;
 }
-.live {
-  font-size: 0.75rem;
-  color: var(--text-faint);
-  letter-spacing: 0.04em;
-}
-.live.on {
-  /* One step brighter than the global --status-clean (#16a34a, green-600)
-     so the header dot reads as "active right now" without recolouring
-     every clean-status badge across the dashboard. ~Tailwind green-500. */
-  color: #22c55e;
-}
 
 /* Fixed top-right menubar that holds the action-button cluster. Stays
    pinned while the page scrolls so TUIs/Undo/Events are always one
