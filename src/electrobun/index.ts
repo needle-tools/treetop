@@ -13,6 +13,7 @@ import { resolve, dirname, join } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync, spawn } from "node:child_process";
+import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
 const PORT = 27787;
@@ -48,16 +49,60 @@ if (loginPath) {
   process.env.PATH = loginPath;
 }
 
+// ── Orphaned WebView2 cleanup (Windows) ──────────────────────────────
+// When a previous supergit instance crashes, electrobun doesn't kill
+// the child msedgewebview2.exe processes it spawned. They keep holding
+// the EBWebView profile lockfile, so the *next* launch fails with
+// HRESULT 0x800700AA (ERROR_BUSY). On startup we look for orphaned
+// msedgewebview2.exe processes whose --user-data-dir points into our
+// install partition and kill them. Scope is narrow: we never touch a
+// WebView2 process that isn't pointed at our partition.
+
+function killOrphanedWebView2(): void {
+  if (!isWin) return;
+  try {
+    // Match the EBWebView dir installed builds use. process.execPath is
+    // …\Supergit\bin\bun.exe (Worker process), so go up to install root.
+    const partition = resolve(
+      dirname(process.execPath),
+      "..", "..", "WebView2", "Partitions", "default", "EBWebView",
+    );
+    // PowerShell CIM query: returns CommandLine; we match by --user-data-dir
+    // pointing at our partition, then kill by ProcessId.
+    const ps = bunSpawnSync({
+      cmd: [
+        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ` +
+        `Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${partition.replace(/\\/g, "\\\\")}') } | ` +
+        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ],
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    // Also remove a stale lockfile if it exists. WebView2 leaves it
+    // behind when the holding process is gone.
+    const lockfile = join(partition, "lockfile");
+    if (existsSync(lockfile)) {
+      try { Bun.spawnSync({ cmd: ["cmd.exe", "/c", "del", "/q", lockfile], stdout: "ignore", stderr: "ignore" }); } catch {}
+    }
+  } catch {
+    // Best-effort; if cleanup fails the launch may still succeed.
+  }
+}
+
 // ── Check for git ────────────────────────────────────────────────────
 
 function gitAvailable(): boolean {
   try {
-    const r = spawnSync("git", ["--version"], {
-      timeout: 3000,
-      stdio: "ignore",
-      env: process.env,
+    const r = bunSpawnSync({
+      cmd: ["git", "--version"],
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+      env: process.env as Record<string, string>,
     });
-    return r.status === 0;
+    return r.exitCode === 0;
   } catch {
     return false;
   }
@@ -84,7 +129,7 @@ async function waitForDaemon(attempts = 0): Promise<void> {
 }
 
 let ownsDaemon = false;
-let daemonProc: ReturnType<typeof spawn> | null = null;
+let daemonProc: ReturnType<typeof bunSpawn> | null = null;
 
 async function getDaemonBuildTime(): Promise<string | null> {
   try {
@@ -190,15 +235,23 @@ async function ensureDaemon(): Promise<void> {
   env.SUPERGIT_PORT = String(PORT);
   if (loginPath) env.PATH = loginPath;
 
-  daemonProc = spawn(binary, [], {
-    env,
-    stdio: "ignore",
-    detached: false,
-  });
+  const logDir = join(homedir(), ".config", "supergit");
+  try { mkdirSync(logDir, { recursive: true }); } catch {}
+  const logPath = join(logDir, "daemon.log");
+  const logFile = Bun.file(logPath);
 
-  daemonProc.on("error", (err) => {
-    console.error("Failed to start daemon:", err.message);
-  });
+  try {
+    daemonProc = bunSpawn({
+      cmd: [binary],
+      env,
+      stdout: logFile,
+      stderr: logFile,
+      stdin: "ignore",
+    });
+  } catch (err) {
+    console.error("Failed to start daemon:", (err as Error).message);
+    throw err;
+  }
 
   ownsDaemon = true;
   await waitForDaemon();
@@ -207,8 +260,8 @@ async function ensureDaemon(): Promise<void> {
 // ── Cleanup ──────────────────────────────────────────────────────────
 
 process.on("exit", () => {
-  if (ownsDaemon && daemonProc && !daemonProc.killed) {
-    daemonProc.kill("SIGTERM");
+  if (ownsDaemon && daemonProc) {
+    try { daemonProc.kill(); } catch {}
   }
 });
 
@@ -298,6 +351,10 @@ if (!isWin) {
 
 await ensureDaemon();
 
+// Kill any leftover WebView2 processes from a previous crashed instance
+// that are still holding our profile's lockfile (HRESULT 0x800700AA).
+killOrphanedWebView2();
+
 const bounds = loadBounds();
 
 const win = new BrowserWindow({
@@ -311,22 +368,25 @@ const win = new BrowserWindow({
 // so we do it ourselves via bun:ffi after the window is created.
 if (isWin) {
   try {
+    // Win32 ABI on x64: HWND/HINSTANCE/HICON are 64-bit handles, WPARAM/LPARAM
+    // are uintptr_t. Bun's `ptr` maps to u64 on x64; `u64` is the safe choice
+    // for handle-shaped values to avoid CFG fast-fails from ABI mismatch.
     const user32 = dlopen("user32.dll", {
-      FindWindowW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-      SendMessageW: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-      LoadImageW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
+      FindWindowW:  { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
+      SendMessageW: { args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.u64], returns: FFIType.u64 },
+      LoadImageW:   { args: [FFIType.u64, FFIType.u64, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.u64 },
     });
     const title16 = new Uint8Array(Buffer.from("Supergit\0", "utf-16le"));
-    const hwnd = user32.symbols.FindWindowW(null, ptr(title16));
-    if (hwnd) {
+    const hwnd = user32.symbols.FindWindowW(0n, BigInt(ptr(title16)));
+    if (hwnd && hwnd !== 0n) {
       // ── Icon ──
       const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
       if (existsSync(icoPath)) {
         const ico16 = new Uint8Array(Buffer.from(icoPath + "\0", "utf-16le"));
-        const hIcon = user32.symbols.LoadImageW(null, ptr(ico16), 1, 0, 0, 0x0010 | 0x0040);
-        if (hIcon) {
-          user32.symbols.SendMessageW(hwnd, 0x0080, 0 as any, hIcon);
-          user32.symbols.SendMessageW(hwnd, 0x0080, 1 as any, hIcon);
+        const hIcon = user32.symbols.LoadImageW(0n, BigInt(ptr(ico16)), 1, 0, 0, 0x0010 | 0x0040);
+        if (hIcon && hIcon !== 0n) {
+          user32.symbols.SendMessageW(hwnd, 0x0080, 0n, hIcon);
+          user32.symbols.SendMessageW(hwnd, 0x0080, 1n, hIcon);
         }
       }
 
@@ -337,13 +397,13 @@ if (isWin) {
       try {
         const dwmapi = dlopen("dwmapi.dll", {
           DwmSetWindowAttribute: {
-            args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32],
+            args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.u32],
             returns: FFIType.i32,
           },
         });
         const setAttr = (attr: number, value: number) => {
           const buf = new Uint32Array([value]);
-          dwmapi.symbols.DwmSetWindowAttribute(hwnd, attr, ptr(buf), 4);
+          dwmapi.symbols.DwmSetWindowAttribute(hwnd, attr, BigInt(ptr(buf)), 4);
         };
         setAttr(20, 1);          // DWMWA_USE_IMMERSIVE_DARK_MODE = true
         setAttr(35, 0x001d2623); // DWMWA_CAPTION_COLOR = #23261d as BGR
