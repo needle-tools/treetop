@@ -368,6 +368,19 @@
     return path ? `worktree:${path}` : null;
   }
 
+  function primaryDropAnchor(note: NoteShape): string | undefined {
+    return note.anchors.find((a) => a.startsWith("worktree:") || a.startsWith("repo:"));
+  }
+
+  function noteCanDropOnAnchor(note: NoteShape, anchor: string): boolean {
+    return primaryDropAnchor(note) === anchor;
+  }
+
+  function notesShareDropAnchor(a: NoteShape, b: NoteShape): boolean {
+    const anchor = primaryDropAnchor(a);
+    return !!anchor && anchor === primaryDropAnchor(b);
+  }
+
   function dropTargetAt(
     clientX: number,
     clientY: number,
@@ -877,6 +890,7 @@
   ): Promise<void> {
     const source = notes.find((n) => n.id === payload.sourceNoteId);
     if (!source) return;
+    if (!noteCanDropOnAnchor(source, target.anchor)) return;
     const nextSourceBody = removeInlineAttachmentRef(source.body, payload.raw);
     if (nextSourceBody === source.body) return;
     const sourceParts = parseInlineAttachments(source.body);
@@ -948,6 +962,9 @@
   ): Promise<void> {
     const source = notes.find((n) => n.id === payload.sourceNoteId);
     if (!source) return;
+    if (payload.sourceNoteId !== targetNote.id && !notesShareDropAnchor(source, targetNote)) {
+      return;
+    }
     if (payload.sourceNoteId === targetNote.id) {
       const nextBody = beforeRaw
         ? moveInlineAttachmentRefBefore(source.body, payload.raw, beforeRaw)
@@ -1419,6 +1436,7 @@
     }
     const target = noteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
     if (!target || target.kind === "link" || target.kind === "emoji") return;
+    if (!notesShareDropAnchor(source, target)) return;
     const raw = inlineRefForPinnedNote(source);
     if (!raw) return;
     try {

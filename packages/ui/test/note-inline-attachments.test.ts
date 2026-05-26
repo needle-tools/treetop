@@ -21,6 +21,7 @@ import {
   restoreEditTextAttachments,
   shouldAttachPastedText,
   trailingImageAttachmentIndexes,
+  trailingVisualAttachmentIndexes,
 } from "../src/note-inline-attachments";
 
 describe("note inline attachments", () => {
@@ -44,7 +45,7 @@ describe("note inline attachments", () => {
     });
     const parts = parseInlineAttachments(`before ${ref} after`);
 
-    expect(ref).toMatch(/^\[Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//);
+    expect(ref).toMatch(/^\[@Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//);
     expect(ref).not.toContain("{{supergit:attachment:");
     expect(parts).toHaveLength(3);
     expect(parts[0]).toEqual({ kind: "text", text: "before " });
@@ -68,7 +69,7 @@ describe("note inline attachments", () => {
     });
     const parts = parseInlineAttachments(ref);
 
-    expect(ref).toMatch(/^\[shot\.png\]\(supergit:\/\/attachment\//);
+    expect(ref).toMatch(/^\[@shot\.png\]\(supergit:\/\/attachment\//);
     expect(parts).toHaveLength(1);
     expect(parts[0]?.kind).toBe("attachment");
     if (parts[0]?.kind === "attachment") {
@@ -175,7 +176,7 @@ describe("note inline attachments", () => {
 
     const edit = noteBodyToEditText(body);
 
-    expect(edit.text).toBe("A [Pasted Content, 16 chars]\nB [shot.png]");
+    expect(edit.text).toBe("A @Pasted Content, 16 chars\nB @shot.png");
     expect(edit.refs).toHaveLength(2);
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
@@ -185,12 +186,12 @@ describe("note inline attachments", () => {
       path: "/tmp/supergit/attachments/paste.txt",
       charCount: 16,
     });
-    const body = `[Pasted Content, 16 chars]\n${paste}`;
+    const body = `@Pasted Content, 16 chars\n${paste}`;
 
     const edit = noteBodyToEditText(body);
 
     expect(edit.text).toBe(
-      "[Pasted Content, 16 chars]\n[Pasted Content, 16 chars] #2",
+      "@Pasted Content, 16 chars\n@Pasted Content, 16 chars #2",
     );
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
@@ -296,5 +297,22 @@ describe("note inline attachments", () => {
 
     const mixed = parseInlineAttachments(`${first}\ncaption`);
     expect([...trailingImageAttachmentIndexes(mixed)]).toEqual([]);
+  });
+
+  test("detects mixed visual attachments trailing at the end of note content", () => {
+    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const emoji = makeEmojiAttachmentRef({ body: "✨" });
+    const second = makeImageAttachmentRef({ path: "/tmp/b.png", filename: "b.png" });
+    const paste = makeTextAttachmentRef({
+      path: "/tmp/paste.txt",
+      filename: "paste.txt",
+      charCount: 12,
+    });
+
+    const parts = parseInlineAttachments(`body ${first}\n${emoji}\n${second}\n`);
+    expect([...trailingVisualAttachmentIndexes(parts)]).toEqual([1, 3, 5]);
+
+    const blocked = parseInlineAttachments(`body ${first}\n${paste}\n${emoji}\n`);
+    expect([...trailingVisualAttachmentIndexes(blocked)]).toEqual([5]);
   });
 });

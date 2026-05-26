@@ -5,7 +5,7 @@ export const SESSION_LINK_DRAG_MIME =
   "application/x-supergit-session-link+json";
 export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
 
-const ATTACHMENT_LINK_RE = /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
+const ATTACHMENT_LINK_RE = /\[@((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
 
 export interface AttachmentSource {
   kind: "clipboard" | "drop" | "copy";
@@ -150,7 +150,7 @@ export function parseInlineAttachments(body: string): InlineAttachmentPart[] {
   return parts.length > 0 ? parts : [{ kind: "text", text: body }];
 }
 
-export function trailingImageAttachmentIndexes(
+export function trailingVisualAttachmentIndexes(
   parts: readonly InlineAttachmentPart[],
 ): Set<number> {
   const indexes: number[] = [];
@@ -161,7 +161,7 @@ export function trailingImageAttachmentIndexes(
       if (part.text.trim() === "") continue;
       break;
     }
-    if (part.attachment.kind === "image") {
+    if (part.attachment.kind === "image" || part.attachment.kind === "emoji") {
       indexes.push(i);
       continue;
     }
@@ -170,6 +170,8 @@ export function trailingImageAttachmentIndexes(
   }
   return new Set(indexes.reverse());
 }
+
+export const trailingImageAttachmentIndexes = trailingVisualAttachmentIndexes;
 
 export function removeInlineAttachmentRef(body: string, raw: string): string {
   if (!raw) return body;
@@ -284,7 +286,7 @@ export function noteBodyToEditText(
         usedText += part.text;
         return part.text;
       }
-      const base = `[${inlineAttachmentLabel(part.attachment)}]`;
+      const base = `@${inlineAttachmentLabel(part.attachment)}`;
       const placeholder = uniquePlaceholder(base, usedText, existingRefs, refs);
       refs.push({ placeholder, raw: part.raw });
       usedText += placeholder;
@@ -355,7 +357,7 @@ export function extractNoteClipboardPayloadFromHtml(
 
 function makeAttachmentRef(attachment: InlineAttachment): string {
   const payload = encodeBase64Url(JSON.stringify(attachment));
-  return `[${escapeMarkdownLabel(inlineAttachmentLabel(attachment))}](supergit://attachment/${payload})`;
+  return `[@${escapeMarkdownLabel(inlineAttachmentLabel(attachment))}](supergit://attachment/${payload})`;
 }
 
 function attachmentMatches(body: string): Array<{

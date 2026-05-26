@@ -74,7 +74,7 @@
     parseInlineAttachments,
     restoreEditTextAttachments,
     shouldAttachPastedText,
-    trailingImageAttachmentIndexes,
+    trailingVisualAttachmentIndexes,
     type InlineAttachment,
     type InlineAttachmentEditRef,
     type InlineAttachmentPart,
@@ -1629,7 +1629,12 @@
     !editing && bodyParts.length === 1 && bodyParts[0]?.kind === "attachment"
       ? bodyParts[0]
       : null;
-  $: trailingImageIndexes = trailingImageAttachmentIndexes(bodyParts);
+  $: trailingVisualIndexes = trailingVisualAttachmentIndexes(bodyParts);
+  $: trailingVisualParts = bodyParts.filter(
+    (part, i): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
+      part.kind === "attachment" && trailingVisualIndexes.has(i),
+  );
+  $: trailingVisualFirstIndex = [...trailingVisualIndexes][0] ?? -1;
 
   /** Svelte action: keep a textarea's height in lockstep with its
    *  content so the user never sees a scrollbar or has to grab the
@@ -1996,30 +2001,47 @@
             {@html bodyParts.length === 1
               ? renderBody(part.text, repos, pickerScope)
               : renderInlineBody(part.text)}
-          {:else if part.attachment.kind === "image" && trailingImageIndexes.has(i)}
-            <button
-              type="button"
-              class="sticky-trailing-image"
-              draggable="true"
-              title="View attachment"
-              on:dragstart={(e) =>
-                onInlineAttachmentDragStart(e, part.raw, part.attachment)}
-              on:click|stopPropagation={() =>
-                openInlineAttachment(part.raw, part.attachment)}
-              on:dblclick|stopPropagation
-            >
-              <span class="sticky-photo-frame">
-                <img
-                  src={`/api/image?path=${encodeURIComponent(part.attachment.path)}`}
-                  alt={part.attachment.filename ?? "Attached image"}
-                />
-              </span>
-              <span class="sticky-photo-caption">
-                {part.attachment.filename
-                  ?? part.attachment.path.split("/").pop()
-                  ?? "Image attachment"}
-              </span>
-            </button>
+          {:else if trailingVisualIndexes.has(i)}
+            {#if i === trailingVisualFirstIndex}
+              <div
+                class="sticky-trailing-attachments"
+                class:stacked={trailingVisualParts.length > 1}
+              >
+                {#each trailingVisualParts as visual, j}
+                  <button
+                    type="button"
+                    class={`sticky-trailing-card tilt-${j % 5}`}
+                    class:sticky-trailing-card-emoji={visual.attachment.kind === "emoji"}
+                    class:sticky-trailing-card-image={visual.attachment.kind === "image"}
+                    draggable="true"
+                    title="View attachment"
+                    style:--stack-index={j}
+                    style:--stack-count={trailingVisualParts.length}
+                    on:dragstart={(e) =>
+                      onInlineAttachmentDragStart(e, visual.raw, visual.attachment)}
+                    on:click|stopPropagation={() =>
+                      openInlineAttachment(visual.raw, visual.attachment)}
+                    on:dblclick|stopPropagation
+                  >
+                    {#if visual.attachment.kind === "image"}
+                      <span class="sticky-photo-frame">
+                        <img
+                          src={`/api/image?path=${encodeURIComponent(visual.attachment.path)}`}
+                          alt={visual.attachment.filename ?? "Attached image"}
+                        />
+                      </span>
+                      <span class="sticky-photo-caption">
+                        {visual.attachment.filename
+                          ?? visual.attachment.path.split("/").pop()
+                          ?? "Image attachment"}
+                      </span>
+                    {:else if visual.attachment.kind === "emoji"}
+                      <span class="sticky-trailing-emoji">{visual.attachment.body}</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           {:else}
             <InlineAttachmentChip
               attachment={part.attachment}
