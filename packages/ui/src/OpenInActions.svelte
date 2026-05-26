@@ -256,6 +256,7 @@
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
   let cmdUrlDropdown: string | null = null;
+  let cmdUrlOverride: Record<string, string> = {};
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
@@ -1002,7 +1003,7 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedSuggestionIdx}
-                          on:mousedown|preventDefault={() => { newCmd = s; }}
+                          on:mousedown|preventDefault|stopPropagation={() => { newCmd = s; urlInput?.focus(); }}
                           on:mouseenter={() => { selectedSuggestionIdx = i; }}
                         >{s}</li>
                       {/each}
@@ -1148,7 +1149,7 @@
     {@const target = customLinkTarget(link)}
     {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
     {@const cmdUrls = kind === "command" ? commandUrls[link.id] : undefined}
-    {@const cmdUrl = cmdUrls?.[0]}
+    {@const cmdUrl = (cmdUrls && cmdUrlOverride[link.id] && cmdUrls.includes(cmdUrlOverride[link.id])) ? cmdUrlOverride[link.id] : cmdUrls?.[0]}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -1285,7 +1286,7 @@
                     type="button"
                     class="cmd-url-option"
                     class:active={u === cmdUrl}
-                    on:click|stopPropagation={() => { openUrl(u); cmdUrlDropdown = null; }}
+                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; cmdUrlDropdown = null; }}
                   >
                     {new URL(u).host}
                   </button>
@@ -1426,7 +1427,7 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedEditSuggestionIdx}
-                          on:mousedown|preventDefault={() => { editCmd = s; }}
+                          on:mousedown|preventDefault|stopPropagation={() => { editCmd = s; editUrlInput?.focus(); }}
                           on:mouseenter={() => { selectedEditSuggestionIdx = i; }}
                         >{s}</li>
                       {/each}
@@ -1981,24 +1982,24 @@
     top: 100%;
     right: 0;
     z-index: 200;
-    margin-top: 2px;
-    padding: 3px 0;
+    margin-top: 4px;
+    padding: 4px 0;
     background: var(--bg-2, #1e1e1e);
     border: 1px solid var(--border, #333);
     border-radius: 4px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    min-width: 120px;
+    min-width: 180px;
     white-space: nowrap;
   }
   .cmd-url-option {
     display: block;
     width: 100%;
-    padding: 3px 10px;
+    padding: 5px 12px;
     border: none;
     background: none;
     color: var(--text-2, #ccc);
     font: inherit;
-    font-size: 0.78rem;
+    font-size: 0.82rem;
     text-align: left;
     cursor: pointer;
   }
