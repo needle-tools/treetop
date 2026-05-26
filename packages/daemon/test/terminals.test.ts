@@ -66,6 +66,34 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
   );
 
   test(
+    "spawned PTYs get a color-capable terminal env",
+    async () => {
+      const handle = await backend.spawn({
+        cmd: [
+          "bash",
+          "-c",
+          'printf "TERM=%s\\nCOLORTERM=%s\\nNO_COLOR=%s\\nCOLOR=%s\\n" "$TERM" "$COLORTERM" "${NO_COLOR-unset}" "${COLOR-unset}"',
+        ],
+        cwd: "/tmp",
+        size: { cols: 80, rows: 24 },
+      });
+      const out: string[] = [];
+      await new Promise<void>((resolve) => {
+        handle.subscribe({
+          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
+          onExit() { resolve(); },
+        });
+      });
+      const combined = out.join("");
+      expect(combined).toContain("TERM=xterm-256color");
+      expect(combined).toContain("COLORTERM=truecolor");
+      expect(combined).toContain("NO_COLOR=unset");
+      expect(combined).toContain("COLOR=unset");
+    },
+    10_000,
+  );
+
+  test(
     "kill() actually terminates a long-running process — no zombies",
     async () => {
       const handle = await backend.spawn({

@@ -69,10 +69,15 @@ rl.on("line", (line) => {
         // `process.env.PORT` and tries to bind supergit's port, which
         // strictPort then refuses. supergit's port choice should be its own
         // private concern; spawned terminals get a clean baseline.
+        // The same applies to no-color flags injected by launcher/test
+        // environments: the inline xterm supports color, so don't force
+        // child TUIs into monochrome unless a caller explicitly asks.
         const cleaned = { ...process.env };
         delete cleaned.PORT;
         delete cleaned.PORTLESS_URL;
         delete cleaned.NODE_EXTRA_CA_CERTS;
+        delete cleaned.NO_COLOR;
+        delete cleaned.COLOR;
         // Disable macOS's per-session shell-state restore. On macOS,
         // /etc/zshrc_Apple_Terminal hooks `zshexit` to write a
         // SHELL_SESSION_FILE (an `echo Restored session: <date>` line,
@@ -101,6 +106,8 @@ rl.on("line", (line) => {
         delete cleaned.TERM_PROGRAM;
         delete cleaned.TERM_PROGRAM_VERSION;
         delete cleaned.TERM_SESSION_ID;
+        cleaned.TERM = "xterm-256color";
+        cleaned.COLORTERM = "truecolor";
         const term = ptySpawn(cmd[0], cmd.slice(1), {
           name: "xterm-256color",
           cols: cols ?? 80,
@@ -126,6 +133,9 @@ rl.on("line", (line) => {
           "HISTSIZE",
           "SAVEHIST",
           "TERM",
+          "COLORTERM",
+          "NO_COLOR",
+          "COLOR",
           "HOME",
           "SHELL",
           "PATH",

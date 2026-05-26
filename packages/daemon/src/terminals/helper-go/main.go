@@ -40,16 +40,19 @@ func fail(message string, id string) {
 	emit(m)
 }
 
-// scrubEnv returns a copy of the current env with portless / macOS
-// session-restore vars removed — same scrub as helper.mjs.
+// scrubEnv returns a copy of the current env with launcher-specific
+// portless, no-color, and macOS session-restore vars removed.
 func scrubEnv() []string {
 	skip := map[string]bool{
-		"PORT":                  true,
-		"PORTLESS_URL":          true,
-		"NODE_EXTRA_CA_CERTS":   true,
-		"TERM_PROGRAM":          true,
-		"TERM_PROGRAM_VERSION":  true,
-		"TERM_SESSION_ID":       true,
+		"PORT":                 true,
+		"PORTLESS_URL":         true,
+		"NODE_EXTRA_CA_CERTS":  true,
+		"TERM_PROGRAM":         true,
+		"TERM_PROGRAM_VERSION": true,
+		"TERM_SESSION_ID":      true,
+		"TERM":                 true,
+		"NO_COLOR":             true,
+		"COLOR":                true,
 	}
 	var out []string
 	for _, kv := range os.Environ() {
@@ -64,6 +67,7 @@ func scrubEnv() []string {
 	}
 	out = append(out, "SHELL_SESSIONS_DISABLE=1")
 	out = append(out, "TERM=xterm-256color")
+	out = append(out, "COLORTERM=truecolor")
 	return out
 }
 
@@ -96,7 +100,7 @@ func envSnapshot(env []string) map[string]any {
 	keys := []string{
 		"TERM_PROGRAM", "TERM_SESSION_ID", "SHELL_SESSIONS_DISABLE",
 		"ZDOTDIR", "HISTFILE", "HISTSIZE", "SAVEHIST",
-		"TERM", "HOME", "SHELL", "PATH",
+		"TERM", "COLORTERM", "NO_COLOR", "COLOR", "HOME", "SHELL", "PATH",
 	}
 	lookup := make(map[string]string, len(env))
 	for _, kv := range env {
