@@ -564,6 +564,7 @@
 
   function startSshPolling(id: string) {
     if (sshPollTimer) clearInterval(sshPollTimer);
+    let pollCount = 0;
     const poll = async () => {
       try {
         const sessions = await fetchSshSessions();
@@ -576,9 +577,16 @@
           onSshChange?.(null);
         }
       } catch {}
+      pollCount++;
+      // After the fast initial burst, switch to slower polling
+      if (pollCount === 10 && sshPollTimer) {
+        clearInterval(sshPollTimer);
+        sshPollTimer = setInterval(poll, 5000);
+      }
     };
+    // Poll fast for the first 10s (every 1s), then every 5s
     void poll();
-    sshPollTimer = setInterval(poll, 5000);
+    sshPollTimer = setInterval(poll, 1000);
   }
 
   onDestroy(() => {
