@@ -4581,12 +4581,17 @@
    *  ahead > 0 or behind > 0 render an arrow; the dirty/staged/
    *  unstaged counts surface in the hover label. */
   $: dockRepoStatuses = repos.map((repo) => {
+    const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
+    const visible = new Set(
+      effectiveVisibleWorktrees(repo.id, diskPaths, visibleWorktreesByRepo),
+    );
     let ahead = 0;
     let behind = 0;
     let staged = 0;
     let unstaged = 0;
     let untracked = 0;
     for (const wt of repo.worktrees ?? []) {
+      if (!visible.has(wt.path)) continue;
       if (wt.branchStatus) {
         ahead += wt.branchStatus.ahead;
         behind += wt.branchStatus.behind;
