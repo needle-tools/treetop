@@ -42,6 +42,7 @@ interface InternalTerm {
   subs: Set<TerminalSubscriber>;
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
+  configError: { file: string } | null;
   /** When this PTY is a zsh shell, the temp ZDOTDIR we built for it
    *  (a `.zshrc` that sources the user's real one then adds history
    *  hardening). Cleaned up on exit. Undefined for non-zsh PTYs. */
@@ -70,6 +71,8 @@ const AWAITING_INPUT_PATTERNS: RegExp[] = [
   /\[y\/N\]\s*$/m,
 ];
 
+const CONFIG_ERROR_RE = /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/;
+
 /** Strip common ANSI/terminal escape sequences from a chunk so the
  *  prompt-pattern regexes can match the plain text. We don't try to
  *  be exhaustive — just enough to neutralize colour codes and cursor
@@ -84,12 +87,9 @@ function stripAnsi(text: string): string {
     .replace(/\x1b/g, "");
 }
 
-function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
-  // Only look at the tail — prompts always appear at the bottom of the
-  // visible terminal area. ~4KB is comfortably larger than any single
-  // permission prompt block.
+function getTailText(buffer: Uint8Array[], bufferBytes: number): string {
   const tailBytes = Math.min(4096, bufferBytes);
-  if (tailBytes === 0) return false;
+  if (tailBytes === 0) return "";
   const tail = new Uint8Array(tailBytes);
   let offset = 0;
   let remaining = tailBytes;
@@ -100,8 +100,18 @@ function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
     offset += take;
     remaining -= take;
   }
-  const text = stripAnsi(new TextDecoder("utf-8", { fatal: false }).decode(tail));
-  return AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
+  return stripAnsi(new TextDecoder("utf-8", { fatal: false }).decode(tail));
+}
+
+function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
+  const text = getTailText(buffer, bufferBytes);
+  return text.length > 0 && AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
+}
+
+export function detectConfigError(buffer: Uint8Array[], bufferBytes: number): { file: string } | null {
+  const text = getTailText(buffer, bufferBytes);
+  const m = CONFIG_ERROR_RE.exec(text);
+  return m ? { file: m[1]!.trim() } : null;
 }
 
 /** Map a PTY's argv[0] to an agent label used by the daemon for
@@ -306,9 +316,14 @@ export class NodePtyBackend implements PtyBackend {
         // Recompute awaiting-input state after each output chunk. If
         // the flag flips, notify subscribers so the UI can outline.
         const nextAwaiting = isAwaitingInput(t.buffer, t.bufferBytes);
-        if (nextAwaiting !== t.awaitingInput) {
+        const nextConfigErr = detectConfigError(t.buffer, t.bufferBytes);
+        const configFlipped =
+          (nextConfigErr === null) !== (t.configError === null) ||
+          nextConfigErr?.file !== t.configError?.file;
+        if (nextAwaiting !== t.awaitingInput || configFlipped) {
           t.awaitingInput = nextAwaiting;
-          for (const s of t.subs) s.onState?.({ awaitingInput: nextAwaiting });
+          t.configError = nextConfigErr;
+          for (const s of t.subs) s.onState?.({ awaitingInput: nextAwaiting, configError: nextConfigErr });
         }
         return;
       }
@@ -377,6 +392,7 @@ export class NodePtyBackend implements PtyBackend {
       bufferBytes: 0,
       subs: new Set(),
       awaitingInput: false,
+      configError: null,
     };
     // For zsh shells, build a temp ZDOTDIR whose .zshrc sources the
     // user's real ~/.zshrc and then forces INC_APPEND_HISTORY /
@@ -450,9 +466,10 @@ export class NodePtyBackend implements PtyBackend {
         // detector will re-arm it on the next matching prompt; this
         // just stops the UI outlining the panel between the user
         // typing and the next render arriving.
-        if (t.awaitingInput) {
+        if (t.awaitingInput || t.configError) {
           t.awaitingInput = false;
-          for (const s of t.subs) s.onState?.({ awaitingInput: false });
+          t.configError = null;
+          for (const s of t.subs) s.onState?.({ awaitingInput: false, configError: null });
         }
       },
       resize: (size) => {

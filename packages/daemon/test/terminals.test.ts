@@ -11,7 +11,7 @@
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
-import { NodePtyBackend, detectAgentLabel } from "../src/terminals/node-pty-backend";
+import { NodePtyBackend, detectAgentLabel, detectConfigError } from "../src/terminals/node-pty-backend";
 import {
   sampleProcs,
   shQuote,
@@ -821,5 +821,47 @@ describe("detectAgentLabel", () => {
     expect(detectAgentLabel("")).toBeUndefined();
     expect(detectAgentLabel("vim")).toBeUndefined();
     expect(detectAgentLabel("git")).toBeUndefined();
+  });
+});
+
+describe("detectConfigError", () => {
+  function bufferFrom(text: string): [Uint8Array[], number] {
+    const buf = new TextEncoder().encode(text);
+    return [[buf], buf.byteLength];
+  }
+
+  test("detects Claude config error with file path", () => {
+    const [buf, len] = bufferFrom(
+      "Configuration Error\n\n" +
+      "The configuration file at C:\\Users\\marce\\.claude.json contains invalid JSON.\n\n" +
+      "JSON Parse error: Unable to parse JSON string\n\n" +
+      "Choose an option:\n" +
+      "❯ 1. Exit and fix manually\n" +
+      "  2. Reset with default configuration\n\n" +
+      "Enter to confirm · Esc to cancel",
+    );
+    const result = detectConfigError(buf, len);
+    expect(result).not.toBeNull();
+    expect(result!.file).toBe("C:\\Users\\marce\\.claude.json");
+  });
+
+  test("detects Unix-style path", () => {
+    const [buf, len] = bufferFrom(
+      "Configuration Error\n" +
+      "The configuration file at /home/user/.claude.json contains invalid JSON.\n" +
+      "JSON Parse error: foo",
+    );
+    const result = detectConfigError(buf, len);
+    expect(result).not.toBeNull();
+    expect(result!.file).toBe("/home/user/.claude.json");
+  });
+
+  test("returns null for normal output", () => {
+    const [buf, len] = bufferFrom("$ claude --help\nUsage: claude [options]\n");
+    expect(detectConfigError(buf, len)).toBeNull();
+  });
+
+  test("returns null for empty buffer", () => {
+    expect(detectConfigError([], 0)).toBeNull();
   });
 });
