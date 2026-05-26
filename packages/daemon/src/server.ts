@@ -58,7 +58,7 @@ import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
 import { listRemoteDir, downloadFile, uploadFile, cachePathFor } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
-import { saveAttachment } from "./attachments";
+import { saveAttachment, serveAttachment } from "./attachments";
 import { sampleProcs, sampleCwds, renameArgv, resolveAgentBinary, discoverRepoProcesses } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
@@ -1597,6 +1597,22 @@ const server = Bun.serve<TermWsData, never>({
       });
     }
 
+    if (url.pathname === "/api/attachment" && req.method === "GET") {
+      const result = await serveAttachment(
+        join(WORKSPACE_PATH, "attachments"),
+        url.searchParams.get("path"),
+      );
+      if (result.status !== 200) {
+        return json({ error: result.error }, { status: result.status });
+      }
+      return new Response(result.file, {
+        headers: {
+          ...CORS,
+          "Cache-Control": "private, max-age=60",
+        },
+      });
+    }
+
     if (url.pathname === "/api" || url.pathname === "/api/") {
       return json({
         name: "supergit",
@@ -1609,6 +1625,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/debug/mem", description: "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set." },
           { method: "POST", path: "/api/shutdown", description: "graceful shutdown: flushes state, closes PTYs, stops the server. Used by start.ts to restart prod without manual kill." },
           { method: "GET", path: "/api/image", description: "serve a local image file (?path=) for inline rendering in chat sessions" },
+          { method: "GET", path: "/api/attachment", description: "serve a file previously saved under <workspace>/attachments/ (?path=)" },
           { method: "POST", path: "/api/attach", body: "multipart: file=<Blob>", description: "save a pasted/dropped attachment under <workspace>/attachments/; returns { path: absolute }" },
           { method: "GET", path: "/api/repos", description: "NDJSON stream of registered repos with their worktrees + detected agents. First line is {type:'manifest',repos:[{id,path,name,addedAt,color}]} for skeleton rows; each subsequent line is {type:'repo',repo:{...full enriched repo...}} flushed as that repo's git fan-out completes. Stream ends with EOF (no explicit done marker)." },
           { method: "GET", path: "/api/agents", description: "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions" },
