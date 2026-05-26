@@ -80,6 +80,7 @@
     align-items: center;
     gap: 0.3rem;
     line-height: 1;
+    white-space: nowrap;
     outline: 1px solid transparent;
     outline-offset: -1px;
     transition: outline-color 0.15s;
