@@ -71,12 +71,18 @@ export async function killOnPort(port: number): Promise<void> {
     }
     await Bun.sleep(300);
   } else {
-    const result = await $`lsof -ti :${port}`.quiet().nothrow();
+    // -sTCP:LISTEN is critical: plain `lsof -ti :PORT` also matches
+    // *connections* to the port — e.g. the prod daemon's keep-alive
+    // connection from a peer health check to localhost:7777. Without
+    // this filter we'd SIGKILL prod when restarting dev.
+    const self = String(process.pid);
+    const parent = String(process.ppid);
+    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`.quiet().nothrow();
     const pids = result.stdout
       .toString()
       .trim()
       .split("\n")
-      .filter(Boolean);
+      .filter((p) => p && p !== self && p !== parent);
     if (pids.length === 0) return;
     console.log(`dev: port ${port} held by ${pids.join(", ")} — killing`);
     for (const pid of pids) {
