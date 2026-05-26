@@ -305,9 +305,20 @@
     if (mins < 60) return `in ${mins} min`;
     const hours = Math.round(diffMs / 3_600_000);
     if (hours < 24) return `in ${hours}h`;
-    const d = new Date(t);
-    return d.toLocaleString(undefined, {
+    const days = Math.round(diffMs / (24 * 3_600_000));
+    return `in ${days}d`;
+  }
+
+  /** Full date+time for the reset — used as a native title so the
+   *  user can hover "in 6d" and see "Wed 28 May, 04:00" etc. */
+  function fmtResetsLong(iso: string | undefined): string | undefined {
+    if (!iso) return undefined;
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return undefined;
+    return new Date(t).toLocaleString(undefined, {
       weekday: "short",
+      day: "numeric",
+      month: "short",
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -350,7 +361,10 @@
    *  Math: rate = utilization / elapsed, projected = rate × windowDuration.
    *
    *  Returns null when the window has no resetsAt or the numbers are
-   *  too fresh to project (< 1h elapsed → jittery). */
+   *  too fresh to project meaningfully. The minimum elapsed threshold
+   *  scales with window size: 10% of the window or 1h, whichever is
+   *  larger. For a 7-day window that's ~17h — prevents "2% in 5 min →
+   *  On pace to exceed limit (200%)" jitter right after a reset. */
   function projectWeekly(
     utilization: number | undefined,
     resetsAt: string | undefined,
@@ -363,7 +377,8 @@
     const remaining = resetMs - Date.now();
     if (remaining <= 0) return null;
     const elapsed = windowMs - remaining;
-    if (elapsed < 3_600_000) return null;
+    const minElapsed = Math.max(3_600_000, windowMs * 0.1);
+    if (elapsed < minElapsed) return null;
     const rate = utilization / elapsed;
     const projected = Math.min(rate * windowMs, 2);
     const isOverPace = projected > 1.0;
@@ -583,7 +598,7 @@
                 <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
               </span>
               <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-bars-detail">{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-detail" title={fmtResetsLong(row.window?.resetsAt)}>{fmtResets(row.window?.resetsAt)}</span>
             {/each}
           </div>
           {@const weekProj = projectWeekly(
@@ -611,7 +626,7 @@
                 <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
               </span>
               <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-bars-detail">{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-detail" title={fmtResetsLong(row.window?.resetsAt)}>{fmtResets(row.window?.resetsAt)}</span>
             {/each}
           </div>
           {@const codexWeekWin = codexLive.secondaryWindow ?? codexLive.primaryWindow}
