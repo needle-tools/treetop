@@ -4,6 +4,7 @@ export interface FileEntry {
   size?: number;
   mtime?: string;
   git?: string;
+  sync?: string;
 }
 
 export function joinPath(base: string, name: string): string {
@@ -119,5 +120,66 @@ export async function fetchGitStatus(path: string, gitWt: string): Promise<Map<s
     return map;
   } catch {
     return new Map();
+  }
+}
+
+/**
+ * Extract the terminal ID from a session source string.
+ * Sources go through these forms:
+ *   __new__:shell:<random>      → look up in newTermIds map
+ *   __attached__:shell:<termId> → termId is the last segment
+ */
+export function resolveTermIdFromSource(
+  source: string,
+  newTermIds: Record<string, string>,
+): string | undefined {
+  if (newTermIds[source]) return newTermIds[source];
+  if (source.startsWith("__attached__:")) return source.split(":").pop();
+  return undefined;
+}
+
+/**
+ * Parse a remote file browser source string into its termId.
+ *   __remote__:<termId>:<uniqueId>
+ */
+export function parseRemoteSource(source: string): string | undefined {
+  if (!source.startsWith("__remote__:")) return undefined;
+  return source.split(":")[1];
+}
+
+export interface SshSessionInfo {
+  user: string | undefined;
+  host: string;
+  port: number;
+}
+
+export async function fetchSshSessions(): Promise<Record<string, SshSessionInfo>> {
+  try {
+    const res = await fetch("/api/ssh/sessions");
+    if (!res.ok) return {};
+    return await res.json();
+  } catch {
+    return {};
+  }
+}
+
+export async function fetchRemoteDir(termId: string, path: string): Promise<FileEntry[]> {
+  const res = await fetch(
+    `/api/ssh/files?term=${encodeURIComponent(termId)}&path=${encodeURIComponent(path)}`,
+  );
+  if (!res.ok) throw new Error(`Failed to list remote ${path}`);
+  const data = await res.json();
+  return data.entries ?? [];
+}
+
+export async function openRemoteFile(termId: string, remotePath: string): Promise<void> {
+  const res = await fetch("/api/ssh/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ termId, remotePath }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to open remote file`);
   }
 }

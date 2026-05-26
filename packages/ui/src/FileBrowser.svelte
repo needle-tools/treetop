@@ -2,7 +2,7 @@
   import SessionHeader from "./SessionHeader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchGitStatus, NavHistory, type FileEntry } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -11,6 +11,34 @@
   export let source: string;
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
+  /** When set, this file browser shows a remote filesystem via SSH. */
+  export let remoteTermId: string | null = null;
+  /** Remote cwd from the terminal — file browser follows when followTerminal is true. */
+  export let remoteCwd: string | null = null;
+
+  $: isRemote = remoteTermId !== null;
+  let followTerminal = true;
+
+  $: if (followTerminal && remoteCwd && remoteCwd !== currentDir) {
+    doFollowNav(remoteCwd);
+  }
+
+  function doFollowNav(path: string) {
+    if (path === currentDir) return;
+    nav.push(path);
+    currentDir = path;
+    navTick++;
+    expanded = {};
+    void loadCurrentDir();
+    persistState();
+  }
+
+  function toggleFollow() {
+    followTerminal = !followTerminal;
+    if (followTerminal && remoteCwd && remoteCwd !== currentDir) {
+      doFollowNav(remoteCwd);
+    }
+  }
 
   const KV_KEY = "supergit:fileBrowser:state";
 
@@ -71,15 +99,19 @@
     error = null;
     entries = [];
     try {
-      entries = await fetchDir(currentDir);
+      entries = isRemote && remoteTermId
+        ? await fetchRemoteDir(remoteTermId, currentDir)
+        : await fetchDir(currentDir);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       entries = [];
     }
     loading = false;
-    fetchGitStatus(currentDir, wtPath).then((m) => {
-      gitStatusByDir = { ...gitStatusByDir, [currentDir]: m };
-    });
+    if (!isRemote) {
+      fetchGitStatus(currentDir, wtPath).then((m) => {
+        gitStatusByDir = { ...gitStatusByDir, [currentDir]: m };
+      });
+    }
     if (savedExpandedPaths.length > 0) {
       const toRestore = savedExpandedPaths;
       savedExpandedPaths = [];
@@ -88,10 +120,13 @@
   }
 
   async function restoreExpanded(paths: string[]) {
+    const fetcher = isRemote && remoteTermId
+      ? (p: string) => fetchRemoteDir(remoteTermId!, p)
+      : fetchDir;
     const results = await Promise.all(
       paths.map(async (p) => {
         try {
-          return { path: p, children: await fetchDir(p) };
+          return { path: p, children: await fetcher(p) };
         } catch {
           return null;
         }
@@ -105,6 +140,7 @@
   }
 
   function enterDir(name: string) {
+    if (isRemote) followTerminal = false;
     const next = joinPath(currentDir, name);
     nav.push(next);
     currentDir = next;
@@ -115,6 +151,7 @@
   }
 
   function goBack() {
+    if (isRemote) followTerminal = false;
     const prev = nav.goBack();
     if (!prev) return;
     currentDir = prev;
@@ -125,6 +162,7 @@
   }
 
   function goForward() {
+    if (isRemote) followTerminal = false;
     const next = nav.goForward();
     if (!next) return;
     currentDir = next;
@@ -143,9 +181,12 @@
       expanded = next;
     } else {
       try {
-        const children = await fetchDir(fullPath);
+        const fetcher = isRemote && remoteTermId
+          ? (p: string) => fetchRemoteDir(remoteTermId!, p)
+          : fetchDir;
+        const children = await fetcher(fullPath);
         expanded = { ...expanded, [fullPath]: children };
-        fetchGitStatus(fullPath, wtPath).then((m) => {
+        if (!isRemote) fetchGitStatus(fullPath, wtPath).then((m) => {
           gitStatusByDir = { ...gitStatusByDir, [fullPath]: m };
         });
       } catch {}
@@ -202,11 +243,15 @@
     const dir = parentDir ?? currentDir;
     const fullPath = joinPath(dir, name);
     try {
-      await fetch("/api/open-default", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: fullPath }),
-      });
+      if (isRemote && remoteTermId) {
+        await openRemoteFile(remoteTermId, fullPath);
+      } else {
+        await fetch("/api/open-default", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: fullPath }),
+        });
+      }
     } catch {}
   }
 
@@ -223,6 +268,7 @@
   }
 
   function navigateTo(path: string) {
+    if (isRemote) followTerminal = false;
     nav.push(path);
     currentDir = path;
     navTick++;
@@ -344,6 +390,17 @@
       on:click={() => navigateTo(wtPath)}
       disabled={currentDir === wtPath}
     ><svg class="fb-nav-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></button>
+    {#if isRemote}
+      <button
+        class="fb-follow-btn"
+        class:fb-follow-btn-active={followTerminal}
+        on:click={toggleFollow}
+        title={followTerminal ? "Stop following terminal cwd" : "Follow terminal cwd"}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+        {followTerminal ? "Follow" : "Unfollow"}
+      </button>
+    {/if}
     <div
       class="fb-path"
       role="button"

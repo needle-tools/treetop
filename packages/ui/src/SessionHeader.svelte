@@ -98,6 +98,8 @@
   export let onTitleEditingChange: (editing: boolean) => void = () => {};
   export let onResume: () => void = () => {};
   export let onEndSession: () => void = () => {};
+  export let onSshBrowse: (() => void) | undefined = undefined;
+  export let sshConnected = false;
   export let onCancelInflight: () => void = () => {};
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
@@ -372,6 +374,16 @@
           title="The agent is paused on a prompt — focus the terminal and respond."
         >needs input</span>
       {/if}
+      {#if sshConnected && onSshBrowse}
+        <button
+          class="resume-btn ssh-browse-btn"
+          on:click={onSshBrowse}
+          title="Browse remote filesystem"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Browse Files
+        </button>
+      {/if}
       {#if canEnd}
         <button
           class="resume-btn dispose-btn"
@@ -476,6 +488,11 @@
   .resume-btn:hover {
     color: var(--text-1);
     border-color: var(--text-faint);
+  }
+  .resume-btn.ssh-browse-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
   .resume-btn.dispose-btn {
     color: #efaaaa;

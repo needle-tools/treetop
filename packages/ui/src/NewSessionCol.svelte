@@ -24,6 +24,7 @@
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
+  import type { SshSessionInfo } from "./file-browser-utils";
 
   type AgentKind = "claude" | "codex" | "copilot" | "ollama" | "shell";
 
@@ -95,6 +96,7 @@
     exit: void;
     titleSave: { title: string };
     titleEditingChange: { editing: boolean };
+    sshBrowse: { user: string | undefined; host: string; port: number };
   }>();
 
   /** Mirrors the Stop Session UX from SessionView's resume-in-terminal
@@ -166,6 +168,8 @@
     },
   ] satisfies SessionMenuItem[];
 
+  let sshSession: SshSessionInfo | null = null;
+
   async function saveAsLink(triggerRect: DOMRect): Promise<void> {
     if (!wtPath) return;
     try {
@@ -221,6 +225,8 @@
     closeTitle={agent === "shell"
       ? "Close this column and dispose the terminal.\nThe transcript is kept on disk and can be reopened from the worktree's session picker."
       : "Close this column and stop the agent.\nOnce the agent has written its first message you can also reopen the session later from the worktree's picker."}
+    sshConnected={!!sshSession}
+    onSshBrowse={() => dispatch("sshBrowse", sshSession)}
   />
 
   <TerminalView
@@ -233,6 +239,7 @@
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}
+    onSshChange={(ssh) => { sshSession = ssh; }}
     onExit={() => {
       /* Deliberately NOT closing the column on PTY exit. Some agents
          (notably `codex`) restart themselves after an in-place update —

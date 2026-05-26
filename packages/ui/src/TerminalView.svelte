@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -69,9 +70,14 @@
    *  (--append-system-prompt-file for Claude, positional prompt for
    *  Codex). */
   export let initialPrompt: string | undefined = undefined;
+  /** Fires when an SSH session is detected (or lost) for this terminal.
+   *  Parent can use this to open a remote file browser panel. */
+  export let onSshChange: ((ssh: SshSessionInfo | null) => void) | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
+  let sshSession: SshSessionInfo | null = null;
+  let sshPollTimer: ReturnType<typeof setInterval> | null = null;
   /** Settle-debounce for wheel hijacking — same idea as the chat
    *  scroll-island in SessionView. While the cursor hasn't been
    *  parked over the terminal for ≥ 300ms, we capture wheel events
@@ -245,6 +251,7 @@
       }
       terminalId = id;
       onSpawn(id);
+      startSshPolling(id);
       // Build WS URL relative to current origin so it works behind the
       // Vite proxy or directly against the daemon.
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -555,12 +562,32 @@
     }, 500);
   });
 
+  function startSshPolling(id: string) {
+    if (sshPollTimer) clearInterval(sshPollTimer);
+    const poll = async () => {
+      try {
+        const sessions = await fetchSshSessions();
+        const s = sessions[id];
+        if (s && !sshSession) {
+          sshSession = s;
+          onSshChange?.(s);
+        } else if (!s && sshSession) {
+          sshSession = null;
+          onSshChange?.(null);
+        }
+      } catch {}
+    };
+    void poll();
+    sshPollTimer = setInterval(poll, 5000);
+  }
+
   onDestroy(() => {
     clearStartupGuard();
     if (workingTicker !== null) {
       clearInterval(workingTicker);
       workingTicker = null;
     }
+    if (sshPollTimer) { clearInterval(sshPollTimer); sshPollTimer = null; }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
@@ -789,6 +816,7 @@
     </div>
   {/if}
 
+
 </div>
 
 <style>
@@ -910,4 +938,5 @@
     outline: 2px solid currentColor;
     outline-offset: 1px;
   }
+
 </style>

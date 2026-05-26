@@ -195,3 +195,71 @@
 .fb-selected:hover {
   background: color-mix(in srgb, var(--text-muted) 22%, var(--surface-1));
 }
+
+/* SSH remote sync badges — mirrors .fb-git pattern */
+.fb-sync {
+  font-size: 0.58rem;
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  flex-shrink: 0;
+  padding: 0 0.2rem;
+  border-radius: 2px;
+}
+.fb-sync-downloading {
+  color: var(--brand, #6366f1);
+  background: color-mix(in srgb, var(--brand, #6366f1) 12%, transparent);
+}
+.fb-sync-uploading {
+  color: var(--status-ahead, #f59e0b);
+  background: color-mix(in srgb, var(--status-ahead, #f59e0b) 12%, transparent);
+}
+.fb-sync-editing {
+  color: var(--status-clean, #22c55e);
+  background: color-mix(in srgb, var(--status-clean, #22c55e) 12%, transparent);
+}
+.fb-sync-error {
+  color: #ef4444;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+}
+.fb-sync-synced {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+/* Follow toggle in remote file browser breadcrumbs */
+.fb-follow-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fb-follow-btn:hover {
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+.fb-follow-btn-active {
+  color: var(--brand, #6366f1);
+  border-color: var(--brand, #6366f1);
+  background: color-mix(in srgb, var(--brand, #6366f1) 8%, transparent);
+}
+
+/* Remote cwd indicator (shown when follow is off) */
+.fb-cwd-indicator {
+  display: inline-flex;
+  align-items: center;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--brand, #6366f1);
+  opacity: 0.7;
+  cursor: pointer;
+}
+.fb-cwd-indicator:hover {
+  opacity: 1;
+}

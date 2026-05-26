@@ -251,6 +251,19 @@
         </div>
       </Tooltip>
     {/if}
+    {#if entry.sync}
+      <span class="fb-sync fb-sync-{entry.sync}"
+        title={entry.sync === "downloading" ? "Downloading…"
+             : entry.sync === "uploading" ? "Uploading…"
+             : entry.sync === "editing" ? "Open for editing"
+             : entry.sync === "error" ? "Sync error"
+             : "Synced"}
+      >{entry.sync === "downloading" ? "↓"
+       : entry.sync === "uploading" ? "↑"
+       : entry.sync === "editing" ? "✎"
+       : entry.sync === "error" ? "!"
+       : "✓"}</span>
+    {/if}
     <span class="fb-mtime muted">{formatMtime(entry.mtime)}</span>
     <span class="fb-size muted">{isDir ? "" : formatSize(entry.size)}</span>
   </div>

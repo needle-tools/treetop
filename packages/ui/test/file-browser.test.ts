@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -303,5 +303,50 @@ describe("NavHistory", () => {
     const h = NavHistory.fromSerialized(null as any);
     expect(h.current).toBe("/");
     expect(h.canGoBack()).toBe(false);
+  });
+});
+
+describe("resolveTermIdFromSource", () => {
+  test("resolves from __attached__:shell:<termId>", () => {
+    expect(resolveTermIdFromSource("__attached__:shell:t_abc123", {}))
+      .toBe("t_abc123");
+  });
+
+  test("resolves from newTermIds map for __new__ sources", () => {
+    const newTermIds = { "__new__:shell:xyz": "t_real_id" };
+    expect(resolveTermIdFromSource("__new__:shell:xyz", newTermIds))
+      .toBe("t_real_id");
+  });
+
+  test("newTermIds takes precedence over source parsing", () => {
+    const newTermIds = { "__attached__:shell:t_old": "t_override" };
+    expect(resolveTermIdFromSource("__attached__:shell:t_old", newTermIds))
+      .toBe("t_override");
+  });
+
+  test("returns undefined for unknown source with no newTermIds entry", () => {
+    expect(resolveTermIdFromSource("__new__:shell:unknown", {}))
+      .toBeUndefined();
+  });
+
+  test("returns undefined for unrelated source", () => {
+    expect(resolveTermIdFromSource("some/session/path.jsonl", {}))
+      .toBeUndefined();
+  });
+});
+
+describe("parseRemoteSource", () => {
+  test("extracts termId from __remote__:<termId>:<uniqueId>", () => {
+    expect(parseRemoteSource("__remote__:t_abc123:rb_xyz"))
+      .toBe("t_abc123");
+  });
+
+  test("returns undefined for non-remote source", () => {
+    expect(parseRemoteSource("__files__:fb_123")).toBeUndefined();
+    expect(parseRemoteSource("__attached__:shell:t_123")).toBeUndefined();
+  });
+
+  test("returns undefined for empty string", () => {
+    expect(parseRemoteSource("")).toBeUndefined();
   });
 });

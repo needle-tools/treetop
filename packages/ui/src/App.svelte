@@ -14,6 +14,7 @@
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
+  import { resolveTermIdFromSource, parseRemoteSource } from "./file-browser-utils";
   import GitHistory from "./GitHistory.svelte";
   import ProcessList from "./ProcessList.svelte";
   import StatusBadge from "./StatusBadge.svelte";
@@ -44,6 +45,7 @@
   import { refreshMessages } from "./messages-store";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import OnboardingWalkthrough from "./OnboardingWalkthrough.svelte";
   import {
     WALKTHROUGH_STEPS,
@@ -225,6 +227,8 @@
   let loading = false;
   let loadingSlow = false;
   let loadingSlowTimer: ReturnType<typeof setTimeout> | null = null;
+  let loadingTotal = 0;
+  let loadingDone = 0;
   // Legacy single-string error slot — kept for code paths that still set
   // it directly. New code should call `addToast({ kind: "error", ... })`
   // instead. Anything assigned to `error` is mirrored into the toast
@@ -323,6 +327,24 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  let peerDiscoveryEnabled = false;
+  let peerToggleBusy = false;
+  async function togglePeerDiscovery() {
+    if (peerToggleBusy) return;
+    peerToggleBusy = true;
+    try {
+      const res = await fetch("/api/peer-discovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !peerDiscoveryEnabled }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        peerDiscoveryEnabled = data.enabled === true;
+      }
+    } catch {}
+    peerToggleBusy = false;
+  }
   /** Orphan-notes tray: header button + popover listing notes whose
    *  anchor doesn't match any currently-registered repo or worktree.
    *  Only renders the button when there's at least one orphan. */
@@ -1654,6 +1676,18 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  function openRemoteBrowser(wtPath: string, termId: string, sshHost: string) {
+    const id = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const synthetic = `__remote__:${termId}:${id}`;
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const entry: OpenSession = { agent: "files", source: synthetic };
+    const insertAt = visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, synthetic);
+  }
+
   function openGitHistory(wtPath: string) {
     const id = `gh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__history__:${id}`;
@@ -2860,6 +2894,8 @@
   const load = singleFlight(async () => {
     loading = true;
     loadingSlow = false;
+    loadingTotal = 0;
+    loadingDone = 0;
     if (loadingSlowTimer) clearTimeout(loadingSlowTimer);
     loadingSlowTimer = setTimeout(() => { loadingSlow = true; }, 5000);
     error = "";
@@ -2879,6 +2915,7 @@
       const reposStream = fetchReposNDJSON({
         onManifest: (skel) => {
           tManifest = performance.now() - tStart;
+          loadingTotal = skel.length;
           const filtered = pendingRemoval.size > 0
             ? skel.filter((s) => !pendingRemoval.has(s.id))
             : skel;
@@ -2892,6 +2929,7 @@
         },
         onRepo: (full) => {
           repoCount += 1;
+          loadingDone = repoCount;
           if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
           // If a color save is still in flight for this repo, the
           // daemon's snapshot of `color` is stale (the POST hasn't
@@ -3858,6 +3896,10 @@
         void refreshMessages();
         return;
       }
+      if (payload.kind === "peerDiscovery") {
+        peerDiscoveryEnabled = (payload as { enabled?: unknown }).enabled === true;
+        return;
+      }
       if (payload.kind === "command_start" || payload.kind === "command_exit") {
         void refreshRunningCommands();
         return;
@@ -4516,6 +4558,7 @@
           // (terminal or read-only).
           if (
             s.source.startsWith("__files__:") ||
+            s.source.startsWith("__remote__:") ||
             s.source.startsWith("__history__:")
           ) continue;
           // Same lookup precedence as the NewSessionCol render: once a
@@ -4975,6 +5018,9 @@
     void refreshRunningCommands();
     void refreshCommandUrls();
     void restoreLiveShells();
+    fetch("/api/peer-discovery").then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) peerDiscoveryEnabled = d.enabled === true; })
+      .catch(() => {});
     // Global focus listener — whenever the user puts focus into a
     // session column (typing, clicking into the terminal, etc.)
     // clear that column's "unread" pulse so it doesn't keep
@@ -5253,6 +5299,16 @@
       {/if}
     </div>
 
+    <button
+      class="actions-btn peer-toggle"
+      class:peer-on={peerDiscoveryEnabled}
+      disabled={peerToggleBusy}
+      on:click={togglePeerDiscovery}
+      title={peerDiscoveryEnabled
+        ? "LAN peer discovery is ON — click to turn off"
+        : "LAN peer discovery is OFF — click to turn on"}
+    >LAN {peerDiscoveryEnabled ? "on" : "off"}</button>
+
     <MessagesInbox />
 
     <div class="actions-anchor">
@@ -5390,8 +5446,16 @@
         <LoadingSpinner size="0.85rem" label="Loading" />
         <span>loading…</span>
       </div>
-      {#if loadingSlow}
-        <p class="loading-slow">daemon is busy — scanning worktrees and agent sessions</p>
+      {#if loadingTotal > 0}
+        <p class="loading-slow">Scanning repos {loadingDone} / {loadingTotal}</p>
+        <div class="loading-progress-track">
+          <div
+            class="loading-progress-bar"
+            style="width: {loadingTotal > 0 ? (loadingDone / loadingTotal) * 100 : 0}%"
+          ></div>
+        </div>
+      {:else if loadingSlow}
+        <p class="loading-slow">Loading – scanning worktrees and sessions…</p>
       {/if}
     </div>
   {:else if rows.length === 0 || emptyReposDebug}
@@ -6697,7 +6761,7 @@
                       <LoadingSpinner size="0.7rem" />
                     {/if}
                   </span>
-                  <div class="onboarding-text">{@html marked.parse(ob.text || "", { async: false, breaks: true, gfm: true })}</div>
+                  <div class="onboarding-text">{@html DOMPurify.sanitize(marked.parse(ob.text || "", { async: false, breaks: true, gfm: true }) as string)}</div>
                 </div>
                 {#if ob.status === "done" && walkthroughByWt[wt.path] == null && !walkthroughSeen(wt.path)}
                   <div class="onboarding-tour-buttons">
@@ -6817,7 +6881,17 @@
                         }}
                         out:closeColumn
                       >
-                        {#if s.source.startsWith("__files__:")}
+                        {#if s.source.startsWith("__remote__:")}
+                          {@const remoteTermId = parseRemoteSource(s.source) ?? ""}
+                          <FileBrowser
+                            wtPath="/"
+                            source={s.source}
+                            {remoteTermId}
+                            onClose={() => closeSessionInWt(wt.path, s)}
+                            onDragStart={(e) =>
+                              handleSessionDragStart(e, wt.path, i)}
+                          />
+                        {:else if s.source.startsWith("__files__:")}
                           <FileBrowser
                             wtPath={wt.path}
                             source={s.source}
@@ -7055,6 +7129,10 @@
                                   [s.source]: false,
                                 };
                               }
+                            }}
+                            on:sshBrowse={() => {
+                              const termId = resolveTermIdFromSource(s.source, newTermIds);
+                              if (termId) openRemoteBrowser(wt.path, termId, "");
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}

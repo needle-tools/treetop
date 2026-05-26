@@ -125,6 +125,21 @@ Auth: SSH keys (agent forwarding), password, or keyboard-interactive.
 The daemon stores host configs in the workspace (`ssh-hosts.json` or
 similar) — connection details, preferred protocol, display resolution.
 
+## Orphan terminal cleanup
+
+When no frontend (SSE + WebSocket) has been connected for **5 minutes**,
+the daemon kills ALL spawned terminal processes — shells, agents, SSH
+sessions, everything. No exceptions for starred or pinned sessions.
+
+- **SIGTERM** first, give the process a chance to clean up.
+- **SIGKILL** after **10 seconds** if still alive.
+- **Log every action**: which terminals, their PIDs, how long they were
+  orphaned, exit codes. This is critical for post-mortem debugging when
+  something unexpected happened.
+
+This prevents zombie SSH sessions and orphaned agent processes from
+accumulating when the user closes the browser and forgets about them.
+
 ## What we don't build
 
 - **An SSH server.** supergit is always the client.
