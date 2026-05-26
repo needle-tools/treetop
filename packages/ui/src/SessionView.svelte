@@ -1731,6 +1731,7 @@
        height:100% would push the bottom border under the strip's
        overflow-y:hidden and clip it. */
     height: 100%;
+    min-height: 12rem;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;

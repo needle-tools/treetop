@@ -916,9 +916,7 @@ button.branch-button:hover {
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.5rem;
-  /* Left padding mirrors `.row-activity`'s 0.5rem so the status dot
-     lines up vertically with the agent dot in the activity row above. */
-  padding: 0 0.5rem;
+  padding: 0 0.5rem 0 calc(22px + 0.4rem);
 }
 .status-dot {
   width: 8px;

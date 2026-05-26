@@ -4661,7 +4661,7 @@ const server = Bun.serve<TermWsData, never>({
             const systemPrompt =
               "You are summarising recent git activity so the developer can recall at a glance what they worked on in this repository. " +
               `The window is the last ${sinceHours} hours. ` +
-              "Output ONE single line, max 180 characters. " +
+              "Output ONE single line, max 300 characters. Do NOT include thinking, reasoning, or preamble — output ONLY the summary line. " +
               "List 2 to 4 distinct work themes separated by ' – ' (space, en-dash, space). " +
               "Each theme is a short noun phrase, not a sentence (e.g. 'Ollama summarisation', 'Windows compat pass', 'sticky-notes drag-drop'). " +
               "If a parenthetical detail clarifies a theme, keep it under 6 words: 'Ollama summarisation (sessions + composer)'. " +
@@ -4795,7 +4795,9 @@ const server = Bun.serve<TermWsData, never>({
               totalDeletions,
               estimatedTokens,
               elapsedMs: Date.now() - startedAt,
-              body: collected.trim(),
+              body: collected
+                .replace(/<think>[\s\S]*?<\/think>/gi, "")
+                .trim(),
             });
             broadcast("change", { kind: "repo_summary", repoId: id });
           })();

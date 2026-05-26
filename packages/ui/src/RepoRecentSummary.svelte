@@ -652,6 +652,8 @@
   }
   .tooltip-body {
     max-width: 60ch;
+    max-height: 40vh;
+    overflow-y: auto;
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
