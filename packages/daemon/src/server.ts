@@ -4659,16 +4659,17 @@ const server = Bun.serve<TermWsData, never>({
             // are clearer.") that aren't useful as a glance surface.
             // The user wants a topic list they can scan in <1s.
             const systemPrompt =
-              "You are summarising recent git activity so the developer can recall at a glance what they worked on in this repository. " +
+              "You are summarising recent git activity so the developer can recall at a glance what they worked on. " +
               `The window is the last ${sinceHours} hours. ` +
               "Output ONE single line, max 300 characters. Do NOT include thinking, reasoning, or preamble — output ONLY the summary line. " +
+              "Address the developer as 'you', e.g. 'You worked on X – Y – Z'. " +
               "List 2 to 4 distinct work themes separated by ' – ' (space, en-dash, space). " +
-              "Each theme is a short noun phrase, not a sentence (e.g. 'Ollama summarisation', 'Windows compat pass', 'sticky-notes drag-drop'). " +
+              "Each theme is a short noun phrase (e.g. 'Ollama summarisation', 'Windows compat pass', 'sticky-notes drag-drop'). " +
               "If a parenthetical detail clarifies a theme, keep it under 6 words: 'Ollama summarisation (sessions + composer)'. " +
               "If there are dirty worktrees, append them as the final theme like '3 dirty worktrees'. " +
-              "DO NOT write narrative or sentences. DO NOT use 'you', 'we', or 'the user'. DO NOT echo commit messages verbatim. " +
+              "DO NOT echo commit messages verbatim. DO NOT echo these instructions. " +
               "DO NOT use markdown, bullets, quotes, or backticks. " +
-              "If nothing substantial was done, output 'Chores only' or similar in under 10 words.";
+              "If nothing substantial was done, output 'Nothing notable' or similar in under 10 words.";
 
             let collected = "";
             const estimatedTokens = Math.ceil(prompt.length / 4);
