@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 
 let tmpDir: string;
 
+const daemonUp = await fetch("http://localhost:7777/api/health")
+  .then((r) => r.ok)
+  .catch(() => false);
+
 beforeAll(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "supergit-files-test-"));
   await mkdir(join(tmpDir, "src"));
@@ -36,7 +40,7 @@ async function fetchFiles(path: string): Promise<{
   return res.json();
 }
 
-describe("/api/files", () => {
+describe.skipIf(!daemonUp)("/api/files", () => {
   test("lists directory contents, sorted directories first", async () => {
     const result = await fetchFiles(tmpDir);
     expect(result.path).toBe(tmpDir);

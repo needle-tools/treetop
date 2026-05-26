@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, writeFile, readdir, mkdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { $ } from "bun";
 import { Workspace } from "../src/workspace";
 
@@ -56,7 +56,7 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo(subDir);
     expect(repo.path).toBe(repoDir);
-    expect(repo.name).toBe(repoDir.split("/").pop());
+    expect(repo.name).toBe(basename(repoDir));
   });
 
   test("addRepo deduplicates when subdirectory resolves to already-registered root", async () => {

@@ -127,6 +127,26 @@ export async function sendMessage(
   }
 }
 
+export async function deleteMsg(
+  peerId: string,
+  messageId: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch("/api/messages/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ peerId, messageId }),
+    });
+    if (res.status === 204) {
+      await refreshMessages();
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function mutePeer(peerId: string, minutes: number): Promise<void> {
   await fetch("/api/messages/mute", {
     method: "POST",

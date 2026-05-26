@@ -3854,7 +3854,7 @@
         }
         return;
       }
-      if (payload.kind === "message_mute" || payload.kind === "message_unmute") {
+      if (payload.kind === "message_mute" || payload.kind === "message_unmute" || payload.kind === "message_deleted") {
         void refreshMessages();
         return;
       }

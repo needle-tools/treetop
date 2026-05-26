@@ -12,6 +12,7 @@
     messages,
     refreshMessages,
     sendMessage,
+    deleteMsg,
     mutePeer,
     unmutePeer,
     unreadCount,
@@ -236,6 +237,22 @@
     }
   }
 
+  const MAX_DISPLAY_LINES = 2;
+  function truncateBody(body: string): { text: string; truncated: boolean } {
+    const lines = body.split("\n");
+    if (lines.length <= MAX_DISPLAY_LINES) return { text: body, truncated: false };
+    return { text: lines.slice(0, MAX_DISPLAY_LINES).join("\n") + "…", truncated: true };
+  }
+
+  let deleting: Record<string, boolean> = {};
+
+  async function onDelete(peerId: string, messageId: string) {
+    if (deleting[messageId]) return;
+    deleting = { ...deleting, [messageId]: true };
+    await deleteMsg(peerId, messageId);
+    deleting = { ...deleting, [messageId]: false };
+  }
+
   async function onSend(peerId: string) {
     const live = peerOnline(peerId);
     const text = (replyText[peerId] ?? "").trim();
@@ -406,8 +423,6 @@
   }
   .inbox-body {
     margin: 0;
-    /* Right padding clears the absolute copy icon so a long final
-       line doesn't slip under it. */
     padding: 0.45rem 1.7rem 0.45rem 0.55rem;
     background: color-mix(in srgb, var(--surface-2) 50%, transparent);
     border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
@@ -436,9 +451,6 @@
     color: color-mix(in srgb, var(--brand) 80%, var(--text-muted));
     opacity: 1;
   }
-  /* Copy icon mirrors the send-icon style on the textarea — same
-     corner, same transparent / brand-hover treatment, so the two
-     compose-area affordances feel like a pair. */
   .inbox-copy-icon {
     position: absolute;
     top: 0.3rem;
@@ -461,8 +473,35 @@
     background: color-mix(in srgb, var(--text-muted) 18%, transparent);
     opacity: 1;
   }
-  .inbox-msg-time {
+  .inbox-msg-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     align-self: flex-end;
+  }
+  .inbox-delete-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    padding: 0;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0.6;
+  }
+  .inbox-delete-icon:hover {
+    color: #c0392b;
+    opacity: 1;
+  }
+  .inbox-delete-icon:disabled {
+    opacity: 0.3;
+    cursor: progress;
+  }
+  .inbox-msg-time {
     font-size: 0.7rem;
   }
   .inbox-reply {
@@ -691,9 +730,6 @@
                 <ul class="inbox-msgs">
                   {#each row.messages as msg (msg.id)}
                     <li class="inbox-msg" class:inbox-msg-sent={msg.direction === "out"}>
-                      <!-- Direction arrow lives INSIDE the body so it
-                           sits inline at the start of the first line
-                           of text. ← for received, → for sent. -->
                       <pre class="inbox-body" class:inbox-body-sent={msg.direction === "out"}>{#if msg.direction === "out"}<svg
                         class="inbox-msg-dir inbox-msg-dir-out"
                         width="12"
@@ -716,13 +752,13 @@
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         aria-label="Received"
-                      ><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>{/if} {msg.body}</pre>
+                      ><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>{/if} {truncateBody(msg.body).text}</pre>
                       <button
                         type="button"
                         class="inbox-copy-icon"
                         class:inbox-copy-icon-copied={copied[msg.id]}
                         on:click|stopPropagation={() => onCopy(msg.id, msg.body)}
-                        title={copied[msg.id] ? "Copied" : "Copy to clipboard"}
+                        title={copied[msg.id] ? "Copied" : "Copy full message"}
                         aria-label={copied[msg.id] ? "Copied" : "Copy"}
                       >
                         {#if copied[msg.id]}
@@ -736,7 +772,24 @@
                           </svg>
                         {/if}
                       </button>
-                      <span class="inbox-msg-time muted small">{msg.direction === "out" ? "sent" : "received"} {relTime(msg.direction === "out" ? msg.sentAt : msg.receivedAt)}</span>
+                      <span class="inbox-msg-footer">
+                        <span class="inbox-msg-time muted small">{msg.direction === "out" ? "sent" : "received"} {relTime(msg.direction === "out" ? msg.sentAt : msg.receivedAt)}</span>
+                        {#if msg.direction !== "out"}
+                          <button
+                            type="button"
+                            class="inbox-delete-icon"
+                            on:click|stopPropagation={() => onDelete(row.peer.id, msg.id)}
+                            disabled={deleting[msg.id]}
+                            title="Delete message"
+                            aria-label="Delete"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                          </button>
+                        {/if}
+                      </span>
                     </li>
                   {/each}
                 </ul>

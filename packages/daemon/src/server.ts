@@ -98,6 +98,7 @@ import {
   addIncomingMessage,
   addOutgoingMessage,
   getMessages,
+  deleteMessage,
   mutePeer,
   unmutePeer,
   listMutes,
@@ -3396,6 +3397,26 @@ const server = Bun.serve<TermWsData, never>({
       }
       await unmutePeer(workspace.path, peerId);
       broadcast("change", { kind: "message_unmute", peerId });
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (url.pathname === "/api/messages/delete" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { peerId?: unknown; messageId?: unknown }
+        | null;
+      const peerId = typeof body?.peerId === "string" ? body.peerId : "";
+      const messageId = typeof body?.messageId === "string" ? body.messageId : "";
+      if (!peerId || !messageId) {
+        return json(
+          { error: "peerId, messageId required" },
+          { status: 400 },
+        );
+      }
+      const deleted = await deleteMessage(workspace.path, peerId, messageId);
+      if (!deleted) {
+        return json({ error: "message not found" }, { status: 404 });
+      }
+      broadcast("change", { kind: "message_deleted", peerId, messageId });
       return new Response(null, { status: 204, headers: CORS });
     }
 

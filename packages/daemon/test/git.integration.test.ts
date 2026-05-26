@@ -145,7 +145,7 @@ describe("getWorktreeDetails against real git", () => {
   test("reports clean workdir and last commit for a fresh repo", async () => {
     const repo = await tempRepo();
     const details = await getWorktreeDetails(repo);
-    expect(details.fileStatus).toEqual({ staged: 0, unstaged: 0, untracked: 0, submodules: 0 });
+    expect(details.fileStatus).toEqual({ staged: 0, unstaged: 0, untracked: 0, submodules: 0, dirtyLines: 0 });
     expect(details.branchStatus?.branch).toBe("main");
     expect(details.lastCommit?.subject).toBe("initial");
   });

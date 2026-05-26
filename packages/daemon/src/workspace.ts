@@ -1,4 +1,4 @@
-import { join, basename } from "node:path";
+import { join, basename, normalize } from "node:path";
 import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { $ } from "bun";
@@ -160,7 +160,7 @@ const PREFS_FILE = "prefs.json";
 async function resolveGitToplevel(dir: string): Promise<string> {
   try {
     const top = await $`git -C ${dir} rev-parse --show-toplevel`.quiet().text();
-    return top.trim();
+    return normalize(top.trim());
   } catch {
     return dir;
   }

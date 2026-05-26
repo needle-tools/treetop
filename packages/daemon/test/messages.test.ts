@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   addIncomingMessage,
   getMessages,
+  deleteMessage,
   mutePeer,
   unmutePeer,
   isPeerMuted,
@@ -18,7 +19,13 @@ import {
 } from "../src/messages";
 
 async function ws(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "supergit-messages-"));
+  const dir = await mkdtemp(join(tmpdir(), "supergit-messages-"));
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    join(dir, "peer-identity.json"),
+    JSON.stringify({ id: "test-identity-uuid", label: "Test" }),
+  );
+  return dir;
 }
 
 describe("addIncomingMessage + getMessages", () => {
@@ -129,9 +136,10 @@ describe("addIncomingMessage + getMessages", () => {
       body: "hi",
       sentAt: "2026-05-22T10:00:00Z",
     });
-    // Confirm the file exists with the right shape
     const raw = JSON.parse(await readFile(join(w, "messages.json"), "utf-8"));
-    expect(raw.byPeer["peer-a"].messages[0].body).toBe("hi");
+    expect(raw.byPeer["peer-a"].messages[0].body).toStartWith("enc:v1:");
+    const got = await getMessages(w);
+    expect(got[0]?.messages[0]?.body).toBe("hi");
   });
 
   test("malformed messages.json on disk is treated as empty (self-heals on next write)", async () => {
@@ -186,5 +194,129 @@ describe("mutePeer / unmutePeer / isPeerMuted", () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(w, "peer-mutes.json"), "garbage");
     expect(await isPeerMuted(w, "peer-a")).toBe(false);
+  });
+});
+
+describe("deleteMessage", () => {
+  test("deletes a specific message by id", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "first",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "second",
+      sentAt: "2026-05-22T10:00:01Z",
+    });
+    const before = await getMessages(w);
+    expect(before[0]?.messages).toHaveLength(2);
+    const targetId = before[0]!.messages[1]!.id; // "first"
+    const deleted = await deleteMessage(w, "peer-a", targetId);
+    expect(deleted).toBe(true);
+    const after = await getMessages(w);
+    expect(after[0]?.messages).toHaveLength(1);
+    expect(after[0]?.messages[0]?.body).toBe("second");
+  });
+
+  test("returns false for non-existent message id", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "hi",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    const deleted = await deleteMessage(w, "peer-a", "nonexistent-id");
+    expect(deleted).toBe(false);
+  });
+
+  test("returns false for non-existent peer", async () => {
+    const w = await ws();
+    const deleted = await deleteMessage(w, "no-such-peer", "any-id");
+    expect(deleted).toBe(false);
+  });
+
+  test("removes peer entry when last message is deleted", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "only one",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    const before = await getMessages(w);
+    const msgId = before[0]!.messages[0]!.id;
+    await deleteMessage(w, "peer-a", msgId);
+    const after = await getMessages(w);
+    expect(after).toHaveLength(0);
+  });
+});
+
+describe("encryption at rest", () => {
+  test("messages.json stores encrypted bodies, not plaintext", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "secret message",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    const raw = await readFile(join(w, "messages.json"), "utf-8");
+    expect(raw).not.toContain("secret message");
+    expect(raw).toContain("enc:v1:");
+  });
+
+  test("encrypted bodies are decrypted on read", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "secret message",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    const got = await getMessages(w);
+    expect(got[0]?.messages[0]?.body).toBe("secret message");
+  });
+
+  test("plaintext legacy bodies are still readable (migration)", async () => {
+    const w = await ws();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(w, "messages.json"),
+      JSON.stringify({
+        version: 1,
+        byPeer: {
+          "peer-a": {
+            label: "Alice",
+            messages: [
+              {
+                id: "old-msg",
+                body: "legacy plaintext",
+                sentAt: "2026-05-22T10:00:00Z",
+                receivedAt: "2026-05-22T10:00:01Z",
+                direction: "in",
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const got = await getMessages(w);
+    expect(got[0]?.messages[0]?.body).toBe("legacy plaintext");
+  });
+
+  test("each encryption uses a unique IV (no two ciphertexts match for same plaintext)", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "same text",
+      sentAt: "2026-05-22T10:00:00Z",
+    });
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "same text",
+      sentAt: "2026-05-22T10:00:01Z",
+    });
+    const raw = JSON.parse(await readFile(join(w, "messages.json"), "utf-8"));
+    const bodies = raw.byPeer["peer-a"].messages.map((m: { body: string }) => m.body);
+    expect(bodies[0]).not.toBe(bodies[1]);
   });
 });

@@ -10,6 +10,12 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from "node:crypto";
 
 const MESSAGES_FILE = "messages.json";
 const MUTES_FILE = "peer-mutes.json";
@@ -19,6 +25,50 @@ export const MAX_PER_PEER = 5;
  *  monospace so anything bigger is almost certainly an attached-file
  *  attempt — which this feature explicitly doesn't support. */
 export const MAX_BODY_BYTES = 2048;
+
+/* ------------------------------------------------------------------ */
+/* At-rest encryption — AES-256-GCM keyed from peer identity          */
+/* ------------------------------------------------------------------ */
+
+const ENC_PREFIX = "enc:v1:";
+
+async function getEncryptionKey(workspaceDir: string): Promise<Buffer> {
+  try {
+    const raw = await readFile(join(workspaceDir, "peer-identity.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { id?: string };
+    if (typeof parsed.id === "string" && parsed.id.length > 0) {
+      return createHash("sha256").update(`supergit-msg:${parsed.id}`).digest();
+    }
+  } catch {
+    // identity not yet created — fall through
+  }
+  return createHash("sha256").update("supergit-msg:fallback").digest();
+}
+
+function encryptBody(plaintext: string, key: Buffer): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([
+    cipher.update(plaintext, "utf-8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return `${ENC_PREFIX}${iv.toString("hex")}:${Buffer.concat([ct, tag]).toString("hex")}`;
+}
+
+function decryptBody(stored: string, key: Buffer): string {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  const rest = stored.slice(ENC_PREFIX.length);
+  const colonIdx = rest.indexOf(":");
+  if (colonIdx < 0) return stored;
+  const iv = Buffer.from(rest.slice(0, colonIdx), "hex");
+  const ctAndTag = Buffer.from(rest.slice(colonIdx + 1), "hex");
+  const ct = ctAndTag.subarray(0, ctAndTag.length - 16);
+  const tag = ctAndTag.subarray(ctAndTag.length - 16);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  return decipher.update(ct).toString("utf-8") + decipher.final("utf-8");
+}
 
 export interface IncomingMessage {
   from: { id: string; label: string };
@@ -52,16 +102,15 @@ interface OnDisk {
 }
 
 async function loadStore(workspaceDir: string): Promise<OnDisk> {
+  const key = await getEncryptionKey(workspaceDir);
   try {
     const raw = await readFile(join(workspaceDir, MESSAGES_FILE), "utf-8");
     const parsed = JSON.parse(raw) as Partial<OnDisk>;
     if (parsed && typeof parsed === "object" && parsed.byPeer) {
-      // Backward-compat: messages stored before the direction field
-      // existed should be treated as inbound (the only kind we
-      // tracked at the time).
       for (const entry of Object.values(parsed.byPeer)) {
         for (const m of entry.messages) {
           if (!m.direction) m.direction = "in";
+          m.body = decryptBody(m.body, key);
         }
       }
       return { version: 1, byPeer: parsed.byPeer };
@@ -73,9 +122,23 @@ async function loadStore(workspaceDir: string): Promise<OnDisk> {
 }
 
 async function saveStore(workspaceDir: string, store: OnDisk): Promise<void> {
+  const key = await getEncryptionKey(workspaceDir);
+  const encrypted: OnDisk = {
+    version: 1,
+    byPeer: {},
+  };
+  for (const [peerId, entry] of Object.entries(store.byPeer)) {
+    encrypted.byPeer[peerId] = {
+      label: entry.label,
+      messages: entry.messages.map((m) => ({
+        ...m,
+        body: encryptBody(m.body, key),
+      })),
+    };
+  }
   await writeFile(
     join(workspaceDir, MESSAGES_FILE),
-    JSON.stringify(store, null, 2),
+    JSON.stringify(encrypted, null, 2),
   );
 }
 
@@ -157,6 +220,27 @@ export async function getMessages(workspaceDir: string): Promise<PeerInbox[]> {
     return tb.localeCompare(ta);
   });
   return out;
+}
+
+/** Delete a single message from a peer's inbox. Returns true if
+ *  found and removed, false if the peer or message id didn't exist.
+ *  Removes the peer entry entirely when no messages remain. */
+export async function deleteMessage(
+  workspaceDir: string,
+  peerId: string,
+  messageId: string,
+): Promise<boolean> {
+  const store = await loadStore(workspaceDir);
+  const entry = store.byPeer[peerId];
+  if (!entry) return false;
+  const idx = entry.messages.findIndex((m) => m.id === messageId);
+  if (idx < 0) return false;
+  entry.messages.splice(idx, 1);
+  if (entry.messages.length === 0) {
+    delete store.byPeer[peerId];
+  }
+  await saveStore(workspaceDir, store);
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
