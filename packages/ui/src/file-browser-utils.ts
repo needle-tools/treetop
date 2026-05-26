@@ -151,6 +151,7 @@ export interface SshSessionInfo {
   user: string | undefined;
   host: string;
   port: number;
+  cwd?: string;
 }
 
 export async function fetchSshSessions(): Promise<Record<string, SshSessionInfo>> {

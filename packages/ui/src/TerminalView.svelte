@@ -78,6 +78,31 @@
   let xterm: Terminal | null = null;
   let sshSession: SshSessionInfo | null = null;
   let sshPollTimer: ReturnType<typeof setInterval> | null = null;
+  let lastParsedCwd = "";
+  let cwdParseBuffer = "";
+  const textDecoder = new TextDecoder();
+
+  // Windows cmd:  C:\Users\needle\Music>
+  // PowerShell:   PS C:\Users\needle>
+  // Unix bash:    user@host:/path$  or  user@host:~/path$
+  const WIN_PROMPT_RE = /(?:^|\n)(?:PS )?([A-Za-z]:\\[^\r\n>]*?)>\s*$/;
+  const UNIX_PROMPT_RE = /(?:^|\n)\S+?:([/~][^\r\n$#]*?)[#$%]\s*$/;
+
+  function extractCwdFromOutput(chunk: string): void {
+    if (!sshSession) return;
+    cwdParseBuffer = (cwdParseBuffer + chunk).slice(-1024);
+    const stripped = cwdParseBuffer.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
+    const winMatch = stripped.match(WIN_PROMPT_RE);
+    const unixMatch = stripped.match(UNIX_PROMPT_RE);
+    const raw = winMatch?.[1] ?? unixMatch?.[1];
+    if (!raw) return;
+    const cwd = raw.replace(/\\/g, "/");
+    if (cwd !== lastParsedCwd) {
+      lastParsedCwd = cwd;
+      onSshChange?.({ ...sshSession, cwd } as any);
+    }
+  }
+
   /** Settle-debounce for wheel hijacking — same idea as the chat
    *  scroll-island in SessionView. While the cursor hasn't been
    *  parked over the terminal for ≥ 300ms, we capture wheel events
@@ -311,6 +336,7 @@
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
         xterm?.write(bytes);
         noteActivity();
+        if (sshSession) extractCwdFromOutput(textDecoder.decode(bytes, { stream: true }));
       };
       ws.onerror = () => {
         if (phase !== "exited") {

@@ -97,6 +97,7 @@
     titleSave: { title: string };
     titleEditingChange: { editing: boolean };
     sshBrowse: { user: string | undefined; host: string; port: number };
+    sshCwd: { cwd: string };
   }>();
 
   /** Mirrors the Stop Session UX from SessionView's resume-in-terminal
@@ -239,7 +240,7 @@
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}
-    onSshChange={(ssh) => { sshSession = ssh; }}
+    onSshChange={(ssh) => { sshSession = ssh; if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd }); }}
     onExit={() => {
       /* Deliberately NOT closing the column on PTY exit. Some agents
          (notably `codex`) restart themselves after an in-place update —

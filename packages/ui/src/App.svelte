@@ -764,6 +764,8 @@
    *  takes over; claude/codex/copilot just kill the PTY and leave the
    *  column showing final output until the user clicks ×. */
   let newTermIds: Record<string, string> = {};
+  /** Per-terminal SSH cwd, updated by prompt parsing in TerminalView. */
+  let sshCwdByTermId: Record<string, string> = {};
 
   /** Resolve the daemon termId for a `__new__:` or `__attached__:`
    *  column. `__attached__:` sources carry it directly in the suffix;
@@ -6896,6 +6898,7 @@
                             wtPath="/"
                             source={s.source}
                             {remoteTermId}
+                            remoteCwd={sshCwdByTermId[remoteTermId] ?? null}
                             onClose={() => closeSessionInWt(wt.path, s)}
                             onFocusTerminal={() => {
                               focusedSource = termSource;
@@ -7146,9 +7149,11 @@
                             }}
                             on:sshBrowse={() => {
                               const termId = resolveTermIdFromSource(s.source, newTermIds);
-                              console.debug("[App] on:sshBrowse fired! source=", s.source, "termId=", termId);
                               if (termId) openRemoteBrowser(wt.path, termId, "");
-                              else console.warn("[App] no termId resolved for source", s.source);
+                            }}
+                            on:sshCwd={(e) => {
+                              const termId = resolveTermIdFromSource(s.source, newTermIds);
+                              if (termId) sshCwdByTermId = { ...sshCwdByTermId, [termId]: e.detail.cwd };
                             }}
                             on:titleSave={(e) =>
                               void saveNewSessionTitle(titleSource, e.detail.title)}
