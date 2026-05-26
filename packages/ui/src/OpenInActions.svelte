@@ -430,20 +430,27 @@
     await onRemoveCustomLink(id);
   }
 
+  let addEverOpened = false;
   function toggleAdd() {
     addOpen = !addOpen;
     if (addOpen) {
+      if (!addEverOpened) {
+        addEverOpened = true;
+        const draft = readDraft();
+        newKind = draft.kind ?? readLastKind();
+        newUrl = draft.url ?? "";
+        newPath = draft.path ?? "";
+        newCmd = draft.cmd ?? "";
+        newCwd = draft.cwd ?? "";
+        newRunMode = draft.runMode ?? "internal";
+        newName = draft.name ?? "";
+      }
       npmScriptsDir = "";
-      const draft = readDraft();
-      newKind = draft.kind ?? readLastKind();
-      newUrl = draft.url ?? "";
-      newPath = draft.path ?? "";
-      newCmd = draft.cmd ?? "";
-      newCwd = draft.cwd ?? "";
-      newRunMode = draft.runMode ?? "internal";
-      newName = draft.name ?? "";
       addError = "";
-      setTimeout(() => urlInput?.focus(), 0);
+      setTimeout(() => {
+        urlInput?.focus();
+        window.dispatchEvent(new Event("resize"));
+      }, 0);
     }
   }
 
@@ -468,6 +475,7 @@
         });
         if (ok) {
           addOpen = false;
+          addEverOpened = false;
           newCmd = "";
           newCwd = "";
           newRunMode = "internal";
@@ -502,6 +510,7 @@
         });
         if (ok) {
           addOpen = false;
+          addEverOpened = false;
           newUrl = "";
           newPath = "";
           newName = "";
@@ -537,6 +546,7 @@
       });
       if (ok) {
         addOpen = false;
+        addEverOpened = false;
         newUrl = "";
         newPath = "";
         newName = "";
@@ -898,7 +908,7 @@
       >
         <span class="add-link-glyph" aria-hidden="true">+</span>
       </button>
-      {#if addOpen}
+      <div class="custom-link-popover-mount" class:hidden={!addOpen}>
         <Popover variant="agents" extraClass="custom-link-popover">
           <div class="custom-link-form" on:keydown={onAddPopoverKeydown} role="group">
             <div class="custom-link-kinds" role="tablist">
@@ -1139,7 +1149,7 @@
             </div>
           </div>
         </Popover>
-      {/if}
+      </div>
     </span>
   {/if}
   {#each displayLinks as link (link.id)}
@@ -2009,6 +2019,9 @@
   }
   .cmd-url-option.active {
     color: var(--accent, #58a6ff);
+  }
+  .custom-link-popover-mount.hidden {
+    display: none;
   }
   .custom-link-suggest-wrap {
     position: relative;
