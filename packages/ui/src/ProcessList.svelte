@@ -69,6 +69,7 @@
   let everLoaded = false;
   let loading = false;
   let collapsed: Record<string, boolean> = {};
+  let pendingKill: Record<string, boolean> = {};
 
   const TUI_HOT_MEM_FRACTION = 0.5;
   const TUI_WARM_MEM_FRACTION = 0.3;
@@ -140,6 +141,11 @@
       if (!res.ok) return;
       procs = (await res.json()) as TuiProc[];
       everLoaded = true;
+      const liveIds = new Set(procs.map((p) => p.id));
+      for (const id of Object.keys(pendingKill)) {
+        if (!liveIds.has(id)) delete pendingKill[id];
+      }
+      pendingKill = pendingKill;
     } catch {
     } finally {
       loading = false;
@@ -163,18 +169,45 @@
     open = !open;
     startPolling(open ? FAST_MS : SLOW_MS);
   }
-  async function killTui(id: string) {
-    await fetch(`/api/terminals/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }).catch(() => {});
-    void refresh();
+  async function sendTerm(p: TuiProc) {
+    if (p.kind !== "external") {
+      await fetch(`/api/terminals/${encodeURIComponent(p.id)}`, {
+        method: "DELETE",
+      }).catch(() => {});
+    } else {
+      await fetch(`/api/processes/${p.pid}/kill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signal: "SIGTERM" }),
+      }).catch(() => {});
+    }
   }
-  async function killPid(pid: number, signal: "SIGTERM" | "SIGKILL" = "SIGTERM") {
-    await fetch(`/api/processes/${pid}/kill`, {
+  async function sendKill(p: TuiProc) {
+    await fetch(`/api/processes/${p.pid}/kill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signal }),
+      body: JSON.stringify({ signal: "SIGKILL" }),
     }).catch(() => {});
+  }
+  async function closeProc(p: TuiProc) {
+    if (pendingKill[p.id]) {
+      await sendKill(p);
+      delete pendingKill[p.id];
+      pendingKill = pendingKill;
+      void refresh();
+      return;
+    }
+    await sendTerm(p);
+    pendingKill = { ...pendingKill, [p.id]: true };
+    setTimeout(async () => {
+      if (!pendingKill[p.id]) return;
+      void refresh();
+    }, 2000);
+  }
+  async function forceKillProc(p: TuiProc) {
+    await sendKill(p);
+    delete pendingKill[p.id];
+    pendingKill = pendingKill;
     void refresh();
   }
 
@@ -387,21 +420,16 @@
                         {#if !isExternal && p.lastOutputAt && isIdle(p)}
                           <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
                         {/if}
-                        {#if !isExternal}
-                          <button
-                            class="row-close tui-kill-x"
-                            on:click|stopPropagation={() => killTui(p.id)}
-                            title="Dispose (SIGTERM → SIGKILL)"
-                            aria-label="Kill terminal"
-                          >×</button>
-                        {:else}
-                          <button
-                            class="row-close tui-kill-x"
-                            on:click|stopPropagation={() => killPid(p.pid)}
-                            title="Close (SIGTERM)"
-                            aria-label="Close process"
-                          >×</button>
-                        {/if}
+                        <button
+                          class="row-close tui-kill-x"
+                          class:tui-kill-pending={pendingKill[p.id]}
+                          on:click|stopPropagation={() => closeProc(p)}
+                          on:dblclick|stopPropagation={() => forceKillProc(p)}
+                          title={pendingKill[p.id]
+                            ? "Process didn't exit — click again to force kill (SIGKILL)"
+                            : "Close process (SIGTERM). Double-click to force kill."}
+                          aria-label={pendingKill[p.id] ? "Force kill" : "Close process"}
+                        >×</button>
                       </div>
                     </li>
                   {/each}
