@@ -6,6 +6,10 @@
  * 2. Checks if git is available.
  * 3. Checks for an existing daemon, or starts the bundled one.
  * 4. Opens a native BrowserWindow pointed at localhost:<port>.
+ *
+ * Note: Windows WebView2 orphan cleanup runs in the launcher's main.js
+ * before this Worker is started — see scripts/patch-launcher.ts. By
+ * the time we reach here, the WebView2 profile is unlocked and ready.
  */
 
 import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
@@ -47,48 +51,6 @@ function resolveLoginPath(): string | null {
 const loginPath = resolveLoginPath();
 if (loginPath) {
   process.env.PATH = loginPath;
-}
-
-// ── Orphaned WebView2 cleanup (Windows) ──────────────────────────────
-// When a previous supergit instance crashes, electrobun doesn't kill
-// the child msedgewebview2.exe processes it spawned. They keep holding
-// the EBWebView profile lockfile, so the *next* launch fails with
-// HRESULT 0x800700AA (ERROR_BUSY). On startup we look for orphaned
-// msedgewebview2.exe processes whose --user-data-dir points into our
-// install partition and kill them. Scope is narrow: we never touch a
-// WebView2 process that isn't pointed at our partition.
-
-function killOrphanedWebView2(): void {
-  if (!isWin) return;
-  try {
-    // Match the EBWebView dir installed builds use. process.execPath is
-    // …\Supergit\bin\bun.exe (Worker process), so go up to install root.
-    const partition = resolve(
-      dirname(process.execPath),
-      "..", "..", "WebView2", "Partitions", "default", "EBWebView",
-    );
-    // PowerShell CIM query: returns CommandLine; we match by --user-data-dir
-    // pointing at our partition, then kill by ProcessId.
-    const ps = bunSpawnSync({
-      cmd: [
-        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-        `Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ` +
-        `Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${partition.replace(/\\/g, "\\\\")}') } | ` +
-        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-      ],
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-    });
-    // Also remove a stale lockfile if it exists. WebView2 leaves it
-    // behind when the holding process is gone.
-    const lockfile = join(partition, "lockfile");
-    if (existsSync(lockfile)) {
-      try { Bun.spawnSync({ cmd: ["cmd.exe", "/c", "del", "/q", lockfile], stdout: "ignore", stderr: "ignore" }); } catch {}
-    }
-  } catch {
-    // Best-effort; if cleanup fails the launch may still succeed.
-  }
 }
 
 // ── Check for git ────────────────────────────────────────────────────
@@ -350,10 +312,6 @@ if (!isWin) {
 }
 
 await ensureDaemon();
-
-// Kill any leftover WebView2 processes from a previous crashed instance
-// that are still holding our profile's lockfile (HRESULT 0x800700AA).
-killOrphanedWebView2();
 
 const bounds = loadBounds();
 

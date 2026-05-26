@@ -13,7 +13,7 @@
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
-    "build": "bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
+    "build": "bun run scripts/patch-launcher.ts && bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
     "build:native": "bun run scripts/build-native.ts",
     "build:bun": "cd packages/ui && bun run build",
     "icons": "node scripts/generate-icons.mjs"
