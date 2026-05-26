@@ -6592,13 +6592,6 @@
 
           {#if wt && summary}
             <div class="row-status">
-              {#if !wt.nonGit && summary.submoduleText}
-                <span
-                  class="muted small"
-                  title="Submodule(s) have uncommitted edits inside, but this repo's recorded submodule SHA hasn't moved."
-                >+ {summary.submoduleText}</span>
-              {/if}
-
               {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
                 <RepoRecentSummary repoId={repo.id} repoName={repo.name} inline />
               {/if}

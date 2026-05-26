@@ -14,8 +14,9 @@
    *              scroll the strip, flash the column briefly).
    *  - Hover  -> tooltip with repo/branch + title + last user prompt.
    */
-  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
+  import { splitDockEntries } from "./dock-split";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -76,6 +77,13 @@
 
   const dispatch = createEventDispatcher<{ pick: DockEntry }>();
 
+  /** Toggle: when false, exited (read-mode / ended) dots are hidden
+   *  and only live TUI sessions are visible. Persisted in-memory
+   *  only — resets to "show all" on page load. */
+  let showInactive = true;
+
+  $: split = splitDockEntries(entries, showInactive);
+
   /** How long the "unread" pulse stays on after the AI finishes
    *  a turn (working → idle). Caps the noise so a long-ignored
    *  finished session doesn't keep nagging forever. */
@@ -110,6 +118,52 @@
   } else if (previewResizeObs) {
     previewResizeObs.disconnect();
     previewResizeObs = null;
+  }
+
+  /** Measure the bounding box of all dock dots + toggle and size
+   *  the backdrop element to cover exactly that area — one continuous
+   *  surface behind the dot column, no per-row gaps. */
+  function updateBackdrop(): void {
+    if (!backdropEl || !dockEl) return;
+    const dots = dockEl.querySelectorAll<HTMLElement>(".dock-dot, .dock-toggle");
+    if (dots.length === 0) {
+      backdropEl.style.display = "none";
+      return;
+    }
+    const dockRect = dockEl.getBoundingClientRect();
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let maxRight = 0;
+    for (const dot of dots) {
+      const r = dot.getBoundingClientRect();
+      if (r.height === 0) continue;
+      if (r.top < minY) minY = r.top;
+      if (r.bottom > maxY) maxY = r.bottom;
+      if (r.right > maxRight) maxRight = r.right;
+    }
+    if (minY >= maxY) {
+      backdropEl.style.display = "none";
+      return;
+    }
+    const pad = 4;
+    backdropEl.style.display = "block";
+    backdropEl.style.top = `${minY - dockRect.top - pad}px`;
+    backdropEl.style.left = "0";
+    backdropEl.style.height = `${maxY - minY + pad * 2}px`;
+    backdropEl.style.width = `${maxRight - dockRect.left + pad}px`;
+  }
+
+  // Re-measure backdrop whenever entries/filter change or labels toggle.
+  // tick() waits for Svelte's DOM flush; rAF waits for layout/paint.
+  // Reference all deps in the block body so Svelte tracks them
+  // unconditionally (a comma expression would gate on the last value).
+  $: {
+    void split;
+    void showLabels;
+    void showInactive;
+    if (dockEl) {
+      void tick().then(() => requestAnimationFrame(updateBackdrop));
+    }
   }
 
   function isPulsing(e: DockEntry, now: number): boolean {
@@ -241,6 +295,7 @@
    *  — without it, hovering a row near the bottom of the screen lets
    *  the preview spill off the visible area. */
   let dockEl: HTMLElement | null = null;
+  let backdropEl: HTMLElement | null = null;
   let previewEl: HTMLElement | null = null;
   let previewResizeObs: ResizeObserver | null = null;
   /** Viewport edge padding for the clamp. */
@@ -468,12 +523,21 @@
     on:mouseleave={onDockLeave}
     on:focusin={onDockEnter}
   >
-    <!-- Scrollable list of dots. The scroller sits inside the
-         positioned `.session-dock` shell so the preview aside below
-         can sit at `left: 100%` without being clipped by the
-         scroller's overflow rule. -->
-    <div class="dock-scroller">
-    {#each entries as e, i (e.source)}
+    <!-- Continuous surface behind the dot column. Sized by JS to
+         cover exactly the first dot through the last dot + toggle,
+         so there are no per-row gaps. Hidden when labels are off. -->
+    <div
+      bind:this={backdropEl}
+      class="dock-backdrop"
+      class:visible={showLabels}
+      aria-hidden="true"
+    ></div>
+
+    <!-- Top half: dots stack from bottom-up toward the center toggle.
+         flex:1 + justify-content:flex-end keeps dots hugging the
+         toggle rather than the viewport top. -->
+    <div class="dock-half dock-top">
+    {#each split.top as e, i (e.source)}
       <button
         type="button"
         class="dock-dot agent-{e.agent}"
@@ -482,7 +546,7 @@
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-focused={focusedSource === e.source}
-        class:dock-dot-repo-first={i > 0 && entries[i - 1].repoId !== e.repoId}
+        class:dock-dot-repo-first={i > 0 && split.top[i - 1].repoId !== e.repoId}
         style:--dot-fill={brightenIfDark(e.repoColor)}
         aria-label={tooltipFor(e)}
         on:click={() => handlePick(e)}
@@ -510,6 +574,76 @@
                and tail are clean rounded caps. Always rendered so
                the opacity can fade in/out on working state changes
                — `{#if e.working}` would snap it on/off. -->
+          <svg
+            class="dock-dot-spinner"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9.5" pathLength="100" />
+          </svg>
+        </span>
+        <span class="dock-label">
+          <span class="dock-label-repo">{e.repoName}</span>
+          {#if sessionNameFor(e)}
+            <span class="dock-label-title">{sessionNameFor(e)}</span>
+          {/if}
+          {#if freshestTimestamp(e)}
+            <span class="dock-label-time">{relTime(freshestTimestamp(e))}</span>
+          {/if}
+          <span class="dock-label-activity">
+            {#if (e.recentMessageCount ?? 0) >= recentThreshold}
+              <span class="dock-activity-badge" title="{e.recentMessageCount} messages in the last 4h">{e.recentMessageCount}</span>
+            {/if}
+          </span>
+        </span>
+      </button>
+    {/each}
+
+    </div>
+
+    <!-- Center toggle: always at viewport vertical center because
+         dock-top and dock-bottom are equal flex:1 halves of the
+         full-height dock. The toggle never moves regardless of how
+         many dots are above or below it. -->
+    <button
+      class="dock-toggle"
+      type="button"
+      title={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
+      aria-label={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
+      on:click|stopPropagation={() => (showInactive = !showInactive)}
+      on:mousedown|stopPropagation
+    >
+      <span class="dock-toggle-inner" class:filtering={!showInactive}></span>
+    </button>
+
+    <!-- Bottom half: dots stack top-down from the toggle. -->
+    <div class="dock-half dock-bottom">
+    {#each split.bottom as e, i (e.source)}
+      <button
+        type="button"
+        class="dock-dot agent-{e.agent}"
+        class:dot-working={e.working}
+        class:dot-awaiting={e.awaiting}
+        class:dot-exited={e.exited}
+        class:dot-pulsing={isPulsing(e, nowTick)}
+        class:dock-dot-focused={focusedSource === e.source}
+        class:dock-dot-repo-first={i > 0 && split.bottom[i - 1].repoId !== e.repoId}
+        style:--dot-fill={brightenIfDark(e.repoColor)}
+        aria-label={tooltipFor(e)}
+        on:click={() => handlePick(e)}
+        on:mouseenter={(ev) => onRowEnter(ev, e)}
+        on:focusin={(ev) => onRowEnter(ev, e)}
+      >
+        {#if focusedSource === e.source}
+          <svg
+            class="dock-dot-arrow"
+            viewBox="0 0 5 10"
+            aria-hidden="true"
+          >
+            <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
+          </svg>
+        {/if}
+        <span class="dock-dot-inner">
           <svg
             class="dock-dot-spinner"
             viewBox="0 0 24 24"
@@ -565,88 +699,79 @@
   }
   .session-dock {
     position: fixed;
-    /* Pinned to the left edge of the viewport, vertically centered.
-       The sticky-notes layer sits at z 900 (notes) / 1500 (dragged
-       note), so this dock takes 1600 to stay readable on top. No
-       background, border, or shadow — the dock is just the row of
-       dots, with labels fading in beside them on hover. */
-    /* Pinned flush against the viewport's left edge. The hover
-       outline keeps the right side rounded; the left side bleeds
-       off-screen so the dock reads as docked. */
+    /* Full viewport height so the two .dock-half children split
+       evenly and the toggle sits at exact viewport center. The old
+       `top: 50%; translateY(-50%)` shifted when dots appeared /
+       disappeared, making the toggle jump. */
     left: 0;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 0;
+    bottom: 0;
     z-index: 1600;
-    /* The shell itself doesn't lay out the dot list — the inner
-       .dock-scroller does. The shell stays as a fixed-position
-       wrapper so the side preview aside (position: absolute,
-       left: 100%) anchors to it without being clipped by the
-       scroller's overflow rule. */
-    display: inline-block;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     border-radius: var(--radius-md, 8px);
     background: transparent;
-    /* Always-on transparent border so the dock's bounds don't
-       jitter by 1px when the hover state paints a real one. */
     border: 1px solid transparent;
     transition:
       background-color 160ms ease,
       border-color 160ms ease;
   }
-  /* Scrollable inner column holding the dot list. Caps at the
-     viewport height so a long dock (lots of open sessions) can't
-     run off the top/bottom edge — `overflow-y: auto` only paints
-     a scrollbar when actually needed; short docks stay chrome-free.
-     The outer .session-dock keeps its `top: 50%` + translateY(-50%)
-     centering, so when this scroller is shorter than 100vh the
-     whole dock floats vertically centered. */
-  .dock-scroller {
+  /* Each half owns its scrollbar independently. Top stacks from
+     the bottom (dots hug the toggle); bottom stacks from the top. */
+  /* Each half takes exactly 50% of the remaining height (after the
+     toggle) so the toggle stays at viewport center. The halves
+     themselves are transparent — only the dot buttons inside get a
+     background on hover (via .show-labels). No scrollbar, no
+     overflow clipping: dots stack naturally and the half just
+     provides the flex-centering anchor. */
+  .dock-half {
+    flex: 1 1 0;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 0.15rem;
-    padding: 0.35rem 0.5rem;
-    max-height: 100vh;
-    overflow-y: auto;
-    /* Hide the dedicated scrollbar; reveal it only when the user is
-       actually interacting with the dock. Keeps the resting strip
-       chrome-free. */
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
+    padding: 0.15rem 0.5rem;
+    overflow: hidden;
+    pointer-events: none;
+    /* Above the z-index: 0 backdrop. */
+    position: relative;
+    z-index: 1;
   }
-  .session-dock.show-labels .dock-scroller {
-    scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent) transparent;
+  .dock-half > :global(*) {
+    pointer-events: auto;
   }
-  .dock-scroller::-webkit-scrollbar {
-    width: 6px;
+  .dock-top {
+    justify-content: flex-end;
   }
-  .dock-scroller::-webkit-scrollbar-thumb {
-    background: transparent;
-    border-radius: 999px;
-  }
-  .session-dock.show-labels .dock-scroller::-webkit-scrollbar-thumb {
-    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
+  .dock-bottom {
+    justify-content: flex-start;
   }
   /* Faint 20%-text outline on hover so the dock's frame is
      perceptible alongside the page-bg card and revealed labels.
      Resting state stays chrome-free. */
-  .session-dock.show-labels {
-    border-color: color-mix(in oklch, var(--text-1, #e8e8e8) 20%, transparent);
-  }
-  /* `.show-labels` is set by JS (mouseenter on the dock, plus a
-     1s grace timer on mouseleave) so labels + chat preview share
-     the same lifecycle and don't vanish the moment the cursor
-     drifts off. */
-  .session-dock.show-labels {
+  /* Continuous backdrop behind the dot column. Positioned absolutely
+     inside the dock, sized by JS (updateBackdrop) to cover exactly
+     the bounding box of all visible dots + toggle. Only visible when
+     labels are shown — resting state is chrome-free. */
+  .dock-backdrop {
+    position: absolute;
+    display: none;
     background: var(--surface-0, #23261d);
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid color-mix(in oklch, var(--text-1, #e8e8e8) 15%, transparent);
+    pointer-events: none;
+    z-index: 0;
+    transition: opacity 160ms ease;
+    opacity: 0;
+  }
+  .dock-backdrop.visible {
+    opacity: 1;
   }
   /* While a click is being acted on (smooth-scroll to the picked
-     session), suppress both the wrapping background and the label
-     reveal even if hover/focus is still active. The flag clears on
-     a short timer, so the labels come back the next time the user
-     intentionally hovers the dock. */
-  .session-dock.collapsed {
-    background: transparent;
-  }
+     session), suppress the label reveal even if hover/focus is still
+     active. The flag clears on a short timer, so the labels come
+     back the next time the user intentionally hovers the dock. */
   .session-dock.collapsed .dock-label {
     max-width: 0;
     opacity: 0;
@@ -681,6 +806,49 @@
      the markup using a prev-entry-vs-current-entry repoId compare. */
   .dock-dot.dock-dot-repo-first {
     margin-top: 0.5rem;
+  }
+  /* Center toggle: a small circle that sits between the top and
+     bottom halves of the dock. Clicking it filters exited/read-mode
+     dots on and off. Inherits the dock's button styling but has its
+     own disc visual instead of a repo-coloured dot. */
+  .dock-toggle {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    /* Same padding as dock-dot (3px 8px) PLUS the dock-half's
+       horizontal padding (0.5rem ≈ 8px) so the toggle-inner
+       centre aligns with the dot-inner centres above/below. */
+    padding: 0.2rem 8px 0.2rem calc(8px + 0.5rem);
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .dock-toggle,
+  .dock-toggle:hover,
+  .dock-toggle:focus,
+  .dock-toggle:active {
+    background: transparent;
+  }
+  /* 10px box matching dock-dot-inner so horizontal centres align.
+     The visible circle is inset via border (6px visible area). */
+  .dock-toggle-inner {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    border: 2px solid color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
+    box-sizing: border-box;
+    background: transparent;
+    flex: 0 0 auto;
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+  .dock-toggle-inner.filtering {
+    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
+  }
+  .dock-toggle:hover .dock-toggle-inner {
+    border-color: var(--text-1, #e8e8e8);
   }
   /* Shell sessions render as a small terminal-styled square instead
      of the agent's round dot: dark center + repo-coloured border,
