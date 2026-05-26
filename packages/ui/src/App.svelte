@@ -6584,6 +6584,10 @@
                 >+ {summary.submoduleText}</span>
               {/if}
 
+              {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
+                <RepoRecentSummary repoId={repo.id} repoName={repo.name} inline />
+              {/if}
+
               <OpenInActions
                 path={wt.path}
                 repoId={repo.id}
@@ -6601,10 +6605,6 @@
                 onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
               />
             </div>
-          {/if}
-
-          {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
-            <RepoRecentSummary repoId={repo.id} repoName={repo.name} />
           {/if}
 
           {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path] || walkthroughByWt[wt.path] != null)}

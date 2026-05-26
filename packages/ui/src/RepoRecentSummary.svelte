@@ -20,6 +20,7 @@
 
   export let repoId: string;
   export let repoName: string;
+  export let inline: boolean = false;
 
   interface Frontmatter {
     model: string;
@@ -434,97 +435,143 @@
 </script>
 
 {#if probed}
-  <div
-    class="strip repo-summary"
-    class:empty={!body && !generating && !errorMsg && !queued}
-    bind:this={stripEl}
-    use:observeVisible
-  >
-    {#if generating || queued}
-      <span class="status">
-        <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
-        <span class="dim">
-          {#if queued && !generating}
-            queued…
-          {:else if currentModel}
-            summarising with <span class="model">{currentModel}</span>…
-          {:else}
-            summarising…
-          {/if}
-        </span>
-        {#if generating && (liveSinceHours != null || liveCommitCount != null || liveEstimatedTokens != null)}
-          <span class="live-meta">
-            {#if liveSinceHours != null}
-              <span class="sep">–</span>{rangeLabel(liveSinceHours)}
+  {#if inline}
+    <!-- Compact inline variant: sits inside .row-status alongside OpenInActions -->
+    <span
+      class="inline-summary"
+      class:empty={!body && !generating && !errorMsg && !queued}
+      bind:this={stripEl}
+      use:observeVisible
+    >
+      {#if generating || queued}
+        <LoadingSpinner size="0.6rem" thickness="1.5px" label="Summarising" />
+      {:else if errorMsg}
+        <span class="inline-text" title={errorMsg}>{errorMsg}</span>
+      {:else if body}
+        <Tooltip variant="wide" escapeClip>
+          <span slot="trigger" class="inline-text"
+            >{#if frontmatter}{rangeLabel(frontmatter.sinceHours)}: {/if}{body}</span>
+          <div slot="content" class="tooltip-body"
+            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}
+            {#if frontmatter}
+              <div class="tooltip-meta">
+                {rangeLabel(frontmatter.sinceHours)} · {frontmatter.commitCount} commits · {frontmatter.model} · {relTimeFromIso(frontmatter.generatedAt)}
+              </div>
             {/if}
-            {#if liveCommitCount != null}
-              <span class="sep">–</span>{liveCommitCount} commit{liveCommitCount === 1 ? "" : "s"}
-            {/if}
-            {#if liveDirtyCount != null && liveDirtyCount > 0}
-              <span class="sep">–</span>{liveDirtyCount} dirty
-            {/if}
-            {#if liveEstimatedTokens != null}
-              <span class="sep">–</span>context ~{fmtTokens(liveEstimatedTokens)} tok
+          </div>
+        </Tooltip>
+      {/if}
+      {#if !generating && !queued && (body || errorMsg)}
+        <button
+          type="button"
+          class="refresh"
+          title={`Re-summarise ${repoName} now`}
+          on:click={() => {
+            stale = true;
+            visible = true;
+            maybeEnqueue();
+          }}
+          aria-label="Re-summarise"
+        >
+          <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+            <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
+          </svg>
+        </button>
+      {/if}
+    </span>
+  {:else}
+    <div
+      class="strip repo-summary"
+      class:empty={!body && !generating && !errorMsg && !queued}
+      bind:this={stripEl}
+      use:observeVisible
+    >
+      {#if generating || queued}
+        <span class="status">
+          <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
+          <span class="dim">
+            {#if queued && !generating}
+              queued…
+            {:else if currentModel}
+              summarising with <span class="model">{currentModel}</span>…
+            {:else}
+              summarising…
             {/if}
           </span>
+          {#if generating && (liveSinceHours != null || liveCommitCount != null || liveEstimatedTokens != null)}
+            <span class="live-meta">
+              {#if liveSinceHours != null}
+                <span class="sep">–</span>{rangeLabel(liveSinceHours)}
+              {/if}
+              {#if liveCommitCount != null}
+                <span class="sep">–</span>{liveCommitCount} commit{liveCommitCount === 1 ? "" : "s"}
+              {/if}
+              {#if liveDirtyCount != null && liveDirtyCount > 0}
+                <span class="sep">–</span>{liveDirtyCount} dirty
+              {/if}
+              {#if liveEstimatedTokens != null}
+                <span class="sep">–</span>context ~{fmtTokens(liveEstimatedTokens)} tok
+              {/if}
+            </span>
+          {/if}
+        </span>
+      {:else if errorMsg}
+        <span class="err" title={errorMsg}>{errorMsg}</span>
+      {:else if body}
+        {#if frontmatter}
+          <span
+            class="meta"
+            title={[
+              `Generated ${relTimeFromIso(frontmatter.generatedAt)} with ${frontmatter.model}`,
+              `${rangeLabel(frontmatter.sinceHours)} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`,
+              frontmatter.estimatedTokens
+                ? `context ~${fmtTokens(frontmatter.estimatedTokens)} tokens, took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`
+                : `took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`,
+            ].join(" · ")}
+          >{rangeLabel(frontmatter.sinceHours)}:</span>
         {/if}
-      </span>
-    {:else if errorMsg}
-      <span class="err" title={errorMsg}>{errorMsg}</span>
-    {:else if body}
-      {#if frontmatter}
-        <span
-          class="meta"
-          title={[
-            `Generated ${relTimeFromIso(frontmatter.generatedAt)} with ${frontmatter.model}`,
-            `${rangeLabel(frontmatter.sinceHours)} – ${frontmatter.commitCount} commits, ${frontmatter.dirtyWorktreeCount} dirty worktrees`,
-            frontmatter.estimatedTokens
-              ? `context ~${fmtTokens(frontmatter.estimatedTokens)} tokens, took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`
-              : `took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`,
-          ].join(" · ")}
-        >{rangeLabel(frontmatter.sinceHours)}:</span>
+        <Tooltip variant="wide" escapeClip>
+          <span slot="trigger" class="body"
+            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</span>
+          <div slot="content" class="tooltip-body"
+            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</div>
+        </Tooltip>
       {/if}
-      <Tooltip variant="wide" escapeClip>
-        <span slot="trigger" class="body"
-          >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</span>
-        <div slot="content" class="tooltip-body"
-          >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</div>
-      </Tooltip>
-    {/if}
-    {#if !generating && !queued && (body || errorMsg)}
-      <button
-        type="button"
-        class="refresh"
-        title={`Re-summarise ${repoName} now`}
-        on:click={() => {
-          // Manual refresh: mark stale + visible so maybeEnqueue
-          // picks it up regardless of cache freshness. Routes through
-          // the same shared queue so we never run two at once.
-          stale = true;
-          visible = true;
-          maybeEnqueue();
-        }}
-        aria-label="Re-summarise"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="10"
-          height="10"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+      {#if !generating && !queued && (body || errorMsg)}
+        <button
+          type="button"
+          class="refresh"
+          title={`Re-summarise ${repoName} now`}
+          on:click={() => {
+            stale = true;
+            visible = true;
+            maybeEnqueue();
+          }}
+          aria-label="Re-summarise"
         >
-          <polyline points="23 4 23 10 17 10" />
-          <polyline points="1 20 1 14 7 14" />
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
-          <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
-        </svg>
-      </button>
-    {/if}
-  </div>
+          <svg
+            viewBox="0 0 24 24"
+            width="10"
+            height="10"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+            <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
+          </svg>
+        </button>
+      {/if}
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -606,7 +653,7 @@
   .tooltip-body {
     max-width: 60ch;
     line-height: 1.5;
-    white-space: normal;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--text-1);
   }
@@ -658,5 +705,37 @@
   .refresh:hover {
     background: var(--surface-3, var(--surface-2));
     color: var(--text-1);
+  }
+  /* Inline variant: compact chip sitting in .row-status alongside
+     Open-in actions. Shows the summary as a single ellipsised line
+     with a tooltip for the full text. */
+  .inline-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 10ch;
+    max-width: 35ch;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+  .inline-summary.empty {
+    display: none;
+  }
+  .inline-summary :global(.tt-wrap) {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .inline-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+  }
+  .tooltip-meta {
+    margin-top: 0.4rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid var(--surface-2);
+    color: var(--text-muted);
+    font-size: 0.68rem;
   }
 </style>
