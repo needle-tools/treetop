@@ -6903,7 +6903,7 @@
                             onFocusTerminal={() => {
                               focusedSource = termSource;
                               const el = document.querySelector(`[data-session-source="${termSource}"]`);
-                              el?.scrollIntoView({ behavior: "smooth", inline: "center" });
+                              el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
                             }}
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
