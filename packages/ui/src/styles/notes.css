@@ -1229,7 +1229,8 @@
   color: inherit;
 }
 .sticky-trailing-card-emoji {
-  max-width: 3.8rem;
+  flex-basis: min(8.8rem, 48%);
+  max-width: 10rem;
 }
 .sticky-trailing-card[draggable="true"] {
   cursor: grab;
@@ -1477,14 +1478,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 3.4rem;
-  height: 3.4rem;
+  width: 100%;
+  min-width: 6.4rem;
+  aspect-ratio: 1 / 0.92;
+  min-height: 6.4rem;
   padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
   font-family: "Apple Color Emoji", "Segoe UI Emoji", emoji, sans-serif;
-  font-size: 2.35rem;
+  font-size: 5rem;
   line-height: 1;
 }
 .sticky-detached-emoji {
