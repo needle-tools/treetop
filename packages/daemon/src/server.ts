@@ -4697,13 +4697,33 @@ const server = Bun.serve<TermWsData, never>({
 
       if (runMode === "internal") {
         try {
+          const spawnCmd = shellExec(cmdLink.cmd);
           const handle = await terminalBackend.spawn({
-            cmd: shellExec(cmdLink.cmd),
+            cmd: spawnCmd,
             cwd,
             size: { cols: 120, rows: 30 },
           });
           // Scan PTY output for localhost/LAN URLs for up to 2 minutes
           detectCommandUrl(handle, linkId, repoId);
+          // Track as a shell for input capture + persistence
+          shellTermIds.add(handle.id);
+          void terminalPersist.save({
+            termId: handle.id,
+            cmd: spawnCmd,
+            cwd,
+            wtPath: cwd,
+            title: (link as { name?: string }).name || cmdLink.cmd,
+            lastCmd: cmdLink.cmd,
+          }).catch(() => {});
+          const cmdCleanup = handle.subscribe({
+            onData() {},
+            onExit() {
+              shellTermIds.delete(handle.id);
+              clearShellInputBuffer(handle.id);
+              void terminalPersist.remove(handle.id).catch(() => {});
+              cmdCleanup();
+            },
+          });
           return json({ ok: true, mode: "internal", termId: handle.id, pid: handle.pid });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
