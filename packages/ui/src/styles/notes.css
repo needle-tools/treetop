@@ -1495,7 +1495,7 @@
   width: 100%;
   text-align: center;
   font-family: "Apple Color Emoji", "Segoe UI Emoji", emoji, sans-serif;
-  font-size: clamp(3rem, 12vw, 7rem);
+  font-size: 7rem;
   line-height: 1;
 }
 
@@ -1885,7 +1885,7 @@
   display: none;
 }
 .sticky-emoji-glyph {
-  font-size: 10vw;
+  font-size: 205px;
   line-height: 1;
   width: 1em;
   height: 1em;

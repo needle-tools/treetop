@@ -100,6 +100,7 @@
    *  provider web URL is available. Default "fork" — the only git
    *  GUI currently exposed in OpenInActions. */
   const GIT_CLIENT_PREF_KEY = "supergit:preferred-git-client";
+  const EMOJI_STICKER_BASE_PX = 205;
 
   /** Trigger /api/open against the daemon. Mirrors App.svelte's
    *  openIn (same payload shape) but locally available so the chip
@@ -2301,7 +2302,7 @@
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <span
       class="sticky-emoji-glyph"
-      style="font-size: calc(10vw * {emojiScale})"
+      style="font-size: calc({EMOJI_STICKER_BASE_PX}px * {emojiScale})"
       on:mousedown={onMouseDownHeader}
       title="Drag to move"
     >{note.body}</span>
