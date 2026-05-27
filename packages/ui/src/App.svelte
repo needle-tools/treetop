@@ -3657,6 +3657,11 @@
     scrollNewColIntoView(entry.wtPath, entry.source);
   }
 
+  function isInternalCommandVisible(entry: { wtPath: string; source: string }): boolean {
+    if (dismissedShells.has(entry.source)) return false;
+    return (openSessionsByWt[entry.wtPath] ?? []).some((s) => s.source === entry.source);
+  }
+
   async function handleCommandClick(
     wtPath: string,
     link: CustomLink,
@@ -3681,10 +3686,10 @@
       if (prev) {
         const alive = await commandTermAlive(prev.source);
         if (alive) {
-          if (revealInternalTerminal) {
-            await revealInternalCommand(prev);
-          } else {
+          if (isInternalCommandVisible(prev)) {
             await stopInternalCommand(link.id, prev);
+          } else {
+            await revealInternalCommand(prev);
           }
           return;
         }

@@ -2055,6 +2055,11 @@
     ).join("\u001d"),
   ].join("\u001c");
 
+  $: commandUrlsKey = Object.entries(commandUrls)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, urls]) => `${id}:${urls.join("\u001f")}`)
+    .join("\u001e");
+
   function commandLinkForTarget(target: LinkTarget | undefined):
     ReturnType<typeof resolveLiveCommandLink> {
     return resolveLiveCommandLink(target, repos);
@@ -2104,9 +2109,11 @@
     return cwdLabel ? `${cwdLabel} · ${modeLabel}` : modeLabel;
   }
 
-  function commandUrlsForTarget(target: LinkTarget): string[] {
+  function commandUrlsForTarget(target: LinkTarget, urlsKey = commandUrlsKey): string[] {
+    void urlsKey;
     if (target.type !== "command") return [];
-    return commandUrls[commandLinkIdForTarget(target)] ?? [];
+    const liveId = commandLinkIdForTarget(target);
+    return commandUrls[liveId] ?? commandUrls[target.value] ?? [];
   }
 
   function commandUrlLabel(url: string): string {
@@ -2387,7 +2394,7 @@
 
 {#snippet commandPowerPreview(target: LinkTarget, mode: "detached" | "stack" | "media")}
   {@const running = isCommandRunning(target, commandStateKey)}
-  {@const urls = commandUrlsForTarget(target)}
+  {@const urls = commandUrlsForTarget(target, commandUrlsKey)}
   <span
     class="command-power-card"
     class:command-power-card-running={running}
@@ -2401,7 +2408,9 @@
     </span>
     <span class="command-power-details">
       <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>
-      <span class="command-power-meta">{liveCommandMode(target, commandStateKey)}</span>
+      {#if mode !== "detached"}
+        <span class="command-power-meta">{liveCommandMode(target, commandStateKey)}</span>
+      {/if}
     </span>
     {#if mode === "detached" && urls.length > 0}
       <span class="command-url-satellites" aria-label="Command URLs">
