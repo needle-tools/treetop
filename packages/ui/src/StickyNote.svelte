@@ -108,7 +108,7 @@
    *  provider web URL is available. Default "fork" — the only git
    *  GUI currently exposed in OpenInActions. */
   const GIT_CLIENT_PREF_KEY = "supergit:preferred-git-client";
-  const EMOJI_STICKER_BASE_PX = 205;
+  const EMOJI_STICKER_BASE_PX = 160;
 
   /** Trigger /api/open against the daemon. Mirrors App.svelte's
    *  openIn (same payload shape) but locally available so the chip
