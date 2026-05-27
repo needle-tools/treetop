@@ -5315,8 +5315,9 @@
     {#if daemonVersion || daemonBuildTime}
       <p class="tagline-build">
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
-        {#if daemonVersion && daemonBuildTime} · {/if}
+        {#if daemonVersion && daemonBuildTime} – {/if}
         {#if daemonBuildTime}<code>built {new Date(daemonBuildTime).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</code>{/if}
+        {#if (daemonVersion || daemonBuildTime) && typeof window !== "undefined" && window.location.port} – <code title="daemon port">:{window.location.port}</code>{/if}
       </p>
     {/if}
   </header>

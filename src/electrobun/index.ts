@@ -20,8 +20,12 @@ import { spawnSync, spawn } from "node:child_process";
 import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
-const PORT = 27787;
-const DAEMON_URL = `http://localhost:${PORT}`;
+const PREFERRED_PORT = 27787;
+// Mutated by chooseDaemonPort() at startup. The UI uses relative URLs
+// (`fetch("/api/...")`), so whatever port BrowserWindow opens at is
+// what the frontend will hit — picking a fallback is safe.
+let PORT = PREFERRED_PORT;
+let DAEMON_URL = `http://localhost:${PORT}`;
 const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
 
@@ -170,6 +174,42 @@ async function killPortHolder(port: number): Promise<boolean> {
     });
     return r.exitCode === 0;
   } catch { return false; }
+}
+
+/** Try to bind a quick test server to PORT. If it works, port is free.
+ *  We use Bun.listen on TCP so we don't need any kernel-level tricks. */
+function canBindPort(port: number): boolean {
+  try {
+    const s = Bun.listen({
+      hostname: "127.0.0.1",
+      port,
+      socket: { data() {}, open() {}, close() {} },
+    });
+    s.stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Pick a port for the daemon. Prefer the canonical PREFERRED_PORT so
+ *  external tools / docs aren't broken. Only fall back if the port is
+ *  truly wedged (bound but no live process) — that's the case where
+ *  killPortHolder couldn't help because the holding PID is gone. */
+async function chooseDaemonPort(): Promise<number> {
+  // If something live answers on the canonical port, we'll reuse it
+  // anyway (ensureDaemon handles that). Just check we can use the port.
+  if (await isDaemonRunning()) return PREFERRED_PORT;
+  if (canBindPort(PREFERRED_PORT)) return PREFERRED_PORT;
+  // Wedged. Scan upward for a free port.
+  for (let p = PREFERRED_PORT + 1; p < PREFERRED_PORT + 50; p++) {
+    if (canBindPort(p)) {
+      console.warn(`supergit: port ${PREFERRED_PORT} is wedged, falling back to ${p}`);
+      return p;
+    }
+  }
+  console.error(`supergit: no free port in ${PREFERRED_PORT}..${PREFERRED_PORT + 49}, using canonical anyway`);
+  return PREFERRED_PORT;
 }
 
 function loadMyBuildTime(): string | null {
@@ -374,6 +414,14 @@ if (!isWin) {
     },
   ]);
 }
+
+// Pick a port — canonical 27787 normally; if it's wedged (Windows
+// kernel sometimes leaves a LISTEN socket holding a dead PID's port
+// for hours after the process dies, blocking any new bind), use the
+// next free port. UI uses relative URLs so it follows whatever port
+// BrowserWindow opens at.
+PORT = await chooseDaemonPort();
+DAEMON_URL = `http://localhost:${PORT}`;
 
 // Don't let an ensureDaemon failure bubble up as an unhandled
 // rejection — in a Bun Worker that takes down the launcher's parent
