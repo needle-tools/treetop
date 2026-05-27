@@ -227,6 +227,21 @@ interface RunningCommand {
 }
 const runningCommands = new Map<string, RunningCommand>();
 
+/** Strip model-specific thinking artifacts from Ollama output.
+ *  Some models leak internal reasoning even with `think: false`:
+ *  - gemma4 uses `<channel|>` as a separator (everything before is thinking)
+ *  - deepseek/qwen use `<think>…</think>` XML blocks
+ *  Keeps only the actual answer. */
+function stripThinkingArtifacts(raw: string): string {
+  let s = raw;
+  // gemma4's channel separator — take everything after the last occurrence
+  const chIdx = s.lastIndexOf("<channel|>");
+  if (chIdx !== -1) s = s.slice(chIdx + "<channel|>".length);
+  // XML-style <think> blocks (deepseek, qwen, etc.)
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  return s.trim();
+}
+
 /** The user's default interactive shell with appropriate flags.
  *  Used by /api/shell-default and cmdForOpenSession-equivalent logic. */
 function defaultLoginShell(): { shell: string; args: string[] } {
@@ -3083,6 +3098,7 @@ const server = Bun.serve<TermWsData, never>({
           }
 
           const elapsedMs = Date.now() - startedAt;
+
           try {
             await summaries.write(source, {
               agent: resolved.agent,
@@ -3095,7 +3111,7 @@ const server = Bun.serve<TermWsData, never>({
               truncatedMessages: sampled.truncatedMessages,
               estimatedTokens: sampled.estimatedTokens,
               elapsedMs,
-              body: fullBody.collected,
+              body: stripThinkingArtifacts(fullBody.collected),
             });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -5013,9 +5029,7 @@ const server = Bun.serve<TermWsData, never>({
               totalDeletions,
               estimatedTokens,
               elapsedMs: Date.now() - startedAt,
-              body: collected
-                .replace(/<think>[\s\S]*?<\/think>/gi, "")
-                .trim(),
+              body: stripThinkingArtifacts(collected),
             });
             broadcast("change", { kind: "repo_summary", repoId: id });
           })();
