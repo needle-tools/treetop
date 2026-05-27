@@ -431,6 +431,8 @@
   let openAttachmentDraft = "";
   let openAttachmentEditRefs: InlineAttachmentEditRef[] = [];
   let openAttachmentNoteEditing = false;
+  let confirmingAttachmentDeleteRaw: string | null = null;
+  let attachmentDeleteTimerId: ReturnType<typeof setTimeout> | null = null;
   let attachmentTextareaEl: HTMLTextAreaElement | null = null;
   /** Convenience flag — once derived it gets used a few places (CSS
    *  class, dispatch branching, removeIfEmpty math). Re-derived
@@ -539,6 +541,7 @@
   onDestroy(() => {
     clearPreviewTimers();
     if (copiedTimer) clearTimeout(copiedTimer);
+    if (attachmentDeleteTimerId) clearTimeout(attachmentDeleteTimerId);
   });
 
   /** Move a node to document.body on mount so it escapes any
@@ -1088,6 +1091,7 @@
   }
 
   function openInlineAttachment(raw: string, attachment: InlineAttachment): void {
+    cancelPendingAttachmentDelete();
     openAttachmentRaw = raw;
     openAttachmentEditRefs = [];
     openAttachmentNoteEditing = false;
@@ -1120,6 +1124,7 @@
 
   function closeInlineAttachment(): void {
     if (mentionEditor === "attachment") closeMention();
+    cancelPendingAttachmentDelete();
     openAttachmentRaw = null;
     openAttachmentDraft = "";
     openAttachmentEditRefs = [];
@@ -1218,6 +1223,78 @@
     openAttachmentDraft = edit.text;
     openAttachmentEditRefs = edit.refs;
     openAttachmentNoteEditing = true;
+  }
+
+  function attachmentCopyText(attachment: InlineAttachment): Promise<string> {
+    if (attachment.kind === "text") return fetchTextAttachment(attachment.path);
+    if (attachment.kind === "image") return Promise.resolve(attachment.path);
+    if (attachment.kind === "note" || attachment.kind === "emoji") {
+      return Promise.resolve(attachment.body);
+    }
+    if (attachment.target.type === "session") {
+      return Promise.resolve(`Session: ${attachment.target.value}`);
+    }
+    if (attachment.target.type === "command") {
+      return Promise.resolve(
+        `Command: ${attachment.target.command ?? attachment.target.label ?? attachment.target.value}`,
+      );
+    }
+    return Promise.resolve(attachment.target.label ?? attachment.target.value);
+  }
+
+  async function copyOpenAttachment(attachment: InlineAttachment): Promise<void> {
+    try {
+      const text = await attachmentCopyText(attachment);
+      await navigator.clipboard.writeText(text);
+      copied = true;
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copied = false), 1200);
+    } catch (err) {
+      console.warn("Could not copy attachment", err);
+    }
+  }
+
+  function editOpenAttachment(raw: string, attachment: InlineAttachment): void {
+    cancelPendingAttachmentDelete();
+    if (attachment.kind === "note") {
+      startOpenNoteAttachmentEdit(attachment);
+      return;
+    }
+    if (attachment.kind === "text") {
+      queueMicrotask(() => attachmentTextareaEl?.focus());
+      return;
+    }
+    closeInlineAttachment();
+    startEdit();
+  }
+
+  function cancelPendingAttachmentDelete(): void {
+    if (attachmentDeleteTimerId !== null) {
+      clearTimeout(attachmentDeleteTimerId);
+      attachmentDeleteTimerId = null;
+    }
+    confirmingAttachmentDeleteRaw = null;
+  }
+
+  function deleteOpenAttachment(raw: string): void {
+    if (confirmingAttachmentDeleteRaw === raw) {
+      cancelPendingAttachmentDelete();
+      return;
+    }
+    cancelPendingAttachmentDelete();
+    confirmingAttachmentDeleteRaw = raw;
+    attachmentDeleteTimerId = setTimeout(() => {
+      attachmentDeleteTimerId = null;
+      confirmingAttachmentDeleteRaw = null;
+      if (detachedAttachmentPart?.raw === raw) {
+        closeInlineAttachment();
+        dispatch("remove", { id: note.id });
+        return;
+      }
+      const body = removeInlineAttachmentRef(note.body, raw);
+      closeInlineAttachment();
+      if (body !== note.body) dispatch("save", { id: note.id, body });
+    }, DELETE_GRACE_MS);
   }
 
   function onInlineAttachmentDragStart(
@@ -2444,6 +2521,34 @@
           <header class="attachment-media-head">
             <span class="attachment-media-title">
               {inlineAttachmentLabel(openPart.attachment)}
+            </span>
+            <span class="attachment-media-actions" role="toolbar" aria-label="Attachment actions">
+              <button
+                type="button"
+                class="sticky-btn tiny"
+                title={copied ? "Copied" : "Copy attachment"}
+                aria-label="Copy attachment"
+                on:click={() => void copyOpenAttachment(openPart.attachment)}
+              >{copied ? "✓" : "⧉"}</button>
+              <button
+                type="button"
+                class="sticky-btn tiny"
+                title="Edit attachment"
+                aria-label="Edit attachment"
+                on:click={() => editOpenAttachment(openPart.raw, openPart.attachment)}
+              >✎</button>
+              <button
+                type="button"
+                class="sticky-btn tiny danger"
+                class:confirming={confirmingAttachmentDeleteRaw === openPart.raw}
+                title={confirmingAttachmentDeleteRaw === openPart.raw
+                  ? "Click to cancel — attachment will delete in 2 seconds"
+                  : "Delete attachment (3-second grace; click again to cancel)"}
+                aria-label={confirmingAttachmentDeleteRaw === openPart.raw
+                  ? "Cancel pending attachment delete"
+                  : "Delete attachment"}
+                on:click={() => deleteOpenAttachment(openPart.raw)}
+              >{confirmingAttachmentDeleteRaw === openPart.raw ? "■" : "×"}</button>
             </span>
             {#if attachmentParts.length > 1}
               <button

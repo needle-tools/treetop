@@ -979,7 +979,7 @@
 }
 .attachment-media-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
   align-items: center;
   gap: 0.32rem;
   padding: 0.42rem 0.58rem;
@@ -993,6 +993,11 @@
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.attachment-media-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
 }
 .attachment-media-count {
   color: rgba(42, 37, 22, 0.52);
