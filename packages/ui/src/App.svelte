@@ -7797,6 +7797,7 @@
   onCommandLinkOpen={handleCommandLinkOpen}
   onCommandLinkEdit={handleCommandLinkEdit}
   {runningCommandIds}
+  {commandUrls}
 />
 
 <ConfirmDialog />

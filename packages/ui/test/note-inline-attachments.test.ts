@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  commandCopyText,
   commandPowerLabel,
   commandRunText,
   countTextLines,
@@ -241,6 +242,34 @@ describe("note inline attachments", () => {
       label: "Relaunch",
       command: "npm run build:launch",
     })).toBe("npm run build:launch");
+  });
+
+  test("copies command references with cwd when available", () => {
+    expect(commandCopyText({
+      type: "command",
+      value: "cmd-1",
+      command: "npm run build:launch",
+      cwd: "/Users/herbst/git/supergit",
+    })).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
+
+    expect(commandCopyText({
+      type: "command",
+      value: "cmd-1",
+      command: "npm test",
+      cwd: "/tmp/has space/it's fine",
+    })).toBe("cd '/tmp/has space/it'\\''s fine' && npm test");
+
+    expect(commandCopyText({
+      type: "command",
+      value: "stale",
+      command: "npm run old",
+      cwd: "/tmp/old",
+    }, {
+      id: "live",
+      kind: "command",
+      cmd: "npm run build:launch",
+      cwd: "/Users/herbst/git/supergit",
+    })).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
   });
 
   test("resolves pinned command references against live toolbar commands", () => {

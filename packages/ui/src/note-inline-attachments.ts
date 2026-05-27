@@ -195,6 +195,21 @@ export function commandRunText(target: InlineLinkTarget): string {
   return target.command?.trim() || target.label?.trim() || target.value;
 }
 
+export function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function commandCopyText(
+  target: InlineLinkTarget,
+  live?: CommandLinkSnapshot | null,
+): string {
+  const command = live?.cmd?.trim() || commandRunText(target);
+  const cwd = live?.cwd?.trim() || target.cwd?.trim();
+  if (!cwd) return command;
+  return `cd ${shellQuote(cwd)} && ${command}`;
+}
+
 export function resolveLiveCommandLink(
   target: InlineLinkTarget | undefined,
   repos: readonly CommandLinkRepo[],

@@ -181,6 +181,9 @@
       id: string;
       kind?: string;
       cmd?: string;
+      cwd?: string;
+      runMode?: "internal" | "external" | "shell";
+      name?: string;
     }>;
   }
   export let repos: AnchorableRepo[] = [];
@@ -203,6 +206,7 @@
       ) => void)
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
+  export let commandUrls: Record<string, string[]> = {};
 
   let notes: NoteShape[] = [];
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
@@ -2468,6 +2472,7 @@
         {onCommandLinkOpen}
         {onCommandLinkEdit}
         {runningCommandIds}
+        {commandUrls}
         on:move={handleMove}
         on:save={handleSave}
         on:remove={handleRemove}

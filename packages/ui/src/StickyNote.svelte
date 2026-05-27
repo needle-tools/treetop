@@ -68,8 +68,8 @@
   } from "./preview-action";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
+    commandCopyText,
     commandPowerLabel,
-    commandRunText,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
@@ -286,6 +286,7 @@
       ) => void)
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
+  export let commandUrls: Record<string, string[]> = {};
 
   const dispatch = createEventDispatcher<{
     move: { id: string; x: number; y: number };
@@ -2026,11 +2027,9 @@
   function linkAttachmentMeta(attachment: InlineAttachment): string {
     if (attachment.kind !== "link") return "";
     if (attachment.target.type === "command") {
-      const live = commandLinkForTarget(attachment.target)?.link;
       const parts = [
         isCommandRunning(attachment.target, commandStateKey) ? "ON" : "OFF",
-        live?.runMode ?? attachment.target.runMode,
-        (live?.cwd ?? attachment.target.cwd)?.split("/").pop(),
+        liveCommandMode(attachment.target, commandStateKey),
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "command";
     }
@@ -2080,8 +2079,7 @@
   function liveCommandRunText(target: LinkTarget): string {
     if (target.type !== "command") return target.value;
     const link = commandLinkForTarget(target)?.link;
-    if (link?.cmd?.trim()) return link.cmd.trim();
-    return commandRunText(target);
+    return commandCopyText(target, link);
   }
 
   function liveCommandLabel(target: LinkTarget, stateKey = commandStateKey): string {
@@ -2094,7 +2092,30 @@
   function liveCommandMode(target: LinkTarget, stateKey = commandStateKey): string {
     void stateKey;
     if (target.type !== "command") return "command";
-    return commandLinkForTarget(target)?.link.runMode ?? target.runMode ?? "command";
+    const live = commandLinkForTarget(target)?.link;
+    const cwd = live?.cwd ?? target.cwd;
+    const mode = live?.runMode ?? target.runMode;
+    const modeLabel =
+      mode === "internal" ? "hidden terminal" :
+      mode === "external" ? "external terminal" :
+      mode === "shell" ? "background shell" :
+      "command";
+    const cwdLabel = cwd?.split("/").filter(Boolean).pop();
+    return cwdLabel ? `${cwdLabel} · ${modeLabel}` : modeLabel;
+  }
+
+  function commandUrlsForTarget(target: LinkTarget): string[] {
+    if (target.type !== "command") return [];
+    return commandUrls[commandLinkIdForTarget(target)] ?? [];
+  }
+
+  function commandUrlLabel(url: string): string {
+    try {
+      const parsed = new URL(url);
+      return parsed.port || parsed.hostname.replace(/^www\./, "");
+    } catch {
+      return "url";
+    }
   }
 
   function editCommandTarget(target: LinkTarget): void {
@@ -2366,6 +2387,7 @@
 
 {#snippet commandPowerPreview(target: LinkTarget, mode: "detached" | "stack" | "media")}
   {@const running = isCommandRunning(target, commandStateKey)}
+  {@const urls = commandUrlsForTarget(target)}
   <span
     class="command-power-card"
     class:command-power-card-running={running}
@@ -2381,6 +2403,24 @@
       <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>
       <span class="command-power-meta">{liveCommandMode(target, commandStateKey)}</span>
     </span>
+    {#if mode === "detached" && urls.length > 0}
+      <span class="command-url-satellites" aria-label="Command URLs">
+        {#each urls.slice(0, 4) as url, i}
+          <span
+            class="command-url-satellite"
+            class:main={i === 0}
+            role="link"
+            tabindex="-1"
+            title={`Open ${url}`}
+            on:mousedown|stopPropagation
+            on:click|stopPropagation={() => openUrl(url)}
+            on:keydown={(e) => { if (e.key === "Enter") openUrl(url); }}
+          >
+            {commandUrlLabel(url)}
+          </span>
+        {/each}
+      </span>
+    {/if}
   </span>
 {/snippet}
 

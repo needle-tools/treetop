@@ -398,6 +398,7 @@
 }
 .command-power-card {
   --command-accent: #8b9188;
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
@@ -550,6 +551,55 @@
 .command-power-card-media .command-power-ring {
   width: 4.6rem;
   height: 4.6rem;
+}
+.command-url-satellites {
+  position: absolute;
+  left: 50%;
+  bottom: -0.55rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.22rem;
+  transform: translateX(-50%);
+}
+.command-url-satellite {
+  display: inline-flex;
+  max-width: 3.2rem;
+  height: 1.2rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 50%, #272b28);
+  border-radius: 999px;
+  padding: 0 0.36rem;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.22), transparent 34%),
+    linear-gradient(160deg, #252a27, #121513);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 4px 12px -8px rgba(0, 0, 0, 0.9);
+  color: #f6f1dc;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.52rem;
+  font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  pointer-events: auto;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-url-satellite.main {
+  max-width: 4.4rem;
+  height: 1.55rem;
+  padding: 0 0.5rem;
+  color: #101211;
+  background:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.55), transparent 35%),
+    linear-gradient(160deg, color-mix(in srgb, var(--command-accent) 86%, #f6f1dc), var(--command-accent));
+  font-size: 0.62rem;
+}
+.command-url-satellite:hover {
+  border-color: color-mix(in srgb, var(--command-accent) 78%, #f6f1dc);
+  filter: brightness(1.12);
 }
 /* Hover preview anchored to the right of a session-link sticky.
    Portalled to <body>, positioned at fixed viewport coordinates
