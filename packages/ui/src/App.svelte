@@ -1829,6 +1829,61 @@
     }
   }
 
+  /** Persisted terminal info for __restore__: columns. */
+  let persistedTerminals: Record<string, { cmd: string[]; cwd: string; title?: string }> = {};
+
+  async function restorePersistedTerminals() {
+    try {
+      const res = await fetch("/api/terminals/persisted");
+      if (!res.ok) return;
+      const list = (await res.json()) as Array<{
+        termId: string; cmd: string[]; cwd: string; wtPath: string; title?: string;
+      }>;
+      if (list.length === 0) return;
+      const next = { ...openSessionsByWt };
+      for (const entry of list) {
+        const source = `__restore__:${entry.termId}`;
+        persistedTerminals = { ...persistedTerminals, [source]: { cmd: entry.cmd, cwd: entry.cwd, title: entry.title } };
+        const existing = next[entry.wtPath] ?? [];
+        if (!existing.some((s) => s.source === source)) {
+          next[entry.wtPath] = [{ agent: "shell", source }, ...existing];
+        }
+      }
+      openSessionsByWt = next;
+      // Clear the persisted file — we've consumed it
+      void fetch("/api/terminals/persisted", { method: "DELETE" }).catch(() => {});
+    } catch {}
+  }
+
+  function resumePersistedTerminal(wtPath: string, restoreSource: string) {
+    const info = persistedTerminals[restoreSource];
+    if (!info) return;
+    // Replace the __restore__: column with a __new__:shell: column
+    const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const newSource = `__new__:shell:${id}`;
+    shellResumeCwd = { ...shellResumeCwd, [newSource]: info.cwd };
+    // Store the original command so we can prefill it
+    shellPrefillCmd = { ...shellPrefillCmd, [newSource]: info.cmd.join(" ") };
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((s) => s.source === restoreSource ? { ...s, source: newSource } : s),
+    };
+    delete persistedTerminals[restoreSource];
+  }
+
+  function dismissPersistedTerminal(wtPath: string, restoreSource: string) {
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.filter((s) => s.source !== restoreSource),
+    };
+    delete persistedTerminals[restoreSource];
+  }
+
+  /** Map of __new__:shell: sources to a command string to prefill. */
+  let shellPrefillCmd: Record<string, string> = {};
+
   /** Click handler for a past-shell's "Resume" button. Replaces the
    *  `__transcript__:` column with a `__new__:shell:<id>` one and
    *  remembers `lastCwd` so the render branch can pass it to TerminalView
@@ -4578,6 +4633,7 @@
           if (
             s.source.startsWith("__files__:") ||
             s.source.startsWith("__remote__:") ||
+            s.source.startsWith("__restore__:") ||
             s.source.startsWith("__history__:")
           ) continue;
           // Same lookup precedence as the NewSessionCol render: once a
@@ -5036,7 +5092,7 @@
     void loadSystemInfo();
     void refreshRunningCommands();
     void refreshCommandUrls();
-    void restoreLiveShells();
+    void restoreLiveShells().then(() => restorePersistedTerminals());
     fetch("/api/peer-discovery").then(r => r.ok ? r.json() : null)
       .then(d => { if (d) peerDiscoveryEnabled = d.enabled === true; })
       .catch(() => {});
@@ -6960,7 +7016,26 @@
                         }}
                         out:closeColumn
                       >
-                        {#if s.source.startsWith("__remote__:")}
+                        {#if s.source.startsWith("__restore__:")}
+                          {@const rInfo = persistedTerminals[s.source]}
+                          <div class="session restore-card">
+                            <div class="restore-header">
+                              <span class="restore-title">{rInfo?.title || "Terminal"}</span>
+                              <span class="restore-status">disconnected</span>
+                            </div>
+                            <code class="restore-cmd">{rInfo?.cmd?.join(" ") ?? ""}</code>
+                            <div class="restore-actions">
+                              <button
+                                class="restore-btn restore-resume"
+                                on:click={() => resumePersistedTerminal(wt.path, s.source)}
+                              >Resume</button>
+                              <button
+                                class="restore-btn"
+                                on:click={() => dismissPersistedTerminal(wt.path, s.source)}
+                              >Dismiss</button>
+                            </div>
+                          </div>
+                        {:else if s.source.startsWith("__remote__:")}
                           {@const remoteTermId = parseRemoteSource(s.source) ?? ""}
                           {@const termSource = `__attached__:shell:${remoteTermId}`}
                           <FileBrowser
@@ -7072,6 +7147,7 @@
                               ? s.source.split(":").pop()
                               : undefined}
                             resumeFromTermId={shellResumeFromTermId[s.source]}
+                            prefillCmd={shellPrefillCmd[s.source]}
                             manualTitle={newAgentMeta?.manualTitle ??
                               newSessionTitles[titleSource] ??
                               newSessionTitles[s.source]}

@@ -287,6 +287,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   "__files__:",
   // Remote SSH file browser — UI-owned, backed by /api/ssh/* routes.
   "__remote__:",
+  // Persisted terminal awaiting user resume after daemon restart.
+  "__restore__:",
   // Git history panel — commit list + diff viewer, entirely UI-owned.
   "__history__:",
 ] as const;

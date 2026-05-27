@@ -38,3 +38,73 @@
   border: 0;
   background: var(--surface-1);
 }
+
+/* Restore card — disconnected terminal awaiting user resume */
+.restore-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 1.5rem;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  min-width: 280px;
+}
+.restore-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.restore-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+.restore-status {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+}
+.restore-cmd {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restore-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.restore-btn {
+  padding: 0.3rem 0.8rem;
+  border-radius: 5px;
+  border: 1px solid var(--surface-3);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-family: inherit;
+}
+.restore-btn:hover {
+  color: var(--text-1);
+  border-color: var(--text-faint);
+}
+.restore-resume {
+  color: var(--text-1);
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.restore-resume:hover {
+  background: var(--surface-3);
+}

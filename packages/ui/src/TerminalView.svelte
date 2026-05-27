@@ -70,6 +70,8 @@
    *  (--append-system-prompt-file for Claude, positional prompt for
    *  Codex). */
   export let initialPrompt: string | undefined = undefined;
+  /** Command to prefill at the shell prompt (written to PTY without Enter). */
+  export let prefillCmd: string | undefined = undefined;
   /** Fires when an SSH session is detected (or lost) for this terminal.
    *  Parent can use this to open a remote file browser panel. */
   export let onSshChange: ((ssh: SshSessionInfo | null) => void) | undefined = undefined;
@@ -266,6 +268,7 @@
             ownerId,
             procName,
             previousTermId: resumeFromTermId,
+            prefillCmd,
           }),
           signal: startupAbort.signal,
         });

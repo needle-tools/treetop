@@ -45,6 +45,7 @@
    *  POST so the daemon pre-seeds the new shell's JSONL with the prior
    *  cmd history. Shell-only — agent restarts mint fresh transcripts. */
   export let resumeFromTermId: string | undefined = undefined;
+  export let prefillCmd: string | undefined = undefined;
   /** The saved manual title for this column (lives in App.svelte's
    *  `newSessionTitles` map, persisted server-side via `/api/session/title`).
    *  Empty / undefined → render the "Name this session…" placeholder. */
@@ -237,6 +238,7 @@
     {attachTermId}
     {resumeFromTermId}
     {initialPrompt}
+    {prefillCmd}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}
