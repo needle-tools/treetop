@@ -80,6 +80,7 @@
     clearErrors,
     type FrontendErrorEntry,
   } from "./errors";
+  import { play } from "./sound";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
@@ -286,6 +287,8 @@
         persist: opts.persist,
       },
     ];
+    if (opts.kind === "error") play("error");
+    else if (opts.kind === "invite") play("peer-session");
     if (!opts.persist) {
       const ttl = opts.ttlMs ?? (opts.kind === "error" ? 12_000 : 7_000);
       toastTimers.set(
@@ -841,6 +844,7 @@
       return;
     }
     try {
+      play("session-stop");
       await fetch(`/api/terminals/${encodeURIComponent(termId)}`, {
         method: "DELETE",
       }).catch(() => {});
@@ -3208,6 +3212,7 @@
         const body = await add.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${add.status}`);
       }
+      play(repos.length === 0 ? "folder-add-first" : "folder-add");
       newlyAddedRepoPaths.add(path);
       await load();
       await scrollToNewRepo();
@@ -3321,6 +3326,7 @@
       // Drop the just-added entry from the suggestions list so the
       // popover reflects the new state without a refetch round-trip,
       // then refresh the dashboard so the new row appears.
+      play(repos.length === 0 ? "folder-add-first" : "folder-add");
       importSuggestions = importSuggestions.filter((s) => s.path !== path);
       newlyAddedRepoPaths.add(path);
       await load();
@@ -3647,6 +3653,7 @@
   async function stopInternalCommand(linkId: string, entry: { wtPath: string; source: string }): Promise<void> {
     const termId = entry.source.replace("__attached__:shell:", "");
     if (termId && termId !== entry.source) {
+      play("session-stop");
       await fetch(`/api/terminals/${encodeURIComponent(termId)}`, { method: "DELETE" }).catch(() => {});
       dismissShellSource(entry.source);
     }
@@ -3687,6 +3694,7 @@
     const runningInternalAction = opts.runningInternalAction ?? "reveal";
 
     if (isRunning && cmdLink.runMode === "shell") {
+      play("session-stop");
       void fetch("/api/command/stop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4095,6 +4103,11 @@
       } catch {
         return;
       }
+      if (payload.kind === "sound_play") {
+        const tag = (payload as { tag?: string }).tag;
+        if (tag) play(tag as any);
+        return;
+      }
       if (
         payload.kind === "note_create" ||
         payload.kind === "note_update" ||
@@ -4140,6 +4153,7 @@
           from && typeof from.label === "string" ? from.label : "a peer";
         void refreshMessages();
         if (!muted) {
+          play("message-receive");
           addToast({
             kind: "info",
             title: `Message from ${label}`,

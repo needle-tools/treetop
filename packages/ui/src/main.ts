@@ -1,5 +1,6 @@
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
+import { configure, DEFAULT_MAPPINGS, installGestureListener } from "./sound";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/popover.css";
@@ -79,6 +80,9 @@ if (!target) throw new Error("#app element missing in index.html");
 // Seed localStorage from daemon prefs before mounting so all store
 // constructors see shared state (native app inherits browser layout).
 await initDaemonKV();
+
+configure(DEFAULT_MAPPINGS);
+installGestureListener();
 
 const app = mount(App, { target });
 

@@ -51,6 +51,7 @@ import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
+import { SoundMarkerScanner } from "./sound-marker";
 import { watchWorktree } from "./worktree-watcher";
 import { detectSshChildren, detectSshFromCmd, type SshSession } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
@@ -6190,10 +6191,22 @@ const server = Bun.serve<TermWsData, never>({
       }
       cancelGrace(termId);
       orphanCleaner.onFrontendConnected();
+      const soundScanner = new SoundMarkerScanner();
+      let replayed = false;
       const sub: TerminalSubscriber = {
         onData(chunk) {
-          // Binary frame — raw PTY bytes for xterm.js.
-          ws.send(chunk);
+          if (!replayed) {
+            // First onData is the scrollback replay — don't scan it
+            // for sound markers (it contains historical conversation text).
+            replayed = true;
+            ws.send(chunk);
+            return;
+          }
+          const { output, tags } = soundScanner.scan(chunk);
+          for (const tag of tags) {
+            broadcast("change", { kind: "sound_play", tag, termId });
+          }
+          if (output.length > 0) ws.send(output);
         },
         onState(state) {
           // Text frame carrying daemon-detected terminal state (e.g.

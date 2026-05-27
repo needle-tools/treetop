@@ -101,6 +101,7 @@
   import { requestSessionFocus } from "./session-focus-store";
   import { sessionDisplayTitle, type AgentSession } from "./sessionSearch";
   import { iconFor } from "./icons";
+  import { play } from "./sound";
 
   /** localStorage key for the user's preferred git client. Written
    *  by App.svelte's openIn funnel whenever a git-client app is
@@ -1692,6 +1693,7 @@
     cancelPendingDelete();
     draft = isLink ? note.body : prepareBodyForEdit(note.body);
     editing = true;
+    play("note-edit-start");
     if (!isLink) {
       queueMicrotask(() => {
         if (textareaEl) {
@@ -1766,6 +1768,7 @@
       return;
     }
     if (trimmed === note.body) return;
+    play("note-edit-end");
     dispatch("save", { id: note.id, body: trimmed });
   }
 
