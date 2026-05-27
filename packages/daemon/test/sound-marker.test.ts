@@ -9,16 +9,20 @@ function scan(scanner: SoundMarkerScanner, text: string) {
   return { text: dec.decode(result.output), tags: result.tags };
 }
 
+function noGrace() {
+  return new SoundMarkerScanner(0);
+}
+
 describe("SoundMarkerScanner", () => {
   test("passes through plain text unchanged", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "hello world\n");
     expect(r.text).toBe("hello world\n");
     expect(r.tags).toHaveLength(0);
   });
 
   test("extracts a single marker", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "some output\n§play-sound:ai-applause§\nmore output\n");
     expect(r.tags).toEqual(["ai-applause"]);
     expect(r.text).not.toContain("§play-sound");
@@ -27,20 +31,20 @@ describe("SoundMarkerScanner", () => {
   });
 
   test("extracts multiple markers", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "§play-sound:ai-wow§\ntext\n§play-sound:ai-gulp§\n");
     expect(r.tags).toEqual(["ai-wow", "ai-gulp"]);
     expect(r.text).not.toContain("§");
   });
 
   test("handles marker as only content", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "§play-sound:ai-braam§");
     expect(r.tags).toEqual(["ai-braam"]);
   });
 
   test("handles marker inline with other text", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "before§play-sound:ai-crickets§after");
     expect(r.tags).toEqual(["ai-crickets"]);
     expect(r.text).toContain("before");
@@ -48,26 +52,26 @@ describe("SoundMarkerScanner", () => {
   });
 
   test("ignores invalid tag characters", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "§play-sound:not a valid tag!§\n");
     expect(r.tags).toHaveLength(0);
     expect(r.text).toContain("§play-sound:not a valid tag!§");
   });
 
   test("handles hyphenated tags", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "§play-sound:ai-crowd-gasp§");
     expect(r.tags).toEqual(["ai-crowd-gasp"]);
   });
 
   test("does not match partial markers", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "§play-sound:§\n");
     expect(r.tags).toHaveLength(0);
   });
 
   test("handles chunk split across marker boundary", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r1 = scan(s, "output\n§play-sound:ai-app");
     // Residual should be buffered
     const r2 = scan(s, "lause§\nmore\n");
@@ -76,7 +80,7 @@ describe("SoundMarkerScanner", () => {
   });
 
   test("flush returns buffered residual", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     scan(s, "§play-sound:ai-app");
     const flushed = s.flush();
     expect(dec.decode(flushed.output)).toContain("§play-sound:ai-app");
@@ -84,9 +88,28 @@ describe("SoundMarkerScanner", () => {
   });
 
   test("does not strip real section signs in normal text", () => {
-    const s = new SoundMarkerScanner();
+    const s = noGrace();
     const r = scan(s, "See §42 of the contract\n");
     expect(r.text).toBe("See §42 of the contract\n");
+    expect(r.tags).toHaveLength(0);
+  });
+
+  test("grace period: ignores markers during grace window", () => {
+    const s = new SoundMarkerScanner(60_000);
+    const r = scan(s, "§play-sound:ai-applause§\n");
+    expect(r.tags).toHaveLength(0);
+    expect(r.text).toContain("§play-sound:ai-applause§");
+  });
+
+  test("grace period: scans after grace expires", () => {
+    const s = new SoundMarkerScanner(0);
+    const r = scan(s, "§play-sound:ai-applause§\n");
+    expect(r.tags).toEqual(["ai-applause"]);
+  });
+
+  test("default grace is 5 seconds", () => {
+    const s = new SoundMarkerScanner();
+    const r = scan(s, "§play-sound:ai-wow§\n");
     expect(r.tags).toHaveLength(0);
   });
 });

@@ -6192,16 +6192,8 @@ const server = Bun.serve<TermWsData, never>({
       cancelGrace(termId);
       orphanCleaner.onFrontendConnected();
       const soundScanner = new SoundMarkerScanner();
-      let replayed = false;
       const sub: TerminalSubscriber = {
         onData(chunk) {
-          if (!replayed) {
-            // First onData is the scrollback replay — don't scan it
-            // for sound markers (it contains historical conversation text).
-            replayed = true;
-            ws.send(chunk);
-            return;
-          }
           const { output, tags } = soundScanner.scan(chunk);
           for (const tag of tags) {
             broadcast("change", { kind: "sound_play", tag, termId });

@@ -4105,7 +4105,17 @@
       }
       if (payload.kind === "sound_play") {
         const tag = (payload as { tag?: string }).tag;
-        if (tag) play(tag as any);
+        const tid = (payload as { termId?: string }).termId;
+        if (!tag) return;
+        if (!document.hasFocus()) return;
+        if (tid) {
+          const col =
+            document.querySelector(`.session-col[data-session-source*="${CSS.escape(tid)}"]`);
+          if (!col) return;
+          const rect = col.getBoundingClientRect();
+          if (rect.right < 0 || rect.left > window.innerWidth) return;
+        }
+        play(tag as any);
         return;
       }
       if (

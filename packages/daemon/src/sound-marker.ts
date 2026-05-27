@@ -16,10 +16,20 @@ export interface ScanResult {
   tags: string[];
 }
 
+const DEFAULT_GRACE_MS = 5000;
+
 export class SoundMarkerScanner {
   private residual = "";
+  private scanEnabledAt: number;
+
+  constructor(graceMs: number = DEFAULT_GRACE_MS) {
+    this.scanEnabledAt = Date.now() + graceMs;
+  }
 
   scan(chunk: Uint8Array): ScanResult {
+    if (Date.now() < this.scanEnabledAt) {
+      return { output: chunk, tags: [] };
+    }
     const text = this.residual + decoder.decode(chunk);
     this.residual = "";
 
