@@ -28,6 +28,7 @@ export interface TerminalRecord {
    *  agent idle?" heuristics in the UI — a TUI that hasn't emitted in
    *  a few seconds is almost certainly waiting on the user or done. */
   lastOutputAt: string;
+  awaitingInput?: boolean;
   exitedAt?: string;
   exitCode?: number;
   exitSignal?: string;

@@ -3,6 +3,7 @@ import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
   commandCopyText,
+  commandPowerDisplay,
   commandPowerLabel,
   commandRunText,
   countTextLines,
@@ -11,6 +12,7 @@ import {
   expandNoteBodyForCopy,
   extractNoteClipboardPayloadFromHtml,
   fetchTextAttachment,
+  fetchTextAttachmentPreview,
   inferPastedTextMimeType,
   inlineAttachmentLabel,
   noteBodyToEditText,
@@ -30,12 +32,15 @@ import {
   resolveLiveCommandLink,
   sessionIdFromValue,
   shouldAttachPastedText,
+  singleInlineAttachmentPart,
   textAttachmentMeta,
+  textAttachmentPreviewLines,
   trailingImageAttachmentIndexes,
   trailingVisualAttachmentIndexes,
   visualAttachmentIndexes,
   pastedTextTitleForMime,
 } from "../src/note-inline-attachments";
+import { messageTitleFromMarkdown } from "../src/messages-store";
 
 describe("note inline attachments", () => {
   test("mirrors Codex CLI's large paste cutoff", () => {
@@ -52,6 +57,7 @@ describe("note inline attachments", () => {
       size: 1016,
       charCount: 1016,
       lineCount: 45,
+      previewLines: ["const app = createApp();", "app.mount('#root');"],
       source: {
         kind: "clipboard",
         types: ["text/plain", "text/html"],
@@ -74,11 +80,43 @@ describe("note inline attachments", () => {
       );
       expect(parts[1].attachment.charCount).toBe(1016);
       expect(parts[1].attachment.lineCount).toBe(45);
+      expect(parts[1].attachment.previewLines).toEqual([
+        "const app = createApp();",
+        "app.mount('#root');",
+      ]);
       expect(parts[1].attachment.source?.types).toEqual([
         "text/plain",
         "text/html",
       ]);
     }
+  });
+
+  test("builds compact pasted text preview lines", () => {
+    expect(textAttachmentPreviewLines("\n\tfirst line  \nsecond\nthird", 2)).toEqual([
+      "  first line",
+      "second",
+    ]);
+    expect(textAttachmentPreviewLines("1\n2\n3\n4\n5\n6\n7\n8")).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+    ]);
+    expect(textAttachmentPreviewLines("\n\n", 3)).toEqual(["(empty)"]);
+  });
+
+  test("infers compact message envelope titles from markdown", () => {
+    expect(messageTitleFromMarkdown("# Supergit CLI issues\n\nbody")).toBe("Supergit CLI issues");
+    expect(messageTitleFromMarkdown("Please check this soon. More details follow.")).toBe(
+      "Please check this soon.",
+    );
+    expect(messageTitleFromMarkdown("- one two three four five six seven eight")).toBe(
+      "one two three four five six seven...",
+    );
+    expect(messageTitleFromMarkdown("```ts\nconst x = 1;\n```")).toBe("Untitled message");
   });
 
   test("formats pasted text cards with line count and size", () => {
@@ -238,22 +276,53 @@ describe("note inline attachments", () => {
     }
   });
 
-  test("derives short command power-button labels", () => {
-    expect(
-      commandPowerLabel({
-        type: "command",
-        value: "cmd-1",
-        command: "npm run build:launch",
-      }),
-    ).toBe("build:launch");
-    expect(
-      commandPowerLabel({
-        type: "command",
-        value: "cmd-2",
-        command: "bun run scripts/build-launch.ts",
-        label: "Relaunch",
-      }),
-    ).toBe("Relaunch");
+  test("uses command labels only when explicitly named", () => {
+    expect(commandPowerLabel({
+      type: "command",
+      value: "cmd-1",
+      command: "npm run build:launch",
+    })).toBe("npm run build:launch");
+    expect(commandPowerLabel({
+      type: "command",
+      value: "cmd-2",
+      command: "bun run scripts/build-launch.ts",
+      label: "Relaunch",
+    })).toBe("Relaunch");
+  });
+
+  test("shows the command as subtitle only for named command cards", () => {
+    expect(commandPowerDisplay({
+      type: "command",
+      value: "cmd-1",
+      command: "npm run dev",
+      label: "Start Server",
+    })).toEqual({
+      label: "Start Server",
+      subtitle: "npm run dev",
+    });
+
+    expect(commandPowerDisplay({
+      type: "command",
+      value: "cmd-2",
+      command: "npm run dev",
+    })).toEqual({
+      label: "npm run dev",
+      subtitle: "",
+    });
+
+    expect(commandPowerDisplay({
+      type: "command",
+      value: "cmd-3",
+      command: "npm run old",
+    }, {
+      id: "cmd-3",
+      kind: "command",
+      cmd: "npm run dev",
+      name: "Start Server",
+    })).toEqual({
+      label: "Start Server",
+      subtitle: "npm run dev",
+    });
   });
 
   test("copies command references as the runnable command text", () => {
@@ -502,12 +571,15 @@ describe("note inline attachments", () => {
       await expect(fetchTextAttachment("/tmp/missing.txt")).rejects.toThrow(
         "attachment read failed: 404",
       );
+      await expect(fetchTextAttachmentPreview("/tmp/missing.txt")).rejects.toThrow(
+        "attachment preview read failed: 404",
+      );
     } finally {
       globalThis.fetch = oldFetch;
     }
   });
 
-  test("edit mode shows compact placeholders that round-trip to stored tokens", () => {
+  test("edit mode exposes portable attachment refs that paste into other notes", () => {
     const paste = makeTextAttachmentRef({
       path: "/tmp/supergit/attachments/paste.txt",
       charCount: 16,
@@ -520,12 +592,37 @@ describe("note inline attachments", () => {
 
     const edit = noteBodyToEditText(body);
 
-    expect(edit.text).toBe("A [Pasted Content, 16 chars]\nB [shot.png]");
-    expect(edit.refs).toHaveLength(2);
+    expect(edit.text).toBe(body);
+    expect(edit.text).toContain("supergit://attachment/");
+    expect(edit.refs).toHaveLength(0);
+    expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
+    expect(parseInlineAttachments(edit.text).filter((part) => part.kind === "attachment"))
+      .toHaveLength(2);
+  });
+
+  test("edit mode shows emoji attachments as bracketed emoji text", () => {
+    const emoji = makeEmojiAttachmentRef({ body: "🌱" });
+    const body = `seed ${emoji}`;
+
+    const edit = noteBodyToEditText(body);
+
+    expect(edit.text).toBe("seed [🌱]");
+    expect(edit.text).not.toContain("supergit://attachment/");
+    expect(edit.refs).toEqual([{ placeholder: "[🌱]", raw: emoji }]);
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
 
-  test("edit placeholders avoid clobbering literal note text", () => {
+  test("edit mode keeps literal bracketed emoji text separate from emoji attachments", () => {
+    const emoji = makeEmojiAttachmentRef({ body: "🌱" });
+    const body = `[🌱] ${emoji}`;
+
+    const edit = noteBodyToEditText(body);
+
+    expect(edit.text).toBe("[🌱] [🌱 #2]");
+    expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
+  });
+
+  test("literal attachment labels stay plain text in edit mode", () => {
     const paste = makeTextAttachmentRef({
       path: "/tmp/supergit/attachments/paste.txt",
       charCount: 16,
@@ -534,9 +631,8 @@ describe("note inline attachments", () => {
 
     const edit = noteBodyToEditText(body);
 
-    expect(edit.text).toBe(
-      "[Pasted Content, 16 chars]\n[Pasted Content, 16 chars] #2",
-    );
+    expect(edit.text).toBe(body);
+    expect(edit.refs).toHaveLength(0);
     expect(restoreEditTextAttachments(edit.text, edit.refs)).toBe(body);
   });
 
@@ -719,6 +815,15 @@ describe("note inline attachments", () => {
     );
 
     expect([...visualAttachmentIndexes(parts)]).toEqual([1, 3, 5, 7, 9]);
+  });
+
+  test("detects a detached attachment even with surrounding whitespace", () => {
+    const image = makeImageAttachmentRef({
+      path: "/tmp/screenshot.png",
+      mimeType: "image/png",
+    });
+    expect(singleInlineAttachmentPart(`\n ${image}\n`)?.raw).toBe(image);
+    expect(singleInlineAttachmentPart(`note\n${image}`)).toBeNull();
   });
 });
 

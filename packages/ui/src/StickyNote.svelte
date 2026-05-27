@@ -45,6 +45,26 @@
      *  note pinned to a remote repo reads its text/image attachments from
      *  that box rather than the local daemon. */
     daemonId?: string;
+    receiver?: {
+      kind?: "session" | "peer";
+      sessionId?: string;
+      peerId?: string;
+      label?: string;
+      agent?: string;
+      source?: string;
+      terminalId?: string;
+      host?: string;
+      port?: number;
+      delivery?: "draft" | "staged" | "sent";
+    };
+    sender?: {
+      kind: "session" | "peer";
+      id: string;
+      label?: string;
+      agent?: string;
+      source?: string;
+      terminalId?: string;
+    };
   }
 </script>
 
@@ -84,6 +104,7 @@
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
     commandCopyText,
+    commandPowerDisplay,
     commandPowerLabel,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
@@ -104,7 +125,10 @@
     resolveLiveCommandLink,
     resolveSessionAgent,
     shouldAttachPastedText,
+    singleInlineAttachmentPart,
+    STAGE_PROMPT_EVENT,
     textAttachmentMeta,
+    textAttachmentPreviewLines,
     visualAttachmentIndexes,
     type InlineAttachment,
     type InlineAttachmentEditRef,
@@ -118,6 +142,7 @@
   import { sessionDisplayTitle, type AgentSession } from "./sessionSearch";
   import { iconFor } from "./icons";
   import { play } from "./sound";
+  import { messageTitleFromMarkdown } from "./messages-store";
 
   /** localStorage key for the user's preferred git client. Written
    *  by App.svelte's openIn funnel whenever a git-client app is
@@ -304,6 +329,7 @@
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  export let viewerPeerId: string | null = null;
 
   const dispatch = createEventDispatcher<{
     move: {
@@ -320,11 +346,13 @@
     save: {
       id: string;
       body: string;
-      target?: LinkTarget | null;
-      kind?: AttachmentKind;
-      /** Toggle the hide-until-hover flag. Omitted on ordinary saves. */
-      secret?: boolean;
-    };
+	      target?: LinkTarget | null;
+	      kind?: AttachmentKind;
+	      /** Toggle the hide-until-hover flag. Omitted on ordinary saves. */
+	      secret?: boolean;
+	      receiver?: NoteShape["receiver"] | null;
+	      sender?: NoteShape["sender"] | null;
+	    };
     remove: { id: string };
     focus: { id: string };
     reassign: { id: string; anchor: string; mode: "move" | "duplicate" };
@@ -435,6 +463,180 @@
       return;
     }
     // file: TODO — `/api/open` with the resolved absolute path.
+  }
+
+  let messageStatus = "";
+
+  function receiverLookupIds(): string[] {
+    const r = note.receiver;
+    if (!r) return [];
+    return [r.sessionId, r.terminalId, r.source].filter((x): x is string => !!x);
+  }
+
+  function messageReceiverLabel(): string {
+    const r = note.receiver;
+    if (!r) return "";
+    return r.label ?? r.sessionId ?? r.peerId ?? "";
+  }
+
+  function messageSenderLabel(): string {
+    const s = note.sender;
+    if (!s) return "";
+    return s.label ?? s.id;
+  }
+
+  function messageTitle(body = note.body): string {
+    return messageTitleFromMarkdown(body);
+  }
+
+  function messageFromLabel(): string {
+    return showSender() ? messageSenderLabel() : "Me";
+  }
+
+  function messageToLabel(): string {
+    return showReceiver() ? messageReceiverLabel() : "Me";
+  }
+
+  function messageDelivery(): "draft" | "staged" | "sent" | "received" {
+    if (note.receiver?.delivery === "sent") return "sent";
+    if (note.receiver?.delivery === "staged") return "staged";
+    if (note.sender && !note.receiver?.sessionId && !note.receiver?.peerId) return "received";
+    if (note.sender && note.receiver?.kind === "peer" && viewerPeerId && note.receiver.peerId === viewerPeerId) {
+      return "received";
+    }
+    return "draft";
+  }
+
+  function messageDeliveryLabel(): string {
+    return messageStatus || messageDelivery();
+  }
+
+  function formatMessageDate(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function messageWhenLabel(): string {
+    const delivery = messageDelivery();
+    const date = delivery === "draft" ? note.createdAt : note.updatedAt;
+    const formatted = formatMessageDate(date);
+    if (!formatted) return delivery;
+    const verb = delivery === "sent"
+      ? "Sent"
+      : delivery === "staged"
+        ? "Staged"
+        : delivery === "received"
+          ? "Received"
+          : "Drafted";
+    return `${verb} ${formatted}`;
+  }
+
+  function showReceiver(): boolean {
+    const r = note.receiver;
+    if (!r) return false;
+    return !(r.kind === "peer" && viewerPeerId && r.peerId === viewerPeerId);
+  }
+
+  function showSender(): boolean {
+    const s = note.sender;
+    if (!s) return false;
+    return !(s.kind === "peer" && viewerPeerId && s.id === viewerPeerId);
+  }
+
+  async function sendMessageNote(): Promise<void> {
+    const r = note.receiver;
+    if (!r) return;
+    messageStatus = "";
+    if (r.kind === "peer" || r.peerId) {
+      if (!r.host || !r.port) {
+        messageStatus = "peer offline";
+        return;
+      }
+      try {
+        const res = await fetch("/api/messages/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            peerHost: r.host,
+            peerPort: r.port,
+            body: note.body,
+            kind: "note",
+            note: {
+              body: note.body,
+              anchors: note.anchors,
+              tags: note.tags,
+              kind: note.kind,
+              target: note.target,
+              receiver: r,
+              sender: note.sender,
+            },
+          }),
+        });
+        if (!res.ok) {
+          messageStatus = "send failed";
+          return;
+        }
+        const nextReceiver = { ...r, delivery: "sent" as const };
+        dispatch("save", {
+          id: note.id,
+          body: note.body,
+          receiver: nextReceiver,
+        });
+        messageStatus = "sent";
+      } catch {
+        messageStatus = "send failed";
+      }
+      return;
+    }
+    try {
+      const res = await fetch("/api/supergit/sessions");
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        sessions?: Array<{
+          id: string;
+          terminalId?: string;
+          source?: string;
+          state: string;
+        }>;
+      };
+      const ids = receiverLookupIds();
+      const live = (body.sessions ?? []).find((s) =>
+        ids.includes(s.id) ||
+        (s.terminalId ? ids.includes(s.terminalId) : false) ||
+        (s.source ? ids.includes(s.source) : false)
+      );
+      if (!live || live.state === "stopped") {
+        messageStatus = "session stopped";
+        return;
+      }
+      if (live.state === "awaiting_input") {
+        messageStatus = "waiting on input";
+        return;
+      }
+      window.dispatchEvent(new CustomEvent(STAGE_PROMPT_EVENT, {
+        detail: {
+          source: live.source ?? r.source,
+          termId: live.terminalId ?? r.terminalId,
+          text: note.body,
+        },
+      }));
+      const nextReceiver = { ...r, delivery: "staged" as const };
+      dispatch("save", {
+        id: note.id,
+        body: note.body,
+        receiver: nextReceiver,
+      });
+      messageStatus = "staged";
+    } catch {
+      messageStatus = "send failed";
+    }
   }
 
   /** Live-resolved label for SESSION chips, derived from the
@@ -671,6 +873,7 @@
     clearRevealTimer();
     if (copiedTimer) clearTimeout(copiedTimer);
     if (attachmentDeleteTimerId) clearTimeout(attachmentDeleteTimerId);
+    if (suppressNextClickTimer) clearTimeout(suppressNextClickTimer);
   });
 
   /** Move a node to document.body on mount so it escapes any
@@ -1131,6 +1334,7 @@
           size: blob.size,
           charCount: Array.from(text).length,
           lineCount: countTextLines(text),
+          previewLines: textAttachmentPreviewLines(text),
           source,
         }),
         target,
@@ -1495,18 +1699,20 @@
       return;
     }
     cancelPendingAttachmentDelete();
+    const deleteWholeNote = detachedAttachmentPart?.raw === raw;
+    const sourceBody = note.body;
     confirmingAttachmentDeleteRaw = raw;
     attachmentDeleteTimerId = setTimeout(() => {
       attachmentDeleteTimerId = null;
       confirmingAttachmentDeleteRaw = null;
-      if (detachedAttachmentPart?.raw === raw) {
+      if (deleteWholeNote) {
         closeInlineAttachment();
         dispatch("remove", { id: note.id });
         return;
       }
-      const body = removeInlineAttachmentRef(note.body, raw);
+      const body = removeInlineAttachmentRef(sourceBody, raw);
       closeInlineAttachment();
-      if (body !== note.body) dispatch("save", { id: note.id, body });
+      if (body !== sourceBody) dispatch("save", { id: note.id, body });
     }, DELETE_GRACE_MS);
   }
 
@@ -1516,6 +1722,8 @@
     attachment: InlineAttachment,
   ): void {
     if (!e.dataTransfer) return;
+    nativeAttachmentDragging = true;
+    suppressOpenClickAfterDrag(5000);
     e.stopPropagation();
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData(
@@ -1565,6 +1773,27 @@
   let dragStartClientY = 0;
   let dragMoved = false;
   let suppressNextClick = false;
+  let suppressNextClickTimer: ReturnType<typeof setTimeout> | null = null;
+  let suppressNextClickUntil = 0;
+  let nativeAttachmentDragging = false;
+
+  function suppressOpenClickAfterDrag(ms = 250): void {
+    suppressNextClick = true;
+    suppressNextClickUntil = Date.now() + ms;
+    if (suppressNextClickTimer) clearTimeout(suppressNextClickTimer);
+    suppressNextClickTimer = setTimeout(() => {
+      suppressNextClickTimer = null;
+      if (Date.now() >= suppressNextClickUntil) suppressNextClick = false;
+    }, ms);
+  }
+
+  function shouldSuppressOpenClick(): boolean {
+    if (nativeAttachmentDragging) return true;
+    if (!suppressNextClick) return false;
+    if (Date.now() < suppressNextClickUntil) return true;
+    suppressNextClick = false;
+    return false;
+  }
 
   /** Drag-tilt physics: rotation added to the base `--tilt` while the
    *  user is dragging horizontally, so the note feels like a piece of
@@ -1624,10 +1853,11 @@
   let liveGrabYFrac: number | null = null;
   $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
   $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
-  let textStatsByPath: Record<
-    string,
-    { lineCount: number; charCount: number }
-  > = {};
+  let textStatsByPath: Record<string, {
+    lineCount: number;
+    charCount: number;
+    previewLines: string[];
+  }> = {};
   const pendingTextStats = new Set<string>();
   $: showAttachmentDropActive = attachmentDropActive;
 
@@ -1680,11 +1910,18 @@
     };
     window.addEventListener("scroll", onWindowReflow, true);
     window.addEventListener("resize", onWindowReflow);
+    const onWindowDragEnd = () => {
+      if (!nativeAttachmentDragging) return;
+      nativeAttachmentDragging = false;
+      suppressOpenClickAfterDrag();
+    };
+    window.addEventListener("dragend", onWindowDragEnd);
     return () => {
       window.removeEventListener("mousedown", onWindowDown);
       window.removeEventListener("keydown", onWindowKey);
       window.removeEventListener("scroll", onWindowReflow, true);
       window.removeEventListener("resize", onWindowReflow);
+      window.removeEventListener("dragend", onWindowDragEnd);
       stopSwing();
       cancelPendingDelete();
     };
@@ -1787,13 +2024,8 @@
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
     if (moved) {
-      suppressNextClick = true;
-      setTimeout(() => (suppressNextClick = false), 0);
-      dispatch("dragdrop", {
-        id: note.id,
-        clientX: e.clientX,
-        clientY: e.clientY,
-      });
+      suppressOpenClickAfterDrag();
+      dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
     }
     if (dragRotation !== 0) {
       const next = Math.max(
@@ -1823,7 +2055,7 @@
   }
 
   function onLinkBodyClick(): void {
-    if (suppressNextClick || !note.target) return;
+    if (shouldSuppressOpenClick() || !note.target) return;
     openTarget(note.target);
   }
 
@@ -1831,7 +2063,7 @@
     raw: string,
     attachment: InlineAttachment,
   ): void {
-    if (suppressNextClick) return;
+    if (shouldSuppressOpenClick()) return;
     openInlineAttachment(raw, attachment);
   }
 
@@ -2202,12 +2434,15 @@
 
   function ensureTextStats(attachment: InlineAttachment): void {
     if (attachment.kind !== "text") return;
-    if (typeof attachment.lineCount === "number") return;
     if (
-      textStatsByPath[attachment.path] ||
-      pendingTextStats.has(attachment.path)
-    )
-      return;
+      typeof attachment.lineCount === "number" &&
+      attachment.previewLines?.length
+    ) return;
+    if (
+      textStatsByPath[attachment.path]?.previewLines?.length &&
+      (typeof attachment.lineCount === "number" || typeof textStatsByPath[attachment.path]?.lineCount === "number")
+    ) return;
+    if (pendingTextStats.has(attachment.path)) return;
     pendingTextStats.add(attachment.path);
     void fetchTextAttachment(attachment.path, note.daemonId)
       .then((text) => {
@@ -2215,8 +2450,9 @@
         textStatsByPath = {
           ...textStatsByPath,
           [attachment.path]: {
-            lineCount: countTextLines(text),
-            charCount: Array.from(text).length,
+            lineCount: attachment.lineCount ?? countTextLines(text),
+            charCount: attachment.charCount,
+            previewLines: textAttachmentPreviewLines(text),
           },
         };
       })
@@ -2229,6 +2465,14 @@
     if (attachment.kind !== "text") return "";
     ensureTextStats(attachment);
     return textAttachmentMeta(attachment, textStatsByPath[attachment.path]);
+  }
+
+  function pastedTextPreview(attachment: InlineAttachment): string[] {
+    if (attachment.kind !== "text") return [];
+    ensureTextStats(attachment);
+    return attachment.previewLines?.length
+      ? attachment.previewLines
+      : textStatsByPath[attachment.path]?.previewLines ?? [];
   }
 
   function noteAttachmentTitle(attachment: InlineAttachment): string {
@@ -2244,13 +2488,7 @@
     }
     if (attachment.target.type === "command") {
       const live = commandLinkForTarget(attachment.target)?.link;
-      return (
-        live?.name ??
-        live?.cmd ??
-        attachment.target.label ??
-        attachment.target.command ??
-        attachment.target.value
-      );
+      return commandPowerDisplay(attachment.target, live).label;
     }
     return attachment.target.label ?? displayLabel(attachment.target);
   }
@@ -2260,7 +2498,7 @@
     if (attachment.target.type === "command") {
       const parts = [
         isCommandRunning(attachment.target, commandStateKey) ? "ON" : "OFF",
-        liveCommandMode(attachment.target, commandStateKey),
+        liveCommandSubtitle(attachment.target, commandStateKey),
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "command";
     }
@@ -2271,6 +2509,11 @@
   }
 
   $: isCommandLink = note.kind === "link" && note.target?.type === "command";
+  let messageOpen = false;
+  $: isMessageNote = !isLink && !isEmoji && !isDetachedAttachment && !!(note.receiver || note.sender);
+  $: if (!isMessageNote || editing) {
+    messageOpen = false;
+  }
 
   $: commandStateKey = [
     [...runningCommandIds].sort().join("|"),
@@ -2341,28 +2584,14 @@
     void stateKey;
     if (target.type !== "command") return target.value;
     const link = commandLinkForTarget(target)?.link;
-    return link?.name?.trim() || link?.cmd?.trim() || commandPowerLabel(target);
+    return commandPowerDisplay(target, link).label;
   }
 
-  function liveCommandMode(
-    target: LinkTarget,
-    stateKey = commandStateKey,
-  ): string {
+  function liveCommandSubtitle(target: LinkTarget, stateKey = commandStateKey): string {
     void stateKey;
-    if (target.type !== "command") return "command";
+    if (target.type !== "command") return "";
     const live = commandLinkForTarget(target)?.link;
-    const cwd = live?.cwd ?? target.cwd;
-    const mode = live?.runMode ?? target.runMode;
-    const modeLabel =
-      mode === "internal"
-        ? "hidden terminal"
-        : mode === "external"
-          ? "external terminal"
-          : mode === "shell"
-            ? "background shell"
-            : "command";
-    const cwdLabel = cwd?.split("/").filter(Boolean).pop();
-    return cwdLabel ? `${cwdLabel} · ${modeLabel}` : modeLabel;
+    return commandPowerDisplay(target, live).subtitle;
   }
 
   function commandUrlsForTarget(
@@ -2396,6 +2625,7 @@
   }
 
   function activateAttachment(raw: string, attachment: InlineAttachment): void {
+    if (shouldSuppressOpenClick()) return;
     // Command and session link chips act on click — run the command /
     // focus the session — rather than opening the read-only preview
     // modal the other attachment kinds use.
@@ -2444,9 +2674,7 @@
   }
 
   $: detachedAttachmentPart =
-    !editing && bodyParts.length === 1 && bodyParts[0]?.kind === "attachment"
-      ? bodyParts[0]
-      : null;
+    !editing ? singleInlineAttachmentPart(note.body) : null;
   $: isDetachedAttachment = !!detachedAttachmentPart;
   $: visualAttachmentIndexesInBody = visualAttachmentIndexes(bodyParts);
   $: attachmentParts = bodyParts.filter(
@@ -2608,10 +2836,100 @@
   {/if}
 {/snippet}
 
-{#snippet attachmentPreview(
-  attachment: InlineAttachment,
-  mode: "detached" | "stack" | "media",
-)}
+{#snippet messageEnvelope()}
+  {@const delivery = messageDelivery()}
+  <section
+    class="message-envelope"
+    class:open={messageOpen}
+    class:postmarked={delivery === "sent" || delivery === "received"}
+    class:staged={delivery === "staged"}
+    role="button"
+    tabindex="0"
+    aria-expanded={messageOpen}
+    title={messageOpen ? "Message" : "Open message"}
+    on:click|stopPropagation={() => {
+      if (!messageOpen) messageOpen = true;
+    }}
+    on:keydown={(e) => {
+      if ((e.key === "Enter" || e.key === " ") && !messageOpen) {
+        e.preventDefault();
+        messageOpen = true;
+      }
+    }}
+  >
+    <div class="message-envelope-face" aria-hidden={messageOpen}>
+      <div class="message-window">
+        <span class="message-window-row">
+          <span>From:</span>
+          <strong>{messageFromLabel()}</strong>
+        </span>
+        <span class="message-window-row">
+          <span>To:</span>
+          <strong>{messageToLabel()}</strong>
+        </span>
+        <span class="message-window-row">
+          <span>Title:</span>
+          <strong>{messageTitle()}</strong>
+        </span>
+      </div>
+      <div class="message-stamp" aria-label={messageWhenLabel()}>
+        <span class="message-stamp-pc">PC</span>
+        <span class="message-stamp-fern" aria-hidden="true"></span>
+        <span class="message-postmark">{messageDeliveryLabel()}</span>
+      </div>
+      <div class="message-delivery-line">
+        <span class="message-delivery-badge">{messageDeliveryLabel()}</span>
+        <span>{messageWhenLabel()}</span>
+      </div>
+    </div>
+    <div class="message-envelope-flap" aria-hidden="true"></div>
+    <div class="message-letter">
+      <header class="message-letter-head">
+        <div class="message-window message-window-letter">
+          <span class="message-window-row">
+            <span>From:</span>
+            <strong>{messageFromLabel()}</strong>
+          </span>
+          <span class="message-window-row">
+            <span>To:</span>
+            <strong>{messageToLabel()}</strong>
+          </span>
+          <span class="message-window-row">
+            <span>Title:</span>
+            <strong>{messageTitle()}</strong>
+          </span>
+        </div>
+        <div class="message-stamp message-stamp-letter" aria-label={messageWhenLabel()}>
+          <span class="message-stamp-pc">PC</span>
+          <span class="message-stamp-fern" aria-hidden="true"></span>
+          <span class="message-postmark">{messageDeliveryLabel()}</span>
+        </div>
+      </header>
+      <div class="message-letter-meta">
+        <span>{messageWhenLabel()}</span>
+        <button
+          type="button"
+          class="message-fold-toggle"
+          title="Fold message"
+          aria-label="Fold message"
+          on:click|stopPropagation={() => {
+            messageOpen = false;
+          }}
+        >⌄</button>
+      </div>
+      <div class="message-letter-body">
+        {@render renderedNoteBody(
+          bodyParts,
+          visualAttachmentIndexesInBody,
+          bottomVisualParts,
+          true,
+        )}
+      </div>
+    </div>
+  </section>
+{/snippet}
+
+{#snippet attachmentPreview(attachment: InlineAttachment, mode: "detached" | "stack" | "media")}
   {#if attachment.kind === "image"}
     <span
       class="sticky-photo-frame"
@@ -2624,11 +2942,12 @@
       />
     </span>
   {:else if attachment.kind === "text"}
-    <span
-      class="sticky-snippet-card"
-      class:sticky-snippet-card-media={mode === "media"}
-    >
-      <span class="sticky-snippet-icon" aria-hidden="true">T</span>
+    <span class="sticky-snippet-card" class:sticky-snippet-card-media={mode === "media"}>
+      <span class="sticky-snippet-preview" aria-hidden="true">
+        {#each pastedTextPreview(attachment) as line}
+          <span>{line}</span>
+        {/each}
+      </span>
       <span class="sticky-snippet-title">{pastedTextTitle(attachment)}</span>
       <span class="sticky-snippet-meta">{pastedTextMeta(attachment)}</span>
     </span>
@@ -2679,6 +2998,7 @@
   mode: "detached" | "stack" | "media",
 )}
   {@const running = isCommandRunning(target, commandStateKey)}
+  {@const subtitle = liveCommandSubtitle(target, commandStateKey)}
   {@const urls = commandUrlsForTarget(target, commandUrlsKey)}
   <span
     class="command-power-card"
@@ -2692,13 +3012,9 @@
       <span class="command-power-state">{running ? "ON" : "OFF"}</span>
     </span>
     <span class="command-power-details">
-      <span class="command-power-name"
-        >{liveCommandLabel(target, commandStateKey)}</span
-      >
-      {#if mode !== "detached"}
-        <span class="command-power-meta"
-          >{liveCommandMode(target, commandStateKey)}</span
-        >
+      <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>
+      {#if mode !== "detached" && subtitle}
+        <span class="command-power-meta">{subtitle}</span>
       {/if}
     </span>
     {#if mode === "detached" && urls.length > 0}
@@ -2733,9 +3049,11 @@
   class:sticky-emoji={isEmoji}
   class:sticky-detached={isDetachedAttachment}
   class:sticky-command-link={isCommandLink}
+  class:sticky-message={isMessageNote}
+  class:message-open={messageOpen}
   class:attachment-drop-active={showAttachmentDropActive}
   data-note-id={note.id}
-  data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
+  data-kind={isEmoji ? "emoji" : isLink ? "link" : isMessageNote ? "message" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying
     ? 0.5
     : effectiveGrabXFrac) * 100}%; --grab-y: {(flying
@@ -2749,7 +3067,9 @@
     ? "Emoji sticker"
     : isLink
       ? "Sticky link"
-      : "Sticky note"}
+      : isMessageNote
+        ? "Message note"
+        : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
   on:dragover={onNoteDragOver}
   on:drop={onNoteDrop}
@@ -2771,7 +3091,7 @@
     on:mousedown={onMouseDownHeader}
     title="Drag to move"
   >
-    {#if !editing && !isLink && !isEmoji && !isDetachedAttachment}
+    {#if !editing && !isLink && !isEmoji && !isDetachedAttachment && !isMessageNote}
       <span class="sticky-attach-indicator" aria-hidden="true">📎</span>
     {/if}
     {#if attachmentDropSourceActive}
@@ -2800,6 +3120,14 @@
              already handles, and the empty toolbar gives the
              picker more room to breathe. -->
       {:else}
+        {#if note.receiver}
+          <button
+            class="sticky-btn message-send"
+            on:click={() => void sendMessageNote()}
+            title={`${note.receiver.kind === "peer" || note.receiver.peerId ? "Send this note to" : "Paste this message into"} ${messageReceiverLabel()}`}
+            aria-label="Send message to session"
+          >✉</button>
+        {/if}
         {#if !isEmoji}
           <button
             class="sticky-btn"
@@ -3105,12 +3433,16 @@
             <span class="secret-redaction-bar" style="width: 48%"></span>
           </span>
         {/if}
-        {@render renderedNoteBody(
-          bodyParts,
-          visualAttachmentIndexesInBody,
-          bottomVisualParts,
-          true,
-        )}
+        {#if isMessageNote}
+          {@render messageEnvelope()}
+        {:else}
+          {@render renderedNoteBody(
+            bodyParts,
+            visualAttachmentIndexesInBody,
+            bottomVisualParts,
+            true,
+          )}
+        {/if}
       </div>
     {/if}
   {/if}
@@ -3159,6 +3491,9 @@
           on:click|stopPropagation
           on:dblclick|stopPropagation
         >
+          {#if confirmingAttachmentDeleteRaw === openPart.raw}
+            <div class="attachment-delete-progress" aria-hidden="true"></div>
+          {/if}
           <header class="attachment-media-head">
             <span class="attachment-media-title">
               {inlineAttachmentLabel(openPart.attachment)}
@@ -3228,12 +3563,15 @@
                 on:click={() => openAttachmentByStep(1)}>›</button
               >
             {/if}
-            <span class="attachment-media-count">
-              {openIndex + 1} / {attachmentParts.length}
-            </span>
+            {#if attachmentParts.length > 1}
+              <span class="attachment-media-count">
+                {openIndex + 1} / {attachmentParts.length}
+              </span>
+            {/if}
+            <span class="attachment-media-separator" aria-hidden="true"></span>
             <button
               type="button"
-              class="sticky-btn tiny"
+              class="sticky-btn tiny attachment-media-close"
               title="Close"
               on:click={closeInlineAttachment}>×</button
             >

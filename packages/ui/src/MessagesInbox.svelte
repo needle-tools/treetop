@@ -8,6 +8,8 @@
    */
   import { onDestroy, onMount } from "svelte";
   import { apiUrl } from "./api";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import Popover from "./Popover.svelte";
   import {
     messages,
@@ -71,6 +73,13 @@
    *  clipboard write so the click feels acknowledged. */
   let copied: Record<string, boolean> = {};
   let copiedTimer: Record<string, ReturnType<typeof setTimeout> | null> = {};
+  let viewerPeerId: string | null = null;
+  let openNote:
+    | {
+        peerId: string;
+        msg: import("./messages-store").StoredMessage;
+      }
+    | null = null;
 
   $: count = unreadCount($messages, lastReadAt);
 
@@ -157,6 +166,12 @@
 
   onMount(() => {
     void refreshMessages();
+    void fetch("/api/identity")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { id?: string } | null) => {
+        viewerPeerId = typeof body?.id === "string" ? body.id : null;
+      })
+      .catch(() => {});
     startMessagesPoll();
   });
 
@@ -235,6 +250,18 @@
     if (readStamper) clearInterval(readStamper);
   });
 
+  function portal(node: HTMLElement) {
+    const orig = node.parentNode;
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (orig && orig.contains(node) === false) {
+          try { node.remove(); } catch {}
+        }
+      },
+    };
+  }
+
   function peerOnline(peerId: string): DiscoveredPeer | null {
     return peers.find((p) => p.id === peerId) ?? null;
   }
@@ -278,6 +305,61 @@
       text: lines.slice(0, MAX_DISPLAY_LINES).join("\n") + "…",
       truncated: true,
     };
+  }
+
+  function notePayload(msg: import("./messages-store").StoredMessage) {
+    if (msg.kind !== "note") return null;
+    return msg.note ?? { body: msg.body, tags: ["message"] };
+  }
+
+  function renderNoteHtml(body: string): string {
+    return DOMPurify.sanitize(marked.parse(body, { async: false }) as string);
+  }
+
+  function noteDragPayload(msg: import("./messages-store").StoredMessage): string {
+    const note = notePayload(msg);
+    return JSON.stringify({
+      body: note?.body ?? msg.body,
+      tags: note?.tags ?? ["message"],
+      receiver: note?.receiver,
+      sender: note?.sender,
+    });
+  }
+
+  function onNoteDragStart(e: DragEvent, msg: import("./messages-store").StoredMessage): void {
+    e.dataTransfer?.setData("application/x-supergit-inbox-note", noteDragPayload(msg));
+    e.dataTransfer?.setData("text/plain", notePayload(msg)?.body ?? msg.body);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+  }
+
+  function onViewerNoteDragStart(e: DragEvent, msg: import("./messages-store").StoredMessage): void {
+    onNoteDragStart(e, msg);
+    setTimeout(() => {
+      if (openNote?.msg.id === msg.id) openNote = null;
+    }, 0);
+  }
+
+  function openNoteMessage(peerId: string, msg: import("./messages-store").StoredMessage): void {
+    if (msg.kind !== "note") return;
+    openNote = { peerId, msg };
+  }
+
+  function onNoteKeydown(e: KeyboardEvent, peerId: string, msg: import("./messages-store").StoredMessage): void {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    openNoteMessage(peerId, msg);
+  }
+
+  function senderLabel(msg: import("./messages-store").StoredMessage): string {
+    const sender = notePayload(msg)?.sender;
+    if (!sender || (sender.kind === "peer" && viewerPeerId && sender.id === viewerPeerId)) return "";
+    return sender.label ?? sender.id;
+  }
+
+  function receiverLabel(msg: import("./messages-store").StoredMessage): string {
+    const receiver = notePayload(msg)?.receiver;
+    if (!receiver || (receiver.kind === "peer" && viewerPeerId && receiver.peerId === viewerPeerId)) return "";
+    return receiver.label ?? receiver.sessionId ?? receiver.peerId ?? "";
   }
 
   let deleting: Record<string, boolean> = {};
@@ -918,6 +1000,9 @@
     gap: 0.15rem;
   }
   .inbox-body {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
     margin: 0;
     padding: 0.45rem 1.7rem 0.45rem 0.55rem;
     background: color-mix(in srgb, var(--surface-2) 50%, transparent);
@@ -927,10 +1012,59 @@
     font-size: 0.76rem;
     line-height: 1.4;
     color: var(--text-1, inherit);
+    text-align: left;
     white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: anywhere;
     user-select: text;
+  }
+  button.inbox-body {
+    appearance: none;
+  }
+  .inbox-note-card {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.55rem 0.65rem 0.65rem;
+    border: 0;
+    border-radius: 4px 4px 10px 4px;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0,
+        rgba(0, 0, 0, 0) 18px,
+        rgba(0, 0, 0, 0.035) 18px,
+        rgba(0, 0, 0, 0.035) 19px
+      ),
+      linear-gradient(180deg, #fff4a8 0%, #ffec80 100%);
+    color: #2a2516;
+    box-shadow:
+      0 1px 1px rgba(0, 0, 0, 0.18),
+      0 7px 18px -12px rgba(0, 0, 0, 0.42);
+    cursor: zoom-in;
+    font-family: -apple-system, "Caveat", "Comic Neue", "Patrick Hand",
+      "Marker Felt", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.35;
+    text-align: left;
+  }
+  .inbox-note-card:hover {
+    box-shadow:
+      0 1px 1px rgba(0, 0, 0, 0.2),
+      0 12px 28px -16px rgba(0, 0, 0, 0.5);
+  }
+  .inbox-note-card:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent);
+    outline-offset: 2px;
+  }
+  .inbox-note-card-body {
+    max-height: 7.5rem;
+    overflow: hidden;
+  }
+  .inbox-note-card-body :global(p) {
+    margin: 0 0 0.35em;
+  }
+  .inbox-note-card-body :global(p:last-child) {
+    margin-bottom: 0;
   }
   /* Direction marker rendered INLINE inside `<pre>` as the first
      thing on the line. `vertical-align: middle` centres it against
@@ -1078,4 +1212,16 @@
     margin: 0;
     color: #c0392b;
   }
+  .inbox-note-large-view {
+    width: min(36rem, calc(100vw - 4rem));
+    min-height: auto;
+    cursor: grab;
+  }
+  .inbox-note-large-view .sticky-body {
+    max-height: min(22rem, 48vh);
+  }
+  .inbox-note-media-modal {
+    width: min(42rem, calc(100vw - 2rem));
+  }
 </style>
+

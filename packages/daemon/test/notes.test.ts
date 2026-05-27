@@ -319,6 +319,71 @@ describe("NotesStore", () => {
     });
   });
 
+  test("create + roundtrip preserves message receiver fields", async () => {
+    const path = await tempDir();
+    const a = await NotesStore.open(path);
+    const created = await a.create({
+      body: "Please review this diff.",
+      anchors: ["worktree:/tmp/project", "session:/tmp/session.jsonl"],
+      receiver: {
+        sessionId: "ses-123",
+        label: "Fix auth flow",
+        agent: "codex",
+        source: "/tmp/session.jsonl",
+        terminalId: "t_live",
+        delivery: "draft",
+      },
+    });
+
+    const b = await NotesStore.open(path);
+    const round = await b.get(created.id);
+    expect(round?.receiver).toEqual({
+      sessionId: "ses-123",
+      label: "Fix auth flow",
+      agent: "codex",
+      source: "/tmp/session.jsonl",
+      terminalId: "t_live",
+      delivery: "draft",
+    });
+  });
+
+  test("create + roundtrip preserves peer receiver and sender fields", async () => {
+    const w = await tempDir();
+    const store = await NotesStore.open(w);
+    const created = await store.create({
+      body: "hello peer",
+      receiver: {
+        kind: "peer",
+        peerId: "peer-b",
+        label: "Peer B",
+        host: "127.0.0.1",
+        port: 7777,
+        delivery: "draft",
+      },
+      sender: {
+        kind: "peer",
+        id: "peer-a",
+        label: "Me",
+      },
+    });
+
+    const reopened = await NotesStore.open(w);
+    const round = await reopened.get(created.id);
+    expect(round?.receiver).toEqual({
+      kind: "peer",
+      peerId: "peer-b",
+      label: "Peer B",
+      host: "127.0.0.1",
+      port: 7777,
+      delivery: "draft",
+    });
+    expect(round?.sender).toEqual({
+      kind: "peer",
+      id: "peer-a",
+      label: "Me",
+    });
+  });
+
   test("survives newlines in snapshot fields (collapses to space)", async () => {
     const store = await NotesStore.open(await tempDir());
     const created = await store.create({

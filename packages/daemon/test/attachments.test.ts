@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { saveAttachment, serveAttachment } from "../src/attachments";
+import { saveAttachment, serveAttachment, serveAttachmentPreview } from "../src/attachments";
 
 async function tempAttachmentsDir(): Promise<string> {
   // Real temp dir, no .supergit nesting — saveAttachment treats the
@@ -102,5 +102,20 @@ describe("saveAttachment", () => {
     expect(
       (await serveAttachment(dir, join(dir, "..", "secret.txt"))).status,
     ).toBe(403);
+  });
+
+  test("serves a bounded text preview without reading the whole attachment", async () => {
+    const dir = await tempAttachmentsDir();
+    const saved = await saveAttachment(dir, bytes("one\ntwo\nthree\nfour\nfive"), {
+      filename: "paste.txt",
+      mimeType: "text/plain",
+    });
+
+    const ok = await serveAttachmentPreview(dir, saved.path, { maxBytes: 11 });
+    expect(ok.status).toBe(200);
+    if (ok.status === 200) {
+      expect(ok.text).toBe("one\ntwo\nthr");
+    }
+    expect((await serveAttachmentPreview(dir, join(dir, "..", "secret.txt"))).status).toBe(403);
   });
 });

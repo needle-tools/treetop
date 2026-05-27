@@ -1,6 +1,7 @@
 import { apiUrl } from "./api";
 
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
+export const TEXT_ATTACHMENT_PREVIEW_LINE_LIMIT = 7;
 export const INLINE_ATTACHMENT_DRAG_MIME =
   "application/x-supergit-inline-attachment+json";
 export const LINK_TARGET_DRAG_MIME = "application/x-supergit-link-target+json";
@@ -25,6 +26,7 @@ export interface TextInlineAttachment {
   size?: number;
   charCount: number;
   lineCount?: number;
+  previewLines?: string[];
   source?: AttachmentSource;
 }
 
@@ -194,10 +196,25 @@ export function commandPowerLabel(target: InlineLinkTarget): string {
   if (explicit) return explicit;
   const command = target.command?.trim();
   if (!command) return target.value || "command";
-  const script = command.match(/^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([^\s]+)/);
-  if (script?.[1]) return script[1];
-  const parts = command.split(/\s+/).filter(Boolean);
-  return parts.slice(0, 2).join(" ") || "command";
+  return command;
+}
+
+export function commandPowerDisplay(
+  target: InlineLinkTarget,
+  live?: CommandLinkSnapshot | null,
+): { label: string; subtitle: string } {
+  const label = live?.name?.trim() || target.label?.trim();
+  const command = live?.cmd?.trim() || target.command?.trim() || "";
+  if (label) {
+    return {
+      label,
+      subtitle: command && command !== label ? command : "",
+    };
+  }
+  return {
+    label: command || target.value || "command",
+    subtitle: "",
+  };
 }
 
 export function commandRunText(target: InlineLinkTarget): string {
@@ -282,15 +299,30 @@ export function textAttachmentMeta(
   return `${charCount.toLocaleString()} chars`;
 }
 
-export function makeTextAttachmentRef(input: {
-  path: string;
-  filename?: string;
-  mimeType?: string;
-  size?: number;
-  charCount: number;
-  lineCount?: number;
-  source?: AttachmentSource;
-}): string {
+export function textAttachmentPreviewLines(
+  text: string,
+  maxLines = TEXT_ATTACHMENT_PREVIEW_LINE_LIMIT,
+): string[] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length > 0 && !lines[0]!.trim()) lines.shift();
+  const preview = lines
+    .slice(0, maxLines)
+    .map((line) => line.replace(/\t/g, "  ").trimEnd().slice(0, 160));
+  return preview.some((line) => line.trim()) ? preview : ["(empty)"];
+}
+
+export function makeTextAttachmentRef(
+  input: {
+    path: string;
+    filename?: string;
+    mimeType?: string;
+    size?: number;
+    charCount: number;
+    lineCount?: number;
+    previewLines?: string[];
+     source?: AttachmentSource;
+   },
+): string {
   return makeAttachmentRef({
     kind: "text",
     path: input.path,
@@ -298,8 +330,9 @@ export function makeTextAttachmentRef(input: {
     ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     ...(typeof input.size === "number" ? { size: input.size } : {}),
     charCount: input.charCount,
-    ...(typeof input.lineCount === "number"
-      ? { lineCount: input.lineCount }
+    ...(typeof input.lineCount === "number" ? { lineCount: input.lineCount } : {}),
+    ...(input.previewLines
+      ? { previewLines: input.previewLines.slice(0, TEXT_ATTACHMENT_PREVIEW_LINE_LIMIT) }
       : {}),
     ...(input.source ? { source: input.source } : {}),
   });
@@ -412,10 +445,22 @@ export function removeInlineAttachmentRef(body: string, raw: string): string {
     .join("");
 }
 
-export function moveInlineAttachmentRefToEnd(
+export function singleInlineAttachmentPart(
   body: string,
-  raw: string,
-): string {
+): Extract<InlineAttachmentPart, { kind: "attachment" }> | null {
+  let found: Extract<InlineAttachmentPart, { kind: "attachment" }> | null = null;
+  for (const part of parseInlineAttachments(body)) {
+    if (part.kind === "text") {
+      if (part.text.trim()) return null;
+      continue;
+    }
+    if (found) return null;
+    found = part;
+  }
+  return found;
+}
+
+export function moveInlineAttachmentRefToEnd(body: string, raw: string): string {
   const without = removeInlineAttachmentRef(body, raw);
   if (without === body) return body;
   return appendInlineAttachmentRef(without, raw);
@@ -597,6 +642,12 @@ export async function fetchTextAttachment(
   return res.text();
 }
 
+export async function fetchTextAttachmentPreview(path: string): Promise<string> {
+  const res = await fetch(`/api/attachment/preview?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`attachment preview read failed: ${res.status}`);
+  return res.text();
+}
+
 export function inlineAttachmentLabel(attachment: InlineAttachment): string {
   if (attachment.kind === "text") {
     return `Pasted Content, ${attachment.charCount} chars`;
@@ -639,8 +690,12 @@ export function noteBodyToEditText(
         usedText += part.text;
         return part.text;
       }
-      const base = `[${inlineAttachmentLabel(part.attachment)}]`;
-      const placeholder = uniquePlaceholder(base, usedText, existingRefs, refs);
+      if (part.attachment.kind !== "emoji") {
+        usedText += part.raw;
+        return part.raw;
+      }
+      const base = `[${part.attachment.body || "Emoji"}]`;
+      const placeholder = uniqueEditPlaceholder(base, usedText, existingRefs, refs);
       refs.push({ placeholder, raw: part.raw });
       usedText += placeholder;
       return placeholder;
@@ -658,6 +713,24 @@ export function restoreEditTextAttachments(
     body = body.replace(ref.placeholder, ref.raw);
   }
   return body;
+}
+
+function uniqueEditPlaceholder(
+  base: string,
+  usedText: string,
+  existingRefs: InlineAttachmentEditRef[],
+  refs: InlineAttachmentEditRef[],
+): string {
+  let placeholder = base;
+  let suffix = 2;
+  const hasPlaceholder = (value: string) =>
+    usedText.includes(value) ||
+    existingRefs.some((ref) => ref.placeholder === value) ||
+    refs.some((ref) => ref.placeholder === value);
+  while (hasPlaceholder(placeholder)) {
+    placeholder = `${base.slice(0, -1)} #${suffix++}]`;
+  }
+  return placeholder;
 }
 
 export function makeNoteClipboardPayload(input: {
@@ -753,8 +826,13 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
           : {}),
         ...(typeof obj.size === "number" ? { size: obj.size } : {}),
         charCount,
-        ...(typeof obj.lineCount === "number"
-          ? { lineCount: obj.lineCount }
+        ...(typeof obj.lineCount === "number" ? { lineCount: obj.lineCount } : {}),
+        ...(Array.isArray(obj.previewLines)
+          ? {
+              previewLines: obj.previewLines
+                .filter((x): x is string => typeof x === "string")
+                .slice(0, TEXT_ATTACHMENT_PREVIEW_LINE_LIMIT),
+            }
           : {}),
         ...(source ? { source } : {}),
       };
@@ -855,24 +933,6 @@ function parseSource(value: unknown): AttachmentSource | undefined {
       ? { filename: obj.filename }
       : {}),
   };
-}
-
-function uniquePlaceholder(
-  base: string,
-  usedText: string,
-  existingRefs: InlineAttachmentEditRef[],
-  refs: InlineAttachmentEditRef[],
-): string {
-  let placeholder = base;
-  let suffix = 2;
-  const hasPlaceholder = (value: string) =>
-    usedText.includes(value) ||
-    existingRefs.some((ref) => ref.placeholder === value) ||
-    refs.some((ref) => ref.placeholder === value);
-  while (hasPlaceholder(placeholder)) {
-    placeholder = `${base} #${suffix++}`;
-  }
-  return placeholder;
 }
 
 function encodeBase64Url(s: string): string {

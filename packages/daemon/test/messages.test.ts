@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addIncomingMessage,
+  addOutgoingMessage,
   getMessages,
   deleteMessage,
   mutePeer,
@@ -156,6 +157,55 @@ describe("addIncomingMessage + getMessages", () => {
     const got = await getMessages(w);
     expect(got).toHaveLength(1);
   });
+
+  test("note messages round-trip with sender and receiver metadata", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "note body",
+      sentAt: "2026-05-22T10:00:00Z",
+      kind: "note",
+      note: {
+        body: "note body",
+        tags: ["message"],
+        sender: { kind: "peer", id: "peer-a", label: "Alice" },
+        receiver: { kind: "peer", peerId: "test-identity-uuid", label: "Test" },
+      },
+    });
+    const got = await getMessages(w);
+    const msg = got[0]?.messages[0];
+    expect(msg?.kind).toBe("note");
+    expect(msg?.note?.body).toBe("note body");
+    expect(msg?.note?.sender).toEqual({ kind: "peer", id: "peer-a", label: "Alice" });
+    expect(msg?.note?.receiver).toEqual({
+      kind: "peer",
+      peerId: "test-identity-uuid",
+      label: "Test",
+    });
+  });
+
+  test("outgoing note messages keep receiver metadata", async () => {
+    const w = await ws();
+    await addOutgoingMessage(
+      w,
+      { id: "peer-b", label: "Bob" },
+      "note body",
+      "2026-05-22T10:00:00Z",
+      {
+        kind: "note",
+        note: {
+          body: "note body",
+          sender: { kind: "peer", id: "test-identity-uuid", label: "Test" },
+          receiver: { kind: "peer", peerId: "peer-b", label: "Bob" },
+        },
+      },
+    );
+    const got = await getMessages(w);
+    const msg = got[0]?.messages[0];
+    expect(msg?.direction).toBe("out");
+    expect(msg?.kind).toBe("note");
+    expect(msg?.note?.receiver).toEqual({ kind: "peer", peerId: "peer-b", label: "Bob" });
+  });
 });
 
 describe("mutePeer / unmutePeer / isPeerMuted", () => {
@@ -275,6 +325,22 @@ describe("encryption at rest", () => {
     });
     const got = await getMessages(w);
     expect(got[0]?.messages[0]?.body).toBe("secret message");
+  });
+
+  test("note message bodies are encrypted at rest", async () => {
+    const w = await ws();
+    await addIncomingMessage(w, {
+      from: { id: "peer-a", label: "Alice" },
+      body: "secret note",
+      sentAt: "2026-05-22T10:00:00Z",
+      kind: "note",
+      note: { body: "secret note" },
+    });
+    const raw = await readFile(join(w, "messages.json"), "utf-8");
+    expect(raw).not.toContain("secret note");
+    const got = await getMessages(w);
+    expect(got[0]?.messages[0]?.body).toBe("secret note");
+    expect(got[0]?.messages[0]?.note?.body).toBe("secret note");
   });
 
   test("plaintext legacy bodies are still readable (migration)", async () => {

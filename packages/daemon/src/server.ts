@@ -12,6 +12,7 @@ import {
   writeFile as fsWriteFile,
   readFile,
   mkdir as fsMkdir,
+  chmod as fsChmod,
 } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
@@ -102,7 +103,11 @@ import {
   buildProxyWsUrl,
 } from "./daemon-proxy";
 import { RemoteWsBridge } from "./daemon-ws-proxy";
-import { saveAttachment, serveAttachment } from "./attachments";
+import {
+  saveAttachment,
+  serveAttachment,
+  serveAttachmentPreview,
+} from "./attachments";
 import {
   sampleProcs,
   sampleCwds,
@@ -123,7 +128,25 @@ import {
   pickRepoSinceHours,
   DEFAULT_MAX_AGE_HOURS as REPO_MAX_AGE_HOURS,
 } from "./repo-summary";
-import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
+import {
+  NotesStore,
+  type AttachmentKind,
+  type LinkTarget,
+  type MessageReceiver,
+  type MessageSender,
+} from "./notes";
+import {
+  buildCliMessageBody,
+  buildSupergitCliScript,
+  buildSupergitSessions,
+  isSelfMessageTarget,
+  isSelfSessionTarget,
+  openSessionRefsFromPrefs,
+  receiverForSession,
+  resolveSupergitSelfSession,
+  resolveSupergitSession,
+  supergitSelfResolutionError,
+} from "./supergit-cli";
 import {
   stripThinkingArtifacts,
   defaultLoginShell,
@@ -173,6 +196,7 @@ import {
   listMutes,
   isPeerMuted,
   MAX_BODY_BYTES,
+  type MessageNotePayload,
 } from "./messages";
 import { record, snapshot as timingsSnapshot } from "./timings";
 import { buildDiagnostics } from "./diagnostics";
@@ -256,6 +280,38 @@ process.title =
   process.env.SUPERGIT_PROCESS_TITLE ??
   (UI_DIR ? "supergit-daemon" : "supergit-daemon dev");
 
+const CLI_DAEMON_URL = `http://127.0.0.1:${PORT}`;
+const SUPERGIT_CLI_BIN_DIR = join(WORKSPACE_PATH, ".supergit", "bin");
+
+async function ensureSupergitCliWrapper(): Promise<string | null> {
+  try {
+    await fsMkdir(SUPERGIT_CLI_BIN_DIR, { recursive: true });
+    const path = join(SUPERGIT_CLI_BIN_DIR, "supergit");
+    await fsWriteFile(
+      path,
+      buildSupergitCliScript({ defaultDaemonUrl: CLI_DAEMON_URL }),
+      "utf-8",
+    );
+    await fsChmod(path, 0o755);
+    return path;
+  } catch (e) {
+    console.warn(
+      `supergit daemon: could not create terminal CLI wrapper: ${
+        e instanceof Error ? e.message : e
+      }`,
+    );
+    return null;
+  }
+}
+
+function supergitTerminalPathEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (supergitCliPath) {
+    env.PATH = `${SUPERGIT_CLI_BIN_DIR}:${process.env.PATH ?? ""}`;
+  }
+  return env;
+}
+
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
@@ -318,6 +374,7 @@ const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
  *  one Ollama call covers the whole burst. */
 const repoSummaryInflight = new Map<string, Promise<void>>();
 const notes = await NotesStore.open(WORKSPACE_PATH);
+const supergitCliPath = await ensureSupergitCliWrapper();
 
 const sshPool = new SshPool();
 const sshSyncTracker = new SyncTracker(
@@ -771,6 +828,92 @@ const ALLOWED_ORIGINS = new Set([
 
 import { clampCols, clampRows } from "./term-clamp";
 
+function parseReceiver(v: unknown): MessageReceiver | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const obj = v as Record<string, unknown>;
+  const sessionId = typeof obj.sessionId === "string" ? obj.sessionId : "";
+  const peerId = typeof obj.peerId === "string" ? obj.peerId : "";
+  if (!sessionId && !peerId) return undefined;
+  const receiver: MessageReceiver = {};
+  if (obj.kind === "session" || obj.kind === "peer") receiver.kind = obj.kind;
+  if (sessionId) receiver.sessionId = sessionId;
+  if (peerId) receiver.peerId = peerId;
+  for (const [from, to] of [
+    ["label", "label"],
+    ["agent", "agent"],
+    ["source", "source"],
+    ["terminalId", "terminalId"],
+    ["host", "host"],
+  ] as const) {
+    const value = obj[from];
+    if (typeof value === "string" && value.length > 0) receiver[to] = value;
+  }
+  if (
+    typeof obj.port === "number" &&
+    Number.isFinite(obj.port) &&
+    obj.port > 0
+  ) {
+    receiver.port = obj.port;
+  }
+  if (
+    obj.delivery === "draft" ||
+    obj.delivery === "staged" ||
+    obj.delivery === "sent"
+  ) {
+    receiver.delivery = obj.delivery;
+  }
+  return receiver;
+}
+
+function parseSender(v: unknown): MessageSender | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const obj = v as Record<string, unknown>;
+  if (
+    (obj.kind !== "session" && obj.kind !== "peer") ||
+    typeof obj.id !== "string" ||
+    !obj.id
+  ) {
+    return undefined;
+  }
+  const sender: MessageSender = { kind: obj.kind, id: obj.id };
+  for (const [from, to] of [
+    ["label", "label"],
+    ["agent", "agent"],
+    ["source", "source"],
+    ["terminalId", "terminalId"],
+  ] as const) {
+    const value = obj[from];
+    if (typeof value === "string" && value.length > 0) sender[to] = value;
+  }
+  return sender;
+}
+
+function parseMessageNote(v: unknown): MessageNotePayload | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const obj = v as Record<string, unknown>;
+  const body = typeof obj.body === "string" ? obj.body : "";
+  if (!body) return undefined;
+  return {
+    body,
+    ...(Array.isArray(obj.anchors)
+      ? {
+          anchors: obj.anchors.filter(
+            (x): x is string => typeof x === "string",
+          ),
+        }
+      : {}),
+    ...(Array.isArray(obj.tags)
+      ? { tags: obj.tags.filter((x): x is string => typeof x === "string") }
+      : {}),
+    ...(parseKind(obj.kind) ? { kind: parseKind(obj.kind) } : {}),
+    ...(parseTarget(obj.target) ? { target: parseTarget(obj.target)! } : {}),
+    ...(parseReceiver(obj.receiver)
+      ? { receiver: parseReceiver(obj.receiver)! }
+      : {}),
+    ...(parseSender(obj.sender) ? { sender: parseSender(obj.sender)! } : {}),
+  };
+}
+
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin");
   if (origin && ALLOWED_ORIGINS.has(origin)) {
@@ -984,6 +1127,24 @@ async function cachedDetectAgents(): Promise<AgentSession[]> {
       agentsInflight = null;
     });
   return agentsInflight;
+}
+
+async function supergitSessions(opts: { includeAll?: boolean } = {}) {
+  const [agents, titles, prefs] = await Promise.all([
+    cachedDetectAgents(),
+    workspace.listSessionTitles(),
+    workspace.getPrefs(),
+  ]);
+  const enriched = agents.map((s) =>
+    titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+  );
+  return buildSupergitSessions({
+    terminals: terminalBackend.list(),
+    agents: enriched,
+    sessionTitles: titles,
+    openSessionRefs: openSessionRefsFromPrefs(prefs),
+    includeAll: opts.includeAll,
+  });
 }
 
 function invalidateAgentsCache(): void {
@@ -2040,6 +2201,23 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
+      if (url.pathname === "/api/attachment/preview" && req.method === "GET") {
+        const result = await serveAttachmentPreview(
+          join(WORKSPACE_PATH, "attachments"),
+          url.searchParams.get("path"),
+        );
+        if (result.status !== 200) {
+          return json({ error: result.error }, { status: result.status });
+        }
+        return new Response(result.text, {
+          headers: {
+            ...CORS,
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "private, max-age=60",
+          },
+        });
+      }
+
       if (url.pathname === "/api" || url.pathname === "/api/") {
         return json({
           name: "supergit",
@@ -2093,6 +2271,12 @@ const server = Bun.serve<TermWsData, never>({
                 "serve a file previously saved under <workspace>/attachments/ (?path=)",
             },
             {
+              method: "GET",
+              path: "/api/attachment/preview",
+              description:
+                "serve the first bytes of a text attachment for fast note-card previews (?path=)",
+            },
+            {
               method: "POST",
               path: "/api/attach",
               body: "multipart: file=<Blob>",
@@ -2110,6 +2294,25 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/agents",
               description:
                 "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions",
+            },
+            {
+              method: "GET",
+              path: "/api/supergit/sessions",
+              description:
+                "agent-friendly session list for the injected `supergit` CLI. Default returns open UI sessions; ?all=1 includes older detected sessions.",
+            },
+            {
+              method: "POST",
+              path: "/api/supergit/messages",
+              body: {
+                sessionId: "string?",
+                content: "markdown",
+                args: "string[]?",
+                callerPid: "number?",
+                callerCwd: "string?",
+              },
+              description:
+                "create a workspace note, optionally addressed to a session. Used by `supergit message [sessionId|self|me] <content...>`.",
             },
             {
               method: "GET",
@@ -2524,6 +2727,128 @@ const server = Bun.serve<TermWsData, never>({
             titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
           ),
         );
+      }
+
+      if (url.pathname === "/api/supergit/sessions" && req.method === "GET") {
+        return json({
+          sessions: await supergitSessions({
+            includeAll: url.searchParams.get("all") === "1",
+          }),
+        });
+      }
+
+      if (url.pathname === "/api/supergit/messages" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as
+          | {
+              sessionId?: unknown;
+              content?: unknown;
+              args?: unknown;
+              callerPid?: unknown;
+              callerCwd?: unknown;
+            }
+          | null;
+        const sessionId =
+          typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+        const content = typeof body?.content === "string" ? body.content : "";
+        const args = Array.isArray(body?.args)
+          ? body.args.filter((x): x is string => typeof x === "string")
+          : [];
+        const callerPid =
+          typeof body?.callerPid === "number" && Number.isFinite(body.callerPid)
+            ? body.callerPid
+            : undefined;
+        const callerCwd =
+          typeof body?.callerCwd === "string" ? body.callerCwd : undefined;
+        const messageBody = buildCliMessageBody(content, args);
+        if (!messageBody.trim()) {
+          return json(
+            { error: "content or positional args required" },
+            { status: 400 },
+          );
+        }
+        if (isSelfMessageTarget(sessionId)) {
+          if (!peerIdentity) {
+            return json({ error: "identity not ready" }, { status: 503 });
+          }
+          if (messageBody.length > MAX_BODY_BYTES) {
+            return json(
+              { error: `body exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})` },
+              { status: 413 },
+            );
+          }
+          const sentAt = new Date().toISOString();
+          const selfPeer = { id: peerIdentity.id, label: peerIdentity.label };
+          const sender: MessageSender = {
+            kind: "peer",
+            id: selfPeer.id,
+            label: selfPeer.label,
+          };
+          const receiver: MessageReceiver = {
+            kind: "peer",
+            peerId: selfPeer.id,
+            label: selfPeer.label,
+            delivery: "sent",
+          };
+          await addIncomingMessage(workspace.path, {
+            from: selfPeer,
+            body: messageBody,
+            sentAt,
+            kind: "note",
+            note: {
+              body: messageBody,
+              tags: ["message"],
+              sender,
+              receiver,
+            },
+          });
+          const muted = await isPeerMuted(workspace.path, selfPeer.id);
+          broadcast("change", {
+            kind: "message_received",
+            from: selfPeer,
+            muted,
+          });
+          return json({ ok: true, inbox: true, sentAt }, { status: 202 });
+        }
+        const target = sessionId
+          ? isSelfSessionTarget(sessionId)
+            ? resolveSupergitSelfSession(
+                await supergitSessions({ includeAll: true }),
+                terminalBackend.list(),
+                { callerPid, callerCwd },
+              )
+            : resolveSupergitSession(
+                await supergitSessions({ includeAll: true }),
+                sessionId,
+              )
+          : undefined;
+        if (sessionId && !target) {
+          return json(
+            {
+              error: isSelfSessionTarget(sessionId)
+                ? supergitSelfResolutionError()
+                : "session not found",
+            },
+            { status: 404 },
+          );
+        }
+        const anchors = [
+          ...(target?.cwd ? [`worktree:${target.cwd}`] : []),
+          ...(target?.source ? [`session:${target.source}`] : []),
+        ];
+        const note = await notes.create({
+          body: messageBody,
+          anchors,
+          tags: ["message"],
+          ...(target ? { receiver: receiverForSession(target) } : {}),
+        });
+        const ev = await events.append({
+          type: "create_note",
+          actor: "supergit",
+          payload: { note },
+          inverse: { note },
+        });
+        broadcast("change", { kind: "note_create", id: note.id, eventId: ev.id });
+        return json({ note: { ...note, eventId: ev.id } }, { status: 201 });
       }
 
       // GET /api/agent-usage — sessions + messages per detected coding
@@ -3066,6 +3391,7 @@ const server = Bun.serve<TermWsData, never>({
             cwd: body.cwd,
             ownerId: body.ownerId,
             agent: agentHint,
+            env: supergitTerminalPathEnv(),
             userBoxColor,
             // Clamp absurd dims to a sane floor. The frontend reads
             // xterm.cols/rows in onMount; if the container hasn't laid out
@@ -4412,8 +4738,9 @@ const server = Bun.serve<TermWsData, never>({
       // ──────────────────────────────────────────────────────────────
       // Peer-to-peer message inbox. Tiny: max MAX_BODY_BYTES per
       // message, last 5 per sender, no chat threading. The receiver
-      // never auto-acts on body content — UI shows monospace + a
-      // Copy button. Mute is a receiver-side preference.
+      // never auto-acts on body content — text stays copy-only, while
+      // note payloads can be opened or dragged into a workspace row.
+      // Mute is a receiver-side preference.
       // ──────────────────────────────────────────────────────────────
 
       if (url.pathname === "/api/messages" && req.method === "GET") {
@@ -4433,11 +4760,15 @@ const server = Bun.serve<TermWsData, never>({
           peerHost?: unknown;
           peerPort?: unknown;
           body?: unknown;
+          kind?: unknown;
+          note?: unknown;
         } | null;
         const peerHost =
           typeof body?.peerHost === "string" ? body.peerHost : "";
         const peerPort = typeof body?.peerPort === "number" ? body.peerPort : 0;
         const text = typeof body?.body === "string" ? body.body : "";
+        const kind = body?.kind === "note" ? "note" : "text";
+        const note = kind === "note" ? parseMessageNote(body?.note) : undefined;
         if (!peerHost || !peerPort || !text) {
           return json(
             { error: "peerHost, peerPort, body (non-empty string) required" },
@@ -4453,10 +4784,34 @@ const server = Bun.serve<TermWsData, never>({
         if (!peerIdentity) {
           return json({ error: "identity not ready" }, { status: 503 });
         }
+        const recipient = (peerDiscovery?.peers() ?? []).find(
+          (p) => p.host === peerHost && p.port === peerPort,
+        );
+        const toId = recipient?.id ?? `manual:${peerHost}:${peerPort}`;
+        const toLabel = recipient?.label ?? `${peerHost}:${peerPort}`;
+        const sender: MessageSender = {
+          kind: "peer",
+          id: peerIdentity.id,
+          label: peerIdentity.label,
+        };
+        const notePayload = note
+          ? {
+              ...note,
+              sender: note.sender ?? sender,
+              receiver: note.receiver ?? {
+                kind: "peer" as const,
+                peerId: toId,
+                label: toLabel,
+                host: peerHost,
+                port: peerPort,
+              },
+            }
+          : undefined;
         const payload = {
           from: { id: peerIdentity.id, label: peerIdentity.label },
           body: text,
           sentAt: new Date().toISOString(),
+          ...(kind === "note" && notePayload ? { kind, note: notePayload } : {}),
         };
         const peerUrl = `http://${peerHost}:${peerPort}/api/messages/receive`;
         let peerRes: Response;
@@ -4488,16 +4843,12 @@ const server = Bun.serve<TermWsData, never>({
         // same peer the receiver shows up under. Falls back to a
         // synthetic id derived from host:port when the peer isn't
         // currently advertising (manual host:port entry).
-        const recipient = (peerDiscovery?.peers() ?? []).find(
-          (p) => p.host === peerHost && p.port === peerPort,
-        );
-        const toId = recipient?.id ?? `manual:${peerHost}:${peerPort}`;
-        const toLabel = recipient?.label ?? `${peerHost}:${peerPort}`;
         await addOutgoingMessage(
           workspace.path,
           { id: toId, label: toLabel },
           text,
           payload.sentAt,
+          kind === "note" && notePayload ? { kind, note: notePayload } : {},
         );
         broadcast("change", {
           kind: "message_sent",
@@ -4517,6 +4868,8 @@ const server = Bun.serve<TermWsData, never>({
           from?: { id?: unknown; label?: unknown };
           body?: unknown;
           sentAt?: unknown;
+          kind?: unknown;
+          note?: unknown;
         } | null;
         const fromId =
           body?.from && typeof body.from.id === "string" ? body.from.id : "";
@@ -4526,6 +4879,8 @@ const server = Bun.serve<TermWsData, never>({
             : "";
         const text = typeof body?.body === "string" ? body.body : "";
         const sentAt = typeof body?.sentAt === "string" ? body.sentAt : "";
+        const kind = body?.kind === "note" ? "note" : "text";
+        const note = kind === "note" ? parseMessageNote(body?.note) : undefined;
         if (!fromId || !fromLabel || !text || !sentAt) {
           return json(
             { error: "from.id, from.label, body, sentAt all required" },
@@ -4542,6 +4897,28 @@ const server = Bun.serve<TermWsData, never>({
           from: { id: fromId, label: fromLabel },
           body: text,
           sentAt,
+          ...(kind === "note" && note
+            ? {
+                kind,
+                note: {
+                  ...note,
+                  sender: note.sender ?? {
+                    kind: "peer",
+                    id: fromId,
+                    label: fromLabel,
+                  },
+                  receiver:
+                    note.receiver ??
+                    (peerIdentity
+                      ? {
+                          kind: "peer",
+                          peerId: peerIdentity.id,
+                          label: peerIdentity.label,
+                        }
+                      : undefined),
+                },
+              }
+            : {}),
         });
         const muted = await isPeerMuted(workspace.path, fromId);
         // A short single-line preview so the toast can show the gist
@@ -5872,6 +6249,7 @@ const server = Bun.serve<TermWsData, never>({
             const handle = await terminalBackend.spawn({
               cmd: spawnCmd,
               cwd,
+              env: supergitTerminalPathEnv(),
               size: { cols: 120, rows: 30 },
             });
             // Scan PTY output for localhost/LAN URLs for up to 2 minutes
@@ -7534,11 +7912,13 @@ const server = Bun.serve<TermWsData, never>({
           id?: unknown;
           body?: unknown;
           anchors?: unknown;
-          tags?: unknown;
-          kind?: unknown;
-          target?: unknown;
-          secret?: unknown;
-        } | null;
+	          tags?: unknown;
+	          kind?: unknown;
+	          target?: unknown;
+	          secret?: unknown;
+	          receiver?: unknown;
+	          sender?: unknown;
+	        } | null;
         if (!body || typeof body.body !== "string") {
           return json(
             { error: "body.body (string) is required" },
@@ -7559,10 +7939,12 @@ const server = Bun.serve<TermWsData, never>({
                   (x): x is string => typeof x === "string",
                 )
               : undefined,
-            kind: parseKind(body.kind),
-            target: parseTarget(body.target),
-            ...(body.secret === true ? { secret: true } : {}),
-          });
+	            kind: parseKind(body.kind),
+	            target: parseTarget(body.target),
+	            ...(body.secret === true ? { secret: true } : {}),
+	            receiver: parseReceiver(body.receiver),
+	            sender: parseSender(body.sender),
+	          });
           const ev = await events.append({
             type: "create_note",
             actor: "user",
@@ -7590,11 +7972,13 @@ const server = Bun.serve<TermWsData, never>({
           const body = (await req.json().catch(() => null)) as {
             body?: unknown;
             anchors?: unknown;
-            tags?: unknown;
-            kind?: unknown;
-            target?: unknown;
-            secret?: unknown;
-          } | null;
+	            tags?: unknown;
+	            kind?: unknown;
+	            target?: unknown;
+	            secret?: unknown;
+	            receiver?: unknown;
+	            sender?: unknown;
+	          } | null;
           if (!body) {
             return json({ error: "JSON body required" }, { status: 400 });
           }
@@ -7606,6 +7990,14 @@ const server = Bun.serve<TermWsData, never>({
               "target" in body && body.target === null
                 ? null
                 : parseTarget(body.target);
+            const receiverField: MessageReceiver | null | undefined =
+              "receiver" in body && body.receiver === null
+                ? null
+                : parseReceiver(body.receiver);
+            const senderField: MessageSender | null | undefined =
+              "sender" in body && body.sender === null
+                ? null
+                : parseSender(body.sender);
             const note = await notes.update(id, {
               body: typeof body.body === "string" ? body.body : undefined,
               anchors: Array.isArray(body.anchors)
@@ -7618,12 +8010,14 @@ const server = Bun.serve<TermWsData, never>({
                     (x): x is string => typeof x === "string",
                   )
                 : undefined,
-              kind: parseKind(body.kind),
-              target: targetField,
-              ...(typeof body.secret === "boolean"
-                ? { secret: body.secret }
-                : {}),
-            });
+	              kind: parseKind(body.kind),
+	              target: targetField,
+	              ...(typeof body.secret === "boolean"
+	                ? { secret: body.secret }
+	                : {}),
+	              receiver: receiverField,
+	              sender: senderField,
+	            });
             broadcast("change", { kind: "note_update", id: note.id });
             return json(note);
           } catch (e) {
