@@ -2202,13 +2202,6 @@
         draggable={mode === "media" ? "true" : "false"}
       />
     </span>
-    {#if mode !== "media"}
-      <span class="sticky-photo-caption">
-        {attachment.filename
-          ?? attachment.path.split("/").pop()
-          ?? "Image attachment"}
-      </span>
-    {/if}
   {:else if attachment.kind === "text"}
     <span class="sticky-snippet-card" class:sticky-snippet-card-media={mode === "media"}>
       <span class="sticky-snippet-icon" aria-hidden="true">T</span>

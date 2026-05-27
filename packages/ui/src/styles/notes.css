@@ -1370,15 +1370,6 @@
   user-select: auto;
   -webkit-user-drag: auto;
 }
-.sticky-photo-caption {
-  max-width: 100%;
-  color: rgba(42, 37, 22, 0.66);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .sticky-snippet-card {
   display: grid;
   width: 100%;
