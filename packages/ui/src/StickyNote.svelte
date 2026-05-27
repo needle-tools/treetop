@@ -1398,6 +1398,10 @@
   export let grabXFrac = 0;
   export let grabYFrac = 0;
   export let emojiScale = 1;
+  let liveGrabXFrac: number | null = null;
+  let liveGrabYFrac: number | null = null;
+  $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
+  $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
@@ -1478,13 +1482,13 @@
     const cxDoc = e.clientX + window.scrollX;
     const cyDoc = e.clientY + window.scrollY;
 
-    const oldGx = grabXFrac * w;
-    const oldGy = grabYFrac * h;
+    const oldGx = effectiveGrabXFrac * w;
+    const oldGy = effectiveGrabYFrac * h;
     const oldPivotDocX = x + oldGx;
     const oldPivotDocY = y + oldGy;
     const cdx = cxDoc - oldPivotDocX;
     const cdy = cyDoc - oldPivotDocY;
-    const R = (rotation * Math.PI) / 180;
+    const R = (displayedTilt * Math.PI) / 180;
     const cosR = Math.cos(R);
     const sinR = Math.sin(R);
     const bdx = cosR * cdx + sinR * cdy;
@@ -1493,6 +1497,8 @@
     const newGy = Math.max(0, Math.min(h, oldGy + bdy));
     const newGxFrac = w > 0 ? newGx / w : 0;
     const newGyFrac = h > 0 ? newGy / h : 0;
+    liveGrabXFrac = newGxFrac;
+    liveGrabYFrac = newGyFrac;
     dragDx = newGx;
     dragDy = newGy;
     lastMouseX = e.clientX;
@@ -1555,6 +1561,12 @@
     }
     dragRotation = 0;
     velocityEma = 0;
+    setTimeout(() => {
+      if (!dragging) {
+        liveGrabXFrac = null;
+        liveGrabYFrac = null;
+      }
+    }, 0);
   }
 
   function onLinkBodyClick(): void {
@@ -2222,7 +2234,7 @@
   class:sticky-detached={isDetachedAttachment}
   data-note-id={note.id}
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
-  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : grabXFrac) * 100}%; --grab-y: {(flying ? 0 : grabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
+  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : effectiveGrabXFrac) * 100}%; --grab-y: {(flying ? 0 : effectiveGrabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
   role="dialog"
   tabindex="-1"
   aria-label={isEmoji ? "Emoji sticker" : isLink ? "Sticky link" : "Sticky note"}

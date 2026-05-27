@@ -559,12 +559,24 @@
     li: HTMLElement,
     clientX: number,
     clientY: number,
+    grab?: {
+      grabXFrac?: number;
+      grabYFrac?: number;
+      width?: number;
+      height?: number;
+    },
   ): void {
     const rowRect = li.getBoundingClientRect();
     const rowDocLeft = rowRect.left + window.scrollX;
     const rowDocBottom = rowRect.bottom + window.scrollY;
-    const desiredX = clientX + window.scrollX - NOTE_W / 2;
-    const desiredY = clientY + window.scrollY - 28;
+    const grabX = grab?.grabXFrac !== undefined && grab.width !== undefined
+      ? grab.grabXFrac * grab.width
+      : NOTE_W / 2;
+    const grabY = grab?.grabYFrac !== undefined && grab.height !== undefined
+      ? grab.grabYFrac * grab.height
+      : 28;
+    const desiredX = clientX + window.scrollX - grabX;
+    const desiredY = clientY + window.scrollY - grabY;
     const offsetXFrac = rowRect.width > 0
       ? Math.min(1, Math.max(0, (desiredX - rowDocLeft) / rowRect.width))
       : DEFAULT_OFFSET_X_FRAC;
@@ -577,6 +589,24 @@
     const prev = offsets[id] ?? {};
     offsets = { ...offsets, [id]: { ...prev, offsetXFrac, offsetY } };
     saveOffsets();
+  }
+
+  function grabGeometryFor(note: NoteShape): {
+    grabXFrac?: number;
+    grabYFrac?: number;
+    width?: number;
+    height?: number;
+  } {
+    const sticky = document.querySelector<HTMLElement>(
+      `.sticky[data-note-id="${cssEscape(note.id)}"]`,
+    );
+    const off = offsets[note.id];
+    return {
+      grabXFrac: off?.grabXFrac,
+      grabYFrac: off?.grabYFrac,
+      width: sticky?.offsetWidth,
+      height: sticky?.offsetHeight,
+    };
   }
 
   /** Screen position for one note. Pure — every reactive input is read
@@ -1767,6 +1797,7 @@
     clientY: number,
   ): Promise<void> {
     if (!noteCanDropOnAnchor(note, rowTarget.anchor)) return;
+    const grab = grabGeometryFor(note);
     const auxiliaryAnchors = note.anchors.filter(
       (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
     );
@@ -1778,7 +1809,7 @@
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
-      setDroppedOffset(updated.id, rowTarget.li, clientX, clientY);
+      setDroppedOffset(updated.id, rowTarget.li, clientX, clientY, grab);
       notes = notes.map((n) => (n.id === updated.id ? updated : n));
       bringToFront(updated.id);
       tick++;
