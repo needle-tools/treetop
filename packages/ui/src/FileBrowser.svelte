@@ -21,13 +21,20 @@
 
   $: isRemote = !!remoteTermId;
   let followTerminal = true;
+  let remoteHome = "/";
 
-  $: if (followTerminal && remoteCwd && remoteCwd !== currentDir) {
-    doFollowNav(remoteCwd);
+  $: if (followTerminal && remoteCwd && resolvedRemoteCwd !== currentDir) {
+    doFollowNav(resolvedRemoteCwd);
   }
 
-  function doFollowNav(path: string) {
-    if (path === currentDir) return;
+  $: resolvedRemoteCwd = remoteCwd
+    ? remoteCwd === "~" ? remoteHome
+    : remoteCwd.startsWith("~/") ? remoteHome + "/" + remoteCwd.slice(2)
+    : remoteCwd
+    : null;
+
+  function doFollowNav(path: string | null) {
+    if (!path || path === currentDir) return;
     nav.push(path);
     currentDir = path;
     navTick++;
@@ -38,8 +45,8 @@
 
   function toggleFollow() {
     followTerminal = !followTerminal;
-    if (followTerminal && remoteCwd && remoteCwd !== currentDir) {
-      doFollowNav(remoteCwd);
+    if (followTerminal && resolvedRemoteCwd && resolvedRemoteCwd !== currentDir) {
+      doFollowNav(resolvedRemoteCwd);
     }
   }
 
@@ -385,6 +392,7 @@
     // Remote mode: fetch home dir first, then load
     loading = true;
     void fetchSshHome(remoteTermId).then((home) => {
+      remoteHome = home;
       currentDir = home;
       nav = new NavHistory(home);
       void loadCurrentDir();

@@ -88,6 +88,20 @@ describe("SSH prompt CWD parser", () => {
     });
   });
 
+  describe("tilde paths", () => {
+    test("bare ~ is returned as-is (consumer resolves)", () => {
+      expect(extractCwd("user@server:~$")).toBe("~");
+    });
+
+    test("~/subdir is returned as-is", () => {
+      expect(extractCwd("user@server:~/projects$")).toBe("~/projects");
+    });
+
+    test("absolute path is not affected", () => {
+      expect(extractCwd("user@server:/home/user$")).toBe("/home/user");
+    });
+  });
+
   describe("no match", () => {
     test("plain text returns null", () => {
       expect(extractCwd("just some output text")).toBeNull();

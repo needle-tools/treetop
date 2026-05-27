@@ -99,7 +99,12 @@
     const unixMatch = stripped.match(UNIX_PROMPT_RE);
     const raw = winMatch?.[1] ?? unixMatch?.[1];
     if (!raw) return;
-    const cwd = raw.replace(/\\/g, "/");
+    let cwd = raw.replace(/\\/g, "/");
+    // SFTP doesn't resolve ~; leave it for the UI to handle via the
+    // home dir it already fetched. Mark with a prefix so the consumer
+    // knows it's relative to home.
+    if (cwd === "~") cwd = "~";
+    else if (cwd.startsWith("~/")) cwd = "~/" + cwd.slice(2);
     if (cwd !== lastParsedCwd) {
       lastParsedCwd = cwd;
       onSshChange?.({ ...sshSession, cwd } as any);
