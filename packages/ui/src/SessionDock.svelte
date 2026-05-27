@@ -622,8 +622,20 @@
     class:show-labels={showLabels}
     role="toolbar"
     aria-label="Open sessions"
-    on:mouseenter={onDockEnter}
-    on:mouseleave={onDockLeave}
+    on:pointerover={(ev) => {
+      // pointerover bubbles from children with pointer-events: auto
+      // through the pointer-events: none shell. Only fire onDockEnter
+      // when the pointer actually enters from outside the dock (not
+      // when moving between children inside it).
+      const related = ev.relatedTarget as Element | null;
+      if (related && dockEl?.contains(related)) return;
+      onDockEnter();
+    }}
+    on:pointerout={(ev) => {
+      const related = ev.relatedTarget as Element | null;
+      if (related && dockEl?.contains(related)) return;
+      onDockLeave();
+    }}
     on:focusin={onDockEnter}
   >
     <!-- Continuous surface behind the dot column. Sized by JS to
@@ -875,6 +887,11 @@
     border-radius: var(--radius-md, 8px);
     background: transparent;
     border: 1px solid transparent;
+    /* The dock spans the full viewport height for centering but only
+       the dot halves / toggle / backdrop carry content — clicks on
+       the empty areas must pass through to the dashboard. Children
+       that need interaction re-enable via pointer-events: auto. */
+    pointer-events: none;
     transition:
       background-color 160ms ease,
       border-color 160ms ease;
@@ -976,6 +993,7 @@
   .dock-toggle {
     position: relative;
     z-index: 1;
+    pointer-events: auto;
     display: inline-flex;
     align-items: center;
     justify-content: flex-start;
