@@ -147,6 +147,7 @@
     moveInlineAttachmentRefToEnd,
     parseInlineAttachments,
     removeInlineAttachmentRef,
+    sessionLinkTargetMatchesSource,
     type InlineAttachment,
   } from "./note-inline-attachments";
 
@@ -1870,6 +1871,12 @@
     if (note.kind === "emoji") return;
     if (note.kind === "link") {
       if (note.target?.type !== "session" && note.target?.type !== "command") return;
+      if (
+        note.target.type === "session" &&
+        sessionLinkTargetMatchesSource(note.target, sessionSource)
+      ) {
+        return;
+      }
       const text = note.target.type === "session"
         ? `Session: ${note.target.value}`
         : `Command: ${note.target.command ?? note.target.label ?? note.target.value}`;
@@ -1881,7 +1888,11 @@
       return;
     }
     try {
-      const chunks = await expandNoteBodyForTerminalPasteChunks(note.body, fetchTextAttachment);
+      const chunks = await expandNoteBodyForTerminalPasteChunks(
+        note.body,
+        fetchTextAttachment,
+        { omitTargetSessionSource: sessionSource },
+      );
       if (!chunks.some((chunk) => chunk.trim())) return;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {

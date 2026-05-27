@@ -75,6 +75,10 @@ export type InlineAttachmentPart =
   | { kind: "text"; text: string }
   | { kind: "attachment"; raw: string; attachment: InlineAttachment };
 
+export interface TerminalPasteExpansionOptions {
+  omitTargetSessionSource?: string;
+}
+
 export interface InlineAttachmentEditRef {
   placeholder: string;
   raw: string;
@@ -394,9 +398,11 @@ export async function expandNoteBodyForCopyAsync(
 export async function expandNoteBodyForTerminalPasteChunks(
   body: string,
   readTextAttachment: (path: string) => Promise<string>,
+  opts: TerminalPasteExpansionOptions = {},
 ): Promise<string[]> {
   const chunks: string[] = [];
   let text = "";
+  let skipNextLeadingNewline = false;
   const flushText = () => {
     if (!text) return;
     chunks.push(text);
@@ -405,21 +411,50 @@ export async function expandNoteBodyForTerminalPasteChunks(
 
   for (const part of parseInlineAttachments(body)) {
     if (part.kind === "text") {
-      text += part.text;
+      const nextText = skipNextLeadingNewline && text.endsWith("\n")
+        ? part.text.replace(/^\r?\n/, "")
+        : part.text;
+      skipNextLeadingNewline = false;
+      text += nextText;
     } else if (part.attachment.kind === "text") {
+      skipNextLeadingNewline = false;
       flushText();
       chunks.push(await readTextAttachment(part.attachment.path));
     } else if (part.attachment.kind === "image") {
+      skipNextLeadingNewline = false;
       flushText();
       chunks.push(part.attachment.path);
     } else if (part.attachment.kind === "emoji") {
       continue;
+    } else if (shouldOmitFromTerminalPaste(part.attachment, opts)) {
+      skipNextLeadingNewline = true;
+      continue;
     } else {
+      skipNextLeadingNewline = false;
       text += inlineAttachmentCopyText(part.attachment);
     }
   }
   flushText();
   return chunks;
+}
+
+function shouldOmitFromTerminalPaste(
+  attachment: InlineAttachment,
+  opts: TerminalPasteExpansionOptions,
+): boolean {
+  return attachment.kind === "link" &&
+    attachment.target.type === "session" &&
+    sessionLinkTargetMatchesSource(attachment.target, opts.omitTargetSessionSource);
+}
+
+export function sessionLinkTargetMatchesSource(
+  target: InlineLinkTarget,
+  source?: string,
+): boolean {
+  if (target.type !== "session" || !source) return false;
+  if (target.value === source) return true;
+  const sourceBasename = source.split("/").pop()?.replace(/\.jsonl$/i, "");
+  return !!sourceBasename && target.value === sourceBasename;
 }
 
 export async function fetchTextAttachment(path: string): Promise<string> {

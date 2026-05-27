@@ -336,6 +336,33 @@ describe("note inline attachments", () => {
     ).resolves.toEqual(["A \n", "hidden long text", "\n B"]);
   });
 
+  test("terminal paste skips the target session reference only", async () => {
+    const targetSession = makeLinkAttachmentRef({
+      target: {
+        type: "session",
+        value: "/Users/me/.codex/sessions/current.jsonl",
+        label: "Current session",
+      },
+    });
+    const otherSession = makeLinkAttachmentRef({
+      target: {
+        type: "session",
+        value: "/Users/me/.codex/sessions/other.jsonl",
+        label: "Other session",
+      },
+    });
+
+    await expect(
+      expandNoteBodyForTerminalPasteChunks(
+        `Please check this\n${targetSession}\n${otherSession}`,
+        async () => "",
+        { omitTargetSessionSource: "/Users/me/.codex/sessions/current.jsonl" },
+      ),
+    ).resolves.toEqual([
+      "Please check this\nSession: /Users/me/.codex/sessions/other.jsonl",
+    ]);
+  });
+
   test("text attachment reads fail instead of substituting another payload", async () => {
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response("missing", { status: 404 })) as typeof fetch;

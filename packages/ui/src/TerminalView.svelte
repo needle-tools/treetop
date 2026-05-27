@@ -798,7 +798,11 @@
     if (payload && xterm) {
       e.preventDefault();
       e.stopPropagation();
-      void expandNoteBodyForTerminalPasteChunks(payload.body, fetchTextAttachment)
+      void expandNoteBodyForTerminalPasteChunks(
+        payload.body,
+        fetchTextAttachment,
+        { omitTargetSessionSource: sessionSource },
+      )
         .then((chunks) => pasteChunks(chunks))
         .catch((err) => console.warn("Could not read note attachments for paste", err));
       return;
