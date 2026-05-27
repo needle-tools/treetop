@@ -2771,7 +2771,6 @@
       title="Drop here to attach"
       aria-hidden="true"
     >
-      <span class="sticky-attachment-zone-icon" aria-hidden="true">📎</span>
       <span class="sticky-attachment-zone-label">attach</span>
     </div>
   {/if}

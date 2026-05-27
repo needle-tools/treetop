@@ -1027,12 +1027,11 @@
   height: 1.35rem;
   align-items: center;
   justify-content: center;
-  gap: 0.22rem;
-  border: 1px dashed rgba(90, 74, 31, 0.32);
+  border: 1px dashed rgba(90, 74, 31, 0.54);
   border-top: 0;
   border-radius: 0 0 8px 8px;
-  background: rgba(255, 238, 122, 0.84);
-  color: rgba(90, 74, 31, 0.58);
+  background: #ffe66d;
+  color: #3b2f0f;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 9px;
   line-height: 1;
@@ -1046,17 +1045,15 @@
     border-color 120ms ease;
 }
 .sticky.attachment-drop-active .sticky-attachment-zone {
-  border-color: rgba(90, 74, 31, 0.5);
-  background: rgba(255, 250, 223, 0.96);
-  color: #2a2516;
+  border-color: rgba(90, 74, 31, 0.72);
+  background: #fff0a3;
+  color: #211a08;
   transform: translateX(-50%) translateY(0.06rem);
-}
-.sticky-attachment-zone-icon {
-  font-size: 13px;
 }
 .sticky-attachment-zone-label {
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  font-weight: 800;
 }
 .sticky-body pre {
   background: rgba(0, 0, 0, 0.08);
