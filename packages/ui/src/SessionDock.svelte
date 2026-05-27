@@ -156,15 +156,43 @@
    *  a turn (working → idle). Caps the noise so a long-ignored
    *  finished session doesn't keep nagging forever. */
   const PULSE_MAX_MS = 20 * 60 * 1000;
-  /** Clock tick. Re-rendered every minute so the per-row
-   *  `isPulsing(e)` derivation expires `finishedAt` markers
-   *  cleanly without a per-row timer. */
+  /** After this many ms in awaiting, escalate to the urgent
+   *  animation (bigger scale, faster cadence). */
+  const AWAITING_URGENT_MS = 20_000;
+  /** Per-source timestamp of when the session first entered
+   *  awaiting state. Used to decide mild vs. urgent animation. */
+  const awaitingSince = new Map<string, number>();
+  /** Track awaiting start times. Called reactively whenever
+   *  entries change so new awaiting sessions get stamped and
+   *  sessions that stopped awaiting are cleaned up. */
+  $: {
+    const currentlyAwaiting = new Set<string>();
+    for (const e of entries) {
+      if (e.awaiting) {
+        currentlyAwaiting.add(e.source);
+        if (!awaitingSince.has(e.source)) {
+          awaitingSince.set(e.source, Date.now());
+        }
+      }
+    }
+    for (const src of awaitingSince.keys()) {
+      if (!currentlyAwaiting.has(src)) awaitingSince.delete(src);
+    }
+  }
+  function isAwaitingUrgent(source: string, now: number): boolean {
+    const since = awaitingSince.get(source);
+    if (since === undefined) return false;
+    return now - since >= AWAITING_URGENT_MS;
+  }
+  /** Clock tick. Re-rendered every 5s so the awaiting-urgent
+   *  escalation and the isPulsing expiry fire at reasonable
+   *  cadence without per-row timers. */
   let nowTick = Date.now();
   let nowTimer: ReturnType<typeof setInterval> | null = null;
   onMount(() => {
     nowTimer = setInterval(() => {
       nowTick = Date.now();
-    }, 60_000);
+    }, 5_000);
     window.addEventListener("resize", clampPreviewTop);
   });
   onDestroy(() => {
@@ -642,6 +670,7 @@
         class="dock-dot agent-{e.agent}"
         class:dot-working={e.working}
         class:dot-awaiting={e.awaiting}
+        class:dot-awaiting-urgent={e.awaiting && isAwaitingUrgent(e.source, nowTick)}
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-focused={focusedSource === e.source}
@@ -732,6 +761,7 @@
         class="dock-dot agent-{e.agent}"
         class:dot-working={e.working}
         class:dot-awaiting={e.awaiting}
+        class:dot-awaiting-urgent={e.awaiting && isAwaitingUrgent(e.source, nowTick)}
         class:dot-exited={e.exited}
         class:dot-pulsing={isPulsing(e, nowTick)}
         class:dock-dot-focused={focusedSource === e.source}
@@ -1029,25 +1059,25 @@
      the remaining ~80% (~3s pause at 4s total). The 2× speed comes
      from cramming both bounces into the first 800ms of the 4s loop. */
   .dock-arrow-up {
-    animation: dock-arrow-bounce-up 4s ease-in-out infinite;
+    animation: dock-arrow-bounce-up 10s ease-in-out infinite;
   }
   .dock-arrow-down {
-    animation: dock-arrow-bounce-down 4s ease-in-out infinite;
+    animation: dock-arrow-bounce-down 10s ease-in-out infinite;
   }
   @keyframes dock-arrow-bounce-up {
     0% { transform: translateY(0); }
-    5% { transform: translateY(-3px); }
-    10% { transform: translateY(0); }
-    15% { transform: translateY(-3px); }
-    20% { transform: translateY(0); }
+    2% { transform: translateY(-3px); }
+    4% { transform: translateY(0); }
+    6% { transform: translateY(-3px); }
+    8% { transform: translateY(0); }
     100% { transform: translateY(0); }
   }
   @keyframes dock-arrow-bounce-down {
     0% { transform: translateY(0); }
-    5% { transform: translateY(3px); }
-    10% { transform: translateY(0); }
-    15% { transform: translateY(3px); }
-    20% { transform: translateY(0); }
+    2% { transform: translateY(3px); }
+    4% { transform: translateY(0); }
+    6% { transform: translateY(3px); }
+    8% { transform: translateY(0); }
     100% { transform: translateY(0); }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -1362,9 +1392,8 @@
      spinner + awaiting pulse are reserved for "something's
      happening". */
 
-  /* Awaiting: stronger, attention-grabbing pulse — the dot scales up
-     and its outline blinks the repo color at a faster cadence. This
-     is the "come deal with me" state. */
+  /* Awaiting (mild): gentle pulse for the first 20s — the user
+     probably noticed but hasn't acted yet. */
   .dock-dot.dot-awaiting .dock-dot-inner {
     animation: dock-awaiting 1.1s ease-in-out infinite;
   }
@@ -1374,12 +1403,29 @@
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
     }
     50% {
-      transform: scale(1.25);
+      transform: scale(1.35);
       box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-fill) 0%, transparent);
+    }
+  }
+  /* Awaiting (urgent): after 20s without user action, escalate —
+     bigger scale, faster cadence, stronger glow so the dot is
+     impossible to miss. */
+  .dock-dot.dot-awaiting-urgent .dock-dot-inner {
+    animation: dock-awaiting-urgent 0.7s ease-in-out infinite;
+  }
+  @keyframes dock-awaiting-urgent {
+    0%, 100% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 40%, #fff 60%);
+    }
+    50% {
+      transform: scale(1.5);
+      box-shadow: 0 0 0 6px color-mix(in oklch, var(--dot-fill) 0%, transparent);
     }
   }
   @media (prefers-reduced-motion: reduce) {
     .dock-dot-spinner,
-    .dock-dot.dot-awaiting .dock-dot-inner { animation: none; }
+    .dock-dot.dot-awaiting .dock-dot-inner,
+    .dock-dot.dot-awaiting-urgent .dock-dot-inner { animation: none; }
   }
 </style>
