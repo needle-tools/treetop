@@ -722,6 +722,26 @@
       };
     }, FINISH_DEBOUNCE_MS);
   }
+  /** Grace period before marking a session as "read". The user
+   *  must keep the session focused for this long — a quick click
+   *  that immediately navigates away doesn't count. */
+  const READ_GRACE_MS = 20_000;
+  const readGraceTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  function startReadGrace(source: string): void {
+    cancelReadGrace(source);
+    if (transientFinishedAt[source] === undefined) return;
+    readGraceTimers[source] = setTimeout(() => {
+      readGraceTimers[source] = undefined;
+      clearFinishedFor(source);
+    }, READ_GRACE_MS);
+  }
+  function cancelReadGrace(source: string): void {
+    const t = readGraceTimers[source];
+    if (t) {
+      clearTimeout(t);
+      readGraceTimers[source] = undefined;
+    }
+  }
   function handleFocusInForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
@@ -731,7 +751,22 @@
     if (!col) return;
     const src = col.getAttribute("data-session-source");
     if (!src) return;
-    clearFinishedFor(src);
+    startReadGrace(src);
+  }
+  function handleFocusOutForUnread(ev: FocusEvent): void {
+    const t = ev.target as Element | null;
+    if (!t) return;
+    const col = t.closest?.(".session-col[data-session-source]") as
+      | HTMLElement
+      | null;
+    if (!col) return;
+    const src = col.getAttribute("data-session-source");
+    if (!src) return;
+    // Only cancel if focus actually left this column (not just
+    // moved between children inside it).
+    const next = ev.relatedTarget as Element | null;
+    if (next && col.contains(next)) return;
+    cancelReadGrace(src);
   }
   function isSessionFocused(source: string): boolean {
     if (typeof document === "undefined") return false;
@@ -2677,7 +2712,7 @@
       agent: entry.agent,
       source: entry.source,
     });
-    clearFinishedFor(entry.source);
+    startReadGrace(entry.source);
     focusedSource = entry.source;
 
     // After one Svelte flush + a paint, check whether the column
@@ -5101,6 +5136,7 @@
     // clear that column's "unread" pulse so it doesn't keep
     // blinking while they're already looking at it.
     document.addEventListener("focusin", handleFocusInForUnread);
+    document.addEventListener("focusout", handleFocusOutForUnread);
     void load();
     // Note: SourceControlPane handles its own initial commits-load via
     // a `$: onExpandedChange(expanded, wt.path)` reactive when its
@@ -5192,6 +5228,8 @@
       void focusSessionBySource(req.source);
     });
     return () => {
+      document.removeEventListener("focusin", handleFocusInForUnread);
+      document.removeEventListener("focusout", handleFocusOutForUnread);
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -5382,7 +5420,7 @@
           class:peer-on={peerDiscoveryEnabled}
           disabled={peerToggleBusy}
           on:click={togglePeerDiscovery}
-        >{#if peerDiscoveryEnabled}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>{:else}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0" opacity="0.3"/><path d="M1.42 9a16 16 0 0 1 21.16 0" opacity="0.3"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0" opacity="0.3"/><circle cx="12" cy="20" r="1" opacity="0.3"/><line x1="2" y1="2" x2="22" y2="22"/></svg>{/if}</button>
+        >{#if peerDiscoveryEnabled}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>{:else}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>{/if}</button>
         <span slot="content" class="peer-tooltip">
           <svg class="peer-tooltip-illustration" viewBox="0 0 180 64" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <!-- house roof -->
