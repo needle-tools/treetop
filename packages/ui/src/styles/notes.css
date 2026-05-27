@@ -318,6 +318,121 @@
 .sticky-link-body:hover:not(:disabled) {
   background: transparent;
 }
+.sticky.sticky-link.sticky-command-link {
+  min-width: 0;
+  padding: 4px;
+}
+.command-power-button {
+  display: block;
+  width: 10.4rem;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.command-power-button:hover:not(:disabled) {
+  background: transparent;
+}
+.command-power-card {
+  --command-accent: #8b9188;
+  display: grid;
+  width: min(10rem, 100%);
+  aspect-ratio: 1;
+  place-items: center;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 72%, var(--surface-0));
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.09), transparent 34%),
+    radial-gradient(circle at 50% 62%, color-mix(in srgb, var(--command-accent) 18%, transparent), transparent 56%),
+    linear-gradient(155deg, #1b1d1b, #101110);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -12px 24px rgba(0, 0, 0, 0.28),
+    0 8px 18px -12px rgba(0, 0, 0, 0.75);
+  color: #f3f4ec;
+  text-align: center;
+}
+.command-power-card-running {
+  --command-accent: #8fed72;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -12px 24px rgba(0, 0, 0, 0.28),
+    0 0 0 2px color-mix(in srgb, var(--command-accent) 22%, transparent),
+    0 0 26px -10px color-mix(in srgb, var(--command-accent) 85%, transparent),
+    0 10px 22px -14px rgba(0, 0, 0, 0.85);
+}
+.command-power-ring {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  grid-template-rows: 1fr auto auto 1fr;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 50%, transparent);
+  border-radius: 50%;
+  padding: 0.56rem;
+  background:
+    radial-gradient(circle, transparent 0 52%, rgba(255, 255, 255, 0.07) 53%, transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.36));
+}
+.command-power-led {
+  grid-row: 1;
+  align-self: end;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-bottom: 0.2rem;
+  border-radius: 50%;
+  background: var(--command-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--command-accent) 80%, transparent);
+}
+.command-power-state {
+  grid-row: 2;
+  color: var(--command-accent);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+.command-power-name {
+  grid-row: 3;
+  display: -webkit-box;
+  max-width: 7.2rem;
+  overflow: hidden;
+  color: #f6f1dc;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1.05;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.command-power-meta {
+  grid-row: 4;
+  align-self: start;
+  margin-top: 0.24rem;
+  color: rgba(246, 241, 220, 0.58);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.58rem;
+  white-space: nowrap;
+}
+.command-power-card-stack {
+  width: 100%;
+  padding: 0.5rem;
+}
+.command-power-card-stack .command-power-name {
+  max-width: 5.5rem;
+  font-size: 0.72rem;
+}
+.command-power-card-stack .command-power-meta {
+  display: none;
+}
+.command-power-card-media {
+  width: min(14rem, 62vw);
+}
 /* Hover preview anchored to the right of a session-link sticky.
    Portalled to <body>, positioned at fixed viewport coordinates
    from the card's bounding rect. Transparent panel — bubbles
@@ -1232,6 +1347,9 @@
 .sticky-detached-note {
   width: min(10.5rem, 54vw);
 }
+.sticky-detached-command {
+  width: min(11rem, 58vw);
+}
 .sticky-trailing-attachments {
   display: flex;
   align-items: flex-end;
@@ -1322,6 +1440,10 @@
 .sticky-trailing-card-link {
   flex-basis: min(10.5rem, 56%);
   max-width: 12rem;
+}
+.sticky-trailing-card-command {
+  flex-basis: 8.8rem;
+  max-width: 8.8rem;
 }
 .sticky-photo-frame {
   display: block;

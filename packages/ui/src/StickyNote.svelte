@@ -68,6 +68,7 @@
   } from "./preview-action";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
+    commandPowerLabel,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
@@ -262,9 +263,11 @@
           linkId: string;
           repoId?: string;
           wtPath?: string;
+          revealTerminal?: boolean;
         },
       ) => void)
     | null = null;
+  export let runningCommandIds: Set<string> = new Set();
 
   const dispatch = createEventDispatcher<{
     move: { id: string; x: number; y: number };
@@ -353,6 +356,7 @@
         linkId: t.value,
         ...(t.repoId ? { repoId: t.repoId } : {}),
         ...(wtPath ? { wtPath } : {}),
+        revealTerminal: false,
       });
       return;
     }
@@ -1990,6 +1994,7 @@
     if (attachment.kind !== "link") return "";
     if (attachment.target.type === "command") {
       const parts = [
+        isCommandRunning(attachment.target) ? "ON" : "OFF",
         attachment.target.runMode,
         attachment.target.cwd ? attachment.target.cwd.split("/").pop() : undefined,
       ].filter(Boolean);
@@ -1997,6 +2002,26 @@
     }
     const parts = [attachment.target.meta, attachment.target.subtitle].filter(Boolean);
     return parts.length ? parts.join(" · ") : attachment.target.type;
+  }
+
+  $: isCommandLink = note.kind === "link" && note.target?.type === "command";
+
+  function isCommandRunning(target: LinkTarget | undefined): boolean {
+    return target?.type === "command" && runningCommandIds.has(target.value);
+  }
+
+  function isCommandAttachment(
+    attachment: InlineAttachment,
+  ): attachment is InlineAttachment & { kind: "link"; target: LinkTarget & { type: "command" } } {
+    return attachment.kind === "link" && attachment.target.type === "command";
+  }
+
+  function activateAttachment(raw: string, attachment: InlineAttachment): void {
+    if (isCommandAttachment(attachment)) {
+      openTarget(attachment.target);
+      return;
+    }
+    openInlineAttachment(raw, attachment);
   }
 
   type AttachmentPart = Extract<InlineAttachmentPart, { kind: "attachment" }>;
@@ -2144,7 +2169,7 @@
           if (interactive) onInlineAttachmentDragStart(e, part.raw, part.attachment);
         }}
         onOpen={() => {
-          if (interactive) openInlineAttachment(part.raw, part.attachment);
+          if (interactive) activateAttachment(part.raw, part.attachment);
         }}
         onMerge={() => {
           if (!interactive) return;
@@ -2171,6 +2196,7 @@
           class:sticky-trailing-card-text={visual.attachment.kind === "text"}
           class:sticky-trailing-card-note={visual.attachment.kind === "note"}
           class:sticky-trailing-card-link={visual.attachment.kind === "link"}
+          class:sticky-trailing-card-command={isCommandAttachment(visual.attachment)}
           draggable={interactive}
           title="View attachment"
           style:--stack-index={j}
@@ -2179,7 +2205,7 @@
             if (interactive) onInlineAttachmentDragStart(e, visual.raw, visual.attachment);
           }}
           on:click|stopPropagation={() => {
-            if (interactive) openInlineAttachment(visual.raw, visual.attachment);
+            if (interactive) activateAttachment(visual.raw, visual.attachment);
           }}
           on:dblclick|stopPropagation
         >
@@ -2221,6 +2247,8 @@
       <span class="sticky-mini-note-title">Note</span>
       <span class="sticky-mini-note-body">{noteAttachmentTitle(attachment)}</span>
     </span>
+  {:else if attachment.kind === "link" && attachment.target.type === "command"}
+    {@render commandPowerPreview(attachment.target, mode)}
   {:else if attachment.kind === "link"}
     <span
       class="attachment-link-card attach-card"
@@ -2244,6 +2272,23 @@
   {/if}
 {/snippet}
 
+{#snippet commandPowerPreview(target: LinkTarget, mode: "detached" | "stack" | "media")}
+  {@const running = isCommandRunning(target)}
+  <span
+    class="command-power-card"
+    class:command-power-card-running={running}
+    class:command-power-card-stack={mode === "stack"}
+    class:command-power-card-media={mode === "media"}
+  >
+    <span class="command-power-ring" aria-hidden="true">
+      <span class="command-power-led"></span>
+      <span class="command-power-state">{running ? "ON" : "OFF"}</span>
+      <span class="command-power-name">{commandPowerLabel(target)}</span>
+    </span>
+    <span class="command-power-meta">{target.runMode ?? "command"}</span>
+  </span>
+{/snippet}
+
 <div
   bind:this={stickyEl}
   class="sticky"
@@ -2252,6 +2297,7 @@
   class:sticky-link={isLink}
   class:sticky-emoji={isEmoji}
   class:sticky-detached={isDetachedAttachment}
+  class:sticky-command-link={isCommandLink}
   class:attachment-drop-active={showAttachmentDropActive}
   data-note-id={note.id}
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
@@ -2439,9 +2485,13 @@
            to 4 lines), muted meta line at the bottom. The picker
            rows keep .attach-row for scannable-column alignment. -->
       <button
-        class="sticky-link-body attach-card"
+        class={note.target.type === "command"
+          ? "sticky-link-body command-power-button"
+          : "sticky-link-body attach-card"}
         type="button"
-        title="Click to open"
+        title={note.target.type === "command"
+          ? `${isCommandRunning(note.target) ? "Stop" : "Run"} command`
+          : "Click to open"}
         on:mousedown|stopPropagation={onMouseDownCard}
         on:click={onLinkBodyClick}
         on:dblclick|stopPropagation
@@ -2450,26 +2500,30 @@
         on:focusin={onLinkCardEnter}
         on:focusout={onLinkCardLeave}
       >
-        <span class="attach-card-icon" aria-hidden="true">
-          <AttachmentIcon
-            agent={note.target.agent ?? ""}
-            provider={note.target.provider
-              ?? (note.target.type === "commit"
-                ? pickerScope.currentRepoProvider ?? ""
-                : "")}
-            glyph={targetIcon(note.target)}
-            size={56}
-          />
-        </span>
-        <span class="attach-card-label">
-          {liveSessionLabel ?? note.target.label ?? displayLabel(note.target)}
-        </span>
-        {#if note.target.subtitle || note.target.meta}
-          <span class="attach-card-meta">
-            {#if note.target.meta}{note.target.meta}{/if}
-            {#if note.target.meta && note.target.subtitle} · {/if}
-            {#if note.target.subtitle}{note.target.subtitle}{/if}
+        {#if note.target.type === "command"}
+          {@render commandPowerPreview(note.target, "detached")}
+        {:else}
+          <span class="attach-card-icon" aria-hidden="true">
+            <AttachmentIcon
+              agent={note.target.agent ?? ""}
+              provider={note.target.provider
+                ?? (note.target.type === "commit"
+                  ? pickerScope.currentRepoProvider ?? ""
+                  : "")}
+              glyph={targetIcon(note.target)}
+              size={56}
+            />
           </span>
+          <span class="attach-card-label">
+            {liveSessionLabel ?? note.target.label ?? displayLabel(note.target)}
+          </span>
+          {#if note.target.subtitle || note.target.meta}
+            <span class="attach-card-meta">
+              {#if note.target.meta}{note.target.meta}{/if}
+              {#if note.target.meta && note.target.subtitle} · {/if}
+              {#if note.target.subtitle}{note.target.subtitle}{/if}
+            </span>
+          {/if}
         {/if}
       </button>
     {:else}
@@ -2499,13 +2553,13 @@
         class:sticky-detached-text={detachedAttachmentPart.attachment.kind === "text"}
         class:sticky-detached-note={detachedAttachmentPart.attachment.kind === "note"}
         class:sticky-detached-link={detachedAttachmentPart.attachment.kind === "link"}
-        title="View attachment"
+        class:sticky-detached-command={isCommandAttachment(detachedAttachmentPart.attachment)}
+        title={isCommandAttachment(detachedAttachmentPart.attachment)
+          ? `${isCommandRunning(detachedAttachmentPart.attachment.target) ? "Stop" : "Run"} command`
+          : "View attachment"}
         on:mousedown={onMouseDownCard}
         on:click={() =>
-          onDetachedAttachmentClick(
-            detachedAttachmentPart.raw,
-            detachedAttachmentPart.attachment,
-          )}
+          activateAttachment(detachedAttachmentPart.raw, detachedAttachmentPart.attachment)}
         on:dblclick|stopPropagation
       >
         {@render attachmentPreview(detachedAttachmentPart.attachment, "detached")}

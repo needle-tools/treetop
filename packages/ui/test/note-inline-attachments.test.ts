@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  commandPowerLabel,
   countTextLines,
   expandNoteBodyForTerminalPasteChunks,
   expandNoteBodyForCopyAsync,
@@ -215,6 +216,20 @@ describe("note inline attachments", () => {
       });
       expect(inlineAttachmentLabel(parts[0].attachment)).toBe("build:launch");
     }
+  });
+
+  test("derives short command power-button labels", () => {
+    expect(commandPowerLabel({
+      type: "command",
+      value: "cmd-1",
+      command: "npm run build:launch",
+    })).toBe("build:launch");
+    expect(commandPowerLabel({
+      type: "command",
+      value: "cmd-2",
+      command: "bun run scripts/build-launch.ts",
+      label: "Relaunch",
+    })).toBe("Relaunch");
   });
 
   test("copy expansion restores hidden paste payloads and image paths", () => {

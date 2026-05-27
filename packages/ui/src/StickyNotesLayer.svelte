@@ -184,9 +184,11 @@
           linkId: string;
           repoId?: string;
           wtPath?: string;
+          revealTerminal?: boolean;
         },
       ) => void)
     | null = null;
+  export let runningCommandIds: Set<string> = new Set();
 
   let notes: NoteShape[] = [];
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
@@ -2259,6 +2261,7 @@
         flying={!!flyingNotes[note.id]}
         {repos}
         {onCommandLinkOpen}
+        {runningCommandIds}
         on:move={handleMove}
         on:save={handleSave}
         on:remove={handleRemove}

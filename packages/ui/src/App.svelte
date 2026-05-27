@@ -3609,10 +3609,62 @@
 
   const commandTermSources = new Map<string, { wtPath: string; source: string }>();
 
-  async function handleCommandClick(wtPath: string, link: CustomLink) {
+  async function commandTermAlive(source: string): Promise<boolean> {
+    const termId = source.replace("__attached__:shell:", "");
+    if (!termId || termId === source) return false;
+    try {
+      const r = await fetch("/api/terminals");
+      if (!r.ok) return false;
+      const list = (await r.json()) as { id: string; exitedAt?: string }[];
+      return list.some((t) => t.id === termId && !t.exitedAt);
+    } catch {
+      return false;
+    }
+  }
+
+  function forgetCommandTerm(linkId: string, entry: { wtPath: string; source: string }): void {
+    commandTermSources.delete(linkId);
+    const nextSet = new Set(runningCommandIds);
+    nextSet.delete(linkId);
+    runningCommandIds = nextSet;
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [entry.wtPath]: (openSessionsByWt[entry.wtPath] ?? []).filter((s) => s.source !== entry.source),
+    };
+  }
+
+  async function stopInternalCommand(linkId: string, entry: { wtPath: string; source: string }): Promise<void> {
+    const termId = entry.source.replace("__attached__:shell:", "");
+    if (termId && termId !== entry.source) {
+      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, { method: "DELETE" }).catch(() => {});
+      dismissShellSource(entry.source);
+    }
+    forgetCommandTerm(linkId, entry);
+  }
+
+  async function revealInternalCommand(entry: { wtPath: string; source: string }): Promise<void> {
+    undismissShellSource(entry.source);
+    const existing = openSessionsByWt[entry.wtPath] ?? [];
+    if (!existing.some((s) => s.source === entry.source)) {
+      const next = [...existing];
+      next.splice(visibleLeftInsertIndex(entry.wtPath, existing), 0, {
+        agent: "shell",
+        source: entry.source,
+      });
+      openSessionsByWt = { ...openSessionsByWt, [entry.wtPath]: next };
+    }
+    scrollNewColIntoView(entry.wtPath, entry.source);
+  }
+
+  async function handleCommandClick(
+    wtPath: string,
+    link: CustomLink,
+    opts: { revealInternalTerminal?: boolean } = {},
+  ) {
     if (link.kind !== "command") return;
     const cmdLink = link as { cmd: string; cwd?: string; runMode: string; id: string };
     const isRunning = runningCommandIds.has(link.id);
+    const revealInternalTerminal = opts.revealInternalTerminal ?? true;
 
     if (isRunning && cmdLink.runMode === "shell") {
       void fetch("/api/command/stop", {
@@ -3626,31 +3678,16 @@
     if (cmdLink.runMode === "internal") {
       const prev = commandTermSources.get(link.id);
       if (prev) {
-        const existing = openSessionsByWt[prev.wtPath] ?? [];
-        const colOpen = existing.some((s) => s.source === prev.source);
-        if (colOpen) {
-          const termId = prev.source.replace("__attached__:shell:", "");
-          let alive = false;
-          try {
-            const r = await fetch("/api/terminals");
-            if (r.ok) {
-              const list = (await r.json()) as { id: string; exitedAt?: string }[];
-              alive = list.some((t) => t.id === termId && !t.exitedAt);
-            }
-          } catch {}
-          if (alive) {
-            scrollNewColIntoView(prev.wtPath, prev.source);
-            return;
+        const alive = await commandTermAlive(prev.source);
+        if (alive) {
+          if (revealInternalTerminal) {
+            await revealInternalCommand(prev);
+          } else {
+            await stopInternalCommand(link.id, prev);
           }
-          const next = existing.filter((s) => s.source !== prev.source);
-          openSessionsByWt = { ...openSessionsByWt, [prev.wtPath]: next };
+          return;
         }
-        commandTermSources.delete(link.id);
-        if (runningCommandIds.has(link.id)) {
-          const nextSet = new Set(runningCommandIds);
-          nextSet.delete(link.id);
-          runningCommandIds = nextSet;
-        }
+        forgetCommandTerm(link.id, prev);
       }
     }
 
@@ -3674,7 +3711,6 @@
         const source = `__attached__:shell:${body.termId}`;
         commandTermSources.set(link.id, { wtPath, source });
         runningCommandIds = new Set([...runningCommandIds, link.id]);
-        undismissShellSource(source);
         const title = link.name?.trim() || cmdLink.cmd;
         void fetch("/api/session/title", {
           method: "POST",
@@ -3682,14 +3718,10 @@
           body: JSON.stringify({ source, title }),
         });
         newSessionTitles = { ...newSessionTitles, [source]: title };
-        const existing = openSessionsByWt[wtPath] ?? [];
-        if (!existing.some((s) => s.source === source)) {
-          const entry: OpenSession = { agent: "shell", source };
-          const insertAt = visibleLeftInsertIndex(wtPath, existing);
-          const next = [...existing];
-          next.splice(insertAt, 0, entry);
-          openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
-          scrollNewColIntoView(wtPath, source);
+        if (revealInternalTerminal) {
+          await revealInternalCommand({ wtPath, source });
+        } else {
+          dismissShellSource(source);
         }
       } else if (body.mode === "shell") {
         void refreshRunningCommands();
@@ -3703,6 +3735,7 @@
     linkId: string;
     repoId?: string;
     wtPath?: string;
+    revealTerminal?: boolean;
   }): void {
     const repo = payload.repoId
       ? repos.find((r) => r.id === payload.repoId)
@@ -3717,7 +3750,9 @@
       repo.worktrees.find((wt) => !wt.nonGit)?.path ||
       repo.worktrees[0]?.path ||
       repo.path;
-    void handleCommandClick(wtPath, link);
+    void handleCommandClick(wtPath, link, {
+      revealInternalTerminal: payload.revealTerminal ?? false,
+    });
   }
 
   async function removeRepo(id: string) {
@@ -7738,6 +7773,7 @@
   changeKey={notesChangeKey}
   {repos}
   onCommandLinkOpen={handleCommandLinkOpen}
+  {runningCommandIds}
 />
 
 <ConfirmDialog />

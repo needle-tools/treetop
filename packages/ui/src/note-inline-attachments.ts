@@ -162,6 +162,17 @@ export function pastedTextTitleForMime(mimeType?: string): string {
   return "Pasted Text";
 }
 
+export function commandPowerLabel(target: InlineLinkTarget): string {
+  const explicit = target.label?.trim();
+  if (explicit) return explicit;
+  const command = target.command?.trim();
+  if (!command) return target.value || "command";
+  const script = command.match(/^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([^\s]+)/);
+  if (script?.[1]) return script[1];
+  const parts = command.split(/\s+/).filter(Boolean);
+  return parts.slice(0, 2).join(" ") || "command";
+}
+
 export function humanAttachmentBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
