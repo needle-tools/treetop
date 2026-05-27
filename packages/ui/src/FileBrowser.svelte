@@ -484,10 +484,10 @@
         class="fb-follow-btn"
         class:fb-follow-btn-active={followTerminal}
         on:click={toggleFollow}
-        title={followTerminal ? "Stop following terminal cwd" : "Follow terminal cwd"}
+        title={followTerminal ? "Click to stop following terminal cwd" : "Click to follow terminal cwd"}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-        {followTerminal ? "Follow" : "Unfollow"}
+        {followTerminal ? "Following" : "Follow"}
       </button>
     {/if}
   </nav>
