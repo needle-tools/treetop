@@ -351,20 +351,10 @@
   interface WeeklyProjection {
     projectedPct: number;
     isOverPace: boolean;
+    isEarly: boolean;
     label: string;
   }
 
-  /** Given a window's current utilization and reset timestamp, project
-   *  what % will be used by the time the window resets — assuming the
-   *  current consumption rate holds steady.
-   *
-   *  Math: rate = utilization / elapsed, projected = rate × windowDuration.
-   *
-   *  Returns null when the window has no resetsAt or the numbers are
-   *  too fresh to project meaningfully. The minimum elapsed threshold
-   *  scales with window size: 10% of the window or 1h, whichever is
-   *  larger. For a 7-day window that's ~17h — prevents "2% in 5 min →
-   *  On pace to exceed limit (200%)" jitter right after a reset. */
   function projectWeekly(
     utilization: number | undefined,
     resetsAt: string | undefined,
@@ -377,16 +367,23 @@
     const remaining = resetMs - Date.now();
     if (remaining <= 0) return null;
     const elapsed = windowMs - remaining;
-    const minElapsed = Math.max(3_600_000, windowMs * 0.1);
-    if (elapsed < minElapsed) return null;
+    if (elapsed < 3_600_000) return null; // < 1h = truly no data
+    const minReliable = Math.max(3_600_000, windowMs * 0.1);
+    const isEarly = elapsed < minReliable;
     const rate = utilization / elapsed;
     const projected = Math.min(rate * windowMs, 2);
     const isOverPace = projected > 1.0;
     const pp = Math.round(projected * 100);
-    const label = isOverPace
-      ? `On pace to exceed limit (~${pp}%)`
-      : `On pace for ~${pp}% — ${Math.round((1 - projected) * 100)}% headroom`;
-    return { projectedPct: projected, isOverPace, label };
+    const hoursUntilReliable = Math.ceil((minReliable - elapsed) / 3_600_000);
+    let label: string;
+    if (isEarly) {
+      label = `Projection available in ~${hoursUntilReliable}h (need more data)`;
+    } else if (isOverPace) {
+      label = `On pace to exceed limit (~${pp}%)`;
+    } else {
+      label = `On pace for ~${pp}% — ${Math.round((1 - projected) * 100)}% headroom`;
+    }
+    return { projectedPct: projected, isOverPace, isEarly, label };
   }
 
   /** Compact token formatter — 1,234 → "1.2k", 5,432,100 → "5.4M".
@@ -606,7 +603,7 @@
             claudeLive.sevenDay?.resetsAt,
           )}
           {#if weekProj}
-            <div class="usage-projection" class:over-pace={weekProj.isOverPace}>
+            <div class="usage-projection" class:over-pace={weekProj.isOverPace} class:early={weekProj.isEarly}>
               {weekProj.label}
             </div>
           {/if}
@@ -1007,6 +1004,10 @@
   .usage-projection.over-pace {
     color: #f97316;
     font-weight: 600;
+  }
+  .usage-projection.early {
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   .usage-bar {
