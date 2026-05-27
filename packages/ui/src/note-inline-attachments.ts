@@ -298,6 +298,8 @@ export async function expandNoteBodyForTerminalPasteChunks(
     } else if (part.attachment.kind === "image") {
       flushText();
       chunks.push(part.attachment.path);
+    } else if (part.attachment.kind === "emoji") {
+      continue;
     } else {
       text += inlineAttachmentCopyText(part.attachment);
     }

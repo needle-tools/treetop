@@ -246,6 +246,24 @@ describe("note inline attachments", () => {
     ]);
   });
 
+  test("terminal paste skips emoji attachments", async () => {
+    const emoji = makeEmojiAttachmentRef({ body: "✨" });
+    const paste = makeTextAttachmentRef({
+      path: "/tmp/supergit/attachments/paste.txt",
+      filename: "paste.txt",
+      mimeType: "text/plain",
+      size: 16,
+      charCount: 16,
+    });
+
+    await expect(
+      expandNoteBodyForTerminalPasteChunks(`A ${emoji}\n${paste}\n${emoji} B`, async (path) => {
+        expect(path).toBe("/tmp/supergit/attachments/paste.txt");
+        return "hidden long text";
+      }),
+    ).resolves.toEqual(["A \n", "hidden long text", "\n B"]);
+  });
+
   test("text attachment reads fail instead of substituting another payload", async () => {
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response("missing", { status: 404 })) as typeof fetch;
