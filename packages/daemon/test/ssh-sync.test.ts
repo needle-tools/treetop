@@ -105,17 +105,21 @@ describe("SyncTracker", () => {
     // Modify the file
     await writeFile(localPath, "modified content");
 
-    // Wait for debounce + upload
+    // Wait for debounce — state should be "modified" (not auto-uploaded)
     await new Promise((r) => setTimeout(r, 500));
+
+    expect(uploadCalled).toBe(false);
+    const tracked = tracker.getTracked();
+    expect(tracked[0]!.state).toBe("modified");
+
+    // Now confirm the upload
+    await tracker.confirmUpload(localPath);
 
     expect(uploadCalled).toBe(true);
     expect(uploadedHostKey).toBe("user@host:22");
     expect(uploadedRemotePath).toBe("/remote/file.txt");
     expect(uploadedLocalPath).toBe(localPath);
-
-    // State should return to editing after upload
-    const tracked = tracker.getTracked();
-    expect(tracked[0]!.state).toBe("editing");
+    expect(tracker.getTracked()[0]!.state).toBe("editing");
 
     tracker.dispose();
   });
@@ -133,15 +137,42 @@ describe("SyncTracker", () => {
 
     tracker.startTracking("user@host:22", "/remote/err.txt", localPath);
 
-    // Trigger change
+    // Trigger change → goes to "modified"
     await writeFile(localPath, "changed");
-
-    // Wait for debounce + upload attempt
     await new Promise((r) => setTimeout(r, 500));
+    expect(tracker.getTracked()[0]!.state).toBe("modified");
+
+    // Confirm upload → should fail and go to "error"
+    await tracker.confirmUpload(localPath);
 
     const tracked = tracker.getTracked();
     expect(tracked[0]!.state).toBe("error");
     expect(tracked[0]!.error).toBe("upload failed");
+
+    tracker.dispose();
+  });
+
+  test("dismissModified returns to editing without uploading", async () => {
+    const localPath = join(tmpDir, "dismiss-trigger.txt");
+    await writeFile(localPath, "initial");
+
+    let uploadCalled = false;
+    const tracker = new SyncTracker(
+      async () => { uploadCalled = true; },
+      { debounceMs: 100 },
+    );
+
+    tracker.startTracking("user@host:22", "/remote/dismiss.txt", localPath);
+
+    // Trigger change → goes to "modified"
+    await writeFile(localPath, "changed");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(tracker.getTracked()[0]!.state).toBe("modified");
+
+    // Dismiss — should go back to "editing" without uploading
+    tracker.dismissModified(localPath);
+    expect(tracker.getTracked()[0]!.state).toBe("editing");
+    expect(uploadCalled).toBe(false);
 
     tracker.dispose();
   });

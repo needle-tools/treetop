@@ -46,11 +46,21 @@ click file in browser
 Per-file state machine shown in the file browser:
 
 ```
-idle  →  downloading ↓  →  editing ✎  →  uploading ↑  →  synced ✓
-                                ↑                           │
-                                └───────────────────────────┘
-                                   (user edits again)
+idle  →  downloading ↓  →  editing ✎  →  modified ⚡  →  uploading ↑  →  editing ✎
+                                              │
+                                        user confirms
+                                        via popover
 ```
+
+**Upload confirmation (like FileZilla)**: when `fs.watch()` detects a save,
+DON'T auto-upload. Instead, show an inline popover on the file row in the
+browser: "File modified — upload to remote?" with three actions:
+- **Upload** — confirm overwrite, start upload
+- **Open** — re-open the local copy to review
+- **Dismiss** — discard the change notification
+
+This prevents accidental overwrites on production servers. Auto-sync is
+convenient but dangerous.
 
 - **Cache location**: `<workspace>/.remote-cache/<host>/full/remote/path/file.ext`
   preserves the directory structure so the cache is navigable.
@@ -60,6 +70,23 @@ idle  →  downloading ↓  →  editing ✎  →  uploading ↑  →  synced �
 - **Conflict**: if the remote file changed since download, warn before
   overwriting. Compare mtime or content hash on upload.
 - **Cleanup**: stale cache files can be pruned on daemon start or manually.
+- **mtime refresh**: after a successful upload, the file browser auto-refreshes
+  the current directory listing so the modified time updates.
+- **Live sync badges**: the file browser polls `/api/ssh/status` to show
+  real-time sync state (✎ editing, ⚡ modified, ↑ uploading) on file rows.
+
+#### CWD follow
+
+Terminal cwd tracking works by parsing the prompt output:
+- Windows cmd.exe: `C:\Users\needle\Music>`
+- PowerShell: `PS C:\path>`
+- Unix bash/zsh: `user@host:/path$`
+
+TerminalView extracts the cwd and fires it up through the component chain
+to the FileBrowser's `remoteCwd` prop. When Follow is active, the file
+browser navigates to match. Follow auto-disables on manual navigation.
+
+The Follow and Terminal buttons live on the RIGHT side of the breadcrumb bar.
 
 ### 2. Remote terminal
 

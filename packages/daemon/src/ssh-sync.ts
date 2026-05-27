@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from "node:fs";
 
-export type SyncState = "downloading" | "editing" | "uploading" | "synced" | "error";
+export type SyncState = "downloading" | "editing" | "modified" | "uploading" | "synced" | "error";
 
 export interface TrackedFile {
   hostKey: string;
@@ -84,6 +84,20 @@ export class SyncTracker {
     return out;
   }
 
+  /** Confirm upload for a file in "modified" state. */
+  async confirmUpload(localCachePath: string): Promise<void> {
+    const entry = this.tracked.get(localCachePath);
+    if (!entry || entry.state !== "modified") return;
+    await this.doUpload(entry);
+  }
+
+  /** Dismiss a "modified" notification — go back to editing without uploading. */
+  dismissModified(localCachePath: string): void {
+    const entry = this.tracked.get(localCachePath);
+    if (!entry || entry.state !== "modified") return;
+    entry.state = "editing";
+  }
+
   dispose(): void {
     for (const [path] of this.tracked) {
       this.stopTracking(path);
@@ -98,7 +112,7 @@ export class SyncTracker {
 
     entry.debounceTimer = setTimeout(() => {
       entry.debounceTimer = null;
-      this.doUpload(entry);
+      entry.state = "modified";
     }, this.debounceMs);
   }
 

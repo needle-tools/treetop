@@ -184,6 +184,33 @@ export async function fetchSshHome(termId: string): Promise<string> {
   }
 }
 
+export async function confirmRemoteUpload(localPath: string): Promise<void> {
+  await fetch("/api/ssh/confirm-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ localPath }),
+  });
+}
+
+export async function dismissRemoteUpload(localPath: string): Promise<void> {
+  await fetch("/api/ssh/dismiss-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ localPath }),
+  });
+}
+
+export async function fetchSshStatus(termId: string): Promise<{ remotePath: string; localCachePath: string; state: string; error?: string }[]> {
+  try {
+    const res = await fetch(`/api/ssh/status?term=${encodeURIComponent(termId)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.files ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function openRemoteFile(termId: string, remotePath: string): Promise<void> {
   const res = await fetch("/api/ssh/open", {
     method: "POST",

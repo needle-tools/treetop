@@ -5948,6 +5948,29 @@ const server = Bun.serve<TermWsData, never>({
       return json({ files: sshSyncTracker.getTracked(hostKey) });
     }
 
+    if (url.pathname === "/api/ssh/confirm-upload" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body.localPath !== "string") {
+        return json({ error: "localPath required" }, { status: 400 });
+      }
+      try {
+        await sshSyncTracker.confirmUpload(body.localPath);
+        return json({ ok: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json({ error: msg }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/ssh/dismiss-upload" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body.localPath !== "string") {
+        return json({ error: "localPath required" }, { status: 400 });
+      }
+      sshSyncTracker.dismissModified(body.localPath);
+      return json({ ok: true });
+    }
+
     // Production UI fallback: when SUPERGIT_UI_DIR is set, serve the
     // built SPA from there for any GET request that didn't match an
     // /api/* route. In dev mode UI_DIR is unset and Vite handles UI
