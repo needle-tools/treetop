@@ -98,6 +98,36 @@ describe("TerminalPersist", () => {
     expect(list[0]!.title).toBe("updated");
   });
 
+  test("survives read-after-clear (restore card with empty backing)", async () => {
+    const dir = join(tmpDir, "survive-clear");
+    const tp = new TerminalPersist(dir);
+
+    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a", title: "server" });
+
+    // Simulate: UI reads entries
+    const entries = await tp.list();
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.cmd).toEqual(["ssh", "a@b"]);
+    expect(entries[0]!.title).toBe("server");
+
+    // Simulate: individual remove (not clear-all)
+    await tp.remove("t1");
+    expect(await tp.list()).toEqual([]);
+  });
+
+  test("individual remove preserves other entries", async () => {
+    const dir = join(tmpDir, "partial-remove");
+    const tp = new TerminalPersist(dir);
+
+    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a" });
+    await tp.save({ termId: "t2", cmd: ["ssh", "c@d"], cwd: "/b", wtPath: "/b" });
+
+    await tp.remove("t1");
+    const remaining = await tp.list();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0]!.termId).toBe("t2");
+  });
+
   test("atomic write survives concurrent access", async () => {
     const dir = join(tmpDir, "concurrent");
     const tp = new TerminalPersist(dir);

@@ -2282,6 +2282,15 @@ const server = Bun.serve<TermWsData, never>({
       return json({ ok: true });
     }
 
+    if (url.pathname === "/api/terminals/persisted/remove" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body.termId !== "string") {
+        return json({ error: "termId required" }, { status: 400 });
+      }
+      await terminalPersist.remove(body.termId);
+      return json({ ok: true });
+    }
+
     // file is still present in `<workspace>/shells/`). The UI calls this
     // on mount to repopulate Terminal columns after a reload.
     if (url.pathname === "/api/shells" && req.method === "GET") {

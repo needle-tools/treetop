@@ -1888,19 +1888,17 @@
         }
       }
       openSessionsByWt = next;
-      // Clear the persisted file — we've consumed it
-      void fetch("/api/terminals/persisted", { method: "DELETE" }).catch(() => {});
     } catch {}
   }
 
   function resumePersistedTerminal(wtPath: string, restoreSource: string) {
     const info = persistedTerminals[restoreSource];
     if (!info) return;
+    const termId = restoreSource.replace("__restore__:", "");
     // Replace the __restore__: column with a __new__:shell: column
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const newSource = `__new__:shell:${id}`;
     shellResumeCwd = { ...shellResumeCwd, [newSource]: info.cwd };
-    // Store the original command so we can prefill it
     shellPrefillCmd = { ...shellPrefillCmd, [newSource]: info.cmd.join(" ") };
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
@@ -1908,15 +1906,26 @@
       [wtPath]: existing.map((s) => s.source === restoreSource ? { ...s, source: newSource } : s),
     };
     delete persistedTerminals[restoreSource];
+    void fetch("/api/terminals/persisted/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ termId }),
+    }).catch(() => {});
   }
 
   function dismissPersistedTerminal(wtPath: string, restoreSource: string) {
+    const termId = restoreSource.replace("__restore__:", "");
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
       ...openSessionsByWt,
       [wtPath]: existing.filter((s) => s.source !== restoreSource),
     };
     delete persistedTerminals[restoreSource];
+    void fetch("/api/terminals/persisted/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ termId }),
+    }).catch(() => {});
   }
 
   /** Map of __new__:shell: sources to a command string to prefill. */
