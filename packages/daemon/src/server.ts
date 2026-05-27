@@ -53,6 +53,7 @@ import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend"
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { detectSshChildren, type SshSession } from "./ssh-detect";
+import { OrphanCleaner } from "./orphan-cleanup";
 import { SshPool } from "./ssh-pool";
 import { listRemoteDir, downloadFile, uploadFile, cachePathFor } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
@@ -196,6 +197,20 @@ const sshSyncTracker = new SyncTracker(async (hostKey, remotePath, localCachePat
 });
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
 const termSshSessions = new Map<string, SshSession>();
+
+const orphanCleaner = new OrphanCleaner({
+  getTerminals: () =>
+    terminalBackend.list().map((r) => ({
+      id: r.id,
+      pid: r.pid,
+      isAlive: !r.exitedAt,
+    })),
+  killTerminal: async (id) => {
+    const h = terminalBackend.get(id);
+    if (h?.isAlive()) await h.kill();
+  },
+  log: (msg) => console.log(`supergit daemon: ${msg}`),
+});
 
 import type { Subprocess } from "bun";
 import { customLinkKind, type CommandRunMode } from "./workspace";
@@ -5246,15 +5261,13 @@ const server = Bun.serve<TermWsData, never>({
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           sseSubscribers.add(controller);
-          // Initial hello so the connection's open and the client knows it
+          orphanCleaner.onFrontendConnected();
           controller.enqueue(sseEncoder.encode(`: connected\n\n`));
         },
         cancel(controllerOrReason) {
-          // Best-effort cleanup; broadcast() also prunes failed controllers.
+          orphanCleaner.onFrontendDisconnected();
           for (const ctrl of sseSubscribers) {
             try {
-              // The actual controller isn't passed to cancel; we let broadcast
-              // prune it on the next attempted enqueue.
             } catch {
               sseSubscribers.delete(ctrl);
             }
@@ -6016,6 +6029,7 @@ const server = Bun.serve<TermWsData, never>({
         return;
       }
       cancelGrace(termId);
+      orphanCleaner.onFrontendConnected();
       const sub: TerminalSubscriber = {
         onData(chunk) {
           // Binary frame — raw PTY bytes for xterm.js.
@@ -6088,6 +6102,7 @@ const server = Bun.serve<TermWsData, never>({
       const termId = ws.data.termId;
       try { ws.data.unsubscribe?.(); } catch {}
       ws.data.unsubscribe = null;
+      orphanCleaner.onFrontendDisconnected();
       // If this was the last subscriber, schedule a grace-then-dispose.
       startGraceIfIdle(termId);
     },
@@ -6119,6 +6134,7 @@ const shutdown = async (signal: string) => {
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopActivity();
+    orphanCleaner.dispose();
     sshSyncTracker.dispose();
     sshPool.disconnectAll();
     // De-advertise from mDNS so other peers drop us immediately
