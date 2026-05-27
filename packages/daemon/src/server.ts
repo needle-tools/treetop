@@ -1,6 +1,6 @@
 import { join, resolve, normalize, sep, dirname } from "node:path";
 import { homedir, totalmem, networkInterfaces, hostname as osHostname } from "node:os";
-import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile, readFile } from "node:fs/promises";
+import { stat as fsStat, unlink, readdir, writeFile as fsWriteFile, readFile, mkdir as fsMkdir } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
 import { repairAllClaudeJson } from "./claude-json-repair";
@@ -3069,8 +3069,56 @@ const server = Bun.serve<TermWsData, never>({
             try { controller.close(); } catch {}
             return;
           }
+
+          // Debug log: write the full prompt + response so bad
+          // summaries (thinking artifacts, verbosity) can be
+          // diagnosed after the fact without reproducing the run.
+          try {
+            const debugDir = join(workspace.path, ".debugging", "summaries");
+            await fsMkdir(debugDir, { recursive: true });
+            const ts = new Date(startedAt).toISOString().replace(/[:.]/g, "-");
+            const slug = source.replace(/[/\\]/g, "__").slice(-80);
+            const debugPath = join(debugDir, `${ts}__${slug}.md`);
+            const debugContent = [
+              `# Session summary debug log`,
+              ``,
+              `- **source:** \`${source}\``,
+              `- **model:** ${model}`,
+              `- **agent:** ${resolved.agent}`,
+              `- **sessionId:** ${parsed.sessionId || "(none)"}`,
+              `- **generatedAt:** ${new Date(startedAt).toISOString()}`,
+              `- **elapsedMs:** ${elapsedMs}`,
+              `- **totalMessages:** ${sampled.totalMessages}`,
+              `- **includedMessages:** ${sampled.includedMessages}`,
+              `- **truncatedMessages:** ${sampled.truncatedMessages}`,
+              `- **estimatedTokens:** ${sampled.estimatedTokens}`,
+              ``,
+              `## System prompt`,
+              ``,
+              "```",
+              systemPrompt,
+              "```",
+              ``,
+              `## Sampled prompt (${sampled.prompt.length} chars)`,
+              ``,
+              "```",
+              sampled.prompt,
+              "```",
+              ``,
+              `## Response (${fullBody.collected.length} chars)`,
+              ``,
+              "```",
+              fullBody.collected,
+              "```",
+              ``,
+            ].join("\n");
+            await fsWriteFile(debugPath, debugContent);
+          } catch {
+            // Debug logging is best-effort; never block the summary.
+          }
+
           send("done", { elapsedMs });
-          try { controller.close(); } catch {}
+          setTimeout(() => { try { controller.close(); } catch {} }, 200);
         },
         cancel() {
           abort.abort();

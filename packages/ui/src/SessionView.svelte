@@ -1380,6 +1380,9 @@
                 {summarySnippet}
               {/if}
             </div>
+            {#if summaryModel && !summaryRefreshing}
+              <span class="tui-summary-model">{summaryModel}</span>
+            {/if}
             {#if !summaryRefreshing}
               <button
                 type="button"
@@ -2437,6 +2440,13 @@
     background: var(--surface-3, var(--surface-2));
     color: var(--text-1);
     opacity: 1;
+  }
+  .tui-summary-model {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.65rem;
+    font-family: ui-monospace, monospace;
+    color: var(--text-faint);
   }
   .pinned-last-msg-text {
     min-width: 0;
