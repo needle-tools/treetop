@@ -259,7 +259,6 @@
    *  time — opening one closes any other. Anchor refs live in a map
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
-  let cmdUrlDropdown: string | null = null;
   let cmdUrlOverride: Record<string, string> = {};
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
@@ -928,11 +927,6 @@
       const anchor = editAnchorEls.get(editingLinkId);
       if (anchor && !anchor.contains(target)) closeEdit();
     }
-    if (cmdUrlDropdown) {
-      if (!(target instanceof Element && target.closest(".cmd-url-wrap"))) {
-        cmdUrlDropdown = null;
-      }
-    }
   }
 </script>
 
@@ -1307,7 +1301,10 @@
           <span>{label}</span>
         {/if}
         {#if cmdUrl}
-          <span class="cmd-url-wrap">
+          <span
+            class="cmd-url-wrap"
+            class:has-dropdown={cmdUrls && cmdUrls.length > 1}
+          >
             <span
               class="cmd-url-inner"
               role="link"
@@ -1321,32 +1318,29 @@
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
               </svg>
-            </span>
-            {#if cmdUrls && cmdUrls.length > 1}
-              <span
-                class="cmd-url-caret"
-                role="button"
-                tabindex="-1"
-                title="More URLs"
-                on:click|stopPropagation={() => {
-                  cmdUrlDropdown = cmdUrlDropdown === link.id ? null : link.id;
-                }}
-              >
-                <svg viewBox="0 0 24 24" width="8" height="8" aria-hidden="true">
+              {#if cmdUrls && cmdUrls.length > 1}
+                <svg class="cmd-url-caret-icon" viewBox="0 0 24 24" width="8" height="8" aria-hidden="true">
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
-              </span>
-            {/if}
-            {#if cmdUrlDropdown === link.id && cmdUrls}
+              {/if}
+            </span>
+            {#if cmdUrls && cmdUrls.length > 1}
               <div class="cmd-url-dropdown">
                 {#each cmdUrls as u}
                   <button
                     type="button"
                     class="cmd-url-option"
                     class:active={u === cmdUrl}
-                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; cmdUrlDropdown = null; }}
+                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; }}
                   >
                     {new URL(u).host}
+                    {#if u === cmdUrl}
+                      <svg class="cmd-url-option-icon" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                    {/if}
                   </button>
                 {/each}
               </div>
@@ -2019,41 +2013,46 @@
     display: inline-flex;
     align-items: center;
   }
-  .cmd-url-caret {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 1px;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: color 0.12s;
-  }
-  .cmd-url-caret:hover { color: var(--text-1, #fff); }
-  .cmd-url-caret svg {
+  .cmd-url-caret-icon {
     fill: none;
     stroke: currentColor;
     stroke-width: 2.5;
     stroke-linecap: round;
     stroke-linejoin: round;
+    margin-left: 1px;
+    opacity: 0.6;
+    transition: opacity 0.12s;
+  }
+  .cmd-url-wrap.has-dropdown:hover .cmd-url-caret-icon {
+    opacity: 1;
   }
   .cmd-url-dropdown {
     position: absolute;
     top: 100%;
-    right: 0;
+    left: -1rem;
     z-index: 200;
     margin-top: 4px;
-    padding: 4px 0;
-    background: var(--bg-2, #1e1e1e);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
+    padding: 3px 0;
+    background: var(--surface-3, #333);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+    border-radius: var(--radius-md, 6px);
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     min-width: 180px;
     white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+  .cmd-url-wrap.has-dropdown:hover .cmd-url-dropdown {
+    pointer-events: auto;
+    opacity: 1;
   }
   .cmd-url-option {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     width: 100%;
-    padding: 5px 12px;
+    padding: 5px 10px;
     border: none;
     background: none;
     color: var(--text-2, #ccc);
@@ -2067,7 +2066,16 @@
     color: var(--text-1, #fff);
   }
   .cmd-url-option.active {
-    color: var(--accent, #58a6ff);
+    color: color-mix(in srgb, var(--brand) 80%, var(--text-1, #fff));
+  }
+  .cmd-url-option-icon {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex-shrink: 0;
+    margin-left: auto;
   }
   .custom-link-popover-mount.hidden {
     display: none;
