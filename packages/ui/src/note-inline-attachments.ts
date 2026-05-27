@@ -102,6 +102,9 @@ export function inferPastedTextMimeType(
   text: string,
   sourceTypes: string[] = [],
 ): string {
+  // Lightweight stopgap: good enough for attachment titles, but not
+  // a real language detector. Replace this with Monaco, Shiki, or a
+  // similar proven estimator once pasted snippets need richer typing.
   const lowerTypes = sourceTypes.map((type) => type.toLowerCase());
   const explicit = lowerTypes.find((type) =>
     type.includes("javascript") ||
