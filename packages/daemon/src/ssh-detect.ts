@@ -71,8 +71,25 @@ export function parseSshArgs(
 }
 
 /**
+ * Detect SSH from a terminal's spawn command array.
+ * Works on all platforms — no process tree inspection needed.
+ * Handles: ["sh", "-c", "ssh user@host"], ["ssh", "user@host"], etc.
+ */
+export function detectSshFromCmd(cmd: string[]): SshSession | null {
+  const joined = cmd.join(" ");
+  const parsed = parseSshArgs(joined);
+  if (parsed) return { sshPid: 0, user: parsed.user, host: parsed.host, port: parsed.port };
+  for (const arg of cmd) {
+    const p = parseSshArgs(arg);
+    if (p) return { sshPid: 0, user: p.user, host: p.host, port: p.port };
+  }
+  return null;
+}
+
+/**
  * Detect SSH child processes for a set of PTY parent pids.
  * Returns a map: ptyPid → SshSession.
+ * Unix only — returns empty on Windows (use detectSshFromCmd instead).
  */
 export async function detectSshChildren(
   ptyPids: number[],

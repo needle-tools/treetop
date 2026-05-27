@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { parseSshArgs, detectSshChildren } from "../src/ssh-detect";
+import { parseSshArgs, detectSshChildren, detectSshFromCmd } from "../src/ssh-detect";
 
 describe("parseSshArgs", () => {
   test("user@host", () => {
@@ -93,6 +93,39 @@ describe("parseSshArgs", () => {
       host: "my-server-01.internal",
       port: 22,
     });
+  });
+});
+
+describe("detectSshFromCmd", () => {
+  test("detects ssh in sh -c wrapper", () => {
+    const result = detectSshFromCmd(["sh", "-c", "ssh needle@100.71.105.118"]);
+    expect(result).toBeTruthy();
+    expect(result!.user).toBe("needle");
+    expect(result!.host).toBe("100.71.105.118");
+    expect(result!.port).toBe(22);
+  });
+
+  test("detects bare ssh command", () => {
+    const result = detectSshFromCmd(["ssh", "user@server.com"]);
+    expect(result).toBeTruthy();
+    expect(result!.user).toBe("user");
+    expect(result!.host).toBe("server.com");
+  });
+
+  test("detects ssh with port flag", () => {
+    const result = detectSshFromCmd(["sh", "-c", "ssh -p 2222 admin@prod"]);
+    expect(result).toBeTruthy();
+    expect(result!.port).toBe(2222);
+  });
+
+  test("returns null for non-ssh commands", () => {
+    expect(detectSshFromCmd(["bash"])).toBeNull();
+    expect(detectSshFromCmd(["claude", "--resume", "abc"])).toBeNull();
+    expect(detectSshFromCmd(["zsh"])).toBeNull();
+  });
+
+  test("returns null for empty cmd", () => {
+    expect(detectSshFromCmd([])).toBeNull();
   });
 });
 

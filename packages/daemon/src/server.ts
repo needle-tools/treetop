@@ -52,7 +52,7 @@ import { pingSubscribers } from "./sse-heartbeat";
 import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
-import { detectSshChildren, type SshSession } from "./ssh-detect";
+import { detectSshChildren, detectSshFromCmd, type SshSession } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
 import { SshPool } from "./ssh-pool";
 import { listRemoteDir, downloadFile, uploadFile, cachePathFor } from "./ssh-files";
@@ -6326,6 +6326,14 @@ async function sampleSshSessions(): Promise<void> {
   }
   const pids = shellRecords.map((r) => r.pid);
   const sshMap = await detectSshChildren(pids);
+  // Also detect from the terminal's spawn command (works on Windows
+  // where process-tree inspection isn't available).
+  for (const r of shellRecords) {
+    if (!sshMap.has(r.pid)) {
+      const fromCmd = detectSshFromCmd(r.cmd);
+      if (fromCmd) sshMap.set(r.pid, fromCmd);
+    }
+  }
   let changed = false;
   for (const r of shellRecords) {
     const session = sshMap.get(r.pid);
