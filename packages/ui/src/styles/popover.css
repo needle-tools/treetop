@@ -163,10 +163,11 @@
    ellipsis handles the visible truncation, scroll would just feel
    broken. */
 .tuis-popover {
-  width: max-content;
-  min-width: 540px;
+  width: 640px;
   max-width: 90vw;
+  max-height: 70vh;
   overflow-x: hidden;
+  overflow-y: auto;
 }
 /* Make every row share the same column tracks so stats columns align
    vertically across rows ("memory under memory"). The trick: the
@@ -395,8 +396,7 @@
   color: var(--text-muted);
 }
 .proc-groups {
-  max-height: 60vh;
-  overflow-y: auto;
+  overflow: visible;
 }
 .proc-group {
   position: relative;
