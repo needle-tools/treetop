@@ -205,6 +205,12 @@ export const ICONS: Record<string, IconDef> = {
     paths: ["M12 16v-4", "M12 8h.01"],
     circles: [{ cx: 12, cy: 12, r: 10 }],
   },
+  ai: {
+    filled: true,
+    paths: [
+      "M12 1l2.35 8.65L23 12l-8.65 2.35L12 23l-2.35-8.65L1 12l8.65-2.35z",
+    ],
+  },
   user: {
     paths: ["M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"],
     circles: [{ cx: 12, cy: 7, r: 4 }],

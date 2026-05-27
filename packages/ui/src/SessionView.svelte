@@ -216,6 +216,7 @@
    *  reading) don't flicker it off. */
   const PIN_HIDE_DELAY_MS = 300;
   let pinHideTimer: ReturnType<typeof setTimeout> | null = null;
+  let pinOverlayHovered = false;
   function cancelPinHide(): void {
     if (pinHideTimer) {
       clearTimeout(pinHideTimer);
@@ -228,6 +229,7 @@
       if (!pinnedRevealed) pinnedRevealed = true;
       return;
     }
+    if (pinOverlayHovered) return;
     if (!pinnedRevealed || pinHideTimer) return;
     pinHideTimer = setTimeout(() => {
       pinnedRevealed = false;
@@ -242,6 +244,14 @@
     setPinRevealed(yFrac >= 0 && yFrac <= PIN_REVEAL_RATIO);
   }
   function onSessionMouseLeave(): void {
+    setPinRevealed(false);
+  }
+  function onOverlayEnter(): void {
+    pinOverlayHovered = true;
+    cancelPinHide();
+  }
+  function onOverlayLeave(): void {
+    pinOverlayHovered = false;
     setPinRevealed(false);
   }
 
@@ -1365,12 +1375,12 @@
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
     {#if mode === "terminal" && ((summarySnippet || summaryRefreshing) || (lastUserMessage && lastUserMessage.trim().length > 0))}
-      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>
+      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}
+        on:mouseenter={onOverlayEnter} on:mouseleave={onOverlayLeave}>
         {#if summarySnippet || summaryRefreshing}
           <div class="tui-summary-box">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              {#each ICONS.info.paths ?? [] as d}<path {d}/>{/each}
-              {#each ICONS.info.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
+              {#each ICONS.ai.paths ?? [] as d}<path {d}/>{/each}
             </svg>
             <div class="tui-summary-body">
               {#if summaryRefreshing}
@@ -1478,6 +1488,8 @@
           class="pinned-last-msg-wrap tui-overlay-stack"
           class:summary-stack={shouldShowRefresh || summaryRefreshing}
           class:revealed={pinnedRevealed}
+          on:mouseenter={onOverlayEnter}
+          on:mouseleave={onOverlayLeave}
         >
           {#if summarySnippet}
             <button
@@ -1487,9 +1499,8 @@
               style="--summary-max-lines: {summaryMaxLines}"
               on:click={() => openSummarize(source)}
             >
-              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                {#each ICONS.info.paths ?? [] as d}<path {d}/>{/each}
-                {#each ICONS.info.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
+                {#each ICONS.ai.paths ?? [] as d}<path {d}/>{/each}
               </svg>
               <span class="tui-summary-body">{summarySnippet}</span>
             </button>
@@ -1808,6 +1819,7 @@
   }
   .pinned-last-msg-wrap.revealed {
     opacity: 1;
+    pointer-events: auto;
   }
   /* Always-visible Summarize / Refresh chip in read mode — sits in
      the same below-header zone as the pinned-last-msg pill, so the
