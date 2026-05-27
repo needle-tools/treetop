@@ -3665,12 +3665,16 @@
   async function handleCommandClick(
     wtPath: string,
     link: CustomLink,
-    opts: { revealInternalTerminal?: boolean } = {},
+    opts: {
+      revealInternalTerminal?: boolean;
+      runningInternalAction?: "reveal" | "stop";
+    } = {},
   ) {
     if (link.kind !== "command") return;
     const cmdLink = link as { cmd: string; cwd?: string; runMode: string; id: string };
     const isRunning = runningCommandIds.has(link.id);
     const revealInternalTerminal = opts.revealInternalTerminal ?? true;
+    const runningInternalAction = opts.runningInternalAction ?? "reveal";
 
     if (isRunning && cmdLink.runMode === "shell") {
       void fetch("/api/command/stop", {
@@ -3686,7 +3690,7 @@
       if (prev) {
         const alive = await commandTermAlive(prev.source);
         if (alive) {
-          if (isInternalCommandVisible(prev)) {
+          if (runningInternalAction === "stop" || isInternalCommandVisible(prev)) {
             await stopInternalCommand(link.id, prev);
           } else {
             await revealInternalCommand(prev);
@@ -3758,6 +3762,7 @@
       repo.path;
     void handleCommandClick(wtPath, link, {
       revealInternalTerminal: payload.revealTerminal ?? false,
+      runningInternalAction: "stop",
     });
   }
 
