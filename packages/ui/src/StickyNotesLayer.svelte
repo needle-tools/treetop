@@ -40,13 +40,17 @@
      *  at `originRect`, then flies to the pin slot. Empty/absent
      *  means "open the picker so the user can choose". */
     target?: {
-      type: "url" | "commit" | "session" | "file";
+      type: "url" | "commit" | "session" | "file" | "command";
       value: string;
       label?: string;
       subtitle?: string;
       meta?: string;
       agent?: string;
       provider?: string;
+      repoId?: string;
+      cwd?: string;
+      command?: string;
+      runMode?: "internal" | "external" | "shell";
     };
   };
 
@@ -129,6 +133,7 @@
   import { shrinkImageBlob } from "./image-shrink";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
+    LINK_TARGET_DRAG_MIME,
     SESSION_LINK_DRAG_MIME,
     STAGE_PROMPT_EVENT,
     appendInlineAttachmentRef,
@@ -173,6 +178,15 @@
     worktrees?: AnchorableWorktree[];
   }
   export let repos: AnchorableRepo[] = [];
+  export let onCommandLinkOpen:
+    | ((
+        payload: {
+          linkId: string;
+          repoId?: string;
+          wtPath?: string;
+        },
+      ) => void)
+    | null = null;
 
   let notes: NoteShape[] = [];
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
@@ -760,13 +774,17 @@
     kind?: "note" | "link" | "emoji";
     body?: string;
     target?: {
-      type: "url" | "commit" | "session" | "file";
+      type: "url" | "commit" | "session" | "file" | "command";
       value: string;
       label?: string;
       subtitle?: string;
       meta?: string;
       agent?: string;
       provider?: string;
+      repoId?: string;
+      cwd?: string;
+      command?: string;
+      runMode?: "internal" | "external" | "shell";
     };
   }): Promise<void> {
     const kind = args.kind ?? "note";
@@ -842,8 +860,9 @@
     }
   }
 
-  function hasSessionLinkDrag(e: DragEvent): boolean {
-    return Array.from(e.dataTransfer?.types ?? []).includes(SESSION_LINK_DRAG_MIME);
+  function hasLinkTargetDrag(e: DragEvent): boolean {
+    const types = Array.from(e.dataTransfer?.types ?? []);
+    return types.includes(LINK_TARGET_DRAG_MIME) || types.includes(SESSION_LINK_DRAG_MIME);
   }
 
   function imageFileFromTransfer(dt: DataTransfer | null): File | null {
@@ -953,8 +972,10 @@
     if (rowTarget) await createImageAttachmentNote(raw, rowTarget, clientX, clientY);
   }
 
-  function parseSessionLinkDrag(e: DragEvent): NoteShape["target"] | null {
-    const raw = e.dataTransfer?.getData(SESSION_LINK_DRAG_MIME);
+  function parseLinkTargetDrag(e: DragEvent): NoteShape["target"] | null {
+    const raw =
+      e.dataTransfer?.getData(LINK_TARGET_DRAG_MIME) ||
+      e.dataTransfer?.getData(SESSION_LINK_DRAG_MIME);
     if (!raw) return null;
     try {
       const value = JSON.parse(raw) as unknown;
@@ -962,16 +983,32 @@
       const target = (value as { target?: unknown }).target;
       if (!target || typeof target !== "object") return null;
       const obj = target as Record<string, unknown>;
-      if (obj.type !== "session" || typeof obj.value !== "string" || !obj.value) {
+      if (
+        obj.type !== "url" &&
+        obj.type !== "commit" &&
+        obj.type !== "session" &&
+        obj.type !== "file" &&
+        obj.type !== "command"
+      ) {
+        return null;
+      }
+      if (typeof obj.value !== "string" || !obj.value) {
         return null;
       }
       return {
-        type: "session",
+        type: obj.type,
         value: obj.value,
         ...(typeof obj.label === "string" ? { label: obj.label } : {}),
         ...(typeof obj.agent === "string" ? { agent: obj.agent } : {}),
         ...(typeof obj.subtitle === "string" ? { subtitle: obj.subtitle } : {}),
         ...(typeof obj.meta === "string" ? { meta: obj.meta } : {}),
+        ...(typeof obj.provider === "string" ? { provider: obj.provider } : {}),
+        ...(typeof obj.repoId === "string" ? { repoId: obj.repoId } : {}),
+        ...(typeof obj.cwd === "string" ? { cwd: obj.cwd } : {}),
+        ...(typeof obj.command === "string" ? { command: obj.command } : {}),
+        ...(obj.runMode === "internal" || obj.runMode === "external" || obj.runMode === "shell"
+          ? { runMode: obj.runMode }
+          : {}),
       };
     } catch {
       return null;
@@ -986,7 +1023,7 @@
       return;
     }
     if (
-      hasSessionLinkDrag(e) &&
+      hasLinkTargetDrag(e) &&
       (noteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
     ) {
       e.preventDefault();
@@ -1008,27 +1045,27 @@
       return;
     }
     const hasInline = hasInlineAttachmentDrag(e);
-    const hasSession = hasSessionLinkDrag(e);
+    const hasTargetLink = hasLinkTargetDrag(e);
     const image = imageFileFromTransfer(e.dataTransfer);
-    if (!hasInline && !hasSession && !image) return;
+    if (!hasInline && !hasTargetLink && !image) return;
     const payload = hasInline ? parseInlineAttachmentDrag(e) : null;
     const targetNote = noteAtPoint(
       e.clientX,
       e.clientY,
       payload?.sourceNoteId,
     );
-    if (hasSession && targetNote) {
+    if (hasTargetLink && targetNote) {
       e.preventDefault();
-      const target = parseSessionLinkDrag(e);
-      if (target) await appendSessionLinkToNote(targetNote, target);
+      const target = parseLinkTargetDrag(e);
+      if (target) await appendLinkTargetToNote(targetNote, target);
       return;
     }
-    if (hasSession) {
-      const target = parseSessionLinkDrag(e);
+    if (hasTargetLink) {
+      const target = parseLinkTargetDrag(e);
       const rowTarget = dropTargetAt(e.clientX, e.clientY);
       if (target && rowTarget) {
         e.preventDefault();
-        await createSessionLinkNote(target, rowTarget, e.clientX, e.clientY);
+        await createLinkTargetNote(target, rowTarget, e.clientX, e.clientY);
       }
       return;
     }
@@ -1343,7 +1380,7 @@
       id: string;
       body: string;
       target?:
-        | { type: "url" | "commit" | "session" | "file"; value: string }
+        | { type: "url" | "commit" | "session" | "file" | "command"; value: string }
         | null;
       kind?: "note" | "link";
     }>,
@@ -1590,7 +1627,7 @@
     return makeNoteAttachmentRef({ body: note.body });
   }
 
-  async function appendSessionLinkToNote(
+  async function appendLinkTargetToNote(
     note: NoteShape,
     target: NonNullable<NoteShape["target"]>,
   ): Promise<void> {
@@ -1610,7 +1647,7 @@
     } catch {}
   }
 
-  async function createSessionLinkNote(
+  async function createLinkTargetNote(
     target: NonNullable<NoteShape["target"]>,
     rowTarget: { anchor: string; li: HTMLElement },
     clientX: number,
@@ -1643,10 +1680,13 @@
   ): Promise<void> {
     if (note.kind === "emoji") return;
     if (note.kind === "link") {
-      if (note.target?.type !== "session") return;
+      if (note.target?.type !== "session" && note.target?.type !== "command") return;
+      const text = note.target.type === "session"
+        ? `Session: ${note.target.value}`
+        : `Command: ${note.target.command ?? note.target.label ?? note.target.value}`;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {
-          detail: { source: sessionSource, chunks: [`Session: ${note.target.value}`] },
+          detail: { source: sessionSource, chunks: [text] },
         }),
       );
       return;
@@ -2100,6 +2140,7 @@
         removeIfEmpty={!!staging[note.id]}
         flying={!!flyingNotes[note.id]}
         {repos}
+        {onCommandLinkOpen}
         on:move={handleMove}
         on:save={handleSave}
         on:remove={handleRemove}

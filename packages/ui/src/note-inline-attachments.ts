@@ -1,6 +1,8 @@
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 export const INLINE_ATTACHMENT_DRAG_MIME =
   "application/x-supergit-inline-attachment+json";
+export const LINK_TARGET_DRAG_MIME =
+  "application/x-supergit-link-target+json";
 export const SESSION_LINK_DRAG_MIME =
   "application/x-supergit-session-link+json";
 export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
@@ -44,13 +46,17 @@ export interface EmojiInlineAttachment {
 }
 
 export interface InlineLinkTarget {
-  type: "url" | "commit" | "session" | "file";
+  type: "url" | "commit" | "session" | "file" | "command";
   value: string;
   label?: string;
   subtitle?: string;
   meta?: string;
   agent?: string;
   provider?: string;
+  repoId?: string;
+  cwd?: string;
+  command?: string;
+  runMode?: "internal" | "external" | "shell";
 }
 
 export interface LinkInlineAttachment {
@@ -318,6 +324,9 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
     const firstLine = attachment.body.trim().split(/\r?\n/)[0]?.trim();
     return firstLine ? `Note: ${firstLine.slice(0, 40)}` : "Note";
   }
+  if (attachment.target.type === "command") {
+    return attachment.target.label ?? attachment.target.command ?? attachment.target.value;
+  }
   return attachment.target.label ?? attachment.target.value;
 }
 
@@ -481,7 +490,8 @@ function parseLinkTarget(value: unknown): InlineLinkTarget | null {
     obj.type !== "url" &&
     obj.type !== "commit" &&
     obj.type !== "session" &&
-    obj.type !== "file"
+    obj.type !== "file" &&
+    obj.type !== "command"
   ) {
     return null;
   }
@@ -494,6 +504,12 @@ function parseLinkTarget(value: unknown): InlineLinkTarget | null {
     ...(typeof obj.meta === "string" ? { meta: obj.meta } : {}),
     ...(typeof obj.agent === "string" ? { agent: obj.agent } : {}),
     ...(typeof obj.provider === "string" ? { provider: obj.provider } : {}),
+    ...(typeof obj.repoId === "string" ? { repoId: obj.repoId } : {}),
+    ...(typeof obj.cwd === "string" ? { cwd: obj.cwd } : {}),
+    ...(typeof obj.command === "string" ? { command: obj.command } : {}),
+    ...(obj.runMode === "internal" || obj.runMode === "external" || obj.runMode === "shell"
+      ? { runMode: obj.runMode }
+      : {}),
   };
 }
 
@@ -508,6 +524,9 @@ function inlineAttachmentCopyText(attachment: InlineAttachment): string {
     case "link":
       if (attachment.target.type === "session") {
         return `Session: ${attachment.target.value}`;
+      }
+      if (attachment.target.type === "command") {
+        return `Command: ${attachment.target.command ?? attachment.target.label ?? attachment.target.value}`;
       }
       return attachment.target.label ?? attachment.target.value;
   }

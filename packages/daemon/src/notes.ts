@@ -23,7 +23,7 @@ export type AttachmentKind = "note" | "link" | "emoji";
  *  responsible for resolving it (window.open for url, fork/gh URL
  *  build for commit, etc.). */
 export interface LinkTarget {
-  type: "url" | "commit" | "session" | "file";
+  type: "url" | "commit" | "session" | "file" | "command";
   value: string;
   /** Display snapshot captured at pick-time so the chip can render
    *  instantly without re-hitting /api/agents or /api/commits. */
@@ -42,6 +42,13 @@ export interface LinkTarget {
    *  drives the per-provider brand mark on commit chips. Resolved
    *  from the repo's origin remote at pick time. */
   provider?: string;
+  /** Command links point at a repo custom-link id. These snapshot
+   *  fields let the UI render and re-run the command without resolving
+   *  a separate command-specific storage model. */
+  repoId?: string;
+  cwd?: string;
+  command?: string;
+  runMode?: "internal" | "external" | "shell";
 }
 
 export interface Note {
@@ -124,7 +131,13 @@ export function parseNoteFile(raw: string): Note {
   const tValue = fm.scalars.get("targetValue");
   if (
     tValue !== undefined &&
-    (tType === "url" || tType === "commit" || tType === "session" || tType === "file")
+    (
+      tType === "url" ||
+      tType === "commit" ||
+      tType === "session" ||
+      tType === "file" ||
+      tType === "command"
+    )
   ) {
     const target: LinkTarget = { type: tType, value: tValue };
     // Display-snapshot fields are optional — older link files (and
@@ -135,11 +148,21 @@ export function parseNoteFile(raw: string): Note {
     const tMeta = fm.scalars.get("targetMeta");
     const tAgent = fm.scalars.get("targetAgent");
     const tProvider = fm.scalars.get("targetProvider");
+    const tRepoId = fm.scalars.get("targetRepoId");
+    const tCwd = fm.scalars.get("targetCwd");
+    const tCommand = fm.scalars.get("targetCommand");
+    const tRunMode = fm.scalars.get("targetRunMode");
     if (tLabel !== undefined) target.label = tLabel;
     if (tSubtitle !== undefined) target.subtitle = tSubtitle;
     if (tMeta !== undefined) target.meta = tMeta;
     if (tAgent !== undefined) target.agent = tAgent;
     if (tProvider !== undefined) target.provider = tProvider;
+    if (tRepoId !== undefined) target.repoId = tRepoId;
+    if (tCwd !== undefined) target.cwd = tCwd;
+    if (tCommand !== undefined) target.command = tCommand;
+    if (tRunMode === "internal" || tRunMode === "external" || tRunMode === "shell") {
+      target.runMode = tRunMode;
+    }
     note.target = target;
   }
   return note;
@@ -241,6 +264,18 @@ export function serializeNoteFile(note: Note): string {
     }
     if (note.target.provider !== undefined) {
       out.push(`targetProvider: ${safe(note.target.provider)}`);
+    }
+    if (note.target.repoId !== undefined) {
+      out.push(`targetRepoId: ${safe(note.target.repoId)}`);
+    }
+    if (note.target.cwd !== undefined) {
+      out.push(`targetCwd: ${safe(note.target.cwd)}`);
+    }
+    if (note.target.command !== undefined) {
+      out.push(`targetCommand: ${safe(note.target.command)}`);
+    }
+    if (note.target.runMode !== undefined) {
+      out.push(`targetRunMode: ${safe(note.target.runMode)}`);
     }
   }
   out.push("---");

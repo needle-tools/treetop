@@ -16,7 +16,7 @@ export type ProviderId = "sessions" | "commits";
  *  (see daemon's LinkTarget). The picker maps each PickItem onto one
  *  of these so the link-kind StickyNote can render the right icon /
  *  open the right opener without knowing about providers. */
-export type TargetType = "session" | "commit" | "url" | "file";
+export type TargetType = "session" | "commit" | "url" | "file" | "command";
 
 /** Search scope: what the picker should look at. `currentRepoPath`
  *  filters sessions / commits to the repo the note is anchored to;

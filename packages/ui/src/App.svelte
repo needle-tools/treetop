@@ -58,7 +58,7 @@
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
   import { relativeAge } from "./mention-providers";
-  import { SESSION_LINK_DRAG_MIME } from "./note-inline-attachments";
+  import { LINK_TARGET_DRAG_MIME, SESSION_LINK_DRAG_MIME } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
   import {
     OpenSessionsStore,
@@ -2380,11 +2380,15 @@
   ): void {
     dragSource = { wtPath, index };
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.effectAllowed = "copyMove";
       // Must set some data for Firefox to honour the drag.
       e.dataTransfer.setData("text/plain", `${wtPath}|${index}`);
       const target = sessionDragLinkTarget(wtPath, index);
       if (target) {
+        e.dataTransfer.setData(
+          LINK_TARGET_DRAG_MIME,
+          JSON.stringify({ target }),
+        );
         e.dataTransfer.setData(
           SESSION_LINK_DRAG_MIME,
           JSON.stringify({ target }),
@@ -3695,6 +3699,27 @@
     }
   }
 
+  function handleCommandLinkOpen(payload: {
+    linkId: string;
+    repoId?: string;
+    wtPath?: string;
+  }): void {
+    const repo = payload.repoId
+      ? repos.find((r) => r.id === payload.repoId)
+      : repos.find((r) => (r.customLinks ?? []).some((l) => l.id === payload.linkId));
+    const link = repo?.customLinks?.find((l) => l.id === payload.linkId);
+    if (!repo || !link || link.kind !== "command") {
+      addToast({ kind: "error", message: "Command reference no longer exists" });
+      return;
+    }
+    const wtPath =
+      payload.wtPath ||
+      repo.worktrees.find((wt) => !wt.nonGit)?.path ||
+      repo.worktrees[0]?.path ||
+      repo.path;
+    void handleCommandClick(wtPath, link);
+  }
+
   async function removeRepo(id: string) {
     error = "";
     pendingRemoval.add(id);
@@ -4195,6 +4220,8 @@
         return "▶";
       case "file":
         return "▤";
+      case "command":
+        return "⌁";
       default:
         return "";
     }
@@ -4213,6 +4240,7 @@
       label?: string;
       agent?: string;
       provider?: string;
+      command?: string;
     };
   }): {
     kind: "note" | "link";
@@ -4226,7 +4254,7 @@
     const excerpt = noteExcerpt(n.body);
     if (kind === "link") {
       const t = n.target ?? {};
-      const text = (excerpt || t.label || t.value || "").trim();
+      const text = (excerpt || t.label || t.command || t.value || "").trim();
       const title = [t.label, t.value, n.body].filter((s) => !!s).join("\n");
       return {
         kind,
@@ -7706,7 +7734,11 @@
   }}
 />
 
-<StickyNotesLayer changeKey={notesChangeKey} {repos} />
+<StickyNotesLayer
+  changeKey={notesChangeKey}
+  {repos}
+  onCommandLinkOpen={handleCommandLinkOpen}
+/>
 
 <ConfirmDialog />
 <SummarizeDialog />

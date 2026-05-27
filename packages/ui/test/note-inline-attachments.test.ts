@@ -137,6 +137,39 @@ describe("note inline attachments", () => {
     }
   });
 
+  test("round-trips command link attachment references", () => {
+    const ref = makeLinkAttachmentRef({
+      target: {
+        type: "command",
+        value: "cmd-1",
+        label: "build:launch",
+        repoId: "repo-a",
+        cwd: "/tmp/project",
+        command: "npm run build:launch",
+        runMode: "internal",
+      },
+    });
+    const parts = parseInlineAttachments(ref);
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.kind).toBe("attachment");
+    if (parts[0]?.kind === "attachment") {
+      expect(parts[0].attachment).toEqual({
+        kind: "link",
+        target: {
+          type: "command",
+          value: "cmd-1",
+          label: "build:launch",
+          repoId: "repo-a",
+          cwd: "/tmp/project",
+          command: "npm run build:launch",
+          runMode: "internal",
+        },
+      });
+      expect(inlineAttachmentLabel(parts[0].attachment)).toBe("build:launch");
+    }
+  });
+
   test("copy expansion restores hidden paste payloads and image paths", () => {
     const paste = makeTextAttachmentRef({
       path: "/tmp/paste.txt",

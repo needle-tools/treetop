@@ -288,6 +288,36 @@ describe("NotesStore", () => {
     expect(round?.target?.meta).toBe("2d");
   });
 
+  test("preserves command link target fields on round-trip", async () => {
+    const path = await tempDir();
+    const a = await NotesStore.open(path);
+    const created = await a.create({
+      body: "",
+      kind: "link",
+      target: {
+        type: "command",
+        value: "cmd-build-launch",
+        label: "build:launch",
+        repoId: "repo-1",
+        cwd: "/tmp/project",
+        command: "npm run build:launch",
+        runMode: "internal",
+      },
+    });
+
+    const b = await NotesStore.open(path);
+    const round = await b.get(created.id);
+    expect(round?.target).toEqual({
+      type: "command",
+      value: "cmd-build-launch",
+      label: "build:launch",
+      repoId: "repo-1",
+      cwd: "/tmp/project",
+      command: "npm run build:launch",
+      runMode: "internal",
+    });
+  });
+
   test("survives newlines in snapshot fields (collapses to space)", async () => {
     const store = await NotesStore.open(await tempDir());
     const created = await store.create({

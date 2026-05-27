@@ -21,12 +21,15 @@
     : attachment.kind === "text"
       ? attachment.source?.types?.join(", ") ?? ""
       : attachment.kind === "link"
-        ? attachment.target.type
+        ? attachment.target.type === "command"
+          ? attachment.target.runMode ?? "command"
+          : attachment.target.type
         : "";
   $: glyph = attachment.kind === "text" ? "T"
     : attachment.kind === "image" ? "▤"
     : attachment.kind === "emoji" ? "☺"
     : attachment.kind === "note" ? "✎"
+    : attachment.kind === "link" && attachment.target.type === "command" ? "⌁"
     : "↗";
 </script>
 

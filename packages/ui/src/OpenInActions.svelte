@@ -65,6 +65,7 @@
   import { flip } from "svelte/animate";
   import { openUrl } from "./open-url";
   import { filterNpmSuggestions, npmScriptsPlaceholder } from "./npm-suggestions";
+  import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
 
   export let path: string;
   export let repoId: string = "";
@@ -798,15 +799,45 @@
     return onReorderCustomLinks !== null && !iconOnly && customLinks.length > 1;
   }
 
+  function canDragOut(link: CustomLink): boolean {
+    return customLinkKind(link) === "command" && repoId.length > 0;
+  }
+
+  function canDragLink(link: CustomLink): boolean {
+    return canReorder() || canDragOut(link);
+  }
+
   function startDrag(link: CustomLink, ev: DragEvent) {
-    if (!canReorder() || !ev.dataTransfer) return;
-    dragId = link.id;
-    localOrder = [...customLinks];
-    ev.dataTransfer.effectAllowed = "move";
+    if (!ev.dataTransfer || !canDragLink(link)) return;
+    const reorder = canReorder();
+    if (reorder) {
+      dragId = link.id;
+      localOrder = [...customLinks];
+    }
+    ev.dataTransfer.effectAllowed =
+      reorder && canDragOut(link) ? "copyMove" : reorder ? "move" : "copy";
     // Safari refuses to fire `dragover` unless dataTransfer carries
     // at least one payload — set a noop text/plain so cross-browser
     // drop targets activate.
     try { ev.dataTransfer.setData("text/plain", link.id); } catch { /* IE-only quirk */ }
+    if (canDragOut(link) && link.kind === "command") {
+      ev.dataTransfer.setData(
+        LINK_TARGET_DRAG_MIME,
+        JSON.stringify({
+          target: {
+            type: "command",
+            value: link.id,
+            label: linkLabel(link),
+            subtitle: link.runMode,
+            meta: "command",
+            repoId,
+            cwd: link.cwd || path,
+            command: link.cmd,
+            runMode: link.runMode,
+          },
+        }),
+      );
+    }
   }
 
   function onDragOverLink(target: CustomLink, ev: DragEvent) {
@@ -1163,11 +1194,12 @@
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
-      class:draggable={canReorder()}
+      class:draggable={canDragLink(link)}
       class:dragging={dragId === link.id}
       class:editing={editingLinkId === link.id}
       use:bindEditAnchor={link.id}
-      draggable={canReorder()}
+      role="group"
+      draggable={canDragLink(link)}
       animate:flip={{ duration: 220 }}
       on:dragstart={(ev) => startDrag(link, ev)}
       on:dragover={(ev) => onDragOverLink(link, ev)}

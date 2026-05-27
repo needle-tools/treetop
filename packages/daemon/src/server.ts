@@ -584,7 +584,8 @@ function parseTarget(v: unknown): LinkTarget | undefined {
     obj.type === "url" ||
     obj.type === "commit" ||
     obj.type === "session" ||
-    obj.type === "file"
+    obj.type === "file" ||
+    obj.type === "command"
   ) {
     const target: LinkTarget = { type: obj.type, value: obj.value };
     // Display-snapshot fields are pass-through with a string + length
@@ -606,6 +607,22 @@ function parseTarget(v: unknown): LinkTarget | undefined {
     if (typeof (obj as { provider?: unknown }).provider === "string"
         && ((obj as { provider: string }).provider).length > 0) {
       target.provider = (obj as { provider: string }).provider;
+    }
+    if (typeof (obj as { repoId?: unknown }).repoId === "string"
+        && ((obj as { repoId: string }).repoId).length > 0) {
+      target.repoId = (obj as { repoId: string }).repoId;
+    }
+    if (typeof (obj as { cwd?: unknown }).cwd === "string"
+        && ((obj as { cwd: string }).cwd).length > 0) {
+      target.cwd = (obj as { cwd: string }).cwd;
+    }
+    if (typeof (obj as { command?: unknown }).command === "string"
+        && ((obj as { command: string }).command).length > 0) {
+      target.command = (obj as { command: string }).command;
+    }
+    const runMode = (obj as { runMode?: unknown }).runMode;
+    if (runMode === "internal" || runMode === "external" || runMode === "shell") {
+      target.runMode = runMode;
     }
     return target;
   }

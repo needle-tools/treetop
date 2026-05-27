@@ -7,7 +7,7 @@
    *  to a sibling component. */
   export type AttachmentKind = "note" | "link" | "emoji";
   export interface LinkTarget {
-    type: "url" | "commit" | "session" | "file";
+    type: "url" | "commit" | "session" | "file" | "command";
     value: string;
     /** Display snapshot captured at pick-time so the chip renders
      *  instantly without re-hitting /api/agents or /api/commits.
@@ -20,6 +20,12 @@
     /** Git remote provider ("github", "gitlab", ...) — chip icon for
      *  commit targets. */
     provider?: string;
+    /** Command targets reuse the link-card path; value is the
+     *  custom-link id, with these fields captured for display/run. */
+    repoId?: string;
+    cwd?: string;
+    command?: string;
+    runMode?: "internal" | "external" | "shell";
   }
   export interface NoteShape {
     id: string;
@@ -154,7 +160,7 @@
       const slash = rest.indexOf("/");
       if (slash < 0) return null;
       const type = rest.slice(0, slash) as LinkTarget["type"];
-      if (!["url", "commit", "session", "file"].includes(type)) return null;
+      if (!["url", "commit", "session", "file", "command"].includes(type)) return null;
       let value = decodeURIComponent(rest.slice(slash + 1));
       if (type === "session") {
         const id = value;
@@ -244,6 +250,15 @@
    *  all anchorable rows. Threaded down from the StickyNotesLayer's
    *  `repos` prop. */
   export let repos: AnchorableRepo[] = [];
+  export let onCommandLinkOpen:
+    | ((
+        payload: {
+          linkId: string;
+          repoId?: string;
+          wtPath?: string;
+        },
+      ) => void)
+    | null = null;
 
   const dispatch = createEventDispatcher<{
     move: { id: string; x: number; y: number };
@@ -324,6 +339,16 @@
       requestSessionFocus(t.value);
       return;
     }
+    if (t.type === "command") {
+      const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
+      const wtPath = t.cwd || wtAnchor?.slice("worktree:".length);
+      onCommandLinkOpen?.({
+        linkId: t.value,
+        ...(t.repoId ? { repoId: t.repoId } : {}),
+        ...(wtPath ? { wtPath } : {}),
+      });
+      return;
+    }
     // file: TODO — `/api/open` with the resolved absolute path.
   }
 
@@ -365,6 +390,7 @@
       }
     }
     if (t.type === "commit") return t.value.slice(0, 7);
+    if (t.type === "command") return t.label ?? t.command ?? t.value;
     if (t.type === "file") {
       const parts = t.value.split("/");
       return parts[parts.length - 1] || t.value;
@@ -387,6 +413,8 @@
         return "▶";
       case "file":
         return "▤";
+      case "command":
+        return "⌁";
     }
   }
 
@@ -1836,11 +1864,21 @@
       const found = findSessionAgent(attachment.target.value);
       if (found) return sessionDisplayTitle(found);
     }
+    if (attachment.target.type === "command") {
+      return attachment.target.label ?? attachment.target.command ?? attachment.target.value;
+    }
     return attachment.target.label ?? displayLabel(attachment.target);
   }
 
   function linkAttachmentMeta(attachment: InlineAttachment): string {
     if (attachment.kind !== "link") return "";
+    if (attachment.target.type === "command") {
+      const parts = [
+        attachment.target.runMode,
+        attachment.target.cwd ? attachment.target.cwd.split("/").pop() : undefined,
+      ].filter(Boolean);
+      return parts.length ? parts.join(" · ") : "command";
+    }
     const parts = [attachment.target.meta, attachment.target.subtitle].filter(Boolean);
     return parts.length ? parts.join(" · ") : attachment.target.type;
   }

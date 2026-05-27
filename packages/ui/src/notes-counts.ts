@@ -1,13 +1,17 @@
 import { writable } from "svelte/store";
 
 export interface NoteLinkTargetShape {
-  type: "url" | "commit" | "session" | "file";
+  type: "url" | "commit" | "session" | "file" | "command";
   value: string;
   label?: string;
   subtitle?: string;
   meta?: string;
   agent?: string;
   provider?: string;
+  repoId?: string;
+  cwd?: string;
+  command?: string;
+  runMode?: "internal" | "external" | "shell";
 }
 
 export interface NoteShape {
