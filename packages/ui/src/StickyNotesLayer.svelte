@@ -525,6 +525,20 @@
       const note = notes.find((n) => n.id === id);
       if (note) return note;
     }
+    for (const sticky of document.querySelectorAll<HTMLElement>(".sticky[data-note-id]")) {
+      const id = sticky.dataset.noteId;
+      if (!id || id === excludeId) continue;
+      const r = sticky.getBoundingClientRect();
+      if (
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= r.bottom
+      ) {
+        const note = notes.find((n) => n.id === id);
+        if (note) return note;
+      }
+    }
     return null;
   }
 
@@ -1328,6 +1342,7 @@
 
   function onWindowDoubleClick(e: MouseEvent): void {
     if (!isEmptyNoteCreationTarget(e.target)) return;
+    if (noteAtPoint(e.clientX, e.clientY)) return;
     const target = noteCreationTargetAtPoint(e.clientX, e.clientY);
     if (!target) return;
     e.preventDefault();
