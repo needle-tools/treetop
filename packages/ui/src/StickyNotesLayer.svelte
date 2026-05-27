@@ -244,6 +244,7 @@
     docX: number;
     docY: number;
     anchor: string;
+    keepAtOrigin?: boolean;
   }
   let staging: Record<string, Staging> = {};
   /** Notes mid-fly (staging → pinned). Position is driven by a rAF
@@ -461,6 +462,55 @@
     if (!best) return null;
     const anchor = anchorFromRow(best.li);
     return anchor ? { anchor, li: best.li } : null;
+  }
+
+  function noteCreationTargetAtPoint(
+    clientX: number,
+    clientY: number,
+  ): { anchor: string; li: HTMLElement } | null {
+    const rows = visibleWorktreeRows()
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    for (let i = 0; i < rows.length; i++) {
+      const li = rows[i]!;
+      const r = li.getBoundingClientRect();
+      const nextTop = rows[i + 1]?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
+      const ownedBottom = Math.max(
+        r.bottom + (parseFloat(li.style.marginBottom || "0") || 0),
+        Math.min(nextTop, r.bottom + 24),
+      );
+      if (
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.bottom &&
+        clientY <= ownedBottom
+      ) {
+        const anchor = anchorFromRow(li);
+        if (anchor) return { anchor, li };
+      }
+    }
+    return null;
+  }
+
+  function isEmptyNoteCreationTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return !target.closest(
+      [
+        ".sticky",
+        ".session-col",
+        ".terminal-wrap",
+        ".xterm-host",
+        ".attachment-media-scrim",
+        "[data-note-attachment-zone]",
+        "[data-inline-attachment-raw]",
+        "button",
+        "a",
+        "input",
+        "textarea",
+        "select",
+        "[contenteditable='true']",
+        "[role='button']",
+      ].join(", "),
+    );
   }
 
   function noteAtPoint(clientX: number, clientY: number, excludeId?: string): NoteShape | null {
@@ -899,6 +949,42 @@
     } catch {}
   }
 
+  async function createNoteAtPoint(
+    target: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: "",
+          anchors: [target.anchor],
+          tags: [],
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as NoteShape;
+      setDroppedOffset(created.id, target.li, clientX, clientY);
+      staging = {
+        ...staging,
+        [created.id]: {
+          docX: clientX + window.scrollX - NOTE_W / 2,
+          docY: clientY + window.scrollY - 28,
+          anchor: target.anchor,
+          keepAtOrigin: true,
+        },
+      };
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      editingId = created.id;
+      tick++;
+      await svelteTick();
+      editingId = null;
+    } catch {}
+  }
+
   interface InlineAttachmentDragPayload {
     sourceNoteId: string;
     raw: string;
@@ -1228,6 +1314,15 @@
     if (e.relatedTarget === null) resetAttachmentDrag();
   }
 
+  function onWindowDoubleClick(e: MouseEvent): void {
+    if (!isEmptyNoteCreationTarget(e.target)) return;
+    const target = noteCreationTargetAtPoint(e.clientX, e.clientY);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void createNoteAtPoint(target, e.clientX, e.clientY);
+  }
+
   function onWindowPaste(e: ClipboardEvent): void {
     if (
       e.defaultPrevented ||
@@ -1419,6 +1514,12 @@
   async function flyStagedToPin(id: string): Promise<void> {
     const st = staging[id];
     if (!st) return;
+    if (st.keepAtOrigin) {
+      const next = { ...staging };
+      delete next[id];
+      staging = next;
+      return;
+    }
     const offsetXFrac = findBestOffsetXFrac(st.anchor, id);
     const prev = offsets[id] ?? {};
     offsets = { ...offsets, [id]: { ...prev, offsetXFrac } };
@@ -1585,17 +1686,6 @@
     const note = notes.find((n) => n.id === id);
     if (!note) return;
     const isStaging = !!staging[id];
-    // Play the shrink+fade first (the .removing class on the host
-    // triggers a ~300ms transform/opacity transition) — only then do
-    // we hit the server and splice the note out of the array. Doing
-    // it the other way would unmount the StickyNote before the
-    // animation could even begin.
-    removingIds = new Set([...removingIds, id]);
-    await new Promise((r) => setTimeout(r, 320));
-    // Staged-and-empty: the user opened the "+" affordance and walked
-    // away without typing. Same fade-out, but no undo toast — the 3s
-    // grace already gave them a chance to back out, and the empty
-    // note isn't worth a recovery affordance.
     if (isStaging) {
       try {
         await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -1604,11 +1694,15 @@
       const next = { ...staging };
       delete next[id];
       staging = next;
-      const nextRemoving = new Set(removingIds);
-      nextRemoving.delete(id);
-      removingIds = nextRemoving;
       return;
     }
+    // Play the shrink+fade first (the .removing class on the host
+    // triggers a ~300ms transform/opacity transition) — only then do
+    // we hit the server and splice the note out of the array. Doing
+    // it the other way would unmount the StickyNote before the
+    // animation could even begin.
+    removingIds = new Set([...removingIds, id]);
+    await new Promise((r) => setTimeout(r, 320));
     try {
       const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, {
         method: "DELETE",
@@ -2276,6 +2370,7 @@
     window.addEventListener("dragend", onWindowDragEnd);
     window.addEventListener("dragleave", onWindowDragLeave);
     window.addEventListener("drop", onWindowDropEvent);
+    window.addEventListener("dblclick", onWindowDoubleClick);
     window.addEventListener("paste", onWindowPaste);
 
     // MutationObserver picks up row add/remove, fold/unfold, picker
@@ -2316,6 +2411,7 @@
     window.removeEventListener("dragend", onWindowDragEnd);
     window.removeEventListener("dragleave", onWindowDragLeave);
     window.removeEventListener("drop", onWindowDropEvent);
+    window.removeEventListener("dblclick", onWindowDoubleClick);
     window.removeEventListener("paste", onWindowPaste);
     mutationObs?.disconnect();
     resizeObs?.disconnect();
