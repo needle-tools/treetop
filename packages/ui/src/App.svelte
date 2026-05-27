@@ -221,6 +221,7 @@
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
   let commandUrls: Record<string, string[]> = {};
+  let commandEditRequest: { repoId: string; linkId: string; nonce: number } | null = null;
   /** Shells (Terminal columns the daemon is hosting / has hosted). Used
    *  by the worktree session picker so past + live shells appear next
    *  to Claude/Codex agent sessions instead of hiding under a separate
@@ -3755,6 +3756,25 @@
     });
   }
 
+  function handleCommandLinkEdit(payload: {
+    linkId: string;
+    repoId?: string;
+  }): void {
+    const repo = payload.repoId
+      ? repos.find((r) => r.id === payload.repoId)
+      : repos.find((r) => (r.customLinks ?? []).some((l) => l.id === payload.linkId));
+    const link = repo?.customLinks?.find((l) => l.id === payload.linkId);
+    if (!repo || !link || link.kind !== "command") {
+      addToast({ kind: "error", message: "Command reference no longer exists" });
+      return;
+    }
+    commandEditRequest = {
+      repoId: repo.id,
+      linkId: link.id,
+      nonce: Date.now(),
+    };
+  }
+
   async function removeRepo(id: string) {
     error = "";
     pendingRemoval.add(id);
@@ -6934,6 +6954,7 @@
                 remotes={repo.remotes ?? []}
                 customLinks={repo.customLinks ?? []}
                 {runningCommandIds}
+                editRequest={commandEditRequest}
                 onCommandClick={(l) => handleCommandClick(wt.path, l)}
                 {commandUrls}
                 {openIn}
@@ -7017,6 +7038,7 @@
                 remotes={repo.remotes ?? []}
                 customLinks={repo.customLinks ?? []}
                 {runningCommandIds}
+                editRequest={commandEditRequest}
                 onCommandClick={(l) => handleCommandClick(wt.path, l)}
                 {commandUrls}
                 {openIn}
@@ -7773,6 +7795,7 @@
   changeKey={notesChangeKey}
   {repos}
   onCommandLinkOpen={handleCommandLinkOpen}
+  onCommandLinkEdit={handleCommandLinkEdit}
   {runningCommandIds}
 />
 

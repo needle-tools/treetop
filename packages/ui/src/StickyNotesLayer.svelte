@@ -176,6 +176,11 @@
     name?: string;
     path: string;
     worktrees?: AnchorableWorktree[];
+    customLinks?: Array<{
+      id: string;
+      kind?: string;
+      cmd?: string;
+    }>;
   }
   export let repos: AnchorableRepo[] = [];
   export let onCommandLinkOpen:
@@ -185,6 +190,14 @@
           repoId?: string;
           wtPath?: string;
           revealTerminal?: boolean;
+        },
+      ) => void)
+    | null = null;
+  export let onCommandLinkEdit:
+    | ((
+        payload: {
+          linkId: string;
+          repoId?: string;
         },
       ) => void)
     | null = null;
@@ -2261,6 +2274,7 @@
         flying={!!flyingNotes[note.id]}
         {repos}
         {onCommandLinkOpen}
+        {onCommandLinkEdit}
         {runningCommandIds}
         on:move={handleMove}
         on:save={handleSave}

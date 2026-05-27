@@ -3,6 +3,7 @@ import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
   commandPowerLabel,
+  commandRunText,
   countTextLines,
   expandNoteBodyForTerminalPasteChunks,
   expandNoteBodyForCopyAsync,
@@ -230,6 +231,15 @@ describe("note inline attachments", () => {
       command: "bun run scripts/build-launch.ts",
       label: "Relaunch",
     })).toBe("Relaunch");
+  });
+
+  test("copies command references as the runnable command text", () => {
+    expect(commandRunText({
+      type: "command",
+      value: "cmd-1",
+      label: "Relaunch",
+      command: "npm run build:launch",
+    })).toBe("npm run build:launch");
   });
 
   test("copy expansion restores hidden paste payloads and image paths", () => {

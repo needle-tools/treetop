@@ -74,6 +74,9 @@
   export let customLinks: CustomLink[] = [];
   export let runningCommandIds: ReadonlySet<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  export let editRequest:
+    | { repoId: string; linkId: string; nonce: number }
+    | null = null;
   export let onCommandClick: ((link: CustomLink) => void) | null = null;
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
@@ -270,6 +273,7 @@
   let editError = "";
   let editUrlInput: HTMLInputElement | undefined;
   const editAnchorEls = new Map<string, HTMLElement>();
+  let handledEditRequestNonce = -1;
 
   /** Svelte action: registers the chip-wrap element in
    *  `editAnchorEls` under its link id so the outside-click handler
@@ -321,6 +325,18 @@
     editName = link.name ?? "";
     editError = "";
     setTimeout(() => editUrlInput?.focus(), 0);
+  }
+
+  $: if (
+    editRequest &&
+    editRequest.nonce !== handledEditRequestNonce &&
+    editRequest.repoId === repoId
+  ) {
+    const requestedLink = customLinks.find((link) => link.id === editRequest?.linkId);
+    if (requestedLink) {
+      handledEditRequestNonce = editRequest.nonce;
+      openEdit(requestedLink);
+    }
   }
 
   function closeEdit() {

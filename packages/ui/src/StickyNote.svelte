@@ -69,6 +69,7 @@
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
     commandPowerLabel,
+    commandRunText,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
@@ -230,6 +231,11 @@
     name?: string;
     path: string;
     worktrees?: AnchorableWorktree[];
+    customLinks?: Array<{
+      id: string;
+      kind?: string;
+      cmd?: string;
+    }>;
   }
 
   export let note: NoteShape;
@@ -264,6 +270,14 @@
           repoId?: string;
           wtPath?: string;
           revealTerminal?: boolean;
+        },
+      ) => void)
+    | null = null;
+  export let onCommandLinkEdit:
+    | ((
+        payload: {
+          linkId: string;
+          repoId?: string;
         },
       ) => void)
     | null = null;
@@ -1109,6 +1123,17 @@
   }
 
   async function copyNote(): Promise<void> {
+    if (note.kind === "link" && note.target?.type === "command") {
+      try {
+        await navigator.clipboard.writeText(liveCommandRunText(note.target));
+        copied = true;
+        if (copiedTimer) clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => (copied = false), 1200);
+      } catch (err) {
+        console.warn("Could not copy command", err);
+      }
+      return;
+    }
     await copyNoteBody(note.body, note.id);
   }
 
@@ -1262,9 +1287,7 @@
       return Promise.resolve(`Session: ${attachment.target.value}`);
     }
     if (attachment.target.type === "command") {
-      return Promise.resolve(
-        `Command: ${attachment.target.command ?? attachment.target.label ?? attachment.target.value}`,
-      );
+      return Promise.resolve(liveCommandRunText(attachment.target));
     }
     return Promise.resolve(attachment.target.label ?? attachment.target.value);
   }
@@ -1289,6 +1312,10 @@
     }
     if (attachment.kind === "text") {
       queueMicrotask(() => attachmentTextareaEl?.focus());
+      return;
+    }
+    if (isCommandAttachment(attachment)) {
+      editCommandTarget(attachment.target);
       return;
     }
     closeInlineAttachment();
@@ -2016,6 +2043,25 @@
     return attachment.kind === "link" && attachment.target.type === "command";
   }
 
+  function liveCommandRunText(target: LinkTarget): string {
+    if (target.type !== "command") return target.value;
+    const repo = target.repoId
+      ? repos.find((r) => r.id === target.repoId)
+      : repos.find((r) => (r.customLinks ?? []).some((link) => link.id === target.value));
+    const link = repo?.customLinks?.find((candidate) => candidate.id === target.value);
+    if (link?.kind === "command" && link.cmd?.trim()) return link.cmd.trim();
+    return commandRunText(target);
+  }
+
+  function editCommandTarget(target: LinkTarget): void {
+    if (target.type !== "command") return;
+    closeInlineAttachment();
+    onCommandLinkEdit?.({
+      linkId: target.value,
+      ...(target.repoId ? { repoId: target.repoId } : {}),
+    });
+  }
+
   function activateAttachment(raw: string, attachment: InlineAttachment): void {
     if (isCommandAttachment(attachment)) {
       openTarget(attachment.target);
@@ -2310,7 +2356,12 @@
   on:drop={onNoteDrop}
   on:dragleave={onNoteDragLeave}
   on:dblclick={() => {
-    if (!editing && !isEmoji) startEdit();
+    if (editing || isEmoji) return;
+    if (note.kind === "link" && note.target?.type === "command") {
+      editCommandTarget(note.target);
+      return;
+    }
+    startEdit();
   }}
 >
   <header
@@ -2345,15 +2396,31 @@
           <button
             class="sticky-btn"
             on:click={() => void copyNote()}
-            title={copied ? "Copied" : "Copy note for pasting into a session"}
-            aria-label="Copy note"
+            title={copied
+              ? "Copied"
+              : note.kind === "link" && note.target?.type === "command"
+                ? "Copy command"
+                : "Copy note for pasting into a session"}
+            aria-label={note.kind === "link" && note.target?.type === "command"
+              ? "Copy command"
+              : "Copy note"}
           >{copied ? "✓" : "⧉"}</button>
         {/if}
         <button
           class="sticky-btn"
-          on:click={startEdit}
-          title="Edit"
-          aria-label="Edit"
+          on:click={() => {
+            if (note.kind === "link" && note.target?.type === "command") {
+              editCommandTarget(note.target);
+              return;
+            }
+            startEdit();
+          }}
+          title={note.kind === "link" && note.target?.type === "command"
+            ? "Edit command in toolbar"
+            : "Edit"}
+          aria-label={note.kind === "link" && note.target?.type === "command"
+            ? "Edit command in toolbar"
+            : "Edit"}
         >✎</button>
         <button
           class="sticky-btn danger"
@@ -2630,15 +2697,25 @@
               <button
                 type="button"
                 class="sticky-btn tiny"
-                title={copied ? "Copied" : "Copy attachment"}
-                aria-label="Copy attachment"
+                title={copied
+                  ? "Copied"
+                  : isCommandAttachment(openPart.attachment)
+                    ? "Copy command"
+                    : "Copy attachment"}
+                aria-label={isCommandAttachment(openPart.attachment)
+                  ? "Copy command"
+                  : "Copy attachment"}
                 on:click={() => void copyOpenAttachment(openPart.attachment)}
               >{copied ? "✓" : "⧉"}</button>
               <button
                 type="button"
                 class="sticky-btn tiny"
-                title="Edit attachment"
-                aria-label="Edit attachment"
+                title={isCommandAttachment(openPart.attachment)
+                  ? "Edit command in toolbar"
+                  : "Edit attachment"}
+                aria-label={isCommandAttachment(openPart.attachment)
+                  ? "Edit command in toolbar"
+                  : "Edit attachment"}
                 on:click={() => editOpenAttachment(openPart.raw, openPart.attachment)}
               >✎</button>
               <button

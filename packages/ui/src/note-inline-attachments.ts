@@ -173,6 +173,10 @@ export function commandPowerLabel(target: InlineLinkTarget): string {
   return parts.slice(0, 2).join(" ") || "command";
 }
 
+export function commandRunText(target: InlineLinkTarget): string {
+  return target.command?.trim() || target.label?.trim() || target.value;
+}
+
 export function humanAttachmentBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
