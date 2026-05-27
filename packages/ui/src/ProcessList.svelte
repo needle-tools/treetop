@@ -72,6 +72,7 @@
   let collapsed: Record<string, boolean> = {};
   let closing: Record<string, boolean> = {};
   let pendingKill: Record<string, boolean> = {};
+  let showExternal = true;
 
   const TUI_HOT_MEM_FRACTION = 0.5;
   const TUI_WARM_MEM_FRACTION = 0.3;
@@ -107,7 +108,8 @@
           p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT,
       ));
 
-  $: grouped = groupByRepo(procs);
+  $: visibleProcs = showExternal ? procs : procs.filter((p) => p.kind !== "external");
+  $: grouped = groupByRepo(visibleProcs);
 
   function groupByRepo(list: TuiProc[]): RepoGroup[] {
     const map = new Map<string, RepoGroup>();
@@ -128,6 +130,18 @@
       group.totalCpu += p.cpuPercent;
       group.totalMem += p.memBytes;
       group.procs.push({ ...p, ctx });
+    }
+    for (const repo of repos) {
+      const name = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+      if (!map.has(name)) {
+        map.set(name, {
+          repoName: name,
+          repoColor: repo.color ?? null,
+          totalCpu: 0,
+          totalMem: 0,
+          procs: [],
+        });
+      }
     }
     return [...map.values()];
   }
@@ -335,8 +349,15 @@
   {#if open}
     <Popover variant="actions" extraClass="tuis-popover">
       <svelte:fragment slot="head">
-        Processes
-        <span class="popover-spinner" class:popover-spinner-hidden={!loading} aria-label="loading" title="refreshing"></span>
+        <span class="proc-head-row">
+          <span>Processes</span>
+          <span class="popover-spinner" class:popover-spinner-hidden={!loading} aria-label="loading" title="refreshing"></span>
+          <span class="proc-head-spacer"></span>
+          <label class="proc-toggle" title="Show processes discovered in repo directories (not spawned by supergit)">
+            <input type="checkbox" bind:checked={showExternal} />
+            Subprocesses
+          </label>
+        </span>
       </svelte:fragment>
       {#if !everLoaded}
         <p class="muted small nopad">Loading…</p>
@@ -361,6 +382,9 @@
                 <span class="proc-group-stat">{formatBytes(group.totalMem)}</span>
               </button>
               {#if !collapsed[group.repoName]}
+                {#if group.procs.length === 0}
+                  <p class="muted small proc-empty">No processes running</p>
+                {:else}
                 <ul class="agents-list">
                   <li class="proc-col-header">
                     <span></span>
@@ -452,6 +476,7 @@
                     </li>
                   {/each}
                 </ul>
+                {/if}
               {/if}
             </div>
           {/each}

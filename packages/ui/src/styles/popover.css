@@ -395,6 +395,37 @@
 .tuis-popover .proc-icon {
   color: var(--text-muted);
 }
+.proc-head-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+.proc-head-spacer {
+  flex: 1;
+}
+.proc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.proc-toggle input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--text-muted);
+  cursor: pointer;
+}
+.proc-empty {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.7rem;
+}
 .proc-groups {
   overflow: visible;
 }
