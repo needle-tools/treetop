@@ -363,6 +363,16 @@
     zIndexById = next;
   }
 
+  let attachmentDropAvailableById: Record<string, boolean> = {};
+  $: {
+    void notes;
+    void draggingPinnedNoteId;
+    void attachmentDragAvailable;
+    const next: Record<string, boolean> = {};
+    for (const note of notes) next[note.id] = noteShowsAttachmentDropZone(note);
+    attachmentDropAvailableById = next;
+  }
+
   function cssEscape(s: string): string {
     if (typeof (window as any).CSS?.escape === "function") {
       return (window as any).CSS.escape(s);
@@ -2491,7 +2501,7 @@
         grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
         grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
         emojiScale={offsets[note.id]?.emojiScale ?? 1}
-        attachmentDropAvailable={noteShowsAttachmentDropZone(note)}
+        attachmentDropAvailable={attachmentDropAvailableById[note.id] ?? false}
         attachmentDropActive={attachmentDropNoteId === note.id}
         attachmentDropSourceActive={!!attachmentDropNoteId &&
           (draggingPinnedNoteId === note.id || attachmentDragSourceNoteId === note.id)}
