@@ -260,6 +260,15 @@
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
   let cmdUrlOverride: Record<string, string> = {};
+  let cmdUrlHover = false;
+  let cmdUrlHoverTimer: ReturnType<typeof setTimeout> | null = null;
+  function cmdUrlEnter() {
+    if (cmdUrlHoverTimer) { clearTimeout(cmdUrlHoverTimer); cmdUrlHoverTimer = null; }
+    cmdUrlHover = true;
+  }
+  function cmdUrlLeave() {
+    cmdUrlHoverTimer = setTimeout(() => { cmdUrlHover = false; }, 300);
+  }
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
@@ -1304,6 +1313,9 @@
           <span
             class="cmd-url-wrap"
             class:has-dropdown={cmdUrls && cmdUrls.length > 1}
+            class:dropdown-open={cmdUrlHover && cmdUrls && cmdUrls.length > 1}
+            on:mouseenter={cmdUrlEnter}
+            on:mouseleave={cmdUrlLeave}
           >
             <span
               class="cmd-url-inner"
@@ -1343,6 +1355,7 @@
                     {/if}
                   </button>
                 {/each}
+                <span class="cmd-url-hint">Pick a URL to open it and assign it to the open button</span>
               </div>
             {/if}
           </span>
@@ -2023,7 +2036,7 @@
     opacity: 0.6;
     transition: opacity 0.12s;
   }
-  .cmd-url-wrap.has-dropdown:hover .cmd-url-caret-icon {
+  .cmd-url-wrap.dropdown-open .cmd-url-caret-icon {
     opacity: 1;
   }
   .cmd-url-dropdown {
@@ -2032,7 +2045,7 @@
     left: -1rem;
     z-index: 200;
     margin-top: 4px;
-    padding: 3px 0;
+    padding: 3px 4px;
     background: var(--surface-3, #333);
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
     border-radius: var(--radius-md, 6px);
@@ -2043,7 +2056,7 @@
     opacity: 0;
     transition: opacity 0.1s;
   }
-  .cmd-url-wrap.has-dropdown:hover .cmd-url-dropdown {
+  .cmd-url-wrap.dropdown-open .cmd-url-dropdown {
     pointer-events: auto;
     opacity: 1;
   }
@@ -2076,6 +2089,16 @@
     stroke-linejoin: round;
     flex-shrink: 0;
     margin-left: auto;
+  }
+  .cmd-url-hint {
+    display: block;
+    padding: 4px 10px 5px;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    line-height: 1.35;
+    max-width: 40ch;
+    white-space: normal;
+    text-align: left;
   }
   .custom-link-popover-mount.hidden {
     display: none;
