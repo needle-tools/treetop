@@ -145,6 +145,12 @@ In commit order. Each links to the rationale in the diff.
       transcript reactive tree. With many open sessions this adds up
       to noticeable JS time on each tick. Could move to a single
       shared SSE stream that diffs into per-session stores.
+- [ ] **active-sends polling per session.** Every open Claude session
+      polls `/api/active-sends?sessionId=<id>` regardless of whether
+      the column is scrolled into view. With 4+ TUIs open that's 4+
+      concurrent polls. Should use IntersectionObserver to only poll
+      for visible columns — offscreen sessions don't need real-time
+      send-state. Same pattern as the idle-pill visibility cap above.
 - [ ] **`StickyNotesLayer` RAF loops.** Already self-gated (stop when
       no transitions are active), but watch for accidental always-on
       loops.
