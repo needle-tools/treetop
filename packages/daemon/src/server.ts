@@ -5955,6 +5955,7 @@ const server = Bun.serve<TermWsData, never>({
         return json({ path: dirPath, entries });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        console.log(`supergit daemon: /api/ssh/files error for path=${dirPath}: ${msg}`);
         return json({ error: msg }, { status: 500 });
       }
     }

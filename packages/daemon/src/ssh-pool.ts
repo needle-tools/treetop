@@ -158,22 +158,33 @@ export class SshPool {
 }
 
 /**
- * Resolve the SSH agent socket for a given host by reading `ssh -G`.
- * This handles 1Password, Secretive, and other custom IdentityAgent configs.
- * Falls back to SSH_AUTH_SOCK if `ssh -G` doesn't specify an agent.
+ * Resolve the SSH agent socket for a given host.
+ *
+ * macOS/Linux: reads `ssh -G <host>` for custom IdentityAgent
+ * (1Password, Secretive, etc.), falls back to SSH_AUTH_SOCK.
+ *
+ * Windows: uses the OpenSSH agent named pipe, or reads ssh -G
+ * for custom agent paths.
  */
 async function resolveAgent(host: string): Promise<string | undefined> {
   try {
     const result = await $`ssh -G ${host}`.quiet().nothrow();
     const text = result.stdout.toString();
     for (const line of text.split("\n")) {
-      if (line.startsWith("identityagent ")) {
-        const val = line.slice("identityagent ".length).trim();
+      const trimmed = line.trim().toLowerCase();
+      if (trimmed.startsWith("identityagent ")) {
+        const val = line.trim().slice("identityagent ".length).trim();
         if (val && val !== "SSH_AUTH_SOCK") return val;
       }
     }
   } catch {
     // best-effort
   }
-  return process.env.SSH_AUTH_SOCK;
+
+  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
+
+  // Windows: OpenSSH agent uses a named pipe
+  if (process.platform === "win32") return "\\\\.\\pipe\\openssh-ssh-agent";
+
+  return undefined;
 }
