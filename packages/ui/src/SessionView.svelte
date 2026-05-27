@@ -406,9 +406,12 @@
       return;
     }
     dismissSummarizeNotice();
-    // Refresh path: we already know which model the cached summary
-    // used. Reuse it without probing.
-    if (summaryModel) {
+    // Refresh path: reuse the cached summary's model unless it's a
+    // cloud model (older summaries may have been generated before the
+    // local-only filter existed). Fall through to the first-run picker
+    // so a local model gets chosen instead.
+    const isCloud = (n: string) => /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
+    if (summaryModel && !isCloud(summaryModel)) {
       void runSummaryStream(summaryModel);
       return;
     }
@@ -430,7 +433,6 @@
       showSummarizeNotice("No Ollama model installed — click to install one.", "install");
       return;
     }
-    const isCloud = (n: string) => /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
     const remembered = localStorage.getItem("supergit:summarize:lastModel");
     let pick = "";
     if (remembered && !isCloud(remembered) && list.some((m) => m.name === remembered)) {
@@ -1378,11 +1380,11 @@
                 </span>
               {:else}
                 {summarySnippet}
+                {#if summaryModel}
+                  <span class="tui-summary-model">{summaryModel}</span>
+                {/if}
               {/if}
             </div>
-            {#if summaryModel && !summaryRefreshing}
-              <span class="tui-summary-model">{summaryModel}</span>
-            {/if}
             {#if !summaryRefreshing}
               <button
                 type="button"
