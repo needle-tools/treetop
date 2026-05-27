@@ -178,6 +178,42 @@ accumulating when the user closes the browser and forgets about them.
 - **A full RDP/VNC implementation.** Lean on FreeRDP, libvnc, or noVNC —
   we're the glue, not the protocol library.
 
+## Known bugs (as of 2026-05-27)
+
+### HIGH PRIORITY
+
+- **Orphan process cleanup.** When no frontend is connected for 5 minutes,
+  the daemon must SIGTERM all spawned terminals, then SIGKILL after 10s.
+  No exceptions for starred/pinned. Must log every cleanup action.
+  Without this, SSH sessions and agent processes accumulate indefinitely.
+
+### Must fix
+
+- **Save-back confirmation not surfacing.** The SyncTracker correctly
+  transitions to "modified" state on local file save, but the file
+  browser doesn't poll `/api/ssh/status` to discover the state change.
+  The confirmation popover UI (Upload / Open / Dismiss) hasn't been
+  built yet. The daemon-side confirm/dismiss routes exist and are tested.
+
+- **Follow CWD not working.** The prompt-parsing code in TerminalView
+  extracts cwd from Windows cmd.exe / PowerShell / Unix prompts, but
+  either: (a) HMR doesn't pick up the new code (needs hard reload),
+  (b) the prompt regex doesn't match the actual terminal output
+  (Windows prompts may have ANSI codes or carriage returns that break
+  the match), or (c) the reactive chain
+  (TerminalView → NewSessionCol → App.svelte → FileBrowser) has a gap.
+  Needs debugging with console.debug at each stage.
+
+### Polish
+
+- **mtime not updating after upload.** File browser caches the directory
+  listing and doesn't re-fetch after a sync-back upload completes.
+- **No live sync badges.** File browser doesn't poll `/api/ssh/status`
+  to show ✎/⚡/↑ state on file rows in real time.
+- **Only poll active-sends for visible sessions.** (Medium priority —
+  see plans/performance.md.) Every open Claude session polls regardless
+  of whether the column is scrolled into view.
+
 ## Open questions
 
 - Should remote hosts be per-workspace or global (user-level)?
