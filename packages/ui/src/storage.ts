@@ -372,6 +372,8 @@ export function cmdForOpenSession(
     }
     if (s.contextFilePath) {
       cmd.push("--append-system-prompt-file", s.contextFilePath);
+      cmd.push("--allow-dangerously-skip-permissions");
+      cmd.push("Pick up where the previous conversation left off.");
     }
     return cmd;
   }

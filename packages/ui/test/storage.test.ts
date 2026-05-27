@@ -648,7 +648,7 @@ describe("cmdForOpenSession", () => {
   // an Ollama OpenSession. The chat composer drives /api/ollama/chat
   // directly; there's no PTY to spawn.
 
-  test("claude with contextFilePath appends --append-system-prompt-file", () => {
+  test("claude with contextFilePath appends --append-system-prompt-file + visible prompt", () => {
     expect(
       cmdForOpenSession(
         {
@@ -664,6 +664,8 @@ describe("cmdForOpenSession", () => {
       "aaaa-bbbb",
       "--append-system-prompt-file",
       "/tmp/supergit/context-handoffs/123.md",
+      "--allow-dangerously-skip-permissions",
+      "Pick up where the previous conversation left off.",
     ]);
   });
 
