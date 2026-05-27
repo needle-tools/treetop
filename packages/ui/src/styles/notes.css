@@ -1020,7 +1020,7 @@
 .sticky-attachment-zone {
   position: absolute;
   left: 50%;
-  bottom: -1.18rem;
+  bottom: -1.42rem;
   z-index: 2;
   display: flex;
   width: 6.4rem;
@@ -1038,7 +1038,7 @@
   line-height: 1;
   opacity: 1;
   pointer-events: auto;
-  transform: translateX(-50%) translateY(-0.12rem);
+  transform: translateX(-50%);
   transition:
     opacity 120ms ease,
     transform 120ms ease,
@@ -1049,7 +1049,7 @@
   border-color: rgba(90, 74, 31, 0.5);
   background: rgba(255, 250, 223, 0.96);
   color: #2a2516;
-  transform: translateX(-50%) translateY(0);
+  transform: translateX(-50%) translateY(0.06rem);
 }
 .sticky-attachment-zone-icon {
   font-size: 13px;

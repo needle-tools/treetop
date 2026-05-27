@@ -267,6 +267,7 @@
   let lastPointer = { clientX: 0, clientY: 0 };
   let draggingPinnedNoteId: string | null = null;
   let attachmentDropNoteId: string | null = null;
+  let attachmentDropCandidateNoteId: string | null = null;
   let attachmentDragAvailable = false;
   let attachmentDragSourceNoteId: string | null = null;
   let dragStartOffsets: Record<string, (NoteOffset & { offsetX?: number }) | null> = {};
@@ -368,6 +369,7 @@
     void notes;
     void draggingPinnedNoteId;
     void attachmentDragAvailable;
+    void attachmentDropCandidateNoteId;
     const next: Record<string, boolean> = {};
     for (const note of notes) next[note.id] = noteShowsAttachmentDropZone(note);
     attachmentDropAvailableById = next;
@@ -580,6 +582,46 @@
 
   function noteCanReceiveAttachments(note: NoteShape): boolean {
     return note.kind !== "link" && note.kind !== "emoji";
+  }
+
+  function noteIsDetachedAttachment(note: NoteShape): boolean {
+    if (note.kind === "link" || note.kind === "emoji") return false;
+    const parts = parseInlineAttachments(note.body);
+    return parts.length === 1 && parts[0]?.kind === "attachment";
+  }
+
+  function attachmentCandidateNoteAtPoint(
+    clientX: number,
+    clientY: number,
+    excludeId?: string,
+  ): NoteShape | null {
+    let best: { note: NoteShape; dist: number } | null = null;
+    for (const sticky of document.querySelectorAll<HTMLElement>(".sticky[data-note-id]")) {
+      const id = sticky.dataset.noteId;
+      if (!id || id === excludeId) continue;
+      const note = notes.find((n) => n.id === id);
+      if (!note || !noteCanReceiveAttachments(note) || noteIsDetachedAttachment(note)) continue;
+      const r = sticky.getBoundingClientRect();
+      const xSlack = 28;
+      const yAbove = 74;
+      const yBelow = 56;
+      if (
+        clientX < r.left - xSlack ||
+        clientX > r.right + xSlack ||
+        clientY < r.bottom - yAbove ||
+        clientY > r.bottom + yBelow
+      ) {
+        continue;
+      }
+      const dx =
+        clientX < r.left ? r.left - clientX :
+        clientX > r.right ? clientX - r.right :
+        0;
+      const dy = Math.abs(clientY - r.bottom);
+      const dist = dy * dy + dx * dx * 0.25;
+      if (!best || dist < best.dist) best = { note, dist };
+    }
+    return best?.note ?? null;
   }
 
   function isTerminalEventTarget(target: EventTarget | null): boolean {
@@ -1230,6 +1272,9 @@
       return;
     }
     attachmentDragAvailable = transferCanAppendToNote(e);
+    attachmentDropCandidateNoteId = attachmentDragAvailable
+      ? attachmentCandidateNoteAtPoint(e.clientX, e.clientY)?.id ?? null
+      : null;
     attachmentDropNoteId = attachmentDragAvailable
       ? attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null
       : null;
@@ -1264,6 +1309,10 @@
     if (!draggingPinnedNoteId) return;
     const source = notes.find((n) => n.id === draggingPinnedNoteId);
     attachmentDragAvailable = !!source && pinnedNoteCanAppend(source);
+    attachmentDropCandidateNoteId =
+      attachmentDragAvailable
+        ? attachmentCandidateNoteAtPoint(clientX, clientY, draggingPinnedNoteId)?.id ?? null
+        : null;
     attachmentDropNoteId =
       attachmentDragAvailable
         ? attachmentZoneNoteAtPoint(clientX, clientY, draggingPinnedNoteId)?.id ?? null
@@ -1937,6 +1986,8 @@
 
   function noteShowsAttachmentDropZone(note: NoteShape): boolean {
     if (!noteCanReceiveAttachments(note)) return false;
+    if (noteIsDetachedAttachment(note)) return false;
+    if (attachmentDropCandidateNoteId !== note.id) return false;
     if (draggingPinnedNoteId) {
       const source = notes.find((n) => n.id === draggingPinnedNoteId);
       return !!source &&
@@ -1949,6 +2000,7 @@
 
   function resetAttachmentDrag(): void {
     attachmentDropNoteId = null;
+    attachmentDropCandidateNoteId = null;
     attachmentDragAvailable = false;
     attachmentDragSourceNoteId = null;
   }
