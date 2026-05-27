@@ -1427,9 +1427,8 @@
         {/if}
         {#if lastUserMessage && lastUserMessage.trim().length > 0}
           <div class="pinned-last-msg">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
-              {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
+              {#each ICONS.speech.paths ?? [] as d}<path {d}/>{/each}
             </svg>
             <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
           </div>
@@ -1507,9 +1506,8 @@
           {/if}
           {#if lastUserMessage && lastUserMessage.trim().length > 0}
             <div class="pinned-last-msg">
-              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                {#each ICONS.user.paths ?? [] as d}<path {d}/>{/each}
-                {#each ICONS.user.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}
+              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
+                {#each ICONS.speech.paths ?? [] as d}<path {d}/>{/each}
               </svg>
               <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
             </div>
