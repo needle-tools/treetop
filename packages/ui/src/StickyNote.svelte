@@ -86,6 +86,7 @@
     noteBodyToEditText,
     parseInlineAttachments,
     restoreEditTextAttachments,
+    resolveLiveCommandLink,
     shouldAttachPastedText,
     textAttachmentMeta,
     visualAttachmentIndexes,
@@ -235,6 +236,9 @@
       id: string;
       kind?: string;
       cmd?: string;
+      cwd?: string;
+      runMode?: "internal" | "external" | "shell";
+      name?: string;
     }>;
   }
 
@@ -364,11 +368,13 @@
       return;
     }
     if (t.type === "command") {
+      const live = commandLinkForTarget(t);
       const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
-      const wtPath = t.cwd || wtAnchor?.slice("worktree:".length);
+      const wtPath = wtAnchor?.slice("worktree:".length) || live?.link.cwd || t.cwd;
+      const repoId = live?.repo.id ?? t.repoId;
       onCommandLinkOpen?.({
-        linkId: t.value,
-        ...(t.repoId ? { repoId: t.repoId } : {}),
+        linkId: live?.link.id ?? t.value,
+        ...(repoId ? { repoId } : {}),
         ...(wtPath ? { wtPath } : {}),
         revealTerminal: false,
       });
@@ -2007,7 +2013,12 @@
       if (found) return sessionDisplayTitle(found);
     }
     if (attachment.target.type === "command") {
-      return attachment.target.label ?? attachment.target.command ?? attachment.target.value;
+      const live = commandLinkForTarget(attachment.target)?.link;
+      return live?.name ??
+        live?.cmd ??
+        attachment.target.label ??
+        attachment.target.command ??
+        attachment.target.value;
     }
     return attachment.target.label ?? displayLabel(attachment.target);
   }
@@ -2015,10 +2026,11 @@
   function linkAttachmentMeta(attachment: InlineAttachment): string {
     if (attachment.kind !== "link") return "";
     if (attachment.target.type === "command") {
+      const live = commandLinkForTarget(attachment.target)?.link;
       const parts = [
-        isCommandRunning(attachment.target) ? "ON" : "OFF",
-        attachment.target.runMode,
-        attachment.target.cwd ? attachment.target.cwd.split("/").pop() : undefined,
+        isCommandRunning(attachment.target, commandStateKey) ? "ON" : "OFF",
+        live?.runMode ?? attachment.target.runMode,
+        (live?.cwd ?? attachment.target.cwd)?.split("/").pop(),
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "command";
     }
@@ -2028,8 +2040,35 @@
 
   $: isCommandLink = note.kind === "link" && note.target?.type === "command";
 
-  function isCommandRunning(target: LinkTarget | undefined): boolean {
-    return target?.type === "command" && runningCommandIds.has(target.value);
+  $: commandStateKey = [
+    [...runningCommandIds].sort().join("|"),
+    repos.map((repo) =>
+      `${repo.id}:${(repo.customLinks ?? []).map((link) =>
+        [
+          link.id,
+          link.kind ?? "",
+          link.cmd ?? "",
+          link.cwd ?? "",
+          link.runMode ?? "",
+          link.name ?? "",
+        ].join("\u001f"),
+      ).join("\u001e")}`,
+    ).join("\u001d"),
+  ].join("\u001c");
+
+  function commandLinkForTarget(target: LinkTarget | undefined):
+    ReturnType<typeof resolveLiveCommandLink> {
+    return resolveLiveCommandLink(target, repos);
+  }
+
+  function commandLinkIdForTarget(target: LinkTarget): string {
+    return commandLinkForTarget(target)?.link.id ?? target.value;
+  }
+
+  function isCommandRunning(target: LinkTarget | undefined, stateKey = commandStateKey): boolean {
+    void stateKey;
+    return target?.type === "command" &&
+      runningCommandIds.has(commandLinkIdForTarget(target));
   }
 
   function isCommandAttachment(
@@ -2040,20 +2079,32 @@
 
   function liveCommandRunText(target: LinkTarget): string {
     if (target.type !== "command") return target.value;
-    const repo = target.repoId
-      ? repos.find((r) => r.id === target.repoId)
-      : repos.find((r) => (r.customLinks ?? []).some((link) => link.id === target.value));
-    const link = repo?.customLinks?.find((candidate) => candidate.id === target.value);
-    if (link?.kind === "command" && link.cmd?.trim()) return link.cmd.trim();
+    const link = commandLinkForTarget(target)?.link;
+    if (link?.cmd?.trim()) return link.cmd.trim();
     return commandRunText(target);
+  }
+
+  function liveCommandLabel(target: LinkTarget, stateKey = commandStateKey): string {
+    void stateKey;
+    if (target.type !== "command") return target.value;
+    const link = commandLinkForTarget(target)?.link;
+    return link?.name?.trim() || link?.cmd?.trim() || commandPowerLabel(target);
+  }
+
+  function liveCommandMode(target: LinkTarget, stateKey = commandStateKey): string {
+    void stateKey;
+    if (target.type !== "command") return "command";
+    return commandLinkForTarget(target)?.link.runMode ?? target.runMode ?? "command";
   }
 
   function editCommandTarget(target: LinkTarget): void {
     if (target.type !== "command") return;
+    const live = commandLinkForTarget(target);
+    const repoId = live?.repo.id ?? target.repoId;
     closeInlineAttachment();
     onCommandLinkEdit?.({
-      linkId: target.value,
-      ...(target.repoId ? { repoId: target.repoId } : {}),
+      linkId: live?.link.id ?? target.value,
+      ...(repoId ? { repoId } : {}),
     });
   }
 
@@ -2314,7 +2365,7 @@
 {/snippet}
 
 {#snippet commandPowerPreview(target: LinkTarget, mode: "detached" | "stack" | "media")}
-  {@const running = isCommandRunning(target)}
+  {@const running = isCommandRunning(target, commandStateKey)}
   <span
     class="command-power-card"
     class:command-power-card-running={running}
@@ -2326,8 +2377,8 @@
       <span class="command-power-state">{running ? "ON" : "OFF"}</span>
     </span>
     <span class="command-power-details">
-      <span class="command-power-name">{commandPowerLabel(target)}</span>
-      <span class="command-power-meta">{target.runMode ?? "command"}</span>
+      <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>
+      <span class="command-power-meta">{liveCommandMode(target, commandStateKey)}</span>
     </span>
   </span>
 {/snippet}
@@ -2557,7 +2608,7 @@
           : "sticky-link-body attach-card"}
         type="button"
         title={note.target.type === "command"
-          ? `${isCommandRunning(note.target) ? "Stop" : "Run"} command`
+          ? `${isCommandRunning(note.target, commandStateKey) ? "Stop" : "Run"} command`
           : "Click to open"}
         on:mousedown|stopPropagation={onMouseDownCard}
         on:click={onLinkBodyClick}
@@ -2622,7 +2673,7 @@
         class:sticky-detached-link={detachedAttachmentPart.attachment.kind === "link"}
         class:sticky-detached-command={isCommandAttachment(detachedAttachmentPart.attachment)}
         title={isCommandAttachment(detachedAttachmentPart.attachment)
-          ? `${isCommandRunning(detachedAttachmentPart.attachment.target) ? "Stop" : "Run"} command`
+          ? `${isCommandRunning(detachedAttachmentPart.attachment.target, commandStateKey) ? "Stop" : "Run"} command`
           : "View attachment"}
         on:mousedown={onMouseDownCard}
         on:click={() =>

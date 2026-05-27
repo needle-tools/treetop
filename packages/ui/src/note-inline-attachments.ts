@@ -64,6 +64,20 @@ export interface LinkInlineAttachment {
   target: InlineLinkTarget;
 }
 
+export interface CommandLinkSnapshot {
+  id: string;
+  kind?: string;
+  cmd?: string;
+  cwd?: string;
+  runMode?: "internal" | "external" | "shell";
+  name?: string;
+}
+
+export interface CommandLinkRepo {
+  id: string;
+  customLinks?: CommandLinkSnapshot[];
+}
+
 export type InlineAttachment =
   | TextInlineAttachment
   | ImageInlineAttachment
@@ -179,6 +193,35 @@ export function commandPowerLabel(target: InlineLinkTarget): string {
 
 export function commandRunText(target: InlineLinkTarget): string {
   return target.command?.trim() || target.label?.trim() || target.value;
+}
+
+export function resolveLiveCommandLink(
+  target: InlineLinkTarget | undefined,
+  repos: readonly CommandLinkRepo[],
+): { repo: CommandLinkRepo; link: CommandLinkSnapshot } | null {
+  if (target?.type !== "command") return null;
+  const pinnedRepo = target.repoId
+    ? repos.find((repo) => repo.id === target.repoId)
+    : undefined;
+  const candidateRepos = pinnedRepo ? [pinnedRepo] : repos;
+  const command = target.command?.trim();
+  const label = target.label?.trim();
+  for (const repo of candidateRepos) {
+    const links = (repo.customLinks ?? []).filter((link) => link.kind === "command");
+    const byId = links.find((link) => link.id === target.value);
+    if (byId) return { repo, link: byId };
+    if (command) {
+      const byCommand = links.find((link) => link.cmd?.trim() === command);
+      if (byCommand) return { repo, link: byCommand };
+    }
+    if (label) {
+      const byLabel = links.find((link) =>
+        link.name?.trim() === label || link.cmd?.trim() === label
+      );
+      if (byLabel) return { repo, link: byLabel };
+    }
+  }
+  return null;
 }
 
 export function humanAttachmentBytes(bytes: number): string {

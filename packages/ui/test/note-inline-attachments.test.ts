@@ -25,6 +25,7 @@ import {
   parseInlineAttachments,
   removeInlineAttachmentRef,
   restoreEditTextAttachments,
+  resolveLiveCommandLink,
   shouldAttachPastedText,
   textAttachmentMeta,
   trailingImageAttachmentIndexes,
@@ -240,6 +241,54 @@ describe("note inline attachments", () => {
       label: "Relaunch",
       command: "npm run build:launch",
     })).toBe("npm run build:launch");
+  });
+
+  test("resolves pinned command references against live toolbar commands", () => {
+    const repos = [
+      {
+        id: "repo-a",
+        customLinks: [
+          {
+            id: "cmd-old",
+            kind: "command",
+            cmd: "npm run dev",
+            name: "dev",
+            runMode: "internal" as const,
+          },
+        ],
+      },
+      {
+        id: "repo-b",
+        customLinks: [
+          {
+            id: "cmd-live",
+            kind: "command",
+            cmd: "npm run build:launch",
+            name: "launch",
+            runMode: "shell" as const,
+          },
+        ],
+      },
+    ];
+
+    expect(resolveLiveCommandLink({
+      type: "command",
+      value: "cmd-live",
+      repoId: "repo-b",
+    }, repos)?.link.id).toBe("cmd-live");
+
+    expect(resolveLiveCommandLink({
+      type: "command",
+      value: "stale-id",
+      repoId: "repo-b",
+      command: "npm run build:launch",
+    }, repos)?.link.id).toBe("cmd-live");
+
+    expect(resolveLiveCommandLink({
+      type: "command",
+      value: "stale-id",
+      label: "launch",
+    }, repos)?.repo.id).toBe("repo-b");
   });
 
   test("copy expansion restores hidden paste payloads and image paths", () => {
