@@ -31,6 +31,14 @@
     lastSeen?: string;
   }
 
+  interface PeerDiscoveryStatus {
+    enabled: boolean;
+    interfaceAddress: string | null;
+    port: number;
+    initError: string | null;
+    platform: string;
+  }
+
   let peerInput = "";
   // Two independent privacy toggles. Defaults match the daemon's
   // conservative stance: tool outputs stripped, secrets redacted.
@@ -59,17 +67,56 @@
   // share one workspace identity. See peer-registry.ts.
   let selectedPeerKey: string | null = null;
   let peersPoll: ReturnType<typeof setInterval> | null = null;
+  let discoveryStatus: PeerDiscoveryStatus | null = null;
 
   async function refreshPeers() {
     try {
-      const res = await fetch("/api/peers");
+      const res = await fetch("/api/peers?diag=1");
       if (!res.ok) return;
-      const body = (await res.json()) as { peers?: DiscoveredPeer[] };
+      const body = (await res.json()) as {
+        peers?: DiscoveredPeer[];
+        discovery?: PeerDiscoveryStatus;
+      };
       peers = body.peers ?? [];
+      discoveryStatus = body.discovery ?? null;
     } catch {
       // best-effort — discovery isn't load-bearing, manual input wins.
     }
   }
+
+  $: lanInfo = (() => {
+    if (!discoveryStatus) {
+      return {
+        kind: "unknown",
+        title: "Checking LAN discovery",
+        text: "Looking up whether this supergit is advertising on your local network. You can still use host:port below.",
+      };
+    }
+    if (
+      discoveryStatus.initError &&
+      discoveryStatus.initError !== "peer discovery not initialized"
+    ) {
+      return {
+        kind: "error",
+        title: "LAN discovery did not start",
+        text: discoveryStatus.initError,
+      };
+    }
+    if (!discoveryStatus.enabled) {
+      return {
+        kind: "off",
+        title: "LAN discovery is off",
+        text: "This supergit is not advertising on the local network, so peers cannot be discovered automatically. Use the LAN button in the header to enable it, or enter host:port below.",
+      };
+    }
+    return {
+      kind: "on",
+      title: "LAN discovery is on",
+      text: discoveryStatus.interfaceAddress
+        ? `Listening on ${discoveryStatus.interfaceAddress}:${discoveryStatus.port}. No other supergit peers have been discovered yet.`
+        : "This supergit is advertising on your local network. No other supergit peers have been discovered yet.",
+    };
+  })();
 
   // Reset state every time the dialog opens with a fresh source so
   // a previous send's success/error message doesn't carry over.
@@ -82,6 +129,7 @@
     redactSecrets = true;
     sending = false;
     result = { kind: "idle" };
+    discoveryStatus = null;
     void refreshPeers();
     // Poll while open; 3s is short enough to feel live, long enough
     // not to spam the daemon. Cleared on close + onDestroy below.
@@ -228,9 +276,16 @@
             {/each}
           </ul>
         {:else}
-          <p class="share-peers-empty">
-            No peers discovered yet. Start supergit on another machine on this LAN, or use the manual field below.
-          </p>
+          <div
+            class="share-lan-info"
+            class:share-lan-info-on={lanInfo.kind === "on"}
+            class:share-lan-info-off={lanInfo.kind === "off"}
+            class:share-lan-info-error={lanInfo.kind === "error"}
+            role={lanInfo.kind === "error" ? "alert" : "status"}
+          >
+            <span class="share-lan-info-title">{lanInfo.title}</span>
+            <span class="share-lan-info-text">{lanInfo.text}</span>
+          </div>
         {/if}
       </div>
 
@@ -399,14 +454,38 @@
     font-size: 0.72rem;
     color: var(--text-muted);
   }
-  .share-peers-empty {
+  .share-lan-info {
     margin: 0;
     padding: 0.5rem 0.6rem;
     border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
     background: color-mix(in srgb, var(--surface-2) 25%, transparent);
     color: var(--text-muted);
     font-size: 0.75rem;
     line-height: 1.4;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .share-lan-info-on {
+    border-color: color-mix(in srgb, #2ecc71 35%, transparent);
+    background: color-mix(in srgb, #2ecc71 10%, transparent);
+  }
+  .share-lan-info-off {
+    border-color: color-mix(in srgb, #f1c40f 35%, transparent);
+    background: color-mix(in srgb, #f1c40f 10%, transparent);
+  }
+  .share-lan-info-error {
+    border-color: color-mix(in srgb, #c0392b 45%, transparent);
+    background: color-mix(in srgb, #c0392b 14%, transparent);
+    color: color-mix(in srgb, #fff 88%, var(--text));
+  }
+  .share-lan-info-title {
+    color: var(--text-1, inherit);
+    font-weight: 600;
+  }
+  .share-lan-info-text {
+    color: inherit;
   }
   .share-input {
     font: inherit;
