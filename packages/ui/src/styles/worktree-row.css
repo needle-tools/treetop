@@ -596,12 +596,23 @@ button.branch-button:hover {
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
+  gap: 0.15rem;
   line-height: 1.3;
   /* Question-mark cursor signals "there's more info on hover" — the
      wrapping `<Tooltip>` in App.svelte shows the full ahead/behind/
      dirty breakdown + file list. Matches the `cursor: help` already
      used elsewhere in the row (e.g. the status-summary-trigger). */
   cursor: help;
+}
+.status-badge-arrow {
+  width: 0.72em;
+  height: 0.72em;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* Clickable variant (ahead → push, behind → pull). Strip the
    <button> user-agent defaults; size comes from the shared variable
