@@ -1362,7 +1362,16 @@
         r.left >= stripR.left && r.right <= stripR.right;
       const verticallyVisible = r.top >= 0 && r.bottom <= vh;
       if (!horizontallyVisible) {
-        strip.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
+        // Scroll just enough to reveal the column's right edge, keeping
+        // as much of the strip's prior scroll position as possible.
+        // Only flush-left when the column is entirely off to the left.
+        const colRight = newCol.offsetLeft + newCol.offsetWidth;
+        const stripWidth = strip.clientWidth;
+        if (newCol.offsetLeft < strip.scrollLeft) {
+          strip.scrollTo({ left: newCol.offsetLeft, behavior: "smooth" });
+        } else {
+          strip.scrollTo({ left: colRight - stripWidth, behavior: "smooth" });
+        }
       }
       if (!verticallyVisible) {
         newCol.scrollIntoView({
