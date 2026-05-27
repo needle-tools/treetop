@@ -178,6 +178,27 @@ accumulating when the user closes the browser and forgets about them.
 - **A full RDP/VNC implementation.** Lean on FreeRDP, libvnc, or noVNC —
   we're the glue, not the protocol library.
 
+## Terminal session persistence across restarts
+
+When supergit restarts, Claude/Codex TUIs auto-resume via `--resume`,
+but SSH terminals (and any other shell-based command) are lost. The PTY
+dies and there's no reconnect mechanism.
+
+**Solution:** persist active terminal commands to `<workspace>/active-terminals.json`.
+On restart, show them as disconnected ghost columns with a **Reconnect** button —
+don't auto-run. The user clicks to re-launch whichever ones they want.
+
+Persisted per terminal: `{ cmd, cwd, wtPath, title, linkId? }`.
+Written on spawn, removed on exit. The file is the "restore previous session"
+manifest.
+
+Restore UX: **open and prefill, don't run.**
+- On restart, open a shell terminal column for each persisted session
+- Prefill the command into the shell (e.g. `ssh needle@100.71.105.118`
+  appears at the prompt, cursor at end) but DON'T press Enter
+- User hits Enter to reconnect, or edits the command, or closes the column
+- One keystroke to restore, zero surprise connections
+
 ## Known bugs (as of 2026-05-27)
 
 ### HIGH PRIORITY
