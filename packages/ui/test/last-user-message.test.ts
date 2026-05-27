@@ -66,6 +66,22 @@ describe("lastUserMessageBurst", () => {
     ];
     expect(lastUserMessageBurst(msgs)).toBe("real message");
   });
+
+  it("skips Codex turn-aborted control messages", () => {
+    const msgs = [
+      msg("user", "fix the TUI overlay parsing", ts(-60000)),
+      msg(
+        "user",
+        "<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>",
+        ts(-10000),
+      ),
+      msg("user", "continue plz", ts(-5000)),
+    ];
+    expect(lastUserMessageBurst(msgs)).toBe("continue plz");
+    expect(
+      lastUserMessageWithContext(msgs, lastUserMessageBurst(msgs)),
+    ).toBe("continue plz");
+  });
 });
 
 describe("lastUserMessageWithContext", () => {

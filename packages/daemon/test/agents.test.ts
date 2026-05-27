@@ -404,6 +404,32 @@ describe("scanClaudeUserMessages", () => {
     expect(stats.lastUserMessages).toEqual(["real prompt"]);
   });
 
+  test("skips Claude turn-aborted control messages", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content:
+              "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "continue plz" },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage).toBe("continue plz");
+    expect(stats.userMessageCount).toBe(1);
+    expect(stats.lastUserMessages).toEqual(["continue plz"]);
+  });
+
   test("caps each captured message to a reasonable length", async () => {
     const dir = await tempDir();
     const file = join(dir, "s.jsonl");
@@ -1214,6 +1240,39 @@ describe("scanCodex", () => {
     const s = sessions[0]!;
     expect(s.title).toBe("Fix the auth bug");
     expect(s.firstUserMessage).toBe("Fix the auth bug");
+  });
+
+  test("skips Codex turn-aborted control messages for session previews", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-turn-aborted-");
+    await writeFile(
+      join(root, "session.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "abort-test", cwd: "/proj" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the overlay" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Working." }] } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{
+              type: "input_text",
+              text:
+                "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+            }],
+          },
+        }),
+        JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted", reason: "interrupted" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "continue plz" }] } }),
+      ].join("\n"),
+    );
+    const sessions = await scanCodex([root]);
+    expect(sessions).toHaveLength(1);
+    const s = sessions[0]!;
+    expect(s.firstUserMessage).toBe("Fix the overlay");
+    expect(s.lastUserMessage).toBe("continue plz");
+    expect(s.lastUserMessages).toEqual(["Fix the overlay", "continue plz"]);
   });
 
   test("tags subagent sessions when multiple share a rollout timestamp", async () => {

@@ -11,12 +11,17 @@ export interface Message {
 
 const BURST_GAP_MS = 30_000;
 
+function isInternalUserMessageText(text: string): boolean {
+  return text.trimStart().startsWith("<turn_aborted>");
+}
+
 export function extractUserText(m: Message): string {
-  return (m.blocks ?? [])
+  const text = (m.blocks ?? [])
     .filter((b) => b?.type === "text" && typeof b.text === "string")
     .map((b) => b.text!)
     .join("\n")
     .trim();
+  return isInternalUserMessageText(text) ? "" : text;
 }
 
 export function lastUserMessageBurst(msgs: Message[]): string | undefined {
