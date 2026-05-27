@@ -2324,9 +2324,11 @@
     <span class="command-power-ring" aria-hidden="true">
       <span class="command-power-led"></span>
       <span class="command-power-state">{running ? "ON" : "OFF"}</span>
-      <span class="command-power-name">{commandPowerLabel(target)}</span>
     </span>
-    <span class="command-power-meta">{target.runMode ?? "command"}</span>
+    <span class="command-power-details">
+      <span class="command-power-name">{commandPowerLabel(target)}</span>
+      <span class="command-power-meta">{target.runMode ?? "command"}</span>
+    </span>
   </span>
 {/snippet}
 

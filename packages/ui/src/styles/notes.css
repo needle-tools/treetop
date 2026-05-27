@@ -324,7 +324,7 @@
 }
 .command-power-button {
   display: block;
-  width: 10.4rem;
+  width: 13rem;
   max-width: 100%;
   padding: 0;
   border: 0;
@@ -339,99 +339,132 @@
 .command-power-card {
   --command-accent: #8b9188;
   display: grid;
-  width: min(10rem, 100%);
-  aspect-ratio: 1;
-  place-items: center;
-  padding: 0.65rem;
-  border: 1px solid color-mix(in srgb, var(--command-accent) 72%, var(--surface-0));
-  border-radius: 50%;
+  width: 100%;
+  min-height: 7.2rem;
+  grid-template-columns: 4.4rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.82rem;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 46%, #313633);
+  border-radius: 14px;
   background:
-    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.09), transparent 34%),
-    radial-gradient(circle at 50% 62%, color-mix(in srgb, var(--command-accent) 18%, transparent), transparent 56%),
-    linear-gradient(155deg, #1b1d1b, #101110);
+    radial-gradient(circle at 26% 50%, color-mix(in srgb, var(--command-accent) 14%, transparent), transparent 38%),
+    linear-gradient(160deg, #1d201f, #101211);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -12px 24px rgba(0, 0, 0, 0.28),
-    0 8px 18px -12px rgba(0, 0, 0, 0.75);
+    inset 0 -10px 18px rgba(0, 0, 0, 0.22),
+    0 8px 18px -13px rgba(0, 0, 0, 0.78);
   color: #f3f4ec;
-  text-align: center;
+  text-align: left;
 }
 .command-power-card-running {
   --command-accent: #8fed72;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -12px 24px rgba(0, 0, 0, 0.28),
-    0 0 0 2px color-mix(in srgb, var(--command-accent) 22%, transparent),
-    0 0 26px -10px color-mix(in srgb, var(--command-accent) 85%, transparent),
+    inset 0 -10px 18px rgba(0, 0, 0, 0.22),
+    0 0 0 1px color-mix(in srgb, var(--command-accent) 24%, transparent),
+    0 0 24px -13px color-mix(in srgb, var(--command-accent) 85%, transparent),
     0 10px 22px -14px rgba(0, 0, 0, 0.85);
 }
 .command-power-ring {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  place-items: center;
-  grid-template-rows: 1fr auto auto 1fr;
-  border: 1px solid color-mix(in srgb, var(--command-accent) 50%, transparent);
+  display: flex;
+  width: 4rem;
+  height: 4rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 54%, #2b302d);
   border-radius: 50%;
-  padding: 0.56rem;
+  padding: 0;
   background:
-    radial-gradient(circle, transparent 0 52%, rgba(255, 255, 255, 0.07) 53%, transparent 55%),
-    radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.36));
+    radial-gradient(circle at 50% 34%, rgba(255, 255, 255, 0.18), transparent 18%),
+    radial-gradient(circle at 50% 62%, color-mix(in srgb, var(--command-accent) 22%, transparent), transparent 55%),
+    linear-gradient(145deg, #262b28, #121513);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -8px 14px rgba(0, 0, 0, 0.32);
 }
 .command-power-led {
-  grid-row: 1;
-  align-self: end;
-  width: 0.42rem;
-  height: 0.42rem;
-  margin-bottom: 0.2rem;
+  width: 0.38rem;
+  height: 0.38rem;
+  margin-bottom: 0.34rem;
   border-radius: 50%;
   background: var(--command-accent);
   box-shadow: 0 0 10px color-mix(in srgb, var(--command-accent) 80%, transparent);
 }
 .command-power-state {
-  grid-row: 2;
   color: var(--command-accent);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.62rem;
   font-weight: 800;
   letter-spacing: 0;
 }
+.command-power-details {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+}
 .command-power-name {
-  grid-row: 3;
   display: -webkit-box;
-  max-width: 7.2rem;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: #f6f1dc;
-  font-size: 0.82rem;
+  font-size: 0.9rem;
   font-weight: 800;
-  line-height: 1.05;
+  line-height: 1.1;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   overflow-wrap: anywhere;
 }
 .command-power-meta {
-  grid-row: 4;
-  align-self: start;
-  margin-top: 0.24rem;
+  min-width: 0;
+  margin-top: 0.4rem;
+  overflow: hidden;
   color: rgba(246, 241, 220, 0.58);
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 0.58rem;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .command-power-card-stack {
-  width: 100%;
-  padding: 0.5rem;
+  min-height: 6rem;
+  grid-template-columns: 3.2rem minmax(0, 1fr);
+  gap: 0.55rem;
+  padding: 0.55rem;
+  border-radius: 10px;
+}
+.command-power-card-stack .command-power-ring {
+  width: 3rem;
+  height: 3rem;
+}
+.command-power-card-stack .command-power-led {
+  width: 0.3rem;
+  height: 0.3rem;
+  margin-bottom: 0.2rem;
+}
+.command-power-card-stack .command-power-state {
+  font-size: 0.52rem;
 }
 .command-power-card-stack .command-power-name {
-  max-width: 5.5rem;
   font-size: 0.72rem;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 .command-power-card-stack .command-power-meta {
-  display: none;
+  margin-top: 0.2rem;
+  font-size: 0.56rem;
 }
 .command-power-card-media {
-  width: min(14rem, 62vw);
+  width: min(22rem, 68vw);
+  min-height: 8rem;
+  grid-template-columns: 5rem minmax(0, 1fr);
+}
+.command-power-card-media .command-power-ring {
+  width: 4.6rem;
+  height: 4.6rem;
 }
 /* Hover preview anchored to the right of a session-link sticky.
    Portalled to <body>, positioned at fixed viewport coordinates
