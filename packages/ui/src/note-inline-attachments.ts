@@ -93,6 +93,102 @@ export function shouldAttachPastedText(text: string): boolean {
   return Array.from(text).length > LARGE_PASTE_CHAR_THRESHOLD;
 }
 
+export function countTextLines(text: string): number {
+  if (text.length === 0) return 0;
+  return text.split(/\r\n|\r|\n/).length;
+}
+
+export function inferPastedTextMimeType(
+  text: string,
+  sourceTypes: string[] = [],
+): string {
+  const lowerTypes = sourceTypes.map((type) => type.toLowerCase());
+  const explicit = lowerTypes.find((type) =>
+    type.includes("javascript") ||
+    type.includes("ecmascript") ||
+    type.includes("typescript") ||
+    type.includes("markdown") ||
+    type.includes("json") ||
+    type.includes("xml") ||
+    type === "text/css",
+  );
+  if (explicit) return explicit;
+
+  const trimmed = text.trim();
+  if (trimmed) {
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        JSON.parse(trimmed);
+        return "application/json";
+      } catch {}
+    }
+    if (/^```/m.test(text) || /^#{1,6}\s+\S/m.test(text) || /^\s*[-*]\s+\S/m.test(text)) {
+      return "text/markdown";
+    }
+    if (/^\s*<([a-z][\w:-]*)(\s|>|\/>)/i.test(text)) {
+      return "text/html";
+    }
+  }
+  return "text/plain";
+}
+
+export function pastedTextFilenameForMime(mimeType: string): string {
+  const mime = mimeType.toLowerCase();
+  if (mime.includes("javascript") || mime.includes("ecmascript")) return "pasted-content.js";
+  if (mime.includes("typescript")) return "pasted-content.ts";
+  if (mime.includes("html")) return "pasted-content.html";
+  if (mime.includes("css")) return "pasted-content.css";
+  if (mime.includes("json")) return "pasted-content.json";
+  if (mime.includes("markdown")) return "pasted-content.md";
+  if (mime.includes("xml")) return "pasted-content.xml";
+  return "pasted-content.txt";
+}
+
+export function pastedTextTitleForMime(mimeType?: string): string {
+  const mime = (mimeType ?? "text/plain").toLowerCase();
+  if (mime.includes("javascript") || mime.includes("ecmascript")) return "Pasted Javascript";
+  if (mime.includes("typescript")) return "Pasted TypeScript";
+  if (mime.includes("html")) return "Pasted HTML";
+  if (mime.includes("css")) return "Pasted CSS";
+  if (mime.includes("json")) return "Pasted JSON";
+  if (mime.includes("markdown")) return "Pasted Markdown";
+  if (mime.includes("xml")) return "Pasted XML";
+  return "Pasted Text";
+}
+
+export function humanAttachmentBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+export function textAttachmentMeta(
+  attachment: TextInlineAttachment,
+  stats?: { lineCount?: number; charCount?: number },
+): string {
+  const lineCount = typeof attachment.lineCount === "number"
+    ? attachment.lineCount
+    : stats?.lineCount;
+  const lines = typeof lineCount === "number"
+    ? `${lineCount.toLocaleString()} ${lineCount === 1 ? "line" : "lines"}`
+    : "";
+  if (typeof attachment.size === "number") {
+    const size = humanAttachmentBytes(attachment.size);
+    return lines ? `${lines}, ${size}` : size;
+  }
+  if (lines) return lines;
+  const charCount = stats?.charCount ?? attachment.charCount;
+  return `${charCount.toLocaleString()} chars`;
+}
+
 export function makeTextAttachmentRef(
   input: {
     path: string;

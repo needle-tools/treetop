@@ -71,9 +71,13 @@
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
+    countTextLines,
+    inferPastedTextMimeType,
     inlineAttachmentLabel,
     makeNoteClipboardHtml,
     makeNoteClipboardPayload,
+    pastedTextFilenameForMime,
+    pastedTextTitleForMime,
     makeImageAttachmentRef,
     makeNoteAttachmentRef,
     makeTextAttachmentRef,
@@ -81,6 +85,7 @@
     parseInlineAttachments,
     restoreEditTextAttachments,
     shouldAttachPastedText,
+    textAttachmentMeta,
     visualAttachmentIndexes,
     type InlineAttachment,
     type InlineAttachmentEditRef,
@@ -957,8 +962,10 @@
     target: "note" | "attachment" = "note",
   ): Promise<void> {
     try {
-      const blob = new Blob([text], { type: "text/plain" });
-      const file = new File([blob], "pasted-content.txt", { type: "text/plain" });
+      const mimeType = inferPastedTextMimeType(text, source.types);
+      const filename = pastedTextFilenameForMime(mimeType);
+      const blob = new Blob([text], { type: mimeType });
+      const file = new File([blob], filename, { type: mimeType });
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/attach", { method: "POST", body: form });
@@ -966,11 +973,11 @@
       const { path } = (await res.json()) as { path: string };
       insertAttachmentRef(makeTextAttachmentRef({
         path,
-        filename: "pasted-content.txt",
-        mimeType: "text/plain",
+        filename,
+        mimeType,
         size: blob.size,
         charCount: Array.from(text).length,
-        lineCount: text.split(/\r\n|\r|\n/).length,
+        lineCount: countTextLines(text),
         source,
       }), target);
     } catch (err) {
@@ -1403,6 +1410,8 @@
   let liveGrabYFrac: number | null = null;
   $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
   $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
+  let textStatsByPath: Record<string, { lineCount: number; charCount: number }> = {};
+  const pendingTextStats = new Set<string>();
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
@@ -1908,39 +1917,34 @@
 
   function pastedTextTitle(attachment: InlineAttachment): string {
     if (attachment.kind !== "text") return inlineAttachmentLabel(attachment);
-    const mime = (attachment.mimeType ?? "text/plain").toLowerCase();
-    if (mime.includes("javascript") || mime.includes("ecmascript")) return "Pasted Javascript";
-    if (mime.includes("typescript")) return "Pasted TypeScript";
-    if (mime.includes("html")) return "Pasted HTML";
-    if (mime.includes("css")) return "Pasted CSS";
-    if (mime.includes("json")) return "Pasted JSON";
-    if (mime.includes("markdown")) return "Pasted Markdown";
-    if (mime.includes("xml")) return "Pasted XML";
-    return "Pasted Text";
+    return pastedTextTitleForMime(attachment.mimeType);
   }
 
-  function humanBytes(bytes: number): string {
-    const units = ["B", "KB", "MB", "GB"];
-    let value = bytes;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  function ensureTextStats(attachment: InlineAttachment): void {
+    if (attachment.kind !== "text") return;
+    if (typeof attachment.lineCount === "number") return;
+    if (textStatsByPath[attachment.path] || pendingTextStats.has(attachment.path)) return;
+    pendingTextStats.add(attachment.path);
+    void fetchTextAttachment(attachment.path)
+      .then((text) => {
+        pendingTextStats.delete(attachment.path);
+        textStatsByPath = {
+          ...textStatsByPath,
+          [attachment.path]: {
+            lineCount: countTextLines(text),
+            charCount: Array.from(text).length,
+          },
+        };
+      })
+      .catch(() => {
+        pendingTextStats.delete(attachment.path);
+      });
   }
 
   function pastedTextMeta(attachment: InlineAttachment): string {
     if (attachment.kind !== "text") return "";
-    const lines = typeof attachment.lineCount === "number"
-      ? `${attachment.lineCount.toLocaleString()} ${attachment.lineCount === 1 ? "line" : "lines"}`
-      : "";
-    if (typeof attachment.size === "number") {
-      const size = humanBytes(attachment.size);
-      return lines ? `${lines}, ${size}` : size;
-    }
-    if (lines) return lines;
-    return `${attachment.charCount.toLocaleString()} chars`;
+    ensureTextStats(attachment);
+    return textAttachmentMeta(attachment, textStatsByPath[attachment.path]);
   }
 
   function noteAttachmentTitle(attachment: InlineAttachment): string {

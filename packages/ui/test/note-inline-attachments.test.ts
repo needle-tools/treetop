@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  countTextLines,
   expandNoteBodyForTerminalPasteChunks,
   expandNoteBodyForCopyAsync,
   expandNoteBodyForCopy,
   extractNoteClipboardPayloadFromHtml,
   fetchTextAttachment,
+  inferPastedTextMimeType,
   inlineAttachmentLabel,
   noteBodyToEditText,
   makeNoteClipboardHtml,
@@ -22,9 +24,11 @@ import {
   removeInlineAttachmentRef,
   restoreEditTextAttachments,
   shouldAttachPastedText,
+  textAttachmentMeta,
   trailingImageAttachmentIndexes,
   trailingVisualAttachmentIndexes,
   visualAttachmentIndexes,
+  pastedTextTitleForMime,
 } from "../src/note-inline-attachments";
 
 describe("note inline attachments", () => {
@@ -62,6 +66,49 @@ describe("note inline attachments", () => {
       expect(parts[1].attachment.lineCount).toBe(45);
       expect(parts[1].attachment.source?.types).toEqual(["text/plain", "text/html"]);
     }
+  });
+
+  test("formats pasted text cards with line count and size", () => {
+    const ref = makeTextAttachmentRef({
+      path: "/tmp/supergit/attachments/paste.txt",
+      filename: "paste.txt",
+      mimeType: "text/plain",
+      size: 1229,
+      charCount: 1229,
+      lineCount: 45,
+    });
+    const part = parseInlineAttachments(ref)[0];
+
+    expect(part?.kind).toBe("attachment");
+    if (part?.kind === "attachment" && part.attachment.kind === "text") {
+      expect(textAttachmentMeta(part.attachment)).toBe("45 lines, 1.2 KB");
+    }
+  });
+
+  test("formats legacy pasted text cards after lazy stats load", () => {
+    const ref = makeTextAttachmentRef({
+      path: "/tmp/supergit/attachments/paste.txt",
+      filename: "paste.txt",
+      mimeType: "text/plain",
+      size: 1229,
+      charCount: 1229,
+    });
+    const part = parseInlineAttachments(ref)[0];
+
+    expect(part?.kind).toBe("attachment");
+    if (part?.kind === "attachment" && part.attachment.kind === "text") {
+      expect(textAttachmentMeta(part.attachment, { lineCount: 45, charCount: 1229 })).toBe(
+        "45 lines, 1.2 KB",
+      );
+    }
+  });
+
+  test("infers pasted text types for human labels", () => {
+    expect(countTextLines("a\nb\r\nc")).toBe(3);
+    expect(inferPastedTextMimeType('{"ok": true}', ["text/plain"])).toBe("application/json");
+    expect(inferPastedTextMimeType("# Title\n\nbody", ["text/plain"])).toBe("text/markdown");
+    expect(pastedTextTitleForMime("application/json")).toBe("Pasted JSON");
+    expect(pastedTextTitleForMime("text/markdown")).toBe("Pasted Markdown");
   });
 
   test("round-trips an image attachment reference", () => {
