@@ -244,6 +244,9 @@
   /** Notes mid-fade-out animation before delete. */
   let removingIds = new Set<string>();
   let lastPointer = { clientX: 0, clientY: 0 };
+  let draggingPinnedNoteId: string | null = null;
+  let attachmentDropNoteId: string | null = null;
+  let dragStartOffsets: Record<string, (NoteOffset & { offsetX?: number }) | null> = {};
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
@@ -453,11 +456,30 @@
     return null;
   }
 
-  function noteFromEventTarget(target: EventTarget | null): NoteShape | null {
+  function attachmentZoneNoteAtPoint(
+    clientX: number,
+    clientY: number,
+    excludeId?: string,
+  ): NoteShape | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const zone = (el as HTMLElement).closest<HTMLElement>("[data-note-attachment-zone]");
+      if (!zone) continue;
+      const sticky = zone.closest<HTMLElement>(".sticky[data-note-id]");
+      const id = sticky?.dataset.noteId;
+      if (!id || id === excludeId) continue;
+      const note = notes.find((n) => n.id === id);
+      if (note && note.kind !== "link" && note.kind !== "emoji") return note;
+    }
+    return null;
+  }
+
+  function attachmentZoneNoteFromEventTarget(target: EventTarget | null): NoteShape | null {
     if (!(target instanceof Element)) return null;
-    const sticky = target.closest<HTMLElement>(".sticky[data-note-id]");
+    const zone = target.closest<HTMLElement>("[data-note-attachment-zone]");
+    const sticky = zone?.closest<HTMLElement>(".sticky[data-note-id]");
     const id = sticky?.dataset.noteId;
-    return id ? notes.find((n) => n.id === id) ?? null : null;
+    const note = id ? notes.find((n) => n.id === id) ?? null : null;
+    return note && note.kind !== "link" && note.kind !== "emoji" ? note : null;
   }
 
   function isTerminalEventTarget(target: EventTarget | null): boolean {
@@ -993,7 +1015,9 @@
     clientY: number,
     eventTarget: EventTarget | null,
   ): Promise<void> {
-    const targetNote = noteFromEventTarget(eventTarget) || noteAtPoint(clientX, clientY);
+    const targetNote =
+      attachmentZoneNoteFromEventTarget(eventTarget) ||
+      attachmentZoneNoteAtPoint(clientX, clientY);
     if (targetNote && targetNote.kind !== "link" && targetNote.kind !== "emoji") {
       await appendImageAttachmentToNote(targetNote, raw);
       return;
@@ -1047,6 +1071,7 @@
 
   function onWindowDragOver(e: DragEvent): void {
     if (isTerminalEventTarget(e.target) || isAttachmentModalEventTarget(e.target)) return;
+    attachmentDropNoteId = attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null;
     if (hasInlineAttachmentDrag(e)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -1054,7 +1079,7 @@
     }
     if (
       hasLinkTargetDrag(e) &&
-      (noteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
+      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
     ) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
@@ -1079,7 +1104,7 @@
     const image = imageFileFromTransfer(e.dataTransfer);
     if (!hasInline && !hasTargetLink && !image) return;
     const payload = hasInline ? parseInlineAttachmentDrag(e) : null;
-    const targetNote = noteAtPoint(
+    const targetNote = attachmentZoneNoteAtPoint(
       e.clientX,
       e.clientY,
       payload?.sourceNoteId,
@@ -1124,11 +1149,16 @@
   }
 
   function onWindowDropEvent(e: DragEvent): void {
+    attachmentDropNoteId = null;
     void onWindowDrop(e);
   }
 
   function onWindowPointerMove(e: PointerEvent): void {
     lastPointer = { clientX: e.clientX, clientY: e.clientY };
+    if (draggingPinnedNoteId) {
+      attachmentDropNoteId =
+        attachmentZoneNoteAtPoint(e.clientX, e.clientY, draggingPinnedNoteId)?.id ?? null;
+    }
   }
 
   function onWindowPaste(e: ClipboardEvent): void {
@@ -1232,6 +1262,9 @@
   ): Promise<void> {
     const source = notes.find((n) => n.id === payload.sourceNoteId);
     if (!source) return;
+    if (payload.sourceNoteId !== targetNote.id && payload.attachment.kind === "note") {
+      return;
+    }
     if (payload.sourceNoteId !== targetNote.id && !notesShareDropAnchor(source, targetNote)) {
       return;
     }
@@ -1631,6 +1664,11 @@
   function handleGrab(
     e: CustomEvent<{ id: string; grabXFrac: number; grabYFrac: number }>,
   ): void {
+    draggingPinnedNoteId = e.detail.id;
+    dragStartOffsets = {
+      ...dragStartOffsets,
+      [e.detail.id]: offsets[e.detail.id] ? { ...offsets[e.detail.id] } : null,
+    };
     const prev = offsets[e.detail.id] ?? {};
     offsets = {
       ...offsets,
@@ -1641,6 +1679,34 @@
       },
     };
     saveOffsets();
+  }
+
+  function handleDragCancel(e: CustomEvent<{ id: string }>): void {
+    clearDragState(e.detail.id);
+  }
+
+  function restoreDragStartOffset(id: string): void {
+    if (!(id in dragStartOffsets)) return;
+    const start = dragStartOffsets[id];
+    const next = { ...offsets };
+    if (start) {
+      next[id] = start;
+    } else {
+      delete next[id];
+    }
+    offsets = next;
+    saveOffsets();
+    tick++;
+  }
+
+  function clearDragState(id?: string): void {
+    if (!id || draggingPinnedNoteId === id) draggingPinnedNoteId = null;
+    attachmentDropNoteId = null;
+    if (id && id in dragStartOffsets) {
+      const next = { ...dragStartOffsets };
+      delete next[id];
+      dragStartOffsets = next;
+    }
   }
 
   function inlineRefForPinnedNote(note: NoteShape): string | null {
@@ -1740,21 +1806,41 @@
     const sessionCol = sessionColumnAtPoint(e.detail.clientX, e.detail.clientY);
     const sessionSource = sessionCol?.dataset.sessionSource;
     if (sessionSource) {
+      restoreDragStartOffset(source.id);
+      clearDragState(source.id);
       await stageNoteBodyIntoSessionPrompt(source, sessionSource);
       return;
     }
-    const target = noteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
+    const target = attachmentZoneNoteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
     if (target && target.kind !== "link" && target.kind !== "emoji") {
-      if (!notesShareDropAnchor(source, target)) return;
+      if (!notesShareDropAnchor(source, target)) {
+        restoreDragStartOffset(source.id);
+        clearDragState(source.id);
+        return;
+      }
       const raw = inlineRefForPinnedNote(source);
-      if (!raw) return;
+      if (!raw) {
+        restoreDragStartOffset(source.id);
+        clearDragState(source.id);
+        return;
+      }
+      const part = parseInlineAttachments(raw)[0];
+      if (part?.kind === "attachment" && part.attachment.kind === "note") {
+        restoreDragStartOffset(source.id);
+        clearDragState(source.id);
+        return;
+      }
       await movePinnedNoteIntoNote(source, target, raw);
+      clearDragState(source.id);
       return;
     }
     const rowTarget = dropTargetAt(e.detail.clientX, e.detail.clientY);
     if (rowTarget) {
       await movePinnedNoteToRow(source, rowTarget, e.detail.clientX, e.detail.clientY);
+      clearDragState(source.id);
+      return;
     }
+    clearDragState(source.id);
   }
 
   async function movePinnedNoteIntoNote(
@@ -2167,6 +2253,7 @@
         grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
         grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
         emojiScale={offsets[note.id]?.emojiScale ?? 1}
+        attachmentDropActive={attachmentDropNoteId === note.id}
         startEditing={editingId === note.id}
         removeIfEmpty={!!staging[note.id]}
         flying={!!flyingNotes[note.id]}
@@ -2180,6 +2267,7 @@
         on:rotate={handleRotate}
         on:grab={handleGrab}
         on:dragdrop={handleDragDrop}
+        on:dragcancel={handleDragCancel}
       />
     </div>
   {/each}

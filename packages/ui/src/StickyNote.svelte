@@ -284,6 +284,7 @@
     rotate: { id: string; rotation: number };
     grab: { id: string; grabXFrac: number; grabYFrac: number };
     dragdrop: { id: string; clientX: number; clientY: number };
+    dragcancel: { id: string };
   }>();
 
   /** Open the target in whatever app makes sense for its type.
@@ -1024,16 +1025,30 @@
     }
   }
 
+  function isAttachmentZoneTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("[data-note-attachment-zone]");
+  }
+
   function onNoteDragOver(e: DragEvent): void {
     if (isLink || isEmoji) return;
+    if (!isAttachmentZoneTarget(e.target)) return;
     if (e.dataTransfer?.types.includes("Files")) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
+      localAttachmentDropActive = true;
+    }
+  }
+
+  function onNoteDragLeave(e: DragEvent): void {
+    if (!(e.relatedTarget instanceof Element) || !isAttachmentZoneTarget(e.relatedTarget)) {
+      localAttachmentDropActive = false;
     }
   }
 
   function onNoteDrop(e: DragEvent): void {
+    localAttachmentDropActive = false;
     if (isLink || isEmoji) return;
+    if (!isAttachmentZoneTarget(e.target)) return;
     const files = Array.from(e.dataTransfer?.files ?? []);
     const image = files.find((file) => file.type.startsWith("image/"));
     if (!image) return;
@@ -1406,12 +1421,15 @@
   export let grabXFrac = 0;
   export let grabYFrac = 0;
   export let emojiScale = 1;
+  export let attachmentDropActive = false;
   let liveGrabXFrac: number | null = null;
   let liveGrabYFrac: number | null = null;
   $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
   $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
   let textStatsByPath: Record<string, { lineCount: number; charCount: number }> = {};
   const pendingTextStats = new Set<string>();
+  let localAttachmentDropActive = false;
+  $: showAttachmentDropActive = attachmentDropActive || localAttachmentDropActive;
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
@@ -1547,10 +1565,11 @@
   }
 
   function onMouseUp(e: MouseEvent): void {
+    const moved = dragMoved;
     dragging = false;
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
-    if (dragMoved) {
+    if (moved) {
       suppressNextClick = true;
       setTimeout(() => (suppressNextClick = false), 0);
       dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
@@ -1571,6 +1590,9 @@
     }
     dragRotation = 0;
     velocityEma = 0;
+    if (!moved) {
+      dispatch("dragcancel", { id: note.id });
+    }
     setTimeout(() => {
       if (!dragging) {
         liveGrabXFrac = null;
@@ -2237,6 +2259,7 @@
   class:sticky-link={isLink}
   class:sticky-emoji={isEmoji}
   class:sticky-detached={isDetachedAttachment}
+  class:attachment-drop-active={showAttachmentDropActive}
   data-note-id={note.id}
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
   style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : effectiveGrabXFrac) * 100}%; --grab-y: {(flying ? 0 : effectiveGrabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
@@ -2246,6 +2269,7 @@
   on:mousedown={() => dispatch("focus", { id: note.id })}
   on:dragover={onNoteDragOver}
   on:drop={onNoteDrop}
+  on:dragleave={onNoteDragLeave}
   on:dblclick={() => {
     if (!editing && !isEmoji) startEdit();
   }}
@@ -2258,6 +2282,9 @@
     on:mousedown={onMouseDownHeader}
     title="Drag to move"
   >
+    {#if !editing && !isLink && !isEmoji && !isDetachedAttachment}
+      <span class="sticky-attach-indicator" aria-hidden="true">📎</span>
+    {/if}
     <span class="sticky-grip" aria-hidden="true">⋮⋮</span>
     <div class="sticky-actions">
       {#if editing && !isLink}
@@ -2507,6 +2534,19 @@
         )}
       </div>
     {/if}
+  {/if}
+
+  {#if !editing && !isLink && !isEmoji && !isDetachedAttachment}
+    <div
+      class="sticky-attachment-zone"
+      class:active={showAttachmentDropActive}
+      data-note-attachment-zone="true"
+      title="Drop here to attach"
+      aria-hidden="true"
+    >
+      <span class="sticky-attachment-zone-icon" aria-hidden="true">📎</span>
+      <span class="sticky-attachment-zone-label">attach</span>
+    </div>
   {/if}
 
   {#if openAttachmentRaw}
