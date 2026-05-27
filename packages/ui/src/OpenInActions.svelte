@@ -2045,7 +2045,7 @@
     left: -1rem;
     z-index: 200;
     margin-top: 4px;
-    padding: 3px 4px;
+    padding: 1em 4px 3px;
     background: var(--surface-3, #333);
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
     border-radius: var(--radius-md, 6px);
