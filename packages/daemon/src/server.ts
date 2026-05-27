@@ -54,6 +54,7 @@ import type { TerminalSubscriber } from "./terminals/types";
 import { watchWorktree } from "./worktree-watcher";
 import { detectSshChildren, detectSshFromCmd, type SshSession } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
+import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
 import { listRemoteDir, downloadFile, uploadFile, cachePathFor } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
@@ -197,6 +198,7 @@ const sshSyncTracker = new SyncTracker(async (hostKey, remotePath, localCachePat
 });
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
 const termSshSessions = new Map<string, SshSession>();
+const terminalPersist = new TerminalPersist(WORKSPACE_PATH);
 
 const orphanCleaner = new OrphanCleaner({
   getTerminals: () =>
@@ -1827,6 +1829,15 @@ const server = Bun.serve<TermWsData, never>({
       }
       try {
         await workspace.setSessionTitle(source, title);
+        // Update the persisted terminal's title if applicable
+        if (typeof source === "string" && source.startsWith("__attached__:shell:")) {
+          const termId = source.split(":").pop();
+          if (termId) {
+            const persisted = await terminalPersist.list();
+            const entry = persisted.find((t) => t.termId === termId);
+            if (entry) void terminalPersist.save({ ...entry, title: title || undefined }).catch(() => {});
+          }
+        }
         const titles = await workspace.listSessionTitles();
         broadcast("change", { kind: "session_title", source });
         return json({ source, title: titles[source] ?? "" });
@@ -2167,6 +2178,12 @@ const server = Bun.serve<TermWsData, never>({
               );
             });
           shellTermIds.add(handle.id);
+          void terminalPersist.save({
+            termId: handle.id,
+            cmd,
+            cwd: body.cwd,
+            wtPath: body.cwd,
+          }).catch(() => {});
           // Cleanup-only subscriber: when the PTY exits we drop the
           // in-memory bookkeeping and append a closing `exit` entry so
           // the JSONL becomes a complete transcript. We ignore onData
@@ -2177,6 +2194,7 @@ const server = Bun.serve<TermWsData, never>({
               shellTermIds.delete(handle.id);
               clearShellInputBuffer(handle.id);
               shellCwds.delete(handle.id);
+              void terminalPersist.remove(handle.id).catch(() => {});
               void shells
                 .append(handle.id, {
                   kind: "exit",
@@ -2189,6 +2207,13 @@ const server = Bun.serve<TermWsData, never>({
             },
           });
         }
+        // Prefill: write command text to the PTY without pressing Enter.
+        // Used by session restore to show the previous command at the prompt.
+        if (typeof body.prefillCmd === "string" && body.prefillCmd.length > 0) {
+          setTimeout(() => {
+            try { handle.write(body.prefillCmd); } catch {}
+          }, 500);
+        }
         return json({ id: handle.id, pid: handle.pid });
       } catch (e) {
         return json(
@@ -2199,6 +2224,15 @@ const server = Bun.serve<TermWsData, never>({
     }
 
     // List currently-live shell columns (PTY still alive AND its header
+    if (url.pathname === "/api/terminals/persisted" && req.method === "GET") {
+      return json(await terminalPersist.list());
+    }
+
+    if (url.pathname === "/api/terminals/persisted" && req.method === "DELETE") {
+      await terminalPersist.clear();
+      return json({ ok: true });
+    }
+
     // file is still present in `<workspace>/shells/`). The UI calls this
     // on mount to repopulate Terminal columns after a reload.
     if (url.pathname === "/api/shells" && req.method === "GET") {

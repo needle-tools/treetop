@@ -6,20 +6,22 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 describe("cachePathFor", () => {
+  const normalize = (p: string) => p.replace(/\\/g, "/");
+
   test("assembles cache path from parts", () => {
-    expect(cachePathFor("/workspace", "user@host:22", "/home/user/file.txt")).toBe(
+    expect(normalize(cachePathFor("/workspace", "user@host:22", "/home/user/file.txt"))).toBe(
       "/workspace/.remote-cache/user@host:22/home/user/file.txt",
     );
   });
 
   test("handles root path", () => {
-    expect(cachePathFor("/workspace", "root@srv:22", "/etc/nginx.conf")).toBe(
+    expect(normalize(cachePathFor("/workspace", "root@srv:22", "/etc/nginx.conf"))).toBe(
       "/workspace/.remote-cache/root@srv:22/etc/nginx.conf",
     );
   });
 
   test("handles nested directories", () => {
-    expect(cachePathFor("/ws", "u@h:22", "/a/b/c/d.txt")).toBe(
+    expect(normalize(cachePathFor("/ws", "u@h:22", "/a/b/c/d.txt"))).toBe(
       "/ws/.remote-cache/u@h:22/a/b/c/d.txt",
     );
   });
