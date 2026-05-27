@@ -320,14 +320,74 @@
 }
 .sticky.sticky-link.sticky-command-link {
   min-width: 0;
-  padding: 4px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+}
+.sticky.sticky-link.sticky-command-link .sticky-header {
+  position: absolute;
+  top: -0.7rem;
+  right: -0.7rem;
+  z-index: 4;
+  display: block;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  transform: translateY(2px);
+}
+.sticky.sticky-link.sticky-command-link:hover .sticky-header,
+.sticky.sticky-link.sticky-command-link:focus-within .sticky-header {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0);
+}
+.sticky.sticky-link.sticky-command-link .sticky-header::before,
+.sticky.sticky-link.sticky-command-link .sticky-grip {
+  display: none;
+}
+.sticky.sticky-link.sticky-command-link .sticky-actions {
+  display: flex;
+  gap: 0.28rem;
+}
+.sticky.sticky-link.sticky-command-link .sticky-btn {
+  display: inline-flex;
+  width: 1.35rem;
+  height: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 68%, transparent);
+  border-radius: 50%;
+  padding: 0;
+  background: var(--surface-1);
+  color: var(--text-2);
+  box-shadow: 0 3px 10px -6px rgba(0, 0, 0, 0.8);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+.sticky.sticky-link.sticky-command-link .sticky-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--text-1) 72%, transparent);
+  background: var(--surface-2);
+  color: var(--text-1);
+}
+.sticky.sticky-link.sticky-command-link .sticky-btn.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ctx-hot) 62%, transparent);
+  background: color-mix(in srgb, var(--ctx-hot) 18%, var(--surface-1));
+  color: var(--ctx-hot);
 }
 .command-power-button {
   display: block;
-  width: 13rem;
+  width: 10.5rem;
+  height: 10.5rem;
   max-width: 100%;
   padding: 0;
   border: 0;
+  border-radius: 50%;
   background: transparent;
   color: inherit;
   font: inherit;
@@ -338,24 +398,32 @@
 }
 .command-power-card {
   --command-accent: #8b9188;
-  display: grid;
+  display: flex;
   width: 100%;
+  height: 100%;
   min-height: 7.2rem;
-  grid-template-columns: 4.4rem minmax(0, 1fr);
+  flex-direction: column;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.82rem;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
   border: 1px solid color-mix(in srgb, var(--command-accent) 46%, #313633);
-  border-radius: 14px;
+  border-radius: 50%;
   background:
-    radial-gradient(circle at 26% 50%, color-mix(in srgb, var(--command-accent) 14%, transparent), transparent 38%),
-    linear-gradient(160deg, #1d201f, #101211);
+    radial-gradient(circle at 50% 34%, rgba(255, 255, 255, 0.12), transparent 18%),
+    radial-gradient(circle at 50% 54%, color-mix(in srgb, var(--command-accent) 16%, transparent), transparent 48%),
+    linear-gradient(160deg, #202522, #101211);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -10px 18px rgba(0, 0, 0, 0.22),
+    inset 0 -18px 28px rgba(0, 0, 0, 0.28),
     0 8px 18px -13px rgba(0, 0, 0, 0.78);
   color: #f3f4ec;
-  text-align: left;
+  text-align: center;
+}
+.command-power-card-detached {
+  min-height: 0;
+  height: auto;
+  aspect-ratio: 1 / 1;
 }
 .command-power-card-running {
   --command-accent: #8fed72;
@@ -368,8 +436,8 @@
 }
 .command-power-ring {
   display: flex;
-  width: 4rem;
-  height: 4rem;
+  width: 3.25rem;
+  height: 3.25rem;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -402,7 +470,9 @@
 .command-power-details {
   display: flex;
   min-width: 0;
+  width: 100%;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
 }
 .command-power-name {
@@ -411,12 +481,12 @@
   max-width: 100%;
   overflow: hidden;
   color: #f6f1dc;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   font-weight: 800;
   line-height: 1.1;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow-wrap: anywhere;
 }
 .command-power-meta {
@@ -430,11 +500,18 @@
   white-space: nowrap;
 }
 .command-power-card-stack {
+  display: grid;
   min-height: 6rem;
   grid-template-columns: 3.2rem minmax(0, 1fr);
+  height: auto;
+  align-items: center;
   gap: 0.55rem;
   padding: 0.55rem;
   border-radius: 10px;
+  text-align: left;
+}
+.command-power-card-stack .command-power-details {
+  align-items: flex-start;
 }
 .command-power-card-stack .command-power-ring {
   width: 3rem;
@@ -458,9 +535,17 @@
   font-size: 0.56rem;
 }
 .command-power-card-media {
+  display: grid;
   width: min(22rem, 68vw);
+  height: auto;
   min-height: 8rem;
   grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: center;
+  border-radius: 14px;
+  text-align: left;
+}
+.command-power-card-media .command-power-details {
+  align-items: flex-start;
 }
 .command-power-card-media .command-power-ring {
   width: 4.6rem;
@@ -1397,7 +1482,9 @@
   width: min(10.5rem, 54vw);
 }
 .sticky-detached-command {
-  width: min(11rem, 58vw);
+  width: min(10.5rem, 58vw);
+  height: min(10.5rem, 58vw);
+  padding: 0;
 }
 .sticky-trailing-attachments {
   display: flex;

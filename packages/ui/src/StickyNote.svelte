@@ -2369,6 +2369,7 @@
   <span
     class="command-power-card"
     class:command-power-card-running={running}
+    class:command-power-card-detached={mode === "detached"}
     class:command-power-card-stack={mode === "stack"}
     class:command-power-card-media={mode === "media"}
   >
