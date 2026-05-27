@@ -602,9 +602,9 @@
       const note = notes.find((n) => n.id === id);
       if (!note || !noteCanReceiveAttachments(note) || noteIsDetachedAttachment(note)) continue;
       const r = sticky.getBoundingClientRect();
-      const xSlack = 28;
-      const yAbove = 74;
-      const yBelow = 56;
+      const xSlack = 45;
+      const yAbove = 118;
+      const yBelow = 90;
       if (
         clientX < r.left - xSlack ||
         clientX > r.right + xSlack ||
