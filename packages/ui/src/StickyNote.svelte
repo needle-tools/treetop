@@ -289,7 +289,7 @@
   export let commandUrls: Record<string, string[]> = {};
 
   const dispatch = createEventDispatcher<{
-    move: { id: string; x: number; y: number };
+    move: { id: string; x: number; y: number; clientX: number; clientY: number };
     /** `target` is included when kind="link" so the layer's handleSave
      *  can route both fields through a single PUT. `null` clears an
      *  existing target (kind flip from link → note). Omitting both
@@ -1570,7 +1570,13 @@
     velocityEma = 0;
 
     dispatch("grab", { id: note.id, grabXFrac: newGxFrac, grabYFrac: newGyFrac });
-    dispatch("move", { id: note.id, x: cxDoc - newGx, y: cyDoc - newGy });
+    dispatch("move", {
+      id: note.id,
+      x: cxDoc - newGx,
+      y: cyDoc - newGy,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    });
     dispatch("focus", { id: note.id });
 
     window.addEventListener("mousemove", onMouseMove);
@@ -1594,7 +1600,13 @@
     }
     const nx = Math.max(0, e.clientX + window.scrollX - dragDx);
     const ny = Math.max(0, e.clientY + window.scrollY - dragDy);
-    dispatch("move", { id: note.id, x: nx, y: ny });
+    dispatch("move", {
+      id: note.id,
+      x: nx,
+      y: ny,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    });
   }
 
   function onMouseUp(e: MouseEvent): void {

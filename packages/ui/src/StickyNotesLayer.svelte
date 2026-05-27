@@ -1236,6 +1236,16 @@
     }
   }
 
+  function updatePinnedNoteAttachmentTarget(clientX: number, clientY: number): void {
+    if (!draggingPinnedNoteId) return;
+    const source = notes.find((n) => n.id === draggingPinnedNoteId);
+    attachmentDragAvailable = !!source && pinnedNoteCanAppend(source);
+    attachmentDropNoteId =
+      attachmentDragAvailable
+        ? attachmentZoneNoteAtPoint(clientX, clientY, draggingPinnedNoteId)?.id ?? null
+        : null;
+  }
+
   async function onWindowDrop(e: DragEvent): Promise<void> {
     if (
       e.defaultPrevented ||
@@ -1300,14 +1310,12 @@
 
   function onWindowPointerMove(e: PointerEvent): void {
     lastPointer = { clientX: e.clientX, clientY: e.clientY };
-    if (draggingPinnedNoteId) {
-      const source = notes.find((n) => n.id === draggingPinnedNoteId);
-      attachmentDragAvailable = !!source && pinnedNoteCanAppend(source);
-      attachmentDropNoteId =
-        attachmentDragAvailable
-          ? attachmentZoneNoteAtPoint(e.clientX, e.clientY, draggingPinnedNoteId)?.id ?? null
-          : null;
-    }
+    updatePinnedNoteAttachmentTarget(e.clientX, e.clientY);
+  }
+
+  function onWindowMouseMove(e: MouseEvent): void {
+    lastPointer = { clientX: e.clientX, clientY: e.clientY };
+    updatePinnedNoteAttachmentTarget(e.clientX, e.clientY);
   }
 
   function onWindowDragEnd(): void {
@@ -1764,7 +1772,9 @@
     undoables = undoables.filter((x) => x.key !== key);
   }
 
-  function handleMove(e: CustomEvent<{ id: string; x: number; y: number }>): void {
+  function handleMove(
+    e: CustomEvent<{ id: string; x: number; y: number; clientX?: number; clientY?: number }>,
+  ): void {
     // e.detail.{x,y} arrive in document coordinates (StickyNote's
     // drag handler adds window.scrollX/Y). Translate them back to
     // row-relative offsets that survive scroll/resize: offsetXFrac
@@ -1805,6 +1815,9 @@
     };
     saveOffsets();
     tick++;
+    if (e.detail.clientX !== undefined && e.detail.clientY !== undefined) {
+      updatePinnedNoteAttachmentTarget(e.detail.clientX, e.detail.clientY);
+    }
   }
 
   function handleFocus(e: CustomEvent<{ id: string }>): void {
@@ -2370,6 +2383,7 @@
     // relative to the document change when the viewport resizes.
     window.addEventListener("resize", scheduleTick);
     window.addEventListener("pointermove", onWindowPointerMove);
+    window.addEventListener("mousemove", onWindowMouseMove);
     window.addEventListener("dragover", onWindowDragOver);
     window.addEventListener("dragend", onWindowDragEnd);
     window.addEventListener("dragleave", onWindowDragLeave);
@@ -2411,6 +2425,7 @@
     _unregisterFlyRestore();
     window.removeEventListener("resize", scheduleTick);
     window.removeEventListener("pointermove", onWindowPointerMove);
+    window.removeEventListener("mousemove", onWindowMouseMove);
     window.removeEventListener("dragover", onWindowDragOver);
     window.removeEventListener("dragend", onWindowDragEnd);
     window.removeEventListener("dragleave", onWindowDragLeave);
