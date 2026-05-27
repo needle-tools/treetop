@@ -9,7 +9,9 @@ export interface PersistedTerminal {
   cwd: string;
   wtPath: string;
   title?: string;
-  /** Last command the user typed in this shell (for display + prefill on restore). */
+  /** First command the user typed (the session-defining command, e.g. ssh). */
+  firstCmd?: string;
+  /** Last command the user typed. */
   lastCmd?: string;
 }
 
@@ -58,6 +60,7 @@ export class TerminalPersist {
       const existing = await this.list();
       const entry = existing.find((t) => t.termId === termId);
       if (!entry) return;
+      if (!entry.firstCmd) entry.firstCmd = lastCmd;
       entry.lastCmd = lastCmd;
       await this.write({ terminals: existing });
     });

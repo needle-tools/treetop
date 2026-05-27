@@ -150,16 +150,18 @@ describe("TerminalPersist", () => {
     expect(list[0]!.lastCmd).toBeUndefined();
   });
 
-  test("updateLastCmd overwrites previous lastCmd", async () => {
+  test("updateLastCmd overwrites lastCmd but firstCmd is set once", async () => {
     const dir = join(tmpDir, "lastcmd-overwrite");
     const tp = new TerminalPersist(dir);
 
     await tp.save({ termId: "t1", cmd: ["bash"], cwd: "/", wtPath: "/" });
-    await tp.updateLastCmd("t1", "first command");
-    await tp.updateLastCmd("t1", "second command");
+    await tp.updateLastCmd("t1", "ssh user@host");
+    await tp.updateLastCmd("t1", "cd /var/log");
+    await tp.updateLastCmd("t1", "tail -f syslog");
 
     const list = await tp.list();
-    expect(list[0]!.lastCmd).toBe("second command");
+    expect(list[0]!.firstCmd).toBe("ssh user@host");
+    expect(list[0]!.lastCmd).toBe("tail -f syslog");
   });
 
   test("atomic write survives concurrent access", async () => {
