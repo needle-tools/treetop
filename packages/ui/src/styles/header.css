@@ -87,6 +87,8 @@ main > header > h1 {
   font-size: 0.78rem;
   gap: 0.35rem;
   border: none;
+  min-height: 1.85rem;
+  box-sizing: border-box;
 }
 .menubar .tutorial-btn {
   font-weight: 700;
@@ -286,6 +288,46 @@ main > header > h1 {
 .add-folder-sub {
   margin: 0;
   max-width: 28rem;
+}
+
+/* Button group: visually join adjacent buttons by collapsing
+   inner radii and the inter-button gap. Used for LAN + Inbox. */
+.menubar .btn-group {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+.menubar .btn-group .actions-btn,
+.menubar .btn-group .actions-anchor .actions-btn {
+  border-radius: 0;
+}
+.menubar .btn-group > :first-child,
+.menubar .btn-group > :first-child .actions-btn {
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+.menubar .btn-group > :last-child,
+.menubar .btn-group > :last-child .actions-btn {
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+.menubar .btn-group > * + * {
+  border-left: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+}
+
+/* Peer discovery tooltip illustration */
+.peer-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: 22rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.peer-tooltip-illustration {
+  width: 100%;
+  height: auto;
+  max-height: 4.5rem;
+  color: var(--text-3);
+  margin-bottom: 0.2rem;
 }
 
 /* Peer discovery toggle */

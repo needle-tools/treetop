@@ -5318,17 +5318,77 @@
       {/if}
     </div>
 
-    <button
-      class="actions-btn peer-toggle"
-      class:peer-on={peerDiscoveryEnabled}
-      disabled={peerToggleBusy}
-      on:click={togglePeerDiscovery}
-      title={peerDiscoveryEnabled
-        ? "LAN peer discovery is ON — click to turn off"
-        : "LAN peer discovery is OFF — click to turn on"}
-    >LAN {peerDiscoveryEnabled ? "on" : "off"}</button>
-
-    <MessagesInbox />
+    <div class="btn-group">
+      <Tooltip placement="bottom">
+        <button
+          slot="trigger"
+          class="actions-btn peer-toggle"
+          class:peer-on={peerDiscoveryEnabled}
+          disabled={peerToggleBusy}
+          on:click={togglePeerDiscovery}
+        >{#if peerDiscoveryEnabled}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>{:else}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0" opacity="0.3"/><path d="M1.42 9a16 16 0 0 1 21.16 0" opacity="0.3"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0" opacity="0.3"/><circle cx="12" cy="20" r="1" opacity="0.3"/><line x1="2" y1="2" x2="22" y2="22"/></svg>{/if}</button>
+        <span slot="content" class="peer-tooltip">
+          <svg class="peer-tooltip-illustration" viewBox="0 0 180 64" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <!-- house roof -->
+            <path d="M8 30L90 6l82 24" opacity="0.12" stroke-width="1.5"/>
+            <!-- left person: head, body, arms relaxed, sitting -->
+            <circle cx="36" cy="24" r="4.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M36 28.5v7" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M31 31c2 1.5 8 1.5 10 0" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M32 35.5l-1 6M40 35.5l1 6" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <!-- left laptop -->
+            <rect x="24" y="44" width="24" height="14" rx="2.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <rect x="27" y="46.5" width="18" height="9" rx="1.5" opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}/>
+            {#if peerDiscoveryEnabled}
+              <!-- small wifi dot on left screen -->
+              <circle cx="36" cy="51" r="1.2" fill="currentColor" stroke="none" opacity="0.6"/>
+              <path d="M33 49a4.2 4.2 0 0 1 6 0" opacity="0.4" stroke-width="1"/>
+            {/if}
+            <!-- connection between laptops -->
+            {#if peerDiscoveryEnabled}
+              <!-- dashed path the envelope travels along -->
+              <path d="M50 36 Q90 18 130 36" opacity="0.12" stroke-dasharray="3 3" stroke-width="1" fill="none"/>
+              <!-- envelope flying left→right -->
+              <g opacity="0.6">
+                <rect x="-5" y="-3.5" width="10" height="7" rx="1"/>
+                <path d="M-5-3.5l5 4 5-4"/>
+                <animateMotion dur="3s" repeatCount="indefinite" path="M50,36 Q90,18 130,36" rotate="auto"/>
+              </g>
+              <!-- envelope flying right→left (offset) -->
+              <g opacity="0.4">
+                <rect x="-5" y="-3.5" width="10" height="7" rx="1"/>
+                <path d="M-5-3.5l5 4 5-4"/>
+                <animateMotion dur="3.4s" repeatCount="indefinite" path="M130,36 Q90,18 50,36" rotate="auto" begin="0.8s"/>
+              </g>
+            {:else}
+              <!-- broken / no signal -->
+              <line x1="60" y1="32" x2="120" y2="32" opacity="0.1" stroke-dasharray="3 4"/>
+              <line x1="84" y1="26" x2="96" y2="38" opacity="0.25" stroke-width="1.5"/>
+              <line x1="84" y1="38" x2="96" y2="26" opacity="0.25" stroke-width="1.5"/>
+            {/if}
+            <!-- right person: head, body, arms relaxed, sitting -->
+            <circle cx="144" cy="24" r="4.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M144 28.5v7" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M139 31c2 1.5 8 1.5 10 0" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <path d="M140 35.5l-1 6M148 35.5l1 6" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <!-- right laptop -->
+            <rect x="132" y="44" width="24" height="14" rx="2.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <rect x="135" y="46.5" width="18" height="9" rx="1.5" opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}/>
+            {#if peerDiscoveryEnabled}
+              <!-- small wifi dot on right screen -->
+              <circle cx="144" cy="51" r="1.2" fill="currentColor" stroke="none" opacity="0.6"/>
+              <path d="M141 49a4.2 4.2 0 0 1 6 0" opacity="0.4" stroke-width="1"/>
+            {/if}
+          </svg>
+          {#if peerDiscoveryEnabled}
+            <strong>LAN discovery is on</strong> — other supergit instances on your local network can see this workspace and exchange messages. Click to disable.
+          {:else}
+            <strong>LAN discovery is off</strong> — this workspace is invisible to others on your network. Click to enable peer-to-peer messaging.
+          {/if}
+        </span>
+      </Tooltip>
+      <MessagesInbox />
+    </div>
 
     <div class="actions-anchor">
       <button
