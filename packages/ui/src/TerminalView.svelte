@@ -82,10 +82,11 @@
   let cwdParseBuffer = "";
   const textDecoder = new TextDecoder();
 
-  // Windows cmd:  C:\Users\needle\Music>
+  // Windows cmd:  needle@HOST C:\Users\needle\Music>
+  //          or:  C:\Users\needle\Music>
   // PowerShell:   PS C:\Users\needle>
   // Unix bash:    user@host:/path$  or  user@host:~/path$
-  const WIN_PROMPT_RE = /(?:^|\n)(?:PS )?([A-Za-z]:\\[^\r\n>]*?)>\s*$/;
+  const WIN_PROMPT_RE = /(?:^|\n)(?:.*\s)?(?:PS )?([A-Za-z]:\\[^\r\n>]*?)>\s*$/;
   const UNIX_PROMPT_RE = /(?:^|\n)\S+?:([/~][^\r\n$#]*?)[#$%]\s*$/;
 
   function extractCwdFromOutput(chunk: string): void {

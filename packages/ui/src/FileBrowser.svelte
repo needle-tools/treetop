@@ -2,7 +2,8 @@
   import SessionHeader from "./SessionHeader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile, fetchSshHome } from "./file-browser-utils";
+  import { onDestroy } from "svelte";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -54,6 +55,40 @@
   let selected: Set<string> = new Set();
   let showDotfiles = true;
   let gitStatusByDir: Record<string, Map<string, string>> = {};
+
+  /** Tracked remote files with sync state (modified/uploading/etc). */
+  let syncFiles: { remotePath: string; localCachePath: string; state: string; error?: string }[] = [];
+  let syncPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startSyncPolling() {
+    if (!remoteTermId || syncPollTimer) return;
+    const poll = async () => {
+      syncFiles = await fetchSshStatus(remoteTermId!);
+      if (syncFiles.length > 0 && entries.length > 0) {
+        entries = entries.map((e) => {
+          const remoteFull = currentDir.endsWith("/")
+            ? currentDir + e.name : currentDir + "/" + e.name;
+          const s = syncFiles.find((f) => f.remotePath === remoteFull);
+          return s ? { ...e, sync: s.state } : e.sync ? { ...e, sync: undefined } : e;
+        });
+      }
+    };
+    void poll();
+    syncPollTimer = setInterval(poll, 2000);
+  }
+
+  function stopSyncPolling() {
+    if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+  }
+
+  $: if (isRemote && remoteTermId) startSyncPolling();
+  onDestroy(stopSyncPolling);
+
+  /** Get sync state for a file by its full remote path. */
+  function syncStateFor(remotePath: string): { state: string; localCachePath: string } | null {
+    const f = syncFiles.find((s) => s.remotePath === remotePath);
+    return f ? { state: f.state, localCachePath: f.localCachePath } : null;
+  }
 
   let savedExpandedPaths: string[] = [];
 
@@ -456,6 +491,20 @@
       </button>
     {/if}
   </nav>
+
+  {#each syncFiles.filter((f) => f.state === "modified") as mod (mod.remotePath)}
+    <div class="fb-sync-confirm">
+      <span class="fb-sync-confirm-text">
+        <strong>{mod.remotePath.split("/").pop()}</strong> modified — upload to remote?
+      </span>
+      <button class="fb-sync-confirm-btn fb-sync-confirm-upload" on:click={() => { void confirmRemoteUpload(mod.localCachePath).then(() => loadCurrentDir()); }}>Upload</button>
+      <button class="fb-sync-confirm-btn" on:click={() => {
+        const fullPath = mod.localCachePath;
+        void fetch("/api/open-default", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: fullPath }) });
+      }}>Open</button>
+      <button class="fb-sync-confirm-btn" on:click={() => { void dismissRemoteUpload(mod.localCachePath); }}>Dismiss</button>
+    </div>
+  {/each}
 
   <div class="fb-content">
     {#if loading && entries.length === 0}
