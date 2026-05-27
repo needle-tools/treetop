@@ -192,8 +192,26 @@
   bind:this={wrapEl}
   on:mouseenter={start}
   on:mouseleave={stop}
+  on:click={() => {
+    // A click inside the trigger should keep the tooltip open — the
+    // user is interacting with it. Cancel any pending hide (e.g.
+    // from a disabled-button focusout) and force open immediately.
+    cancelHide();
+    if (!open) { open = true; onShow(); }
+  }}
   on:focusin={start}
-  on:focusout={stop}
+  on:focusout={(ev) => {
+    // Don't close when focus stays inside the wrapper. During a
+    // re-render the focused element may be destroyed (relatedTarget
+    // is null) and Svelte restores focus on the next microtask —
+    // defer the check so we don't race the framework.
+    const next = ev.relatedTarget as Node | null;
+    if (next && wrapEl?.contains(next)) return;
+    queueMicrotask(() => {
+      if (wrapEl?.contains(document.activeElement)) return;
+      stop();
+    });
+  }}
   role="presentation"
 >
   <slot name="trigger" />

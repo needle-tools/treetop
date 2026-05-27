@@ -335,3 +335,20 @@ main > header > h1 {
   background: var(--chip-green-bg, #1a3a1a);
   color: var(--chip-green-text, #8fdf8f);
 }
+.peer-badge {
+  display: inline;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm, 4px);
+  font-size: inherit;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.peer-badge-on {
+  background: var(--chip-green-bg, #1a3a1a);
+  color: var(--chip-green-text, #8fdf8f);
+}
+.peer-badge-off {
+  background: color-mix(in oklch, #e44 25%, var(--surface-2, #1f1f21));
+  color: #f88;
+}

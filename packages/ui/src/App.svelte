@@ -5475,9 +5475,9 @@
             {/if}
           </svg>
           {#if peerDiscoveryEnabled}
-            <strong>LAN discovery is on</strong> — other supergit instances on your local network can see this workspace and exchange messages. Click to disable.
+            <span>LAN discovery is <span class="peer-badge peer-badge-on">ON</span> — other supergit instances on your local network can see this workspace and exchange messages. Click to disable.</span>
           {:else}
-            <strong>LAN discovery is off</strong> — this workspace is invisible to others on your network. Click to enable peer-to-peer messaging.
+            <span>LAN discovery is <span class="peer-badge peer-badge-off">OFF</span> — this workspace is invisible to others on your network. Click to enable peer-to-peer messaging.</span>
           {/if}
         </span>
       </Tooltip>
