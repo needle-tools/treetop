@@ -70,6 +70,7 @@
   let everLoaded = false;
   let loading = false;
   let collapsed: Record<string, boolean> = {};
+  let closing: Record<string, boolean> = {};
   let pendingKill: Record<string, boolean> = {};
 
   const TUI_HOT_MEM_FRACTION = 0.5;
@@ -148,7 +149,11 @@
       for (const id of Object.keys(pendingKill)) {
         if (!liveIds.has(id)) delete pendingKill[id];
       }
+      for (const id of Object.keys(closing)) {
+        if (!liveIds.has(id)) delete closing[id];
+      }
       pendingKill = pendingKill;
+      closing = closing;
     } catch {
     } finally {
       loading = false;
@@ -196,21 +201,28 @@
     if (pendingKill[p.id]) {
       await sendKill(p);
       delete pendingKill[p.id];
+      delete closing[p.id];
       pendingKill = pendingKill;
+      closing = closing;
       void refresh();
       return;
     }
+    closing = { ...closing, [p.id]: true };
     await sendTerm(p);
-    pendingKill = { ...pendingKill, [p.id]: true };
-    setTimeout(async () => {
-      if (!pendingKill[p.id]) return;
+    setTimeout(() => {
+      if (!closing[p.id]) return;
+      delete closing[p.id];
+      closing = closing;
+      pendingKill = { ...pendingKill, [p.id]: true };
       void refresh();
     }, 2000);
   }
   async function forceKillProc(p: TuiProc) {
     await sendKill(p);
     delete pendingKill[p.id];
+    delete closing[p.id];
     pendingKill = pendingKill;
+    closing = closing;
     void refresh();
   }
 
@@ -425,14 +437,17 @@
                         {/if}
                         <button
                           class="row-close tui-kill-x"
+                          class:tui-kill-closing={closing[p.id]}
                           class:tui-kill-pending={pendingKill[p.id]}
                           on:click|stopPropagation={() => closeProc(p)}
                           on:dblclick|stopPropagation={() => forceKillProc(p)}
                           title={pendingKill[p.id]
-                            ? "Process didn't exit — click again to force kill (SIGKILL)"
-                            : "Close process (SIGTERM). Double-click to force kill."}
-                          aria-label={pendingKill[p.id] ? "Force kill" : "Close process"}
-                        >×</button>
+                            ? "Process didn't exit — click to force kill (SIGKILL)"
+                            : closing[p.id]
+                              ? "Closing… waiting for process to exit"
+                              : "Close process (SIGTERM). Double-click to force kill."}
+                          aria-label={pendingKill[p.id] ? "Force kill" : closing[p.id] ? "Closing" : "Close process"}
+                        >{#if closing[p.id]}<svg class="kill-spinner" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="28" stroke-dashoffset="8" /></svg>{:else if pendingKill[p.id]}<svg class="kill-skull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="7" /><circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none" /><circle cx="15" cy="9" r="1.2" fill="currentColor" stroke="none" /><path d="M9.5 14.5 L12 13 L14.5 14.5" /><path d="M9 17v3" /><path d="M12 17v3" /><path d="M15 17v3" /></svg>{:else}×{/if}</button>
                       </div>
                     </li>
                   {/each}

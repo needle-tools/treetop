@@ -211,9 +211,9 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  padding-top: 0.35rem;
-  padding-bottom: 0.15rem;
-  margin-bottom: 0.1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.15rem;
 }
 .tuis-popover .proc-col-header > span {
   white-space: nowrap;
@@ -347,21 +347,43 @@
   opacity: 1;
   pointer-events: auto;
 }
-.tui-kill-x {
+.tuis-popover .tui-kill-x {
   border: none;
   padding: 0;
+  margin-right: 0.3rem;
   background: none;
   font-size: 0.75rem;
 }
-.tui-kill-x:hover {
+.tuis-popover .tui-kill-x:hover {
   color: var(--error-text);
   background: var(--error-bg);
 }
-.tui-kill-x.tui-kill-pending {
-  opacity: 1;
-  pointer-events: auto;
+.tuis-popover .tui-kill-x.tui-kill-closing {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  color: var(--text-muted);
+}
+.tuis-popover .tui-kill-x.tui-kill-pending {
+  opacity: 1 !important;
+  pointer-events: auto !important;
   color: var(--error-text);
-  background: var(--error-bg);
+  animation: kill-pulse 0.8s ease-in-out infinite;
+}
+.kill-spinner {
+  width: 14px;
+  height: 14px;
+  animation: kill-spin 0.8s linear infinite;
+}
+.kill-skull {
+  width: 14px;
+  height: 14px;
+}
+@keyframes kill-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes kill-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 .tuis-popover .proc-warm {
   color: var(--chip-orange-text);
@@ -390,9 +412,10 @@
   align-items: center;
   gap: 0.4rem;
   width: 100%;
-  padding: 0.25rem 0.3rem;
+  padding: 0.35rem 0.3rem;
   border: none;
   border-bottom: 1px solid var(--surface-2);
+  margin-bottom: 0.3rem;
   background: var(--surface-1);
   color: var(--text-muted);
   font-size: 0.7rem;
