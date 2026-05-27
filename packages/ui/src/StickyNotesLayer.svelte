@@ -261,6 +261,8 @@
   let lastPointer = { clientX: 0, clientY: 0 };
   let draggingPinnedNoteId: string | null = null;
   let attachmentDropNoteId: string | null = null;
+  let attachmentDragAvailable = false;
+  let attachmentDragSourceNoteId: string | null = null;
   let dragStartOffsets: Record<string, (NoteOffset & { offsetX?: number }) | null> = {};
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
@@ -495,6 +497,10 @@
     const id = sticky?.dataset.noteId;
     const note = id ? notes.find((n) => n.id === id) ?? null : null;
     return note && note.kind !== "link" && note.kind !== "emoji" ? note : null;
+  }
+
+  function noteCanReceiveAttachments(note: NoteShape): boolean {
+    return note.kind !== "link" && note.kind !== "emoji";
   }
 
   function isTerminalEventTarget(target: EventTarget | null): boolean {
@@ -953,6 +959,25 @@
     );
   }
 
+  function hasImageFileTransfer(dt: DataTransfer | null): boolean {
+    if (!dt) return false;
+    return (
+      Array.from(dt.files ?? []).some((file) => file.type.startsWith("image/")) ||
+      Array.from(dt.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))
+    );
+  }
+
+  function transferCanAppendToNote(e: DragEvent): boolean {
+    attachmentDragSourceNoteId = null;
+    if (hasLinkTargetDrag(e)) return true;
+    if (hasInlineAttachmentDrag(e)) {
+      const payload = parseInlineAttachmentDrag(e);
+      attachmentDragSourceNoteId = payload?.sourceNoteId ?? null;
+      return !payload || payload.attachment.kind !== "note";
+    }
+    return hasImageFileTransfer(e.dataTransfer);
+  }
+
   async function uploadDroppedImageAttachment(
     file: File,
     source: { kind: "clipboard" | "drop"; types: string[] },
@@ -1085,8 +1110,14 @@
   }
 
   function onWindowDragOver(e: DragEvent): void {
-    if (isTerminalEventTarget(e.target) || isAttachmentModalEventTarget(e.target)) return;
-    attachmentDropNoteId = attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null;
+    if (isTerminalEventTarget(e.target) || isAttachmentModalEventTarget(e.target)) {
+      resetAttachmentDrag();
+      return;
+    }
+    attachmentDragAvailable = transferCanAppendToNote(e);
+    attachmentDropNoteId = attachmentDragAvailable
+      ? attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null
+      : null;
     if (hasInlineAttachmentDrag(e)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -1094,6 +1125,14 @@
     }
     if (
       hasLinkTargetDrag(e) &&
+      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
+    ) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      return;
+    }
+    if (
+      hasImageFileTransfer(e.dataTransfer) &&
       (attachmentZoneNoteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
     ) {
       e.preventDefault();
@@ -1164,16 +1203,28 @@
   }
 
   function onWindowDropEvent(e: DragEvent): void {
-    attachmentDropNoteId = null;
+    resetAttachmentDrag();
     void onWindowDrop(e);
   }
 
   function onWindowPointerMove(e: PointerEvent): void {
     lastPointer = { clientX: e.clientX, clientY: e.clientY };
     if (draggingPinnedNoteId) {
+      const source = notes.find((n) => n.id === draggingPinnedNoteId);
+      attachmentDragAvailable = !!source && pinnedNoteCanAppend(source);
       attachmentDropNoteId =
-        attachmentZoneNoteAtPoint(e.clientX, e.clientY, draggingPinnedNoteId)?.id ?? null;
+        attachmentDragAvailable
+          ? attachmentZoneNoteAtPoint(e.clientX, e.clientY, draggingPinnedNoteId)?.id ?? null
+          : null;
     }
+  }
+
+  function onWindowDragEnd(): void {
+    resetAttachmentDrag();
+  }
+
+  function onWindowDragLeave(e: DragEvent): void {
+    if (e.relatedTarget === null) resetAttachmentDrag();
   }
 
   function onWindowPaste(e: ClipboardEvent): void {
@@ -1717,6 +1768,8 @@
   function clearDragState(id?: string): void {
     if (!id || draggingPinnedNoteId === id) draggingPinnedNoteId = null;
     attachmentDropNoteId = null;
+    attachmentDragAvailable = false;
+    attachmentDragSourceNoteId = null;
     if (id && id in dragStartOffsets) {
       const next = { ...dragStartOffsets };
       delete next[id];
@@ -1736,6 +1789,31 @@
       return parts[0].raw;
     }
     return makeNoteAttachmentRef({ body: note.body });
+  }
+
+  function pinnedNoteCanAppend(source: NoteShape): boolean {
+    const raw = inlineRefForPinnedNote(source);
+    if (!raw) return false;
+    const part = parseInlineAttachments(raw)[0];
+    return part?.kind === "attachment" && part.attachment.kind !== "note";
+  }
+
+  function noteShowsAttachmentDropZone(note: NoteShape): boolean {
+    if (!noteCanReceiveAttachments(note)) return false;
+    if (draggingPinnedNoteId) {
+      const source = notes.find((n) => n.id === draggingPinnedNoteId);
+      return !!source &&
+        source.id !== note.id &&
+        pinnedNoteCanAppend(source) &&
+        notesShareDropAnchor(source, note);
+    }
+    return attachmentDragAvailable;
+  }
+
+  function resetAttachmentDrag(): void {
+    attachmentDropNoteId = null;
+    attachmentDragAvailable = false;
+    attachmentDragSourceNoteId = null;
   }
 
   async function appendLinkTargetToNote(
@@ -2184,6 +2262,8 @@
     window.addEventListener("resize", scheduleTick);
     window.addEventListener("pointermove", onWindowPointerMove);
     window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("dragend", onWindowDragEnd);
+    window.addEventListener("dragleave", onWindowDragLeave);
     window.addEventListener("drop", onWindowDropEvent);
     window.addEventListener("paste", onWindowPaste);
 
@@ -2222,6 +2302,8 @@
     window.removeEventListener("resize", scheduleTick);
     window.removeEventListener("pointermove", onWindowPointerMove);
     window.removeEventListener("dragover", onWindowDragOver);
+    window.removeEventListener("dragend", onWindowDragEnd);
+    window.removeEventListener("dragleave", onWindowDragLeave);
     window.removeEventListener("drop", onWindowDropEvent);
     window.removeEventListener("paste", onWindowPaste);
     mutationObs?.disconnect();
@@ -2268,7 +2350,10 @@
         grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
         grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
         emojiScale={offsets[note.id]?.emojiScale ?? 1}
+        attachmentDropAvailable={noteShowsAttachmentDropZone(note)}
         attachmentDropActive={attachmentDropNoteId === note.id}
+        attachmentDropSourceActive={!!attachmentDropNoteId &&
+          (draggingPinnedNoteId === note.id || attachmentDragSourceNoteId === note.id)}
         startEditing={editingId === note.id}
         removeIfEmpty={!!staging[note.id]}
         flying={!!flyingNotes[note.id]}

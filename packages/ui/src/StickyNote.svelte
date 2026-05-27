@@ -1048,24 +1048,18 @@
   }
 
   function onNoteDragOver(e: DragEvent): void {
-    if (isLink || isEmoji) return;
+    if (isLink || isEmoji || !attachmentDropAvailable) return;
     if (!isAttachmentZoneTarget(e.target)) return;
     if (e.dataTransfer?.types.includes("Files")) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
-      localAttachmentDropActive = true;
     }
   }
 
-  function onNoteDragLeave(e: DragEvent): void {
-    if (!(e.relatedTarget instanceof Element) || !isAttachmentZoneTarget(e.relatedTarget)) {
-      localAttachmentDropActive = false;
-    }
-  }
+  function onNoteDragLeave(_e: DragEvent): void {}
 
   function onNoteDrop(e: DragEvent): void {
-    localAttachmentDropActive = false;
-    if (isLink || isEmoji) return;
+    if (isLink || isEmoji || !attachmentDropAvailable) return;
     if (!isAttachmentZoneTarget(e.target)) return;
     const files = Array.from(e.dataTransfer?.files ?? []);
     const image = files.find((file) => file.type.startsWith("image/"));
@@ -1452,15 +1446,16 @@
   export let grabXFrac = 0;
   export let grabYFrac = 0;
   export let emojiScale = 1;
+  export let attachmentDropAvailable = false;
   export let attachmentDropActive = false;
+  export let attachmentDropSourceActive = false;
   let liveGrabXFrac: number | null = null;
   let liveGrabYFrac: number | null = null;
   $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
   $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
   let textStatsByPath: Record<string, { lineCount: number; charCount: number }> = {};
   const pendingTextStats = new Set<string>();
-  let localAttachmentDropActive = false;
-  $: showAttachmentDropActive = attachmentDropActive || localAttachmentDropActive;
+  $: showAttachmentDropActive = attachmentDropActive;
 
   onMount(() => {
     if (editing && !isLink && textareaEl) {
@@ -2375,6 +2370,9 @@
     {#if !editing && !isLink && !isEmoji && !isDetachedAttachment}
       <span class="sticky-attach-indicator" aria-hidden="true">📎</span>
     {/if}
+    {#if attachmentDropSourceActive}
+      <span class="sticky-attach-source-indicator" aria-hidden="true">📎</span>
+    {/if}
     <span class="sticky-grip" aria-hidden="true">⋮⋮</span>
     <div class="sticky-actions">
       {#if editing && !isLink}
@@ -2650,7 +2648,7 @@
     {/if}
   {/if}
 
-  {#if !editing && !isLink && !isEmoji && !isDetachedAttachment}
+  {#if attachmentDropAvailable && !editing && !isLink && !isEmoji && !isDetachedAttachment}
     <div
       class="sticky-attachment-zone"
       class:active={showAttachmentDropActive}
