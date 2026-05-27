@@ -31,10 +31,15 @@ const targets = [
 const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
 
 // Helper: resolve the WebView2 partition path. Used by both snippets.
+//
+// Uses __require (= import.meta.require, defined at top of bundled
+// main.js by Bun's bundler) — bare require() is not a global in Bun's
+// ESM runtime, so any earlier use of `require()` here silently threw
+// and the cleanup never ran.
 const PARTITION_RESOLVE = `
-    const _path = require("node:path");
-    const _fs = require("node:fs");
-    const { spawnSync: _spawnSync } = require("bun");
+    const _path = __require("node:path");
+    const _fs = __require("node:fs");
+    const { spawnSync: _spawnSync } = __require("bun");
     const _partition = _path.resolve(
       _path.dirname(process.execPath),
       "..", "..", "WebView2", "Partitions", "default", "EBWebView",
@@ -72,7 +77,7 @@ const POST_CLOSE = `
   try {${PARTITION_RESOLVE}${KILL_WEBVIEW2}
     // Shut down the daemon so it doesn't linger.
     try {
-      const _http = require("node:http");
+      const _http = __require("node:http");
       const _req = _http.request("http://localhost:27787/api/shutdown", { method: "POST", timeout: 2000 });
       _req.on("error", () => {});
       _req.end();
@@ -80,8 +85,13 @@ const POST_CLOSE = `
   } catch {}
 `;
 
-const START_EVENT_LOOP = /lib\.symbols\.startEventLoop\s*\(/;
-const FORCE_EXIT = /lib\.symbols\.forceExit\s*\(/;
+// Electrobun 1.18.1+ replaced the original {startEventLoop, forceExit}
+// pair with a single `electrobun_core_run_main_thread` call that returns
+// an i32 status code. We support both shapes — older builds still use
+// the old symbols. Find both API variants and patch whichever matches.
+const ENTRY_OLD = /lib\.symbols\.startEventLoop\s*\(/;
+const EXIT_OLD = /lib\.symbols\.forceExit\s*\(/;
+const ENTRY_NEW = /lib\.symbols\.electrobun_core_run_main_thread\s*\(/;
 
 for (const path of targets) {
   if (!existsSync(path)) {
@@ -94,23 +104,56 @@ for (const path of targets) {
     continue;
   }
 
-  const mStart = src.match(START_EVENT_LOOP);
-  const mExit = src.match(FORCE_EXIT);
+  // Try the new API shape first (electrobun_core_run_main_thread).
+  // The call returns the status, so post-close runs naturally after it.
+  const mNew = src.match(ENTRY_NEW);
+  if (mNew) {
+    // Locate the end of the const runStatus = ...; statement: scan from
+    // the match index forward to the matching `;` after the closing `)`.
+    const start = mNew.index!;
+    let i = start, depth = 0, found = -1;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (c === "(") depth++;
+      else if (c === ")") { depth--; if (depth === 0) { i++; break; } }
+    }
+    // Skip whitespace + ;
+    while (i < src.length && /\s/.test(src[i]!)) i++;
+    if (src[i] === ";") { i++; found = i; }
+    if (found < 0) {
+      console.warn(`  ⚠ couldn't locate end of run_main_thread call in ${path}`);
+      continue;
+    }
+    // Find the start of the line containing run_main_thread (back to \n)
+    let lineStart = start;
+    while (lineStart > 0 && src[lineStart - 1] !== "\n") lineStart--;
+
+    const out =
+      src.slice(0, lineStart) +
+      PRE_INIT +
+      src.slice(lineStart, found) +
+      "\n" +
+      POST_CLOSE +
+      src.slice(found);
+    writeFileSync(path, out);
+    console.log(`  patched (new API): ${path}`);
+    continue;
+  }
+
+  // Fallback: old API (startEventLoop + forceExit).
+  const mStart = src.match(ENTRY_OLD);
+  const mExit = src.match(EXIT_OLD);
   if (!mStart) {
-    console.warn(`  ⚠ no startEventLoop in ${path}, skipping`);
+    console.warn(`  ⚠ no recognized entry point in ${path}, skipping`);
     continue;
   }
   if (!mExit) {
     console.warn(`  ⚠ no forceExit in ${path}, skipping`);
     continue;
   }
-
-  // Insert post-close FIRST (higher index) so pre-init offset stays valid.
   let out = src.slice(0, mExit.index!) + POST_CLOSE + "  " + src.slice(mExit.index!);
-  // Now find startEventLoop again in the modified string and insert pre-init.
-  const mStart2 = out.match(START_EVENT_LOOP);
+  const mStart2 = out.match(ENTRY_OLD);
   out = out.slice(0, mStart2!.index!) + PRE_INIT + "  " + out.slice(mStart2!.index!);
-
   writeFileSync(path, out);
-  console.log(`  patched: ${path}`);
+  console.log(`  patched (old API): ${path}`);
 }

@@ -120,6 +120,58 @@ async function shutdownDaemon(): Promise<void> {
   }
 }
 
+/** True when something is listening on PORT but doesn't respond to
+ *  HTTP. A previous daemon got wedged and is keeping the port
+ *  EADDRINUSE-locked for any new daemon we'd spawn. We detect this so
+ *  ensureDaemon() can force-kill the holder before spawning. */
+async function isPortBound(port: number): Promise<boolean> {
+  if (isWin) {
+    try {
+      const r = bunSpawnSync({
+        cmd: ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+          `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count`],
+        stdout: "pipe", stderr: "ignore", stdin: "ignore",
+      });
+      const count = parseInt((r.stdout?.toString() ?? "0").trim(), 10);
+      return count > 0;
+    } catch { return false; }
+  }
+  try {
+    const r = bunSpawnSync({
+      cmd: ["lsof", "-i", `TCP:${port}`, "-sTCP:LISTEN", "-t"],
+      stdout: "pipe", stderr: "ignore", stdin: "ignore",
+    });
+    return ((r.stdout?.toString() ?? "").trim().length > 0);
+  } catch { return false; }
+}
+
+/** Force-kill whatever process is holding PORT in LISTEN state. Only
+ *  called after we've confirmed (via isDaemonRunning + isPortBound)
+ *  that there's a zombie daemon — a process that bound the port but
+ *  isn't responding to HTTP. Returns true if we killed something. */
+async function killPortHolder(port: number): Promise<boolean> {
+  if (isWin) {
+    try {
+      const r = bunSpawnSync({
+        cmd: ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+          `$pids = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique; ` +
+          `foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; ` +
+          `Write-Output ($pids.Count)`],
+        stdout: "pipe", stderr: "ignore", stdin: "ignore",
+      });
+      const killed = parseInt((r.stdout?.toString() ?? "0").trim(), 10);
+      return killed > 0;
+    } catch { return false; }
+  }
+  try {
+    const r = bunSpawnSync({
+      cmd: ["bash", "-c", `lsof -i TCP:${port} -sTCP:LISTEN -t | xargs -r kill -9`],
+      stdout: "ignore", stderr: "ignore", stdin: "ignore",
+    });
+    return r.exitCode === 0;
+  } catch { return false; }
+}
+
 function loadMyBuildTime(): string | null {
   // build-info.json is copied into the bundle by electrobun.config.ts
   const execDir = dirname(process.execPath);
@@ -156,6 +208,18 @@ async function ensureDaemon(): Promise<void> {
     } else {
       return; // Dev mode, no build-info.json — reuse whatever's running
     }
+  }
+
+  // Zombie check: isDaemonRunning() failed (no HTTP response) but the
+  // port might still be bound by a wedged previous daemon. If we don't
+  // force-kill it, our spawn below will fail with EADDRINUSE and the
+  // child daemon will exit silently — waitForDaemon then times out and
+  // throws an unhandled rejection that kills the launcher.
+  if (await isPortBound(PORT)) {
+    console.log(`supergit: port ${PORT} bound but unresponsive — killing zombie holder`);
+    await killPortHolder(PORT);
+    // Give the OS a moment to release the socket.
+    await new Promise((r) => setTimeout(r, 500));
   }
 
   // Find the bundled daemon binary. Layout differs per platform:
@@ -311,7 +375,27 @@ if (!isWin) {
   ]);
 }
 
-await ensureDaemon();
+// Don't let an ensureDaemon failure bubble up as an unhandled
+// rejection — in a Bun Worker that takes down the launcher's parent
+// process with exit 1, and the user sees nothing at all. Log + retry
+// once after force-killing whatever's holding the port, then bail
+// loudly if it still fails.
+try {
+  await ensureDaemon();
+} catch (e) {
+  console.error("supergit: ensureDaemon failed:", e instanceof Error ? e.message : e);
+  // One last-ditch attempt: kill anything on the port and retry.
+  await killPortHolder(PORT);
+  await new Promise((r) => setTimeout(r, 500));
+  try {
+    await ensureDaemon();
+  } catch (e2) {
+    console.error("supergit: ensureDaemon retry failed:", e2 instanceof Error ? e2.message : e2);
+    // Continue anyway — BrowserWindow will load with a connection error
+    // page instead of vanishing silently. The user can at least see
+    // something and use the OS to terminate.
+  }
+}
 
 const bounds = loadBounds();
 
