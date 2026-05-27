@@ -6228,11 +6228,13 @@ const server = Bun.serve<TermWsData, never>({
         if (lines.length > 0) {
           const ts = new Date().toISOString();
           const cwd = shellCwds.get(termId) ?? "";
+          const lastLine = lines[lines.length - 1]!;
           for (const line of lines) {
             void shells
               .append(termId, { kind: "cmd", ts, line, cwd })
               .catch(() => {});
           }
+          void terminalPersist.updateLastCmd(termId, lastLine).catch(() => {});
         }
       }
       handle.write(buf);

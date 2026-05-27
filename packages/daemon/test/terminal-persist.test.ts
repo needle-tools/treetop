@@ -128,6 +128,40 @@ describe("TerminalPersist", () => {
     expect(remaining[0]!.termId).toBe("t2");
   });
 
+  test("updateLastCmd stores the last typed command", async () => {
+    const dir = join(tmpDir, "lastcmd");
+    const tp = new TerminalPersist(dir);
+
+    await tp.save({ termId: "t1", cmd: ["cmd.exe"], cwd: "/a", wtPath: "/a" });
+    await tp.updateLastCmd("t1", "ssh needle@100.71.105.118");
+
+    const list = await tp.list();
+    expect(list[0]!.lastCmd).toBe("ssh needle@100.71.105.118");
+  });
+
+  test("updateLastCmd is a no-op for unknown termId", async () => {
+    const dir = join(tmpDir, "lastcmd-noop");
+    const tp = new TerminalPersist(dir);
+
+    await tp.save({ termId: "t1", cmd: ["bash"], cwd: "/", wtPath: "/" });
+    await tp.updateLastCmd("t_unknown", "some command");
+
+    const list = await tp.list();
+    expect(list[0]!.lastCmd).toBeUndefined();
+  });
+
+  test("updateLastCmd overwrites previous lastCmd", async () => {
+    const dir = join(tmpDir, "lastcmd-overwrite");
+    const tp = new TerminalPersist(dir);
+
+    await tp.save({ termId: "t1", cmd: ["bash"], cwd: "/", wtPath: "/" });
+    await tp.updateLastCmd("t1", "first command");
+    await tp.updateLastCmd("t1", "second command");
+
+    const list = await tp.list();
+    expect(list[0]!.lastCmd).toBe("second command");
+  });
+
   test("atomic write survives concurrent access", async () => {
     const dir = join(tmpDir, "concurrent");
     const tp = new TerminalPersist(dir);

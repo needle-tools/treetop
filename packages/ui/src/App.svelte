@@ -1868,20 +1868,20 @@
   }
 
   /** Persisted terminal info for __restore__: columns. */
-  let persistedTerminals: Record<string, { cmd: string[]; cwd: string; title?: string }> = {};
+  let persistedTerminals: Record<string, { cmd: string[]; cwd: string; title?: string; lastCmd?: string }> = {};
 
   async function restorePersistedTerminals() {
     try {
       const res = await fetch("/api/terminals/persisted");
       if (!res.ok) return;
       const list = (await res.json()) as Array<{
-        termId: string; cmd: string[]; cwd: string; wtPath: string; title?: string;
+        termId: string; cmd: string[]; cwd: string; wtPath: string; title?: string; lastCmd?: string;
       }>;
       if (list.length === 0) return;
       const next = { ...openSessionsByWt };
       for (const entry of list) {
         const source = `__restore__:${entry.termId}`;
-        persistedTerminals = { ...persistedTerminals, [source]: { cmd: entry.cmd, cwd: entry.cwd, title: entry.title } };
+        persistedTerminals = { ...persistedTerminals, [source]: { cmd: entry.cmd, cwd: entry.cwd, title: entry.title, lastCmd: entry.lastCmd } };
         const existing = next[entry.wtPath] ?? [];
         if (!existing.some((s) => s.source === source)) {
           next[entry.wtPath] = [{ agent: "shell", source }, ...existing];
@@ -1899,7 +1899,8 @@
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const newSource = `__new__:shell:${id}`;
     shellResumeCwd = { ...shellResumeCwd, [newSource]: info.cwd };
-    shellPrefillCmd = { ...shellPrefillCmd, [newSource]: info.cmd.join(" ") };
+    const prefill = info.lastCmd || info.cmd.join(" ");
+    shellPrefillCmd = { ...shellPrefillCmd, [newSource]: prefill };
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
       ...openSessionsByWt,
@@ -7213,7 +7214,7 @@
                               <span class="restore-title">{rInfo?.title || "Terminal"}</span>
                               <span class="restore-status">disconnected</span>
                             </div>
-                            <code class="restore-cmd">{rInfo?.cmd?.join(" ") ?? ""}</code>
+                            <code class="restore-cmd">{rInfo?.lastCmd || rInfo?.cmd?.join(" ") || ""}</code>
                             <div class="restore-actions">
                               <button
                                 class="restore-btn restore-resume"

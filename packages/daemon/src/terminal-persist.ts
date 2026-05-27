@@ -9,6 +9,8 @@ export interface PersistedTerminal {
   cwd: string;
   wtPath: string;
   title?: string;
+  /** Last command the user typed in this shell (for display + prefill on restore). */
+  lastCmd?: string;
 }
 
 interface PersistFile {
@@ -48,6 +50,16 @@ export class TerminalPersist {
       const filtered = existing.filter((t) => t.termId !== termId);
       if (filtered.length === existing.length) return;
       await this.write({ terminals: filtered });
+    });
+  }
+
+  async updateLastCmd(termId: string, lastCmd: string): Promise<void> {
+    await this.withLock(async () => {
+      const existing = await this.list();
+      const entry = existing.find((t) => t.termId === termId);
+      if (!entry) return;
+      entry.lastCmd = lastCmd;
+      await this.write({ terminals: existing });
     });
   }
 
