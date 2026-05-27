@@ -446,6 +446,38 @@ describe("filterToExistingSessions", () => {
       mkSess("__transcript__:shell:t_2"),
     ]);
   });
+
+  // Regression: the strip's `{#each visibleSessions as s, i (s.source)}`
+  // throws `svelte/e/each_key_duplicate` if the same source appears
+  // twice. Promotion paths (executePromotion, promoteTransientSessions)
+  // can rewrite a `__new__:` entry's source to a real one that already
+  // exists in the same worktree's array — e.g. when the same session is
+  // opened a second time. The render-time filter dedupes so the crash
+  // is structurally impossible from the {#each}'s point of view; the
+  // promotion sites should still avoid creating dupes, but this is the
+  // last line of defense.
+  test("dedupes by source, keeping the first occurrence", () => {
+    const persisted = [
+      mkSess("/agents/dup.jsonl"),
+      mkSess("/agents/other.jsonl"),
+      mkSess("/agents/dup.jsonl"),
+    ];
+    const existing = new Set(["/agents/dup.jsonl", "/agents/other.jsonl"]);
+    expect(filterToExistingSessions(persisted, existing)).toEqual([
+      mkSess("/agents/dup.jsonl"),
+      mkSess("/agents/other.jsonl"),
+    ]);
+  });
+
+  test("dedupes duplicate synthetic sources too", () => {
+    const persisted = [
+      mkSess("__new__:claude:abc"),
+      mkSess("__new__:claude:abc"),
+    ];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual([
+      mkSess("__new__:claude:abc"),
+    ]);
+  });
 });
 
 describe("VisibleWorktreesStore", () => {

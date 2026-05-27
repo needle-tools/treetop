@@ -307,11 +307,22 @@ export function filterToExistingSessions(
   persisted: PersistedSession[],
   existingSources: ReadonlySet<string>,
 ): PersistedSession[] {
-  return persisted.filter(
-    (s) =>
+  // Dedupe by source as a last line of defense for the strip's
+  // `{#each ... as s (s.source)}` block. Promotion paths
+  // (executePromotion, promoteTransientSessions) rewrite a `__new__:`
+  // source to a real one, and can collide with an entry that already
+  // has that real source — which would crash Svelte with
+  // `each_key_duplicate`. Keep the first occurrence to preserve
+  // drag-reorder.
+  const seen = new Set<string>();
+  return persisted.filter((s) => {
+    if (seen.has(s.source)) return false;
+    const keep =
       SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
-      existingSources.has(s.source),
-  );
+      existingSources.has(s.source);
+    if (keep) seen.add(s.source);
+    return keep;
+  });
 }
 
 /** Build the cmd[] supergit should hand to a `TerminalView` mounted in
