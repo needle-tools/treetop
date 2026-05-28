@@ -1909,6 +1909,15 @@
     saveOffsets();
   }
 
+  function handleScale(e: CustomEvent<{ id: string; emojiScale: number }>): void {
+    const prev = offsets[e.detail.id] ?? {};
+    offsets = {
+      ...offsets,
+      [e.detail.id]: { ...prev, emojiScale: e.detail.emojiScale },
+    };
+    saveOffsets();
+  }
+
   /** Grab-point capture from StickyNote's mousedown. The fraction is
    *  applied as `transform-origin` so rotation pivots around the
    *  cursor; persisting it across drags keeps the visual appearance
@@ -2571,6 +2580,7 @@
         on:focus={handleFocus}
         on:reassign={handleReassign}
         on:rotate={handleRotate}
+        on:scale={handleScale}
         on:grab={handleGrab}
         on:dragdrop={handleDragDrop}
         on:dragcancel={handleDragCancel}

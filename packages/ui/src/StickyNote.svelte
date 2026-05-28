@@ -308,7 +308,17 @@
     grab: { id: string; grabXFrac: number; grabYFrac: number };
     dragdrop: { id: string; clientX: number; clientY: number };
     dragcancel: { id: string };
+    scale: { id: string; emojiScale: number };
   }>();
+
+  const EMOJI_SCALE_STEPS = [0.5, 0.875, 1.25, 1.625, 2.0] as const;
+  function cycleEmojiScale(): void {
+    const idx = EMOJI_SCALE_STEPS.findIndex(
+      (s) => Math.abs(s - emojiScale) < 0.05,
+    );
+    const next = EMOJI_SCALE_STEPS[(idx + 1) % EMOJI_SCALE_STEPS.length] ?? 1;
+    dispatch("scale", { id: note.id, emojiScale: next });
+  }
 
   /** Open the target in whatever app makes sense for its type.
    *
@@ -2557,7 +2567,8 @@
       class="sticky-emoji-glyph"
       style="font-size: calc({EMOJI_STICKER_BASE_PX}px * {emojiScale})"
       on:mousedown={onMouseDownHeader}
-      title="Drag to move"
+      on:dblclick|stopPropagation={cycleEmojiScale}
+      title="Drag to move — double-click to resize"
     >{note.body}</span>
     <button
       class="sticky-emoji-delete sticky-btn danger"
