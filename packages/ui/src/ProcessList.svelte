@@ -508,7 +508,7 @@
                                 " ",
                               )}{/if}
                             {#if ctx.relCwd}<span class="tui-inline-cwd"
-                                >· {ctx.relCwd}</span
+                                >{ctx.relCwd}</span
                               >{/if}
                           </span>
                           <span
