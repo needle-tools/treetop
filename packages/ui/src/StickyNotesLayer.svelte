@@ -1911,9 +1911,38 @@
 
   function handleScale(e: CustomEvent<{ id: string; emojiScale: number }>): void {
     const prev = offsets[e.detail.id] ?? {};
+    const oldScale = prev.emojiScale ?? 1;
+    const newScale = e.detail.emojiScale;
+    // Emoji base font-size is 160px. The glyph box scales with font-size
+    // (width: 1em; height: 1em), so a scale delta of Δ changes the box
+    // by 160·Δ in both dimensions. To keep the visual center fixed
+    // (instead of growing from top-left), shift the stored position by
+    // -160·Δ/2 in both axes.
+    const EMOJI_BASE_PX = 160;
+    const deltaPx = EMOJI_BASE_PX * (newScale - oldScale);
+    let nextOffsetXFrac = prev.offsetXFrac;
+    let nextOffsetY = prev.offsetY;
+    const note = notes.find((n) => n.id === e.detail.id);
+    if (note) {
+      const li = findAnchorLi(note);
+      if (li) {
+        const rowWidth = li.getBoundingClientRect().width;
+        if (rowWidth > 0 && nextOffsetXFrac !== undefined) {
+          nextOffsetXFrac = nextOffsetXFrac - deltaPx / 2 / rowWidth;
+        }
+      }
+      if (nextOffsetY !== undefined) {
+        nextOffsetY = nextOffsetY - deltaPx / 2;
+      }
+    }
     offsets = {
       ...offsets,
-      [e.detail.id]: { ...prev, emojiScale: e.detail.emojiScale },
+      [e.detail.id]: {
+        ...prev,
+        emojiScale: newScale,
+        ...(nextOffsetXFrac !== undefined ? { offsetXFrac: nextOffsetXFrac } : {}),
+        ...(nextOffsetY !== undefined ? { offsetY: nextOffsetY } : {}),
+      },
     };
     saveOffsets();
   }

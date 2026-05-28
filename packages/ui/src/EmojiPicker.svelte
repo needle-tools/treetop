@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
+  import {
+    APP_ICONS,
+    APP_ICON_TOKEN_PREFIX,
+    appIconUrl,
+    type AppIcon,
+  } from "./app-icons";
 
   const dispatch = createEventDispatcher<{ pick: string; cancel: void }>();
 
@@ -40,6 +46,14 @@
     for (const e of emojis) {
       searchIndex.push({ emoji: e, terms: term });
     }
+  }
+  // App icons searchable by name, label, and keywords.
+  for (const icon of APP_ICONS) {
+    const token = `${APP_ICON_TOKEN_PREFIX}${icon.name}`;
+    const terms = [icon.name, icon.label, ...(icon.keywords ?? [])]
+      .join(" ")
+      .toLowerCase();
+    searchIndex.push({ emoji: token, terms });
   }
 
   let query = "";
@@ -101,19 +115,46 @@
     {#if searchResults}
       {#if searchResults.length > 0}
         <div class="emoji-grid">
-          {#each searchResults as emoji}
+          {#each searchResults as token}
+            {@const appName = token.startsWith(APP_ICON_TOKEN_PREFIX)
+              ? token.slice(APP_ICON_TOKEN_PREFIX.length)
+              : null}
             <button
               class="emoji-cell"
+              class:emoji-cell-app={appName !== null}
               type="button"
-              on:click={() => onPick(emoji)}
-              title={emoji}
-            >{emoji}</button>
+              on:click={() => onPick(token)}
+              title={appName ?? token}
+            >
+              {#if appName !== null}
+                <img class="emoji-app-icon" src={appIconUrl(appName)} alt={appName} />
+              {:else}
+                {token}
+              {/if}
+            </button>
           {/each}
         </div>
       {:else}
         <div class="emoji-no-results">No matches</div>
       {/if}
     {:else}
+      {#if APP_ICONS.length > 0}
+        <div class="emoji-category">
+          <span class="emoji-category-label">Apps</span>
+          <div class="emoji-grid">
+            {#each APP_ICONS as icon (icon.name)}
+              <button
+                class="emoji-cell emoji-cell-app"
+                type="button"
+                on:click={() => onPick(`${APP_ICON_TOKEN_PREFIX}${icon.name}`)}
+                title={icon.label}
+              >
+                <img class="emoji-app-icon" src={appIconUrl(icon.name)} alt={icon.label} />
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
       {#each EMOJIS as [category, emojis]}
         <div class="emoji-category">
           <span class="emoji-category-label">{category}</span>
@@ -192,6 +233,12 @@
   }
   .emoji-cell:active {
     transform: scale(1.2);
+  }
+  .emoji-app-icon {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+    pointer-events: none;
   }
   .emoji-no-results {
     padding: 16px 0;

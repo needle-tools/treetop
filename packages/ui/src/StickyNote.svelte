@@ -52,6 +52,11 @@
    */
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { marked } from "marked";
+  import {
+    isAppIconToken,
+    appIconNameFromToken,
+    appIconUrl,
+  } from "./app-icons";
   import DOMPurify from "dompurify";
   import AnchorPicker from "./AnchorPicker.svelte";
   import Popover from "./Popover.svelte";
@@ -482,6 +487,8 @@
    *  whenever the note prop changes so kind flips propagate. */
   $: isLink = note.kind === "link";
   $: isEmoji = note.kind === "emoji";
+  $: isAppIconBody = isEmoji && isAppIconToken(note.body ?? "");
+  $: appIconName = isAppIconBody ? appIconNameFromToken(note.body) : null;
   $: isSessionLink =
     isLink &&
     note.target?.type === "session" &&
@@ -2565,11 +2572,19 @@
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <span
       class="sticky-emoji-glyph"
+      class:sticky-emoji-glyph-app={isAppIconBody}
       style="font-size: calc({EMOJI_STICKER_BASE_PX}px * {emojiScale})"
       on:mousedown={onMouseDownHeader}
       on:dblclick|stopPropagation={cycleEmojiScale}
       title="Drag to move — double-click to resize"
-    >{note.body}</span>
+    >{#if isAppIconBody && appIconName}
+      <img
+        class="sticky-emoji-app-img"
+        src={appIconUrl(appIconName)}
+        alt={appIconName}
+        draggable="false"
+      />
+    {:else}{note.body}{/if}</span>
     <button
       class="sticky-emoji-delete sticky-btn danger"
       on:click={onDeleteClick}

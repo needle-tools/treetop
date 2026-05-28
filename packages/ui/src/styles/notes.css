@@ -769,9 +769,9 @@
    visually unified, and so a future redesign that re-tones --ctx-hot
    doesn't require a second edit here. */
 .sticky .sticky-btn.danger.confirming {
-  background: color-mix(in srgb, var(--ctx-hot) 18%, transparent);
-  color: var(--ctx-hot);
-  border-color: color-mix(in srgb, var(--ctx-hot) 55%, transparent);
+  background: var(--ctx-hot);
+  color: #fff;
+  border-color: var(--ctx-hot);
 }
 
 .sticky {
@@ -977,8 +977,9 @@
   color: #fff4a8;
 }
 .sticky .sticky-btn.danger:hover:not(:disabled) {
-  background: rgba(180, 30, 30, 0.18);
-  color: #6a0e0e;
+  background: rgb(180, 30, 30);
+  color: #fff;
+  border-color: rgb(180, 30, 30);
 }
 /* Secondary buttons inside the sticky header (move-to / copy-to) —
    smaller than primary actions so the toolbar still reads "Cancel /
@@ -2233,6 +2234,14 @@
   position: relative;
   transform: none !important;
   aspect-ratio: 1 / 1;
+  transition: left 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+              top 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.sticky-emoji.dragging {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticky-emoji { transition: none; }
 }
 .sticky-emoji .sticky-header {
   display: none;
@@ -2250,10 +2259,21 @@
   justify-content: center;
   cursor: grab;
   user-select: none;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, font-size 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticky-emoji-glyph { transition: none; }
 }
 .sticky-emoji.dragging .sticky-emoji-glyph {
   cursor: grabbing;
+}
+.sticky-emoji-app-img {
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 .sticky-emoji-delete {
   position: absolute;
