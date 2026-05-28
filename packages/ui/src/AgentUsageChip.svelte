@@ -324,6 +324,23 @@
     });
   }
 
+  /** "5s ago", "12m ago", "3h ago", "2d ago" — compact relative time
+   *  for the data-freshness indicator next to the projection line. */
+  function fmtAgo(iso: string | undefined): string {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return "";
+    const diffMs = Math.max(0, Date.now() - t);
+    const s = Math.round(diffMs / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(diffMs / 60_000);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(diffMs / 3_600_000);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.round(diffMs / (24 * 3_600_000));
+    return `${d}d ago`;
+  }
+
   /** Capitalize a Codex plan_type string ("free" / "plus" / "pro" /
    *  "business" / …) so it reads like a proper name in the tooltip
    *  head, matching how Claude's "Max (20x)" is presented. */
@@ -604,7 +621,10 @@
           )}
           {#if weekProj}
             <div class="usage-projection" class:over-pace={weekProj.isOverPace} class:early={weekProj.isEarly}>
-              {weekProj.label}
+              <span class="usage-projection-label">{weekProj.label}</span>
+              {#if claudeLive.fetchedAt}
+                <span class="usage-projection-fetched" title={fmtResetsLong(claudeLive.fetchedAt)}>updated {fmtAgo(claudeLive.fetchedAt)}</span>
+              {/if}
             </div>
           {/if}
           {#if claudeLive.extraUsage?.isEnabled}
@@ -634,7 +654,10 @@
           )}
           {#if codexProj}
             <div class="usage-projection" class:over-pace={codexProj.isOverPace}>
-              {codexProj.label}
+              <span class="usage-projection-label">{codexProj.label}</span>
+              {#if codexLive.fetchedAt}
+                <span class="usage-projection-fetched" title={fmtResetsLong(codexLive.fetchedAt)}>updated {fmtAgo(codexLive.fetchedAt)}</span>
+              {/if}
             </div>
           {/if}
           {#if codexLive.credits && (codexLive.credits.hasCredits || codexLive.credits.unlimited)}
@@ -1000,6 +1023,21 @@
     margin-top: 0.35rem;
     font-size: 0.7rem;
     color: var(--text-2);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+  .usage-projection-label {
+    min-width: 0;
+  }
+  /* Faint, right-aligned freshness marker. Inherits over-pace/early
+   * colors from the parent so it doesn't fight the projection text. */
+  .usage-projection-fetched {
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .usage-projection.over-pace {
     color: #f97316;
