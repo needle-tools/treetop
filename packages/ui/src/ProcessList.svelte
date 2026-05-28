@@ -395,9 +395,19 @@
                 class="proc-group-header"
                 on:click={() => toggleGroup(group.repoName)}
               >
-                <span class="proc-group-toggle"
-                  >{collapsed[group.repoName] ? "▸" : "▾"}</span
+                <svg
+                  class="proc-group-chevron"
+                  class:collapsed={collapsed[group.repoName]}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
                 >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
                 <span
                   class="proc-group-name"
                   style={group.repoColor ? `color: ${group.repoColor}` : ""}
