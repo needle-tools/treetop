@@ -44,6 +44,7 @@
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
   import CopySessionDialog from "./CopySessionDialog.svelte";
+  import RepoReorderDialog from "./RepoReorderDialog.svelte";
   import RepairSessionDialog from "./RepairSessionDialog.svelte";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
@@ -330,13 +331,20 @@
    *  starts unfocused). */
   let focusedSource: string | null = null;
 
-  // The unique row key (repoId + worktree path) currently being renamed.
-  // Was just editingRepoId — but repos with multiple worktrees produce
-  // multiple rows for the same repo, so a repo-id match would render two
-  // inputs at once and the bind:value + focus() race breaks typing.
+  // The unique row key (repoId + worktree path) whose repo-edit popover
+  // (name + color + reorder) is currently open. Keyed by row rather than
+  // repo id because repos with multiple worktrees produce multiple rows
+  // for the same repo — a repo-id match would open two popovers at once
+  // and the bind:value + focus() race would break typing.
   let editingRowKey: string | null = null;
   let editingRepoId: string | null = null;
   let editRepoName = "";
+  // Whether the drag-to-reorder-repos dialog is open (reached from the
+  // repo-edit popover). Global — reorders the whole repo list.
+  let reorderDialogOpen = false;
+  // The repo whose popover opened the reorder dialog — highlighted in
+  // the list so the user can find where they started.
+  let reorderHighlightRepoId: string | null = null;
 
   let actionsOpen = false;
   let eventsOpen = false;
@@ -3395,19 +3403,25 @@
     return `${Math.round(mo / 12)}y ago`;
   }
 
-  function startRenameRepo(repo: Repo, rowKey: string) {
+  /** Open the repo-edit popover (name + color + reorder) for a row. */
+  function openRepoEdit(repo: Repo, rowKey: string) {
     editingRowKey = rowKey;
     editingRepoId = repo.id;
     editRepoName = repo.name;
   }
+  /** Close the popover without persisting the name. Colour edits are
+   *  saved live (on the picker's `change`), so only the pending name is
+   *  dropped here. */
   function cancelRenameRepo() {
     editingRowKey = null;
     editingRepoId = null;
     editRepoName = "";
   }
+  /** Persist the pending name (no-op if blank/unchanged) then close. */
   async function commitRenameRepo(id: string) {
     const name = editRepoName.trim();
-    if (!name) {
+    const current = repos.find((r) => r.id === id)?.name;
+    if (!name || name === current) {
       cancelRenameRepo();
       return;
     }
@@ -3425,6 +3439,25 @@
       editingRowKey = null;
       editingRepoId = null;
       editRepoName = "";
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  /** Persist a new global repo display order. The daemon broadcasts
+   *  `repos_reorder`, which round-trips a fresh `/api/repos` and
+   *  re-derives the row order — no optimistic mutation needed here. */
+  async function reorderRepos(orderedIds: string[]) {
+    error = "";
+    try {
+      const res = await fetch(`/api/repos/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: orderedIds }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -5055,6 +5088,15 @@
         branchPickerOpen = { ...branchPickerOpen, [key]: false };
       }
     }
+    // Close the repo-edit popover if the click landed outside of it,
+    // committing any pending name first (colour saves live).
+    if (
+      editingRowKey &&
+      !target?.closest(`[data-repo-edit-anchor="${CSS.escape(editingRowKey)}"]`)
+    ) {
+      if (editingRepoId) void commitRenameRepo(editingRepoId);
+      else cancelRenameRepo();
+    }
     // Close any open worktree-picker popover the click landed outside of.
     for (const key of Object.keys(wtPickerOpen)) {
       if (!wtPickerOpen[key]) continue;
@@ -6065,64 +6107,97 @@
             >
               <span class="arrow">▸</span>
             </button>
-            {#if editingRowKey === row.key}
-              <input
-                class="name-edit"
-                use:focusAndSelect
-                bind:value={editRepoName}
-                on:keydown={(e) => {
-                  if (e.key === "Enter") commitRenameRepo(repo.id);
-                  if (e.key === "Escape") cancelRenameRepo();
-                }}
-                on:blur={() => commitRenameRepo(repo.id)}
-              />
-            {:else}
-              <!-- Swatch + chip live inside a flex stack so they read as
-                   a single docked element — same idiom as `.agent-add`
-                   docked to the agent badges below. The swatch is a
-                   native <input type=color> on the LEFT, rounded only
-                   on its left side; the chip's left corners are
-                   squared by `.repo-chip-stacked` so the two visually
-                   fuse. `input` fires continuously while dragging (live
-                   chip preview), `change` fires once on commit (when
-                   we persist to the daemon). Right-click clears. -->
-              <span class="repo-chip-stack">
-                <input
-                  class="repo-color-swatch"
-                  type="color"
-                  aria-label="Repo accent color"
-                  title={repo.color
-                    ? `Repo color (${repo.color}) — right-click to clear`
-                    : "Set a repo accent color (right-click to clear)"}
-                  value={repo.color ?? defaultChipHex}
-                  style={repo.color
-                    ? `--swatch-bg: ${repo.color}`
-                    : `--swatch-bg: ${defaultChipHex}`}
-                  on:input={(e) => {
-                    const v = (e.currentTarget as HTMLInputElement).value;
-                    repo.color = v;
-                    repos = repos;
-                  }}
-                  on:change={(e) =>
-                    setRepoColor(repo.id, (e.currentTarget as HTMLInputElement).value)}
-                  on:contextmenu|preventDefault={() => setRepoColor(repo.id, null)}
-                />
-                <button
-                  class="repo-chip repo-chip-stacked"
-                  class:repo-chip-colored={!!repo.color}
-                  title="Rename repo"
-                  style={repo.color
-                    ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
-                    : ""}
-                  on:click={() => startRenameRepo(repo, row.key)}
-                >
-                  {repo.name}
-                  <span class="chip-tail">
-                    <span class="pencil">✎</span>
-                  </span>
-                </button>
-              </span>
-            {/if}
+            <!-- Clicking the chip opens an edit popover (name + accent
+                 colour + a "Reorder repos…" entry point). The colour
+                 picker's `input` fires continuously while dragging (live
+                 chip preview via `repos = repos`); `change` fires once on
+                 commit (when we persist). Right-click on it clears. -->
+            <span class="repo-chip-anchor" data-repo-edit-anchor={row.key}>
+              <button
+                class="repo-chip"
+                class:repo-chip-colored={!!repo.color}
+                title="Edit repo"
+                style={repo.color
+                  ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
+                  : ""}
+                on:click|stopPropagation={() =>
+                  editingRowKey === row.key
+                    ? cancelRenameRepo()
+                    : openRepoEdit(repo, row.key)}
+              >
+                {repo.name}
+                <span class="chip-tail">
+                  <span class="pencil">✎</span>
+                </span>
+              </button>
+              {#if editingRowKey === row.key}
+                <Popover variant="agents" extraClass="repo-edit-popover" headClass="repo-edit-popover-head">
+                  <svelte:fragment slot="head">
+                    <span>Edit repo</span>
+                  </svelte:fragment>
+                  <div class="repo-edit-body">
+                    <label class="repo-edit-field">
+                      <span class="repo-edit-label">Name</span>
+                      <input
+                        class="repo-edit-name"
+                        use:focusAndSelect
+                        bind:value={editRepoName}
+                        on:keydown={(e) => {
+                          if (e.key === "Enter") commitRenameRepo(repo.id);
+                          if (e.key === "Escape") cancelRenameRepo();
+                        }}
+                      />
+                    </label>
+                    <div class="repo-edit-field">
+                      <span class="repo-edit-label">Color</span>
+                      <span class="repo-edit-color">
+                        <input
+                          class="repo-color-swatch"
+                          type="color"
+                          aria-label="Repo accent color"
+                          title={repo.color
+                            ? `Repo color (${repo.color}) — right-click to clear`
+                            : "Set a repo accent color (right-click to clear)"}
+                          value={repo.color ?? defaultChipHex}
+                          style={repo.color
+                            ? `--swatch-bg: ${repo.color}`
+                            : `--swatch-bg: ${defaultChipHex}`}
+                          on:input={(e) => {
+                            const v = (e.currentTarget as HTMLInputElement).value;
+                            repo.color = v;
+                            repos = repos;
+                          }}
+                          on:change={(e) =>
+                            setRepoColor(repo.id, (e.currentTarget as HTMLInputElement).value)}
+                          on:contextmenu|preventDefault={() => setRepoColor(repo.id, null)}
+                        />
+                        {#if repo.color}
+                          <button
+                            class="repo-edit-clear"
+                            title="Clear accent color"
+                            on:click|stopPropagation={() => setRepoColor(repo.id, null)}
+                          >Clear</button>
+                        {/if}
+                      </span>
+                    </div>
+                    <button
+                      class="repo-edit-reorder"
+                      on:click|stopPropagation={() => {
+                        void commitRenameRepo(repo.id);
+                        // Key the highlight on repo.id (not row.key) so a
+                        // repo with multiple worktree rows still maps to
+                        // its single entry in the reorder list.
+                        reorderHighlightRepoId = repo.id;
+                        reorderDialogOpen = true;
+                      }}
+                    >
+                      <svg class="repo-edit-reorder-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M8 5v14M8 5L4 9M8 5l4 4M16 19V5m0 14l-4-4m4 4l4-4" /></svg>
+                      Reorder repos…
+                    </button>
+                  </div>
+                </Popover>
+              {/if}
+            </span>
 
             {#if wt}
               {#if wt.nonGit}
@@ -7948,6 +8023,13 @@
 <ReceiveInviteDialog />
 <CopySessionDialog />
 <RepairSessionDialog />
+<RepoReorderDialog
+  bind:open={reorderDialogOpen}
+  repos={repos}
+  onReorder={reorderRepos}
+  defaultColor={defaultChipHex}
+  highlightId={reorderHighlightRepoId}
+/>
 
 {#if dirtyCheckout}
   <div

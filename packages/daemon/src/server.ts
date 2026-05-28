@@ -1672,6 +1672,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "GET", path: "/api/processes", description: "list of supergit-spawned PTYs plus external processes discovered in tracked repo directories, each with a live cpu%/memory sample. kind='tui' for PTYs, kind='external' for discovered processes." },
           { method: "POST", path: "/api/fetch", description: "trigger an immediate git fetch of all registered repos" },
           { method: "POST", path: "/api/repos", body: { path: "string (absolute)" }, description: "add a repo to the workspace" },
+          { method: "POST", path: "/api/repos/order", body: { order: "string[] of repo ids" }, description: "rewrite the global repo display order to match the provided id list (must be a permutation of the existing repo ids). Used by the drag-to-reorder dialog in the repo edit popover." },
           { method: "DELETE", path: "/api/repos/:id", description: "remove a repo from the workspace" },
           { method: "POST", path: "/api/repos/:id/rename", body: { name: "string" }, description: "rename a repo (undoable)" },
           { method: "POST", path: "/api/repos/:id/color", body: { color: "#rrggbb hex string or null" }, description: "set or clear a repo's accent color (used wherever the name renders)" },
@@ -5153,6 +5154,35 @@ const server = Bun.serve<TermWsData, never>({
       if (!removed) return new Response(null, { status: 404, headers: CORS });
       broadcast("change", { kind: "repo_summary", repoId: id });
       return new Response(null, { status: 204, headers: CORS });
+    }
+
+    // POST /api/repos/order — rewrite the global repo display order to
+    // match the provided id list (must be a permutation of the existing
+    // repo ids). Checked before the `:id` matchers so "order" can't be
+    // captured as an id. Not undoable — mirrors custom-link reorder.
+    if (url.pathname === "/api/repos/order" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { order?: unknown }
+        | null;
+      const order = Array.isArray(body?.order) ? body.order : null;
+      if (!order) {
+        return json(
+          { error: "body.order must be an array of repo ids" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { oldOrder, newOrder } = await workspace.reorderRepos(
+          order as string[],
+        );
+        if (oldOrder.join() !== newOrder.join()) {
+          broadcast("change", { kind: "repos_reorder" });
+        }
+        return json({ oldOrder, newOrder });
+      } catch (e) {
+        const msg = String(e instanceof Error ? e.message : e);
+        return json({ error: msg }, { status: /not found/.test(msg) ? 404 : 400 });
+      }
     }
 
     const renameMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/rename$/);

@@ -420,6 +420,48 @@ describe("Workspace", () => {
     await expect(ws.reorderCustomLinks("nope", [])).rejects.toThrow(/not found/);
   });
 
+  test("reorderRepos rewrites the repo order to match the id list", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const a = await ws.addRepo("/tmp/a");
+    const b = await ws.addRepo("/tmp/b");
+    const c = await ws.addRepo("/tmp/c");
+    const result = await ws.reorderRepos([c.id, a.id, b.id]);
+    expect(result.oldOrder).toEqual([a.id, b.id, c.id]);
+    expect(result.newOrder).toEqual([c.id, a.id, b.id]);
+    expect((await ws.listRepos()).map((r) => r.id)).toEqual([c.id, a.id, b.id]);
+  });
+
+  test("reorderRepos is a no-op when the order is unchanged", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const a = await ws.addRepo("/tmp/a");
+    const b = await ws.addRepo("/tmp/b");
+    const result = await ws.reorderRepos([a.id, b.id]);
+    expect(result.oldOrder).toEqual([a.id, b.id]);
+    expect(result.newOrder).toEqual([a.id, b.id]);
+    expect((await ws.listRepos()).map((r) => r.id)).toEqual([a.id, b.id]);
+  });
+
+  test("reorderRepos rejects mismatched id sets", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const a = await ws.addRepo("/tmp/a");
+    const b = await ws.addRepo("/tmp/b");
+    // wrong length
+    await expect(ws.reorderRepos([a.id])).rejects.toThrow(/length/);
+    // unknown id
+    await expect(ws.reorderRepos([a.id, "ghost"])).rejects.toThrow(
+      /Unknown repo id/,
+    );
+    // duplicates
+    await expect(ws.reorderRepos([a.id, a.id])).rejects.toThrow(/unique/);
+    void b;
+  });
+
+  test("reorderRepos rejects a non-array argument", async () => {
+    const ws = await Workspace.open(await tempDir());
+    // @ts-expect-error testing runtime guard
+    await expect(ws.reorderRepos("nope")).rejects.toThrow(/array/);
+  });
+
   test("updateCustomLink rewrites the URL", async () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo("/tmp/foo");

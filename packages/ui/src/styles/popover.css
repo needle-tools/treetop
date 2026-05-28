@@ -303,6 +303,10 @@
   min-width: 3ch;
   max-width: 30ch;
 }
+.tui-inline-cwd {
+  margin-left: 0.3rem;
+  opacity: 0.6;
+}
 /* Stats column. Each stat lives in its own grid cell so adjacent
    rows align: CPU sits under CPU, memory under memory, uptime under
    uptime — regardless of value widths. tabular-nums keeps digits a
@@ -516,6 +520,14 @@
 /* New-agent picker popover. */
 .new-agent-popover {
   width: 360px;
+  max-width: 90vw;
+}
+
+/* Repo-edit popover — name field + accent colour + "Reorder repos…",
+   opened off the repo chip. Narrow; content laid out by the
+   .repo-edit-* rules in worktree-row.css. */
+.repo-edit-popover {
+  width: 240px;
   max-width: 90vw;
 }
 

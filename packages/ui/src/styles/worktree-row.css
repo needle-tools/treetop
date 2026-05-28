@@ -143,20 +143,96 @@
 .repo-chip:hover .pencil {
   opacity: 0.8;
 }
-/* Repo chip + swatch live inside this flex stack so the two read as a
-   single docked element — same idiom as .agent-add docked to .agent
-   chips below. No gap, swatch on the left, chip on the right. */
-.repo-chip-stack {
+/* The chip is now a single button that opens the repo-edit popover.
+   This anchor wraps the chip + the popover so the popover positions
+   relative to the chip — same idiom as .branch-anchor. */
+.repo-chip-anchor {
+  position: relative;
   display: inline-flex;
-  align-items: stretch;
   flex-shrink: 0;
 }
 
-/* Native <input type=color> rendered as a docked colour bar on the
-   LEFT of the repo chip. The browser's default chrome is hidden via
-   the inner ::-webkit-color-swatch / ::-moz-color-swatch pseudos so
-   what's left is a clean rectangular fill. The fill colour comes from
-   --swatch-bg set inline. */
+/* Repo-edit popover body: stacked Name / Color fields + a reorder
+   button. Lives in the global stylesheet (not the .svelte file) per the
+   styles/ convention — the popover root is shared and variant rules
+   target it directly. */
+.repo-edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.repo-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.repo-edit-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.repo-edit-name {
+  padding: 0.3rem 0.45rem;
+  font-size: 0.85rem;
+  background: var(--surface-1);
+  border: 1px solid var(--brand);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.repo-edit-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.repo-edit-reorder {
+  margin-top: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.repo-edit-reorder:hover {
+  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+}
+.repo-edit-reorder-icon {
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+.repo-edit-clear {
+  padding: 0.2rem 0.5rem;
+  font: inherit;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.repo-edit-clear:hover {
+  color: inherit;
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+}
+
+/* Native <input type=color> rendered as a colour chip. The browser's
+   default chrome is hidden via the inner ::-webkit-color-swatch /
+   ::-moz-color-swatch pseudos so what's left is a clean fill. The fill
+   colour comes from --swatch-bg set inline. Inside the repo-edit
+   popover it's a small rounded square (see .repo-edit-color override). */
 .repo-color-swatch {
   appearance: none;
   -webkit-appearance: none;
@@ -206,23 +282,16 @@
   background: var(--swatch-bg, transparent);
 }
 
-/* When the chip is paired with a swatch on its left, square off the
-   chip's left corners so the two halves visually fuse into one
-   element. The right corners keep the normal pill rounding. */
-.repo-chip.repo-chip-stacked {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-}
-.name-edit {
-  padding: 0.15rem 0.4rem;
-  font-size: 0.85rem;
-  background: var(--surface-1);
-  border: 1px solid var(--brand);
+/* Inside the repo-edit popover the swatch is a standalone rounded
+   square rather than a left-docked bar — restore full rounding and a
+   tappable size. */
+.repo-edit-color .repo-color-swatch {
+  width: 24px;
+  min-width: 24px;
+  max-width: 24px;
+  height: 24px;
+  align-self: auto;
   border-radius: var(--radius-sm);
-  color: inherit;
-  width: auto;
-  max-width: 240px;
-  flex: 0 0 auto;
 }
 .wt-path {
   flex: 1;

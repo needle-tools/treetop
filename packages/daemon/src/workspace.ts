@@ -403,6 +403,49 @@ export class Workspace {
   }
 
   /**
+   * Reorder the registered repos to match the provided id list.
+   * `orderedIds` must be a permutation of the existing repo ids — same
+   * length, same set, just rearranged. Returns the previous order (id
+   * list) so the caller can detect a no-op. Throws if the ids don't
+   * match. Repo display order in the dashboard is derived straight from
+   * this array order, so this is the single source of truth for it.
+   */
+  async reorderRepos(
+    orderedIds: string[],
+  ): Promise<{ oldOrder: string[]; newOrder: string[] }> {
+    if (!Array.isArray(orderedIds)) {
+      throw new Error("orderedIds must be an array of repo ids");
+    }
+    const repos = await this.listRepos();
+    const oldOrder = repos.map((r) => r.id);
+    if (orderedIds.length !== oldOrder.length) {
+      throw new Error("orderedIds length must match existing repos");
+    }
+    const seen = new Set<string>();
+    for (const rid of orderedIds) {
+      if (typeof rid !== "string" || rid.length === 0) {
+        throw new Error("orderedIds must contain non-empty strings");
+      }
+      if (seen.has(rid)) {
+        throw new Error("orderedIds must be unique");
+      }
+      seen.add(rid);
+    }
+    const byId = new Map(repos.map((r) => [r.id, r]));
+    const reordered: Repo[] = [];
+    for (const rid of orderedIds) {
+      const repo = byId.get(rid);
+      if (!repo) throw new Error(`Unknown repo id: ${rid}`);
+      reordered.push(repo);
+    }
+    if (oldOrder.every((rid, i) => rid === orderedIds[i])) {
+      return { oldOrder, newOrder: [...orderedIds] };
+    }
+    await this.writeRepos(reordered);
+    return { oldOrder, newOrder: [...orderedIds] };
+  }
+
+  /**
    * Append a user-defined "open in" link to a repo. Returns the newly
    * minted entry (with its generated id) so the caller can echo it
    * back to the client.

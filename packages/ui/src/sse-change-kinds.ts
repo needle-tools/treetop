@@ -25,6 +25,7 @@ export const CHANGE_KINDS_REQUIRING_REPOS_RELOAD: ReadonlySet<string> = new Set(
   "rename_repo",
   "repo_color",
   "repo_summary",
+  "repos_reorder",
   // Worktree-level mutations.
   "create_worktree",
   "remove_worktree",
