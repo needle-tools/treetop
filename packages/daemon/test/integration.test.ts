@@ -32,7 +32,8 @@ async function undoAction(
 ): Promise<void> {
   const ev = await events.findById(eventId);
   if (!ev) throw new Error("event not found");
-  if (!ev.reversible || ev.inverse === undefined) throw new Error("not reversible");
+  if (!ev.reversible || ev.inverse === undefined)
+    throw new Error("not reversible");
   if (ev.undone) throw new Error("already undone");
 
   if (ev.type === "add_repo") {
@@ -78,7 +79,8 @@ async function redoAction(
 ): Promise<void> {
   const ev = await events.findById(eventId);
   if (!ev) throw new Error("event not found");
-  if (!ev.reversible || ev.inverse === undefined) throw new Error("not reversible");
+  if (!ev.reversible || ev.inverse === undefined)
+    throw new Error("not reversible");
   if (!ev.undone) throw new Error("nothing to redo");
 
   if (ev.type === "add_repo") {
@@ -202,7 +204,10 @@ describe("rename works correctly regardless of how many worktrees the repo has",
     // renders one row per worktree but they all share the same Repo id.
     // Renaming via id must succeed without depending on row identity.
     const result = await ws.renameRepo(repo.id, "MultiWtRenamed");
-    expect(result).toEqual({ oldName: "multi-wt-repo", newName: "MultiWtRenamed" });
+    expect(result).toEqual({
+      oldName: "multi-wt-repo",
+      newName: "MultiWtRenamed",
+    });
     const after = await ws.listRepos();
     expect(after).toHaveLength(1);
     expect(after[0]?.id).toBe(repo.id);

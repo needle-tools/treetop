@@ -38,7 +38,9 @@ window.addEventListener("popstate", () => {
 // the daemon so they open in the OS browser. In WKWebView (native app),
 // clicking an <a href> would navigate the webview itself instead.
 document.addEventListener("click", (ev) => {
-  const a = (ev.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
+  const a = (ev.target as HTMLElement)?.closest?.(
+    "a[href]",
+  ) as HTMLAnchorElement | null;
   if (!a) return;
   const href = a.href;
   if (!href || !href.startsWith("http")) return;

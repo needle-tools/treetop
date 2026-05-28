@@ -11,12 +11,12 @@
  * subsequence) — there's no shared dock for commits to align with.
  */
 
-import type {
-  PickItem,
-  Provider,
-  SearchScope,
-} from "./mention-types";
-import { scoreSession, sessionDisplayTitle, type AgentSession } from "./sessionSearch";
+import type { PickItem, Provider, SearchScope } from "./mention-types";
+import {
+  scoreSession,
+  sessionDisplayTitle,
+  type AgentSession,
+} from "./sessionSearch";
 
 /** Per-URL in-flight + resolved cache. Picker re-renders are
  *  reactive on `scope` and `$recents`, which can flicker by identity
@@ -54,10 +54,9 @@ async function fetchJsonCached<T>(url: string): Promise<T> {
     const data = (await res.json()) as T;
     resolvedCache.set(url, { ts: Date.now(), data });
     return data;
-  })()
-    .finally(() => {
-      inflightCache.delete(url);
-    });
+  })().finally(() => {
+    inflightCache.delete(url);
+  });
   inflightCache.set(url, p);
   return p as Promise<T>;
 }
@@ -203,14 +202,17 @@ export const sessionsProvider: Provider = {
         return [];
       }
       pool = scope.currentWorktreePath
-        ? all.filter((s) =>
-            typeof s.cwd === "string" &&
-            (s.cwd === scope.currentWorktreePath ||
-              s.cwd.startsWith(scope.currentWorktreePath! + "/")),
+        ? all.filter(
+            (s) =>
+              typeof s.cwd === "string" &&
+              (s.cwd === scope.currentWorktreePath ||
+                s.cwd.startsWith(scope.currentWorktreePath! + "/")),
           )
         : scope.currentRepoPath
-          ? all.filter((s) =>
-              typeof s.cwd === "string" && s.cwd.startsWith(scope.currentRepoPath!),
+          ? all.filter(
+              (s) =>
+                typeof s.cwd === "string" &&
+                s.cwd.startsWith(scope.currentRepoPath!),
             )
           : all;
     }
@@ -228,7 +230,9 @@ export const sessionsProvider: Provider = {
           })
       : pool
           .map((s) => ({ s, r: 1 }))
-          .sort((a, b) => Date.parse(b.s.lastActive) - Date.parse(a.s.lastActive));
+          .sort(
+            (a, b) => Date.parse(b.s.lastActive) - Date.parse(a.s.lastActive),
+          );
     return ranked.slice(0, limit).map((x) => sessionToPickItem(x.s));
   },
 };
@@ -290,9 +294,7 @@ export const commitsProvider: Provider = {
         return Date.parse(b.c.time) - Date.parse(a.c.time);
       })
       .slice(0, limit);
-    return ranked.map((x) =>
-      commitToPickItem(x.c, scope.currentRepoProvider),
-    );
+    return ranked.map((x) => commitToPickItem(x.c, scope.currentRepoProvider));
   },
 };
 

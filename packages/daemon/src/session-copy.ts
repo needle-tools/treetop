@@ -65,8 +65,14 @@ export async function copySessionToWorktree(args: {
   // Write to the Claude projects dir under the target's cwd encoding.
   const targetDir = await claudeProjectDirForCwd(targetCwd, claudeProjectsDir);
   await mkdir(targetDir, { recursive: true });
-  const sid = source.split(sep).pop()?.replace(/\.jsonl$/, "") ?? "unknown";
-  const copiedTo = await import("node:path").then(p => p.join(targetDir, `${sid}.jsonl`));
+  const sid =
+    source
+      .split(sep)
+      .pop()
+      ?.replace(/\.jsonl$/, "") ?? "unknown";
+  const copiedTo = await import("node:path").then((p) =>
+    p.join(targetDir, `${sid}.jsonl`),
+  );
   await writeFile(copiedTo, jsonl);
 
   return { ok: true, copiedTo };

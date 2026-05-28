@@ -62,20 +62,20 @@ describe("clampCols / clampRows", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("PTY round-trip with clamped dimensions", () => {
-  const backend = new NodePtyBackend();
+describe.skipIf(process.platform === "win32")(
+  "PTY round-trip with clamped dimensions",
+  () => {
+    const backend = new NodePtyBackend();
 
-  afterAll(async () => {
-    await backend.shutdown();
-  });
+    afterAll(async () => {
+      await backend.shutdown();
+    });
 
-  // The bug presented as zsh seeing a 2-col terminal. Prove that when
-  // we spawn with the clamped value (80x24), `stty size` inside the
-  // PTY echoes back 24 80 — i.e. dimensions truly land at node-pty,
-  // not just at the JSON layer.
-  test(
-    "spawn at clamped 80x24 → stty size reports 24 80",
-    async () => {
+    // The bug presented as zsh seeing a 2-col terminal. Prove that when
+    // we spawn with the clamped value (80x24), `stty size` inside the
+    // PTY echoes back 24 80 — i.e. dimensions truly land at node-pty,
+    // not just at the JSON layer.
+    test("spawn at clamped 80x24 → stty size reports 24 80", async () => {
       const cols = clampCols(2);
       const rows = clampRows(2);
       expect(cols).toBe(80);
@@ -103,13 +103,9 @@ describe.skipIf(process.platform === "win32")("PTY round-trip with clamped dimen
       // `stty size` prints "<rows> <cols>" — assert both made the trip
       // intact. The bug would have shown e.g. "24 2" here.
       expect(output).toMatch(/\b24\s+80\b/);
-    },
-    10_000,
-  );
+    }, 10_000);
 
-  test(
-    "spawn at sane 120x40 round-trips unchanged",
-    async () => {
+    test("spawn at sane 120x40 round-trips unchanged", async () => {
       const handle = await backend.spawn({
         cmd: ["bash", "-c", "stty size; exit 0"],
         cwd: "/tmp",
@@ -130,7 +126,6 @@ describe.skipIf(process.platform === "win32")("PTY round-trip with clamped dimen
       await done;
 
       expect(output).toMatch(/\b40\s+120\b/);
-    },
-    10_000,
-  );
-});
+    }, 10_000);
+  },
+);

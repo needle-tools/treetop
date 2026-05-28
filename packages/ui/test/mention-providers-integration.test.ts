@@ -57,11 +57,32 @@ beforeEach(() => {
 
 describe("sessionsProvider.search", () => {
   test("returns top items by lastActive when query is empty", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      { agent: "claude", cwd: "/repo/a", lastActive: "2026-05-15T10:00:00Z", source: "s1", title: "Old session" },
-      { agent: "claude", cwd: "/repo/a", lastActive: "2026-05-16T10:00:00Z", source: "s2", title: "New session" },
-      { agent: "codex", cwd: "/repo/a", lastActive: "2026-05-14T10:00:00Z", source: "s3", title: "Older session" },
-    ]);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "claude",
+          cwd: "/repo/a",
+          lastActive: "2026-05-15T10:00:00Z",
+          source: "s1",
+          title: "Old session",
+        },
+        {
+          agent: "claude",
+          cwd: "/repo/a",
+          lastActive: "2026-05-16T10:00:00Z",
+          source: "s2",
+          title: "New session",
+        },
+        {
+          agent: "codex",
+          cwd: "/repo/a",
+          lastActive: "2026-05-14T10:00:00Z",
+          source: "s3",
+          title: "Older session",
+        },
+      ],
+    );
     const out = await sessionsProvider.search("", {}, 5);
     // Most recent first.
     expect(out.map((it) => it.label)).toEqual([
@@ -75,23 +96,26 @@ describe("sessionsProvider.search", () => {
   });
 
   test("fuzzy-matches across title, firstUserMessage, agent, cwd", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      {
-        agent: "claude",
-        cwd: "/Users/m/git/supergit/packages/ui",
-        lastActive: "2026-05-16T10:00:00Z",
-        source: "s1",
-        title: "Refactor the dock",
-        firstUserMessage: "help me with the auth refactor",
-      },
-      {
-        agent: "codex",
-        cwd: "/Users/m/git/supergit/packages/daemon",
-        lastActive: "2026-05-16T11:00:00Z",
-        source: "s2",
-        title: "Unrelated work on the parser",
-      },
-    ]);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "claude",
+          cwd: "/Users/m/git/supergit/packages/ui",
+          lastActive: "2026-05-16T10:00:00Z",
+          source: "s1",
+          title: "Refactor the dock",
+          firstUserMessage: "help me with the auth refactor",
+        },
+        {
+          agent: "codex",
+          cwd: "/Users/m/git/supergit/packages/daemon",
+          lastActive: "2026-05-16T11:00:00Z",
+          source: "s2",
+          title: "Unrelated work on the parser",
+        },
+      ],
+    );
     // "auth" hits the firstUserMessage on s1 but nothing on s2.
     const out = await sessionsProvider.search("auth", {}, 5);
     expect(out).toHaveLength(1);
@@ -99,11 +123,30 @@ describe("sessionsProvider.search", () => {
   });
 
   test("filters by currentRepoPath, falls back to all when scope is empty", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      { agent: "claude", cwd: "/wrong/path", lastActive: "2026-05-16T10:00:00Z", source: "s1", title: "Wrong repo" },
-      { agent: "claude", cwd: "/repo/main", lastActive: "2026-05-16T11:00:00Z", source: "s2", title: "Right repo" },
-    ]);
-    const inScope = await sessionsProvider.search("", { currentRepoPath: "/repo/main" }, 5);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "claude",
+          cwd: "/wrong/path",
+          lastActive: "2026-05-16T10:00:00Z",
+          source: "s1",
+          title: "Wrong repo",
+        },
+        {
+          agent: "claude",
+          cwd: "/repo/main",
+          lastActive: "2026-05-16T11:00:00Z",
+          source: "s2",
+          title: "Right repo",
+        },
+      ],
+    );
+    const inScope = await sessionsProvider.search(
+      "",
+      { currentRepoPath: "/repo/main" },
+      5,
+    );
     expect(inScope.map((it) => it.value)).toEqual(["s2"]);
     // Cache makes the second call return the cached body, so we don't
     // need to re-set the route. With no scope, both items come back.
@@ -112,17 +155,46 @@ describe("sessionsProvider.search", () => {
   });
 
   test("scopes strictly to currentWorktreePath when provided — no global fallthrough", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      { agent: "claude", cwd: "/wt/a", lastActive: "2026-05-16T10:00:00Z", source: "sa", title: "A" },
-      { agent: "claude", cwd: "/wt/b", lastActive: "2026-05-16T11:00:00Z", source: "sb", title: "B" },
-      { agent: "claude", cwd: "/wt/b/sub", lastActive: "2026-05-16T12:00:00Z", source: "sb-sub", title: "B/sub" },
-    ]);
-    const inWt = await sessionsProvider.search("", { currentWorktreePath: "/wt/b" }, 5);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "claude",
+          cwd: "/wt/a",
+          lastActive: "2026-05-16T10:00:00Z",
+          source: "sa",
+          title: "A",
+        },
+        {
+          agent: "claude",
+          cwd: "/wt/b",
+          lastActive: "2026-05-16T11:00:00Z",
+          source: "sb",
+          title: "B",
+        },
+        {
+          agent: "claude",
+          cwd: "/wt/b/sub",
+          lastActive: "2026-05-16T12:00:00Z",
+          source: "sb-sub",
+          title: "B/sub",
+        },
+      ],
+    );
+    const inWt = await sessionsProvider.search(
+      "",
+      { currentWorktreePath: "/wt/b" },
+      5,
+    );
     // Includes the worktree itself + any nested cwd.
     expect(inWt.map((it) => it.value).sort()).toEqual(["sb", "sb-sub"]);
     // Empty result when no session matches: must not silently surface
     // sister-worktree sessions whose titles look like the user's.
-    const empty = await sessionsProvider.search("", { currentWorktreePath: "/wt/none" }, 5);
+    const empty = await sessionsProvider.search(
+      "",
+      { currentWorktreePath: "/wt/none" },
+      5,
+    );
     expect(empty).toEqual([]);
   });
 
@@ -138,8 +210,20 @@ describe("commitsProvider.search", () => {
     setRouteJson(
       (u) => u.startsWith("/api/commits?"),
       [
-        { sha: "aaaaaa1", shortSha: "aaaaaa1", subject: "first", author: "alice", time: "2026-05-10T10:00:00Z" },
-        { sha: "bbbbbb2", shortSha: "bbbbbb2", subject: "second", author: "bob", time: "2026-05-16T10:00:00Z" },
+        {
+          sha: "aaaaaa1",
+          shortSha: "aaaaaa1",
+          subject: "first",
+          author: "alice",
+          time: "2026-05-10T10:00:00Z",
+        },
+        {
+          sha: "bbbbbb2",
+          shortSha: "bbbbbb2",
+          subject: "second",
+          author: "bob",
+          time: "2026-05-16T10:00:00Z",
+        },
       ],
     );
     const out = await commitsProvider.search(
@@ -157,16 +241,19 @@ describe("commitsProvider.search", () => {
   });
 
   test("session PickItem splits agent / name / msgCount / age across dedicated fields", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      {
-        agent: "claude",
-        cwd: "/x",
-        lastActive: "2026-05-16T10:00:00Z",
-        source: "s1",
-        title: "Refactor the dock",
-        messageCount: 42,
-      },
-    ]);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "claude",
+          cwd: "/x",
+          lastActive: "2026-05-16T10:00:00Z",
+          source: "s1",
+          title: "Refactor the dock",
+          messageCount: 42,
+        },
+      ],
+    );
     const out = await sessionsProvider.search("", {}, 5);
     expect(out).toHaveLength(1);
     // Per current layout: icon is driven by `agent`, label is the
@@ -179,15 +266,18 @@ describe("commitsProvider.search", () => {
   });
 
   test("session without messageCount emits empty subtitle, still shows age in meta", async () => {
-    setRouteJson((u) => u === "/api/agents", [
-      {
-        agent: "codex",
-        cwd: "/x",
-        lastActive: new Date(Date.now() - 3600 * 1000).toISOString(),
-        source: "s1",
-        title: "no-count session",
-      },
-    ]);
+    setRouteJson(
+      (u) => u === "/api/agents",
+      [
+        {
+          agent: "codex",
+          cwd: "/x",
+          lastActive: new Date(Date.now() - 3600 * 1000).toISOString(),
+          source: "s1",
+          title: "no-count session",
+        },
+      ],
+    );
     const out = await sessionsProvider.search("", {}, 5);
     expect(out[0]!.agent).toBe("codex");
     expect(out[0]!.subtitle).toBe("");
@@ -201,7 +291,13 @@ describe("commitsProvider.search", () => {
     setRouteJson(
       (u) => u.startsWith("/api/commits?"),
       [
-        { sha: "a1", shortSha: "a1", subject: "Add auth", author: "alice", time: "2026-05-16T10:00:00Z" },
+        {
+          sha: "a1",
+          shortSha: "a1",
+          subject: "Add auth",
+          author: "alice",
+          time: "2026-05-16T10:00:00Z",
+        },
       ],
     );
     const out = await commitsProvider.search(
@@ -216,8 +312,20 @@ describe("commitsProvider.search", () => {
     setRouteJson(
       (u) => u.startsWith("/api/commits?"),
       [
-        { sha: "a1", shortSha: "a1", subject: "Fix auth flow", author: "alice", time: "2026-05-16T10:00:00Z" },
-        { sha: "b2", shortSha: "b2", subject: "Refactor renderer", author: "bob", time: "2026-05-16T11:00:00Z" },
+        {
+          sha: "a1",
+          shortSha: "a1",
+          subject: "Fix auth flow",
+          author: "alice",
+          time: "2026-05-16T10:00:00Z",
+        },
+        {
+          sha: "b2",
+          shortSha: "b2",
+          subject: "Refactor renderer",
+          author: "bob",
+          time: "2026-05-16T11:00:00Z",
+        },
       ],
     );
     // Author "bob" should pull the second commit even though the

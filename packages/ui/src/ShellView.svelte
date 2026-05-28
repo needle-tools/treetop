@@ -124,12 +124,10 @@
       on:click={resume}
       disabled={!transcript}
       title="Spawn a fresh shell at this past terminal's last known cwd"
-    >Resume in terminal</button>
-    <button
-      class="close"
-      on:click={onClose}
-      title="Close this column"
-    >×</button>
+      >Resume in terminal</button
+    >
+    <button class="close" on:click={onClose} title="Close this column">×</button
+    >
   </header>
 
   {#if loading && !transcript}
@@ -240,7 +238,8 @@
     grid-template-columns: 6rem 1fr auto;
     gap: 0.5rem;
     padding: 0.15rem 0;
-    border-bottom: 1px dotted color-mix(in srgb, var(--surface-2) 60%, transparent);
+    border-bottom: 1px dotted
+      color-mix(in srgb, var(--surface-2) 60%, transparent);
     align-items: baseline;
   }
   .cmd-row:last-child {

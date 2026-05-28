@@ -12,7 +12,14 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, access, readdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  access,
+  readdir,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,7 +39,10 @@ async function cpd(): Promise<string> {
 describe("migrateLegacyImportedSessions", () => {
   test("noop when imported-sessions dir doesn't exist", async () => {
     const w = await ws();
-    expect(await migrateLegacyImportedSessions(w)).toEqual({ moved: 0, skipped: 0 });
+    expect(await migrateLegacyImportedSessions(w)).toEqual({
+      moved: 0,
+      skipped: 0,
+    });
   });
 
   test("moves an old-layout claude pair into <machine>/claude/", async () => {
@@ -99,7 +109,9 @@ describe("migrateLegacyImportedSessions", () => {
     const res = await migrateLegacyImportedSessions(w);
     expect(res).toEqual({ moved: 0, skipped: 0 });
     // File still where it was
-    expect(await readFile(join(newDir, "n.jsonl"), "utf-8")).toBe("already-migrated");
+    expect(await readFile(join(newDir, "n.jsonl"), "utf-8")).toBe(
+      "already-migrated",
+    );
   });
 
   test("skips orphan jsonl without a matching sidecar", async () => {
@@ -318,7 +330,9 @@ describe("migrateClaudeImportsToProjects", () => {
     expect(res.moved).toBe(1);
 
     // File moved to the current-encoder location
-    expect(await readFile(join(currentDir, "sid.jsonl"), "utf-8")).toBe("imported");
+    expect(await readFile(join(currentDir, "sid.jsonl"), "utf-8")).toBe(
+      "imported",
+    );
     // Stale location now empty
     let stillThere = true;
     try {

@@ -49,8 +49,12 @@ describe("saveAttachment", () => {
 
   test("adds a short suffix on filename collision instead of overwriting", async () => {
     const dir = await tempAttachmentsDir();
-    const first = await saveAttachment(dir, bytes("a"), { filename: "img.png" });
-    const second = await saveAttachment(dir, bytes("b"), { filename: "img.png" });
+    const first = await saveAttachment(dir, bytes("a"), {
+      filename: "img.png",
+    });
+    const second = await saveAttachment(dir, bytes("b"), {
+      filename: "img.png",
+    });
     expect(first.path).not.toBe(second.path);
     // The original file is untouched.
     expect((await readFile(first.path)).toString()).toBe("a");
@@ -95,6 +99,8 @@ describe("saveAttachment", () => {
     if (ok.status === 200) {
       expect(await ok.file.text()).toBe("visible");
     }
-    expect((await serveAttachment(dir, join(dir, "..", "secret.txt"))).status).toBe(403);
+    expect(
+      (await serveAttachment(dir, join(dir, "..", "secret.txt"))).status,
+    ).toBe(403);
   });
 });

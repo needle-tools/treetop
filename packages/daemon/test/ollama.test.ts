@@ -28,7 +28,9 @@ describe("normalizeApiModels", () => {
 
   test("falls back to `model` field when `name` is missing", () => {
     const out = normalizeApiModels({ models: [{ model: "foo:latest" }] });
-    expect(out).toEqual([{ name: "foo:latest", size: undefined, parameterSize: undefined }]);
+    expect(out).toEqual([
+      { name: "foo:latest", size: undefined, parameterSize: undefined },
+    ]);
   });
 
   test("returns [] on garbage input", () => {
@@ -42,7 +44,9 @@ describe("normalizeApiModels", () => {
     const out = normalizeApiModels({
       models: [{ size: 1 }, { name: "ok:1" }],
     });
-    expect(out).toEqual([{ name: "ok:1", size: undefined, parameterSize: undefined }]);
+    expect(out).toEqual([
+      { name: "ok:1", size: undefined, parameterSize: undefined },
+    ]);
   });
 });
 

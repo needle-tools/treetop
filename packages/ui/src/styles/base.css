@@ -20,11 +20,7 @@ body {
   overscroll-behavior-x: none;
 }
 body {
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    system-ui,
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   margin: 0;
   background: var(--surface-0);
   color: var(--text-1);
@@ -63,8 +59,12 @@ main {
   animation: loading-slow-fade-in 0.4s ease-out;
 }
 @keyframes loading-slow-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .loading-progress-track {
   width: 180px;
@@ -173,7 +173,9 @@ input[type="checkbox"] {
   cursor: pointer;
   display: inline-block;
   vertical-align: middle;
-  transition: background 80ms ease, border-color 80ms ease;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease;
 }
 input[type="checkbox"]:hover {
   border-color: color-mix(in srgb, var(--text-muted) 85%, transparent);

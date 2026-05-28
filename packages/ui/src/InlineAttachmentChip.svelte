@@ -14,23 +14,30 @@
   export let onDragStart: (event: DragEvent) => void = () => {};
 
   $: label = inlineAttachmentLabel(attachment);
-  $: meta = attachment.kind === "image"
-    ? [attachment.mimeType, attachment.size ? `${attachment.size} bytes` : ""]
-        .filter(Boolean)
-        .join(" · ")
-    : attachment.kind === "text"
-      ? attachment.source?.types?.join(", ") ?? ""
-      : attachment.kind === "link"
-        ? attachment.target.type === "command"
-          ? attachment.target.runMode ?? "command"
-          : attachment.target.type
-        : "";
-  $: glyph = attachment.kind === "text" ? "T"
-    : attachment.kind === "image" ? "▤"
-    : attachment.kind === "emoji" ? "☺"
-    : attachment.kind === "note" ? "✎"
-    : attachment.kind === "link" && attachment.target.type === "command" ? "⌁"
-    : "↗";
+  $: meta =
+    attachment.kind === "image"
+      ? [attachment.mimeType, attachment.size ? `${attachment.size} bytes` : ""]
+          .filter(Boolean)
+          .join(" · ")
+      : attachment.kind === "text"
+        ? (attachment.source?.types?.join(", ") ?? "")
+        : attachment.kind === "link"
+          ? attachment.target.type === "command"
+            ? (attachment.target.runMode ?? "command")
+            : attachment.target.type
+          : "";
+  $: glyph =
+    attachment.kind === "text"
+      ? "T"
+      : attachment.kind === "image"
+        ? "▤"
+        : attachment.kind === "emoji"
+          ? "☺"
+          : attachment.kind === "note"
+            ? "✎"
+            : attachment.kind === "link" && attachment.target.type === "command"
+              ? "⌁"
+              : "↗";
 </script>
 
 <span
@@ -48,7 +55,7 @@
     on:click|stopPropagation={onOpen}
   >
     <span class="inline-attachment-icon attach-row-icon" aria-hidden="true">
-      <AttachmentIcon glyph={glyph} size={14} />
+      <AttachmentIcon {glyph} size={14} />
     </span>
     <span class="inline-attachment-label attach-row-label">{label}</span>
     {#if meta}
@@ -61,7 +68,7 @@
       class="inline-attachment-action"
       title="Merge attachment into note text"
       aria-label="Merge attachment into note text"
-      on:click|stopPropagation={onMerge}
-    >↩</button>
+      on:click|stopPropagation={onMerge}>↩</button
+    >
   {/if}
 </span>

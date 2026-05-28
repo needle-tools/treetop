@@ -92,10 +92,9 @@ describe("ShellsLog", () => {
     const ws = await tempWorkspace();
     const log = await ShellsLog.open(ws);
     // Direct write of garbage so we don't go through writeHeader.
-    await (await import("node:fs/promises")).writeFile(
-      join(log.dir, "garbage.jsonl"),
-      "not json\n",
-    );
+    await (
+      await import("node:fs/promises")
+    ).writeFile(join(log.dir, "garbage.jsonl"), "not json\n");
     expect(await log.listHeaders()).toEqual([]);
   });
 
@@ -251,8 +250,18 @@ describe("ShellsLog", () => {
         spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
-      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
-      await log.append("t-prev", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+      await log.append("t-prev", {
+        kind: "cmd",
+        ts: "t1",
+        line: "ls",
+        cwd: "/w",
+      });
+      await log.append("t-prev", {
+        kind: "cmd",
+        ts: "t2",
+        line: "pwd",
+        cwd: "/w",
+      });
       await log.append("t-prev", { kind: "exit", ts: "t3", code: 0 });
 
       // Resume into a new shell, passing the prior termId.
@@ -268,7 +277,10 @@ describe("ShellsLog", () => {
       );
 
       const content = await readFile(join(log.dir, "t-new.jsonl"), "utf-8");
-      const lines = content.trim().split("\n").map((l) => JSON.parse(l));
+      const lines = content
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
       // Expected order: carried cmds → resume marker → new header.
       // Prior header and exit are NOT carried (would confuse readTranscript).
       expect(lines.map((l) => l.kind)).toEqual([
@@ -293,7 +305,12 @@ describe("ShellsLog", () => {
         spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
-      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
+      await log.append("t-prev", {
+        kind: "cmd",
+        ts: "t1",
+        line: "ls",
+        cwd: "/w",
+      });
       await log.writeHeader(
         {
           kind: "header",
@@ -304,7 +321,12 @@ describe("ShellsLog", () => {
         },
         "t-prev",
       );
-      await log.append("t-new", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+      await log.append("t-new", {
+        kind: "cmd",
+        ts: "t2",
+        line: "pwd",
+        cwd: "/w",
+      });
 
       const t = await log.readTranscript("t-new");
       expect(t).not.toBeNull();
@@ -319,32 +341,60 @@ describe("ShellsLog", () => {
       const log = await ShellsLog.open(ws);
       // Session A
       await log.writeHeader({
-        kind: "header", termId: "A", wt: "/w", spawnCwd: "/w",
+        kind: "header",
+        termId: "A",
+        wt: "/w",
+        spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
-      await log.append("A", { kind: "cmd", ts: "a1", line: "echo A", cwd: "/w" });
+      await log.append("A", {
+        kind: "cmd",
+        ts: "a1",
+        line: "echo A",
+        cwd: "/w",
+      });
       // Resume → Session B
       await log.writeHeader(
         {
-          kind: "header", termId: "B", wt: "/w", spawnCwd: "/w",
+          kind: "header",
+          termId: "B",
+          wt: "/w",
+          spawnCwd: "/w",
           createdAt: "2026-05-13T01:00:00Z",
         },
         "A",
       );
-      await log.append("B", { kind: "cmd", ts: "b1", line: "echo B", cwd: "/w" });
+      await log.append("B", {
+        kind: "cmd",
+        ts: "b1",
+        line: "echo B",
+        cwd: "/w",
+      });
       // Resume → Session C
       await log.writeHeader(
         {
-          kind: "header", termId: "C", wt: "/w", spawnCwd: "/w",
+          kind: "header",
+          termId: "C",
+          wt: "/w",
+          spawnCwd: "/w",
           createdAt: "2026-05-13T02:00:00Z",
         },
         "B",
       );
-      await log.append("C", { kind: "cmd", ts: "c1", line: "echo C", cwd: "/w" });
+      await log.append("C", {
+        kind: "cmd",
+        ts: "c1",
+        line: "echo C",
+        cwd: "/w",
+      });
 
       const t = await log.readTranscript("C");
       expect(t).not.toBeNull();
-      expect(t!.cmds.map((c) => c.line)).toEqual(["echo A", "echo B", "echo C"]);
+      expect(t!.cmds.map((c) => c.line)).toEqual([
+        "echo A",
+        "echo B",
+        "echo C",
+      ]);
       expect(t!.header.termId).toBe("C");
     });
 
@@ -353,7 +403,10 @@ describe("ShellsLog", () => {
       const log = await ShellsLog.open(ws);
       await log.writeHeader(
         {
-          kind: "header", termId: "t-new", wt: "/w", spawnCwd: "/w",
+          kind: "header",
+          termId: "t-new",
+          wt: "/w",
+          spawnCwd: "/w",
           createdAt: "2026-05-13T00:00:00Z",
         },
         "t-does-not-exist",
@@ -368,7 +421,10 @@ describe("ShellsLog", () => {
       const ws = await tempWorkspace();
       const log = await ShellsLog.open(ws);
       await log.writeHeader({
-        kind: "header", termId: "t-fresh", wt: "/w", spawnCwd: "/w",
+        kind: "header",
+        termId: "t-fresh",
+        wt: "/w",
+        spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
       const t = await log.readTranscript("t-fresh");
@@ -381,11 +437,19 @@ describe("ShellsLog", () => {
       const ws = await tempWorkspace();
       const log = await ShellsLog.open(ws);
       await log.writeHeader({
-        kind: "header", termId: "t-a", wt: "/w", spawnCwd: "/w",
+        kind: "header",
+        termId: "t-a",
+        wt: "/w",
+        spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
       await log.append("t-a", { kind: "cmd", ts: "t1", line: "ls", cwd: "/w" });
-      await log.append("t-a", { kind: "cmd", ts: "t2", line: "pwd", cwd: "/w" });
+      await log.append("t-a", {
+        kind: "cmd",
+        ts: "t2",
+        line: "pwd",
+        cwd: "/w",
+      });
       await log.append("t-a", { kind: "exit", ts: "t3", code: 0 });
       expect(await log.getCarryOverCmdLines("t-a")).toEqual(["ls", "pwd"]);
     });
@@ -400,15 +464,34 @@ describe("ShellsLog", () => {
       const ws = await tempWorkspace();
       const log = await ShellsLog.open(ws);
       await log.writeHeader({
-        kind: "header", termId: "A", wt: "/w", spawnCwd: "/w",
+        kind: "header",
+        termId: "A",
+        wt: "/w",
+        spawnCwd: "/w",
         createdAt: "2026-05-13T00:00:00Z",
       });
-      await log.append("A", { kind: "cmd", ts: "a1", line: "echo A", cwd: "/w" });
+      await log.append("A", {
+        kind: "cmd",
+        ts: "a1",
+        line: "echo A",
+        cwd: "/w",
+      });
       await log.writeHeader(
-        { kind: "header", termId: "B", wt: "/w", spawnCwd: "/w", createdAt: "x" },
+        {
+          kind: "header",
+          termId: "B",
+          wt: "/w",
+          spawnCwd: "/w",
+          createdAt: "x",
+        },
         "A",
       );
-      await log.append("B", { kind: "cmd", ts: "b1", line: "echo B", cwd: "/w" });
+      await log.append("B", {
+        kind: "cmd",
+        ts: "b1",
+        line: "echo B",
+        cwd: "/w",
+      });
       // Seeding C from B should yield A's + B's commands.
       expect(await log.getCarryOverCmdLines("B")).toEqual(["echo A", "echo B"]);
     });
@@ -425,7 +508,12 @@ describe("ShellsLog", () => {
         spawnCwd: "/wt",
         createdAt: "t0",
       });
-      await log.append("t", { kind: "cmd", ts: "t1", line: "secret-command --key=abc123", cwd: "/wt" });
+      await log.append("t", {
+        kind: "cmd",
+        ts: "t1",
+        line: "secret-command --key=abc123",
+        cwd: "/wt",
+      });
       const raw = await readFile(join(log.dir, "t.jsonl"), "utf-8");
       expect(raw).not.toContain("secret-command");
       expect(raw).toContain("enc:v1:");
@@ -441,7 +529,12 @@ describe("ShellsLog", () => {
         spawnCwd: "/wt",
         createdAt: "t0",
       });
-      await log.append("t", { kind: "cmd", ts: "t1", line: "secret-command", cwd: "/wt" });
+      await log.append("t", {
+        kind: "cmd",
+        ts: "t1",
+        line: "secret-command",
+        cwd: "/wt",
+      });
       const tr = await log.readTranscript("t");
       expect(tr!.cmds[0]!.line).toBe("secret-command");
     });
@@ -456,7 +549,12 @@ describe("ShellsLog", () => {
         spawnCwd: "/wt",
         createdAt: "t0",
       });
-      await log.append("t", { kind: "cmd", ts: "t1", line: "my-secret-cmd", cwd: "/wt" });
+      await log.append("t", {
+        kind: "cmd",
+        ts: "t1",
+        line: "my-secret-cmd",
+        cwd: "/wt",
+      });
       const sum = await log.cmdSummary("t");
       expect(sum.lastLine).toBe("my-secret-cmd");
     });
@@ -467,8 +565,19 @@ describe("ShellsLog", () => {
       await writeFile(
         join(log.dir, "legacy.jsonl"),
         [
-          JSON.stringify({ kind: "header", termId: "legacy", wt: "/w", spawnCwd: "/w", createdAt: "t0" }),
-          JSON.stringify({ kind: "cmd", ts: "t1", line: "old-plaintext-cmd", cwd: "/w" }),
+          JSON.stringify({
+            kind: "header",
+            termId: "legacy",
+            wt: "/w",
+            spawnCwd: "/w",
+            createdAt: "t0",
+          }),
+          JSON.stringify({
+            kind: "cmd",
+            ts: "t1",
+            line: "old-plaintext-cmd",
+            cwd: "/w",
+          }),
         ].join("\n") + "\n",
       );
       const tr = await log.readTranscript("legacy");
@@ -485,9 +594,20 @@ describe("ShellsLog", () => {
         spawnCwd: "/w",
         createdAt: "t0",
       });
-      await log.append("t-prev", { kind: "cmd", ts: "t1", line: "carried-secret", cwd: "/w" });
+      await log.append("t-prev", {
+        kind: "cmd",
+        ts: "t1",
+        line: "carried-secret",
+        cwd: "/w",
+      });
       await log.writeHeader(
-        { kind: "header", termId: "t-new", wt: "/w", spawnCwd: "/w", createdAt: "t2" },
+        {
+          kind: "header",
+          termId: "t-new",
+          wt: "/w",
+          spawnCwd: "/w",
+          createdAt: "t2",
+        },
         "t-prev",
       );
       const raw = await readFile(join(log.dir, "t-new.jsonl"), "utf-8");

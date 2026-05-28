@@ -13,11 +13,7 @@
    * forking the bubble styles.
    */
   import ToolIcon from "./ToolIcon.svelte";
-  import type {
-    PreviewAction,
-    PreviewGap,
-    PreviewMsg,
-  } from "./preview-action";
+  import type { PreviewAction, PreviewGap, PreviewMsg } from "./preview-action";
 
   type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
 
@@ -26,7 +22,13 @@
    *  array means "loaded, but no messages" → the empty state. */
   export let items: PreviewItem[] | undefined = undefined;
   /** Drives the agent icon next to assistant role captions. */
-  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell" | undefined = undefined;
+  export let agent:
+    | "claude"
+    | "codex"
+    | "copilot"
+    | "ollama"
+    | "shell"
+    | undefined = undefined;
   /** Surfaces a spinner row when items are not yet cached. */
   export let loading: boolean = false;
 
@@ -80,13 +82,17 @@
                 {item.role === "assistant" ? (agent ?? "assistant") : item.role}
               </span>
               {#if item.timestamp}
-                <span class="chat-preview-time">· {relTime(item.timestamp)}</span>
+                <span class="chat-preview-time"
+                  >· {relTime(item.timestamp)}</span
+                >
               {/if}
             </span>
             <span class="chat-preview-text">{snippet(item.text)}</span>
           </div>
         {:else}
-          <div class="chat-preview-gap">+ {item.count} message{item.count === 1 ? "" : "s"}</div>
+          <div class="chat-preview-gap">
+            + {item.count} message{item.count === 1 ? "" : "s"}
+          </div>
         {/if}
       {/each}
     {/if}
@@ -106,10 +112,18 @@
        AI / tool    — light surface (inverted from the page bg)
                       so AI messages "pop" off the dashboard. */
   .chat-preview {
-    --chat-preview-user-bg: color-mix(in oklch, var(--brand, #60b74c) 18%, var(--surface-0, #23261d));
+    --chat-preview-user-bg: color-mix(
+      in oklch,
+      var(--brand, #60b74c) 18%,
+      var(--surface-0, #23261d)
+    );
     --chat-preview-user-border: var(--text-muted, #888);
     --chat-preview-user-text: var(--text-1, #e8e8e8);
-    --chat-preview-user-role: color-mix(in oklch, var(--brand, #60b74c) 70%, var(--text-1, #e8e8e8));
+    --chat-preview-user-role: color-mix(
+      in oklch,
+      var(--brand, #60b74c) 70%,
+      var(--text-1, #e8e8e8)
+    );
 
     --chat-preview-ai-bg: var(--text-1, #e8e8e8);
     --chat-preview-ai-border: var(--text-muted, #888);
@@ -172,13 +186,29 @@
        drops its contrast so it reads as muted context. The text
        channel mixes too so the type doesn't punch out over the
        darker surface. */
-    background: color-mix(in oklch, var(--chat-preview-ai-bg) 55%, var(--surface-0, #23261d));
-    border-color: color-mix(in oklch, var(--chat-preview-ai-border) 50%, var(--surface-0, #23261d));
-    color: color-mix(in oklch, var(--chat-preview-ai-text) 65%, var(--surface-0, #23261d));
+    background: color-mix(
+      in oklch,
+      var(--chat-preview-ai-bg) 55%,
+      var(--surface-0, #23261d)
+    );
+    border-color: color-mix(
+      in oklch,
+      var(--chat-preview-ai-border) 50%,
+      var(--surface-0, #23261d)
+    );
+    color: color-mix(
+      in oklch,
+      var(--chat-preview-ai-text) 65%,
+      var(--surface-0, #23261d)
+    );
   }
   .chat-preview-msg.chat-preview-older .chat-preview-role,
   .chat-preview-msg.chat-preview-older .chat-preview-time {
-    color: color-mix(in oklch, var(--chat-preview-ai-text) 65%, var(--surface-0, #23261d));
+    color: color-mix(
+      in oklch,
+      var(--chat-preview-ai-text) 65%,
+      var(--surface-0, #23261d)
+    );
   }
   .chat-preview-head {
     display: inline-flex;
@@ -223,15 +253,20 @@
     width: 0.7rem;
     height: 0.7rem;
     border-radius: 50%;
-    border: 2px solid color-mix(in oklch, var(--text-muted, #888) 35%, transparent);
+    border: 2px solid
+      color-mix(in oklch, var(--text-muted, #888) 35%, transparent);
     border-top-color: var(--text-1, #e8e8e8);
     animation: chat-preview-spin 0.8s linear infinite;
   }
   @keyframes chat-preview-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
-    .chat-preview-spinner { animation: none; }
+    .chat-preview-spinner {
+      animation: none;
+    }
   }
   /* "Now:" action chip — shares the AI bubble's inverted palette
      so tool messages read as the same visual family as the AI

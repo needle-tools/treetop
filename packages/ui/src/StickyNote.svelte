@@ -175,21 +175,25 @@
       const slash = rest.indexOf("/");
       if (slash < 0) return null;
       const type = rest.slice(0, slash) as LinkTarget["type"];
-      if (!["url", "commit", "session", "file", "command"].includes(type)) return null;
+      if (!["url", "commit", "session", "file", "command"].includes(type))
+        return null;
       let value = decodeURIComponent(rest.slice(slash + 1));
       if (type === "session") {
         const id = value;
         const suffix = `/${id}.jsonl`;
         outer: for (const r of repos) {
           for (const wt of r.worktrees ?? []) {
-            const agents = (wt as { agents?: Array<{ source: string; sessionId?: string }> }).agents;
+            const agents = (
+              wt as { agents?: Array<{ source: string; sessionId?: string }> }
+            ).agents;
             if (!agents) continue;
             // Match by sessionId first (the daemon's authoritative id),
             // then fall back to the source path ending in `<id>.jsonl`
             // for sessions whose AgentSession.sessionId isn't populated
             // (older indexed records, or the brief window after spawn
             // before the JSONL is parsed).
-            const a = agents.find((x) => x.sessionId === id) ??
+            const a =
+              agents.find((x) => x.sessionId === id) ??
               agents.find((x) => x.source.endsWith(suffix));
             if (a) {
               value = a.source;
@@ -232,7 +236,10 @@
     }
   }
 
-  interface AnchorableWorktree { path: string; branch: string; }
+  interface AnchorableWorktree {
+    path: string;
+    branch: string;
+  }
   interface AnchorableRepo {
     id: string;
     name?: string;
@@ -274,28 +281,27 @@
    *  `repos` prop. */
   export let repos: AnchorableRepo[] = [];
   export let onCommandLinkOpen:
-    | ((
-        payload: {
-          linkId: string;
-          repoId?: string;
-          wtPath?: string;
-          revealTerminal?: boolean;
-        },
-      ) => void)
+    | ((payload: {
+        linkId: string;
+        repoId?: string;
+        wtPath?: string;
+        revealTerminal?: boolean;
+      }) => void)
     | null = null;
   export let onCommandLinkEdit:
-    | ((
-        payload: {
-          linkId: string;
-          repoId?: string;
-        },
-      ) => void)
+    | ((payload: { linkId: string; repoId?: string }) => void)
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
 
   const dispatch = createEventDispatcher<{
-    move: { id: string; x: number; y: number; clientX: number; clientY: number };
+    move: {
+      id: string;
+      x: number;
+      y: number;
+      clientX: number;
+      clientY: number;
+    };
     /** `target` is included when kind="link" so the layer's handleSave
      *  can route both fields through a single PUT. `null` clears an
      *  existing target (kind flip from link → note). Omitting both
@@ -357,9 +363,19 @@
         ? repos.find((r) => r.worktrees?.some((w) => w.path === wtPath))
         : undefined;
       const remoteRefs =
-        (repo as { remotes?: Array<{ name: string; webUrl: string | null; provider: string | null }> } | undefined)
-          ?.remotes ?? [];
-      const origin = remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
+        (
+          repo as
+            | {
+                remotes?: Array<{
+                  name: string;
+                  webUrl: string | null;
+                  provider: string | null;
+                }>;
+              }
+            | undefined
+        )?.remotes ?? [];
+      const origin =
+        remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
       if (origin?.webUrl) {
         const url = buildCommitWebUrl(origin.webUrl, origin.provider, t.value);
         if (url) {
@@ -387,7 +403,8 @@
     if (t.type === "command") {
       const live = commandLinkForTarget(t);
       const wtAnchor = note.anchors.find((a) => a.startsWith("worktree:"));
-      const wtPath = wtAnchor?.slice("worktree:".length) || live?.link.cwd || t.cwd;
+      const wtPath =
+        wtAnchor?.slice("worktree:".length) || live?.link.cwd || t.cwd;
       const repoId = live?.repo.id ?? t.repoId;
       onCommandLinkOpen?.({
         linkId: live?.link.id ?? t.value,
@@ -409,7 +426,11 @@
    *  live row matches (orphan session, repo not loaded yet) so
    *  the chip uses the pick-time snapshot label. */
   $: liveSessionLabel = (() => {
-    if (note.kind !== "link" || !note.target || note.target.type !== "session") {
+    if (
+      note.kind !== "link" ||
+      !note.target ||
+      note.target.type !== "session"
+    ) {
       return null;
     }
     const src = note.target.value;
@@ -605,7 +626,9 @@
     return {
       destroy() {
         if (orig && orig.contains(node) === false) {
-          try { node.remove(); } catch {}
+          try {
+            node.remove();
+          } catch {}
         }
       },
     };
@@ -641,14 +664,20 @@
     // present, else the first detected one. Empty when the repo has
     // no remotes; the commit chip then falls back to its generic
     // ◆ glyph instead of a brand mark.
-    const remoteRefs = (repo as { remotes?: Array<{ name: string; provider?: string | null }> } | undefined)?.remotes ?? [];
+    const remoteRefs =
+      (
+        repo as
+          | { remotes?: Array<{ name: string; provider?: string | null }> }
+          | undefined
+      )?.remotes ?? [];
     const origin = remoteRefs.find((r) => r.name === "origin") ?? remoteRefs[0];
     const nextProvider = origin?.provider ?? undefined;
     // The daemon's per-worktree session bucketing — same list that
     // powers the "+N sessions in this worktree" popover. Passing it
     // here makes the @-mention picker show that exact set, instead
     // of re-deriving it from /api/agents + cwd guessing.
-    const nextSessions = (wt as { agents?: AgentSession[] } | undefined)?.agents;
+    const nextSessions = (wt as { agents?: AgentSession[] } | undefined)
+      ?.agents;
     if (
       pickerScope.currentWorktreePath !== wtPath ||
       pickerScope.currentRepoPath !== nextRepoPath ||
@@ -718,7 +747,9 @@
     recomputeChipMaxWidth();
   }
 
-  function editorTextarea(target: "note" | "attachment"): HTMLTextAreaElement | null {
+  function editorTextarea(
+    target: "note" | "attachment",
+  ): HTMLTextAreaElement | null {
     return target === "note" ? textareaEl : attachmentTextareaEl;
   }
 
@@ -808,7 +839,11 @@
       // Track the live query span between the `@` and the caret.
       // Close if the user erased the `@`, moved the caret behind it,
       // or typed whitespace (mentions are single-token by design).
-      if (mentionStart < 0 || text[mentionStart] !== "@" || caret <= mentionStart) {
+      if (
+        mentionStart < 0 ||
+        text[mentionStart] !== "@" ||
+        caret <= mentionStart
+      ) {
         closeMention();
         return;
       }
@@ -889,14 +924,20 @@
     }
   }
 
-  function textSourceFromClipboardData(cd: DataTransfer | null): { kind: "clipboard"; types: string[] } {
+  function textSourceFromClipboardData(cd: DataTransfer | null): {
+    kind: "clipboard";
+    types: string[];
+  } {
     return {
       kind: "clipboard",
       types: cd ? Array.from(cd.types) : [],
     };
   }
 
-  function insertIntoDraft(text: string, target: "note" | "attachment" = "note"): void {
+  function insertIntoDraft(
+    text: string,
+    target: "note" | "attachment" = "note",
+  ): void {
     const activeTextarea = editorTextarea(target);
     const current = editorText(target);
     if (!activeTextarea) {
@@ -926,7 +967,8 @@
     body: string,
     target: "note" | "attachment" = "note",
   ): string {
-    const existingRefs = target === "note" ? editAttachmentRefs : openAttachmentEditRefs;
+    const existingRefs =
+      target === "note" ? editAttachmentRefs : openAttachmentEditRefs;
     const usedText = target === "note" ? draft : openAttachmentDraft;
     const edit = noteBodyToEditText(body, {
       existingRefs,
@@ -947,7 +989,10 @@
     insertIntoDraft(bodyFragmentToEditText(body, target), target);
   }
 
-  function insertAttachmentRef(ref: string, target: "note" | "attachment" = "note"): void {
+  function insertAttachmentRef(
+    ref: string,
+    target: "note" | "attachment" = "note",
+  ): void {
     const part = parseInlineAttachments(ref)[0];
     if (target === "attachment") {
       insertBodyIntoDraft(ref, "attachment");
@@ -971,7 +1016,10 @@
 
   async function uploadImageAttachment(
     blob: Blob,
-    opts: { filename?: string; source: { kind: "clipboard" | "drop"; types: string[] } },
+    opts: {
+      filename?: string;
+      source: { kind: "clipboard" | "drop"; types: string[] };
+    },
     target: "note" | "attachment" = "note",
   ): Promise<void> {
     try {
@@ -979,7 +1027,9 @@
       const form = new FormData();
       form.append(
         "file",
-        opts.filename ? new File([shrunk], opts.filename, { type: shrunk.type }) : shrunk,
+        opts.filename
+          ? new File([shrunk], opts.filename, { type: shrunk.type })
+          : shrunk,
       );
       const res = await fetch("/api/attach", { method: "POST", body: form });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
@@ -1015,15 +1065,18 @@
       const res = await fetch("/api/attach", { method: "POST", body: form });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
       const { path } = (await res.json()) as { path: string };
-      insertAttachmentRef(makeTextAttachmentRef({
-        path,
-        filename,
-        mimeType,
-        size: blob.size,
-        charCount: Array.from(text).length,
-        lineCount: countTextLines(text),
-        source,
-      }), target);
+      insertAttachmentRef(
+        makeTextAttachmentRef({
+          path,
+          filename,
+          mimeType,
+          size: blob.size,
+          charCount: Array.from(text).length,
+          lineCount: countTextLines(text),
+          source,
+        }),
+        target,
+      );
     } catch (err) {
       console.warn("Could not save text attachment", err);
     }
@@ -1054,10 +1107,14 @@
         const file = item.getAsFile();
         if (!file) continue;
         e.preventDefault();
-        void uploadImageAttachment(file, {
-          filename: file.name && file.name !== "blob" ? file.name : undefined,
-          source: { kind: "clipboard", types: Array.from(cd.types) },
-        }, target);
+        void uploadImageAttachment(
+          file,
+          {
+            filename: file.name && file.name !== "blob" ? file.name : undefined,
+            source: { kind: "clipboard", types: Array.from(cd.types) },
+          },
+          target,
+        );
         return;
       }
     }
@@ -1069,7 +1126,10 @@
   }
 
   function isAttachmentZoneTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && !!target.closest("[data-note-attachment-zone]");
+    return (
+      target instanceof Element &&
+      !!target.closest("[data-note-attachment-zone]")
+    );
   }
 
   function onNoteDragOver(e: DragEvent): void {
@@ -1092,7 +1152,10 @@
     e.preventDefault();
     void uploadImageAttachment(image, {
       filename: image.name,
-      source: { kind: "drop", types: e.dataTransfer ? Array.from(e.dataTransfer.types) : [] },
+      source: {
+        kind: "drop",
+        types: e.dataTransfer ? Array.from(e.dataTransfer.types) : [],
+      },
     });
   }
 
@@ -1108,17 +1171,18 @@
     }
 
     try {
-      const ClipboardItemCtor = (globalThis as typeof globalThis & {
-        ClipboardItem?: typeof ClipboardItem;
-      }).ClipboardItem;
+      const ClipboardItemCtor = (
+        globalThis as typeof globalThis & {
+          ClipboardItem?: typeof ClipboardItem;
+        }
+      ).ClipboardItem;
       if (navigator.clipboard?.write && ClipboardItemCtor) {
         await navigator.clipboard.write([
           new ClipboardItemCtor({
             "text/plain": new Blob([text], { type: "text/plain" }),
-            "text/html": new Blob(
-              [makeNoteClipboardHtml(payload, text)],
-              { type: "text/html" },
-            ),
+            "text/html": new Blob([makeNoteClipboardHtml(payload, text)], {
+              type: "text/html",
+            }),
           }),
         ]);
       } else {
@@ -1156,12 +1220,17 @@
     await copyNoteBody(note.body, note.id);
   }
 
-  async function textForAttachment(attachment: InlineAttachment): Promise<string> {
+  async function textForAttachment(
+    attachment: InlineAttachment,
+  ): Promise<string> {
     if (attachment.kind !== "text") return "";
     return fetchTextAttachment(attachment.path);
   }
 
-  function openInlineAttachment(raw: string, attachment: InlineAttachment): void {
+  function openInlineAttachment(
+    raw: string,
+    attachment: InlineAttachment,
+  ): void {
     cancelPendingAttachmentDelete();
     openAttachmentRaw = raw;
     openAttachmentEditRefs = [];
@@ -1186,7 +1255,9 @@
           openAttachmentDraft = text;
           openAttachmentEditRefs = [];
           queueMicrotask(() => {
-            attachmentTextareaEl?.dispatchEvent(new Event("input", { bubbles: true }));
+            attachmentTextareaEl?.dispatchEvent(
+              new Event("input", { bubbles: true }),
+            );
           });
         })
         .catch((err) => console.warn("Could not read text attachment", err));
@@ -1204,11 +1275,14 @@
 
   function openAttachmentByStep(step: number): void {
     if (!openAttachmentRaw || attachmentParts.length < 2) return;
-    const index = attachmentParts.findIndex((part) => part.raw === openAttachmentRaw);
+    const index = attachmentParts.findIndex(
+      (part) => part.raw === openAttachmentRaw,
+    );
     if (index < 0) return;
-    const next = attachmentParts[
-      (index + step + attachmentParts.length) % attachmentParts.length
-    ];
+    const next =
+      attachmentParts[
+        (index + step + attachmentParts.length) % attachmentParts.length
+      ];
     if (next) openInlineAttachment(next.raw, next.attachment);
   }
 
@@ -1233,21 +1307,15 @@
 
   function onAttachmentWindowKeydown(e: KeyboardEvent): void {
     if (!openAttachmentRaw) return;
-    if (
-      e.key !== "Escape" &&
-      e.key !== "ArrowLeft" &&
-      e.key !== "ArrowRight"
-    ) {
+    if (e.key !== "Escape" && e.key !== "ArrowLeft" && e.key !== "ArrowRight") {
       return;
     }
     const target = e.target;
     if (
       (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
-      (
-        target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLTextAreaElement ||
         target instanceof HTMLInputElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      )
+        (target instanceof HTMLElement && target.isContentEditable))
     ) {
       return;
     }
@@ -1269,18 +1337,27 @@
 
   function openAttachmentKind(): InlineAttachment["kind"] | null {
     if (!openAttachmentRaw) return null;
-    return attachmentParts.find((part) => part.raw === openAttachmentRaw)?.attachment.kind ?? null;
+    return (
+      attachmentParts.find((part) => part.raw === openAttachmentRaw)?.attachment
+        .kind ?? null
+    );
   }
 
   function mergeOpenTextAttachment(): void {
     if (!openAttachmentRaw) return;
-    const body = restoreEditTextAttachments(openAttachmentDraft, openAttachmentEditRefs);
+    const body = restoreEditTextAttachments(
+      openAttachmentDraft,
+      openAttachmentEditRefs,
+    );
     mergeInlineAttachment(openAttachmentRaw, body);
   }
 
   function saveOpenNoteAttachment(): void {
     if (!openAttachmentRaw) return;
-    const body = restoreEditTextAttachments(openAttachmentDraft, openAttachmentEditRefs);
+    const body = restoreEditTextAttachments(
+      openAttachmentDraft,
+      openAttachmentEditRefs,
+    );
     const replacement = makeNoteAttachmentRef({ body });
     const nextBody = note.body.replace(openAttachmentRaw, replacement);
     closeInlineAttachment();
@@ -1311,7 +1388,9 @@
     return Promise.resolve(attachment.target.label ?? attachment.target.value);
   }
 
-  async function copyOpenAttachment(attachment: InlineAttachment): Promise<void> {
+  async function copyOpenAttachment(
+    attachment: InlineAttachment,
+  ): Promise<void> {
     try {
       const text = await attachmentCopyText(attachment);
       await navigator.clipboard.writeText(text);
@@ -1385,7 +1464,10 @@
     e.dataTransfer.setData("text/plain", inlineAttachmentLabel(attachment));
   }
 
-  async function mergeTextAttachment(raw: string, attachment: InlineAttachment): Promise<void> {
+  async function mergeTextAttachment(
+    raw: string,
+    attachment: InlineAttachment,
+  ): Promise<void> {
     if (attachment.kind !== "text") return;
     try {
       mergeInlineAttachment(raw, await textForAttachment(attachment));
@@ -1394,7 +1476,10 @@
     }
   }
 
-  function mergeNoteAttachment(raw: string, attachment: InlineAttachment): void {
+  function mergeNoteAttachment(
+    raw: string,
+    attachment: InlineAttachment,
+  ): void {
     if (attachment.kind !== "note") return;
     mergeInlineAttachment(raw, attachment.body);
   }
@@ -1478,7 +1563,10 @@
   let liveGrabYFrac: number | null = null;
   $: effectiveGrabXFrac = liveGrabXFrac ?? grabXFrac;
   $: effectiveGrabYFrac = liveGrabYFrac ?? grabYFrac;
-  let textStatsByPath: Record<string, { lineCount: number; charCount: number }> = {};
+  let textStatsByPath: Record<
+    string,
+    { lineCount: number; charCount: number }
+  > = {};
   const pendingTextStats = new Set<string>();
   $: showAttachmentDropActive = attachmentDropActive;
 
@@ -1552,7 +1640,8 @@
   function startMouseDrag(e: MouseEvent, allowButtonTarget: boolean): void {
     // Only drag with primary button; ignore clicks on buttons inside header.
     if (e.button !== 0) return;
-    if (!allowButtonTarget && (e.target as HTMLElement).closest("button")) return;
+    if (!allowButtonTarget && (e.target as HTMLElement).closest("button"))
+      return;
     dragging = true;
     dragMoved = false;
 
@@ -1587,7 +1676,11 @@
     stopSwing();
     velocityEma = 0;
 
-    dispatch("grab", { id: note.id, grabXFrac: newGxFrac, grabYFrac: newGyFrac });
+    dispatch("grab", {
+      id: note.id,
+      grabXFrac: newGxFrac,
+      grabYFrac: newGyFrac,
+    });
     dispatch("move", {
       id: note.id,
       x: cxDoc - newGx,
@@ -1635,7 +1728,11 @@
     if (moved) {
       suppressNextClick = true;
       setTimeout(() => (suppressNextClick = false), 0);
-      dispatch("dragdrop", { id: note.id, clientX: e.clientX, clientY: e.clientY });
+      dispatch("dragdrop", {
+        id: note.id,
+        clientX: e.clientX,
+        clientY: e.clientY,
+      });
     }
     if (dragRotation !== 0) {
       const next = Math.max(
@@ -1677,10 +1774,12 @@
     openInlineAttachment(raw, attachment);
   }
 
-  $: displayedTilt = tilt + Math.max(
-    -DRAG_ROTATION_MAX - 8,
-    Math.min(DRAG_ROTATION_MAX + 8, rotation + dragRotation + swingAngle),
-  );
+  $: displayedTilt =
+    tilt +
+    Math.max(
+      -DRAG_ROTATION_MAX - 8,
+      Math.min(DRAG_ROTATION_MAX + 8, rotation + dragRotation + swingAngle),
+    );
 
   function cancelPendingDelete(): void {
     if (deleteTimerId !== null) {
@@ -1789,7 +1888,10 @@
     dispatch("save", { id: note.id, body: trimmed });
   }
 
-  function onKey(e: KeyboardEvent, target: "note" | "attachment" = "note"): void {
+  function onKey(
+    e: KeyboardEvent,
+    target: "note" | "attachment" = "note",
+  ): void {
     // While the @-mention picker is open, the textarea forwards
     // navigation/commit keys into it. The picker decides whether the
     // current cursor maps to a real pick; if not, fall through so
@@ -1807,7 +1909,13 @@
         mentionPickerRef.moveCursor(-1);
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
         if (mentionPickerRef.hasResults()) {
           e.preventDefault();
           e.stopPropagation();
@@ -1827,7 +1935,13 @@
     // so plain Enter as the save shortcut is the muscle memory the
     // user wants. Shift+Enter falls through to the textarea default
     // (insert newline). Esc reverts.
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey
+    ) {
       e.preventDefault();
       e.stopPropagation();
       if (target === "note") {
@@ -1880,7 +1994,8 @@
       for (const wt of r.worktrees ?? []) {
         const agents = (wt as { agents?: AgentSession[] }).agents;
         if (!agents) continue;
-        const found = agents.find((x) => x.sessionId === id) ??
+        const found =
+          agents.find((x) => x.sessionId === id) ??
           agents.find((x) => x.source.endsWith(suffix));
         if (found) return found;
       }
@@ -1893,7 +2008,8 @@
    *  string-concat / `@html` flow that can't mount Svelte components
    *  per anchor. If the canonical path ever changes in AgentIcon,
    *  both spots need the same update. */
-  const CODEX_PATH = "M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z";
+  const CODEX_PATH =
+    "M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z";
 
   /** Inline-icon HTML for the rendered note body's @-mention chips.
    *  Mirrors AgentIcon / AttachmentIcon's resolution so chips that
@@ -1901,7 +2017,10 @@
    *  link-chip and the @-mention picker rows. Returns "" when no
    *  recognizable agent/provider — caller renders the link without
    *  an icon prefix. */
-  function inlineMentionIconHtml(opts: { agent?: string; provider?: string }): string {
+  function inlineMentionIconHtml(opts: {
+    agent?: string;
+    provider?: string;
+  }): string {
     // Bumped from 12 → 16 so the brand marks read at a glance inside
     // the note body's handwriting-font text. The container's flexbox
     // centring (.inline-mention-icon CSS) keeps them aligned with the
@@ -1991,8 +2110,10 @@
     _reposToken: AnchorableRepo[],
     _scopeToken: typeof pickerScope,
   ): string {
-    if (!body.trim()) return "<p class=\"sticky-empty\">(empty)</p>";
-    const raw = DOMPurify.sanitize(marked.parse(body, { async: false }) as string);
+    if (!body.trim()) return '<p class="sticky-empty">(empty)</p>';
+    const raw = DOMPurify.sanitize(
+      marked.parse(body, { async: false }) as string,
+    );
     return enhanceSupergitLinks(raw);
   }
 
@@ -2010,7 +2131,11 @@
   function ensureTextStats(attachment: InlineAttachment): void {
     if (attachment.kind !== "text") return;
     if (typeof attachment.lineCount === "number") return;
-    if (textStatsByPath[attachment.path] || pendingTextStats.has(attachment.path)) return;
+    if (
+      textStatsByPath[attachment.path] ||
+      pendingTextStats.has(attachment.path)
+    )
+      return;
     pendingTextStats.add(attachment.path);
     void fetchTextAttachment(attachment.path)
       .then((text) => {
@@ -2047,11 +2172,13 @@
     }
     if (attachment.target.type === "command") {
       const live = commandLinkForTarget(attachment.target)?.link;
-      return live?.name ??
+      return (
+        live?.name ??
         live?.cmd ??
         attachment.target.label ??
         attachment.target.command ??
-        attachment.target.value;
+        attachment.target.value
+      );
     }
     return attachment.target.label ?? displayLabel(attachment.target);
   }
@@ -2065,7 +2192,9 @@
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "command";
     }
-    const parts = [attachment.target.meta, attachment.target.subtitle].filter(Boolean);
+    const parts = [attachment.target.meta, attachment.target.subtitle].filter(
+      Boolean,
+    );
     return parts.length ? parts.join(" · ") : attachment.target.type;
   }
 
@@ -2073,18 +2202,23 @@
 
   $: commandStateKey = [
     [...runningCommandIds].sort().join("|"),
-    repos.map((repo) =>
-      `${repo.id}:${(repo.customLinks ?? []).map((link) =>
-        [
-          link.id,
-          link.kind ?? "",
-          link.cmd ?? "",
-          link.cwd ?? "",
-          link.runMode ?? "",
-          link.name ?? "",
-        ].join("\u001f"),
-      ).join("\u001e")}`,
-    ).join("\u001d"),
+    repos
+      .map(
+        (repo) =>
+          `${repo.id}:${(repo.customLinks ?? [])
+            .map((link) =>
+              [
+                link.id,
+                link.kind ?? "",
+                link.cmd ?? "",
+                link.cwd ?? "",
+                link.runMode ?? "",
+                link.name ?? "",
+              ].join("\u001f"),
+            )
+            .join("\u001e")}`,
+      )
+      .join("\u001d"),
   ].join("\u001c");
 
   $: commandUrlsKey = Object.entries(commandUrls)
@@ -2092,8 +2226,9 @@
     .map(([id, urls]) => `${id}:${urls.join("\u001f")}`)
     .join("\u001e");
 
-  function commandLinkForTarget(target: LinkTarget | undefined):
-    ReturnType<typeof resolveLiveCommandLink> {
+  function commandLinkForTarget(
+    target: LinkTarget | undefined,
+  ): ReturnType<typeof resolveLiveCommandLink> {
     return resolveLiveCommandLink(target, repos);
   }
 
@@ -2101,15 +2236,23 @@
     return commandLinkForTarget(target)?.link.id ?? target.value;
   }
 
-  function isCommandRunning(target: LinkTarget | undefined, stateKey = commandStateKey): boolean {
+  function isCommandRunning(
+    target: LinkTarget | undefined,
+    stateKey = commandStateKey,
+  ): boolean {
     void stateKey;
-    return target?.type === "command" &&
-      runningCommandIds.has(commandLinkIdForTarget(target));
+    return (
+      target?.type === "command" &&
+      runningCommandIds.has(commandLinkIdForTarget(target))
+    );
   }
 
   function isCommandAttachment(
     attachment: InlineAttachment,
-  ): attachment is InlineAttachment & { kind: "link"; target: LinkTarget & { type: "command" } } {
+  ): attachment is InlineAttachment & {
+    kind: "link";
+    target: LinkTarget & { type: "command" };
+  } {
     return attachment.kind === "link" && attachment.target.type === "command";
   }
 
@@ -2119,29 +2262,41 @@
     return commandCopyText(target, link);
   }
 
-  function liveCommandLabel(target: LinkTarget, stateKey = commandStateKey): string {
+  function liveCommandLabel(
+    target: LinkTarget,
+    stateKey = commandStateKey,
+  ): string {
     void stateKey;
     if (target.type !== "command") return target.value;
     const link = commandLinkForTarget(target)?.link;
     return link?.name?.trim() || link?.cmd?.trim() || commandPowerLabel(target);
   }
 
-  function liveCommandMode(target: LinkTarget, stateKey = commandStateKey): string {
+  function liveCommandMode(
+    target: LinkTarget,
+    stateKey = commandStateKey,
+  ): string {
     void stateKey;
     if (target.type !== "command") return "command";
     const live = commandLinkForTarget(target)?.link;
     const cwd = live?.cwd ?? target.cwd;
     const mode = live?.runMode ?? target.runMode;
     const modeLabel =
-      mode === "internal" ? "hidden terminal" :
-      mode === "external" ? "external terminal" :
-      mode === "shell" ? "background shell" :
-      "command";
+      mode === "internal"
+        ? "hidden terminal"
+        : mode === "external"
+          ? "external terminal"
+          : mode === "shell"
+            ? "background shell"
+            : "command";
     const cwdLabel = cwd?.split("/").filter(Boolean).pop();
     return cwdLabel ? `${cwdLabel} · ${modeLabel}` : modeLabel;
   }
 
-  function commandUrlsForTarget(target: LinkTarget, urlsKey = commandUrlsKey): string[] {
+  function commandUrlsForTarget(
+    target: LinkTarget,
+    urlsKey = commandUrlsKey,
+  ): string[] {
     void urlsKey;
     if (target.type !== "command") return [];
     const liveId = commandLinkIdForTarget(target);
@@ -2201,7 +2356,9 @@
     bodyParts = parseInlineAttachments(note.body);
     if (
       openAttachmentRaw &&
-      !bodyParts.some((part) => part.kind === "attachment" && part.raw === openAttachmentRaw)
+      !bodyParts.some(
+        (part) => part.kind === "attachment" && part.raw === openAttachmentRaw,
+      )
     ) {
       closeInlineAttachment();
     }
@@ -2318,7 +2475,8 @@
         selected={interactive && openAttachmentRaw === part.raw}
         draggable={interactive}
         onDragStart={(e) => {
-          if (interactive) onInlineAttachmentDragStart(e, part.raw, part.attachment);
+          if (interactive)
+            onInlineAttachmentDragStart(e, part.raw, part.attachment);
         }}
         onOpen={() => {
           if (interactive) activateAttachment(part.raw, part.attachment);
@@ -2348,13 +2506,16 @@
           class:sticky-trailing-card-text={visual.attachment.kind === "text"}
           class:sticky-trailing-card-note={visual.attachment.kind === "note"}
           class:sticky-trailing-card-link={visual.attachment.kind === "link"}
-          class:sticky-trailing-card-command={isCommandAttachment(visual.attachment)}
+          class:sticky-trailing-card-command={isCommandAttachment(
+            visual.attachment,
+          )}
           draggable={interactive}
           title="View attachment"
           style:--stack-index={j}
           style:--stack-count={visualParts.length}
           on:dragstart={(e) => {
-            if (interactive) onInlineAttachmentDragStart(e, visual.raw, visual.attachment);
+            if (interactive)
+              onInlineAttachmentDragStart(e, visual.raw, visual.attachment);
           }}
           on:click|stopPropagation={() => {
             if (interactive) activateAttachment(visual.raw, visual.attachment);
@@ -2368,7 +2529,10 @@
   {/if}
 {/snippet}
 
-{#snippet attachmentPreview(attachment: InlineAttachment, mode: "detached" | "stack" | "media")}
+{#snippet attachmentPreview(
+  attachment: InlineAttachment,
+  mode: "detached" | "stack" | "media",
+)}
   {#if attachment.kind === "image"}
     <span
       class="sticky-photo-frame"
@@ -2381,15 +2545,20 @@
       />
     </span>
   {:else if attachment.kind === "text"}
-    <span class="sticky-snippet-card" class:sticky-snippet-card-media={mode === "media"}>
+    <span
+      class="sticky-snippet-card"
+      class:sticky-snippet-card-media={mode === "media"}
+    >
       <span class="sticky-snippet-icon" aria-hidden="true">T</span>
       <span class="sticky-snippet-title">{pastedTextTitle(attachment)}</span>
       <span class="sticky-snippet-meta">{pastedTextMeta(attachment)}</span>
     </span>
   {:else if attachment.kind === "emoji"}
     <span
-      class={mode === "stack" ? "sticky-trailing-emoji" : "sticky-detached-emoji"}
-    >{attachment.body}</span>
+      class={mode === "stack"
+        ? "sticky-trailing-emoji"
+        : "sticky-detached-emoji"}>{attachment.body}</span
+    >
   {:else if attachment.kind === "note"}
     <span
       class="sticky-mini-note-card"
@@ -2397,7 +2566,9 @@
     >
       <span class="sticky-mini-note-icon" aria-hidden="true">✎</span>
       <span class="sticky-mini-note-title">Note</span>
-      <span class="sticky-mini-note-body">{noteAttachmentTitle(attachment)}</span>
+      <span class="sticky-mini-note-body"
+        >{noteAttachmentTitle(attachment)}</span
+      >
     </span>
   {:else if attachment.kind === "link" && attachment.target.type === "command"}
     {@render commandPowerPreview(attachment.target, mode)}
@@ -2410,9 +2581,9 @@
       <span class="attach-card-icon" aria-hidden="true">
         <AttachmentIcon
           agent={attachment.target.agent ?? ""}
-          provider={attachment.target.provider
-            ?? (attachment.target.type === "commit"
-              ? pickerScope.currentRepoProvider ?? ""
+          provider={attachment.target.provider ??
+            (attachment.target.type === "commit"
+              ? (pickerScope.currentRepoProvider ?? "")
               : "")}
           glyph={targetIcon(attachment.target)}
           size={mode === "stack" ? 30 : 56}
@@ -2424,7 +2595,10 @@
   {/if}
 {/snippet}
 
-{#snippet commandPowerPreview(target: LinkTarget, mode: "detached" | "stack" | "media")}
+{#snippet commandPowerPreview(
+  target: LinkTarget,
+  mode: "detached" | "stack" | "media",
+)}
   {@const running = isCommandRunning(target, commandStateKey)}
   {@const urls = commandUrlsForTarget(target, commandUrlsKey)}
   <span
@@ -2439,9 +2613,13 @@
       <span class="command-power-state">{running ? "ON" : "OFF"}</span>
     </span>
     <span class="command-power-details">
-      <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>
+      <span class="command-power-name"
+        >{liveCommandLabel(target, commandStateKey)}</span
+      >
       {#if mode !== "detached"}
-        <span class="command-power-meta">{liveCommandMode(target, commandStateKey)}</span>
+        <span class="command-power-meta"
+          >{liveCommandMode(target, commandStateKey)}</span
+        >
       {/if}
     </span>
     {#if mode === "detached" && urls.length > 0}
@@ -2455,7 +2633,9 @@
             title={`Open ${url}`}
             on:mousedown|stopPropagation
             on:click|stopPropagation={() => openUrl(url)}
-            on:keydown={(e) => { if (e.key === "Enter") openUrl(url); }}
+            on:keydown={(e) => {
+              if (e.key === "Enter") openUrl(url);
+            }}
           >
             {commandUrlLabel(url)}
           </span>
@@ -2477,10 +2657,20 @@
   class:attachment-drop-active={showAttachmentDropActive}
   data-note-id={note.id}
   data-kind={isEmoji ? "emoji" : isLink ? "link" : "note"}
-  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying ? 0.5 : effectiveGrabXFrac) * 100}%; --grab-y: {(flying ? 0 : effectiveGrabYFrac) * 100}%;{editing && isLink ? ` max-width: ${chipMaxWidth}px;` : ''}"
+  style="left: {x}px; top: {y}px; --tilt: {displayedTilt}deg; --grab-x: {(flying
+    ? 0.5
+    : effectiveGrabXFrac) * 100}%; --grab-y: {(flying
+    ? 0
+    : effectiveGrabYFrac) * 100}%;{editing && isLink
+    ? ` max-width: ${chipMaxWidth}px;`
+    : ''}"
   role="dialog"
   tabindex="-1"
-  aria-label={isEmoji ? "Emoji sticker" : isLink ? "Sticky link" : "Sticky note"}
+  aria-label={isEmoji
+    ? "Emoji sticker"
+    : isLink
+      ? "Sticky link"
+      : "Sticky note"}
   on:mousedown={() => dispatch("focus", { id: note.id })}
   on:dragover={onNoteDragOver}
   on:drop={onNoteDrop}
@@ -2516,8 +2706,14 @@
              left slot of the toolbar — and the natural next action
              after typing is Save, not Cancel. Keeping the affirmative
              action under the cursor avoids a wasted aim. -->
-        <button class="sticky-btn primary" on:click={saveEdit} title="Save (Enter)">Save</button>
-        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)">Cancel</button>
+        <button
+          class="sticky-btn primary"
+          on:click={saveEdit}
+          title="Save (Enter)">Save</button
+        >
+        <button class="sticky-btn" on:click={cancelEdit} title="Cancel (Esc)"
+          >Cancel</button
+        >
       {:else if editing && isLink}
         <!-- Link editing is picker-driven: pick = save, Esc /
              click-outside = cancel. No explicit Cancel button — it
@@ -2536,8 +2732,8 @@
                 : "Copy note for pasting into a session"}
             aria-label={note.kind === "link" && note.target?.type === "command"
               ? "Copy command"
-              : "Copy note"}
-          >{copied ? "✓" : "⧉"}</button>
+              : "Copy note"}>{copied ? "✓" : "⧉"}</button
+          >
         {/if}
         <button
           class="sticky-btn"
@@ -2553,8 +2749,8 @@
             : "Edit"}
           aria-label={note.kind === "link" && note.target?.type === "command"
             ? "Edit command in toolbar"
-            : "Edit"}
-        >✎</button>
+            : "Edit"}>✎</button
+        >
         <button
           class="sticky-btn danger"
           class:confirming={confirmingDelete}
@@ -2563,7 +2759,8 @@
             ? "Click to cancel — note will delete in 2 seconds"
             : "Delete (3-second grace; click again to cancel)"}
           aria-label={confirmingDelete ? "Cancel pending delete" : "Delete"}
-        >{confirmingDelete ? "■" : "×"}</button>
+          >{confirmingDelete ? "■" : "×"}</button
+        >
       {/if}
     </div>
   </header>
@@ -2577,20 +2774,22 @@
       on:mousedown={onMouseDownHeader}
       on:dblclick|stopPropagation={cycleEmojiScale}
       title="Drag to move — double-click to resize"
-    >{#if isAppIconBody && appIconName}
-      <img
-        class="sticky-emoji-app-img"
-        src={appIconUrl(appIconName)}
-        alt={appIconName}
-        draggable="false"
-      />
-    {:else}{note.body}{/if}</span>
+      >{#if isAppIconBody && appIconName}
+        <img
+          class="sticky-emoji-app-img"
+          src={appIconUrl(appIconName)}
+          alt={appIconName}
+          draggable="false"
+        />
+      {:else}{note.body}{/if}</span
+    >
     <button
       class="sticky-emoji-delete sticky-btn danger"
       on:click={onDeleteClick}
       title={confirmingDelete ? "Click to cancel" : "Delete"}
       aria-label={confirmingDelete ? "Cancel pending delete" : "Delete"}
-    >{confirmingDelete ? "■" : "×"}</button>
+      >{confirmingDelete ? "■" : "×"}</button
+    >
   {:else if editing}
     {#if isLink}
       <!-- Link editor: fuzzy mention picker (sessions + commits +
@@ -2621,60 +2820,63 @@
          link kind: those are picker-driven and the footer's extra
          affordances would crowd the popover. -->
     {#if !isLink}
-    <footer class="sticky-edit-footer">
-      <span class="sticky-action-anchor">
-        <button
-          class="sticky-btn tiny"
-          on:click={() => (pickerMode = pickerMode === "move" ? null : "move")}
-          class:active={pickerMode === "move"}
-          title="Move this note to another repo/worktree"
-        >move to</button>
-        {#if pickerMode === "move"}
-          <Popover variant="agents" extraClass="sticky-anchor-popover">
-            <span slot="head">Move note to…</span>
-            <AnchorPicker
-              {repos}
-              currentAnchor={note.anchors[0] ?? null}
-              on:pick={(e) => {
-                dispatch("reassign", {
-                  id: note.id,
-                  anchor: e.detail.anchor,
-                  mode: "move",
-                });
-                pickerMode = null;
-              }}
-              on:cancel={() => (pickerMode = null)}
-            />
-          </Popover>
-        {/if}
-      </span>
-      <span class="sticky-action-anchor">
-        <button
-          class="sticky-btn tiny"
-          on:click={() => (pickerMode = pickerMode === "duplicate" ? null : "duplicate")}
-          class:active={pickerMode === "duplicate"}
-          title="Duplicate this note to another repo/worktree (original stays)"
-        >copy to</button>
-        {#if pickerMode === "duplicate"}
-          <Popover variant="agents" extraClass="sticky-anchor-popover">
-            <span slot="head">Duplicate note to…</span>
-            <AnchorPicker
-              {repos}
-              currentAnchor={note.anchors[0] ?? null}
-              on:pick={(e) => {
-                dispatch("reassign", {
-                  id: note.id,
-                  anchor: e.detail.anchor,
-                  mode: "duplicate",
-                });
-                pickerMode = null;
-              }}
-              on:cancel={() => (pickerMode = null)}
-            />
-          </Popover>
-        {/if}
-      </span>
-    </footer>
+      <footer class="sticky-edit-footer">
+        <span class="sticky-action-anchor">
+          <button
+            class="sticky-btn tiny"
+            on:click={() =>
+              (pickerMode = pickerMode === "move" ? null : "move")}
+            class:active={pickerMode === "move"}
+            title="Move this note to another repo/worktree">move to</button
+          >
+          {#if pickerMode === "move"}
+            <Popover variant="agents" extraClass="sticky-anchor-popover">
+              <span slot="head">Move note to…</span>
+              <AnchorPicker
+                {repos}
+                currentAnchor={note.anchors[0] ?? null}
+                on:pick={(e) => {
+                  dispatch("reassign", {
+                    id: note.id,
+                    anchor: e.detail.anchor,
+                    mode: "move",
+                  });
+                  pickerMode = null;
+                }}
+                on:cancel={() => (pickerMode = null)}
+              />
+            </Popover>
+          {/if}
+        </span>
+        <span class="sticky-action-anchor">
+          <button
+            class="sticky-btn tiny"
+            on:click={() =>
+              (pickerMode = pickerMode === "duplicate" ? null : "duplicate")}
+            class:active={pickerMode === "duplicate"}
+            title="Duplicate this note to another repo/worktree (original stays)"
+            >copy to</button
+          >
+          {#if pickerMode === "duplicate"}
+            <Popover variant="agents" extraClass="sticky-anchor-popover">
+              <span slot="head">Duplicate note to…</span>
+              <AnchorPicker
+                {repos}
+                currentAnchor={note.anchors[0] ?? null}
+                on:pick={(e) => {
+                  dispatch("reassign", {
+                    id: note.id,
+                    anchor: e.detail.anchor,
+                    mode: "duplicate",
+                  });
+                  pickerMode = null;
+                }}
+                on:cancel={() => (pickerMode = null)}
+              />
+            </Popover>
+          {/if}
+        </span>
+      </footer>
     {/if}
   {:else if isLink}
     {#if note.target}
@@ -2715,9 +2917,9 @@
           <span class="attach-card-icon" aria-hidden="true">
             <AttachmentIcon
               agent={note.target.agent ?? ""}
-              provider={note.target.provider
-                ?? (note.target.type === "commit"
-                  ? pickerScope.currentRepoProvider ?? ""
+              provider={note.target.provider ??
+                (note.target.type === "commit"
+                  ? (pickerScope.currentRepoProvider ?? "")
                   : "")}
               glyph={targetIcon(note.target)}
               size={56}
@@ -2729,7 +2931,9 @@
           {#if note.target.subtitle || note.target.meta}
             <span class="attach-card-meta">
               {#if note.target.meta}{note.target.meta}{/if}
-              {#if note.target.meta && note.target.subtitle} · {/if}
+              {#if note.target.meta && note.target.subtitle}
+                ·
+              {/if}
               {#if note.target.subtitle}{note.target.subtitle}{/if}
             </span>
           {/if}
@@ -2758,20 +2962,32 @@
       <button
         type="button"
         class="sticky-detached-attachment"
-        class:sticky-detached-image={detachedAttachmentPart.attachment.kind === "image"}
-        class:sticky-detached-text={detachedAttachmentPart.attachment.kind === "text"}
-        class:sticky-detached-note={detachedAttachmentPart.attachment.kind === "note"}
-        class:sticky-detached-link={detachedAttachmentPart.attachment.kind === "link"}
-        class:sticky-detached-command={isCommandAttachment(detachedAttachmentPart.attachment)}
+        class:sticky-detached-image={detachedAttachmentPart.attachment.kind ===
+          "image"}
+        class:sticky-detached-text={detachedAttachmentPart.attachment.kind ===
+          "text"}
+        class:sticky-detached-note={detachedAttachmentPart.attachment.kind ===
+          "note"}
+        class:sticky-detached-link={detachedAttachmentPart.attachment.kind ===
+          "link"}
+        class:sticky-detached-command={isCommandAttachment(
+          detachedAttachmentPart.attachment,
+        )}
         title={isCommandAttachment(detachedAttachmentPart.attachment)
           ? `${isCommandRunning(detachedAttachmentPart.attachment.target, commandStateKey) ? "Stop" : "Run"} command`
           : "View attachment"}
         on:mousedown={onMouseDownCard}
         on:click={() =>
-          activateAttachment(detachedAttachmentPart.raw, detachedAttachmentPart.attachment)}
+          activateAttachment(
+            detachedAttachmentPart.raw,
+            detachedAttachmentPart.attachment,
+          )}
         on:dblclick|stopPropagation
       >
-        {@render attachmentPreview(detachedAttachmentPart.attachment, "detached")}
+        {@render attachmentPreview(
+          detachedAttachmentPart.attachment,
+          "detached",
+        )}
       </button>
     {:else}
       <div
@@ -2805,7 +3021,9 @@
   {/if}
 
   {#if openAttachmentRaw}
-    {@const openIndex = attachmentParts.findIndex((part) => part.raw === openAttachmentRaw)}
+    {@const openIndex = attachmentParts.findIndex(
+      (part) => part.raw === openAttachmentRaw,
+    )}
     {@const openPart = openIndex >= 0 ? attachmentParts[openIndex] : null}
     {#if openPart}
       <section
@@ -2819,10 +3037,14 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="attachment-media-modal"
-          class:attachment-media-modal-image={openPart.attachment.kind === "image"}
-          class:attachment-media-modal-note={openPart.attachment.kind === "note"}
-          class:attachment-media-modal-text={openPart.attachment.kind === "text"}
-          class:attachment-media-modal-card={openPart.attachment.kind === "link" || openPart.attachment.kind === "emoji"}
+          class:attachment-media-modal-image={openPart.attachment.kind ===
+            "image"}
+          class:attachment-media-modal-note={openPart.attachment.kind ===
+            "note"}
+          class:attachment-media-modal-text={openPart.attachment.kind ===
+            "text"}
+          class:attachment-media-modal-card={openPart.attachment.kind ===
+            "link" || openPart.attachment.kind === "emoji"}
           role="dialog"
           aria-modal="true"
           aria-label="Attachment"
@@ -2834,7 +3056,11 @@
             <span class="attachment-media-title">
               {inlineAttachmentLabel(openPart.attachment)}
             </span>
-            <span class="attachment-media-actions" role="toolbar" aria-label="Attachment actions">
+            <span
+              class="attachment-media-actions"
+              role="toolbar"
+              aria-label="Attachment actions"
+            >
               <button
                 type="button"
                 class="sticky-btn tiny"
@@ -2847,7 +3073,8 @@
                   ? "Copy command"
                   : "Copy attachment"}
                 on:click={() => void copyOpenAttachment(openPart.attachment)}
-              >{copied ? "✓" : "⧉"}</button>
+                >{copied ? "✓" : "⧉"}</button
+              >
               <button
                 type="button"
                 class="sticky-btn tiny"
@@ -2857,12 +3084,15 @@
                 aria-label={isCommandAttachment(openPart.attachment)
                   ? "Edit command in toolbar"
                   : "Edit attachment"}
-                on:click={() => editOpenAttachment(openPart.raw, openPart.attachment)}
-              >✎</button>
+                on:click={() =>
+                  editOpenAttachment(openPart.raw, openPart.attachment)}
+                >✎</button
+              >
               <button
                 type="button"
                 class="sticky-btn tiny danger"
-                class:confirming={confirmingAttachmentDeleteRaw === openPart.raw}
+                class:confirming={confirmingAttachmentDeleteRaw ===
+                  openPart.raw}
                 title={confirmingAttachmentDeleteRaw === openPart.raw
                   ? "Click to cancel — attachment will delete in 2 seconds"
                   : "Delete attachment (3-second grace; click again to cancel)"}
@@ -2870,7 +3100,10 @@
                   ? "Cancel pending attachment delete"
                   : "Delete attachment"}
                 on:click={() => deleteOpenAttachment(openPart.raw)}
-              >{confirmingAttachmentDeleteRaw === openPart.raw ? "■" : "×"}</button>
+                >{confirmingAttachmentDeleteRaw === openPart.raw
+                  ? "■"
+                  : "×"}</button
+              >
             </span>
             {#if attachmentParts.length > 1}
               <button
@@ -2878,15 +3111,15 @@
                 class="attachment-media-nav"
                 aria-label="Previous attachment"
                 title="Previous attachment"
-                on:click={() => openAttachmentByStep(-1)}
-              >‹</button>
+                on:click={() => openAttachmentByStep(-1)}>‹</button
+              >
               <button
                 type="button"
                 class="attachment-media-nav"
                 aria-label="Next attachment"
                 title="Next attachment"
-                on:click={() => openAttachmentByStep(1)}
-              >›</button>
+                on:click={() => openAttachmentByStep(1)}>›</button
+              >
             {/if}
             <span class="attachment-media-count">
               {openIndex + 1} / {attachmentParts.length}
@@ -2895,16 +3128,20 @@
               type="button"
               class="sticky-btn tiny"
               title="Close"
-              on:click={closeInlineAttachment}
-            >×</button>
+              on:click={closeInlineAttachment}>×</button
+            >
           </header>
 
           <div
             class="attachment-media-shell"
-            class:attachment-media-shell-image={openPart.attachment.kind === "image"}
-            class:attachment-media-shell-note={openPart.attachment.kind === "note"}
-            class:attachment-media-shell-text={openPart.attachment.kind === "text"}
-            class:attachment-media-shell-card={openPart.attachment.kind === "link" || openPart.attachment.kind === "emoji"}
+            class:attachment-media-shell-image={openPart.attachment.kind ===
+              "image"}
+            class:attachment-media-shell-note={openPart.attachment.kind ===
+              "note"}
+            class:attachment-media-shell-text={openPart.attachment.kind ===
+              "text"}
+            class:attachment-media-shell-card={openPart.attachment.kind ===
+              "link" || openPart.attachment.kind === "emoji"}
           >
             <div class="attachment-media-body">
               {#if openPart.attachment.kind === "text"}
@@ -2920,35 +3157,40 @@
                     <button
                       type="button"
                       class="sticky-btn primary"
-                      on:click={mergeOpenTextAttachment}
-                    >merge in</button>
+                      on:click={mergeOpenTextAttachment}>merge in</button
+                    >
                     <button
                       type="button"
                       class="sticky-btn"
-                      on:click={closeInlineAttachment}
-                    >Cancel</button>
+                      on:click={closeInlineAttachment}>Cancel</button
+                    >
                   </footer>
                 </div>
               {:else if openPart.attachment.kind === "note"}
                 {#if openAttachmentNoteEditing}
                   <div class="attachment-note-editor">
                     {@render noteEditorSurface("attachment")}
-                    <footer class="sticky-edit-footer attachment-note-editor-footer">
+                    <footer
+                      class="sticky-edit-footer attachment-note-editor-footer"
+                    >
                       <button
                         type="button"
                         class="sticky-btn primary"
-                        on:click={saveOpenNoteAttachment}
-                      >Save</button>
+                        on:click={saveOpenNoteAttachment}>Save</button
+                      >
                       <button
                         type="button"
                         class="sticky-btn"
-                        on:click={closeInlineAttachment}
-                      >Cancel</button>
+                        on:click={closeInlineAttachment}>Cancel</button
+                      >
                     </footer>
                   </div>
                 {:else}
-                  {@const noteParts = parseInlineAttachments(openPart.attachment.body)}
-                  {@const noteVisualIndexes = visualAttachmentIndexes(noteParts)}
+                  {@const noteParts = parseInlineAttachments(
+                    openPart.attachment.body,
+                  )}
+                  {@const noteVisualIndexes =
+                    visualAttachmentIndexes(noteParts)}
                   {@const noteVisualParts = visualPartsFor(noteParts)}
                   <div class="attachment-note-view">
                     <div
@@ -2970,14 +3212,18 @@
                         type="button"
                         class="sticky-btn"
                         title={copied ? "Copied" : "Copy note"}
-                        on:click={() => void copyNoteBody(openPart.attachment.body)}
-                      >{copied ? "✓" : "⧉"}</button>
+                        on:click={() =>
+                          void copyNoteBody(openPart.attachment.body)}
+                        >{copied ? "✓" : "⧉"}</button
+                      >
                       <button
                         type="button"
                         class="sticky-btn"
                         title="Edit"
-                        on:click={() => startOpenNoteAttachmentEdit(openPart.attachment)}
-                      >✎</button>
+                        on:click={() =>
+                          startOpenNoteAttachmentEdit(openPart.attachment)}
+                        >✎</button
+                      >
                     </footer>
                   </div>
                 {/if}

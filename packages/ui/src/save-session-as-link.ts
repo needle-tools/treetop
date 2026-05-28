@@ -46,7 +46,9 @@ export interface SaveSessionAsLinkOpts {
   triggerRect: DOMRect;
 }
 
-export async function saveSessionAsLink(opts: SaveSessionAsLinkOpts): Promise<void> {
+export async function saveSessionAsLink(
+  opts: SaveSessionAsLinkOpts,
+): Promise<void> {
   if (!opts.wtPath) return;
   let label = opts.fallbackLabel?.trim() || "(session)";
   let agentName: string = opts.fallbackAgent;
@@ -63,9 +65,7 @@ export async function saveSessionAsLink(opts: SaveSessionAsLinkOpts): Promise<vo
           (found.manualTitle && found.manualTitle.trim()) ||
           (found.title && found.title.trim()) ||
           (found.firstUserMessage && found.firstUserMessage.trim()) ||
-          (found.sessionId
-            ? `session ${found.sessionId.slice(0, 8)}`
-            : label);
+          (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : label);
         msgCount = found.messageCount ?? 0;
         lastActive = found.lastActive;
       }

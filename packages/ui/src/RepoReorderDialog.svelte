@@ -176,8 +176,8 @@
     >
       <h2 id="reorder-title" class="reorder-title">Reorder repos</h2>
       <p class="reorder-blurb">
-        Drag a repo to a new position, or use the arrows. The order is
-        saved as you go and applies across the dashboard.
+        Drag a repo to a new position, or use the arrows. The order is saved as
+        you go and applies across the dashboard.
       </p>
 
       {#if orderedRepos.length === 0}
@@ -210,7 +210,13 @@
                   disabled={i === 0}
                   on:click={() => move(repo.id, -1)}
                 >
-                  <svg class="reorder-arrow-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+                  <svg
+                    class="reorder-arrow-icon"
+                    viewBox="0 0 24 24"
+                    width="13"
+                    height="13"
+                    aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg
+                  >
                 </button>
                 <button
                   class="reorder-arrow"
@@ -219,7 +225,13 @@
                   disabled={i === orderedRepos.length - 1}
                   on:click={() => move(repo.id, 1)}
                 >
-                  <svg class="reorder-arrow-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
+                  <svg
+                    class="reorder-arrow-icon"
+                    viewBox="0 0 24 24"
+                    width="13"
+                    height="13"
+                    aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7" /></svg
+                  >
                 </button>
               </span>
             </li>

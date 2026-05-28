@@ -1,5 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { cachePathFor, listRemoteDir, downloadFile, uploadFile } from "../src/ssh-files";
+import {
+  cachePathFor,
+  listRemoteDir,
+  downloadFile,
+  uploadFile,
+} from "../src/ssh-files";
 import { SshPool } from "../src/ssh-pool";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,15 +14,17 @@ describe("cachePathFor", () => {
   const normalize = (p: string) => p.replace(/\\/g, "/");
 
   test("sanitizes hostKey colon (port) for local filesystem", () => {
-    expect(normalize(cachePathFor("/workspace", "user@host:22", "/home/user/file.txt"))).toBe(
-      "/workspace/.remote-cache/user@host_22/home/user/file.txt",
-    );
+    expect(
+      normalize(
+        cachePathFor("/workspace", "user@host:22", "/home/user/file.txt"),
+      ),
+    ).toBe("/workspace/.remote-cache/user@host_22/home/user/file.txt");
   });
 
   test("handles Unix root path", () => {
-    expect(normalize(cachePathFor("/workspace", "root@srv:22", "/etc/nginx.conf"))).toBe(
-      "/workspace/.remote-cache/root@srv_22/etc/nginx.conf",
-    );
+    expect(
+      normalize(cachePathFor("/workspace", "root@srv:22", "/etc/nginx.conf")),
+    ).toBe("/workspace/.remote-cache/root@srv_22/etc/nginx.conf");
   });
 
   test("handles nested directories", () => {
@@ -27,21 +34,21 @@ describe("cachePathFor", () => {
   });
 
   test("sanitizes Windows drive letter (C: → C_) so local path is valid", () => {
-    expect(normalize(cachePathFor("/ws", "u@h:22", "C:/Users/me/file.txt"))).toBe(
-      "/ws/.remote-cache/u@h_22/C_/Users/me/file.txt",
-    );
+    expect(
+      normalize(cachePathFor("/ws", "u@h:22", "C:/Users/me/file.txt")),
+    ).toBe("/ws/.remote-cache/u@h_22/C_/Users/me/file.txt");
   });
 
   test("handles Windows path with backslash-converted forward slashes", () => {
-    expect(normalize(cachePathFor("/ws", "u@h:22", "D:/Programs/app.exe"))).toBe(
-      "/ws/.remote-cache/u@h_22/D_/Programs/app.exe",
-    );
+    expect(
+      normalize(cachePathFor("/ws", "u@h:22", "D:/Programs/app.exe")),
+    ).toBe("/ws/.remote-cache/u@h_22/D_/Programs/app.exe");
   });
 
   test("user-only hostKey (no port) still sanitized correctly", () => {
-    expect(normalize(cachePathFor("/ws", "alice@host", "/home/alice/file"))).toBe(
-      "/ws/.remote-cache/alice@host/home/alice/file",
-    );
+    expect(
+      normalize(cachePathFor("/ws", "alice@host", "/home/alice/file")),
+    ).toBe("/ws/.remote-cache/alice@host/home/alice/file");
   });
 });
 
@@ -98,7 +105,8 @@ describe.skipIf(skipIntegration)("SFTP integration (SSH_TEST_HOST)", () => {
     let remoteHome = homeProbe.trim();
     if (remoteHome === "%USERPROFILE%") {
       // Not Windows — try $HOME
-      remoteHome = (await pool.exec(user, host, port, "echo $HOME")).trim() || "/tmp";
+      remoteHome =
+        (await pool.exec(user, host, port, "echo $HOME")).trim() || "/tmp";
     }
     // Normalize backslashes to forward slashes for SFTP
     remoteHome = remoteHome.replace(/\\/g, "/");

@@ -96,10 +96,7 @@ export function pushRecent(item: PickItem): void {
  *  by the popover's future "remove from recents" affordance. Not
  *  surfaced yet but the function is here so the store stays the
  *  single owner of the data shape. */
-export function removeRecent(
-  providerId: ProviderId,
-  value: string,
-): void {
+export function removeRecent(providerId: ProviderId, value: string): void {
   recents.update((state) => {
     const list = state[providerId];
     if (!list) return state;

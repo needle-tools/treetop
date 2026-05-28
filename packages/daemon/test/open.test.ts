@@ -35,9 +35,7 @@ describe("findWorkspaceFile", () => {
     await writeFile(join(d, "zzz.code-workspace"), "{}");
     const base = basename(d);
     await writeFile(join(d, `${base}.code-workspace`), "{}");
-    expect(await findWorkspaceFile(d)).toBe(
-      join(d, `${base}.code-workspace`),
-    );
+    expect(await findWorkspaceFile(d)).toBe(join(d, `${base}.code-workspace`));
   });
 });
 

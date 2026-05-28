@@ -124,9 +124,7 @@
 
   /** Effective visibility: zen forces hidden unless the user
    *  explicitly overrides via the toggle during that zen session. */
-  $: showInactive = zen
-    ? (zenOverride ?? false)
-    : userShowInactive;
+  $: showInactive = zen ? (zenOverride ?? false) : userShowInactive;
 
   function toggleInactive() {
     if (zen) {
@@ -158,9 +156,7 @@
     dockRepoStatuses
       .filter(
         (s) =>
-          s.ahead > 0 ||
-          s.behind > 0 ||
-          (showInactive && dockDirtyOf(s) > 0),
+          s.ahead > 0 || s.behind > 0 || (showInactive && dockDirtyOf(s) > 0),
       )
       .map((s) => [s.repoId, s]),
   );
@@ -176,9 +172,7 @@
     ]);
     return dockRepoStatuses.filter(
       (s) =>
-        (s.ahead > 0 ||
-          s.behind > 0 ||
-          (showInactive && dockDirtyOf(s) > 0)) &&
+        (s.ahead > 0 || s.behind > 0 || (showInactive && dockDirtyOf(s) > 0)) &&
         !inDock.has(s.repoId),
     );
   })();
@@ -252,7 +246,9 @@
    *  surface behind the dot column, no per-row gaps. */
   function updateBackdrop(): void {
     if (!backdropEl || !dockEl) return;
-    const dots = dockEl.querySelectorAll<HTMLElement>(".dock-dot, .dock-toggle");
+    const dots = dockEl.querySelectorAll<HTMLElement>(
+      ".dock-dot, .dock-toggle",
+    );
     if (dots.length === 0) {
       backdropEl.style.display = "none";
       return;
@@ -447,7 +443,10 @@
     if (minCenterVp > maxCenterVp) {
       clampedCenterVp = PREVIEW_VIEWPORT_INSET + h / 2;
     } else {
-      clampedCenterVp = Math.max(minCenterVp, Math.min(maxCenterVp, desiredCenterVp));
+      clampedCenterVp = Math.max(
+        minCenterVp,
+        Math.min(maxCenterVp, desiredCenterVp),
+      );
     }
     const clampedTop = clampedCenterVp - dockRect.top;
     if (Math.abs(clampedTop - hoveredTop) > 0.5) hoveredTop = clampedTop;
@@ -551,9 +550,10 @@
     const t = e.manualTitle ?? e.title;
     if (t) lines.push(t);
     if (e.lastUserMessage) {
-      const cap = e.lastUserMessage.length > 200
-        ? e.lastUserMessage.slice(0, 199) + "…"
-        : e.lastUserMessage;
+      const cap =
+        e.lastUserMessage.length > 200
+          ? e.lastUserMessage.slice(0, 199) + "…"
+          : e.lastUserMessage;
       lines.push(`\n${cap}`);
     }
     if (e.awaiting) lines.push("\n⏳ waiting for your input");
@@ -683,89 +683,113 @@
          flex:1 + justify-content:flex-end keeps dots hugging the
          toggle rather than the viewport top. -->
     <div class="dock-half dock-top">
-    {#each split.top as e, i (e.source)}
-      {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
-        {@const rs = repoStatusMap.get(e.repoId)}
-        {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
-        <span
-          class="dock-dot dock-repo-arrow"
-          style:--arrow-color={brightenIfDark(rs?.repoColor)}
-          on:mouseenter={onArrowEnter}
-          on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
-        >
-          <span class="dock-dot-inner dock-arrow-inner">
-            {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
-            {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
-            {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
-          </span>
-          <span class="dock-label">
-            <span class="dock-label-repo">{rs?.repoName}</span>
-            <span class="dock-label-badges">
-              {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
-              {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-              {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
+      {#each split.top as e, i (e.source)}
+        {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+          {@const rs = repoStatusMap.get(e.repoId)}
+          {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
+          <span
+            class="dock-dot dock-repo-arrow"
+            style:--arrow-color={brightenIfDark(rs?.repoColor)}
+            on:mouseenter={onArrowEnter}
+            on:click={() =>
+              dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
+          >
+            <span class="dock-dot-inner dock-arrow-inner">
+              {#if rs?.ahead}<svg
+                  class="dock-arrow-glyph dock-arrow-up"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+                >{/if}
+              {#if rs?.behind}<svg
+                  class="dock-arrow-glyph dock-arrow-down"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+                >{/if}
+              {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
+                  class="dock-arrow-glyph dock-arrow-dirty"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+                >{/if}
+            </span>
+            <span class="dock-label">
+              <span class="dock-label-repo">{rs?.repoName}</span>
+              <span class="dock-label-badges">
+                {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+                {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
+                {#if dirtyCount && showInactive}<StatusBadge
+                    compact
+                    dirty={dirtyCount}
+                  />{/if}
+              </span>
             </span>
           </span>
-        </span>
-      {/if}
-      <button
-        type="button"
-        class="dock-dot agent-{e.agent}"
-        class:dot-working={e.working}
-        class:dot-awaiting={e.awaiting}
-        class:dot-awaiting-urgent={e.awaiting && isAwaitingUrgent(e.source, nowTick)}
-        class:dot-exited={e.exited}
-        class:dot-pulsing={isPulsing(e, nowTick)}
-        class:dock-dot-focused={focusedSource === e.source}
-        class:dock-dot-repo-first={i > 0 && split.top[i - 1].repoId !== e.repoId && !repoStatusMap.has(e.repoId)}
-        style:--dot-fill={brightenIfDark(e.repoColor)}
-        aria-label={tooltipFor(e)}
-        on:click={() => handlePick(e)}
-        on:mouseenter={(ev) => onRowEnter(ev, e)}
-        on:focusin={(ev) => onRowEnter(ev, e)}
-      >
-        {#if focusedSource === e.source}
-          <svg
-            class="dock-dot-arrow"
-            viewBox="0 0 5 10"
-            aria-hidden="true"
-          >
-            <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
-          </svg>
         {/if}
-        <span class="dock-dot-inner">
-          <svg
-            class="dock-dot-spinner"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="9.5" pathLength="100" />
-          </svg>
-        </span>
-        <span class="dock-label">
-          <span class="dock-label-repo">{e.repoName}</span>
-          {#if sessionNameFor(e)}
-            <span class="dock-label-title">{sessionNameFor(e)}</span>
+        <button
+          type="button"
+          class="dock-dot agent-{e.agent}"
+          class:dot-working={e.working}
+          class:dot-awaiting={e.awaiting}
+          class:dot-awaiting-urgent={e.awaiting &&
+            isAwaitingUrgent(e.source, nowTick)}
+          class:dot-exited={e.exited}
+          class:dot-pulsing={isPulsing(e, nowTick)}
+          class:dock-dot-focused={focusedSource === e.source}
+          class:dock-dot-repo-first={i > 0 &&
+            split.top[i - 1].repoId !== e.repoId &&
+            !repoStatusMap.has(e.repoId)}
+          style:--dot-fill={brightenIfDark(e.repoColor)}
+          aria-label={tooltipFor(e)}
+          on:click={() => handlePick(e)}
+          on:mouseenter={(ev) => onRowEnter(ev, e)}
+          on:focusin={(ev) => onRowEnter(ev, e)}
+        >
+          {#if focusedSource === e.source}
+            <svg class="dock-dot-arrow" viewBox="0 0 5 10" aria-hidden="true">
+              <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
+            </svg>
           {/if}
-          {#if freshestTimestamp(e)}
-            <span class="dock-label-time">{relTime(freshestTimestamp(e))}</span>
-          {/if}
-          <span class="dock-label-activity">
-            {#if (e.recentMessageCount ?? 0) >= recentThreshold}
-              <span class="dock-activity-badge" title="{e.recentMessageCount} messages in the last 4h">{e.recentMessageCount}</span>
-            {/if}
+          <span class="dock-dot-inner">
+            <svg
+              class="dock-dot-spinner"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9.5" pathLength="100" />
+            </svg>
           </span>
-        </span>
-      </button>
-    {/each}
-
+          <span class="dock-label">
+            <span class="dock-label-repo">{e.repoName}</span>
+            {#if sessionNameFor(e)}
+              <span class="dock-label-title">{sessionNameFor(e)}</span>
+            {/if}
+            {#if freshestTimestamp(e)}
+              <span class="dock-label-time"
+                >{relTime(freshestTimestamp(e))}</span
+              >
+            {/if}
+            <span class="dock-label-activity">
+              {#if (e.recentMessageCount ?? 0) >= recentThreshold}
+                <span
+                  class="dock-activity-badge"
+                  title="{e.recentMessageCount} messages in the last 4h"
+                  >{e.recentMessageCount}</span
+                >
+              {/if}
+            </span>
+          </span>
+        </button>
+      {/each}
     </div>
 
     <button
       class="dock-toggle"
       type="button"
       title={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
-      aria-label={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
+      aria-label={showInactive
+        ? "Hide inactive sessions"
+        : "Show inactive sessions"}
       on:click|stopPropagation={toggleInactive}
       on:mousedown|stopPropagation
     >
@@ -774,105 +798,145 @@
 
     <!-- Bottom half: dots stack top-down from the toggle. -->
     <div class="dock-half dock-bottom">
-    {#each split.bottom as e, i (e.source)}
-      {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
-        {@const rs = repoStatusMap.get(e.repoId)}
-        {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
-        <span
-          class="dock-dot dock-repo-arrow"
-          style:--arrow-color={brightenIfDark(rs?.repoColor)}
-          on:mouseenter={onArrowEnter}
-          on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
+      {#each split.bottom as e, i (e.source)}
+        {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+          {@const rs = repoStatusMap.get(e.repoId)}
+          {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
+          <span
+            class="dock-dot dock-repo-arrow"
+            style:--arrow-color={brightenIfDark(rs?.repoColor)}
+            on:mouseenter={onArrowEnter}
+            on:click={() =>
+              dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
+          >
+            <span class="dock-dot-inner dock-arrow-inner">
+              {#if rs?.ahead}<svg
+                  class="dock-arrow-glyph dock-arrow-up"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+                >{/if}
+              {#if rs?.behind}<svg
+                  class="dock-arrow-glyph dock-arrow-down"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+                >{/if}
+              {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
+                  class="dock-arrow-glyph dock-arrow-dirty"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+                >{/if}
+            </span>
+            <span class="dock-label">
+              <span class="dock-label-repo">{rs?.repoName}</span>
+              <span class="dock-label-badges">
+                {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+                {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
+                {#if dirtyCount && showInactive}<StatusBadge
+                    compact
+                    dirty={dirtyCount}
+                  />{/if}
+              </span>
+            </span>
+          </span>
+        {/if}
+        <button
+          type="button"
+          class="dock-dot agent-{e.agent}"
+          class:dot-working={e.working}
+          class:dot-awaiting={e.awaiting}
+          class:dot-awaiting-urgent={e.awaiting &&
+            isAwaitingUrgent(e.source, nowTick)}
+          class:dot-exited={e.exited}
+          class:dot-pulsing={isPulsing(e, nowTick)}
+          class:dock-dot-focused={focusedSource === e.source}
+          class:dock-dot-repo-first={i > 0 &&
+            split.bottom[i - 1].repoId !== e.repoId &&
+            !repoStatusMap.has(e.repoId)}
+          style:--dot-fill={brightenIfDark(e.repoColor)}
+          aria-label={tooltipFor(e)}
+          on:click={() => handlePick(e)}
+          on:mouseenter={(ev) => onRowEnter(ev, e)}
+          on:focusin={(ev) => onRowEnter(ev, e)}
         >
-          <span class="dock-dot-inner dock-arrow-inner">
-            {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
-            {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
-            {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
+          {#if focusedSource === e.source}
+            <svg class="dock-dot-arrow" viewBox="0 0 5 10" aria-hidden="true">
+              <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
+            </svg>
+          {/if}
+          <span class="dock-dot-inner">
+            <svg
+              class="dock-dot-spinner"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9.5" pathLength="100" />
+            </svg>
           </span>
           <span class="dock-label">
-            <span class="dock-label-repo">{rs?.repoName}</span>
+            <span class="dock-label-repo">{e.repoName}</span>
+            {#if sessionNameFor(e)}
+              <span class="dock-label-title">{sessionNameFor(e)}</span>
+            {/if}
+            {#if freshestTimestamp(e)}
+              <span class="dock-label-time"
+                >{relTime(freshestTimestamp(e))}</span
+              >
+            {/if}
+            <span class="dock-label-activity">
+              {#if (e.recentMessageCount ?? 0) >= recentThreshold}
+                <span
+                  class="dock-activity-badge"
+                  title="{e.recentMessageCount} messages in the last 4h"
+                  >{e.recentMessageCount}</span
+                >
+              {/if}
+            </span>
+          </span>
+        </button>
+      {/each}
+      <!-- Orphan arrows: repos with push/pull but no session dots. -->
+      {#each orphanRepoArrows as rs (rs.repoId)}
+        {@const dirtyCount = dockDirtyOf(rs)}
+        <span
+          class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
+          style:--arrow-color={brightenIfDark(rs.repoColor)}
+          on:mouseenter={onArrowEnter}
+          on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
+        >
+          <span class="dock-dot-inner dock-arrow-inner">
+            {#if rs.ahead}<svg
+                class="dock-arrow-glyph dock-arrow-up"
+                viewBox="0 0 12 12"
+                aria-hidden="true"
+                ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+              >{/if}
+            {#if rs.behind}<svg
+                class="dock-arrow-glyph dock-arrow-down"
+                viewBox="0 0 12 12"
+                aria-hidden="true"
+                ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+              >{/if}
+            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<svg
+                class="dock-arrow-glyph dock-arrow-dirty"
+                viewBox="0 0 12 12"
+                aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+              >{/if}
+          </span>
+          <span class="dock-label">
+            <span class="dock-label-repo">{rs.repoName}</span>
             <span class="dock-label-badges">
-              {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
-              {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-              {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
+              {#if rs.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+              {#if rs.behind}<StatusBadge compact behind={rs.behind} />{/if}
+              {#if dirtyCount && showInactive}<StatusBadge
+                  compact
+                  dirty={dirtyCount}
+                />{/if}
             </span>
           </span>
         </span>
-      {/if}
-      <button
-        type="button"
-        class="dock-dot agent-{e.agent}"
-        class:dot-working={e.working}
-        class:dot-awaiting={e.awaiting}
-        class:dot-awaiting-urgent={e.awaiting && isAwaitingUrgent(e.source, nowTick)}
-        class:dot-exited={e.exited}
-        class:dot-pulsing={isPulsing(e, nowTick)}
-        class:dock-dot-focused={focusedSource === e.source}
-        class:dock-dot-repo-first={i > 0 && split.bottom[i - 1].repoId !== e.repoId && !repoStatusMap.has(e.repoId)}
-        style:--dot-fill={brightenIfDark(e.repoColor)}
-        aria-label={tooltipFor(e)}
-        on:click={() => handlePick(e)}
-        on:mouseenter={(ev) => onRowEnter(ev, e)}
-        on:focusin={(ev) => onRowEnter(ev, e)}
-      >
-        {#if focusedSource === e.source}
-          <svg
-            class="dock-dot-arrow"
-            viewBox="0 0 5 10"
-            aria-hidden="true"
-          >
-            <polyline points="0.5,0.5 4.5,5 0.5,9.5" />
-          </svg>
-        {/if}
-        <span class="dock-dot-inner">
-          <svg
-            class="dock-dot-spinner"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="9.5" pathLength="100" />
-          </svg>
-        </span>
-        <span class="dock-label">
-          <span class="dock-label-repo">{e.repoName}</span>
-          {#if sessionNameFor(e)}
-            <span class="dock-label-title">{sessionNameFor(e)}</span>
-          {/if}
-          {#if freshestTimestamp(e)}
-            <span class="dock-label-time">{relTime(freshestTimestamp(e))}</span>
-          {/if}
-          <span class="dock-label-activity">
-            {#if (e.recentMessageCount ?? 0) >= recentThreshold}
-              <span class="dock-activity-badge" title="{e.recentMessageCount} messages in the last 4h">{e.recentMessageCount}</span>
-            {/if}
-          </span>
-        </span>
-      </button>
-    {/each}
-    <!-- Orphan arrows: repos with push/pull but no session dots. -->
-    {#each orphanRepoArrows as rs (rs.repoId)}
-      {@const dirtyCount = dockDirtyOf(rs)}
-      <span
-        class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
-        style:--arrow-color={brightenIfDark(rs.repoColor)}
-        on:mouseenter={onArrowEnter}
-        on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
-      >
-        <span class="dock-dot-inner dock-arrow-inner">
-          {#if rs.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
-          {#if rs.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
-          {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
-        </span>
-        <span class="dock-label">
-          <span class="dock-label-repo">{rs.repoName}</span>
-          <span class="dock-label-badges">
-            {#if rs.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
-            {#if rs.behind}<StatusBadge compact behind={rs.behind} />{/if}
-            {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
-          </span>
-        </span>
-      </span>
-    {/each}
+      {/each}
     </div>
     {#if hoveredEntry?.transcriptSource}
       <aside
@@ -969,7 +1033,8 @@
     display: none;
     background: var(--surface-0, #23261d);
     border-radius: var(--radius-md, 8px);
-    border: 1px solid color-mix(in oklch, var(--text-1, #e8e8e8) 15%, transparent);
+    border: 1px solid
+      color-mix(in oklch, var(--text-1, #e8e8e8) 15%, transparent);
     pointer-events: none;
     z-index: 0;
     transition: opacity 160ms ease;
@@ -1049,14 +1114,21 @@
     width: 10px;
     height: 10px;
     border-radius: 999px;
-    border: 2px solid color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
+    border: 2px solid
+      color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
     box-sizing: border-box;
     background: transparent;
     flex: 0 0 auto;
-    transition: background-color 160ms ease, border-color 160ms ease;
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease;
   }
   .dock-toggle-inner.filtering {
-    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--text-muted, #9a9aa0) 50%,
+      transparent
+    );
   }
   .dock-toggle:hover .dock-toggle-inner {
     border-color: var(--text-1, #e8e8e8);
@@ -1121,24 +1193,50 @@
     animation: dock-arrow-bounce-down 10s ease-in-out infinite;
   }
   @keyframes dock-arrow-bounce-up {
-    0% { transform: translateY(0); }
-    2% { transform: translateY(-3px); }
-    4% { transform: translateY(0); }
-    6% { transform: translateY(-3px); }
-    8% { transform: translateY(0); }
-    100% { transform: translateY(0); }
+    0% {
+      transform: translateY(0);
+    }
+    2% {
+      transform: translateY(-3px);
+    }
+    4% {
+      transform: translateY(0);
+    }
+    6% {
+      transform: translateY(-3px);
+    }
+    8% {
+      transform: translateY(0);
+    }
+    100% {
+      transform: translateY(0);
+    }
   }
   @keyframes dock-arrow-bounce-down {
-    0% { transform: translateY(0); }
-    2% { transform: translateY(3px); }
-    4% { transform: translateY(0); }
-    6% { transform: translateY(3px); }
-    8% { transform: translateY(0); }
-    100% { transform: translateY(0); }
+    0% {
+      transform: translateY(0);
+    }
+    2% {
+      transform: translateY(3px);
+    }
+    4% {
+      transform: translateY(0);
+    }
+    6% {
+      transform: translateY(3px);
+    }
+    8% {
+      transform: translateY(0);
+    }
+    100% {
+      transform: translateY(0);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .dock-arrow-up,
-    .dock-arrow-down { animation: none; }
+    .dock-arrow-down {
+      animation: none;
+    }
   }
   /* Wrapper for the StatusBadge compact pills inside a hover label.
      Inline-flex so the pills sit on the same baseline as the repo
@@ -1227,11 +1325,18 @@
     animation: dock-unread-pulse 0.6s ease-in-out infinite;
   }
   @keyframes dock-unread-pulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.25); }
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.25);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
-    .dock-dot.dot-pulsing .dock-dot-inner { animation: none; }
+    .dock-dot.dot-pulsing .dock-dot-inner {
+      animation: none;
+    }
   }
   /* Ended / inactive session: shrink the visible dot via a transform
      so the box dimensions stay at 10×10. Keeping the box size means
@@ -1335,7 +1440,8 @@
     font-weight: 600;
     color: var(--text-1, #e8e8e8);
     background: color-mix(in oklch, var(--text-1, #e8e8e8) 12%, transparent);
-    border: 1px solid color-mix(in oklch, var(--text-1, #e8e8e8) 18%, transparent);
+    border: 1px solid
+      color-mix(in oklch, var(--text-1, #e8e8e8) 18%, transparent);
     border-radius: var(--radius-sm, 4px);
     padding: 0.1em 0.35em;
     line-height: 1;
@@ -1446,7 +1552,9 @@
     stroke-dasharray: 35 65;
   }
   @keyframes dock-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* Idle (PTY alive, nothing streaming, no prompt): no outline at
@@ -1460,7 +1568,8 @@
     animation: dock-awaiting 1.1s ease-in-out infinite;
   }
   @keyframes dock-awaiting {
-    0%, 100% {
+    0%,
+    100% {
       transform: scale(1);
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
     }
@@ -1476,7 +1585,8 @@
     animation: dock-awaiting-urgent 0.7s ease-in-out infinite;
   }
   @keyframes dock-awaiting-urgent {
-    0%, 100% {
+    0%,
+    100% {
       transform: scale(1);
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 40%, #fff 60%);
     }
@@ -1488,6 +1598,8 @@
   @media (prefers-reduced-motion: reduce) {
     .dock-dot-spinner,
     .dock-dot.dot-awaiting .dock-dot-inner,
-    .dock-dot.dot-awaiting-urgent .dock-dot-inner { animation: none; }
+    .dock-dot.dot-awaiting-urgent .dock-dot-inner {
+      animation: none;
+    }
   }
 </style>

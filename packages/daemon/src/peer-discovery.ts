@@ -96,7 +96,11 @@ export class PeerDiscovery {
       // because Windows is more permissive about SO_REUSEADDR than
       // BSD-derived stacks). Node's dgram exposes `reusePort` from
       // v18.14; Bun supports it too.
-      const socketOpts: { type: "udp4"; reuseAddr: boolean; reusePort?: boolean } = {
+      const socketOpts: {
+        type: "udp4";
+        reuseAddr: boolean;
+        reusePort?: boolean;
+      } = {
         type: "udp4",
         reuseAddr: true,
       };

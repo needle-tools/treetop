@@ -83,10 +83,7 @@ export interface StalenessResult {
  *  casing drift doesn't change the key — and then hashed. */
 export function keyForSource(sourcePath: string): string {
   const normalised = sourcePath.toLowerCase();
-  return createHash("sha256")
-    .update(normalised)
-    .digest("hex")
-    .slice(0, 16);
+  return createHash("sha256").update(normalised).digest("hex").slice(0, 16);
 }
 
 export class SummariesStore {
@@ -159,7 +156,8 @@ export class SummariesStore {
       currentMtimeMs = null;
     }
     const stale =
-      currentMtimeMs === null || currentMtimeMs !== summary.frontmatter.sourceMtimeMs;
+      currentMtimeMs === null ||
+      currentMtimeMs !== summary.frontmatter.sourceMtimeMs;
     return { summary, stale };
   }
 
@@ -220,8 +218,10 @@ export interface RepoSummaryRecord {
   body: string;
 }
 
-export interface RepoSummaryWriteInput
-  extends Omit<RepoSummaryFrontmatter, "repoId"> {
+export interface RepoSummaryWriteInput extends Omit<
+  RepoSummaryFrontmatter,
+  "repoId"
+> {
   body: string;
 }
 
@@ -247,7 +247,11 @@ export class RepoSummariesStore {
   }
 
   private pathFor(repoId: string): string {
-    if (repoId.includes("/") || repoId.includes("\\") || repoId.includes("..")) {
+    if (
+      repoId.includes("/") ||
+      repoId.includes("\\") ||
+      repoId.includes("..")
+    ) {
       throw new Error(`invalid repoId: ${repoId}`);
     }
     return join(this.dir, `${keyForRepo(repoId)}.md`);
@@ -458,7 +462,8 @@ function parseFrontmatter(text: string): SummaryFrontmatter | null {
     if (!(k in out)) return null;
   }
   const agent = out.agent;
-  if (agent !== "claude" && agent !== "codex" && agent !== "ollama") return null;
+  if (agent !== "claude" && agent !== "codex" && agent !== "ollama")
+    return null;
   return {
     source: String(out.source),
     agent,

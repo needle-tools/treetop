@@ -23,7 +23,9 @@ describe("statusSummary (FileStatus only)", () => {
   });
 
   test("formats non-zero buckets in fixed order", () => {
-    expect(statusSummary(FS(3, 5, 1)).text).toBe("3 staged, 5 unstaged, 1 untracked");
+    expect(statusSummary(FS(3, 5, 1)).text).toBe(
+      "3 staged, 5 unstaged, 1 untracked",
+    );
   });
 
   test("omits zero buckets from the joined text", () => {
@@ -32,8 +34,12 @@ describe("statusSummary (FileStatus only)", () => {
   });
 
   test("pluralises submoduleText", () => {
-    expect(statusSummary(FS(0, 0, 0, 1)).submoduleText).toBe("1 submodule changed");
-    expect(statusSummary(FS(0, 0, 0, 3)).submoduleText).toBe("3 submodules changed");
+    expect(statusSummary(FS(0, 0, 0, 1)).submoduleText).toBe(
+      "1 submodule changed",
+    );
+    expect(statusSummary(FS(0, 0, 0, 3)).submoduleText).toBe(
+      "3 submodules changed",
+    );
   });
 
   test("clean + dirty-submodule still reports clean=true (badge is just a trailer)", () => {
@@ -55,11 +61,15 @@ describe("statusSummary (wt-summary override)", () => {
   });
 
   test("falls back to FileStatus when wt-summary is undefined", () => {
-    expect(statusSummary(FS(0, 5, 1), undefined).text).toBe("5 unstaged, 1 untracked");
+    expect(statusSummary(FS(0, 5, 1), undefined).text).toBe(
+      "5 unstaged, 1 untracked",
+    );
   });
 
   test('falls back to FileStatus when wt-summary is "loading"', () => {
-    expect(statusSummary(FS(0, 5, 1), "loading").text).toBe("5 unstaged, 1 untracked");
+    expect(statusSummary(FS(0, 5, 1), "loading").text).toBe(
+      "5 unstaged, 1 untracked",
+    );
   });
 
   test("an empty wt-summary overrides a stale-dirty FileStatus to clean", () => {

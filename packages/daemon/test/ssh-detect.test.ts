@@ -1,5 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { parseSshArgs, detectSshChildren, detectSshFromCmd } from "../src/ssh-detect";
+import {
+  parseSshArgs,
+  detectSshChildren,
+  detectSshFromCmd,
+} from "../src/ssh-detect";
 
 describe("parseSshArgs", () => {
   test("user@host", () => {
@@ -43,7 +47,11 @@ describe("parseSshArgs", () => {
   });
 
   test("with flags before host", () => {
-    expect(parseSshArgs("ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa admin@prod")).toEqual({
+    expect(
+      parseSshArgs(
+        "ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa admin@prod",
+      ),
+    ).toEqual({
       user: "admin",
       host: "prod",
       port: 22,

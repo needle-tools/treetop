@@ -67,10 +67,7 @@ describe("discoverRepoProcesses", () => {
   test("excludes pids in the exclude set", async () => {
     if (isWin) return;
     const cwd = process.cwd();
-    const results = await discoverRepoProcesses(
-      [cwd],
-      new Set([process.pid]),
-    );
+    const results = await discoverRepoProcesses([cwd], new Set([process.pid]));
     const self = results.find((r) => r.pid === process.pid);
     expect(self).toBeUndefined();
   });

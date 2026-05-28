@@ -71,7 +71,9 @@
         return `![pasted image](${url})`;
       },
     );
-    return DOMPurify.sanitize(marked.parse(processed, { async: false }) as string);
+    return DOMPurify.sanitize(
+      marked.parse(processed, { async: false }) as string,
+    );
   }
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
@@ -102,7 +104,12 @@
    *  for `targetAgent`, and seeds it with the conversation context.
    *  When undefined the menu items are hidden (e.g. copilot sessions
    *  where continuation isn't supported). */
-  export let onContinueWith: ((targetAgent: "claude" | "codex" | "ollama", ollamaModel?: string) => void) | undefined = undefined;
+  export let onContinueWith:
+    | ((
+        targetAgent: "claude" | "codex" | "ollama",
+        ollamaModel?: string,
+      ) => void)
+    | undefined = undefined;
   /** Called when the user successfully renames this session. Lets the
    *  parent refresh its `/api/repos` snapshot so the worktree row and
    *  the "+N sessions" popover reflect the new title immediately,
@@ -398,7 +405,10 @@
   let summarizeNotice: string = "";
   let noticeAction: "install" | null = null;
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  function showSummarizeNotice(msg: string, action: "install" | null = null): void {
+  function showSummarizeNotice(
+    msg: string,
+    action: "install" | null = null,
+  ): void {
     summarizeNotice = msg;
     noticeAction = action;
     if (noticeTimer) clearTimeout(noticeTimer);
@@ -433,7 +443,8 @@
     // cloud model (older summaries may have been generated before the
     // local-only filter existed). Fall through to the first-run picker
     // so a local model gets chosen instead.
-    const isCloud = (n: string) => /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
+    const isCloud = (n: string) =>
+      /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
     if (summaryModel && !isCloud(summaryModel)) {
       void runSummaryStream(summaryModel);
       return;
@@ -443,22 +454,33 @@
     try {
       const res = await fetch("/api/ollama/models");
       if (!res.ok) {
-        showSummarizeNotice("Couldn't reach Ollama — try the menu's Summarize for details.");
+        showSummarizeNotice(
+          "Couldn't reach Ollama — try the menu's Summarize for details.",
+        );
         return;
       }
       const body = (await res.json()) as { models?: typeof list };
       list = body.models ?? [];
     } catch {
-      showSummarizeNotice("Couldn't reach Ollama — try the menu's Summarize for details.");
+      showSummarizeNotice(
+        "Couldn't reach Ollama — try the menu's Summarize for details.",
+      );
       return;
     }
     if (list.length === 0) {
-      showSummarizeNotice("No Ollama model installed — click to install one.", "install");
+      showSummarizeNotice(
+        "No Ollama model installed — click to install one.",
+        "install",
+      );
       return;
     }
     const remembered = localStorage.getItem("supergit:summarize:lastModel");
     let pick = "";
-    if (remembered && !isCloud(remembered) && list.some((m) => m.name === remembered)) {
+    if (
+      remembered &&
+      !isCloud(remembered) &&
+      list.some((m) => m.name === remembered)
+    ) {
       pick = remembered;
     } else if (list.some((m) => m.name === "llama3.2:3b")) {
       pick = "llama3.2:3b";
@@ -505,8 +527,12 @@
         body: JSON.stringify({ source: targetSource, model: targetModel }),
       });
       if (!res.ok) {
-        const errBody = await res.json().catch(() => null) as { error?: string } | null;
-        showSummarizeNotice(errBody?.error ?? `Summarise failed (HTTP ${res.status})`);
+        const errBody = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        showSummarizeNotice(
+          errBody?.error ?? `Summarise failed (HTTP ${res.status})`,
+        );
         return;
       }
       if (!res.body) {
@@ -540,14 +566,17 @@
             if (event === "chunk") {
               collected += payload.delta ?? "";
             } else if (event === "error") {
-              const label = payload.kind === "ollama_unreachable"
-                ? "Ollama unreachable"
-                : payload.kind === "ollama_model_missing"
-                  ? "Model not installed"
-                  : payload.kind === "empty"
-                    ? "Nothing to summarise"
-                    : "Summarise failed";
-              showSummarizeNotice(`${label}: ${payload.message ?? "unknown error"}`);
+              const label =
+                payload.kind === "ollama_unreachable"
+                  ? "Ollama unreachable"
+                  : payload.kind === "ollama_model_missing"
+                    ? "Model not installed"
+                    : payload.kind === "empty"
+                      ? "Nothing to summarise"
+                      : "Summarise failed";
+              showSummarizeNotice(
+                `${label}: ${payload.message ?? "unknown error"}`,
+              );
               await refreshSummary();
               return;
             }
@@ -566,7 +595,10 @@
     }
   }
   // Re-fetch on mount + whenever `source` changes.
-  $: { void source; void refreshSummary(); }
+  $: {
+    void source;
+    void refreshSummary();
+  }
   // Re-fetch whenever the global summarize dialog *closes* against
   // this source — picks up newly-generated or just-deleted summaries
   // without polling.
@@ -837,7 +869,9 @@
         label: "Copy session ID + path",
         icon: "⧉",
         disabled: !sid,
-        title: sid ? "Copy session id and file path to clipboard" : "No session id yet",
+        title: sid
+          ? "Copy session id and file path to clipboard"
+          : "No session id yet",
         getText: () => `${sid}\n${source}`,
       },
       {
@@ -845,9 +879,10 @@
         label: "Summarize with Ollama",
         icon: "✦",
         disabled: !(session && session.messages.length > 0),
-        title: session && session.messages.length > 0
-          ? "Summarize this session with a local Ollama model"
-          : "Session is empty — nothing to summarize",
+        title:
+          session && session.messages.length > 0
+            ? "Summarize this session with a local Ollama model"
+            : "Session is empty — nothing to summarize",
         onSelect: () => openSummarize(source),
       },
       {
@@ -865,10 +900,7 @@
         label: "Share session in local network",
         // Lucide "send"-ish: paper-plane silhouette. Reads as "ship
         // this somewhere" without confusing with "open in external".
-        iconSvg: [
-          "M22 2 11 13",
-          "m22 2-7 20-4-9-9-4 20-7z",
-        ],
+        iconSvg: ["M22 2 11 13", "m22 2-7 20-4-9-9-4 20-7z"],
         title: "Send this session to another supergit on the LAN",
         onSelect: () => openShare(source),
       },
@@ -895,28 +927,31 @@
           "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
         ],
         disabled: agent !== "claude",
-        title: agent === "claude"
-          ? "Diagnose and repair broken parent chains in the JSONL file"
-          : "Repair is only supported for Claude sessions",
+        title:
+          agent === "claude"
+            ? "Diagnose and repair broken parent chains in the JSONL file"
+            : "Repair is only supported for Claude sessions",
         onSelect: () => void openRepair(source),
       },
     ];
     if (onContinueWith && session && session.messages.length > 0) {
-      const others: Array<{ agent: "claude" | "codex" | "ollama"; label: string }> = [
+      const others: Array<{
+        agent: "claude" | "codex" | "ollama";
+        label: string;
+      }> = [
         { agent: "claude", label: "Claude" },
         { agent: "codex", label: "Codex" },
         { agent: "ollama", label: "Ollama" },
-      ].filter((o) => o.agent !== agent) as Array<{ agent: "claude" | "codex" | "ollama"; label: string }>;
+      ].filter((o) => o.agent !== agent) as Array<{
+        agent: "claude" | "codex" | "ollama";
+        label: string;
+      }>;
       base.push({
         kind: "submenu",
         label: "Continue with…",
-        iconSvg: [
-          "m16 3 4 4-4 4",
-          "M20 7H4",
-          "m8 21-4-4 4-4",
-          "M4 17h16",
-        ],
-        title: "Start a new session with another agent, seeded with this conversation's context",
+        iconSvg: ["m16 3 4 4-4 4", "M20 7H4", "m8 21-4-4 4-4", "M4 17h16"],
+        title:
+          "Start a new session with another agent, seeded with this conversation's context",
         children: others.map((o) => ({
           kind: "action" as const,
           label: o.label,
@@ -946,7 +981,12 @@
     const origin =
       triggerRect ??
       sessionEl?.getBoundingClientRect() ??
-      new DOMRect(window.innerWidth / 2 - 100, window.innerHeight / 2 - 50, 200, 100);
+      new DOMRect(
+        window.innerWidth / 2 - 100,
+        window.innerHeight / 2 - 50,
+        200,
+        100,
+      );
     try {
       await saveSessionAsLink({
         wtPath,
@@ -1027,7 +1067,10 @@
       // that means claude has written at least the user-turn (and likely
       // the assistant turn too) into the JSONL. At that point we clear
       // the composer.
-      if (pendingSinceLen !== null && session.messages.length > pendingSinceLen) {
+      if (
+        pendingSinceLen !== null &&
+        session.messages.length > pendingSinceLen
+      ) {
         inputText = "";
         sending = false;
         pendingSinceLen = null;
@@ -1070,7 +1113,9 @@
     const ids = inflight.map((r) => r.id);
     await Promise.allSettled(
       ids.map((id) =>
-        fetch(`/api/active-sends/${encodeURIComponent(id)}`, { method: "DELETE" }),
+        fetch(`/api/active-sends/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+        }),
       ),
     );
     void refreshInflight();
@@ -1106,7 +1151,11 @@
       author: model,
     };
     if (session) {
-      session.messages = [...session.messages, optimisticUser, optimisticAssistant];
+      session.messages = [
+        ...session.messages,
+        optimisticUser,
+        optimisticAssistant,
+      ];
       ollamaStreamingIdx = session.messages.length - 1;
     }
     inputText = "";
@@ -1155,7 +1204,9 @@
             applyOllamaChunk(payload.delta);
           } else if (event === "error") {
             const msg =
-              typeof payload.message === "string" ? payload.message : "stream error";
+              typeof payload.message === "string"
+                ? payload.message
+                : "stream error";
             sendError = msg;
           } else if (event === "done") {
             // Stream finished cleanly. Stop here; the outer reader
@@ -1212,7 +1263,8 @@
     if (pendingTimer) clearTimeout(pendingTimer);
     pendingTimer = setTimeout(() => {
       if (pendingSinceLen !== null) {
-        sendError = "Claude didn't respond in 90s — try again or check claude logs";
+        sendError =
+          "Claude didn't respond in 90s — try again or check claude logs";
         pendingSinceLen = null;
         sending = false;
       }
@@ -1370,7 +1422,7 @@
     <SessionHeader
       {agent}
       agentLabel={agent === "ollama"
-        ? (model || undefined)
+        ? model || undefined
         : agent === "claude"
           ? claudeModelAlias(claudeModel ?? model)
           : undefined}
@@ -1378,7 +1430,8 @@
       {source}
       {manualTitle}
       {mode}
-      canResume={!!onCustomResume || (!!session?.sessionId && (agent === "claude" || agent === "codex"))}
+      canResume={!!onCustomResume ||
+        (!!session?.sessionId && (agent === "claude" || agent === "codex"))}
       canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
       {disposing}
       {awaitingInput}
@@ -1411,19 +1464,38 @@
         ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
-    {#if mode === "terminal" && ((summarySnippet || summaryRefreshing) || (lastUserMessage && lastUserMessage.trim().length > 0))}
-      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}
-        on:mouseenter={onOverlayEnter} on:mouseleave={onOverlayLeave}>
+    {#if mode === "terminal" && (summarySnippet || summaryRefreshing || (lastUserMessage && lastUserMessage.trim().length > 0))}
+      <div
+        class="pinned-last-msg-wrap tui-overlay-stack"
+        class:revealed={pinnedRevealed}
+        on:mouseenter={onOverlayEnter}
+        on:mouseleave={onOverlayLeave}
+      >
         {#if summarySnippet || summaryRefreshing}
           <div class="tui-summary-box">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
-              {#each ICONS.ai.paths ?? [] as d}<path {d}/>{/each}
+            <svg
+              class="tui-overlay-icon"
+              viewBox="0 0 24 24"
+              width="11"
+              height="11"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              {#each ICONS.ai.paths ?? [] as d}<path {d} />{/each}
             </svg>
             <div class="tui-summary-body">
               {#if summaryRefreshing}
                 <span class="tui-summary-refreshing">
-                  <LoadingSpinner size="0.65rem" thickness="2px" label="Refreshing summary" />
-                  <span class="dim">refreshing{summaryModel ? ` with ${summaryModel}` : ""}…</span>
+                  <LoadingSpinner
+                    size="0.65rem"
+                    thickness="2px"
+                    label="Refreshing summary"
+                  />
+                  <span class="dim"
+                    >refreshing{summaryModel
+                      ? ` with ${summaryModel}`
+                      : ""}…</span
+                  >
                 </span>
               {:else}
                 {summarySnippet}
@@ -1464,10 +1536,19 @@
         {/if}
         {#if lastUserMessage && lastUserMessage.trim().length > 0}
           <div class="pinned-last-msg">
-            <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
-              {#each ICONS.speech.paths ?? [] as d}<path {d}/>{/each}
+            <svg
+              class="tui-overlay-icon"
+              viewBox="0 0 24 24"
+              width="11"
+              height="11"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              {#each ICONS.speech.paths ?? [] as d}<path {d} />{/each}
             </svg>
-            <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
+            <span class="pinned-last-msg-text"
+              >{lastUserMessageWithContext}</span
+            >
           </div>
         {/if}
       </div>
@@ -1494,8 +1575,10 @@
                   dismissSummarizeNotice();
                 }
               }}
-              title={noticeAction === "install" ? "Open the install dialog" : "Dismiss"}
-            >{summarizeNotice}</button>
+              title={noticeAction === "install"
+                ? "Open the install dialog"
+                : "Dismiss"}>{summarizeNotice}</button
+            >
           {/if}
           <button
             type="button"
@@ -1509,7 +1592,11 @@
                 : "Summarize this session with a local Ollama model (uses last-picked model)"}
           >
             {#if summaryRefreshing}
-              <LoadingSpinner size="0.7rem" thickness="2px" label="Refreshing summary" />
+              <LoadingSpinner
+                size="0.7rem"
+                thickness="2px"
+                label="Refreshing summary"
+              />
               <span>Refreshing…</span>
             {:else if summarySnippet}
               ↻ Refresh summary
@@ -1535,18 +1622,34 @@
               style="--summary-max-lines: {summaryMaxLines}"
               on:click={() => openSummarize(source)}
             >
-              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
-                {#each ICONS.ai.paths ?? [] as d}<path {d}/>{/each}
+              <svg
+                class="tui-overlay-icon"
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                {#each ICONS.ai.paths ?? [] as d}<path {d} />{/each}
               </svg>
               <span class="tui-summary-body">{summarySnippet}</span>
             </button>
           {/if}
           {#if lastUserMessage && lastUserMessage.trim().length > 0}
             <div class="pinned-last-msg">
-              <svg class="tui-overlay-icon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
-                {#each ICONS.speech.paths ?? [] as d}<path {d}/>{/each}
+              <svg
+                class="tui-overlay-icon"
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                {#each ICONS.speech.paths ?? [] as d}<path {d} />{/each}
               </svg>
-              <span class="pinned-last-msg-text">{lastUserMessageWithContext}</span>
+              <span class="pinned-last-msg-text"
+                >{lastUserMessageWithContext}</span
+              >
             </div>
           {/if}
         </div>
@@ -1632,7 +1735,8 @@
               class:brand-claude={m.role === "assistant" && agent === "claude"}
               class:brand-codex={m.role === "assistant" && agent === "codex"}
               class:brand-ollama={m.role === "assistant" && agent === "ollama"}
-              class:brand-copilot={m.role === "assistant" && agent === "copilot"}
+              class:brand-copilot={m.role === "assistant" &&
+                agent === "copilot"}
             >
               {#if m.role === "assistant" && agent === "claude"}
                 <img class="agent-icon" src="/agents/claude.svg" alt="" />
@@ -1646,7 +1750,9 @@
                   fill="currentColor"
                   aria-hidden="true"
                 >
-                  <path d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" />
+                  <path
+                    d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z"
+                  />
                 </svg>
               {:else if m.role === "assistant" && agent === "ollama"}
                 <img class="agent-icon" src="/agents/ollama.svg" alt="" />
@@ -1692,17 +1798,16 @@
               <div class="block tool-result">
                 <span class="muted small">result</span>
                 <div class="tool-result-body">
-                  <code
-                    class="tool-result-preview"
-                    title={b.text ?? ""}
-                  >{toolResultPreview(b.text ?? "")}</code>
+                  <code class="tool-result-preview" title={b.text ?? ""}
+                    >{toolResultPreview(b.text ?? "")}</code
+                  >
                   <button
                     type="button"
                     class="copy-btn"
                     on:click={() => void copyToClipboard(b.text ?? "")}
                     title="Copy full tool result"
-                    aria-label="Copy"
-                  >Copy</button>
+                    aria-label="Copy">Copy</button
+                  >
                 </div>
               </div>
             {:else if b.type === "ide_context"}
@@ -1772,7 +1877,6 @@
       {/if}
     </div>
   {/if}
-
 </div>
 
 <style>
@@ -1810,8 +1914,15 @@
     animation: session-awaiting-pulse 1.8s ease-in-out infinite;
   }
   @keyframes session-awaiting-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
-    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0
+        color-mix(in srgb, var(--status-dirty) 0%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 4px
+        color-mix(in srgb, var(--status-dirty) 25%, transparent);
+    }
   }
   /* When this column goes fullscreen, drop the rounded border + fill
      the viewport. TerminalView's ResizeObserver re-fits xterm for us. */
@@ -1833,8 +1944,15 @@
     flex: 1 1 0;
   }
   @keyframes session-awaiting-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
-    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0
+        color-mix(in srgb, var(--status-dirty) 0%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 4px
+        color-mix(in srgb, var(--status-dirty) 25%, transparent);
+    }
   }
   /* The head-stack hosts the header + the absolutely-positioned pin.
      `z-index: 2` lifts its entire compositing layer above the TUI
@@ -2460,12 +2578,16 @@
     pointer-events: auto;
     max-height: calc(4 * 1.5em + 0.6rem);
     overflow: hidden;
-    transition: max-height 300ms 300ms ease, opacity 100ms ease;
+    transition:
+      max-height 300ms 300ms ease,
+      opacity 100ms ease;
   }
   .tui-summary-box:hover {
     max-height: 50vh;
     overflow: auto;
-    transition: max-height 150ms ease, opacity 100ms ease;
+    transition:
+      max-height 150ms ease,
+      opacity 100ms ease;
   }
   .tui-summary-body {
     overflow: hidden;

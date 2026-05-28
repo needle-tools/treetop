@@ -8,7 +8,9 @@ describe("OrphanCleaner", () => {
       orphanTimeoutMs: 100,
       killGraceMs: 50,
       getTerminals: () => [{ id: "t1", pid: 1, isAlive: true }],
-      killTerminal: async () => { killed = true; },
+      killTerminal: async () => {
+        killed = true;
+      },
       log: () => {},
     });
 
@@ -27,7 +29,9 @@ describe("OrphanCleaner", () => {
         { id: "t1", pid: 111, isAlive: true },
         { id: "t2", pid: 222, isAlive: true },
       ],
-      killTerminal: async (id) => { killed.push(id); },
+      killTerminal: async (id) => {
+        killed.push(id);
+      },
       log: (msg) => console.log(`  [test] ${msg}`),
     });
 
@@ -44,7 +48,9 @@ describe("OrphanCleaner", () => {
       orphanTimeoutMs: 200,
       killGraceMs: 50,
       getTerminals: () => [{ id: "t1", pid: 1, isAlive: true }],
-      killTerminal: async () => { killed = true; },
+      killTerminal: async () => {
+        killed = true;
+      },
       log: () => {},
     });
 
@@ -65,7 +71,9 @@ describe("OrphanCleaner", () => {
         { id: "t1", pid: 111, isAlive: false },
         { id: "t2", pid: 222, isAlive: true },
       ],
-      killTerminal: async (id) => { killed.push(id); },
+      killTerminal: async (id) => {
+        killed.push(id);
+      },
       log: () => {},
     });
 
@@ -99,7 +107,9 @@ describe("OrphanCleaner", () => {
       orphanTimeoutMs: 100,
       killGraceMs: 50,
       getTerminals: () => [{ id: "t1", pid: 1, isAlive: true }],
-      killTerminal: async () => { killed = true; },
+      killTerminal: async () => {
+        killed = true;
+      },
       log: () => {},
     });
 

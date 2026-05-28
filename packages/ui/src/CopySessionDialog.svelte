@@ -56,11 +56,16 @@
           targetCwd: wt.path,
         }),
       });
-      const body = (await res.json().catch(() => null)) as
-        | { ok?: boolean; copiedTo?: string; error?: string }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        copiedTo?: string;
+        error?: string;
+      } | null;
       if (!res.ok || !body?.ok) {
-        result = { kind: "error", message: body?.error ?? `HTTP ${res.status}` };
+        result = {
+          kind: "error",
+          message: body?.error ?? `HTTP ${res.status}`,
+        };
         return;
       }
       result = { kind: "ok", copiedTo: body.copiedTo ?? wt.path };
@@ -74,7 +79,10 @@
       }
       setTimeout(() => closeCopy(), 1500);
     } catch (e) {
-      result = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+      result = {
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       copying = false;
     }
@@ -112,8 +120,8 @@
     >
       <h2 id="copy-title" class="copy-title">Copy to</h2>
       <p class="copy-blurb">
-        Copy this session to another worktree so you can resume it
-        there. Paths are rewritten automatically.
+        Copy this session to another worktree so you can resume it there. Paths
+        are rewritten automatically.
       </p>
 
       {#if loading}
@@ -141,7 +149,9 @@
                       {#if copying}
                         <span class="copy-spinner"></span>
                       {/if}
-                      <span class="copy-wt-branch">{wt.branch || shortPath(wt)}</span>
+                      <span class="copy-wt-branch"
+                        >{wt.branch || shortPath(wt)}</span
+                      >
                       <span class="copy-wt-path">{shortPath(wt)}</span>
                     </button>
                   </li>
@@ -230,7 +240,9 @@
     animation: copy-spin 0.6s linear infinite;
   }
   @keyframes copy-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   .copy-targets {
     display: flex;

@@ -53,7 +53,11 @@
         ta.select();
         const ok = document.execCommand("copy");
         document.body.removeChild(ta);
-        try { prev?.focus(); } catch { /* best-effort restore */ }
+        try {
+          prev?.focus();
+        } catch {
+          /* best-effort restore */
+        }
         return ok;
       } catch {
         return false;
@@ -71,7 +75,9 @@
       return;
     }
     if (!tryLegacy()) {
-      console.warn("supergit: clipboard write failed (no async API, execCommand denied)");
+      console.warn(
+        "supergit: clipboard write failed (no async API, execCommand denied)",
+      );
     }
   }
 
@@ -88,7 +94,10 @@
   export let procName: string | undefined = undefined;
   /** Called when the underlying PTY exits. Parent flips column back to
    *  the read-only view. */
-  export let onExit: (info: { code: number; signal?: string }) => void = () => {};
+  export let onExit: (info: {
+    code: number;
+    signal?: string;
+  }) => void = () => {};
   /** Fires once the daemon hands us back the terminal id. Lets the parent
    *  drive dispose via DELETE /api/terminals/:id from its own header. */
   export let onSpawn: (id: string) => void = () => {};
@@ -129,7 +138,8 @@
   export let prefillCmd: string | undefined = undefined;
   /** Fires when an SSH session is detected (or lost) for this terminal.
    *  Parent can use this to open a remote file browser panel. */
-  export let onSshChange: ((ssh: SshSessionInfo | null) => void) | undefined = undefined;
+  export let onSshChange: ((ssh: SshSessionInfo | null) => void) | undefined =
+    undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -149,7 +159,9 @@
   function extractCwdFromOutput(chunk: string): void {
     if (!sshSession) return;
     cwdParseBuffer = (cwdParseBuffer + chunk).slice(-1024);
-    const stripped = cwdParseBuffer.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
+    const stripped = cwdParseBuffer
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
     const winMatch = stripped.match(WIN_PROMPT_RE);
     const unixMatch = stripped.match(UNIX_PROMPT_RE);
     const raw = winMatch?.[1] ?? unixMatch?.[1];
@@ -280,7 +292,9 @@
     if (phase !== "error") return;
     clearStartupGuard();
     if (ws) {
-      try { ws.close(1000, "retry"); } catch {}
+      try {
+        ws.close(1000, "retry");
+      } catch {}
       ws = null;
     }
     error = "";
@@ -298,7 +312,9 @@
       // Force the in-flight POST (if any) to bail out so the loading
       // overlay can clear and onError handlers see something concrete.
       startupAbort?.abort();
-      try { ws?.close(4000, "startup-timeout"); } catch {}
+      try {
+        ws?.close(4000, "startup-timeout");
+      } catch {}
       error = `Terminal didn't start within ${STARTUP_TIMEOUT_MS / 1000}s. Close the column and try again — the daemon may be busy or the PTY backend stalled.`;
       phase = "error";
     }, STARTUP_TIMEOUT_MS);
@@ -372,7 +388,11 @@
         //     resume has no click → we have to focus explicitly.
         requestAnimationFrame(() => {
           if (fit && xterm && containerEl && containerEl.clientWidth > 0) {
-            try { fit.fit(); } catch { /* pre-layout race; ignore */ }
+            try {
+              fit.fit();
+            } catch {
+              /* pre-layout race; ignore */
+            }
             sendResize();
           }
           focusTerminal();
@@ -400,7 +420,8 @@
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
         xterm?.write(bytes);
         noteActivity();
-        if (sshSession) extractCwdFromOutput(textDecoder.decode(bytes, { stream: true }));
+        if (sshSession)
+          extractCwdFromOutput(textDecoder.decode(bytes, { stream: true }));
       };
       ws.onerror = () => {
         if (phase !== "exited") {
@@ -433,7 +454,9 @@
 
   function sendResize() {
     if (!ws || ws.readyState !== WebSocket.OPEN || !xterm) return;
-    ws.send(JSON.stringify({ type: "resize", cols: xterm.cols, rows: xterm.rows }));
+    ws.send(
+      JSON.stringify({ type: "resize", cols: xterm.cols, rows: xterm.rows }),
+    );
   }
 
   onMount(() => {
@@ -475,15 +498,17 @@
     xterm.loadAddon(fit);
     // Open URLs via the daemon so it works in both browser and native
     // app (WKWebView doesn't route window.open to the OS browser).
-    xterm.loadAddon(new WebLinksAddon((_event, uri) => {
-      fetch("/api/open-default", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: uri }),
-      }).catch(() => {
-        window.open(uri, "_blank");
-      });
-    }));
+    xterm.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        fetch("/api/open-default", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: uri }),
+        }).catch(() => {
+          window.open(uri, "_blank");
+        });
+      }),
+    );
     xterm.open(containerEl);
     // Defer the initial fit to rAF so the flex parent has settled its
     // layout. A synchronous fit.fit() here races the browser's layout
@@ -492,7 +517,11 @@
     // xterm cols=2 and producing a 2-char-wide terminal.
     requestAnimationFrame(() => {
       if (fit && containerEl && containerEl.clientWidth > 0) {
-        try { fit.fit(); } catch { /* layout race; ResizeObserver will retry */ }
+        try {
+          fit.fit();
+        } catch {
+          /* layout race; ResizeObserver will retry */
+        }
       }
     });
 
@@ -500,69 +529,73 @@
     // Cmd/Ctrl shortcuts BEFORE the native Edit menu can claim them.
     // When xterm is focused we handle copy/paste/interrupt ourselves;
     // outside xterm (e.g. text inputs) the Edit menu works normally.
-    containerEl.addEventListener("keydown", (ev) => {
-      const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+    containerEl.addEventListener(
+      "keydown",
+      (ev) => {
+        const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 
-      if (isMac && ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
-        if (ev.code === "KeyC" && !xterm?.hasSelection()) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          ws?.send(new Uint8Array([0x03]));
-          return;
+        if (isMac && ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+          if (ev.code === "KeyC" && !xterm?.hasSelection()) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            ws?.send(new Uint8Array([0x03]));
+            return;
+          }
+          if (ev.code === "KeyA") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            ws?.send(new Uint8Array([0x01]));
+            return;
+          }
         }
-        if (ev.code === "KeyA") {
-          ev.preventDefault();
-          ev.stopPropagation();
-          ws?.send(new Uint8Array([0x01]));
-          return;
-        }
-      }
 
-      if (isMac && ev.metaKey && !ev.ctrlKey) {
-        if (ev.code === "KeyV") {
-          // Block xterm's handler (which calls navigator.clipboard.read
-          // and triggers the macOS "Paste" popup). Instead we listen for
-          // the native `paste` event below, which carries clipboardData
-          // inline without any popup.
-          ev.stopPropagation();
-          return;
+        if (isMac && ev.metaKey && !ev.ctrlKey) {
+          if (ev.code === "KeyV") {
+            // Block xterm's handler (which calls navigator.clipboard.read
+            // and triggers the macOS "Paste" popup). Instead we listen for
+            // the native `paste` event below, which carries clipboardData
+            // inline without any popup.
+            ev.stopPropagation();
+            return;
+          }
+          if (ev.code === "KeyC" && xterm?.hasSelection()) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const sel = getCleanedSelection(xterm);
+            if (sel) copyToClipboard(sel);
+            return;
+          }
+          if (ev.code === "KeyA") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+          }
         }
-        if (ev.code === "KeyC" && xterm?.hasSelection()) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const sel = getCleanedSelection(xterm);
-          if (sel) copyToClipboard(sel);
-          return;
-        }
-        if (ev.code === "KeyA") {
-          ev.preventDefault();
-          ev.stopPropagation();
-          return;
-        }
-      }
 
-      // Windows/Linux: Ctrl+C with a TUI selection copies. We mirror the
-      // mac Cmd+C branch in capture phase rather than relying solely on
-      // attachCustomKeyEventHandler because xterm's own keydown handler
-      // can clear / mutate selection state between the raw keydown and
-      // the custom-key callback firing (observed under cmd.exe and
-      // PowerShell PTYs on Windows: selection visibly highlights, plain
-      // Ctrl+C feels like it "did nothing"). Reading + writing in
-      // capture phase pins the selection read and clipboard write to
-      // the earliest possible moment so the convention works the same
-      // way Cmd+C does on macOS. The interrupt path (Ctrl+C with no
-      // selection → 0x03) is left to xterm's default — falling through
-      // is correct and keeps SIGINT working in TUIs.
-      if (!isMac && ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
-        if (ev.code === "KeyC" && xterm?.hasSelection()) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const sel = getCleanedSelection(xterm);
-          if (sel) copyToClipboard(sel);
-          return;
+        // Windows/Linux: Ctrl+C with a TUI selection copies. We mirror the
+        // mac Cmd+C branch in capture phase rather than relying solely on
+        // attachCustomKeyEventHandler because xterm's own keydown handler
+        // can clear / mutate selection state between the raw keydown and
+        // the custom-key callback firing (observed under cmd.exe and
+        // PowerShell PTYs on Windows: selection visibly highlights, plain
+        // Ctrl+C feels like it "did nothing"). Reading + writing in
+        // capture phase pins the selection read and clipboard write to
+        // the earliest possible moment so the convention works the same
+        // way Cmd+C does on macOS. The interrupt path (Ctrl+C with no
+        // selection → 0x03) is left to xterm's default — falling through
+        // is correct and keeps SIGINT working in TUIs.
+        if (!isMac && ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
+          if (ev.code === "KeyC" && xterm?.hasSelection()) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const sel = getCleanedSelection(xterm);
+            if (sel) copyToClipboard(sel);
+            return;
+          }
         }
-      }
-    }, true);
+      },
+      true,
+    );
 
     xterm.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown" || ev.altKey) return true;
@@ -581,7 +614,12 @@
           void doClipboardPaste();
           return false;
         }
-        if (ev.ctrlKey && !ev.metaKey && !ev.shiftKey && xterm?.hasSelection()) {
+        if (
+          ev.ctrlKey &&
+          !ev.metaKey &&
+          !ev.shiftKey &&
+          xterm?.hasSelection()
+        ) {
           ev.preventDefault();
           const sel = getCleanedSelection(xterm);
           if (sel) copyToClipboard(sel);
@@ -633,7 +671,12 @@
     // crash when the column was unmounting.
     resizeObs = new ResizeObserver(() => {
       if (!fit || !xterm || phase === "exited") return;
-      if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
+      if (
+        !containerEl ||
+        containerEl.clientWidth === 0 ||
+        containerEl.clientHeight === 0
+      )
+        return;
       const before = { cols: xterm.cols, rows: xterm.rows };
       let proposed: { cols: number; rows: number } | undefined;
       try {
@@ -642,7 +685,8 @@
         // pre-mount sizing race; ignored
       }
       if (!proposed) return;
-      if (proposed.cols === before.cols && proposed.rows === before.rows) return;
+      if (proposed.cols === before.cols && proposed.rows === before.rows)
+        return;
       try {
         fit.fit();
       } catch {
@@ -661,10 +705,19 @@
       if (!containerEl || containerEl.clientWidth === 0) return;
       const before = { cols: xterm.cols, rows: xterm.rows };
       let proposed: { cols: number; rows: number } | undefined;
-      try { proposed = fit.proposeDimensions(); } catch { return; }
+      try {
+        proposed = fit.proposeDimensions();
+      } catch {
+        return;
+      }
       if (!proposed) return;
-      if (proposed.cols === before.cols && proposed.rows === before.rows) return;
-      try { fit.fit(); } catch { return; }
+      if (proposed.cols === before.cols && proposed.rows === before.rows)
+        return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
       sendResize();
     };
     window.addEventListener("resize", onWindowResize);
@@ -729,13 +782,18 @@
       clearInterval(workingTicker);
       workingTicker = null;
     }
-    if (sshPollTimer) { clearInterval(sshPollTimer); sshPollTimer = null; }
+    if (sshPollTimer) {
+      clearInterval(sshPollTimer);
+      sshPollTimer = null;
+    }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (ws && ws.readyState <= WebSocket.OPEN) {
-      try { ws.close(1000, "unmount"); } catch {}
+      try {
+        ws.close(1000, "unmount");
+      } catch {}
     }
     xterm?.dispose();
     xterm = null;
@@ -746,7 +804,9 @@
   }
 
   function onStagePrompt(e: Event): void {
-    const detail = (e as CustomEvent<{ source?: string; text?: string; chunks?: string[] }>).detail;
+    const detail = (
+      e as CustomEvent<{ source?: string; text?: string; chunks?: string[] }>
+    ).detail;
     if (!detail || detail.source !== sessionSource || !xterm) return;
     const chunks = detail.chunks ?? (detail.text ? [detail.text] : []);
     if (chunks.length === 0) return;
@@ -834,11 +894,16 @@
         for (const item of items) {
           if (item.types.includes("text/html")) {
             const blob = await item.getType("text/html");
-            const payload = extractNoteClipboardPayloadFromHtml(await blob.text());
+            const payload = extractNoteClipboardPayloadFromHtml(
+              await blob.text(),
+            );
             if (payload) {
               try {
                 await pasteChunks(
-                  await expandNoteBodyForTerminalPasteChunks(payload.body, fetchTextAttachment),
+                  await expandNoteBodyForTerminalPasteChunks(
+                    payload.body,
+                    fetchTextAttachment,
+                  ),
                 );
               } catch (err) {
                 console.warn("Could not read note attachments for paste", err);
@@ -884,7 +949,9 @@
   function onPaste(e: ClipboardEvent): void {
     const cd = e.clipboardData;
     if (!cd) return;
-    const payload = extractNoteClipboardPayloadFromHtml(cd.getData("text/html"));
+    const payload = extractNoteClipboardPayloadFromHtml(
+      cd.getData("text/html"),
+    );
     if (payload && xterm) {
       e.preventDefault();
       e.stopPropagation();
@@ -894,7 +961,9 @@
         { omitTargetSessionSource: sessionSource },
       )
         .then((chunks) => pasteChunks(chunks))
-        .catch((err) => console.warn("Could not read note attachments for paste", err));
+        .catch((err) =>
+          console.warn("Could not read note attachments for paste", err),
+        );
       return;
     }
     for (const it of cd.items) {
@@ -1007,14 +1076,20 @@
 
   {#if configError}
     <div class="config-error-pill">
-      <span class="config-error-label">Config error: {configError.file.split(/[\\/]/).pop()}</span>
-      <button type="button" class="pill-btn" on:click={configErrorOpen}>Open</button>
-      <button type="button" class="pill-btn" on:click={configErrorAutofix}>Autofix</button>
-      <button type="button" class="pill-btn" on:click={configErrorRestart}>Dismiss</button>
+      <span class="config-error-label"
+        >Config error: {configError.file.split(/[\\/]/).pop()}</span
+      >
+      <button type="button" class="pill-btn" on:click={configErrorOpen}
+        >Open</button
+      >
+      <button type="button" class="pill-btn" on:click={configErrorAutofix}
+        >Autofix</button
+      >
+      <button type="button" class="pill-btn" on:click={configErrorRestart}
+        >Dismiss</button
+      >
     </div>
   {/if}
-
-
 </div>
 
 <style>
@@ -1033,7 +1108,9 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     border: 1px solid var(--surface-2);
-    transition: border-color 120ms ease, box-shadow 120ms ease;
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease;
     /* Contain VERTICAL scroll chaining only — hitting top/bottom of
        the TUI scrollback shouldn't bleed into the page. Horizontal
        stays `auto` so a trackpad swipe over the TUI passes through
@@ -1084,7 +1161,9 @@
     border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
     padding: 0.2rem 0.75rem;
     border-radius: var(--radius-sm);
-    transition: background 120ms ease, border-color 120ms ease;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease;
   }
   .retry-btn:hover {
     background: color-mix(in srgb, currentColor 22%, transparent);
@@ -1126,7 +1205,9 @@
     border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
     padding: 0.15rem 0.5rem;
     border-radius: 999px;
-    transition: background 100ms ease, border-color 100ms ease;
+    transition:
+      background 100ms ease,
+      border-color 100ms ease;
   }
   .pill-btn:hover {
     background: color-mix(in srgb, currentColor 20%, transparent);
@@ -1136,5 +1217,4 @@
     outline: 2px solid currentColor;
     outline-offset: 1px;
   }
-
 </style>

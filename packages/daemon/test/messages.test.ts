@@ -318,7 +318,9 @@ describe("encryption at rest", () => {
       sentAt: "2026-05-22T10:00:01Z",
     });
     const raw = JSON.parse(await readFile(join(w, "messages.json"), "utf-8"));
-    const bodies = raw.byPeer["peer-a"].messages.map((m: { body: string }) => m.body);
+    const bodies = raw.byPeer["peer-a"].messages.map(
+      (m: { body: string }) => m.body,
+    );
     expect(bodies[0]).not.toBe(bodies[1]);
   });
 });
@@ -327,7 +329,9 @@ describe("auto-expire messages older than MESSAGE_TTL_MS", () => {
   test("messages older than 4 hours are pruned on read", async () => {
     const w = await ws();
     const { writeFile } = await import("node:fs/promises");
-    const oldTime = new Date(Date.now() - MESSAGE_TTL_MS - 60_000).toISOString();
+    const oldTime = new Date(
+      Date.now() - MESSAGE_TTL_MS - 60_000,
+    ).toISOString();
     const freshTime = new Date().toISOString();
     await writeFile(
       join(w, "messages.json"),
@@ -337,8 +341,20 @@ describe("auto-expire messages older than MESSAGE_TTL_MS", () => {
           "peer-a": {
             label: "Alice",
             messages: [
-              { id: "fresh", body: "new", sentAt: freshTime, receivedAt: freshTime, direction: "in" },
-              { id: "old", body: "expired", sentAt: oldTime, receivedAt: oldTime, direction: "in" },
+              {
+                id: "fresh",
+                body: "new",
+                sentAt: freshTime,
+                receivedAt: freshTime,
+                direction: "in",
+              },
+              {
+                id: "old",
+                body: "expired",
+                sentAt: oldTime,
+                receivedAt: oldTime,
+                direction: "in",
+              },
             ],
           },
         },
@@ -352,7 +368,9 @@ describe("auto-expire messages older than MESSAGE_TTL_MS", () => {
   test("peer entry is removed when all messages expire", async () => {
     const w = await ws();
     const { writeFile } = await import("node:fs/promises");
-    const oldTime = new Date(Date.now() - MESSAGE_TTL_MS - 60_000).toISOString();
+    const oldTime = new Date(
+      Date.now() - MESSAGE_TTL_MS - 60_000,
+    ).toISOString();
     await writeFile(
       join(w, "messages.json"),
       JSON.stringify({
@@ -361,7 +379,13 @@ describe("auto-expire messages older than MESSAGE_TTL_MS", () => {
           "peer-a": {
             label: "Alice",
             messages: [
-              { id: "old", body: "expired", sentAt: oldTime, receivedAt: oldTime, direction: "in" },
+              {
+                id: "old",
+                body: "expired",
+                sentAt: oldTime,
+                receivedAt: oldTime,
+                direction: "in",
+              },
             ],
           },
         },

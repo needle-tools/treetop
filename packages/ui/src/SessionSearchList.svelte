@@ -65,7 +65,9 @@
     if (!q.trim()) {
       debouncedQuery = q;
     } else {
-      debounceTimer = setTimeout(() => { debouncedQuery = q; }, DEBOUNCE_MS);
+      debounceTimer = setTimeout(() => {
+        debouncedQuery = q;
+      }, DEBOUNCE_MS);
     }
   }
   $: filtered = filterSessions(sessions, debouncedQuery);
@@ -226,7 +228,10 @@
       hoveredSess = sess;
       void loadPreview(sess);
       stopPoll();
-      poller = setInterval(() => void loadPreview(sess, { force: true }), POLL_MS);
+      poller = setInterval(
+        () => void loadPreview(sess, { force: true }),
+        POLL_MS,
+      );
     };
     if (hoveredSess) open();
     else showTimer = setTimeout(open, SHOW_DELAY_MS);
@@ -277,7 +282,10 @@
   });
 </script>
 
-<Popover variant="agents" extraClass={`session-search-popover ${extraClass}`.trim()}>
+<Popover
+  variant="agents"
+  extraClass={`session-search-popover ${extraClass}`.trim()}
+>
   <svelte:fragment slot="head">
     <div class="session-search-head">
       <!-- The heading IS the search field: a chrome-free input whose
@@ -309,177 +317,204 @@
         class:dismissed-header={item.kind === "header"}
         animate:flip={{ duration: 250 }}
       >
-      {#if item.kind === "header"}
-        <span class="dismissed-header-text">Dismissed</span>
-        <span class="dismissed-header-count">{item.count}</span>
-      {:else}
-        {@const sess = item.sess}
-        <button
-          class="agent-row brand-{sess.agent}"
-          class:dimmed={!isOpen(sess) && !item.dismissed}
-          class:dismissed-row={item.dismissed}
-          class:orphan-row={orphanSources.has(sess.source)}
-          class:preview-open={hoveredSess?.source === sess.source}
-          on:click={() => dispatch("pick", sess)}
-          on:mouseenter={(ev) => onRowEnter(ev, sess)}
-          on:mouseleave={onRowLeave}
-          on:focusin={(ev) => onRowEnter(ev, sess)}
-          on:focusout={onRowLeave}
-        >
-          {#if sess.agent === "claude"}
-            <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-          {:else if sess.agent === "codex"}
-            <svg
-              class="agent-row-icon"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" />
-            </svg>
-          {:else if sess.agent === "shell"}
-            <svg
-              class="agent-row-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <polyline points="4 7 9 12 4 17" />
-              <line x1="12" y1="18" x2="20" y2="18" />
-            </svg>
-          {:else}
-            <span class="agent-dot agent-{sess.agent}"></span>
-          {/if}
-          <span class="agent-row-name">
-            {sess.agent === "claude"
-              ? "Claude"
-              : sess.agent === "codex"
-                ? "Codex"
-                : sess.agent}
-          </span>
-          {#if starredSources.has(sess.source)}
-            <svg class="row-star" viewBox="0 0 24 24" width="10" height="10" aria-hidden="true" aria-label="Starred">
-              <path fill="#e8b931" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
-            </svg>
-          {/if}
-          {#if sess.manualTitle && sess.manualTitle.trim().length > 0}
-            <span class="agent-title manual">{sess.manualTitle}</span>
-          {:else if sess.agent === "shell" && sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
-            <!-- Shell rows don't carry an agent-side title, so the
+        {#if item.kind === "header"}
+          <span class="dismissed-header-text">Dismissed</span>
+          <span class="dismissed-header-count">{item.count}</span>
+        {:else}
+          {@const sess = item.sess}
+          <button
+            class="agent-row brand-{sess.agent}"
+            class:dimmed={!isOpen(sess) && !item.dismissed}
+            class:dismissed-row={item.dismissed}
+            class:orphan-row={orphanSources.has(sess.source)}
+            class:preview-open={hoveredSess?.source === sess.source}
+            on:click={() => dispatch("pick", sess)}
+            on:mouseenter={(ev) => onRowEnter(ev, sess)}
+            on:mouseleave={onRowLeave}
+            on:focusin={(ev) => onRowEnter(ev, sess)}
+            on:focusout={onRowLeave}
+          >
+            {#if sess.agent === "claude"}
+              <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
+            {:else if sess.agent === "codex"}
+              <svg
+                class="agent-row-icon"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z"
+                />
+              </svg>
+            {:else if sess.agent === "shell"}
+              <svg
+                class="agent-row-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="4 7 9 12 4 17" />
+                <line x1="12" y1="18" x2="20" y2="18" />
+              </svg>
+            {:else}
+              <span class="agent-dot agent-{sess.agent}"></span>
+            {/if}
+            <span class="agent-row-name">
+              {sess.agent === "claude"
+                ? "Claude"
+                : sess.agent === "codex"
+                  ? "Codex"
+                  : sess.agent}
+            </span>
+            {#if starredSources.has(sess.source)}
+              <svg
+                class="row-star"
+                viewBox="0 0 24 24"
+                width="10"
+                height="10"
+                aria-hidden="true"
+                aria-label="Starred"
+              >
+                <path
+                  fill="#e8b931"
+                  d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"
+                />
+              </svg>
+            {/if}
+            {#if sess.manualTitle && sess.manualTitle.trim().length > 0}
+              <span class="agent-title manual">{sess.manualTitle}</span>
+            {:else if sess.agent === "shell" && sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
+              <!-- Shell rows don't carry an agent-side title, so the
                  1fr title cell stays empty by default. Surface the
                  most recent captured command there as a muted
                  monospace snippet — same slot the manual title would
                  occupy when set, so the grid stays 7 columns. -->
-            <span class="agent-title agent-last-cmd" title={sess.lastUserMessage}>
-              {sess.lastUserMessage}
-            </span>
-          {:else if sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
-            <!-- Chat session without a user-set title: fall back to
+              <span
+                class="agent-title agent-last-cmd"
+                title={sess.lastUserMessage}
+              >
+                {sess.lastUserMessage}
+              </span>
+            {:else if sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
+              <!-- Chat session without a user-set title: fall back to
                  the most recent user message so the row still says
                  something identifiable instead of being blank. Wrapped
                  to one line and clamped via .agent-last-user-msg. -->
-            <span class="agent-title agent-last-user-msg" title={sess.lastUserMessage}>
-              {sess.lastUserMessage}
-            </span>
-          {:else if sess.title && sess.title.trim().length > 0}
-            <span class="agent-title">{sess.title}</span>
-          {/if}
-          {#if orphanSources.has(sess.source)}
-            <span class="orphan-tag" title={`Originated in ${sess.cwd} — no live worktree matches this path anymore.`}>orphan</span>
-          {/if}
-          <span
-            class="muted small agent-msgs"
-            title={sess.messageCount
-              ? sess.agent === "shell"
-                ? `${sess.messageCount.toLocaleString()} command${sess.messageCount === 1 ? "" : "s"} in this session`
-                : `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
-              : sess.agent === "shell"
-                ? "no commands captured"
-                : "no messages counted"}
-          >
-            {#if sess.messageCount}{sess.messageCount.toLocaleString()} {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}
-          </span>
-          <span class="muted small agent-time">{relTime(sess.lastActive)}</span>
-          {#if sess.sessionId}
-            <code class="muted small agent-sid">{sess.sessionId.slice(0, 8)}</code>
-          {/if}
-          <span
-            class="row-close"
-            aria-hidden={!isOpen(sess)}
-            on:click|stopPropagation={() => {
-              if (isOpen(sess)) dispatch("close", sess);
-            }}
-            title="Close this session"
-          >×</span>
-          {#if item.dismissed}
+              <span
+                class="agent-title agent-last-user-msg"
+                title={sess.lastUserMessage}
+              >
+                {sess.lastUserMessage}
+              </span>
+            {:else if sess.title && sess.title.trim().length > 0}
+              <span class="agent-title">{sess.title}</span>
+            {/if}
+            {#if orphanSources.has(sess.source)}
+              <span
+                class="orphan-tag"
+                title={`Originated in ${sess.cwd} — no live worktree matches this path anymore.`}
+                >orphan</span
+              >
+            {/if}
             <span
-              class="row-action row-restore"
-              role="button"
-              tabindex="0"
-              title="Restore this session to the active list"
-              on:click|stopPropagation={() => dispatch("restore", sess)}
-              on:keydown|stopPropagation={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  dispatch("restore", sess);
-                }
-              }}
-              aria-label="Restore session"
+              class="muted small agent-msgs"
+              title={sess.messageCount
+                ? sess.agent === "shell"
+                  ? `${sess.messageCount.toLocaleString()} command${sess.messageCount === 1 ? "" : "s"} in this session`
+                  : `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
+                : sess.agent === "shell"
+                  ? "no commands captured"
+                  : "no messages counted"}
             >
-              <!-- Lucide rotate-ccw — the standard "undo / restore"
+              {#if sess.messageCount}{sess.messageCount.toLocaleString()}
+                {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}
+            </span>
+            <span class="muted small agent-time"
+              >{relTime(sess.lastActive)}</span
+            >
+            {#if sess.sessionId}
+              <code class="muted small agent-sid"
+                >{sess.sessionId.slice(0, 8)}</code
+              >
+            {/if}
+            <span
+              class="row-close"
+              aria-hidden={!isOpen(sess)}
+              on:click|stopPropagation={() => {
+                if (isOpen(sess)) dispatch("close", sess);
+              }}
+              title="Close this session">×</span
+            >
+            {#if item.dismissed}
+              <span
+                class="row-action row-restore"
+                role="button"
+                tabindex="0"
+                title="Restore this session to the active list"
+                on:click|stopPropagation={() => dispatch("restore", sess)}
+                on:keydown|stopPropagation={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    dispatch("restore", sess);
+                  }
+                }}
+                aria-label="Restore session"
+              >
+                <!-- Lucide rotate-ccw — the standard "undo / restore"
                    glyph; pairs visually with the archive icon used
                    for dismiss. -->
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-6.74 2.74L3 8" />
+                  <polyline points="3 3 3 8 8 8" />
+                </svg>
+              </span>
+            {:else}
+              <span
+                class="row-action row-dismiss"
+                role="button"
+                tabindex="0"
+                title="Dismiss this session — moves it to the Dismissed group at the bottom"
+                on:click|stopPropagation={() => dispatch("dismiss", sess)}
+                on:keydown|stopPropagation={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    dispatch("dismiss", sess);
+                  }
+                }}
+                aria-label="Dismiss session"
               >
-                <path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-6.74 2.74L3 8" />
-                <polyline points="3 3 3 8 8 8" />
-              </svg>
-            </span>
-          {:else}
-            <span
-              class="row-action row-dismiss"
-              role="button"
-              tabindex="0"
-              title="Dismiss this session — moves it to the Dismissed group at the bottom"
-              on:click|stopPropagation={() => dispatch("dismiss", sess)}
-              on:keydown|stopPropagation={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  dispatch("dismiss", sess);
-                }
-              }}
-              aria-label="Dismiss session"
-            >
-              <!-- Lucide archive — reads as "stash this away" without
+                <!-- Lucide archive — reads as "stash this away" without
                    implying destructive delete (a trash icon would). -->
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <rect x="3" y="3" width="18" height="5" rx="1" />
-                <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
-                <line x1="10" y1="13" x2="14" y2="13" />
-              </svg>
-            </span>
-          {/if}
-        </button>
-      {/if}
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="18" height="5" rx="1" />
+                  <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+                  <line x1="10" y1="13" x2="14" y2="13" />
+                </svg>
+              </span>
+            {/if}
+          </button>
+        {/if}
       </li>
     {/each}
     {#if filtered.length === 0}
@@ -813,6 +848,8 @@
     /* One above the popover root (2300) so the hover preview always
        paints on top of the picker rows it's anchored to. */
     z-index: 2400;
-    transition: top 120ms ease, left 120ms ease;
+    transition:
+      top 120ms ease,
+      left 120ms ease;
   }
 </style>

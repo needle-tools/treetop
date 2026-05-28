@@ -18,18 +18,21 @@ function extractCwd(output: string): string | null {
 describe("SSH prompt CWD parser", () => {
   describe("Windows cmd.exe", () => {
     test("hostname + path prompt", () => {
-      expect(extractCwd("needle@NEEDLE-NUC2-WIN C:\\Users\\needle>"))
-        .toBe("C:/Users/needle");
+      expect(extractCwd("needle@NEEDLE-NUC2-WIN C:\\Users\\needle>")).toBe(
+        "C:/Users/needle",
+      );
     });
 
     test("bare drive:\\path prompt", () => {
-      expect(extractCwd("C:\\Users\\needle\\Music>"))
-        .toBe("C:/Users/needle/Music");
+      expect(extractCwd("C:\\Users\\needle\\Music>")).toBe(
+        "C:/Users/needle/Music",
+      );
     });
 
     test("prompt after command output", () => {
-      expect(extractCwd("some file listing\nneedle@HOST C:\\Users\\test>"))
-        .toBe("C:/Users/test");
+      expect(
+        extractCwd("some file listing\nneedle@HOST C:\\Users\\test>"),
+      ).toBe("C:/Users/test");
     });
 
     test("root of drive", () => {
@@ -37,54 +40,53 @@ describe("SSH prompt CWD parser", () => {
     });
 
     test("path with spaces", () => {
-      expect(extractCwd("needle@HOST C:\\Program Files\\Unity>"))
-        .toBe("C:/Program Files/Unity");
+      expect(extractCwd("needle@HOST C:\\Program Files\\Unity>")).toBe(
+        "C:/Program Files/Unity",
+      );
     });
   });
 
   describe("PowerShell", () => {
     test("PS prompt", () => {
-      expect(extractCwd("PS C:\\Users\\needle>"))
-        .toBe("C:/Users/needle");
+      expect(extractCwd("PS C:\\Users\\needle>")).toBe("C:/Users/needle");
     });
 
     test("PS prompt after output", () => {
-      expect(extractCwd("output line\nPS C:\\Windows\\System32>"))
-        .toBe("C:/Windows/System32");
+      expect(extractCwd("output line\nPS C:\\Windows\\System32>")).toBe(
+        "C:/Windows/System32",
+      );
     });
   });
 
   describe("Unix bash/zsh", () => {
     test("user@host:/path$", () => {
-      expect(extractCwd("user@server:/home/user$"))
-        .toBe("/home/user");
+      expect(extractCwd("user@server:/home/user$")).toBe("/home/user");
     });
 
     test("user@host:~$", () => {
-      expect(extractCwd("user@server:~$"))
-        .toBe("~");
+      expect(extractCwd("user@server:~$")).toBe("~");
     });
 
     test("user@host:~/projects$", () => {
-      expect(extractCwd("user@server:~/projects$"))
-        .toBe("~/projects");
+      expect(extractCwd("user@server:~/projects$")).toBe("~/projects");
     });
 
     test("root prompt with #", () => {
-      expect(extractCwd("root@server:/etc#"))
-        .toBe("/etc");
+      expect(extractCwd("root@server:/etc#")).toBe("/etc");
     });
   });
 
   describe("ANSI escape stripping", () => {
     test("strips CSI sequences before matching", () => {
-      expect(extractCwd("\x1b[32mneedle@HOST\x1b[0m C:\\Users\\needle>"))
-        .toBe("C:/Users/needle");
+      expect(extractCwd("\x1b[32mneedle@HOST\x1b[0m C:\\Users\\needle>")).toBe(
+        "C:/Users/needle",
+      );
     });
 
     test("strips OSC sequences", () => {
-      expect(extractCwd("\x1b]0;title\x07C:\\Users\\needle>"))
-        .toBe("C:/Users/needle");
+      expect(extractCwd("\x1b]0;title\x07C:\\Users\\needle>")).toBe(
+        "C:/Users/needle",
+      );
     });
   });
 

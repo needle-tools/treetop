@@ -30,20 +30,26 @@ describe("formatTokens", () => {
 describe("modelContextCap", () => {
   test("current Opus / Sonnet (4.6+) → 1M per Anthropic's published caps", () => {
     expect(modelContextCap("claude-opus-4-7", "claude")).toBe(1_000_000);
-    expect(modelContextCap("claude-opus-4-7-20251201", "claude")).toBe(1_000_000);
+    expect(modelContextCap("claude-opus-4-7-20251201", "claude")).toBe(
+      1_000_000,
+    );
     expect(modelContextCap("claude-sonnet-4-6", "claude")).toBe(1_000_000);
     expect(modelContextCap("claude-opus-4-6", "claude")).toBe(1_000_000);
   });
 
   test("Haiku 4.5 stays at 200k even on the current generation", () => {
     expect(modelContextCap("claude-haiku-4-5", "claude")).toBe(200_000);
-    expect(modelContextCap("claude-haiku-4-5-20251001", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-haiku-4-5-20251001", "claude")).toBe(
+      200_000,
+    );
   });
 
   test("legacy Opus / Sonnet (≤4.5) → 200k", () => {
     expect(modelContextCap("claude-opus-4-5-20251101", "claude")).toBe(200_000);
     expect(modelContextCap("claude-opus-4-1-20250805", "claude")).toBe(200_000);
-    expect(modelContextCap("claude-sonnet-4-5-20250929", "claude")).toBe(200_000);
+    expect(modelContextCap("claude-sonnet-4-5-20250929", "claude")).toBe(
+      200_000,
+    );
     expect(modelContextCap("claude-sonnet-4-20250514", "claude")).toBe(200_000);
   });
 

@@ -27,7 +27,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const USER_AGENT = "supergit-agent-usage/1.0 (+https://github.com/needle-tools/supergit)";
+const USER_AGENT =
+  "supergit-agent-usage/1.0 (+https://github.com/needle-tools/supergit)";
 
 export interface CodexWindowSnapshot {
   /** Integer 0..100 (NOT 0..1 like Anthropic's). Decoder normalizes to
@@ -88,7 +89,9 @@ interface ReadAuthOk {
   accountId: string | null;
 }
 
-async function readAuth(): Promise<ReadAuthOk | { error: CodexOAuthUsageError }> {
+async function readAuth(): Promise<
+  ReadAuthOk | { error: CodexOAuthUsageError }
+> {
   const path = join(homedir(), ".codex", "auth.json");
   let content: string;
   try {
@@ -136,7 +139,9 @@ function decodeWindow(raw: unknown): CodexWindowSnapshot | undefined {
   if (typeof used !== "number") return undefined;
   const resetUnix = typeof r.reset_at === "number" ? r.reset_at : undefined;
   const windowSeconds =
-    typeof r.limit_window_seconds === "number" ? r.limit_window_seconds : undefined;
+    typeof r.limit_window_seconds === "number"
+      ? r.limit_window_seconds
+      : undefined;
   // Normalize to 0..1 to match the rest of the codebase's "ratio" idiom.
   return {
     utilization: used / 100,
@@ -157,7 +162,9 @@ function decodeUsage(json: unknown): CodexOAuthUsage | null {
     credits: credits
       ? {
           hasCredits:
-            typeof credits.has_credits === "boolean" ? credits.has_credits : false,
+            typeof credits.has_credits === "boolean"
+              ? credits.has_credits
+              : false,
           unlimited:
             typeof credits.unlimited === "boolean" ? credits.unlimited : false,
           balance:

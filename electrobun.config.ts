@@ -30,13 +30,19 @@ export default {
     // (the asar isn't a real filesystem). Default electrobun unpack
     // already covers *.node/*.dll/*.dylib/*.so.
     asarUnpack: [
-      "*.node", "*.dll", "*.dylib", "*.so", "*.exe",
+      "*.node",
+      "*.dll",
+      "*.dylib",
+      "*.so",
+      "*.exe",
       "ui/**",
       // Unpack the daemon + pty-helper by exact name (no extension on
       // mac/linux, with .exe on Windows — both patterns are harmless on
       // platforms where the file doesn't exist).
-      "supergit", "supergit.exe",
-      "pty-helper", "pty-helper.exe",
+      "supergit",
+      "supergit.exe",
+      "pty-helper",
+      "pty-helper.exe",
     ],
     copy: {
       [`build/supergit-native/supergit${exe}`]: `supergit${exe}`,

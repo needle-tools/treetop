@@ -98,7 +98,11 @@ describe("parseClaudeJsonl", () => {
       message: {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "tu-1", content: "1 file changed" },
+          {
+            type: "tool_result",
+            tool_use_id: "tu-1",
+            content: "1 file changed",
+          },
         ],
       },
     });
@@ -110,7 +114,10 @@ describe("parseClaudeJsonl", () => {
           {
             type: "tool_result",
             tool_use_id: "tu-2",
-            content: [{ type: "text", text: "line a" }, { type: "text", text: "line b" }],
+            content: [
+              { type: "text", text: "line a" },
+              { type: "text", text: "line b" },
+            ],
           },
         ],
       },
@@ -165,7 +172,10 @@ describe("parseClaudeJsonl", () => {
       message: {
         role: "user",
         content: [
-          { type: "text", text: "# Needle Engine\n\nYou are an expert in Needle Engine — a web-first 3D engine…" },
+          {
+            type: "text",
+            text: "# Needle Engine\n\nYou are an expert in Needle Engine — a web-first 3D engine…",
+          },
         ],
       },
     });
@@ -178,10 +188,15 @@ describe("parseClaudeJsonl", () => {
       type: "user",
       message: { role: "user", content: "do the thing" },
     });
-    const s = parseClaudeJsonl([skillInjection, resumeNudge, realUser].join("\n"));
+    const s = parseClaudeJsonl(
+      [skillInjection, resumeNudge, realUser].join("\n"),
+    );
     expect(s.messages).toHaveLength(1);
     expect(s.messages[0]?.role).toBe("user");
-    expect(s.messages[0]?.blocks[0]).toMatchObject({ type: "text", text: "do the thing" });
+    expect(s.messages[0]?.blocks[0]).toMatchObject({
+      type: "text",
+      text: "do the thing",
+    });
   });
 
   test("a user message that mixes real text with a tool_result stays 'user'", () => {
@@ -203,10 +218,14 @@ describe("parseClaudeJsonl", () => {
   });
 
   test("skips lines that don't parse as JSON", () => {
-    const text = ["not json", "{\"type\":\"summary\"}", JSON.stringify({
-      type: "user",
-      message: { role: "user", content: "ok" },
-    })].join("\n");
+    const text = [
+      "not json",
+      '{"type":"summary"}',
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "ok" },
+      }),
+    ].join("\n");
     const s = parseClaudeJsonl(text);
     expect(s.messages).toHaveLength(1);
   });
@@ -214,7 +233,10 @@ describe("parseClaudeJsonl", () => {
   test("ignores summary and unknown types", () => {
     const text = [
       JSON.stringify({ type: "summary", summary: "x" }),
-      JSON.stringify({ type: "system", message: { role: "system", content: "y" } }),
+      JSON.stringify({
+        type: "system",
+        message: { role: "system", content: "y" },
+      }),
     ].join("\n");
     expect(parseClaudeJsonl(text).messages).toEqual([]);
   });
@@ -258,11 +280,7 @@ describe("splitInjectedTags", () => {
     const input =
       "Hi there.\n<ide_opened_file>opened foo.ts</ide_opened_file>\nPlease implement X.";
     const blocks = splitInjectedTags(input);
-    expect(blocks.map((b) => b.type)).toEqual([
-      "text",
-      "ide_context",
-      "text",
-    ]);
+    expect(blocks.map((b) => b.type)).toEqual(["text", "ide_context", "text"]);
     expect(blocks[0]?.text).toBe("Hi there.");
     expect(blocks[2]?.text).toBe("Please implement X.");
   });
@@ -288,11 +306,7 @@ describe("parseClaudeJsonl with a real sanitized fixture", () => {
   test("handles a 13-line session without throwing and produces valid blocks", async () => {
     const { readFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
-    const path = join(
-      import.meta.dir,
-      "fixtures",
-      "claude-real-sample.jsonl",
-    );
+    const path = join(import.meta.dir, "fixtures", "claude-real-sample.jsonl");
     const raw = await readFile(path, "utf-8");
     const session = parseClaudeJsonl(raw);
 
@@ -489,9 +503,9 @@ describe("parseCodexJsonl", () => {
             text: [
               "Done.",
               "",
-              "::git-create-branch{cwd=\"/Users/me/proj\" branch=\"codex/demo\"}",
-              "::git-commit{cwd=\"/Users/me/proj\"}",
-              "::git-push{cwd=\"/Users/me/proj\" branch=\"codex/demo\"}",
+              '::git-create-branch{cwd="/Users/me/proj" branch="codex/demo"}',
+              '::git-commit{cwd="/Users/me/proj"}',
+              '::git-push{cwd="/Users/me/proj" branch="codex/demo"}',
             ].join("\n"),
           },
         ],
@@ -643,7 +657,9 @@ describe("parseCodexJsonl", () => {
 describe("parseCodexJsonl with a real sanitized fixture", () => {
   test("0.130 layout: extracts metadata, user prompt, and assistant reply", async () => {
     const text = await Bun.file(
-      fileURLToPath(new URL("./fixtures/codex-real-sample.jsonl", import.meta.url)),
+      fileURLToPath(
+        new URL("./fixtures/codex-real-sample.jsonl", import.meta.url),
+      ),
     ).text();
     const s = parseCodexJsonl(text);
     expect(s.cwd).toBe("/Users/sanitized/proj");
@@ -766,21 +782,19 @@ describe("getSessionResponseJson cache", () => {
     await writeFile(path, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
 
     const a = JSON.parse(await getSessionResponseJson("claude", path));
-    expect(a.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text)).toEqual(["first"]);
+    expect(
+      a.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text),
+    ).toEqual(["first"]);
 
     // Append one line — the tail parser should pick up just the new line.
-    await appendFile(
-      path,
-      claudeLine("second", "2026-05-12T01:00:01Z") + "\n",
-    );
+    await appendFile(path, claudeLine("second", "2026-05-12T01:00:01Z") + "\n");
     const b = JSON.parse(await getSessionResponseJson("claude", path));
-    expect(b.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text)).toEqual(["first", "second"]);
+    expect(
+      b.messages.map((m: { blocks: { text: string }[] }) => m.blocks[0]?.text),
+    ).toEqual(["first", "second"]);
 
     // Append a third — same path again.
-    await appendFile(
-      path,
-      claudeLine("third", "2026-05-12T01:00:02Z") + "\n",
-    );
+    await appendFile(path, claudeLine("third", "2026-05-12T01:00:02Z") + "\n");
     const c = JSON.parse(await getSessionResponseJson("claude", path));
     expect(c.messages).toHaveLength(3);
     expect(c.messages[2]?.blocks[0]?.text).toBe("third");
@@ -798,7 +812,12 @@ describe("getSessionResponseJson cache", () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-head-"));
     const path = join(dir, "session.jsonl");
 
-    function lineWithCwd(cwd: string, sessionId: string, content: string, ts: string) {
+    function lineWithCwd(
+      cwd: string,
+      sessionId: string,
+      content: string,
+      ts: string,
+    ) {
       return JSON.stringify({
         type: "user",
         cwd,
@@ -810,7 +829,12 @@ describe("getSessionResponseJson cache", () => {
     // Head: the authoritative cwd + sessionId.
     await writeFile(
       path,
-      lineWithCwd("/origin", "head-session-id", "first", "2026-05-12T01:00:00Z") + "\n",
+      lineWithCwd(
+        "/origin",
+        "head-session-id",
+        "first",
+        "2026-05-12T01:00:00Z",
+      ) + "\n",
     );
     // Force the tail-read window to exclude the head by passing a tiny
     // tailBytes; the head meta read uses its own (larger) window.
@@ -818,7 +842,12 @@ describe("getSessionResponseJson cache", () => {
     // cwd. With the fix, head wins.
     await appendFile(
       path,
-      lineWithCwd("/origin/sub", "tail-session-id", "later", "2026-05-12T01:00:01Z") + "\n",
+      lineWithCwd(
+        "/origin/sub",
+        "tail-session-id",
+        "later",
+        "2026-05-12T01:00:01Z",
+      ) + "\n",
     );
     const result = await tailParseSessionFile("claude", path, 200, 64 * 1024);
     expect(result.cwd).toBe("/origin");
@@ -872,8 +901,10 @@ describe("getSessionResponseJson cache", () => {
     // Append a few more — cache stays bounded.
     await appendFile(
       path,
-      claudeLine("after-1", "2026-05-12T01:00:01Z") + "\n" +
-        claudeLine("after-2", "2026-05-12T01:00:02Z") + "\n",
+      claudeLine("after-1", "2026-05-12T01:00:01Z") +
+        "\n" +
+        claudeLine("after-2", "2026-05-12T01:00:02Z") +
+        "\n",
     );
     const b = JSON.parse(await getSessionResponseJson("claude", path));
     expect(b.messages).toHaveLength(100);
@@ -952,8 +983,10 @@ describe("getSessionResponseJson cache", () => {
     const path = join(dir, "session.jsonl");
     await writeFile(
       path,
-      claudeLine("a", "2026-05-12T01:00:00Z") + "\n" +
-        claudeLine("b", "2026-05-12T01:00:01Z") + "\n",
+      claudeLine("a", "2026-05-12T01:00:00Z") +
+        "\n" +
+        claudeLine("b", "2026-05-12T01:00:01Z") +
+        "\n",
     );
     const before = JSON.parse(await getSessionResponseJson("claude", path));
     expect(before.messages).toHaveLength(2);

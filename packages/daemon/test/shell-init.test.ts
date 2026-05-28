@@ -47,48 +47,54 @@ describe("isZshCmd", () => {
   // detection MUST see through the wrapper or every later fix is
   // building on sand.
   test("matches zsh wrapped through `bash -c 'exec -a …'` (renameArgv)", () => {
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-new-shell' '/bin/zsh' '-l'",
-    ])).toBe(true);
+    expect(
+      isZshCmd([
+        "bash",
+        "-c",
+        "exec -a 'supergit-tui-new-shell' '/bin/zsh' '-l'",
+      ]),
+    ).toBe(true);
     // Also when the inner shell is referred to by bare name with no
     // path (rare but valid — when PATH already covers it).
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' zsh -l",
-    ])).toBe(true);
+    expect(isZshCmd(["bash", "-c", "exec -a 'supergit-tui-x' zsh -l"])).toBe(
+      true,
+    );
     // Versioned binary inside the wrapper.
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' /usr/local/bin/zsh-5.9 -l",
-    ])).toBe(true);
+    expect(
+      isZshCmd([
+        "bash",
+        "-c",
+        "exec -a 'supergit-tui-x' /usr/local/bin/zsh-5.9 -l",
+      ]),
+    ).toBe(true);
   });
 
   test("does NOT mistake bash-wrapped non-zsh shells for zsh", () => {
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' '/bin/bash' '-l'",
-    ])).toBe(false);
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' '/opt/homebrew/bin/fish'",
-    ])).toBe(false);
+    expect(
+      isZshCmd(["bash", "-c", "exec -a 'supergit-tui-x' '/bin/bash' '-l'"]),
+    ).toBe(false);
+    expect(
+      isZshCmd([
+        "bash",
+        "-c",
+        "exec -a 'supergit-tui-x' '/opt/homebrew/bin/fish'",
+      ]),
+    ).toBe(false);
     // Bare words that LOOK like zsh-derivatives but aren't.
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' '/usr/local/bin/mkzsh' '-l'",
-    ])).toBe(false);
-    expect(isZshCmd([
-      "bash",
-      "-c",
-      "exec -a 'supergit-tui-x' '/usr/local/bin/zshare'",
-    ])).toBe(false);
+    expect(
+      isZshCmd([
+        "bash",
+        "-c",
+        "exec -a 'supergit-tui-x' '/usr/local/bin/mkzsh' '-l'",
+      ]),
+    ).toBe(false);
+    expect(
+      isZshCmd([
+        "bash",
+        "-c",
+        "exec -a 'supergit-tui-x' '/usr/local/bin/zshare'",
+      ]),
+    ).toBe(false);
   });
 
   test("does NOT match other shells", () => {
@@ -128,7 +134,9 @@ describe("ZSH_HISTORY_SNIPPET", () => {
     expect(ZSH_HISTORY_SNIPPET).toContain("unsetopt SHARE_HISTORY");
     // Belt-and-braces: also assert we never SET it earlier in the snippet.
     // (?<![a-z]) avoids matching `unsetopt SHARE_HISTORY` further down.
-    expect(ZSH_HISTORY_SNIPPET).not.toMatch(/(?<![a-z])setopt[^\n]*SHARE_HISTORY/);
+    expect(ZSH_HISTORY_SNIPPET).not.toMatch(
+      /(?<![a-z])setopt[^\n]*SHARE_HISTORY/,
+    );
   });
 
   test("enables INC_APPEND_HISTORY + EXTENDED_HISTORY so every Enter flushes", () => {
@@ -172,7 +180,7 @@ describe("makeZshZdotdir / cleanupZdotdir", () => {
     const dir = await makeZshZdotdir();
     try {
       const rc = await readFile(join(dir, ".zshrc"), "utf-8");
-      const sourceIdx = rc.indexOf("source \"$HOME/.zshrc\"");
+      const sourceIdx = rc.indexOf('source "$HOME/.zshrc"');
       const setoptIdx = rc.indexOf("setopt INC_APPEND_HISTORY");
       expect(sourceIdx).toBeGreaterThan(-1);
       expect(setoptIdx).toBeGreaterThan(-1);

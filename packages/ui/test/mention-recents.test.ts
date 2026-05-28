@@ -2,7 +2,10 @@ import { test, expect, describe } from "bun:test";
 import { dedupAndCap, CAP } from "../src/mention-recents";
 import type { PickItem } from "../src/mention-types";
 
-function mk(value: string, providerId: PickItem["providerId"] = "sessions"): PickItem {
+function mk(
+  value: string,
+  providerId: PickItem["providerId"] = "sessions",
+): PickItem {
   return {
     providerId,
     id: value,

@@ -151,9 +151,7 @@ describe("pushError coalescing", () => {
     // Head id stays stable so subscribers keyed by id don't churn.
     expect(list[0]?.id).toBe("burst-0");
     // Timestamp tracks the latest occurrence.
-    expect(list[0]?.timestamp).toBe(
-      new Date(baseTs + 29 * 100).toISOString(),
-    );
+    expect(list[0]?.timestamp).toBe(new Date(baseTs + 29 * 100).toISOString());
   });
 
   test("does NOT merge entries with different routes", () => {
@@ -224,7 +222,8 @@ describe("installFetchTracking — expected-client-error filter", () => {
   });
 
   function stubResponse(status: number, statusText: string) {
-    globalThis.fetch = (async () => new Response("", { status, statusText })) as typeof fetch;
+    globalThis.fetch = (async () =>
+      new Response("", { status, statusText })) as typeof fetch;
     installFetchTracking();
   }
 

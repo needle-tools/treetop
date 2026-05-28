@@ -51,7 +51,10 @@
        a code change here. -->
   <span
     class="agent-icon-dot agent-{agent}"
-    style="width: {Math.max(6, Math.round(size * 0.6))}px; height: {Math.max(6, Math.round(size * 0.6))}px;"
+    style="width: {Math.max(6, Math.round(size * 0.6))}px; height: {Math.max(
+      6,
+      Math.round(size * 0.6),
+    )}px;"
     aria-hidden="true"
   ></span>
 {/if}

@@ -80,7 +80,7 @@ export function extractFirstJsonObject(raw: string): {
  * If corrupted and repairable, backs up the original and writes the fix.
  */
 export async function repairClaudeJson(
-  repoPath: string
+  repoPath: string,
 ): Promise<RepairResult | null> {
   const filePath = join(repoPath, ".claude.json");
 
@@ -125,7 +125,7 @@ export async function repairClaudeJson(
  * Returns the list of repairs performed.
  */
 export async function repairAllClaudeJson(
-  repoPaths: string[]
+  repoPaths: string[],
 ): Promise<RepairResult[]> {
   const results: RepairResult[] = [];
   for (const repoPath of repoPaths) {
@@ -135,7 +135,7 @@ export async function repairAllClaudeJson(
     } catch (err) {
       console.error(
         `supergit: failed to check .claude.json in ${repoPath}:`,
-        err
+        err,
       );
     }
   }

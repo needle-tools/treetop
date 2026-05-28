@@ -1,5 +1,12 @@
 import { join, basename, normalize } from "node:path";
-import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  access,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { $ } from "bun";
 
@@ -25,11 +32,20 @@ export type CustomLink =
   | { id: string; kind?: "url"; url: string; name?: string }
   | { id: string; kind: "file"; path: string; name?: string }
   | { id: string; kind: "folder"; path: string; name?: string }
-  | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
+  | {
+      id: string;
+      kind: "command";
+      cmd: string;
+      cwd?: string;
+      runMode: CommandRunMode;
+      name?: string;
+    };
 
 /** Resolve a CustomLink's effective kind, treating a missing field as
  *  "url" for backward-compat with pre-file-link repos.json entries. */
-export function customLinkKind(link: CustomLink): "url" | "file" | "folder" | "command" {
+export function customLinkKind(
+  link: CustomLink,
+): "url" | "file" | "folder" | "command" {
   if (link.kind === "command") return "command";
   if (link.kind === "file") return "file";
   if (link.kind === "folder") return "folder";
@@ -58,26 +74,42 @@ export type CustomLinkInput =
   | { kind: "url"; url: string; name?: string }
   | { kind: "file"; path: string; name?: string }
   | { kind: "folder"; path: string; name?: string }
-  | { kind: "command"; cmd: string; cwd?: string; runMode?: CommandRunMode; name?: string };
+  | {
+      kind: "command";
+      cmd: string;
+      cwd?: string;
+      runMode?: CommandRunMode;
+      name?: string;
+    };
 
-const VALID_RUN_MODES: ReadonlySet<string> = new Set(["internal", "external", "shell"]);
+const VALID_RUN_MODES: ReadonlySet<string> = new Set([
+  "internal",
+  "external",
+  "shell",
+]);
 
-function buildCustomLink(
-  id: string,
-  input: CustomLinkInput,
-): CustomLink {
+function buildCustomLink(id: string, input: CustomLinkInput): CustomLink {
   if ("kind" in input && input.kind === "command") {
     const rawCmd = typeof input.cmd === "string" ? input.cmd.trim() : "";
     if (rawCmd.length === 0) throw new Error("cmd must be a non-empty string");
     const rawCwd = typeof input.cwd === "string" ? input.cwd.trim() : "";
-    if (rawCwd.length > 0 && !rawCwd.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(rawCwd)) {
+    if (
+      rawCwd.length > 0 &&
+      !rawCwd.startsWith("/") &&
+      !/^[a-zA-Z]:[\\/]/.test(rawCwd)
+    ) {
       throw new Error("cwd must be absolute when provided");
     }
     const mode: CommandRunMode =
       typeof input.runMode === "string" && VALID_RUN_MODES.has(input.runMode)
         ? input.runMode
         : "internal";
-    const link: CustomLink = { id, kind: "command", cmd: rawCmd, runMode: mode };
+    const link: CustomLink = {
+      id,
+      kind: "command",
+      cmd: rawCmd,
+      runMode: mode,
+    };
     if (rawCwd.length > 0) link.cwd = rawCwd;
     if (typeof input.name === "string") {
       const trimmed = input.name.trim();
@@ -224,7 +256,11 @@ export class Workspace {
         `failed to parse session-titles.json: ${(err as Error).message}`,
       );
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       throw new Error("session-titles.json must be a JSON object");
     }
     const out: Record<string, string> = {};
@@ -241,7 +277,9 @@ export class Workspace {
    *  on a single volume on every supported OS, so a power loss or
    *  daemon crash mid-write can leave either the old or new file in
    *  place but never a half-written / empty one. */
-  private async writeSessionTitles(titles: Record<string, string>): Promise<void> {
+  private async writeSessionTitles(
+    titles: Record<string, string>,
+  ): Promise<void> {
     const dst = join(this.path, SESSION_TITLES_FILE);
     const tmp = `${dst}.tmp`;
     await writeFile(tmp, JSON.stringify(titles, null, 2));
@@ -284,7 +322,10 @@ export class Workspace {
    *  No-op if `oldSource` has no title. Preserves both entries if `newSource`
    *  already has its own title (the more-explicit later edit wins; we never
    *  silently overwrite). */
-  async migrateSessionTitle(oldSource: string, newSource: string): Promise<void> {
+  async migrateSessionTitle(
+    oldSource: string,
+    newSource: string,
+  ): Promise<void> {
     if (typeof oldSource !== "string" || oldSource.length === 0) {
       throw new Error("oldSource must be a non-empty string");
     }
@@ -454,10 +495,7 @@ export class Workspace {
    * for a web link or `{ path: "/abs/path" }` for a file link. URLs
    * are validated as http(s); file paths must be absolute.
    */
-  async addCustomLink(
-    id: string,
-    input: CustomLinkInput,
-  ): Promise<CustomLink> {
+  async addCustomLink(id: string, input: CustomLinkInput): Promise<CustomLink> {
     const repos = await this.listRepos();
     const idx = repos.findIndex((r) => r.id === id);
     if (idx < 0) throw new Error(`Repo not found: ${id}`);
@@ -503,18 +541,41 @@ export class Workspace {
 
     let merged: CustomLinkInput;
 
-    if (input.kind === "command" || (input.cmd !== undefined && currentKind === "command")) {
-      const rawCmd = input.cmd ?? (currentKind === "command" ? (current as { cmd: string }).cmd : "");
-      const rawCwd = input.cwd ?? (currentKind === "command" ? (current as { cwd?: string }).cwd : undefined);
-      const rawMode = input.runMode ?? (currentKind === "command" ? (current as { runMode: CommandRunMode }).runMode : "internal");
+    if (
+      input.kind === "command" ||
+      (input.cmd !== undefined && currentKind === "command")
+    ) {
+      const rawCmd =
+        input.cmd ??
+        (currentKind === "command" ? (current as { cmd: string }).cmd : "");
+      const rawCwd =
+        input.cwd ??
+        (currentKind === "command"
+          ? (current as { cwd?: string }).cwd
+          : undefined);
+      const rawMode =
+        input.runMode ??
+        (currentKind === "command"
+          ? (current as { runMode: CommandRunMode }).runMode
+          : "internal");
       merged = { kind: "command", cmd: rawCmd, cwd: rawCwd, runMode: rawMode };
     } else if (input.url !== undefined && input.path !== undefined) {
       throw new Error("pass either url or path, not both");
     } else if (input.url !== undefined) {
       merged = { kind: "url", url: input.url };
     } else if (input.path !== undefined) {
-      const explicit = input.kind === "folder" ? "folder" : input.kind === "file" ? "file" : null;
-      const inherited = currentKind === "folder" ? "folder" : currentKind === "file" ? "file" : "file";
+      const explicit =
+        input.kind === "folder"
+          ? "folder"
+          : input.kind === "file"
+            ? "file"
+            : null;
+      const inherited =
+        currentKind === "folder"
+          ? "folder"
+          : currentKind === "file"
+            ? "file"
+            : "file";
       const newKind = explicit ?? inherited;
       merged = { kind: newKind, path: input.path };
     } else if (currentKind === "command") {
@@ -646,7 +707,12 @@ export class Workspace {
     try {
       const raw = await readFile(join(this.path, PREFS_FILE), "utf-8");
       const parsed = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      )
+        return {};
       const out: Record<string, string> = {};
       for (const [k, v] of Object.entries(parsed)) {
         if (typeof v === "string") out[k] = v;
@@ -657,13 +723,18 @@ export class Workspace {
     }
   }
 
-  async patchPrefs(patch: Record<string, string | null>): Promise<Record<string, string>> {
+  async patchPrefs(
+    patch: Record<string, string | null>,
+  ): Promise<Record<string, string>> {
     const current = await this.getPrefs();
     for (const [k, v] of Object.entries(patch)) {
       if (v === null) delete current[k];
       else current[k] = v;
     }
-    await writeFile(join(this.path, PREFS_FILE), JSON.stringify(current, null, 2));
+    await writeFile(
+      join(this.path, PREFS_FILE),
+      JSON.stringify(current, null, 2),
+    );
     return current;
   }
 }

@@ -49,7 +49,9 @@ class DaemonKVStore implements KVStore {
     if (this.cache[key] === value) return;
     this.cache[key] = value;
     this.pendingPatch[key] = value;
-    try { window.localStorage.setItem(key, value); } catch {}
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {}
     this.scheduleFlush();
   }
 
@@ -82,7 +84,9 @@ export async function initDaemonKV(): Promise<void> {
   if (daemonHasData) {
     // Seed localStorage so the stores' initial load() sees daemon data.
     for (const [k, v] of Object.entries(prefs)) {
-      try { window.localStorage.setItem(k, v as string); } catch {}
+      try {
+        window.localStorage.setItem(k, v as string);
+      } catch {}
     }
   } else {
     // Daemon is empty — migrate localStorage to daemon.
@@ -107,5 +111,10 @@ export async function initDaemonKV(): Promise<void> {
 }
 
 export function getDaemonKV(): KVStore {
-  return instance ?? (typeof window !== "undefined" ? window.localStorage : { getItem: () => null, setItem: () => {} });
+  return (
+    instance ??
+    (typeof window !== "undefined"
+      ? window.localStorage
+      : { getItem: () => null, setItem: () => {} })
+  );
 }

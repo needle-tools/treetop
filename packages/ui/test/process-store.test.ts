@@ -11,7 +11,14 @@
  * The module holds singleton state, so each test resets it first.
  */
 
-import { test, expect, describe, beforeEach, afterEach, setSystemTime } from "bun:test";
+import {
+  test,
+  expect,
+  describe,
+  beforeEach,
+  afterEach,
+  setSystemTime,
+} from "bun:test";
 import { get } from "svelte/store";
 import {
   recordSamples,
@@ -23,7 +30,9 @@ import {
   type ProcEntry,
 } from "../src/process-store";
 
-function proc(over: Partial<ProcEntry> & { id: string; pid: number }): ProcEntry {
+function proc(
+  over: Partial<ProcEntry> & { id: string; pid: number },
+): ProcEntry {
   return {
     cmd: ["x"],
     cwd: "/",
@@ -73,10 +82,7 @@ describe("recordSamples / getHistory", () => {
   test("drops the history of a process that disappears from the sample", () => {
     // The leak guard: once a TUI exits it's no longer in the sample, so
     // its buffer must be deleted rather than accumulating forever.
-    recordSamples([
-      proc({ id: "p1", pid: 1 }),
-      proc({ id: "p2", pid: 2 }),
-    ]);
+    recordSamples([proc({ id: "p1", pid: 1 }), proc({ id: "p2", pid: 2 })]);
     recordSamples([proc({ id: "p1", pid: 1 })]); // p2 gone
     // p1 keeps accumulating (two samples); p2's buffer is reclaimed.
     expect(getHistory("p1").length).toBe(2);

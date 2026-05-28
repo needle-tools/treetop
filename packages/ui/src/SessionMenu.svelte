@@ -97,7 +97,10 @@
   let submenuTimer: ReturnType<typeof setTimeout> | null = null;
 
   function showSubmenu(index: number) {
-    if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null; }
+    if (submenuTimer) {
+      clearTimeout(submenuTimer);
+      submenuTimer = null;
+    }
     submenuIndex = index;
   }
   function hideSubmenuDelayed() {
@@ -108,7 +111,10 @@
     }, 200);
   }
   function cancelSubmenuHide() {
-    if (submenuTimer) { clearTimeout(submenuTimer); submenuTimer = null; }
+    if (submenuTimer) {
+      clearTimeout(submenuTimer);
+      submenuTimer = null;
+    }
   }
 
   function toggle() {
@@ -121,7 +127,12 @@
     submenuIndex = null;
     const rect =
       triggerEl?.getBoundingClientRect() ??
-      new DOMRect(window.innerWidth / 2 - 10, window.innerHeight / 2 - 10, 20, 20);
+      new DOMRect(
+        window.innerWidth / 2 - 10,
+        window.innerHeight / 2 - 10,
+        20,
+        20,
+      );
     child.onSelect(rect);
   }
 
@@ -132,7 +143,12 @@
       if (!item.keepOpen) open = false;
       const rect =
         triggerEl?.getBoundingClientRect() ??
-        new DOMRect(window.innerWidth / 2 - 10, window.innerHeight / 2 - 10, 20, 20);
+        new DOMRect(
+          window.innerWidth / 2 - 10,
+          window.innerHeight / 2 - 10,
+          20,
+          20,
+        );
       item.onSelect(rect);
       return;
     }
@@ -171,8 +187,8 @@
     aria-haspopup="menu"
     aria-expanded={open}
     aria-label={triggerLabel}
-    title={triggerLabel}
-  >☰</button>
+    title={triggerLabel}>☰</button
+  >
   {#if open}
     <Popover variant="actions" extraClass="session-menu-popover">
       <ul class="menu-list">
@@ -180,8 +196,12 @@
           {@const isCopied = copiedIndex === i}
           <li
             class:has-submenu={item.kind === "submenu"}
-            on:mouseenter={() => item.kind === "submenu" && !item.disabled ? showSubmenu(i) : undefined}
-            on:mouseleave={() => item.kind === "submenu" ? hideSubmenuDelayed() : undefined}
+            on:mouseenter={() =>
+              item.kind === "submenu" && !item.disabled
+                ? showSubmenu(i)
+                : undefined}
+            on:mouseleave={() =>
+              item.kind === "submenu" ? hideSubmenuDelayed() : undefined}
           >
             <button
               type="button"
@@ -199,7 +219,9 @@
                   <span
                     class="icon icon-svg"
                     class:icon-filled={item.iconFilled}
-                    style={item.iconColor ? `color:${item.iconColor}` : undefined}
+                    style={item.iconColor
+                      ? `color:${item.iconColor}`
+                      : undefined}
                     aria-hidden="true"
                   >
                     <svg viewBox="0 0 24 24" width="14" height="14">
@@ -219,7 +241,9 @@
                 <span class="label">{item.label}</span>
                 {#if item.kind === "action" && item.selected}
                   <span class="trailing-check" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" width="13" height="13"><path d="M20 6 9 17l-5-5" /></svg>
+                    <svg viewBox="0 0 24 24" width="13" height="13"
+                      ><path d="M20 6 9 17l-5-5" /></svg
+                    >
                   </span>
                 {/if}
                 {#if item.kind === "submenu"}
@@ -246,7 +270,9 @@
                         <span
                           class="icon icon-svg"
                           class:icon-filled={child.iconFilled}
-                          style={child.iconColor ? `color:${child.iconColor}` : undefined}
+                          style={child.iconColor
+                            ? `color:${child.iconColor}`
+                            : undefined}
                           aria-hidden="true"
                         >
                           <svg viewBox="0 0 24 24" width="14" height="14">
@@ -259,14 +285,17 @@
                           </svg>
                         </span>
                       {:else if child.icon}
-                        <span class="icon" aria-hidden="true">{child.icon}</span>
+                        <span class="icon" aria-hidden="true">{child.icon}</span
+                        >
                       {:else}
                         <span class="icon icon-empty" aria-hidden="true"></span>
                       {/if}
                       <span class="label">{child.label}</span>
                       {#if child.kind === "action" && child.selected}
                         <span class="trailing-check" aria-hidden="true">
-                          <svg viewBox="0 0 24 24" width="13" height="13"><path d="M20 6 9 17l-5-5" /></svg>
+                          <svg viewBox="0 0 24 24" width="13" height="13"
+                            ><path d="M20 6 9 17l-5-5" /></svg
+                          >
                         </span>
                       {/if}
                     </button>

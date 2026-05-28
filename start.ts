@@ -19,7 +19,9 @@ async function stopExisting(): Promise<void> {
     });
     if (res.ok) {
       const body = (await res.json().catch(() => ({}))) as { pid?: number };
-      console.log(`supergit: asked existing daemon (pid ${body.pid ?? "?"}) to shut down`);
+      console.log(
+        `supergit: asked existing daemon (pid ${body.pid ?? "?"}) to shut down`,
+      );
     }
   } catch {
     // no daemon, or it didn't answer — that's fine
@@ -54,21 +56,27 @@ async function stopExisting(): Promise<void> {
     }
     pids = [...seen];
     if (pids.length > 0) {
-      console.log(`supergit: port ${port} still held by ${pids.join(", ")} — killing`);
+      console.log(
+        `supergit: port ${port} still held by ${pids.join(", ")} — killing`,
+      );
       for (const pid of pids) {
         await $`taskkill /F /PID ${pid}`.quiet().nothrow();
       }
       await Bun.sleep(300);
     }
   } else {
-    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`.quiet().nothrow();
+    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`
+      .quiet()
+      .nothrow();
     pids = result.stdout
       .toString()
       .trim()
       .split("\n")
       .filter((p) => p && p !== self && p !== parent);
     if (pids.length > 0) {
-      console.log(`supergit: port ${port} still held by ${pids.join(", ")} — killing`);
+      console.log(
+        `supergit: port ${port} still held by ${pids.join(", ")} — killing`,
+      );
       for (const pid of pids) {
         await $`kill -9 ${pid}`.quiet().nothrow();
       }
@@ -82,19 +90,28 @@ await stopExisting();
 console.log(`supergit prod: API     → ${url}/api/`);
 console.log(`supergit prod: UI      → ${url}`);
 
-const server = Bun.spawn([process.execPath, "run", "packages/daemon/src/server.ts"], {
-  stdout: "inherit",
-  stderr: "inherit",
-  env: {
-    ...process.env,
-    SUPERGIT_PORT: port,
-    SUPERGIT_UI_DIR: uiDir,
-    SUPERGIT_PROCESS_TITLE: "supergit prod",
+const server = Bun.spawn(
+  [process.execPath, "run", "packages/daemon/src/server.ts"],
+  {
+    stdout: "inherit",
+    stderr: "inherit",
+    env: {
+      ...process.env,
+      SUPERGIT_PORT: port,
+      SUPERGIT_UI_DIR: uiDir,
+      SUPERGIT_PROCESS_TITLE: "supergit prod",
+    },
   },
-});
+);
 
-process.on("SIGINT", () => { server.kill(); process.exit(0); });
-process.on("SIGTERM", () => { server.kill(); process.exit(0); });
+process.on("SIGINT", () => {
+  server.kill();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  server.kill();
+  process.exit(0);
+});
 
 await server.exited;
 process.exit(server.exitCode ?? 1);

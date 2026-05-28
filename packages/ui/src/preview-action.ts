@@ -251,9 +251,7 @@ function latestActionHostIdx(all: PreviewActionMessage[]): number {
  *      neither text nor a tool call yet — guarantees the user
  *      always sees at least one row for the latest AI message,
  *      even mid-stream. */
-export function buildPreviewItems(
-  all: PreviewActionMessage[],
-): PreviewItem[] {
+export function buildPreviewItems(all: PreviewActionMessage[]): PreviewItem[] {
   const out: PreviewItem[] = [];
   if (!Array.isArray(all) || all.length === 0) return out;
 
@@ -398,11 +396,7 @@ export function buildPreviewItems(
     // tool calls yet (mid-stream first frame). Without this an
     // in-flight reply could render as nothing and the panel would
     // look like it's missing the freshest message.
-    if (
-      it.idx === latestAssistantIdx &&
-      !emittedTextBubble &&
-      !emittedAction
-    ) {
+    if (it.idx === latestAssistantIdx && !emittedTextBubble && !emittedAction) {
       out.push({
         kind: "msg",
         role: "assistant",
@@ -425,7 +419,9 @@ export async function fetchPreviewItems(
   source: string,
 ): Promise<{ items: PreviewItem[]; latestTs?: string } | null> {
   try {
-    const res = await fetch(`/api/session?source=${encodeURIComponent(source)}`);
+    const res = await fetch(
+      `/api/session?source=${encodeURIComponent(source)}`,
+    );
     if (!res.ok) return null;
     const data = (await res.json()) as {
       messages?: PreviewActionMessage[];

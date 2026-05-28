@@ -71,20 +71,23 @@ const AWAITING_INPUT_PATTERNS: RegExp[] = [
   /\[y\/N\]\s*$/m,
 ];
 
-const CONFIG_ERROR_RE = /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/;
+const CONFIG_ERROR_RE =
+  /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/;
 
 /** Strip common ANSI/terminal escape sequences from a chunk so the
  *  prompt-pattern regexes can match the plain text. We don't try to
  *  be exhaustive — just enough to neutralize colour codes and cursor
  *  positioning so the words we look for line up. */
 function stripAnsi(text: string): string {
-  return text
-    // CSI sequences (most colours, cursor movement)
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    // OSC sequences (title, hyperlinks, etc.)
-    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
-    // bare ESC
-    .replace(/\x1b/g, "");
+  return (
+    text
+      // CSI sequences (most colours, cursor movement)
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      // OSC sequences (title, hyperlinks, etc.)
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+      // bare ESC
+      .replace(/\x1b/g, "")
+  );
 }
 
 function getTailText(buffer: Uint8Array[], bufferBytes: number): string {
@@ -96,7 +99,10 @@ function getTailText(buffer: Uint8Array[], bufferBytes: number): string {
   for (let i = buffer.length - 1; i >= 0 && remaining > 0; i--) {
     const chunk = buffer[i]!;
     const take = Math.min(chunk.byteLength, remaining);
-    tail.set(chunk.subarray(chunk.byteLength - take), tailBytes - offset - take);
+    tail.set(
+      chunk.subarray(chunk.byteLength - take),
+      tailBytes - offset - take,
+    );
     offset += take;
     remaining -= take;
   }
@@ -108,7 +114,10 @@ function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
   return text.length > 0 && AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
 }
 
-export function detectConfigError(buffer: Uint8Array[], bufferBytes: number): { file: string } | null {
+export function detectConfigError(
+  buffer: Uint8Array[],
+  bufferBytes: number,
+): { file: string } | null {
   const text = getTailText(buffer, bufferBytes);
   const m = CONFIG_ERROR_RE.exec(text);
   return m ? { file: m[1]!.trim() } : null;
@@ -153,9 +162,10 @@ function detectAgent(cmd: string[]): string | undefined {
  *  cost of doing this every time the backend boots is negligible. */
 function fixSpawnHelperBit() {
   if (process.platform !== "darwin" && process.platform !== "linux") return;
-  const platform = process.platform === "darwin"
-    ? `darwin-${process.arch}`
-    : `linux-${process.arch}`;
+  const platform =
+    process.platform === "darwin"
+      ? `darwin-${process.arch}`
+      : `linux-${process.arch}`;
   const candidates = [
     // Compiled binary: prebuilds live next to the executable.
     pathResolve(
@@ -180,7 +190,14 @@ function fixSpawnHelperBit() {
   for (const path of candidates) {
     if (!existsSync(path)) continue;
     try {
-      chmodSync(path, fsConstants.S_IRWXU | fsConstants.S_IRGRP | fsConstants.S_IXGRP | fsConstants.S_IROTH | fsConstants.S_IXOTH);
+      chmodSync(
+        path,
+        fsConstants.S_IRWXU |
+          fsConstants.S_IRGRP |
+          fsConstants.S_IXGRP |
+          fsConstants.S_IROTH |
+          fsConstants.S_IXOTH,
+      );
     } catch {
       // best effort
     }
@@ -196,7 +213,8 @@ export class NodePtyBackend implements PtyBackend {
 
   private helperCmd(): string[] {
     // Prefer the Go binary (no Node dependency).
-    const goBinary = process.platform === "win32" ? "pty-helper.exe" : "pty-helper";
+    const goBinary =
+      process.platform === "win32" ? "pty-helper.exe" : "pty-helper";
     const goCandidates = [
       pathResolve(pathDirname(process.execPath), goBinary),
       pathResolve(import.meta.dir, "helper-go", goBinary),
@@ -257,7 +275,8 @@ export class NodePtyBackend implements PtyBackend {
         }
         this.helper = null;
         this.helperReady = null;
-        if (!acked) reject(new Error(`helper exited before ready (code ${code})`));
+        if (!acked)
+          reject(new Error(`helper exited before ready (code ${code})`));
       });
     });
     return this.helperReady;
@@ -288,7 +307,10 @@ export class NodePtyBackend implements PtyBackend {
     }
   }
 
-  private handleEvent(evt: { ev: string; [k: string]: unknown }, onReady: () => void) {
+  private handleEvent(
+    evt: { ev: string; [k: string]: unknown },
+    onReady: () => void,
+  ) {
     switch (evt.ev) {
       case "ready":
         onReady();
@@ -309,7 +331,9 @@ export class NodePtyBackend implements PtyBackend {
       case "data": {
         const t = this.terms.get(evt.id as string);
         if (!t) return;
-        const buf = Uint8Array.from(Buffer.from(evt.dataB64 as string ?? "", "base64"));
+        const buf = Uint8Array.from(
+          Buffer.from((evt.dataB64 as string) ?? "", "base64"),
+        );
         t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
@@ -323,7 +347,11 @@ export class NodePtyBackend implements PtyBackend {
         if (nextAwaiting !== t.awaitingInput || configFlipped) {
           t.awaitingInput = nextAwaiting;
           t.configError = nextConfigErr;
-          for (const s of t.subs) s.onState?.({ awaitingInput: nextAwaiting, configError: nextConfigErr });
+          for (const s of t.subs)
+            s.onState?.({
+              awaitingInput: nextAwaiting,
+              configError: nextConfigErr,
+            });
         }
         return;
       }
@@ -333,7 +361,8 @@ export class NodePtyBackend implements PtyBackend {
         t.exitedAt = new Date().toISOString();
         t.exitCode = (evt.code as number) ?? 0;
         t.exitSignal = evt.signal as string | undefined;
-        for (const s of t.subs) s.onExit({ code: t.exitCode!, signal: t.exitSignal });
+        for (const s of t.subs)
+          s.onExit({ code: t.exitCode!, signal: t.exitSignal });
         if (t.zdotdir) {
           void cleanupZdotdir(t.zdotdir);
           t.zdotdir = undefined;
@@ -370,7 +399,9 @@ export class NodePtyBackend implements PtyBackend {
   }
 
   private send(obj: Record<string, unknown>) {
-    const stdin = this.helper?.stdin as unknown as { write: (s: string) => unknown } | undefined;
+    const stdin = this.helper?.stdin as unknown as
+      | { write: (s: string) => unknown }
+      | undefined;
     if (!stdin) throw new Error("helper not running");
     stdin.write(JSON.stringify(obj) + "\n");
   }
@@ -404,7 +435,10 @@ export class NodePtyBackend implements PtyBackend {
     // SUPERGIT_DISABLE_ZSH_HARDENING=1 bypasses our temp-ZDOTDIR wrapper
     // (sources user's rc + appends INC_APPEND_HISTORY/SHARE_HISTORY).
     // Toggle for A/B-ing whether our injection is to blame for input bugs.
-    if (isZshCmd(opts.cmd) && process.env.SUPERGIT_DISABLE_ZSH_HARDENING !== "1") {
+    if (
+      isZshCmd(opts.cmd) &&
+      process.env.SUPERGIT_DISABLE_ZSH_HARDENING !== "1"
+    ) {
       const zdotdir = await makeZshZdotdir(opts.historyPreload ?? []);
       t.zdotdir = zdotdir;
       env = { ...(opts.env ?? {}), ZDOTDIR: zdotdir };
@@ -455,12 +489,17 @@ export class NodePtyBackend implements PtyBackend {
 
   private handleFor(t: InternalTerm): TerminalHandle {
     return {
-      get id() { return t.id; },
-      get pid() { return t.pid; },
+      get id() {
+        return t.id;
+      },
+      get pid() {
+        return t.pid;
+      },
       write: (data) => {
-        const buf = typeof data === "string"
-          ? Buffer.from(data, "utf-8")
-          : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+        const buf =
+          typeof data === "string"
+            ? Buffer.from(data, "utf-8")
+            : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
         this.send({ op: "write", id: t.id, dataB64: buf.toString("base64") });
         // Any keystroke clears the awaiting-input flag eagerly. The
         // detector will re-arm it on the next matching prompt; this
@@ -469,7 +508,8 @@ export class NodePtyBackend implements PtyBackend {
         if (t.awaitingInput || t.configError) {
           t.awaitingInput = false;
           t.configError = null;
-          for (const s of t.subs) s.onState?.({ awaitingInput: false, configError: null });
+          for (const s of t.subs)
+            s.onState?.({ awaitingInput: false, configError: null });
         }
       },
       resize: (size) => {
@@ -496,8 +536,11 @@ export class NodePtyBackend implements PtyBackend {
         // Deliver current awaiting-input state so a freshly-attached
         // client immediately knows whether to outline the panel.
         sub.onState?.({ awaitingInput: t.awaitingInput });
-        if (t.exitedAt) sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
-        return () => { t.subs.delete(sub); };
+        if (t.exitedAt)
+          sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
+        return () => {
+          t.subs.delete(sub);
+        };
       },
       subscriberCount: () => t.subs.size,
       isAlive: () => !t.exitedAt,
@@ -550,7 +593,9 @@ export class NodePtyBackend implements PtyBackend {
 
   async shutdown() {
     if (this.helper) {
-      try { this.helper.kill(); } catch {}
+      try {
+        this.helper.kill();
+      } catch {}
     }
     this.helper = null;
     this.helperReady = null;

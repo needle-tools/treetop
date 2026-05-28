@@ -42,7 +42,9 @@ export async function killOnPort(port: number): Promise<void> {
         await fetch(`http://localhost:${port}/api/health`, {
           signal: AbortSignal.timeout(500),
         });
-        console.log(`dev: daemon on :${port} (pid ${pid}) did not stop — will force-kill`);
+        console.log(
+          `dev: daemon on :${port} (pid ${pid}) did not stop — will force-kill`,
+        );
         // Still alive — fall through to force-kill below.
       } catch {
         console.log(`dev: daemon on :${port} (pid ${pid}) stopped`);
@@ -80,14 +82,18 @@ export async function killOnPort(port: number): Promise<void> {
     // this filter we'd SIGKILL prod when restarting dev.
     const self = String(process.pid);
     const parent = String(process.ppid);
-    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`.quiet().nothrow();
+    const result = await $`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`
+      .quiet()
+      .nothrow();
     const pids = result.stdout
       .toString()
       .trim()
       .split("\n")
       .filter((p) => p && p !== self && p !== parent);
     if (pids.length === 0) return;
-    console.log(`dev: port ${port} held by pid ${pids.join(", ")} — force-killing`);
+    console.log(
+      `dev: port ${port} held by pid ${pids.join(", ")} — force-killing`,
+    );
     for (const pid of pids) {
       await $`kill -9 ${pid}`.quiet().nothrow();
     }

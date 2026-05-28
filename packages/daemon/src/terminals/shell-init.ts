@@ -73,7 +73,11 @@ export function isZshCmd(cmd: readonly string[]): boolean {
   // reference inside it. Conservative regex: a path or bare word
   // ending in zsh, optionally version-suffixed, bounded by quote
   // or whitespace so we don't match e.g. `mkzsh` or `zshare`.
-  if ((base === "bash" || base === "sh") && cmd[1] === "-c" && typeof cmd[2] === "string") {
+  if (
+    (base === "bash" || base === "sh") &&
+    cmd[1] === "-c" &&
+    typeof cmd[2] === "string"
+  ) {
     if (/(?:^|[\s'"/])zsh(?:-\d[\d.]*)?(?:['"\s]|$)/.test(cmd[2])) return true;
   }
   return false;

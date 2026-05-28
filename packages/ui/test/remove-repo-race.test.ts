@@ -30,9 +30,10 @@ describe("removeRepo race with stale in-flight NDJSON stream", () => {
     ];
 
     function onManifest(skel: FakeRepo[]) {
-      const filtered = pendingRemoval.size > 0
-        ? skel.filter((s) => !pendingRemoval.has(s.id))
-        : skel;
+      const filtered =
+        pendingRemoval.size > 0
+          ? skel.filter((s) => !pendingRemoval.has(s.id))
+          : skel;
       const existingById = new Map(repos.map((r) => [r.id, r]));
       repos = filtered.map((s) => existingById.get(s.id) ?? s);
     }
@@ -102,12 +103,17 @@ describe("removeRepo race with stale in-flight NDJSON stream", () => {
     }
 
     let resolveStaleLoad!: () => void;
-    const staleLoadDone = new Promise<void>((res) => { resolveStaleLoad = res; });
+    const staleLoadDone = new Promise<void>((res) => {
+      resolveStaleLoad = res;
+    });
 
     const load = singleFlight(async () => {
       await staleLoadDone;
       // Simulate stale NDJSON stream that includes B
-      onManifestOld([{ id: "a", name: "A" }, { id: "b", name: "B" }]);
+      onManifestOld([
+        { id: "a", name: "A" },
+        { id: "b", name: "B" },
+      ]);
       onRepoOld({ id: "a", name: "A", enriched: true });
       onRepoOld({ id: "b", name: "B", enriched: true });
     });
@@ -136,9 +142,10 @@ describe("removeRepo race with stale in-flight NDJSON stream", () => {
     ];
 
     function onManifest(skel: FakeRepo[]) {
-      const filtered = pendingRemoval.size > 0
-        ? skel.filter((s) => !pendingRemoval.has(s.id))
-        : skel;
+      const filtered =
+        pendingRemoval.size > 0
+          ? skel.filter((s) => !pendingRemoval.has(s.id))
+          : skel;
       const existingById = new Map(repos.map((r) => [r.id, r]));
       repos = filtered.map((s) => existingById.get(s.id) ?? s);
     }
@@ -154,11 +161,16 @@ describe("removeRepo race with stale in-flight NDJSON stream", () => {
     }
 
     let resolveStaleLoad!: () => void;
-    const staleLoadDone = new Promise<void>((res) => { resolveStaleLoad = res; });
+    const staleLoadDone = new Promise<void>((res) => {
+      resolveStaleLoad = res;
+    });
 
     const load = singleFlight(async () => {
       await staleLoadDone;
-      onManifest([{ id: "a", name: "A" }, { id: "b", name: "B" }]);
+      onManifest([
+        { id: "a", name: "A" },
+        { id: "b", name: "B" },
+      ]);
       onRepo({ id: "a", name: "A", enriched: true });
       onRepo({ id: "b", name: "B", enriched: true });
     });

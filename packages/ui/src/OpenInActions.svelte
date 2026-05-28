@@ -24,7 +24,14 @@
     | { id: string; kind?: "url"; url: string; name?: string }
     | { id: string; kind: "file"; path: string; name?: string }
     | { id: string; kind: "folder"; path: string; name?: string }
-    | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
+    | {
+        id: string;
+        kind: "command";
+        cmd: string;
+        cwd?: string;
+        runMode: CommandRunMode;
+        name?: string;
+      };
 
   export function customLinkKind(
     link: CustomLink,
@@ -64,7 +71,10 @@
   import { confirmDialog } from "./confirm-dialog";
   import { flip } from "svelte/animate";
   import { openUrl } from "./open-url";
-  import { filterNpmSuggestions, npmScriptsPlaceholder } from "./npm-suggestions";
+  import {
+    filterNpmSuggestions,
+    npmScriptsPlaceholder,
+  } from "./npm-suggestions";
   import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
   import { CommandUrlPickStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
@@ -76,9 +86,11 @@
   export let customLinks: CustomLink[] = [];
   export let runningCommandIds: ReadonlySet<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
-  export let editRequest:
-    | { repoId: string; linkId: string; nonce: number }
-    | null = null;
+  export let editRequest: {
+    repoId: string;
+    linkId: string;
+    nonce: number;
+  } | null = null;
   export let onCommandClick: ((link: CustomLink) => void) | null = null;
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
@@ -92,7 +104,13 @@
           | { kind: "url"; url: string; name?: string }
           | { kind: "file"; path: string; name?: string }
           | { kind: "folder"; path: string; name?: string }
-          | { kind: "command"; cmd: string; cwd?: string; runMode?: CommandRunMode; name?: string },
+          | {
+              kind: "command";
+              cmd: string;
+              cwd?: string;
+              runMode?: CommandRunMode;
+              name?: string;
+            },
       ) => Promise<boolean>)
     | null = null;
   /** Remove-link handler. Same contract — the parent owns the fetch. */
@@ -226,9 +244,14 @@
     if (!dir || dir === npmScriptsDir) return;
     npmScriptsDir = dir;
     try {
-      const res = await fetch(`/api/npm-scripts?dir=${encodeURIComponent(dir)}`);
-      if (!res.ok) { npmScripts = []; return; }
-      const body = await res.json() as { scripts?: string[] };
+      const res = await fetch(
+        `/api/npm-scripts?dir=${encodeURIComponent(dir)}`,
+      );
+      if (!res.ok) {
+        npmScripts = [];
+        return;
+      }
+      const body = (await res.json()) as { scripts?: string[] };
       npmScripts = body.scripts ?? [];
     } catch {
       npmScripts = [];
@@ -273,11 +296,16 @@
   let cmdUrlHover = false;
   let cmdUrlHoverTimer: ReturnType<typeof setTimeout> | null = null;
   function cmdUrlEnter() {
-    if (cmdUrlHoverTimer) { clearTimeout(cmdUrlHoverTimer); cmdUrlHoverTimer = null; }
+    if (cmdUrlHoverTimer) {
+      clearTimeout(cmdUrlHoverTimer);
+      cmdUrlHoverTimer = null;
+    }
     cmdUrlHover = true;
   }
   function cmdUrlLeave() {
-    cmdUrlHoverTimer = setTimeout(() => { cmdUrlHover = false; }, 300);
+    cmdUrlHoverTimer = setTimeout(() => {
+      cmdUrlHover = false;
+    }, 300);
   }
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
@@ -350,7 +378,9 @@
     editRequest.nonce !== handledEditRequestNonce &&
     editRequest.repoId === repoId
   ) {
-    const requestedLink = customLinks.find((link) => link.id === editRequest?.linkId);
+    const requestedLink = customLinks.find(
+      (link) => link.id === editRequest?.linkId,
+    );
     if (requestedLink) {
       handledEditRequestNonce = editRequest.nonce;
       openEdit(requestedLink);
@@ -432,8 +462,7 @@
   }
 
   async function pickEditPath() {
-    const want: "file" | "folder" =
-      editKind === "folder" ? "folder" : "file";
+    const want: "file" | "folder" = editKind === "folder" ? "folder" : "file";
     try {
       const picked = await runPathPicker(want);
       if (picked) {
@@ -734,7 +763,8 @@
   ): Promise<string | null> {
     const startAt = readLastPick() ?? undefined;
     const endpoint = kind === "folder" ? "/api/pick-folder" : "/api/pick-file";
-    const prompt = kind === "folder" ? "Pick a folder to link" : "Pick a file to link";
+    const prompt =
+      kind === "folder" ? "Pick a folder to link" : "Pick a file to link";
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -853,7 +883,11 @@
     // Safari refuses to fire `dragover` unless dataTransfer carries
     // at least one payload — set a noop text/plain so cross-browser
     // drop targets activate.
-    try { ev.dataTransfer.setData("text/plain", link.id); } catch { /* IE-only quirk */ }
+    try {
+      ev.dataTransfer.setData("text/plain", link.id);
+    } catch {
+      /* IE-only quirk */
+    }
     if (canDragOut(link) && link.kind === "command") {
       ev.dataTransfer.setData(
         LINK_TARGET_DRAG_MIME,
@@ -970,7 +1004,11 @@
       </button>
       <div class="custom-link-popover-mount" class:hidden={!addOpen}>
         <Popover variant="agents" extraClass="custom-link-popover">
-          <div class="custom-link-form" on:keydown={onAddPopoverKeydown} role="group">
+          <div
+            class="custom-link-form"
+            on:keydown={onAddPopoverKeydown}
+            role="group"
+          >
             <div class="custom-link-kinds" role="tablist">
               <button
                 type="button"
@@ -980,9 +1018,19 @@
                 aria-selected={newKind === "url"}
                 on:click={() => (newKind = "url")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
-                  <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5" />
-                  <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon"
+                >
+                  <path
+                    d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5"
+                  />
+                  <path
+                    d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5"
+                  />
                 </svg>
                 URL
               </button>
@@ -994,8 +1042,16 @@
                 aria-selected={newKind === "file"}
                 on:click={() => (newKind = "file")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon kind-icon-filled"
+                >
+                  <path
+                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                  />
                   <path d="M14 2v6h6" />
                 </svg>
                 File
@@ -1008,8 +1064,16 @@
                 aria-selected={newKind === "folder"}
                 on:click={() => (newKind = "folder")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
-                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon kind-icon-filled"
+                >
+                  <path
+                    d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                  />
                 </svg>
                 Folder
               </button>
@@ -1021,7 +1085,13 @@
                 aria-selected={newKind === "command"}
                 on:click={() => (newKind = "command")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon"
+                >
                   <polyline points="4 17 10 11 4 5" />
                   <line x1="12" y1="19" x2="20" y2="19" />
                 </svg>
@@ -1040,22 +1110,39 @@
                     bind:value={newCmd}
                     disabled={adding}
                     autocomplete="off"
-                    on:focus={() => { showSuggestions = true; selectedSuggestionIdx = -1; }}
-                    on:blur={() => { setTimeout(() => { showSuggestions = false; }, 150); }}
-                    on:input={() => { showSuggestions = true; selectedSuggestionIdx = -1; }}
+                    on:focus={() => {
+                      showSuggestions = true;
+                      selectedSuggestionIdx = -1;
+                    }}
+                    on:blur={() => {
+                      setTimeout(() => {
+                        showSuggestions = false;
+                      }, 150);
+                    }}
+                    on:input={() => {
+                      showSuggestions = true;
+                      selectedSuggestionIdx = -1;
+                    }}
                     on:keydown={(e) => {
                       if (showSuggestions && addSuggestions.length > 0) {
                         if (e.key === "ArrowDown") {
                           e.preventDefault();
-                          selectedSuggestionIdx = (selectedSuggestionIdx + 1) % addSuggestions.length;
+                          selectedSuggestionIdx =
+                            (selectedSuggestionIdx + 1) % addSuggestions.length;
                           return;
                         }
                         if (e.key === "ArrowUp") {
                           e.preventDefault();
-                          selectedSuggestionIdx = selectedSuggestionIdx <= 0 ? addSuggestions.length - 1 : selectedSuggestionIdx - 1;
+                          selectedSuggestionIdx =
+                            selectedSuggestionIdx <= 0
+                              ? addSuggestions.length - 1
+                              : selectedSuggestionIdx - 1;
                           return;
                         }
-                        if ((e.key === "Tab" || e.key === "Enter") && selectedSuggestionIdx >= 0) {
+                        if (
+                          (e.key === "Tab" || e.key === "Enter") &&
+                          selectedSuggestionIdx >= 0
+                        ) {
                           e.preventDefault();
                           newCmd = addSuggestions[selectedSuggestionIdx];
                           showSuggestions = false;
@@ -1063,7 +1150,10 @@
                           return;
                         }
                       }
-                      if (e.key === "Escape") { showSuggestions = false; return; }
+                      if (e.key === "Escape") {
+                        showSuggestions = false;
+                        return;
+                      }
                       if (e.key === "Enter") submitAdd();
                     }}
                   />
@@ -1073,16 +1163,27 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedSuggestionIdx}
-                          on:mousedown|preventDefault|stopPropagation={() => { newCmd = s; urlInput?.focus(); }}
-                          on:mouseenter={() => { selectedSuggestionIdx = i; }}
-                        >{s}</li>
+                          on:mousedown|preventDefault|stopPropagation={() => {
+                            newCmd = s;
+                            urlInput?.focus();
+                          }}
+                          on:mouseenter={() => {
+                            selectedSuggestionIdx = i;
+                          }}
+                        >
+                          {s}
+                        </li>
                       {/each}
                     </ul>
                   {/if}
                 </div>
               </label>
               <label class="custom-link-field">
-                <span class="custom-link-label">Working directory <span class="muted">(optional — defaults to repo dir)</span></span>
+                <span class="custom-link-label"
+                  >Working directory <span class="muted"
+                    >(optional — defaults to repo dir)</span
+                  ></span
+                >
                 <div class="custom-link-fileinput">
                   <input
                     class="custom-link-input"
@@ -1098,37 +1199,41 @@
                     type="button"
                     class="tiny custom-link-browse"
                     on:click={pickAddCwd}
-                    disabled={adding}
-                  >Browse…</button>
+                    disabled={adding}>Browse…</button
+                  >
                 </div>
               </label>
               <div class="custom-link-field">
                 <span class="custom-link-label">Run mode</span>
-                <div class="custom-link-kinds" role="radiogroup" style="margin-top:2px">
+                <div
+                  class="custom-link-kinds"
+                  role="radiogroup"
+                  style="margin-top:2px"
+                >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={newRunMode === "shell"}
                     role="radio"
                     aria-checked={newRunMode === "shell"}
-                    on:click={() => (newRunMode = "shell")}
-                  >Shell</button>
+                    on:click={() => (newRunMode = "shell")}>Shell</button
+                  >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={newRunMode === "internal"}
                     role="radio"
                     aria-checked={newRunMode === "internal"}
-                    on:click={() => (newRunMode = "internal")}
-                  >Internal</button>
+                    on:click={() => (newRunMode = "internal")}>Internal</button
+                  >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={newRunMode === "external"}
                     role="radio"
                     aria-checked={newRunMode === "external"}
-                    on:click={() => (newRunMode = "external")}
-                  >External</button>
+                    on:click={() => (newRunMode = "external")}>External</button
+                  >
                 </div>
               </div>
             {:else if newKind === "url"}
@@ -1168,13 +1273,19 @@
                     type="button"
                     class="tiny custom-link-browse"
                     on:click={pickAddPath}
-                    disabled={adding}
-                  >Browse…</button>
+                    disabled={adding}>Browse…</button
+                  >
                 </div>
               </label>
             {/if}
             <label class="custom-link-field">
-              <span class="custom-link-label">Label <span class="muted">(optional{newKind === "url" ? " — auto-fills from page title for URLs" : ""})</span></span>
+              <span class="custom-link-label"
+                >Label <span class="muted"
+                  >(optional{newKind === "url"
+                    ? " — auto-fills from page title for URLs"
+                    : ""})</span
+                ></span
+              >
               <input
                 class="custom-link-input"
                 type="text"
@@ -1194,18 +1305,23 @@
                 type="button"
                 class="tiny custom-link-cancel"
                 on:click={() => (addOpen = false)}
-                disabled={adding}
-              >Cancel</button>
+                disabled={adding}>Cancel</button
+              >
               <button
                 type="button"
                 class="tiny custom-link-go"
                 on:click={submitAdd}
-                disabled={adding
-                  || (newKind === "url" && newUrl.trim().length === 0)
-                  || ((newKind === "file" || newKind === "folder")
-                    && newPath.trim().length === 0)
-                  || (newKind === "command" && newCmd.trim().length === 0)}
-              >{adding ? "Adding…" : newKind === "command" ? "Add command" : "Add link"}</button>
+                disabled={adding ||
+                  (newKind === "url" && newUrl.trim().length === 0) ||
+                  ((newKind === "file" || newKind === "folder") &&
+                    newPath.trim().length === 0) ||
+                  (newKind === "command" && newCmd.trim().length === 0)}
+                >{adding
+                  ? "Adding…"
+                  : newKind === "command"
+                    ? "Add command"
+                    : "Add link"}</button
+              >
             </div>
           </div>
         </Popover>
@@ -1219,7 +1335,12 @@
     {@const target = customLinkTarget(link)}
     {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
     {@const cmdUrls = kind === "command" ? commandUrls[link.id] : undefined}
-    {@const cmdUrl = (cmdUrls && cmdUrlOverride[link.id] && cmdUrls.includes(cmdUrlOverride[link.id])) ? cmdUrlOverride[link.id] : cmdUrls?.[0]}
+    {@const cmdUrl =
+      cmdUrls &&
+      cmdUrlOverride[link.id] &&
+      cmdUrls.includes(cmdUrlOverride[link.id])
+        ? cmdUrlOverride[link.id]
+        : cmdUrls?.[0]}
     <span
       class="custom-link-wrap"
       class:icon-only={iconOnly}
@@ -1267,7 +1388,9 @@
             height="13"
             aria-hidden="true"
           >
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path
+              d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+            />
             <path d="M14 2v6h6" />
           </svg>
         {:else if kind === "folder"}
@@ -1278,7 +1401,9 @@
             height="13"
             aria-hidden="true"
           >
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <path
+              d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+            />
           </svg>
         {:else if kind === "command"}
           {#if cmdRunning}
@@ -1333,15 +1458,30 @@
               tabindex="-1"
               title={`Open ${cmdUrl}`}
               on:click|stopPropagation={() => openUrl(cmdUrl)}
-              on:keydown={(e) => { if (e.key === "Enter") openUrl(cmdUrl); }}
+              on:keydown={(e) => {
+                if (e.key === "Enter") openUrl(cmdUrl);
+              }}
             >
-              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <svg
+                viewBox="0 0 24 24"
+                width="12"
+                height="12"
+                aria-hidden="true"
+              >
+                <path
+                  d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
+                />
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
               </svg>
               {#if cmdUrls && cmdUrls.length > 1}
-                <svg class="cmd-url-caret-icon" viewBox="0 0 24 24" width="8" height="8" aria-hidden="true">
+                <svg
+                  class="cmd-url-caret-icon"
+                  viewBox="0 0 24 24"
+                  width="8"
+                  height="8"
+                  aria-hidden="true"
+                >
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               {/if}
@@ -1353,19 +1493,33 @@
                     type="button"
                     class="cmd-url-option"
                     class:active={u === cmdUrl}
-                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; cmdUrlPicks.set(link.id, u); }}
+                    on:click|stopPropagation={() => {
+                      openUrl(u);
+                      cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u };
+                      cmdUrlPicks.set(link.id, u);
+                    }}
                   >
                     {new URL(u).host}
                     {#if u === cmdUrl}
-                      <svg class="cmd-url-option-icon" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                      <svg
+                        class="cmd-url-option-icon"
+                        viewBox="0 0 24 24"
+                        width="11"
+                        height="11"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
+                        />
                         <polyline points="15 3 21 3 21 9" />
                         <line x1="10" y1="14" x2="21" y2="3" />
                       </svg>
                     {/if}
                   </button>
                 {/each}
-                <span class="cmd-url-hint">Pick a URL to open it and assign it to the open button</span>
+                <span class="cmd-url-hint"
+                  >Pick a URL to open it and assign it to the open button</span
+                >
               </div>
             {/if}
           </span>
@@ -1410,9 +1564,19 @@
                 aria-selected={editKind === "url"}
                 on:click={() => (editKind = "url")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
-                  <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5" />
-                  <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon"
+                >
+                  <path
+                    d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07l-1.5 1.5"
+                  />
+                  <path
+                    d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07l1.5-1.5"
+                  />
                 </svg>
                 URL
               </button>
@@ -1424,8 +1588,16 @@
                 aria-selected={editKind === "file"}
                 on:click={() => (editKind = "file")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon kind-icon-filled"
+                >
+                  <path
+                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                  />
                   <path d="M14 2v6h6" />
                 </svg>
                 File
@@ -1438,8 +1610,16 @@
                 aria-selected={editKind === "folder"}
                 on:click={() => (editKind = "folder")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon kind-icon-filled">
-                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon kind-icon-filled"
+                >
+                  <path
+                    d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                  />
                 </svg>
                 Folder
               </button>
@@ -1451,7 +1631,13 @@
                 aria-selected={editKind === "command"}
                 on:click={() => (editKind = "command")}
               >
-                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" class="kind-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                  class="kind-icon"
+                >
                   <polyline points="4 17 10 11 4 5" />
                   <line x1="12" y1="19" x2="20" y2="19" />
                 </svg>
@@ -1469,22 +1655,40 @@
                     bind:value={editCmd}
                     disabled={editing}
                     autocomplete="off"
-                    on:focus={() => { showEditSuggestions = true; selectedEditSuggestionIdx = -1; }}
-                    on:blur={() => { setTimeout(() => { showEditSuggestions = false; }, 150); }}
-                    on:input={() => { showEditSuggestions = true; selectedEditSuggestionIdx = -1; }}
+                    on:focus={() => {
+                      showEditSuggestions = true;
+                      selectedEditSuggestionIdx = -1;
+                    }}
+                    on:blur={() => {
+                      setTimeout(() => {
+                        showEditSuggestions = false;
+                      }, 150);
+                    }}
+                    on:input={() => {
+                      showEditSuggestions = true;
+                      selectedEditSuggestionIdx = -1;
+                    }}
                     on:keydown={(e) => {
                       if (showEditSuggestions && editSuggestions.length > 0) {
                         if (e.key === "ArrowDown") {
                           e.preventDefault();
-                          selectedEditSuggestionIdx = (selectedEditSuggestionIdx + 1) % editSuggestions.length;
+                          selectedEditSuggestionIdx =
+                            (selectedEditSuggestionIdx + 1) %
+                            editSuggestions.length;
                           return;
                         }
                         if (e.key === "ArrowUp") {
                           e.preventDefault();
-                          selectedEditSuggestionIdx = selectedEditSuggestionIdx <= 0 ? editSuggestions.length - 1 : selectedEditSuggestionIdx - 1;
+                          selectedEditSuggestionIdx =
+                            selectedEditSuggestionIdx <= 0
+                              ? editSuggestions.length - 1
+                              : selectedEditSuggestionIdx - 1;
                           return;
                         }
-                        if ((e.key === "Tab" || e.key === "Enter") && selectedEditSuggestionIdx >= 0) {
+                        if (
+                          (e.key === "Tab" || e.key === "Enter") &&
+                          selectedEditSuggestionIdx >= 0
+                        ) {
                           e.preventDefault();
                           editCmd = editSuggestions[selectedEditSuggestionIdx];
                           showEditSuggestions = false;
@@ -1492,7 +1696,10 @@
                           return;
                         }
                       }
-                      if (e.key === "Escape") { showEditSuggestions = false; return; }
+                      if (e.key === "Escape") {
+                        showEditSuggestions = false;
+                        return;
+                      }
                       if (e.key === "Enter") submitEdit();
                     }}
                   />
@@ -1502,16 +1709,25 @@
                         <li
                           class="cmd-suggestion"
                           class:active={i === selectedEditSuggestionIdx}
-                          on:mousedown|preventDefault|stopPropagation={() => { editCmd = s; editUrlInput?.focus(); }}
-                          on:mouseenter={() => { selectedEditSuggestionIdx = i; }}
-                        >{s}</li>
+                          on:mousedown|preventDefault|stopPropagation={() => {
+                            editCmd = s;
+                            editUrlInput?.focus();
+                          }}
+                          on:mouseenter={() => {
+                            selectedEditSuggestionIdx = i;
+                          }}
+                        >
+                          {s}
+                        </li>
                       {/each}
                     </ul>
                   {/if}
                 </div>
               </label>
               <label class="custom-link-field">
-                <span class="custom-link-label">Working directory <span class="muted">(optional)</span></span>
+                <span class="custom-link-label"
+                  >Working directory <span class="muted">(optional)</span></span
+                >
                 <div class="custom-link-fileinput">
                   <input
                     class="custom-link-input"
@@ -1527,37 +1743,41 @@
                     type="button"
                     class="tiny custom-link-browse"
                     on:click={pickEditCwd}
-                    disabled={editing}
-                  >Browse…</button>
+                    disabled={editing}>Browse…</button
+                  >
                 </div>
               </label>
               <div class="custom-link-field">
                 <span class="custom-link-label">Run mode</span>
-                <div class="custom-link-kinds" role="radiogroup" style="margin-top:2px">
+                <div
+                  class="custom-link-kinds"
+                  role="radiogroup"
+                  style="margin-top:2px"
+                >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={editRunMode === "shell"}
                     role="radio"
                     aria-checked={editRunMode === "shell"}
-                    on:click={() => (editRunMode = "shell")}
-                  >Shell</button>
+                    on:click={() => (editRunMode = "shell")}>Shell</button
+                  >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={editRunMode === "internal"}
                     role="radio"
                     aria-checked={editRunMode === "internal"}
-                    on:click={() => (editRunMode = "internal")}
-                  >Internal</button>
+                    on:click={() => (editRunMode = "internal")}>Internal</button
+                  >
                   <button
                     type="button"
                     class="custom-link-kind"
                     class:active={editRunMode === "external"}
                     role="radio"
                     aria-checked={editRunMode === "external"}
-                    on:click={() => (editRunMode = "external")}
-                  >External</button>
+                    on:click={() => (editRunMode = "external")}>External</button
+                  >
                 </div>
               </div>
             {:else if editKind === "url"}
@@ -1593,8 +1813,8 @@
                     type="button"
                     class="tiny custom-link-browse"
                     on:click={pickEditPath}
-                    disabled={editing}
-                  >Browse…</button>
+                    disabled={editing}>Browse…</button
+                  >
                 </div>
               </label>
             {/if}
@@ -1622,26 +1842,27 @@
                   class="tiny custom-link-delete"
                   on:click={deleteFromEdit}
                   disabled={editing}
-                  title="Delete this link"
-                >Delete</button>
+                  title="Delete this link">Delete</button
+                >
               {/if}
               <span class="custom-link-buttons-spacer"></span>
               <button
                 type="button"
                 class="tiny custom-link-cancel"
                 on:click={closeEdit}
-                disabled={editing}
-              >Cancel</button>
+                disabled={editing}>Cancel</button
+              >
               <button
                 type="button"
                 class="tiny custom-link-go"
                 on:click={submitEdit}
-                disabled={editing
-                  || (editKind === "url" && editUrl.trim().length === 0)
-                  || ((editKind === "file" || editKind === "folder")
-                    && editPath.trim().length === 0)
-                  || (editKind === "command" && editCmd.trim().length === 0)}
-              >{editing ? "Saving…" : "Save"}</button>
+                disabled={editing ||
+                  (editKind === "url" && editUrl.trim().length === 0) ||
+                  ((editKind === "file" || editKind === "folder") &&
+                    editPath.trim().length === 0) ||
+                  (editKind === "command" && editCmd.trim().length === 0)}
+                >{editing ? "Saving…" : "Save"}</button
+              >
             </div>
           </div>
         </Popover>
@@ -1775,7 +1996,9 @@
     color: var(--text-muted);
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.12s, color 0.12s;
+    transition:
+      opacity 0.12s,
+      color 0.12s;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2008,7 +2231,9 @@
     transform-origin: center;
   }
   @keyframes cmd-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   .cmd-url-inner {
     display: inline-flex;
@@ -2059,7 +2284,7 @@
     background: var(--surface-3, #333);
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
     border-radius: var(--radius-md, 6px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     min-width: 180px;
     white-space: nowrap;
     pointer-events: none;
@@ -2130,7 +2355,7 @@
     border-radius: 4px;
     max-height: 160px;
     overflow-y: auto;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   }
   .cmd-suggestion {
     padding: 3px 8px;

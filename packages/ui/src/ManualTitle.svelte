@@ -121,7 +121,8 @@
     class="manual-title"
     class:compact
     class:placeholder={!current}
-    title={(current ? `Click to rename · ${current}` : placeholder) + (extraTooltip ? `\n${extraTooltip}` : "")}
+    title={(current ? `Click to rename · ${current}` : placeholder) +
+      (extraTooltip ? `\n${extraTooltip}` : "")}
     on:click={startEdit}
   >
     {current || placeholder}

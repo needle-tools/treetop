@@ -77,10 +77,7 @@ export interface OllamaTurnEntry {
   partial?: boolean;
 }
 
-export type OllamaEntry =
-  | OllamaHeader
-  | OllamaExitEntry
-  | OllamaTurnEntry;
+export type OllamaEntry = OllamaHeader | OllamaExitEntry | OllamaTurnEntry;
 
 export class OllamaSessionsLog {
   private constructor(public readonly dir: string) {}
@@ -103,7 +100,11 @@ export class OllamaSessionsLog {
   }
 
   private pathFor(termId: string): string {
-    if (termId.includes("/") || termId.includes("\\") || termId.includes("..")) {
+    if (
+      termId.includes("/") ||
+      termId.includes("\\") ||
+      termId.includes("..")
+    ) {
       throw new Error(`invalid termId: ${termId}`);
     }
     return join(this.dir, `${termId}.jsonl`);
@@ -112,7 +113,10 @@ export class OllamaSessionsLog {
   /** Serialize an append-to-this-termId through a per-termId promise
    *  chain. Ensures two callers writing to the same file end up with
    *  whole lines in order, not interleaved bytes. */
-  private async serialize(termId: string, op: () => Promise<void>): Promise<void> {
+  private async serialize(
+    termId: string,
+    op: () => Promise<void>,
+  ): Promise<void> {
     const prev = this.writeChains.get(termId) ?? Promise.resolve();
     const next = prev.then(op, op);
     this.writeChains.set(termId, next);
@@ -160,9 +164,7 @@ export class OllamaSessionsLog {
    *
    *  Returns `null` when the file is missing or has no header. A
    *  header-only file (no turns yet) returns an empty messages[]. */
-  async readMessagesForChat(
-    termId: string,
-  ): Promise<{
+  async readMessagesForChat(termId: string): Promise<{
     model: string;
     messages: { role: "user" | "assistant"; content: string }[];
   } | null> {
@@ -193,7 +195,10 @@ export class OllamaSessionsLog {
       } else if (kind === "turn") {
         const role = obj.role;
         const content = obj.content;
-        if ((role === "user" || role === "assistant") && typeof content === "string") {
+        if (
+          (role === "user" || role === "assistant") &&
+          typeof content === "string"
+        ) {
           turns.push({ role, content });
           if (typeof obj.model === "string") activeModel = obj.model;
         }

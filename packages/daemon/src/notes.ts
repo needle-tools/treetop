@@ -117,13 +117,17 @@ export function parseNoteFile(raw: string): Note {
   const updatedAt = fm.scalars.get("updatedAt") ?? createdAt;
   const anchors = fm.lists.get("anchors") ?? [];
   const tags = fm.lists.get("tags") ?? [];
-  const body = lines.slice(end + 1).join("\n").replace(/\s+$/g, "");
+  const body = lines
+    .slice(end + 1)
+    .join("\n")
+    .replace(/\s+$/g, "");
   const note: Note = { id, anchors, tags, createdAt, updatedAt, body };
   // Optional kind discriminator. Anything other than the known values
   // is dropped silently — forward-compat with future kinds, and
   // defensive against hand-edits that fat-finger the field.
   const rawKind = fm.scalars.get("kind");
-  if (rawKind === "note" || rawKind === "link" || rawKind === "emoji") note.kind = rawKind;
+  if (rawKind === "note" || rawKind === "link" || rawKind === "emoji")
+    note.kind = rawKind;
   // Flat target fields. Both must be present and the type recognized;
   // otherwise we treat the file as if no target was set so the UI
   // falls back to plain-note rendering rather than a half-broken chip.
@@ -131,13 +135,11 @@ export function parseNoteFile(raw: string): Note {
   const tValue = fm.scalars.get("targetValue");
   if (
     tValue !== undefined &&
-    (
-      tType === "url" ||
+    (tType === "url" ||
       tType === "commit" ||
       tType === "session" ||
       tType === "file" ||
-      tType === "command"
-    )
+      tType === "command")
   ) {
     const target: LinkTarget = { type: tType, value: tValue };
     // Display-snapshot fields are optional — older link files (and
@@ -160,7 +162,11 @@ export function parseNoteFile(raw: string): Note {
     if (tRepoId !== undefined) target.repoId = tRepoId;
     if (tCwd !== undefined) target.cwd = tCwd;
     if (tCommand !== undefined) target.command = tCommand;
-    if (tRunMode === "internal" || tRunMode === "external" || tRunMode === "shell") {
+    if (
+      tRunMode === "internal" ||
+      tRunMode === "external" ||
+      tRunMode === "shell"
+    ) {
       target.runMode = tRunMode;
     }
     note.target = target;
@@ -205,9 +211,13 @@ function parseFrontmatter(lines: string[]): ParsedFrontmatter {
     if (value.startsWith("[") && value.endsWith("]")) {
       // Inline list: `tags: [a, b]`. Empty `[]` yields an empty array.
       const inner = value.slice(1, -1).trim();
-      const items = inner.length === 0
-        ? []
-        : inner.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+      const items =
+        inner.length === 0
+          ? []
+          : inner
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
       lists.set(key, items);
       i++;
       continue;

@@ -35,7 +35,10 @@ const ENC_PREFIX = "enc:v1:";
 
 async function getEncryptionKey(workspaceDir: string): Promise<Buffer> {
   try {
-    const raw = await readFile(join(workspaceDir, "peer-identity.json"), "utf-8");
+    const raw = await readFile(
+      join(workspaceDir, "peer-identity.json"),
+      "utf-8",
+    );
     const parsed = JSON.parse(raw) as { id?: string };
     if (typeof parsed.id === "string" && parsed.id.length > 0) {
       return createHash("sha256").update(`supergit-msg:${parsed.id}`).digest();
@@ -49,10 +52,7 @@ async function getEncryptionKey(workspaceDir: string): Promise<Buffer> {
 function encryptBody(plaintext: string, key: Buffer): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const ct = Buffer.concat([
-    cipher.update(plaintext, "utf-8"),
-    cipher.final(),
-  ]);
+  const ct = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${ENC_PREFIX}${iv.toString("hex")}:${Buffer.concat([ct, tag]).toString("hex")}`;
 }
@@ -96,10 +96,7 @@ export interface PeerInbox {
 
 interface OnDisk {
   version: 1;
-  byPeer: Record<
-    string,
-    { label: string; messages: StoredMessage[] }
-  >;
+  byPeer: Record<string, { label: string; messages: StoredMessage[] }>;
 }
 
 async function loadStore(workspaceDir: string): Promise<OnDisk> {

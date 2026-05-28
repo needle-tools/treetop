@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { filterNpmSuggestions, npmScriptsPlaceholder } from "../src/npm-suggestions";
+import {
+  filterNpmSuggestions,
+  npmScriptsPlaceholder,
+} from "../src/npm-suggestions";
 
-const SCRIPTS = ["start", "dev", "build", "test", "test:watch", "test:coverage", "stop-dev"];
+const SCRIPTS = [
+  "start",
+  "dev",
+  "build",
+  "test",
+  "test:watch",
+  "test:coverage",
+  "stop-dev",
+];
 
 describe("filterNpmSuggestions", () => {
   test("returns empty for empty scripts list", () => {
@@ -24,14 +35,14 @@ describe("filterNpmSuggestions", () => {
 
   test("shows all scripts when typing 'npm'", () => {
     expect(filterNpmSuggestions("npm", SCRIPTS)).toEqual(
-      SCRIPTS.map(s => `npm run ${s}`),
+      SCRIPTS.map((s) => `npm run ${s}`),
     );
   });
 
   test("shows all scripts for partial 'n', 'np', 'npm'", () => {
     for (const partial of ["n", "np", "npm"]) {
       expect(filterNpmSuggestions(partial, SCRIPTS)).toEqual(
-        SCRIPTS.map(s => `npm run ${s}`),
+        SCRIPTS.map((s) => `npm run ${s}`),
       );
     }
   });
@@ -39,14 +50,14 @@ describe("filterNpmSuggestions", () => {
   test("shows all scripts for 'npm r', 'npm ru', 'npm run'", () => {
     for (const partial of ["npm r", "npm ru", "npm run"]) {
       expect(filterNpmSuggestions(partial, SCRIPTS)).toEqual(
-        SCRIPTS.map(s => `npm run ${s}`),
+        SCRIPTS.map((s) => `npm run ${s}`),
       );
     }
   });
 
   test("shows all scripts for 'npm run ' (with trailing space)", () => {
     expect(filterNpmSuggestions("npm run ", SCRIPTS)).toEqual(
-      SCRIPTS.map(s => `npm run ${s}`),
+      SCRIPTS.map((s) => `npm run ${s}`),
     );
   });
 
@@ -64,8 +75,12 @@ describe("filterNpmSuggestions", () => {
   });
 
   test("exact match still shows the suggestion", () => {
-    expect(filterNpmSuggestions("npm run dev", SCRIPTS)).toEqual(["npm run dev"]);
-    expect(filterNpmSuggestions("npm run start", SCRIPTS)).toEqual(["npm run start"]);
+    expect(filterNpmSuggestions("npm run dev", SCRIPTS)).toEqual([
+      "npm run dev",
+    ]);
+    expect(filterNpmSuggestions("npm run start", SCRIPTS)).toEqual([
+      "npm run start",
+    ]);
     expect(filterNpmSuggestions("npm run test", SCRIPTS)).toEqual([
       "npm run test",
       "npm run test:watch",
@@ -87,11 +102,15 @@ describe("filterNpmSuggestions", () => {
   });
 
   test("leading whitespace is ignored", () => {
-    expect(filterNpmSuggestions("  npm run d", SCRIPTS)).toEqual(["npm run dev"]);
+    expect(filterNpmSuggestions("  npm run d", SCRIPTS)).toEqual([
+      "npm run dev",
+    ]);
   });
 
   test("extra spaces between npm and run are tolerated", () => {
-    expect(filterNpmSuggestions("npm  run  d", SCRIPTS)).toEqual(["npm run dev"]);
+    expect(filterNpmSuggestions("npm  run  d", SCRIPTS)).toEqual([
+      "npm run dev",
+    ]);
   });
 
   test("'npm s' matches start and stop-dev with shorthands", () => {
@@ -127,14 +146,14 @@ describe("filterNpmSuggestions", () => {
   test("shows all scripts for partial 'y', 'ya', 'yar', 'yarn'", () => {
     for (const partial of ["y", "ya", "yar", "yarn"]) {
       expect(filterNpmSuggestions(partial, SCRIPTS)).toEqual(
-        SCRIPTS.map(s => `yarn run ${s}`),
+        SCRIPTS.map((s) => `yarn run ${s}`),
       );
     }
   });
 
   test("'yarn run ' lists all scripts", () => {
     expect(filterNpmSuggestions("yarn run ", SCRIPTS)).toEqual(
-      SCRIPTS.map(s => `yarn run ${s}`),
+      SCRIPTS.map((s) => `yarn run ${s}`),
     );
   });
 
@@ -146,7 +165,9 @@ describe("filterNpmSuggestions", () => {
   });
 
   test("'yarn run d' matches dev", () => {
-    expect(filterNpmSuggestions("yarn run d", SCRIPTS)).toEqual(["yarn run dev"]);
+    expect(filterNpmSuggestions("yarn run d", SCRIPTS)).toEqual([
+      "yarn run dev",
+    ]);
   });
 
   test("'yarn dev' exact match", () => {
@@ -172,14 +193,14 @@ describe("filterNpmSuggestions", () => {
   test("shows all scripts for partial 'b', 'bu', 'bun'", () => {
     for (const partial of ["b", "bu", "bun"]) {
       expect(filterNpmSuggestions(partial, SCRIPTS)).toEqual(
-        SCRIPTS.map(s => `bun run ${s}`),
+        SCRIPTS.map((s) => `bun run ${s}`),
       );
     }
   });
 
   test("'bun run ' lists all scripts", () => {
     expect(filterNpmSuggestions("bun run ", SCRIPTS)).toEqual(
-      SCRIPTS.map(s => `bun run ${s}`),
+      SCRIPTS.map((s) => `bun run ${s}`),
     );
   });
 
@@ -202,7 +223,9 @@ describe("filterNpmSuggestions", () => {
   });
 
   test("'bun run dev' exact match stays visible", () => {
-    expect(filterNpmSuggestions("bun run dev", SCRIPTS)).toEqual(["bun run dev"]);
+    expect(filterNpmSuggestions("bun run dev", SCRIPTS)).toEqual([
+      "bun run dev",
+    ]);
   });
 
   // ── bare script name ──────────────────────────────────────────
@@ -282,7 +305,17 @@ describe("npmScriptsPlaceholder", () => {
   });
 
   test("truncates long lists with ellipsis", () => {
-    const many = ["start", "dev", "build", "test", "test:watch", "test:coverage", "lint", "format", "deploy"];
+    const many = [
+      "start",
+      "dev",
+      "build",
+      "test",
+      "test:watch",
+      "test:coverage",
+      "lint",
+      "format",
+      "deploy",
+    ];
     const result = npmScriptsPlaceholder(many);
     expect(result.length).toBeLessThanOrEqual(50);
     expect(result).toEndWith("...");

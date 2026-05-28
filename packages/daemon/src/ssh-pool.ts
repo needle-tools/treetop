@@ -144,7 +144,9 @@ export class SshPool {
       entry.client.exec(command, (err, stream) => {
         if (err) return reject(err);
         let out = "";
-        stream.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+        stream.on("data", (chunk: Buffer) => {
+          out += chunk.toString();
+        });
         stream.stderr.on("data", () => {});
         stream.on("close", () => resolve(out));
       });

@@ -47,7 +47,12 @@ describe("PeerRegistry", () => {
     r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 7777 });
     r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
     expect(r.peers()).toHaveLength(2);
-    expect(r.peers().map((p) => p.port).sort((a, b) => a - b)).toEqual([7777, 27787]);
+    expect(
+      r
+        .peers()
+        .map((p) => p.port)
+        .sort((a, b) => a - b),
+    ).toEqual([7777, 27787]);
   });
 
   test("the last seen host wins on dedupe (most recent is the freshest route)", () => {

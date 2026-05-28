@@ -221,14 +221,17 @@ export function installFetchTracking(): void {
   originalFetch = orig;
   globalThis.fetch = async function trackedFetch(input, init) {
     const method = (init?.method ?? "GET").toUpperCase();
-    const route = typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
+    const route =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
     try {
       const res = await orig(input as RequestInfo, init);
-      if (!res.ok && res.status !== 304 &&
+      if (
+        !res.ok &&
+        res.status !== 304 &&
         !isExpectedClientError(res.status, method) &&
         !(route.includes("/api/errors") && method === "POST")
       ) {
@@ -271,7 +274,9 @@ export function installGlobalErrorHandlers(): void {
     recordBrowserError({
       kind: "uncaught",
       source: "browser",
-      message: (evt as ErrorEvent).message || (e instanceof Error ? e.message : String(e)),
+      message:
+        (evt as ErrorEvent).message ||
+        (e instanceof Error ? e.message : String(e)),
       stack: e instanceof Error ? e.stack : undefined,
       extra: {
         filename: (evt as ErrorEvent).filename,

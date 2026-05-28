@@ -31,7 +31,11 @@ afterAll(async () => {
 
 async function fetchFiles(path: string): Promise<{
   path: string;
-  entries: { name: string; type: "file" | "directory" | "symlink"; size?: number }[];
+  entries: {
+    name: string;
+    type: "file" | "directory" | "symlink";
+    size?: number;
+  }[];
 }> {
   const res = await fetch(
     `http://localhost:7777/api/files?path=${encodeURIComponent(path)}`,
@@ -121,7 +125,9 @@ describe.skipIf(!daemonUp)("/api/files", () => {
 
 describe.skipIf(!daemonUp)("/api/exists", () => {
   type StatEntry = { exists: boolean; type?: "file" | "directory" | "symlink" };
-  async function postExists(paths: string[]): Promise<Record<string, StatEntry>> {
+  async function postExists(
+    paths: string[],
+  ): Promise<Record<string, StatEntry>> {
     const res = await fetch("http://localhost:7777/api/exists", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

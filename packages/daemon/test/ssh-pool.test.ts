@@ -59,7 +59,9 @@ describe("SshPool", () => {
 
       const sftp = await pool.connect(user, host, port);
       expect(sftp).toBeTruthy();
-      expect(pool.hasCachedConnection(pool.hostKey(user, host, port))).toBe(true);
+      expect(pool.hasCachedConnection(pool.hostKey(user, host, port))).toBe(
+        true,
+      );
     });
   });
 });

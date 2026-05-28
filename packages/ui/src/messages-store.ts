@@ -68,7 +68,10 @@ export function totalCount(snap: InboxSnapshot): number {
  *  that baseline isn't set yet (first run, fresh browser) we treat
  *  every inbound message as unread so the user still gets a hint.
  *  Muted senders and outbound entries are ignored. */
-export function unreadCount(snap: InboxSnapshot, lastReadAtIso: string | null): number {
+export function unreadCount(
+  snap: InboxSnapshot,
+  lastReadAtIso: string | null,
+): number {
   if (!lastReadAtIso) return totalCount(snap);
   const cutoff = Date.parse(lastReadAtIso);
   if (!Number.isFinite(cutoff)) return totalCount(snap);
@@ -120,7 +123,9 @@ export async function sendMessage(
       body: JSON.stringify({ peerHost, peerPort, body }),
     });
     if (res.status === 202) return { ok: true };
-    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    const err = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
     return { ok: false, error: err?.error ?? `HTTP ${res.status}` };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

@@ -34,11 +34,7 @@ export async function pickFolder(
   }
 
   if (platform === "linux") {
-    const args = [
-      "--file-selection",
-      "--directory",
-      `--title=${prompt}`,
-    ];
+    const args = ["--file-selection", "--directory", `--title=${prompt}`];
     if (startDir) args.push(`--filename=${startDir}/`);
     const proc = Bun.spawn(["zenity", ...args], {
       stdout: "pipe",

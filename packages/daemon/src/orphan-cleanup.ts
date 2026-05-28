@@ -50,7 +50,9 @@ export class OrphanCleaner {
     this.lastDisconnectAt = Date.now();
     if (this.orphanTimer) return;
 
-    this.log(`orphan cleanup: no frontend connected, will kill all terminals in ${Math.round(this.orphanTimeoutMs / 1000)}s`);
+    this.log(
+      `orphan cleanup: no frontend connected, will kill all terminals in ${Math.round(this.orphanTimeoutMs / 1000)}s`,
+    );
     this.orphanTimer = setTimeout(() => {
       this.orphanTimer = null;
       void this.doCleanup();
@@ -72,11 +74,15 @@ export class OrphanCleaner {
     const alive = terminals.filter((t) => t.isAlive);
 
     if (alive.length === 0) {
-      this.log(`orphan cleanup: no live terminals to clean up (orphaned ${orphanedFor}s)`);
+      this.log(
+        `orphan cleanup: no live terminals to clean up (orphaned ${orphanedFor}s)`,
+      );
       return;
     }
 
-    this.log(`orphan cleanup: killing ${alive.length} terminal(s) after ${orphanedFor}s with no frontend`);
+    this.log(
+      `orphan cleanup: killing ${alive.length} terminal(s) after ${orphanedFor}s with no frontend`,
+    );
 
     for (const t of alive) {
       this.log(`orphan cleanup: SIGTERM ${t.id} (pid ${t.pid})`);
@@ -84,7 +90,9 @@ export class OrphanCleaner {
         await this.killTerminal(t.id);
         this.log(`orphan cleanup: ${t.id} (pid ${t.pid}) terminated`);
       } catch (err) {
-        this.log(`orphan cleanup: ${t.id} (pid ${t.pid}) kill failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.log(
+          `orphan cleanup: ${t.id} (pid ${t.pid}) kill failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }

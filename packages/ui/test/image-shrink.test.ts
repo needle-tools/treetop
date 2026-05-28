@@ -66,14 +66,7 @@ describe("targetDimensions", () => {
  * headers.
  */
 const PNG_SIG = new Uint8Array([
-  0x89,
-  0x50,
-  0x4e,
-  0x47,
-  0x0d,
-  0x0a,
-  0x1a,
-  0x0a,
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 
 function writeUint32BE(out: number[], v: number): void {
@@ -83,7 +76,12 @@ function writeUint32BE(out: number[], v: number): void {
 function chunk(type: string, data: number[]): number[] {
   const out: number[] = [];
   writeUint32BE(out, data.length);
-  out.push(type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3));
+  out.push(
+    type.charCodeAt(0),
+    type.charCodeAt(1),
+    type.charCodeAt(2),
+    type.charCodeAt(3),
+  );
   out.push(...data);
   // Dummy CRC — parser doesn't verify.
   writeUint32BE(out, 0);
@@ -110,7 +108,9 @@ describe("pngPixelDensityDpi", () => {
     expect(pngPixelDensityDpi(new Uint8Array([1, 2, 3, 4]))).toBeNull();
     expect(pngPixelDensityDpi(new Uint8Array(0))).toBeNull();
     // JPEG SOI marker — definitely not a PNG.
-    expect(pngPixelDensityDpi(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBeNull();
+    expect(
+      pngPixelDensityDpi(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])),
+    ).toBeNull();
   });
 
   test("returns null for a PNG without a pHYs chunk", () => {

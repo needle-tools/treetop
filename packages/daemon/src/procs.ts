@@ -52,19 +52,29 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
   // .zshrc). Probe the most common layouts.
   const nvmDir = process.env.NVM_DIR || join(home, ".nvm");
   try {
-    const nvmVersions = await readdir(join(nvmDir, "versions", "node")).catch(() => []);
+    const nvmVersions = await readdir(join(nvmDir, "versions", "node")).catch(
+      () => [],
+    );
     for (const v of nvmVersions) {
       wellKnown.push(join(nvmDir, "versions", "node", v, "bin", name));
     }
-  } catch { /* nvm not installed */ }
+  } catch {
+    /* nvm not installed */
+  }
   // fnm
   try {
     const fnmDir = process.env.FNM_DIR || join(home, ".fnm");
-    const fnmVersions = await readdir(join(fnmDir, "node-versions")).catch(() => []);
+    const fnmVersions = await readdir(join(fnmDir, "node-versions")).catch(
+      () => [],
+    );
     for (const v of fnmVersions) {
-      wellKnown.push(join(fnmDir, "node-versions", v, "installation", "bin", name));
+      wellKnown.push(
+        join(fnmDir, "node-versions", v, "installation", "bin", name),
+      );
     }
-  } catch { /* fnm not installed */ }
+  } catch {
+    /* fnm not installed */
+  }
   // volta
   wellKnown.push(join(home, ".volta", "bin", name));
   // n (tj/n)
@@ -90,9 +100,8 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
   // bare extension in the candidate set, mtime ties would pick the
   // bash script and every TUI spawn would die at error 193. Probing
   // only the spawnable extensions sidesteps that entirely.
-  const exts = process.platform === "win32"
-    ? [".exe", ".cmd", ".bat", ".ps1"]
-    : [""];
+  const exts =
+    process.platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1"] : [""];
   for (const p of all) {
     for (const ext of exts) {
       const full = p + ext;
@@ -215,9 +224,14 @@ export async function discoverRepoProcesses(
   if (matched.length === 0) return [];
   const pids = matched.map((m) => m.pid);
   const list = pids.join(",");
-  const info = new Map<number, { comm: string; args: string; cpu: number; mem: number }>();
+  const info = new Map<
+    number,
+    { comm: string; args: string; cpu: number; mem: number }
+  >();
   try {
-    const result = await $`ps -o pid=,pcpu=,rss=,args= -p ${list}`.quiet().nothrow();
+    const result = await $`ps -o pid=,pcpu=,rss=,args= -p ${list}`
+      .quiet()
+      .nothrow();
     for (const line of result.stdout.toString().split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -226,7 +240,8 @@ export async function discoverRepoProcesses(
       const pid = Number(m[1]);
       if (!Number.isFinite(pid)) continue;
       const args = m[4]!;
-      const comm = args.split(/\s/)[0]!.split("/").pop() || args.split(/\s/)[0]!;
+      const comm =
+        args.split(/\s/)[0]!.split("/").pop() || args.split(/\s/)[0]!;
       info.set(pid, {
         comm,
         args,
@@ -234,7 +249,9 @@ export async function discoverRepoProcesses(
         mem: (Number(m[3]) || 0) * 1024,
       });
     }
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
   return matched
     .filter((m) => info.has(m.pid))
     .map((m) => {
@@ -266,11 +283,15 @@ async function allProcessCwds(): Promise<Map<number, string>> {
         curPid = null;
       }
     }
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
   return out;
 }
 
-export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage>> {
+export async function sampleProcs(
+  pids: number[],
+): Promise<Map<number, ProcUsage>> {
   const out = new Map<number, ProcUsage>();
   if (pids.length === 0) return out;
   if (process.platform === "win32") {
@@ -285,7 +306,9 @@ export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage
         `$m = @{}; Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { $m[$_.Id] = $_.WorkingSet64 }; ` +
         `$c = @{}; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue | Where-Object { $m.ContainsKey([int]$_.IDProcess) } | ForEach-Object { $c[[int]$_.IDProcess] = $_.PercentProcessorTime }; ` +
         `foreach ($pid in $m.Keys) { $cpu = if ($c.ContainsKey($pid)) { $c[$pid] } else { 0 }; "$pid $($m[$pid]) $cpu" }`;
-      const result = await $`powershell -NoProfile -Command ${ps}`.quiet().nothrow();
+      const result = await $`powershell -NoProfile -Command ${ps}`
+        .quiet()
+        .nothrow();
       const text = result.stdout.toString();
       for (const line of text.split(/\r?\n/)) {
         const trimmed = line.trim();

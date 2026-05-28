@@ -132,7 +132,14 @@ export class DismissedSessionsStore {
  * page reloads so the user lands back where they were. Same KVStore-injection
  * pattern as ExpandedStore so it's testable without a real browser.
  */
-export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell" | "files" | "history";
+export type PersistedAgent =
+  | "claude"
+  | "codex"
+  | "copilot"
+  | "ollama"
+  | "shell"
+  | "files"
+  | "history";
 
 /** Model tier aliases offered for Claude sessions. We deliberately stick
  *  to the CLI's stable aliases rather than pinned versions so the menu
@@ -141,7 +148,13 @@ export const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"] as const;
 export type ClaudeModelAlias = (typeof CLAUDE_MODEL_ALIASES)[number];
 
 /** Effort levels the Claude CLI accepts via `--effort`. */
-export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const CLAUDE_EFFORT_LEVELS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 export type ClaudeEffort = (typeof CLAUDE_EFFORT_LEVELS)[number];
 
 /** Collapse a model id — either a bare alias ("opus") or a full id
@@ -149,7 +162,9 @@ export type ClaudeEffort = (typeof CLAUDE_EFFORT_LEVELS)[number];
  *  pill. Returns undefined when the input is empty or doesn't match a
  *  known tier, so callers can fall back to the generic "claude" label
  *  rather than showing a fabricated tier. */
-export function claudeModelAlias(model: string | undefined): ClaudeModelAlias | undefined {
+export function claudeModelAlias(
+  model: string | undefined,
+): ClaudeModelAlias | undefined {
   if (!model) return undefined;
   const m = model.toLowerCase();
   if (m.includes("opus")) return "opus";
@@ -489,7 +504,12 @@ export function setSessionMode(
 
 export function stampDiscoveredSessionId(
   byWt: Record<string, PersistedSession[]>,
-  ev: { agent: PersistedAgent; cwd: string; sessionId: string; source?: string },
+  ev: {
+    agent: PersistedAgent;
+    cwd: string;
+    sessionId: string;
+    source?: string;
+  },
 ): Record<string, PersistedSession[]> {
   const res = stampDiscoveredSessionIdWithDetail(byWt, ev);
   return res.byWt;
@@ -516,7 +536,12 @@ export function stampDiscoveredSessionId(
  *  already claimed by a sibling column" test for the scenario. */
 export function stampDiscoveredSessionIdWithDetail(
   byWt: Record<string, PersistedSession[]>,
-  ev: { agent: PersistedAgent; cwd: string; sessionId: string; source?: string },
+  ev: {
+    agent: PersistedAgent;
+    cwd: string;
+    sessionId: string;
+    source?: string;
+  },
 ): { byWt: Record<string, PersistedSession[]>; stampedSource: string | null } {
   if (!ev.sessionId) return { byWt, stampedSource: null };
   const list = byWt[ev.cwd];
@@ -531,9 +556,7 @@ export function stampDiscoveredSessionIdWithDetail(
   const prefix = `__new__:${ev.agent}:`;
   const idx = list.findIndex(
     (s) =>
-      s.agent === ev.agent &&
-      s.source.startsWith(prefix) &&
-      !s.resumeSessionId,
+      s.agent === ev.agent && s.source.startsWith(prefix) && !s.resumeSessionId,
   );
   if (idx === -1) return { byWt, stampedSource: null };
   const target = list[idx]!;
@@ -554,7 +577,11 @@ export function stampDiscoveredSessionIdWithDetail(
  *  fall back to the synthetic source so an unfinished name doesn't get
  *  silently dropped. */
 export function resolveTitleSource(
-  session: { source: string; resumeSessionId?: string; agent: PersistedAgent | "shell" },
+  session: {
+    source: string;
+    resumeSessionId?: string;
+    agent: PersistedAgent | "shell";
+  },
   agents: ReadonlyArray<{ agent: string; sessionId?: string; source: string }>,
 ): string {
   if (!session.source.startsWith("__new__:")) return session.source;
@@ -599,13 +626,21 @@ export class VisibleWorktreesStore {
     } catch {
       return {};
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       return {};
     }
     const out: Record<string, string[]> = {};
-    for (const [repoId, value] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [repoId, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
       if (!Array.isArray(value)) continue;
-      out[repoId] = value.filter((x): x is string => typeof x === "string" && x.length > 0);
+      out[repoId] = value.filter(
+        (x): x is string => typeof x === "string" && x.length > 0,
+      );
     }
     return out;
   }
@@ -616,7 +651,9 @@ export class VisibleWorktreesStore {
       // don't accumulate garbage.
       const sanitized: Record<string, string[]> = {};
       for (const [k, v] of Object.entries(map)) {
-        const paths = (v ?? []).filter((p) => typeof p === "string" && p.length > 0);
+        const paths = (v ?? []).filter(
+          (p) => typeof p === "string" && p.length > 0,
+        );
         if (paths.length > 0) sanitized[k] = paths;
       }
       this.storage.setItem(this.key, JSON.stringify(sanitized));
@@ -686,12 +723,22 @@ export class CommandUrlPickStore {
     } catch {
       return {};
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       return {};
     }
     const out: Record<string, string> = {};
-    for (const [linkId, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof linkId === "string" && linkId.length > 0 && typeof value === "string") {
+    for (const [linkId, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
+      if (
+        typeof linkId === "string" &&
+        linkId.length > 0 &&
+        typeof value === "string"
+      ) {
         out[linkId] = value;
       }
     }
@@ -746,17 +793,25 @@ export class CommandTermStore {
     } catch {
       return {};
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       return {};
     }
     const out: Record<string, CommandTermEntry> = {};
-    for (const [linkId, value] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [linkId, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
       if (typeof linkId !== "string" || linkId.length === 0) continue;
       if (typeof value !== "object" || value === null) continue;
       const v = value as { wtPath?: unknown; source?: unknown };
       if (
-        typeof v.wtPath === "string" && v.wtPath.length > 0 &&
-        typeof v.source === "string" && v.source.length > 0
+        typeof v.wtPath === "string" &&
+        v.wtPath.length > 0 &&
+        typeof v.source === "string" &&
+        v.source.length > 0
       ) {
         out[linkId] = { wtPath: v.wtPath, source: v.source };
       }
@@ -768,7 +823,13 @@ export class CommandTermStore {
     try {
       const sanitized: Record<string, CommandTermEntry> = {};
       for (const [k, v] of Object.entries(map)) {
-        if (typeof k === "string" && k.length > 0 && v && typeof v.wtPath === "string" && typeof v.source === "string") {
+        if (
+          typeof k === "string" &&
+          k.length > 0 &&
+          v &&
+          typeof v.wtPath === "string" &&
+          typeof v.source === "string"
+        ) {
           sanitized[k] = { wtPath: v.wtPath, source: v.source };
         }
       }

@@ -22,16 +22,61 @@ export interface AppIcon {
 }
 
 export const APP_ICONS: AppIcon[] = [
-  { name: "needle", label: "Needle", ext: "webp", keywords: ["needle", "engine", "tools", "3d", "web"] },
-  { name: "blender", label: "Blender", ext: "png", keywords: ["3d", "modeling", "animation"] },
+  {
+    name: "needle",
+    label: "Needle",
+    ext: "webp",
+    keywords: ["needle", "engine", "tools", "3d", "web"],
+  },
+  {
+    name: "blender",
+    label: "Blender",
+    ext: "png",
+    keywords: ["3d", "modeling", "animation"],
+  },
   { name: "unity", label: "Unity", keywords: ["3d", "game", "engine"] },
-  { name: "vscode", label: "VS Code", ext: "png", keywords: ["editor", "code", "ide", "microsoft"] },
-  { name: "threejs", label: "three.js", ext: "png", keywords: ["3d", "webgl", "javascript", "library"] },
-  { name: "threejs-alt", label: "three.js (alt)", ext: "png", keywords: ["3d", "webgl", "javascript", "library"] },
-  { name: "gltf", label: "glTF", ext: "png", keywords: ["3d", "format", "model", "khronos"] },
-  { name: "usd", label: "USD", ext: "png", keywords: ["3d", "format", "scene", "pixar", "openusd"] },
-  { name: "npm", label: "npm", ext: "png", keywords: ["package", "node", "registry", "javascript"] },
-  { name: "hetzner", label: "Hetzner", ext: "png", keywords: ["cloud", "hosting", "server"] },
+  {
+    name: "vscode",
+    label: "VS Code",
+    ext: "png",
+    keywords: ["editor", "code", "ide", "microsoft"],
+  },
+  {
+    name: "threejs",
+    label: "three.js",
+    ext: "png",
+    keywords: ["3d", "webgl", "javascript", "library"],
+  },
+  {
+    name: "threejs-alt",
+    label: "three.js (alt)",
+    ext: "png",
+    keywords: ["3d", "webgl", "javascript", "library"],
+  },
+  {
+    name: "gltf",
+    label: "glTF",
+    ext: "png",
+    keywords: ["3d", "format", "model", "khronos"],
+  },
+  {
+    name: "usd",
+    label: "USD",
+    ext: "png",
+    keywords: ["3d", "format", "scene", "pixar", "openusd"],
+  },
+  {
+    name: "npm",
+    label: "npm",
+    ext: "png",
+    keywords: ["package", "node", "registry", "javascript"],
+  },
+  {
+    name: "hetzner",
+    label: "Hetzner",
+    ext: "png",
+    keywords: ["cloud", "hosting", "server"],
+  },
 ];
 
 export const APP_ICON_TOKEN_PREFIX = "app:";

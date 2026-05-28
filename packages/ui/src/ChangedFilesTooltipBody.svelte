@@ -70,7 +70,10 @@
    *  go to the bottom and fall back to lexical order so the list
    *  stays stable across renders. Returns a new array — never
    *  mutates the input. */
-  function sortByMtime(paths: string[], mtimes?: Record<string, number>): string[] {
+  function sortByMtime(
+    paths: string[],
+    mtimes?: Record<string, number>,
+  ): string[] {
     return paths.slice().sort((a, b) => {
       const ma = mtimes?.[a];
       const mb = mtimes?.[b];
@@ -81,11 +84,31 @@
     });
   }
 
-  function plan(s: WtSummaryLike): { columns: Column[]; hiddenCount: number; total: number } {
-    const buckets: Array<{ kind: BucketKind; paths: string[]; stats?: Record<string, NumstatEntry> }> = [
-      { kind: "staged", paths: sortByMtime(s.staged, s.mtimes), stats: s.stagedStats },
-      { kind: "unstaged", paths: sortByMtime(s.unstaged, s.mtimes), stats: s.stats },
-      { kind: "untracked", paths: sortByMtime(s.untracked, s.mtimes), stats: s.stats },
+  function plan(s: WtSummaryLike): {
+    columns: Column[];
+    hiddenCount: number;
+    total: number;
+  } {
+    const buckets: Array<{
+      kind: BucketKind;
+      paths: string[];
+      stats?: Record<string, NumstatEntry>;
+    }> = [
+      {
+        kind: "staged",
+        paths: sortByMtime(s.staged, s.mtimes),
+        stats: s.stagedStats,
+      },
+      {
+        kind: "unstaged",
+        paths: sortByMtime(s.unstaged, s.mtimes),
+        stats: s.stats,
+      },
+      {
+        kind: "untracked",
+        paths: sortByMtime(s.untracked, s.mtimes),
+        stats: s.stats,
+      },
     ];
     const columns: Column[] = [];
     let hidden = 0;
@@ -98,7 +121,8 @@
         rows: slice.map((p) => ({ path: p, stat: b.stats?.[p] })),
         total: b.paths.length,
       });
-      if (b.paths.length > slice.length) hidden += b.paths.length - slice.length;
+      if (b.paths.length > slice.length)
+        hidden += b.paths.length - slice.length;
     }
     const total = s.staged.length + s.unstaged.length + s.untracked.length;
     return { columns, hiddenCount: hidden, total };
@@ -109,9 +133,12 @@
   /** Reach up to the enclosing Tooltip (if any) to keep it pinned
    *  open while the user is on our portal'd diff popup. Optional —
    *  the component still works standalone. */
-  const parentHover = getContext<TooltipHoverCtx | undefined>(TOOLTIP_HOVER_CTX);
+  const parentHover = getContext<TooltipHoverCtx | undefined>(
+    TOOLTIP_HOVER_CTX,
+  );
 
-  let hovered: { kind: BucketKind; path: string; stat?: NumstatEntry } | null = null;
+  let hovered: { kind: BucketKind; path: string; stat?: NumstatEntry } | null =
+    null;
   let anchorEl: HTMLElement | null = null;
   let showTimer: ReturnType<typeof setTimeout> | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -239,7 +266,7 @@
   // Re-position when anchorEl changes (row switch). Drive via a
   // reactive statement that touches `hovered` / `anchorEl` so the
   // action's `update` fires.
-  $: hovered, anchorEl;
+  $: (hovered, anchorEl);
 
   function openFileDefault(relPath: string) {
     if (!worktreePath) return;
@@ -275,16 +302,27 @@
               role={interactive ? "button" : undefined}
               tabindex={interactive ? -1 : undefined}
               on:mouseenter={(e) =>
-                onRowEnter(col.kind, row.path, row.stat, e.currentTarget as HTMLElement)}
+                onRowEnter(
+                  col.kind,
+                  row.path,
+                  row.stat,
+                  e.currentTarget as HTMLElement,
+                )}
               on:mouseleave={onRowLeave}
               on:dblclick={() => openFileDefault(row.path)}
             >
               <span class="wt-tt-path" title={row.path}>{row.path}</span>
               <span class="wt-tt-added"
-                >{row.stat ? (row.stat.binary ? "bin" : `+${row.stat.added}`) : ""}</span
+                >{row.stat
+                  ? row.stat.binary
+                    ? "bin"
+                    : `+${row.stat.added}`
+                  : ""}</span
               >
               <span class="wt-tt-removed"
-                >{row.stat && !row.stat.binary ? `−${row.stat.removed}` : ""}</span
+                >{row.stat && !row.stat.binary
+                  ? `−${row.stat.removed}`
+                  : ""}</span
               >
             </span>
           {/each}
@@ -294,7 +332,8 @@
   </div>
   {#if p.hiddenCount > 0}
     <div class="wt-tt-more-files">
-      + {p.hiddenCount} change{p.hiddenCount === 1 ? "" : "s"} (in total {p.total} files touched)?
+      + {p.hiddenCount} change{p.hiddenCount === 1 ? "" : "s"} (in total {p.total}
+      files touched)?
     </div>
   {/if}
 {/if}
@@ -319,7 +358,7 @@
       {/if}
     </div>
     <FileDiffTooltipBody
-      worktreePath={worktreePath}
+      {worktreePath}
       file={hovered.path}
       kind={DIFF_KIND[hovered.kind]}
     />
@@ -358,7 +397,8 @@
        most of the "elevated" work here. */
     background: color-mix(in srgb, var(--surface-3, #2a2a2c) 92%, #ffffff 8%);
     color: var(--text-1, #e8e8e8);
-    border: 1px solid color-mix(in srgb, var(--surface-3, #2a2a2c) 70%, #ffffff 30%);
+    border: 1px solid
+      color-mix(in srgb, var(--surface-3, #2a2a2c) 70%, #ffffff 30%);
     padding: 0.4rem 0.5rem;
     border-radius: var(--radius-sm, 0.35rem);
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);

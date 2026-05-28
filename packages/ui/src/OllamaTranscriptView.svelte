@@ -34,7 +34,12 @@
    *  for freshly-created sessions). SessionView fetches it via
    *  `/api/session?source=<path>`. */
   export let sourcePath: string;
-  export let onContinueWith: ((targetAgent: "claude" | "codex" | "ollama", ollamaModel?: string) => void) | undefined = undefined;
+  export let onContinueWith:
+    | ((
+        targetAgent: "claude" | "codex" | "ollama",
+        ollamaModel?: string,
+      ) => void)
+    | undefined = undefined;
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
 
@@ -54,7 +59,7 @@
   source={sourcePath}
   wtPath={wt}
   initialMode="read"
-  model={model}
+  {model}
   {starred}
   {onToggleStar}
   {onContinueWith}

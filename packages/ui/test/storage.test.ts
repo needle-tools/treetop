@@ -166,10 +166,7 @@ describe("DismissedSessionsStore", () => {
     const m = new MemStore();
     const s = new DismissedSessionsStore(m, DK);
     s.save(["/a.jsonl", "__attached__:shell:abc"]);
-    expect([...s.load()]).toEqual([
-      "/a.jsonl",
-      "__attached__:shell:abc",
-    ]);
+    expect([...s.load()]).toEqual(["/a.jsonl", "__attached__:shell:abc"]);
   });
 
   test("save replaces, not merges", () => {
@@ -195,10 +192,7 @@ describe("DismissedSessionsStore", () => {
   test("drops non-string entries", () => {
     const m = new MemStore();
     m.setItem(DK, JSON.stringify(["a", 1, null, "b"]));
-    expect([...new DismissedSessionsStore(m, DK).load()]).toEqual([
-      "a",
-      "b",
-    ]);
+    expect([...new DismissedSessionsStore(m, DK).load()]).toEqual(["a", "b"]);
   });
 
   test("storage exceptions don't propagate", () => {
@@ -419,7 +413,11 @@ describe("filterToExistingSessions", () => {
   });
 
   test("returns only sessions whose source is in the existing set", () => {
-    const persisted = [mkSess("/a.jsonl"), mkSess("/b.jsonl"), mkSess("/c.jsonl")];
+    const persisted = [
+      mkSess("/a.jsonl"),
+      mkSess("/b.jsonl"),
+      mkSess("/c.jsonl"),
+    ];
     const existing = new Set(["/a.jsonl", "/c.jsonl"]);
     expect(filterToExistingSessions(persisted, existing)).toEqual([
       mkSess("/a.jsonl"),
@@ -597,7 +595,10 @@ describe("cmdForOpenSession", () => {
     // Even with a sid stamped (shouldn't happen for shells, but the
     // helper must be defensive): still defaultShell, not anything else.
     expect(
-      cmdForOpenSession({ agent: "shell", resumeSessionId: "sid" }, "/bin/fish"),
+      cmdForOpenSession(
+        { agent: "shell", resumeSessionId: "sid" },
+        "/bin/fish",
+      ),
     ).toEqual(["/bin/fish", "-l"]);
   });
 
@@ -690,10 +691,7 @@ describe("cmdForOpenSession", () => {
 
   test("brand-new claude column with claudeEffort appends `--effort <level>`", () => {
     expect(
-      cmdForOpenSession(
-        { agent: "claude", claudeEffort: "high" },
-        "/bin/zsh",
-      ),
+      cmdForOpenSession({ agent: "claude", claudeEffort: "high" }, "/bin/zsh"),
     ).toEqual(["claude", "--effort", "high"]);
   });
 
@@ -759,7 +757,9 @@ describe("cmdForOpenSession", () => {
   });
 
   test("brand-new codex column (no sid) spawns bare `codex`", () => {
-    expect(cmdForOpenSession({ agent: "codex" }, "/bin/zsh")).toEqual(["codex"]);
+    expect(cmdForOpenSession({ agent: "codex" }, "/bin/zsh")).toEqual([
+      "codex",
+    ]);
   });
 
   test("codex with a stamped resumeSessionId uses `codex resume <sid>`", () => {
@@ -977,8 +977,7 @@ describe("stampDiscoveredSessionId", () => {
       "/wt": [
         {
           agent: "claude",
-          source:
-            "/Users/me/.claude/projects/-Users-me-wt/abc-123.jsonl",
+          source: "/Users/me/.claude/projects/-Users-me-wt/abc-123.jsonl",
         },
       ],
     };
@@ -1162,8 +1161,7 @@ describe("resolveTitleSource", () => {
   // resumeSessionId is stamped, so the title travels with the
   // conversation. `resolveTitleSource` is the pure resolver the render
   // path uses to decide where the title save/lookup should go.
-  const JSONL_PATH =
-    "/Users/me/.claude/projects/-Users-me-wt/sid-A.jsonl";
+  const JSONL_PATH = "/Users/me/.claude/projects/-Users-me-wt/sid-A.jsonl";
 
   test("falls back to the synthetic source when no resumeSessionId yet (brand-new TUI)", () => {
     const out = resolveTitleSource(
@@ -1200,9 +1198,7 @@ describe("resolveTitleSource", () => {
         source: "__new__:claude:t_abc",
         resumeSessionId: "sid-A",
       },
-      [
-        { agent: "claude", sessionId: "sid-B", source: "/other.jsonl" },
-      ],
+      [{ agent: "claude", sessionId: "sid-B", source: "/other.jsonl" }],
     );
     expect(out).toBe("__new__:claude:t_abc");
   });
@@ -1285,7 +1281,9 @@ describe("setSessionMode", () => {
     const before: Record<string, PersistedSession[]> = {
       "/wt": [{ agent: "claude", source: SOURCE }],
     };
-    expect(setSessionMode(before, "/other-wt", SOURCE, "terminal")).toBe(before);
+    expect(setSessionMode(before, "/other-wt", SOURCE, "terminal")).toBe(
+      before,
+    );
   });
 
   test("returns same reference when the source isn't in the list", () => {
@@ -1305,7 +1303,12 @@ describe("setSessionMode", () => {
         },
       ],
     };
-    const after = setSessionMode(before, "/wt", "__new__:claude:t_a", "terminal");
+    const after = setSessionMode(
+      before,
+      "/wt",
+      "__new__:claude:t_a",
+      "terminal",
+    );
     expect(after["/wt"]).toEqual([
       {
         agent: "claude",
@@ -1337,14 +1340,10 @@ describe("OpenSessionsStore + mode round-trip", () => {
     const m = new MemStore();
     const s = new OpenSessionsStore(m, KEY);
     s.save({
-      "/wt": [
-        { agent: "claude", source: "/agents/x.jsonl", mode: "terminal" },
-      ],
+      "/wt": [{ agent: "claude", source: "/agents/x.jsonl", mode: "terminal" }],
     });
     expect(s.load()).toEqual({
-      "/wt": [
-        { agent: "claude", source: "/agents/x.jsonl", mode: "terminal" },
-      ],
+      "/wt": [{ agent: "claude", source: "/agents/x.jsonl", mode: "terminal" }],
     });
   });
 
@@ -1420,9 +1419,7 @@ describe("reload-resume terminal-mode round-trip (the SessionView path)", () => 
     // 4. App.svelte's render branch hands SessionView `initialMode =
     //    "terminal"` based on this field; SessionView mounts straight
     //    into the live `claude --resume <sid>` PTY.
-    expect(
-      restored.mode === "terminal" ? "terminal" : "read",
-    ).toBe("terminal");
+    expect(restored.mode === "terminal" ? "terminal" : "read").toBe("terminal");
   });
 
   test("Dispose terminal → mode goes back to read → next reload starts in read", () => {
@@ -1430,9 +1427,7 @@ describe("reload-resume terminal-mode round-trip (the SessionView path)", () => 
     const KEY = "supergit:openSessions-dispose-mode";
     const store = new OpenSessionsStore(m, KEY);
     let byWt: Record<string, PersistedSession[]> = {
-      "/wt": [
-        { agent: "claude", source: "/x.jsonl", mode: "terminal" },
-      ],
+      "/wt": [{ agent: "claude", source: "/x.jsonl", mode: "terminal" }],
     };
     store.save(byWt);
 
@@ -1590,7 +1585,9 @@ describe("reload-resume round-trip (stamp → persist → load → cmd)", () => 
 
 describe("effectiveVisibleWorktrees", () => {
   test("returns [] when the repo has no worktrees on disk", () => {
-    expect(effectiveVisibleWorktrees("rA", [], { rA: ["/anything"] })).toEqual([]);
+    expect(effectiveVisibleWorktrees("rA", [], { rA: ["/anything"] })).toEqual(
+      [],
+    );
   });
 
   test("with no stored entry, defaults to the first worktree on disk only", () => {
@@ -1618,21 +1615,17 @@ describe("effectiveVisibleWorktrees", () => {
 
   test("an explicit empty list keeps the repo hidden — does NOT fall back to first wt", () => {
     expect(
-      effectiveVisibleWorktrees(
-        "rA",
-        ["/repos/A", "/wt/A/feature"],
-        { rA: [] },
-      ),
+      effectiveVisibleWorktrees("rA", ["/repos/A", "/wt/A/feature"], {
+        rA: [],
+      }),
     ).toEqual([]);
   });
 
   test("filters out stored paths whose worktree no longer exists on disk", () => {
     expect(
-      effectiveVisibleWorktrees(
-        "rA",
-        ["/repos/A"],
-        { rA: ["/wt/A/feature-deleted", "/repos/A"] },
-      ),
+      effectiveVisibleWorktrees("rA", ["/repos/A"], {
+        rA: ["/wt/A/feature-deleted", "/repos/A"],
+      }),
     ).toEqual(["/repos/A"]);
   });
 });
@@ -1657,7 +1650,10 @@ describe("CommandUrlPickStore", () => {
     // session that surfaced the URLs. Two store instances over the same
     // backing storage stand in for "before reload" and "after reload".
     const m = new MemStore();
-    new CommandUrlPickStore(m, PICK_KEY).set("link-1", "http://192.168.0.174:7779");
+    new CommandUrlPickStore(m, PICK_KEY).set(
+      "link-1",
+      "http://192.168.0.174:7779",
+    );
     const reopened = new CommandUrlPickStore(m, PICK_KEY);
     expect(reopened.load()["link-1"]).toBe("http://192.168.0.174:7779");
   });
@@ -1688,8 +1684,13 @@ describe("CommandUrlPickStore", () => {
 
   test("drops non-string values from the stored map", () => {
     const m = new MemStore();
-    m.setItem(PICK_KEY, JSON.stringify({ a: "http://x", b: 1, c: null, d: { x: 1 } }));
-    expect(new CommandUrlPickStore(m, PICK_KEY).load()).toEqual({ a: "http://x" });
+    m.setItem(
+      PICK_KEY,
+      JSON.stringify({ a: "http://x", b: 1, c: null, d: { x: 1 } }),
+    );
+    expect(new CommandUrlPickStore(m, PICK_KEY).load()).toEqual({
+      a: "http://x",
+    });
   });
 
   test("swallows storage errors on set", () => {
@@ -1714,7 +1715,10 @@ describe("CommandTermStore", () => {
   test("set then load round-trips the entry", () => {
     const m = new MemStore();
     const s = new CommandTermStore(m, KEY);
-    s.set("link-1", { wtPath: "/repo/foo", source: "__attached__:shell:t-123" });
+    s.set("link-1", {
+      wtPath: "/repo/foo",
+      source: "__attached__:shell:t-123",
+    });
     expect(s.load()).toEqual({
       "link-1": { wtPath: "/repo/foo", source: "__attached__:shell:t-123" },
     });

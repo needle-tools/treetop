@@ -27,7 +27,10 @@ describe("configure + getMappings", () => {
   });
 
   test("replaces previous mappings entirely", () => {
-    configure({ "note-edit-start": { files: ["/a.mp3"] }, "error": { files: ["/b.mp3"] } });
+    configure({
+      "note-edit-start": { files: ["/a.mp3"] },
+      error: { files: ["/b.mp3"] },
+    });
     configure({ "folder-add": { files: ["/c.mp3"] } });
     expect(getMappings()["note-edit-start"]).toBeUndefined();
     expect(getMappings()["folder-add"]?.files[0]).toBe("/c.mp3");
@@ -37,8 +40,13 @@ describe("configure + getMappings", () => {
 describe("DEFAULT_MAPPINGS", () => {
   test("contains all phase-1 tags", () => {
     const tags: SoundTag[] = [
-      "folder-add-first", "folder-add", "note-edit-start",
-      "note-edit-end", "message-receive", "error", "peer-session",
+      "folder-add-first",
+      "folder-add",
+      "note-edit-start",
+      "note-edit-end",
+      "message-receive",
+      "error",
+      "peer-session",
     ];
     for (const t of tags) {
       expect(DEFAULT_MAPPINGS[t]).toBeDefined();
@@ -123,7 +131,11 @@ describe("queue management (non-overlay)", () => {
   test("clearQueue empties the queue", () => {
     configure({
       "folder-add": { files: ["/a.mp3"], selfCooldown: 0, globalCooldown: 0 },
-      "folder-add-first": { files: ["/b.mp3"], selfCooldown: 0, globalCooldown: 0 },
+      "folder-add-first": {
+        files: ["/b.mp3"],
+        selfCooldown: 0,
+        globalCooldown: 0,
+      },
     });
     play("folder-add");
     play("folder-add-first");
@@ -133,7 +145,13 @@ describe("queue management (non-overlay)", () => {
   });
 
   test("queue caps at MAX_QUEUE_SIZE (8)", () => {
-    configure({ "folder-add": { files: ["/sounds/pop.mp3"], selfCooldown: 0, globalCooldown: 0 } });
+    configure({
+      "folder-add": {
+        files: ["/sounds/pop.mp3"],
+        selfCooldown: 0,
+        globalCooldown: 0,
+      },
+    });
     for (let i = 0; i < 12; i++) {
       play("folder-add");
     }
@@ -152,13 +170,15 @@ describe("queue management (non-overlay)", () => {
 
 describe("overlay sounds", () => {
   test("overlay sounds bypass the queue", () => {
-    configure({ "error": { files: ["/a.mp3"], overlay: true, selfCooldown: 0 } });
+    configure({ error: { files: ["/a.mp3"], overlay: true, selfCooldown: 0 } });
     play("error");
     expect(getQueueSnapshot()).toHaveLength(0);
   });
 
   test("overlay sounds still respect selfCooldown", () => {
-    configure({ "error": { files: ["/a.mp3"], overlay: true, selfCooldown: 5000 } });
+    configure({
+      error: { files: ["/a.mp3"], overlay: true, selfCooldown: 5000 },
+    });
     play("error");
     play("error");
     // second play should be blocked by selfCooldown — we can't easily
@@ -169,7 +189,7 @@ describe("overlay sounds", () => {
   test("overlay and queued sounds are independent", () => {
     configure({
       "folder-add": { files: ["/a.mp3"], selfCooldown: 0 },
-      "error": { files: ["/b.mp3"], overlay: true, selfCooldown: 0 },
+      error: { files: ["/b.mp3"], overlay: true, selfCooldown: 0 },
     });
     play("folder-add");
     play("error");
@@ -188,7 +208,9 @@ describe("cooldown + dedup", () => {
   });
 
   test("same tag with selfCooldown: 0 and globalCooldown: 0 allows rapid fire", () => {
-    configure({ "folder-add": { files: ["/a.mp3"], selfCooldown: 0, globalCooldown: 0 } });
+    configure({
+      "folder-add": { files: ["/a.mp3"], selfCooldown: 0, globalCooldown: 0 },
+    });
     play("folder-add");
     play("folder-add");
     play("folder-add");
@@ -205,7 +227,11 @@ describe("cooldown + dedup", () => {
   test("different tags can queue in the same frame", () => {
     configure({
       "folder-add": { files: ["/a.mp3"], selfCooldown: 0, globalCooldown: 0 },
-      "folder-add-first": { files: ["/b.mp3"], selfCooldown: 0, globalCooldown: 0 },
+      "folder-add-first": {
+        files: ["/b.mp3"],
+        selfCooldown: 0,
+        globalCooldown: 0,
+      },
     });
     play("folder-add");
     play("folder-add-first");
@@ -214,7 +240,11 @@ describe("cooldown + dedup", () => {
 
   test("globalCooldown blocks other tags when queue is non-empty", () => {
     configure({
-      "folder-add-first": { files: ["/a.mp3"], selfCooldown: 0, globalCooldown: 5000 },
+      "folder-add-first": {
+        files: ["/a.mp3"],
+        selfCooldown: 0,
+        globalCooldown: 5000,
+      },
       "folder-add": { files: ["/b.mp3"], selfCooldown: 0 },
     });
     play("folder-add-first");

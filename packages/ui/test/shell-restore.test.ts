@@ -94,9 +94,7 @@ describe("mergePersistedTerminals", () => {
       },
     ];
     const result = mergePersistedTerminals({ [WT]: [] }, persisted);
-    expect(result[WT]).toEqual([
-      { agent: "shell", source: "__restore__:t1" },
-    ]);
+    expect(result[WT]).toEqual([{ agent: "shell", source: "__restore__:t1" }]);
   });
 
   test("two distinct persisted PTYs produce two restore cards (matches user's screenshot)", () => {
@@ -179,7 +177,9 @@ describe("mergePersistedTerminals", () => {
   });
 
   test("empty persisted list is a no-op (preserves input identity)", () => {
-    const input = { [WT]: [{ agent: "shell" as const, source: "__attached__:shell:t1" }] };
+    const input = {
+      [WT]: [{ agent: "shell" as const, source: "__attached__:shell:t1" }],
+    };
     const result = mergePersistedTerminals(input, []);
     expect(result).toBe(input);
   });

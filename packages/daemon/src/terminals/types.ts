@@ -55,7 +55,10 @@ export interface TerminalSubscriber {
   /** Daemon-detected state changes (e.g. agent paused on a "press
    *  enter to continue" / permission prompt). Optional so existing
    *  subscribers don't need to implement it. */
-  onState?(state: { awaitingInput: boolean; configError?: { file: string } | null }): void;
+  onState?(state: {
+    awaitingInput: boolean;
+    configError?: { file: string } | null;
+  }): void;
 }
 
 export interface TerminalHandle {

@@ -56,9 +56,14 @@ describe("feedShellInput", () => {
     const id = `t-${Math.random().toString(36).slice(2)}`;
     // "ls" + ESC[A (up arrow) + ESC[D (left arrow) + Enter
     const chunk = new Uint8Array([
-      0x6c, 0x73, // "ls"
-      0x1b, 0x5b, 0x41, // ESC [ A — up
-      0x1b, 0x5b, 0x44, // ESC [ D — left
+      0x6c,
+      0x73, // "ls"
+      0x1b,
+      0x5b,
+      0x41, // ESC [ A — up
+      0x1b,
+      0x5b,
+      0x44, // ESC [ D — left
       0x0d, // Enter
     ]);
     expect(feedShellInput(id, chunk)).toEqual(["ls"]);

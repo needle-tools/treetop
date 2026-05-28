@@ -46,7 +46,13 @@ describe("summarize (claude)", () => {
     const r = summarize("claude", {
       type: "assistant",
       message: {
-        content: [{ type: "tool_use", name: "Edit", input: { file_path: "/Users/me/src/foo.ts" } }],
+        content: [
+          {
+            type: "tool_use",
+            name: "Edit",
+            input: { file_path: "/Users/me/src/foo.ts" },
+          },
+        ],
       },
     });
     expect(r).toBe("Edit(/Users/me/src/foo.ts)");
@@ -56,7 +62,9 @@ describe("summarize (claude)", () => {
     const r = summarize("claude", {
       type: "assistant",
       message: {
-        content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }],
+        content: [
+          { type: "tool_use", name: "Bash", input: { command: "bun test" } },
+        ],
       },
     });
     expect(r).toBe("Bash(bun test)");
@@ -67,7 +75,9 @@ describe("summarize (claude)", () => {
     const r = summarize("claude", {
       type: "assistant",
       message: {
-        content: [{ type: "tool_use", name: "Read", input: { file_path: path } }],
+        content: [
+          { type: "tool_use", name: "Read", input: { file_path: path } },
+        ],
       },
     });
     expect(r?.startsWith("Read(…")).toBe(true);

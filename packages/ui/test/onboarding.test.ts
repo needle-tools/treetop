@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { walkthroughHash, WALKTHROUGH_STEPS } from "../src/onboarding-walkthrough";
+import {
+  walkthroughHash,
+  WALKTHROUGH_STEPS,
+} from "../src/onboarding-walkthrough";
 
 describe("walkthroughHash", () => {
   it("returns a stable non-empty string", () => {
@@ -36,7 +39,10 @@ describe("WALKTHROUGH_STEPS", () => {
 });
 
 describe("X button remove-vs-hide logic", () => {
-  function shouldRemoveRepo(wt: { nonGit: boolean } | null, worktreeCount: number): boolean {
+  function shouldRemoveRepo(
+    wt: { nonGit: boolean } | null,
+    worktreeCount: number,
+  ): boolean {
     if (wt && !wt.nonGit && worktreeCount > 1) return false;
     return true;
   }

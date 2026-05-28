@@ -5,7 +5,21 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, shouldDeferToNativeCopy, cleanCopiedPathSelection } from "../src/file-browser-utils";
+import {
+  joinPath,
+  formatSize,
+  formatMtime,
+  NavHistory,
+  resolveTermIdFromSource,
+  parseRemoteSource,
+  StarStore,
+  breadcrumbs,
+  normalizePath,
+  computeStarredList,
+  splitParent,
+  shouldDeferToNativeCopy,
+  cleanCopiedPathSelection,
+} from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -37,7 +51,9 @@ describe("joinPath", () => {
   });
 
   test("windows backslash path uses backslash separator", () => {
-    expect(joinPath("C:\\git\\needle-cloud", "src")).toBe("C:\\git\\needle-cloud\\src");
+    expect(joinPath("C:\\git\\needle-cloud", "src")).toBe(
+      "C:\\git\\needle-cloud\\src",
+    );
   });
 
   test("windows path with trailing backslash", () => {
@@ -183,16 +199,28 @@ describe("file browser KV state", () => {
     expect(raw).not.toBeNull();
     const parsed = JSON.parse(raw!);
     expect(parsed["__files__:fb_test"].currentDir).toBe("/Users/test/repo/src");
-    expect(parsed["__files__:fb_test"].dirHistory).toEqual(["/Users/test/repo"]);
-    expect(parsed["__files__:fb_test"].expanded).toEqual(["/Users/test/repo/src/lib"]);
+    expect(parsed["__files__:fb_test"].dirHistory).toEqual([
+      "/Users/test/repo",
+    ]);
+    expect(parsed["__files__:fb_test"].expanded).toEqual([
+      "/Users/test/repo/src/lib",
+    ]);
   });
 
   test("multiple file browser states are independent", () => {
     const m = new MemStore();
     const key = "supergit:fileBrowser:state";
     const state = {
-      "__files__:fb_1": { currentDir: "/repo/src", dirHistory: ["/repo"], expanded: [] },
-      "__files__:fb_2": { currentDir: "/repo/docs", dirHistory: ["/repo"], expanded: [] },
+      "__files__:fb_1": {
+        currentDir: "/repo/src",
+        dirHistory: ["/repo"],
+        expanded: [],
+      },
+      "__files__:fb_2": {
+        currentDir: "/repo/docs",
+        dirHistory: ["/repo"],
+        expanded: [],
+      },
     };
     m.setItem(key, JSON.stringify(state));
     const parsed = JSON.parse(m.getItem(key)!);
@@ -320,37 +348,41 @@ describe("NavHistory", () => {
 
 describe("resolveTermIdFromSource", () => {
   test("resolves from __attached__:shell:<termId>", () => {
-    expect(resolveTermIdFromSource("__attached__:shell:t_abc123", {}))
-      .toBe("t_abc123");
+    expect(resolveTermIdFromSource("__attached__:shell:t_abc123", {})).toBe(
+      "t_abc123",
+    );
   });
 
   test("resolves from newTermIds map for __new__ sources", () => {
     const newTermIds = { "__new__:shell:xyz": "t_real_id" };
-    expect(resolveTermIdFromSource("__new__:shell:xyz", newTermIds))
-      .toBe("t_real_id");
+    expect(resolveTermIdFromSource("__new__:shell:xyz", newTermIds)).toBe(
+      "t_real_id",
+    );
   });
 
   test("newTermIds takes precedence over source parsing", () => {
     const newTermIds = { "__attached__:shell:t_old": "t_override" };
-    expect(resolveTermIdFromSource("__attached__:shell:t_old", newTermIds))
-      .toBe("t_override");
+    expect(
+      resolveTermIdFromSource("__attached__:shell:t_old", newTermIds),
+    ).toBe("t_override");
   });
 
   test("returns undefined for unknown source with no newTermIds entry", () => {
-    expect(resolveTermIdFromSource("__new__:shell:unknown", {}))
-      .toBeUndefined();
+    expect(
+      resolveTermIdFromSource("__new__:shell:unknown", {}),
+    ).toBeUndefined();
   });
 
   test("returns undefined for unrelated source", () => {
-    expect(resolveTermIdFromSource("some/session/path.jsonl", {}))
-      .toBeUndefined();
+    expect(
+      resolveTermIdFromSource("some/session/path.jsonl", {}),
+    ).toBeUndefined();
   });
 });
 
 describe("parseRemoteSource", () => {
   test("extracts termId from __remote__:<termId>:<uniqueId>", () => {
-    expect(parseRemoteSource("__remote__:t_abc123:rb_xyz"))
-      .toBe("t_abc123");
+    expect(parseRemoteSource("__remote__:t_abc123:rb_xyz")).toBe("t_abc123");
   });
 
   test("returns undefined for non-remote source", () => {
@@ -400,9 +432,7 @@ describe("breadcrumbs", () => {
   });
 
   test("windows drive root alone", () => {
-    expect(breadcrumbs("C:\\")).toEqual([
-      { name: "C:", path: "C:\\" },
-    ]);
+    expect(breadcrumbs("C:\\")).toEqual([{ name: "C:", path: "C:\\" }]);
   });
 
   test("lowercase drive letter still detected", () => {
@@ -520,7 +550,11 @@ describe("splitParent", () => {
     // `split("/")` which never matched a Windows separator → dir=""
     // and openFile prepended a stray "/" producing /C:\git\... paths
     // that Windows can't resolve.
-    expect(splitParent("C:\\git\\needle-cloud\\documentation\\Files and websites.md")).toEqual({
+    expect(
+      splitParent(
+        "C:\\git\\needle-cloud\\documentation\\Files and websites.md",
+      ),
+    ).toEqual({
       dir: "C:\\git\\needle-cloud\\documentation",
       name: "Files and websites.md",
     });
@@ -582,7 +616,11 @@ describe("computeStarredList", () => {
     const stars = new Set(["C:\\git\\repo\\src\\foo.ts"]);
     const list = computeStarredList(stars, "C:\\git\\repo");
     expect(list).toEqual([
-      { fullPath: "C:\\git\\repo\\src\\foo.ts", rel: "src\\foo.ts", inWt: true },
+      {
+        fullPath: "C:\\git\\repo\\src\\foo.ts",
+        rel: "src\\foo.ts",
+        inWt: true,
+      },
     ]);
   });
 
@@ -633,11 +671,18 @@ describe("computeStarredList", () => {
   });
 
   test("unix paths work too", () => {
-    const stars = new Set(["/Users/me/repo/src/foo.ts", "/Users/me/other/bar.ts"]);
+    const stars = new Set([
+      "/Users/me/repo/src/foo.ts",
+      "/Users/me/other/bar.ts",
+    ]);
     const list = computeStarredList(stars, "/Users/me/repo");
     expect(list).toEqual([
       { fullPath: "/Users/me/repo/src/foo.ts", rel: "src/foo.ts", inWt: true },
-      { fullPath: "/Users/me/other/bar.ts", rel: "/Users/me/other/bar.ts", inWt: false },
+      {
+        fullPath: "/Users/me/other/bar.ts",
+        rel: "/Users/me/other/bar.ts",
+        inWt: false,
+      },
     ]);
   });
 
@@ -656,11 +701,15 @@ describe("computeStarredList", () => {
 
 describe("normalizePath", () => {
   test("unix path unchanged", () => {
-    expect(normalizePath("/Users/me/repo/src/foo.ts")).toBe("/Users/me/repo/src/foo.ts");
+    expect(normalizePath("/Users/me/repo/src/foo.ts")).toBe(
+      "/Users/me/repo/src/foo.ts",
+    );
   });
 
   test("windows path with mixed separators uses backslash", () => {
-    expect(normalizePath("C:\\git\\repo/docs\\foo.md")).toBe("C:\\git\\repo\\docs\\foo.md");
+    expect(normalizePath("C:\\git\\repo/docs\\foo.md")).toBe(
+      "C:\\git\\repo\\docs\\foo.md",
+    );
   });
 
   test("windows path with forward slashes converts to backslash", () => {
@@ -740,11 +789,14 @@ describe("StarStore", () => {
 
   test("load normalizes legacy mixed-separator entries", () => {
     const m = new MemStore();
-    m.setItem(KEY, JSON.stringify([
-      "C:\\git\\repo\\foo.md",
-      "C:/git/repo/foo.md",
-      "C:\\git\\repo\\bar.md",
-    ]));
+    m.setItem(
+      KEY,
+      JSON.stringify([
+        "C:\\git\\repo\\foo.md",
+        "C:/git/repo/foo.md",
+        "C:\\git\\repo\\bar.md",
+      ]),
+    );
     const s = new StarStore(m, KEY);
     expect([...s.load()].sort()).toEqual([
       "C:\\git\\repo\\bar.md",

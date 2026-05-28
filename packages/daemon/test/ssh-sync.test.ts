@@ -158,7 +158,9 @@ describe("SyncTracker", () => {
 
     let uploadCalled = false;
     const tracker = new SyncTracker(
-      async () => { uploadCalled = true; },
+      async () => {
+        uploadCalled = true;
+      },
       { debounceMs: 100 },
     );
 

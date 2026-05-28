@@ -13,16 +13,34 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { get } from "svelte/store";
 import { activeConfirm, confirmDialog } from "../src/confirm-dialog";
 import { activeCopy, openCopy, closeCopy } from "../src/copy-session-dialog";
-import { activeShare, openShare, closeShare, rememberPeer, recallPeer } from "../src/share-session-dialog";
-import { activeRepair, openRepair, closeRepair } from "../src/repair-session-dialog";
-import { activeInvite, openInvite, closeInvite } from "../src/receive-invite-dialog";
+import {
+  activeShare,
+  openShare,
+  closeShare,
+  rememberPeer,
+  recallPeer,
+} from "../src/share-session-dialog";
+import {
+  activeRepair,
+  openRepair,
+  closeRepair,
+} from "../src/repair-session-dialog";
+import {
+  activeInvite,
+  openInvite,
+  closeInvite,
+} from "../src/receive-invite-dialog";
 import { activeSummarize, openSummarize } from "../src/summarize-dialog";
 
 describe("confirmDialog", () => {
   beforeEach(() => activeConfirm.set(null));
 
   test("opening publishes a request carrying the options", () => {
-    const p = confirmDialog({ title: "Remove the link?", message: "https://x", danger: true });
+    const p = confirmDialog({
+      title: "Remove the link?",
+      message: "https://x",
+      danger: true,
+    });
     const req = get(activeConfirm);
     expect(req?.title).toBe("Remove the link?");
     expect(req?.message).toBe("https://x");

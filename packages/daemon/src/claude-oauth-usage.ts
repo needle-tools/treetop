@@ -421,10 +421,13 @@ function decodeUsage(json: unknown): ClaudeOAuthUsage | null {
           const r = extraRaw as Record<string, unknown>;
           const out: OAuthExtraUsage = {};
           if (typeof r.is_enabled === "boolean") out.isEnabled = r.is_enabled;
-          if (typeof r.monthly_limit === "number") out.monthlyLimit = r.monthly_limit;
-          if (typeof r.used_credits === "number") out.usedCredits = r.used_credits;
+          if (typeof r.monthly_limit === "number")
+            out.monthlyLimit = r.monthly_limit;
+          if (typeof r.used_credits === "number")
+            out.usedCredits = r.used_credits;
           // Same 0..100 → 0..1 normalization as the window decoder.
-          if (typeof r.utilization === "number") out.utilization = r.utilization / 100;
+          if (typeof r.utilization === "number")
+            out.utilization = r.utilization / 100;
           if (typeof r.currency === "string") out.currency = r.currency;
           return Object.keys(out).length > 0 ? out : undefined;
         })()
@@ -483,7 +486,8 @@ export async function fetchClaudeOAuthUsage(
     const message = e instanceof Error ? e.message : String(e);
     return { usage: null, error: { kind: "network", message } };
   }
-  if (res.status === 401) return { usage: null, error: { kind: "unauthorized" } };
+  if (res.status === 401)
+    return { usage: null, error: { kind: "unauthorized" } };
   if (res.status !== 200) {
     const body = await res.text().catch(() => undefined);
     return {

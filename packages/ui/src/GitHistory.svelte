@@ -156,21 +156,28 @@
       label: allBranches ? "Current branch" : "All branches",
       icon: allBranches ? "◎" : "⊕",
       keepOpen: true,
-      onSelect: () => { allBranches = !allBranches; void reloadCommits(); },
+      onSelect: () => {
+        allBranches = !allBranches;
+        void reloadCommits();
+      },
     },
     {
       kind: "action" as const,
       label: showDiff ? "Hide diffs" : "Show diffs",
       icon: showDiff ? "◉" : "○",
       keepOpen: true,
-      onSelect: () => { showDiff = !showDiff; },
+      onSelect: () => {
+        showDiff = !showDiff;
+      },
     },
     {
       kind: "action" as const,
       label: fullFile ? "±2 lines context" : "Full file context",
       icon: fullFile ? "◇" : "◈",
       keepOpen: true,
-      onSelect: () => { void toggleFullFile(); },
+      onSelect: () => {
+        void toggleFullFile();
+      },
     },
   ] satisfies SessionMenuItem[];
 
@@ -181,7 +188,11 @@
     sentinelEl = node;
     observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !commitsLoading && !commitsExhausted) {
+        if (
+          entries[0]?.isIntersecting &&
+          !commitsLoading &&
+          !commitsExhausted
+        ) {
           void loadMoreCommits();
         }
       },
@@ -190,7 +201,9 @@
     observer.observe(node);
   }
 
-  onDestroy(() => { observer?.disconnect(); });
+  onDestroy(() => {
+    observer?.disconnect();
+  });
 
   void loadCommitsInitial();
 </script>
@@ -206,7 +219,9 @@
     canEnd={false}
     {onClose}
     {onDragStart}
-    lastActivityFallback={commits ? `${commits.length}${commitsExhausted ? "" : "+"} commits` : ""}
+    lastActivityFallback={commits
+      ? `${commits.length}${commitsExhausted ? "" : "+"} commits`
+      : ""}
     closeTitle="Close this git history panel."
     {menuItems}
   />
@@ -230,7 +245,27 @@
               <span class="gh-subject">
                 {#if c.refs && c.refs.length > 0}
                   {#each c.refs as ref}
-                    <span class="gh-ref" class:gh-ref-head={ref.startsWith("HEAD")} class:gh-ref-tag={ref.startsWith("tag:")}>{#if ref.startsWith("tag:")}<svg class="gh-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.tag.paths as d}<path {d}/>{/each}{#each ICONS.tag.circles ?? [] as c}<circle cx={c.cx} cy={c.cy} r={c.r}/>{/each}</svg>{/if}{ref.replace(/^tag: /, "")}</span>
+                    <span
+                      class="gh-ref"
+                      class:gh-ref-head={ref.startsWith("HEAD")}
+                      class:gh-ref-tag={ref.startsWith("tag:")}
+                      >{#if ref.startsWith("tag:")}<svg
+                          class="gh-tag-icon"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          >{#each ICONS.tag.paths as d}<path
+                              {d}
+                            />{/each}{#each ICONS.tag.circles ?? [] as c}<circle
+                              cx={c.cx}
+                              cy={c.cy}
+                              r={c.r}
+                            />{/each}</svg
+                        >{/if}{ref.replace(/^tag: /, "")}</span
+                    >
                   {/each}
                 {/if}
                 <span class="gh-subject-text">{c.subject}</span>
@@ -245,7 +280,9 @@
               {#if commitDiff[c.sha] !== undefined}
                 <DiffViewer text={commitDiff[c.sha]} showCommitHeader={false} />
               {:else if diffLoading}
-                <div class="gh-diff-loading"><LoadingSpinner size="1rem" /></div>
+                <div class="gh-diff-loading">
+                  <LoadingSpinner size="1rem" />
+                </div>
               {/if}
             </div>
           {/if}

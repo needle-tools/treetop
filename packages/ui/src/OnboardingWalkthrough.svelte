@@ -19,7 +19,10 @@
   let showEmoji = false;
 
   function stopTyping() {
-    if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
+    if (typeTimer) {
+      clearTimeout(typeTimer);
+      typeTimer = null;
+    }
   }
 
   function typeOut(full: string): Promise<void> {
@@ -28,7 +31,10 @@
     return new Promise<void>((resolve) => {
       let i = 0;
       function tick_() {
-        if (i >= full.length) { resolve(); return; }
+        if (i >= full.length) {
+          resolve();
+          return;
+        }
         typedText = full.slice(0, ++i);
         typeTimer = setTimeout(tick_, 9);
       }
@@ -213,22 +219,35 @@
   }
 </script>
 
-<div class="walkthrough-highlight walkthrough-hidden" bind:this={highlightEl}></div>
+<div
+  class="walkthrough-highlight walkthrough-hidden"
+  bind:this={highlightEl}
+></div>
 
 <div class="walkthrough-tooltip walkthrough-hidden" bind:this={tooltipEl}>
   <div class="walkthrough-msg" class:walkthrough-text-visible={textVisible}>
     {#if targetMissing}
       Unfold the row to continue the tour.
     {:else}
-      {typedText}{#if showEmoji} <span
-        class="walkthrough-emoji walkthrough-emoji-enter walkthrough-emoji-{WALKTHROUGH_STEPS[displayedStep]?.emojiAnim ?? 'bounce'}"
-      >{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span>{/if}
+      {typedText}{#if showEmoji}
+        <span
+          class="walkthrough-emoji walkthrough-emoji-enter walkthrough-emoji-{WALKTHROUGH_STEPS[
+            displayedStep
+          ]?.emojiAnim ?? 'bounce'}"
+          >{WALKTHROUGH_STEPS[displayedStep]?.emoji ?? ""}</span
+        >{/if}
     {/if}
   </div>
-  <div class="walkthrough-tooltip-footer" class:walkthrough-text-visible={textVisible}>
+  <div
+    class="walkthrough-tooltip-footer"
+    class:walkthrough-text-visible={textVisible}
+  >
     {#if displayedStep < total - 1}
-      <button class="walkthrough-btn-skip" on:click={() => dispatch("skip")}
-              disabled={transitioning}>
+      <button
+        class="walkthrough-btn-skip"
+        on:click={() => dispatch("skip")}
+        disabled={transitioning}
+      >
         Skip
       </button>
     {:else}
@@ -237,8 +256,11 @@
     <span class="walkthrough-step-indicator">
       {displayedStep + 1} of {total}
     </span>
-    <button class="walkthrough-btn-next" on:click={() => dispatch("next")}
-            disabled={targetMissing || transitioning}>
+    <button
+      class="walkthrough-btn-next"
+      on:click={() => dispatch("next")}
+      disabled={targetMissing || transitioning}
+    >
       {displayedStep >= total - 1 ? "Finish" : "Next"}
     </button>
   </div>

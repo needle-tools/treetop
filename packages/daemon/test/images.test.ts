@@ -6,7 +6,9 @@ import { serveImage } from "../src/images";
 
 // Minimal PNG header (8 bytes) — enough that Bun.file.exists() is true
 // and Bun.file.size > 0.
-const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_HEADER = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 
 async function writeTempPng(name = "shot.png"): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "supergit-img-"));

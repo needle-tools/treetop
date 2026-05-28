@@ -178,7 +178,10 @@ export async function migrateClaudeImportsToProjects(
       // than what the current encoder produces. Move the file
       // there if it's at the stale location, then rewrite the
       // sidecar's pointer.
-      if (sidecar.importedJsonlPath && sidecar.importedJsonlPath !== targetPath) {
+      if (
+        sidecar.importedJsonlPath &&
+        sidecar.importedJsonlPath !== targetPath
+      ) {
         try {
           await access(sidecar.importedJsonlPath);
           try {
@@ -329,7 +332,10 @@ export async function migrateOllamaImportsToWorkspace(
  *  content. Otherwise it's renamed to `<...>.migrated-bak` so the
  *  user can compare by hand before deleting (this preserves data when
  *  someone hand-edited one of the two paths between migrations). */
-async function dropLegacyJsonl(legacyPath: string, keepPath: string): Promise<void> {
+async function dropLegacyJsonl(
+  legacyPath: string,
+  keepPath: string,
+): Promise<void> {
   let legacySt;
   try {
     legacySt = await stat(legacyPath);

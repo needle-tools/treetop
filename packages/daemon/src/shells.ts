@@ -38,10 +38,15 @@ const ENC_PREFIX = "enc:v1:";
 
 async function getEncryptionKey(workspacePath: string): Promise<Buffer> {
   try {
-    const raw = await readFile(join(workspacePath, "peer-identity.json"), "utf-8");
+    const raw = await readFile(
+      join(workspacePath, "peer-identity.json"),
+      "utf-8",
+    );
     const parsed = JSON.parse(raw) as { id?: string };
     if (typeof parsed.id === "string" && parsed.id.length > 0) {
-      return createHash("sha256").update(`supergit-shell:${parsed.id}`).digest();
+      return createHash("sha256")
+        .update(`supergit-shell:${parsed.id}`)
+        .digest();
     }
   } catch {
     // identity not yet created
@@ -167,7 +172,11 @@ export class ShellsLog {
     // Defensive: termId comes from our own backend (UUID-shaped); we still
     // refuse anything with a path separator so a malicious caller can't
     // escape the shells/ directory.
-    if (termId.includes("/") || termId.includes("\\") || termId.includes("..")) {
+    if (
+      termId.includes("/") ||
+      termId.includes("\\") ||
+      termId.includes("..")
+    ) {
       throw new Error(`invalid termId: ${termId}`);
     }
     return join(this.dir, `${termId}.jsonl`);
@@ -188,7 +197,10 @@ export class ShellsLog {
    *
    *  cwd entries are not carried because they'd be misleading — a `cwd`
    *  line from a past shell session doesn't describe the new PTY. */
-  async writeHeader(header: ShellHeader, previousTermId?: string): Promise<void> {
+  async writeHeader(
+    header: ShellHeader,
+    previousTermId?: string,
+  ): Promise<void> {
     const target = this.pathFor(header.termId);
     if (previousTermId) {
       const carry = await this.collectCarryOver(previousTermId);
@@ -199,12 +211,14 @@ export class ShellsLog {
           return e;
         });
         const body =
-          encrypted.map((e) => JSON.stringify(e)).join("\n") + "\n" +
+          encrypted.map((e) => JSON.stringify(e)).join("\n") +
+          "\n" +
           JSON.stringify({
             kind: "resume",
             ts: new Date().toISOString(),
             fromTermId: previousTermId,
-          } satisfies ShellResumeEntry) + "\n";
+          } satisfies ShellResumeEntry) +
+          "\n";
         await appendFile(target, body);
       }
     }
@@ -216,7 +230,9 @@ export class ShellsLog {
    *  zsh arrow-up shows the prior session's commands. */
   async getCarryOverCmdLines(prevTermId: string): Promise<string[]> {
     const entries = await this.collectCarryOver(prevTermId);
-    return entries.filter((e): e is ShellCmdEntry => e.kind === "cmd").map((e) => e.line);
+    return entries
+      .filter((e): e is ShellCmdEntry => e.kind === "cmd")
+      .map((e) => e.line);
   }
 
   /** Read prior file and return entries worth carrying forward on a
@@ -239,7 +255,10 @@ export class ShellsLog {
       try {
         const obj = JSON.parse(line) as ShellEntry;
         if (obj.kind === "cmd") {
-          (obj as ShellCmdEntry).line = decryptStr((obj as ShellCmdEntry).line, key);
+          (obj as ShellCmdEntry).line = decryptStr(
+            (obj as ShellCmdEntry).line,
+            key,
+          );
           out.push(obj);
         } else if (obj.kind === "resume") {
           out.push(obj);
@@ -353,7 +372,8 @@ export class ShellsLog {
         };
         if (obj.kind !== "cmd") continue;
         count++;
-        if (typeof obj.line === "string") lastLine = decryptStr(obj.line, encKey);
+        if (typeof obj.line === "string")
+          lastLine = decryptStr(obj.line, encKey);
         if (typeof obj.ts === "string") lastTs = obj.ts;
       } catch {
         // skip malformed
@@ -407,9 +427,10 @@ export class ShellsLog {
       }
     }
     if (!header) return null;
-    const lastCwd = cmds.length > 0
-      ? (cmds[cmds.length - 1]!.cwd || header.spawnCwd)
-      : header.spawnCwd;
+    const lastCwd =
+      cmds.length > 0
+        ? cmds[cmds.length - 1]!.cwd || header.spawnCwd
+        : header.spawnCwd;
     return { header, cmds, exit, lastCwd };
   }
 }

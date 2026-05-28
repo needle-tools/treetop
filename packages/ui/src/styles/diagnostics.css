@@ -125,10 +125,19 @@
   color: var(--text-3);
   text-align: center;
 }
-.err-kind-server { background: color-mix(in srgb, var(--error-bg, #5a1d1d) 70%, transparent); color: var(--error-text, #ffb4ad); }
-.err-kind-fetch { background: color-mix(in srgb, #5a4500 70%, transparent); color: #ffd58a; }
+.err-kind-server {
+  background: color-mix(in srgb, var(--error-bg, #5a1d1d) 70%, transparent);
+  color: var(--error-text, #ffb4ad);
+}
+.err-kind-fetch {
+  background: color-mix(in srgb, #5a4500 70%, transparent);
+  color: #ffd58a;
+}
 .err-kind-rejection,
-.err-kind-uncaught { background: color-mix(in srgb, #1d3a5a 70%, transparent); color: #a8d0ff; }
+.err-kind-uncaught {
+  background: color-mix(in srgb, #1d3a5a 70%, transparent);
+  color: #a8d0ff;
+}
 .err-msg {
   white-space: nowrap;
   overflow: hidden;

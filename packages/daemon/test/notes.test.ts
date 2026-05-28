@@ -60,9 +60,7 @@ describe("parseNoteFile", () => {
   });
 
   test("treats missing id as a parse error", () => {
-    expect(() =>
-      parseNoteFile("---\nanchors: []\n---\nbody"),
-    ).toThrow(/id/);
+    expect(() => parseNoteFile("---\nanchors: []\n---\nbody")).toThrow(/id/);
   });
 
   test("round-trips through serializeNoteFile", () => {
@@ -122,15 +120,13 @@ describe("NotesStore", () => {
 
   test("create rejects an id with disallowed characters", async () => {
     const store = await NotesStore.open(await tempDir());
-    await expect(
-      store.create({ id: "bad/id", body: "x" }),
-    ).rejects.toThrow(/id/);
-    await expect(
-      store.create({ id: "bad id", body: "x" }),
-    ).rejects.toThrow(/id/);
-    await expect(
-      store.create({ id: "", body: "x" }),
-    ).rejects.toThrow(/id/);
+    await expect(store.create({ id: "bad/id", body: "x" })).rejects.toThrow(
+      /id/,
+    );
+    await expect(store.create({ id: "bad id", body: "x" })).rejects.toThrow(
+      /id/,
+    );
+    await expect(store.create({ id: "", body: "x" })).rejects.toThrow(/id/);
   });
 
   test("create rejects a duplicate id", async () => {
@@ -194,7 +190,9 @@ describe("NotesStore", () => {
 
   test("update throws on unknown id", async () => {
     const store = await NotesStore.open(await tempDir());
-    await expect(store.update("nope", { body: "x" })).rejects.toThrow(/not found/);
+    await expect(store.update("nope", { body: "x" })).rejects.toThrow(
+      /not found/,
+    );
   });
 
   test("remove deletes the file and returns true", async () => {
@@ -251,7 +249,10 @@ describe("NotesStore", () => {
       target: { type: "url", value: "https://example.com/x" },
     });
     expect(created.kind).toBe("link");
-    expect(created.target).toEqual({ type: "url", value: "https://example.com/x" });
+    expect(created.target).toEqual({
+      type: "url",
+      value: "https://example.com/x",
+    });
     // Reopen the store to force a re-read from disk — exercises the
     // parser path that picks kind/targetType/targetValue out of
     // frontmatter, not just the in-memory pass-through.

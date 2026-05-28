@@ -1,6 +1,12 @@
 import { getDaemonKV } from "./daemon-kv";
 
-export type EmojiAnim = "bounce" | "fly-up" | "fly-down" | "fly-left" | "spin" | "heartbeat";
+export type EmojiAnim =
+  | "bounce"
+  | "fly-up"
+  | "fly-down"
+  | "fly-left"
+  | "spin"
+  | "heartbeat";
 
 export interface WalkthroughStep {
   id: string;
@@ -48,8 +54,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "sticky-notes",
     emoji: "\u{1F4CC}",
     emojiAnim: "fly-down",
-    target: (_wt, row) =>
-      row?.querySelector<HTMLElement>(".notes-add") ?? null,
+    target: (_wt, row) => row?.querySelector<HTMLElement>(".notes-add") ?? null,
     message:
       "Pin sticky notes to any repo or worktree — keep track of TODOs, context, or reminders.",
     placement: "bottom",
@@ -70,8 +75,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "menubar",
     emoji: "\u{2699}\u{FE0F}",
     emojiAnim: "spin",
-    target: () =>
-      document.querySelector<HTMLElement>(".menubar"),
+    target: () => document.querySelector<HTMLElement>(".menubar"),
     message:
       "The menubar gives you quick access to notes, actions, events, and this help button. You can replay this tour anytime from the \u{2753} icon.",
     placement: "bottom",
@@ -80,8 +84,7 @@ export const WALKTHROUGH_STEPS: WalkthroughStep[] = [
     id: "finish",
     emoji: "\u{1F49A}",
     emojiAnim: "heartbeat",
-    target: () =>
-      document.querySelector<HTMLElement>(".menubar"),
+    target: () => document.querySelector<HTMLElement>(".menubar"),
     message:
       "You\u{2019}re all set! Thanks for using supergit by Needle. Happy shipping! \u{1F389}",
     placement: "bottom",

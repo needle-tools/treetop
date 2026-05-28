@@ -79,7 +79,10 @@
   // who's both online and has history appears once.
   $: rows = buildRows($messages.inbox, $messages.mutes, peers, lastReadAt);
 
-  function computeUnread(msgs: import("./messages-store").StoredMessage[], readAt: string | null): number {
+  function computeUnread(
+    msgs: import("./messages-store").StoredMessage[],
+    readAt: string | null,
+  ): number {
     if (!readAt) return msgs.filter((m) => m.direction !== "out").length;
     const cutoff = Date.parse(readAt);
     if (!Number.isFinite(cutoff)) return 0;
@@ -92,18 +95,24 @@
     return n;
   }
 
-  function computePreview(msgs: import("./messages-store").StoredMessage[]): string {
+  function computePreview(
+    msgs: import("./messages-store").StoredMessage[],
+  ): string {
     const latest = msgs[0];
     if (!latest) return "";
     const first = latest.body.split("\n")[0] ?? "";
     const prefix = latest.direction === "out" ? "You: " : "";
     const max = 60;
-    if (prefix.length + first.length > max) return prefix + first.slice(0, max - prefix.length) + "...";
+    if (prefix.length + first.length > max)
+      return prefix + first.slice(0, max - prefix.length) + "...";
     return prefix + first;
   }
 
   function buildRows(
-    inbox: { peer: { id: string; label: string }; messages: import("./messages-store").StoredMessage[] }[],
+    inbox: {
+      peer: { id: string; label: string };
+      messages: import("./messages-store").StoredMessage[];
+    }[],
     mutes: Record<string, string>,
     discovered: DiscoveredPeer[],
     readAt: string | null,
@@ -262,8 +271,12 @@
   const MAX_DISPLAY_LINES = 2;
   function truncateBody(body: string): { text: string; truncated: boolean } {
     const lines = body.split("\n");
-    if (lines.length <= MAX_DISPLAY_LINES) return { text: body, truncated: false };
-    return { text: lines.slice(0, MAX_DISPLAY_LINES).join("\n") + "…", truncated: true };
+    if (lines.length <= MAX_DISPLAY_LINES)
+      return { text: body, truncated: false };
+    return {
+      text: lines.slice(0, MAX_DISPLAY_LINES).join("\n") + "…",
+      truncated: true,
+    };
   }
 
   let deleting: Record<string, boolean> = {};
@@ -329,8 +342,388 @@
     if (peerId in expanded) return expanded[peerId];
     return idx === 0;
   }
-
 </script>
+
+<svelte:window on:click={onDocClick} />
+
+<div class="actions-anchor inbox-anchor">
+  <button
+    class="actions-btn"
+    class:open
+    on:click={toggleOpen}
+    title={count > 0
+      ? `${count} message${count === 1 ? "" : "s"} from other supergit peers`
+      : "Messages from other supergit peers on your LAN"}
+  >
+    <!-- Inbox tray icon (lucide "inbox"). Inline SVG so it picks up
+         currentColor and we don't pull a sprite dependency. -->
+    <svg
+      class="inbox-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
+      <path
+        d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"
+      ></path>
+    </svg>
+    Inbox
+    {#if count > 0}
+      <span class="count inbox-unread-count">{count}</span>
+    {/if}
+  </button>
+  {#if open}
+    <Popover variant="actions" extraClass="inbox-popover" unclamped>
+      <span slot="head">Messages</span>
+      {#if rows.length === 0}
+        <p class="muted small nopad">
+          No peers discovered on this network yet, and nobody's sent you
+          anything. Once another supergit instance comes online on your LAN
+          it'll show up here.
+        </p>
+      {:else}
+        <ul class="inbox-list">
+          {#each rows as row, idx (row.peer.id)}
+            {@const ex = isExpanded(row.peer.id, idx)}
+            <li class="inbox-row" class:inbox-row-muted={row.muted}>
+              <button
+                type="button"
+                class="inbox-head"
+                on:click|stopPropagation={() => toggleExpanded(row.peer.id)}
+              >
+                <svg
+                  class="inbox-chevron"
+                  class:inbox-chevron-open={ex}
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  ><polyline points="9 18 15 12 9 6"></polyline></svg
+                >
+                <span
+                  class="inbox-status-dot"
+                  class:inbox-status-online={row.online}
+                  title={row.online ? "Online" : "Offline"}
+                ></span>
+                <div class="inbox-peer-id">
+                  <span class="inbox-peer-label">
+                    {row.peer.label}
+                    {#if row.unread > 0}
+                      <span class="inbox-peer-unread">{row.unread}</span>
+                    {/if}
+                  </span>
+                  {#if !ex && row.preview}
+                    <span class="inbox-preview">{row.preview}</span>
+                  {/if}
+                </div>
+                <span class="inbox-head-meta">
+                  {#if row.messages.length > 0}
+                    <span class="inbox-head-time"
+                      >{relTime(row.messages[0].receivedAt)}</span
+                    >
+                  {/if}
+                </span>
+              </button>
+
+              <div class="inbox-expanded" class:inbox-collapsed={!ex}>
+                {#if row.contact}
+                  {@const fp = row.contact.frontendPort ?? row.contact.port}
+                  <div class="inbox-peer-detail">
+                    <a
+                      class="inbox-peer-host"
+                      href={`http://${row.contact.host}:${fp}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`Open this peer's dashboard (daemon API on :${row.contact.port})`}
+                    >
+                      {row.contact.host}:{fp} ↗
+                    </a>
+                    {#if row.muted}
+                      <button
+                        type="button"
+                        class="inbox-mute-btn inbox-muted"
+                        on:click={() => onMute(row.peer.id, null)}
+                        title="Unmute this peer">muted · unmute</button
+                      >
+                    {:else if row.messages.length > 0}
+                      <select
+                        class="inbox-mute-select"
+                        title="Mute this peer"
+                        on:change={(e) => {
+                          const v = (e.target as HTMLSelectElement).value;
+                          (e.target as HTMLSelectElement).value = "";
+                          if (v) onMute(row.peer.id, Number(v));
+                        }}
+                      >
+                        <option value="">Mute ▾</option>
+                        <option value="15">15 min</option>
+                        <option value="60">1 hour</option>
+                        <option value="1440">24 hours</option>
+                      </select>
+                    {/if}
+                  </div>
+                {:else}
+                  {#if row.muted}
+                    <div class="inbox-peer-detail">
+                      <span
+                        class="inbox-offline"
+                        title="Peer isn't currently advertising on the LAN"
+                        >offline</span
+                      >
+                      <button
+                        type="button"
+                        class="inbox-mute-btn inbox-muted"
+                        on:click={() => onMute(row.peer.id, null)}
+                        title="Unmute this peer">muted · unmute</button
+                      >
+                    </div>
+                  {:else if row.messages.length > 0}
+                    <div class="inbox-peer-detail">
+                      <span
+                        class="inbox-offline"
+                        title="Peer isn't currently advertising on the LAN"
+                        >offline</span
+                      >
+                      <select
+                        class="inbox-mute-select"
+                        title="Mute this peer"
+                        on:change={(e) => {
+                          const v = (e.target as HTMLSelectElement).value;
+                          (e.target as HTMLSelectElement).value = "";
+                          if (v) onMute(row.peer.id, Number(v));
+                        }}
+                      >
+                        <option value="">Mute ▾</option>
+                        <option value="15">15 min</option>
+                        <option value="60">1 hour</option>
+                        <option value="1440">24 hours</option>
+                      </select>
+                    </div>
+                  {/if}
+                {/if}
+
+                <div class="inbox-reply">
+                  <textarea
+                    class="inbox-reply-input"
+                    placeholder={row.online
+                      ? row.messages.length > 0
+                        ? `Reply to ${row.peer.label}…`
+                        : `Send to ${row.peer.label}…`
+                      : "Peer offline — can't send right now"}
+                    rows="2"
+                    bind:value={replyText[row.peer.id]}
+                    disabled={!row.online || sending[row.peer.id]}
+                    on:keydown={(e) => onReplyKey(e, row.peer.id)}
+                  ></textarea>
+                  {#if (replyText[row.peer.id] ?? "").trim().length > 0 && row.online}
+                    <button
+                      type="button"
+                      class="inbox-send-icon"
+                      on:click|stopPropagation={() => onSend(row.peer.id)}
+                      disabled={sending[row.peer.id]}
+                      title={sending[row.peer.id] ? "Sending…" : "Send (Enter)"}
+                      aria-label="Send"
+                    >
+                      {#if sending[row.peer.id]}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="inbox-send-spinning"
+                          aria-hidden="true"
+                        >
+                          <circle
+                            cx="12"
+                            cy="12"
+                            r="9"
+                            stroke-dasharray="42"
+                            stroke-dashoffset="20"
+                          ></circle>
+                        </svg>
+                      {:else}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M22 2 11 13"></path>
+                          <path d="m22 2-7 20-4-9-9-4 20-7z"></path>
+                        </svg>
+                      {/if}
+                    </button>
+                  {:else if sentBadge[row.peer.id]}
+                    <span class="inbox-sent-badge" aria-live="polite"
+                      >Sent ✓</span
+                    >
+                  {/if}
+                </div>
+                {#if sendError[row.peer.id]}
+                  <p class="inbox-err small" role="alert">
+                    {sendError[row.peer.id]}
+                  </p>
+                {/if}
+
+                {#if row.messages.length > 0}
+                  <ul class="inbox-msgs">
+                    {#each row.messages as msg (msg.id)}
+                      <li
+                        class="inbox-msg"
+                        class:inbox-msg-sent={msg.direction === "out"}
+                      >
+                        <pre
+                          class="inbox-body"
+                          class:inbox-body-sent={msg.direction ===
+                            "out"}>{#if msg.direction === "out"}<svg
+                              class="inbox-msg-dir inbox-msg-dir-out"
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-label="Sent"
+                              ><line x1="5" y1="12" x2="19" y2="12" /><polyline
+                                points="12 5 19 12 12 19"
+                              /></svg
+                            >{:else}<svg
+                              class="inbox-msg-dir inbox-msg-dir-in"
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-label="Received"
+                              ><line x1="19" y1="12" x2="5" y2="12" /><polyline
+                                points="12 19 5 12 12 5"
+                              /></svg
+                            >{/if} {truncateBody(msg.body).text}</pre>
+                        <button
+                          type="button"
+                          class="inbox-copy-icon"
+                          class:inbox-copy-icon-copied={copied[msg.id]}
+                          on:click|stopPropagation={() =>
+                            onCopy(msg.id, msg.body)}
+                          title={copied[msg.id]
+                            ? "Copied"
+                            : "Copy full message"}
+                          aria-label={copied[msg.id] ? "Copied" : "Copy"}
+                        >
+                          {#if copied[msg.id]}
+                            <svg
+                              width="13"
+                              height="13"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                          {:else}
+                            <svg
+                              width="13"
+                              height="13"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <rect
+                                x="9"
+                                y="9"
+                                width="13"
+                                height="13"
+                                rx="2"
+                                ry="2"
+                              ></rect>
+                              <path
+                                d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                              ></path>
+                            </svg>
+                          {/if}
+                        </button>
+                        <span class="inbox-msg-footer">
+                          <span class="inbox-msg-time muted small"
+                            >{msg.direction === "out" ? "sent" : "received"}
+                            {relTime(
+                              msg.direction === "out"
+                                ? msg.sentAt
+                                : msg.receivedAt,
+                            )}</span
+                          >
+                          <button
+                            type="button"
+                            class="inbox-delete-icon"
+                            on:click|stopPropagation={() =>
+                              onDelete(row.peer.id, msg.id)}
+                            disabled={deleting[msg.id]}
+                            title="Delete message"
+                            aria-label="Delete"
+                          >
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path
+                                d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                              ></path>
+                            </svg>
+                          </button>
+                        </span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </Popover>
+  {/if}
+</div>
 
 <style>
   .inbox-icon {
@@ -361,7 +754,8 @@
   .inbox-row {
     display: flex;
     flex-direction: column;
-    border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
+    border-bottom: 1px solid
+      color-mix(in srgb, var(--text-muted) 14%, transparent);
   }
   .inbox-row:last-child {
     border-bottom: none;
@@ -675,283 +1069,12 @@
     transform-origin: center;
   }
   @keyframes inbox-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   .inbox-err {
     margin: 0;
     color: #c0392b;
   }
 </style>
-
-<svelte:window on:click={onDocClick} />
-
-<div class="actions-anchor inbox-anchor">
-  <button
-    class="actions-btn"
-    class:open
-    on:click={toggleOpen}
-    title={count > 0
-      ? `${count} message${count === 1 ? "" : "s"} from other supergit peers`
-      : "Messages from other supergit peers on your LAN"}
-  >
-    <!-- Inbox tray icon (lucide "inbox"). Inline SVG so it picks up
-         currentColor and we don't pull a sprite dependency. -->
-    <svg
-      class="inbox-icon"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
-      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
-    </svg>
-    Inbox
-    {#if count > 0}
-      <span class="count inbox-unread-count">{count}</span>
-    {/if}
-  </button>
-  {#if open}
-    <Popover variant="actions" extraClass="inbox-popover" unclamped>
-      <span slot="head">Messages</span>
-      {#if rows.length === 0}
-        <p class="muted small nopad">
-          No peers discovered on this network yet, and nobody's sent
-          you anything. Once another supergit instance comes online
-          on your LAN it'll show up here.
-        </p>
-      {:else}
-        <ul class="inbox-list">
-          {#each rows as row, idx (row.peer.id)}
-            {@const ex = isExpanded(row.peer.id, idx)}
-            <li class="inbox-row" class:inbox-row-muted={row.muted}>
-              <button
-                type="button"
-                class="inbox-head"
-                on:click|stopPropagation={() => toggleExpanded(row.peer.id)}
-              >
-                <svg
-                  class="inbox-chevron"
-                  class:inbox-chevron-open={ex}
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                ><polyline points="9 18 15 12 9 6"></polyline></svg>
-                <span
-                  class="inbox-status-dot"
-                  class:inbox-status-online={row.online}
-                  title={row.online ? "Online" : "Offline"}
-                ></span>
-                <div class="inbox-peer-id">
-                  <span class="inbox-peer-label">
-                    {row.peer.label}
-                    {#if row.unread > 0}
-                      <span class="inbox-peer-unread">{row.unread}</span>
-                    {/if}
-                  </span>
-                  {#if !ex && row.preview}
-                    <span class="inbox-preview">{row.preview}</span>
-                  {/if}
-                </div>
-                <span class="inbox-head-meta">
-                  {#if row.messages.length > 0}
-                    <span class="inbox-head-time">{relTime(row.messages[0].receivedAt)}</span>
-                  {/if}
-                </span>
-              </button>
-
-              <div class="inbox-expanded" class:inbox-collapsed={!ex}>
-                  {#if row.contact}
-                    {@const fp = row.contact.frontendPort ?? row.contact.port}
-                    <div class="inbox-peer-detail">
-                      <a
-                        class="inbox-peer-host"
-                        href={`http://${row.contact.host}:${fp}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={`Open this peer's dashboard (daemon API on :${row.contact.port})`}
-                      >
-                        {row.contact.host}:{fp} ↗
-                      </a>
-                      {#if row.muted}
-                        <button
-                          type="button"
-                          class="inbox-mute-btn inbox-muted"
-                          on:click={() => onMute(row.peer.id, null)}
-                          title="Unmute this peer"
-                        >muted · unmute</button>
-                      {:else if row.messages.length > 0}
-                        <select
-                          class="inbox-mute-select"
-                          title="Mute this peer"
-                          on:change={(e) => {
-                            const v = (e.target as HTMLSelectElement).value;
-                            (e.target as HTMLSelectElement).value = "";
-                            if (v) onMute(row.peer.id, Number(v));
-                          }}
-                        >
-                          <option value="">Mute ▾</option>
-                          <option value="15">15 min</option>
-                          <option value="60">1 hour</option>
-                          <option value="1440">24 hours</option>
-                        </select>
-                      {/if}
-                    </div>
-                  {:else}
-                    {#if row.muted}
-                      <div class="inbox-peer-detail">
-                        <span class="inbox-offline" title="Peer isn't currently advertising on the LAN">offline</span>
-                        <button
-                          type="button"
-                          class="inbox-mute-btn inbox-muted"
-                          on:click={() => onMute(row.peer.id, null)}
-                          title="Unmute this peer"
-                        >muted · unmute</button>
-                      </div>
-                    {:else if row.messages.length > 0}
-                      <div class="inbox-peer-detail">
-                        <span class="inbox-offline" title="Peer isn't currently advertising on the LAN">offline</span>
-                        <select
-                          class="inbox-mute-select"
-                          title="Mute this peer"
-                          on:change={(e) => {
-                            const v = (e.target as HTMLSelectElement).value;
-                            (e.target as HTMLSelectElement).value = "";
-                            if (v) onMute(row.peer.id, Number(v));
-                          }}
-                        >
-                          <option value="">Mute ▾</option>
-                          <option value="15">15 min</option>
-                          <option value="60">1 hour</option>
-                          <option value="1440">24 hours</option>
-                        </select>
-                      </div>
-                    {/if}
-                  {/if}
-
-                  <div class="inbox-reply">
-                    <textarea
-                      class="inbox-reply-input"
-                      placeholder={row.online
-                        ? row.messages.length > 0
-                          ? `Reply to ${row.peer.label}…`
-                          : `Send to ${row.peer.label}…`
-                        : "Peer offline — can't send right now"}
-                      rows="2"
-                      bind:value={replyText[row.peer.id]}
-                      disabled={!row.online || sending[row.peer.id]}
-                      on:keydown={(e) => onReplyKey(e, row.peer.id)}
-                    ></textarea>
-                    {#if (replyText[row.peer.id] ?? "").trim().length > 0 && row.online}
-                      <button
-                        type="button"
-                        class="inbox-send-icon"
-                        on:click|stopPropagation={() => onSend(row.peer.id)}
-                        disabled={sending[row.peer.id]}
-                        title={sending[row.peer.id] ? "Sending…" : "Send (Enter)"}
-                        aria-label="Send"
-                      >
-                        {#if sending[row.peer.id]}
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inbox-send-spinning" aria-hidden="true">
-                            <circle cx="12" cy="12" r="9" stroke-dasharray="42" stroke-dashoffset="20"></circle>
-                          </svg>
-                        {:else}
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M22 2 11 13"></path>
-                            <path d="m22 2-7 20-4-9-9-4 20-7z"></path>
-                          </svg>
-                        {/if}
-                      </button>
-                    {:else if sentBadge[row.peer.id]}
-                      <span class="inbox-sent-badge" aria-live="polite">Sent ✓</span>
-                    {/if}
-                  </div>
-                  {#if sendError[row.peer.id]}
-                    <p class="inbox-err small" role="alert">{sendError[row.peer.id]}</p>
-                  {/if}
-
-                  {#if row.messages.length > 0}
-                    <ul class="inbox-msgs">
-                      {#each row.messages as msg (msg.id)}
-                        <li class="inbox-msg" class:inbox-msg-sent={msg.direction === "out"}>
-                          <pre class="inbox-body" class:inbox-body-sent={msg.direction === "out"}>{#if msg.direction === "out"}<svg
-                            class="inbox-msg-dir inbox-msg-dir-out"
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2.4"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-label="Sent"
-                          ><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>{:else}<svg
-                            class="inbox-msg-dir inbox-msg-dir-in"
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2.4"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-label="Received"
-                          ><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>{/if} {truncateBody(msg.body).text}</pre>
-                          <button
-                            type="button"
-                            class="inbox-copy-icon"
-                            class:inbox-copy-icon-copied={copied[msg.id]}
-                            on:click|stopPropagation={() => onCopy(msg.id, msg.body)}
-                            title={copied[msg.id] ? "Copied" : "Copy full message"}
-                            aria-label={copied[msg.id] ? "Copied" : "Copy"}
-                          >
-                            {#if copied[msg.id]}
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                              </svg>
-                            {:else}
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                              </svg>
-                            {/if}
-                          </button>
-                          <span class="inbox-msg-footer">
-                            <span class="inbox-msg-time muted small">{msg.direction === "out" ? "sent" : "received"} {relTime(msg.direction === "out" ? msg.sentAt : msg.receivedAt)}</span>
-                            <button
-                              type="button"
-                              class="inbox-delete-icon"
-                              on:click|stopPropagation={() => onDelete(row.peer.id, msg.id)}
-                              disabled={deleting[msg.id]}
-                              title="Delete message"
-                              aria-label="Delete"
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <polyline points="3 6 5 6 21 6"></polyline>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                              </svg>
-                            </button>
-                          </span>
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </Popover>
-  {/if}
-</div>

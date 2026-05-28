@@ -47,14 +47,22 @@ describe.skipIf(isWin)("node-pty direct under Bun", () => {
       });
 
       const timed = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error(`no PTY data after 2s; buf=${JSON.stringify(buf)}`)), 2000),
+        setTimeout(
+          () =>
+            reject(
+              new Error(`no PTY data after 2s; buf=${JSON.stringify(buf)}`),
+            ),
+          2000,
+        ),
       );
 
       try {
         await Promise.race([got, timed]);
         expect(buf).toContain(marker);
       } finally {
-        try { pty.kill(); } catch {}
+        try {
+          pty.kill();
+        } catch {}
       }
     },
     5000,

@@ -22,9 +22,7 @@ export function splitDockEntries<T extends SplittableDockEntry>(
   entries: T[],
   showInactive: boolean,
 ): { top: T[]; bottom: T[] } {
-  const visible = showInactive
-    ? entries
-    : entries.filter((e) => !e.exited);
+  const visible = showInactive ? entries : entries.filter((e) => !e.exited);
 
   if (visible.length === 0) return { top: [], bottom: [] };
 

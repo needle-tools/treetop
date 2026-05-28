@@ -84,7 +84,7 @@ describe("repairClaudeJson", () => {
     await writeFile(
       join(dir, ".claude.json"),
       JSON.stringify({ allowedTools: ["Bash"] }),
-      "utf-8"
+      "utf-8",
     );
     const result = await repairClaudeJson(dir);
     expect(result).toBeNull();

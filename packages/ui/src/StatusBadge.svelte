@@ -59,10 +59,26 @@
       class:status-badge-compact={compact}
       aria-label={title}
       disabled={busy}
-      on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
-    >{#if busy}<span class="status-badge-spinner" aria-label="pushing"></span>{:else}<svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{ahead}{/if}</button>
+      on:click={(e) => {
+        e.stopPropagation();
+        onClick?.(e);
+      }}
+      >{#if busy}<span class="status-badge-spinner" aria-label="pushing"
+        ></span>{:else}<svg
+          class="status-badge-arrow"
+          viewBox="0 0 12 12"
+          aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+        >{ahead}{/if}</button
+    >
   {:else}
-    <span class="status-badge status-badge-ahead" class:pulsate class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{ahead}</span>
+    <span
+      class="status-badge status-badge-ahead"
+      class:pulsate
+      class:status-badge-compact={compact}
+      ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
+        ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+      >{ahead}</span
+    >
   {/if}
 {:else if kind === "behind"}
   {#if clickable}
@@ -72,13 +88,36 @@
       class:status-badge-compact={compact}
       aria-label={title}
       disabled={busy}
-      on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
-    >{#if busy}<span class="status-badge-spinner" aria-label="pulling"></span>{:else}<svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{behind}{/if}</button>
+      on:click={(e) => {
+        e.stopPropagation();
+        onClick?.(e);
+      }}
+      >{#if busy}<span class="status-badge-spinner" aria-label="pulling"
+        ></span>{:else}<svg
+          class="status-badge-arrow"
+          viewBox="0 0 12 12"
+          aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+        >{behind}{/if}</button
+    >
   {:else}
-    <span class="status-badge status-badge-behind" class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{behind}</span>
+    <span
+      class="status-badge status-badge-behind"
+      class:status-badge-compact={compact}
+      ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
+        ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+      >{behind}</span
+    >
   {/if}
 {:else if kind === "dirty"}
-  <span class="status-badge" class:status-badge-dirty={!warn} class:status-badge-dirty-warn={warn} class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{dirty}</span>
+  <span
+    class="status-badge"
+    class:status-badge-dirty={!warn}
+    class:status-badge-dirty-warn={warn}
+    class:status-badge-compact={compact}
+    ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
+      ><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+    >{dirty}</span
+  >
 {/if}
 
 <!-- Styles live globally in packages/ui/src/styles/worktree-row.css so

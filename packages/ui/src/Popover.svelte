@@ -33,7 +33,8 @@
   /** Forwarded to the root element so callers can style or anchor on it. */
   export let id: string | undefined = undefined;
 
-  $: rootClass = `${variant === "actions" ? "actions-popover" : "agents-popover"} ${extraClass}`.trim();
+  $: rootClass =
+    `${variant === "actions" ? "actions-popover" : "agents-popover"} ${extraClass}`.trim();
   $: headClassFull = `popover-head ${headClass}`.trim();
 </script>
 
@@ -62,4 +63,3 @@
      avoids Svelte's per-component scope hashing — `extraClass`-based
      variant rules can target the Popover root directly without needing
      :global() wrappers in every caller. -->
-

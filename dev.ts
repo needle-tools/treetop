@@ -7,11 +7,7 @@
 // EADDRINUSE / "Port 7779 is in use". Prod's :27787 is NEVER touched —
 // see `dev-ports.ts` and `stop-dev.ts`.
 
-import {
-  DEV_DAEMON_PORT,
-  DEV_UI_PORT,
-  killDevPorts,
-} from "./dev-ports";
+import { DEV_DAEMON_PORT, DEV_UI_PORT, killDevPorts } from "./dev-ports";
 
 await killDevPorts();
 

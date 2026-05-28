@@ -23,13 +23,18 @@ import { listWorktrees } from "./git";
 interface ToolDef {
   name: string;
   description: string;
-  inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+  inputSchema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
 }
 
 const TOOLS: ToolDef[] = [
   {
     name: "list_repos",
-    description: "List repos registered in the supergit workspace, each with its worktrees.",
+    description:
+      "List repos registered in the supergit workspace, each with its worktrees.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -38,17 +43,23 @@ const TOOLS: ToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Absolute path to the git repo's working tree." },
+        path: {
+          type: "string",
+          description: "Absolute path to the git repo's working tree.",
+        },
       },
       required: ["path"],
     },
   },
   {
     name: "remove_repo",
-    description: "Remove a repo (by id) from the workspace. The repo itself is untouched on disk.",
+    description:
+      "Remove a repo (by id) from the workspace. The repo itself is untouched on disk.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string", description: "Repo id from list_repos." } },
+      properties: {
+        id: { type: "string", description: "Repo id from list_repos." },
+      },
       required: ["id"],
     },
   },
@@ -107,12 +118,19 @@ export async function handleMcp(
                 worktrees: await listWorktrees(r.path),
               })),
             );
-            return ok(request.id, textContent(JSON.stringify(enriched, null, 2)));
+            return ok(
+              request.id,
+              textContent(JSON.stringify(enriched, null, 2)),
+            );
           }
           case "add_repo": {
             const path = args.path;
             if (typeof path !== "string" || path.length === 0) {
-              return err(request.id, -32602, "add_repo: arguments.path (string) is required");
+              return err(
+                request.id,
+                -32602,
+                "add_repo: arguments.path (string) is required",
+              );
             }
             const repo = await ctx.workspace.addRepo(path);
             await ctx.events.append({
@@ -126,13 +144,27 @@ export async function handleMcp(
           case "remove_repo": {
             const id = args.id;
             if (typeof id !== "string" || id.length === 0) {
-              return err(request.id, -32602, "remove_repo: arguments.id (string) is required");
+              return err(
+                request.id,
+                -32602,
+                "remove_repo: arguments.id (string) is required",
+              );
             }
             const repos = await ctx.workspace.listRepos();
             const repo = repos.find((r) => r.id === id);
-            if (!repo) return err(request.id, -32602, `remove_repo: no repo with id ${id}`);
+            if (!repo)
+              return err(
+                request.id,
+                -32602,
+                `remove_repo: no repo with id ${id}`,
+              );
             const removed = await ctx.workspace.removeRepo(id);
-            if (!removed) return err(request.id, -32602, `remove_repo: failed to remove ${id}`);
+            if (!removed)
+              return err(
+                request.id,
+                -32602,
+                `remove_repo: failed to remove ${id}`,
+              );
             await ctx.events.append({
               type: "remove_repo",
               actor: "agent",
@@ -145,7 +177,11 @@ export async function handleMcp(
             return err(request.id, -32601, `unknown tool: ${name}`);
         }
       } catch (e) {
-        return err(request.id, -32603, e instanceof Error ? e.message : String(e));
+        return err(
+          request.id,
+          -32603,
+          e instanceof Error ? e.message : String(e),
+        );
       }
     }
 

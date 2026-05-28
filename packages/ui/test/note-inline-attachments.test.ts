@@ -57,7 +57,9 @@ describe("note inline attachments", () => {
     });
     const parts = parseInlineAttachments(`before ${ref} after`);
 
-    expect(ref).toMatch(/^\[Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//);
+    expect(ref).toMatch(
+      /^\[Pasted Content, \d+ chars\]\(supergit:\/\/attachment\//,
+    );
     expect(ref).not.toContain("{{supergit:attachment:");
     expect(parts).toHaveLength(3);
     expect(parts[0]).toEqual({ kind: "text", text: "before " });
@@ -65,10 +67,15 @@ describe("note inline attachments", () => {
     expect(parts[1]?.kind).toBe("attachment");
     if (parts[1]?.kind === "attachment") {
       expect(parts[1].attachment.kind).toBe("text");
-      expect(parts[1].attachment.path).toBe("/tmp/supergit/attachments/paste.txt");
+      expect(parts[1].attachment.path).toBe(
+        "/tmp/supergit/attachments/paste.txt",
+      );
       expect(parts[1].attachment.charCount).toBe(1016);
       expect(parts[1].attachment.lineCount).toBe(45);
-      expect(parts[1].attachment.source?.types).toEqual(["text/plain", "text/html"]);
+      expect(parts[1].attachment.source?.types).toEqual([
+        "text/plain",
+        "text/html",
+      ]);
     }
   });
 
@@ -101,16 +108,20 @@ describe("note inline attachments", () => {
 
     expect(part?.kind).toBe("attachment");
     if (part?.kind === "attachment" && part.attachment.kind === "text") {
-      expect(textAttachmentMeta(part.attachment, { lineCount: 45, charCount: 1229 })).toBe(
-        "45 lines, 1.2 KB",
-      );
+      expect(
+        textAttachmentMeta(part.attachment, { lineCount: 45, charCount: 1229 }),
+      ).toBe("45 lines, 1.2 KB");
     }
   });
 
   test("infers pasted text types for human labels", () => {
     expect(countTextLines("a\nb\r\nc")).toBe(3);
-    expect(inferPastedTextMimeType('{"ok": true}', ["text/plain"])).toBe("application/json");
-    expect(inferPastedTextMimeType("# Title\n\nbody", ["text/plain"])).toBe("text/markdown");
+    expect(inferPastedTextMimeType('{"ok": true}', ["text/plain"])).toBe(
+      "application/json",
+    );
+    expect(inferPastedTextMimeType("# Title\n\nbody", ["text/plain"])).toBe(
+      "text/markdown",
+    );
     expect(pastedTextTitleForMime("application/json")).toBe("Pasted JSON");
     expect(pastedTextTitleForMime("text/markdown")).toBe("Pasted Markdown");
   });
@@ -130,7 +141,9 @@ describe("note inline attachments", () => {
     expect(parts[0]?.kind).toBe("attachment");
     if (parts[0]?.kind === "attachment") {
       expect(parts[0].attachment.kind).toBe("image");
-      expect(parts[0].attachment.path).toBe("/tmp/supergit/attachments/shot.png");
+      expect(parts[0].attachment.path).toBe(
+        "/tmp/supergit/attachments/shot.png",
+      );
       expect(parts[0].attachment.filename).toBe("shot.png");
       expect(parts[0].attachment.mimeType).toBe("image/png");
       expect(parts[0].attachment.size).toBe(123);
@@ -148,7 +161,9 @@ describe("note inline attachments", () => {
 
     expect(parts[0]?.kind).toBe("attachment");
     if (parts[0]?.kind === "attachment") {
-      expect(inlineAttachmentLabel(parts[0].attachment)).toBe("events-overlay-sheet.jpg");
+      expect(inlineAttachmentLabel(parts[0].attachment)).toBe(
+        "events-overlay-sheet.jpg",
+      );
     }
   });
 
@@ -222,54 +237,69 @@ describe("note inline attachments", () => {
   });
 
   test("derives short command power-button labels", () => {
-    expect(commandPowerLabel({
-      type: "command",
-      value: "cmd-1",
-      command: "npm run build:launch",
-    })).toBe("build:launch");
-    expect(commandPowerLabel({
-      type: "command",
-      value: "cmd-2",
-      command: "bun run scripts/build-launch.ts",
-      label: "Relaunch",
-    })).toBe("Relaunch");
+    expect(
+      commandPowerLabel({
+        type: "command",
+        value: "cmd-1",
+        command: "npm run build:launch",
+      }),
+    ).toBe("build:launch");
+    expect(
+      commandPowerLabel({
+        type: "command",
+        value: "cmd-2",
+        command: "bun run scripts/build-launch.ts",
+        label: "Relaunch",
+      }),
+    ).toBe("Relaunch");
   });
 
   test("copies command references as the runnable command text", () => {
-    expect(commandRunText({
-      type: "command",
-      value: "cmd-1",
-      label: "Relaunch",
-      command: "npm run build:launch",
-    })).toBe("npm run build:launch");
+    expect(
+      commandRunText({
+        type: "command",
+        value: "cmd-1",
+        label: "Relaunch",
+        command: "npm run build:launch",
+      }),
+    ).toBe("npm run build:launch");
   });
 
   test("copies command references with cwd when available", () => {
-    expect(commandCopyText({
-      type: "command",
-      value: "cmd-1",
-      command: "npm run build:launch",
-      cwd: "/Users/herbst/git/supergit",
-    })).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
+    expect(
+      commandCopyText({
+        type: "command",
+        value: "cmd-1",
+        command: "npm run build:launch",
+        cwd: "/Users/herbst/git/supergit",
+      }),
+    ).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
 
-    expect(commandCopyText({
-      type: "command",
-      value: "cmd-1",
-      command: "npm test",
-      cwd: "/tmp/has space/it's fine",
-    })).toBe("cd '/tmp/has space/it'\\''s fine' && npm test");
+    expect(
+      commandCopyText({
+        type: "command",
+        value: "cmd-1",
+        command: "npm test",
+        cwd: "/tmp/has space/it's fine",
+      }),
+    ).toBe("cd '/tmp/has space/it'\\''s fine' && npm test");
 
-    expect(commandCopyText({
-      type: "command",
-      value: "stale",
-      command: "npm run old",
-      cwd: "/tmp/old",
-    }, {
-      id: "live",
-      kind: "command",
-      cmd: "npm run build:launch",
-      cwd: "/Users/herbst/git/supergit",
-    })).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
+    expect(
+      commandCopyText(
+        {
+          type: "command",
+          value: "stale",
+          command: "npm run old",
+          cwd: "/tmp/old",
+        },
+        {
+          id: "live",
+          kind: "command",
+          cmd: "npm run build:launch",
+          cwd: "/Users/herbst/git/supergit",
+        },
+      ),
+    ).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
   });
 
   test("resolves pinned command references against live toolbar commands", () => {
@@ -300,24 +330,39 @@ describe("note inline attachments", () => {
       },
     ];
 
-    expect(resolveLiveCommandLink({
-      type: "command",
-      value: "cmd-live",
-      repoId: "repo-b",
-    }, repos)?.link.id).toBe("cmd-live");
+    expect(
+      resolveLiveCommandLink(
+        {
+          type: "command",
+          value: "cmd-live",
+          repoId: "repo-b",
+        },
+        repos,
+      )?.link.id,
+    ).toBe("cmd-live");
 
-    expect(resolveLiveCommandLink({
-      type: "command",
-      value: "stale-id",
-      repoId: "repo-b",
-      command: "npm run build:launch",
-    }, repos)?.link.id).toBe("cmd-live");
+    expect(
+      resolveLiveCommandLink(
+        {
+          type: "command",
+          value: "stale-id",
+          repoId: "repo-b",
+          command: "npm run build:launch",
+        },
+        repos,
+      )?.link.id,
+    ).toBe("cmd-live");
 
-    expect(resolveLiveCommandLink({
-      type: "command",
-      value: "stale-id",
-      label: "launch",
-    }, repos)?.repo.id).toBe("repo-b");
+    expect(
+      resolveLiveCommandLink(
+        {
+          type: "command",
+          value: "stale-id",
+          label: "launch",
+        },
+        repos,
+      )?.repo.id,
+    ).toBe("repo-b");
   });
 
   test("copy expansion restores hidden paste payloads and image paths", () => {
@@ -329,9 +374,9 @@ describe("note inline attachments", () => {
     const emoji = makeEmojiAttachmentRef({ body: "✨" });
     const note = makeNoteAttachmentRef({ body: "nested" });
 
-    expect(expandNoteBodyForCopy(`A ${paste} B ${image} C ${emoji} D ${note}`)).toBe(
-      "A /tmp/paste.txt B /tmp/a.png C ✨ D nested",
-    );
+    expect(
+      expandNoteBodyForCopy(`A ${paste} B ${image} C ${emoji} D ${note}`),
+    ).toBe("A /tmp/paste.txt B /tmp/a.png C ✨ D nested");
   });
 
   test("copy expansion keeps session links as explicit session references", () => {
@@ -383,10 +428,13 @@ describe("note inline attachments", () => {
     });
 
     await expect(
-      expandNoteBodyForTerminalPasteChunks(`A ${paste}\n${image}\nthanks`, async (path) => {
-        expect(path).toBe("/tmp/supergit/attachments/paste.txt");
-        return "hidden long text";
-      }),
+      expandNoteBodyForTerminalPasteChunks(
+        `A ${paste}\n${image}\nthanks`,
+        async (path) => {
+          expect(path).toBe("/tmp/supergit/attachments/paste.txt");
+          return "hidden long text";
+        },
+      ),
     ).resolves.toEqual([
       "A ",
       "hidden long text",
@@ -407,10 +455,13 @@ describe("note inline attachments", () => {
     });
 
     await expect(
-      expandNoteBodyForTerminalPasteChunks(`A ${emoji}\n${paste}\n${emoji} B`, async (path) => {
-        expect(path).toBe("/tmp/supergit/attachments/paste.txt");
-        return "hidden long text";
-      }),
+      expandNoteBodyForTerminalPasteChunks(
+        `A ${emoji}\n${paste}\n${emoji} B`,
+        async (path) => {
+          expect(path).toBe("/tmp/supergit/attachments/paste.txt");
+          return "hidden long text";
+        },
+      ),
     ).resolves.toEqual(["A \n", "hidden long text", "\n B"]);
   });
 
@@ -443,7 +494,8 @@ describe("note inline attachments", () => {
 
   test("text attachment reads fail instead of substituting another payload", async () => {
     const oldFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response("missing", { status: 404 })) as typeof fetch;
+    globalThis.fetch = (async () =>
+      new Response("missing", { status: 404 })) as typeof fetch;
     try {
       await expect(fetchTextAttachment("/tmp/missing.txt")).rejects.toThrow(
         "attachment read failed: 404",
@@ -506,7 +558,9 @@ describe("note inline attachments", () => {
 
   test("ignores malformed attachment references as plain text", () => {
     const body = "before [broken](supergit://attachment/not-base64) after";
-    expect(parseInlineAttachments(body)).toEqual([{ kind: "text", text: body }]);
+    expect(parseInlineAttachments(body)).toEqual([
+      { kind: "text", text: body },
+    ]);
   });
 
   test("removes a moved inline attachment ref from its source note body", () => {
@@ -522,14 +576,21 @@ describe("note inline attachments", () => {
       charCount: 12,
     });
 
-    expect(removeInlineAttachmentRef(`before ${first} middle ${second} after`, first))
-      .toBe(`before  middle ${second} after`);
+    expect(
+      removeInlineAttachmentRef(
+        `before ${first} middle ${second} after`,
+        first,
+      ),
+    ).toBe(`before  middle ${second} after`);
     expect(removeInlineAttachmentRef(first, first)).toBe("");
     expect(removeInlineAttachmentRef("unchanged", first)).toBe("unchanged");
   });
 
   test("moves an inline attachment ref within a note body", () => {
-    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+    });
     const second = makeTextAttachmentRef({
       path: "/tmp/paste.txt",
       filename: "paste.txt",
@@ -537,11 +598,19 @@ describe("note inline attachments", () => {
     });
     const third = makeEmojiAttachmentRef({ body: "✨" });
 
-    expect(moveInlineAttachmentRefToEnd(`A ${first} B ${second}`, first))
-      .toBe(`A  B ${second}\n${first}`);
-    expect(moveInlineAttachmentRefBefore(`A ${first} B ${second} C ${third}`, third, second))
-      .toBe(`A ${first} B ${third}${second} C `);
-    expect(moveInlineAttachmentRefBefore("unchanged", first, second)).toBe("unchanged");
+    expect(moveInlineAttachmentRefToEnd(`A ${first} B ${second}`, first)).toBe(
+      `A  B ${second}\n${first}`,
+    );
+    expect(
+      moveInlineAttachmentRefBefore(
+        `A ${first} B ${second} C ${third}`,
+        third,
+        second,
+      ),
+    ).toBe(`A ${first} B ${third}${second} C `);
+    expect(moveInlineAttachmentRefBefore("unchanged", first, second)).toBe(
+      "unchanged",
+    );
   });
 
   test("appends a session reference without deleting the note body", () => {
@@ -579,10 +648,18 @@ describe("note inline attachments", () => {
       filename: "paste.txt",
       charCount: 12,
     });
-    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
-    const second = makeImageAttachmentRef({ path: "/tmp/b.png", filename: "b.png" });
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+    });
+    const second = makeImageAttachmentRef({
+      path: "/tmp/b.png",
+      filename: "b.png",
+    });
 
-    const parts = parseInlineAttachments(`body ${paste}\n${first}\n${second}\n`);
+    const parts = parseInlineAttachments(
+      `body ${paste}\n${first}\n${second}\n`,
+    );
     expect([...trailingImageAttachmentIndexes(parts)]).toEqual([3, 5]);
 
     const mixed = parseInlineAttachments(`${first}\ncaption`);
@@ -590,24 +667,37 @@ describe("note inline attachments", () => {
   });
 
   test("detects mixed visual attachments trailing at the end of note content", () => {
-    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+    });
     const emoji = makeEmojiAttachmentRef({ body: "✨" });
-    const second = makeImageAttachmentRef({ path: "/tmp/b.png", filename: "b.png" });
+    const second = makeImageAttachmentRef({
+      path: "/tmp/b.png",
+      filename: "b.png",
+    });
     const paste = makeTextAttachmentRef({
       path: "/tmp/paste.txt",
       filename: "paste.txt",
       charCount: 12,
     });
 
-    const parts = parseInlineAttachments(`body ${first}\n${emoji}\n${second}\n`);
+    const parts = parseInlineAttachments(
+      `body ${first}\n${emoji}\n${second}\n`,
+    );
     expect([...trailingVisualAttachmentIndexes(parts)]).toEqual([1, 3, 5]);
 
-    const blocked = parseInlineAttachments(`body ${first}\n${paste}\n${emoji}\n`);
+    const blocked = parseInlineAttachments(
+      `body ${first}\n${paste}\n${emoji}\n`,
+    );
     expect([...trailingVisualAttachmentIndexes(blocked)]).toEqual([5]);
   });
 
   test("detects visual attachments anywhere in note content", () => {
-    const first = makeImageAttachmentRef({ path: "/tmp/a.png", filename: "a.png" });
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+    });
     const paste = makeTextAttachmentRef({
       path: "/tmp/paste.txt",
       filename: "paste.txt",
@@ -616,7 +706,11 @@ describe("note inline attachments", () => {
     const emoji = makeEmojiAttachmentRef({ body: "✨" });
     const note = makeNoteAttachmentRef({ body: "nested note" });
     const session = makeLinkAttachmentRef({
-      target: { type: "session", value: "/tmp/session.jsonl", label: "Session title" },
+      target: {
+        type: "session",
+        value: "/tmp/session.jsonl",
+        label: "Session title",
+      },
     });
     const parts = parseInlineAttachments(
       `body ${first}\n${paste}\n${emoji}\n${note}\n${session}\ncaption`,

@@ -1,5 +1,8 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { TerminalPersist, type PersistedTerminal } from "../src/terminal-persist";
+import {
+  TerminalPersist,
+  type PersistedTerminal,
+} from "../src/terminal-persist";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -43,8 +46,19 @@ describe("TerminalPersist", () => {
     const dir = join(tmpDir, "multi");
     const tp = new TerminalPersist(dir);
 
-    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a" });
-    await tp.save({ termId: "t2", cmd: ["ssh", "c@d"], cwd: "/b", wtPath: "/b", title: "server" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["ssh", "a@b"],
+      cwd: "/a",
+      wtPath: "/a",
+    });
+    await tp.save({
+      termId: "t2",
+      cmd: ["ssh", "c@d"],
+      cwd: "/b",
+      wtPath: "/b",
+      title: "server",
+    });
 
     const list = await tp.list();
     expect(list.length).toBe(2);
@@ -54,8 +68,18 @@ describe("TerminalPersist", () => {
     const dir = join(tmpDir, "remove");
     const tp = new TerminalPersist(dir);
 
-    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a" });
-    await tp.save({ termId: "t2", cmd: ["ssh", "c@d"], cwd: "/b", wtPath: "/b" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["ssh", "a@b"],
+      cwd: "/a",
+      wtPath: "/a",
+    });
+    await tp.save({
+      termId: "t2",
+      cmd: ["ssh", "c@d"],
+      cwd: "/b",
+      wtPath: "/b",
+    });
 
     await tp.remove("t1");
     const list = await tp.list();
@@ -67,7 +91,12 @@ describe("TerminalPersist", () => {
     const dir = join(tmpDir, "noop");
     const tp = new TerminalPersist(dir);
 
-    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["ssh", "a@b"],
+      cwd: "/a",
+      wtPath: "/a",
+    });
     await tp.remove("t_nonexistent");
 
     const list = await tp.list();
@@ -90,7 +119,13 @@ describe("TerminalPersist", () => {
     const tp = new TerminalPersist(dir);
 
     await tp.save({ termId: "t1", cmd: ["old"], cwd: "/", wtPath: "/" });
-    await tp.save({ termId: "t1", cmd: ["new"], cwd: "/", wtPath: "/", title: "updated" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["new"],
+      cwd: "/",
+      wtPath: "/",
+      title: "updated",
+    });
 
     const list = await tp.list();
     expect(list.length).toBe(1);
@@ -102,7 +137,13 @@ describe("TerminalPersist", () => {
     const dir = join(tmpDir, "survive-clear");
     const tp = new TerminalPersist(dir);
 
-    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a", title: "server" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["ssh", "a@b"],
+      cwd: "/a",
+      wtPath: "/a",
+      title: "server",
+    });
 
     // Simulate: UI reads entries
     const entries = await tp.list();
@@ -119,8 +160,18 @@ describe("TerminalPersist", () => {
     const dir = join(tmpDir, "partial-remove");
     const tp = new TerminalPersist(dir);
 
-    await tp.save({ termId: "t1", cmd: ["ssh", "a@b"], cwd: "/a", wtPath: "/a" });
-    await tp.save({ termId: "t2", cmd: ["ssh", "c@d"], cwd: "/b", wtPath: "/b" });
+    await tp.save({
+      termId: "t1",
+      cmd: ["ssh", "a@b"],
+      cwd: "/a",
+      wtPath: "/a",
+    });
+    await tp.save({
+      termId: "t2",
+      cmd: ["ssh", "c@d"],
+      cwd: "/b",
+      wtPath: "/b",
+    });
 
     await tp.remove("t1");
     const remaining = await tp.list();

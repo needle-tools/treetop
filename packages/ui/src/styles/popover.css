@@ -101,7 +101,9 @@
 }
 
 @keyframes popover-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Session-menu popover: rendered by SessionMenu.svelte from the
@@ -191,7 +193,10 @@
      "4m 18s" jammed into "idle 3m 58s". Keeping idle at its
      natural width forces any overflow to the row's right edge,
      where `overflow-x: hidden` clips it cleanly. */
-  grid-template-columns: 16px minmax(6ch, 10ch) minmax(10ch, 1fr) 6ch 8ch 8ch auto 18px;
+  grid-template-columns: 16px minmax(6ch, 10ch) minmax(
+      10ch,
+      1fr
+    ) 6ch 8ch 8ch auto 18px;
   /* The vertical gap is what was the default `gap: 0.25rem` on
      .agents-list — preserve the spacing between rows. The
      `column-gap` matches `.agent-row`'s default; without it set
@@ -219,7 +224,7 @@
 .tuis-popover .proc-col-header > span {
   white-space: nowrap;
 }
-.tuis-popover .proc-col-header > span:nth-child(n+4) {
+.tuis-popover .proc-col-header > span:nth-child(n + 4) {
   text-align: right;
 }
 /* IMPORTANT: every `.tui-row-static` rule below qualifies with
@@ -260,12 +265,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tuis-popover .tui-row-static > .tui-inline-title { grid-column: 3; }
-.tuis-popover .tui-row-static > .tui-cpu { grid-column: 4; }
-.tuis-popover .tui-row-static > .tui-mem { grid-column: 5; }
-.tuis-popover .tui-row-static > .tui-uptime { grid-column: 6; }
-.tuis-popover .tui-row-static > .tui-idle { grid-column: 7; }
-.tuis-popover .tui-row-static > .tui-kill-x { grid-column: 8; }
+.tuis-popover .tui-row-static > .tui-inline-title {
+  grid-column: 3;
+}
+.tuis-popover .tui-row-static > .tui-cpu {
+  grid-column: 4;
+}
+.tuis-popover .tui-row-static > .tui-mem {
+  grid-column: 5;
+}
+.tuis-popover .tui-row-static > .tui-uptime {
+  grid-column: 6;
+}
+.tuis-popover .tui-row-static > .tui-idle {
+  grid-column: 7;
+}
+.tuis-popover .tui-row-static > .tui-kill-x {
+  grid-column: 8;
+}
 .tuis-popover .tui-row-static:hover {
   background: var(--surface-2);
 }
@@ -384,11 +401,18 @@
   height: 14px;
 }
 @keyframes kill-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 @keyframes kill-pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .tuis-popover .proc-warm {
   color: var(--chip-orange-text);

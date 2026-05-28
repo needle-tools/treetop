@@ -13,15 +13,22 @@
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
-    if (n.includes("bash") || n.includes("shell") || n.includes("exec")) return "bash";
+    if (n.includes("bash") || n.includes("shell") || n.includes("exec"))
+      return "bash";
     if (n.includes("read")) return "read";
     if (n === "write") return "write";
     if (n.includes("edit") || n.includes("update") || n.includes("modify"))
       return "edit";
     if (n.includes("grep") || n.includes("search")) return "search";
-    if (n.includes("glob") || n.includes("ls") || n.includes("list") || n.includes("dir"))
+    if (
+      n.includes("glob") ||
+      n.includes("ls") ||
+      n.includes("list") ||
+      n.includes("dir")
+    )
       return "list";
-    if (n.includes("fetch") || n.includes("web") || n.includes("http")) return "fetch";
+    if (n.includes("fetch") || n.includes("web") || n.includes("http"))
+      return "fetch";
     return "tool";
   }
 
@@ -77,7 +84,9 @@
     <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0 -18z" />
   {:else}
     <!-- generic wrench -->
-    <path d="M14.7 6.3a4 4 0 0 0-5.7 5.6l-6.1 6.1a2 2 0 0 0 2.8 2.8l6.1-6.1a4 4 0 0 0 5.6-5.7l-2.7 2.7-2.5-2.5 2.5-2.9z" />
+    <path
+      d="M14.7 6.3a4 4 0 0 0-5.7 5.6l-6.1 6.1a2 2 0 0 0 2.8 2.8l6.1-6.1a4 4 0 0 0 5.6-5.7l-2.7 2.7-2.5-2.5 2.5-2.9z"
+    />
   {/if}
 </svg>
 

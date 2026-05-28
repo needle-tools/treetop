@@ -1,8 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import {
-  pendingDiffLoad,
-  type DiffCacheState,
-} from "../src/source-control";
+import { pendingDiffLoad, type DiffCacheState } from "../src/source-control";
 
 function state(over: Partial<DiffCacheState> = {}): DiffCacheState {
   return {
@@ -19,7 +16,11 @@ describe("pendingDiffLoad", () => {
     expect(pendingDiffLoad(state({ expanded: false }))).toBeNull();
     expect(
       pendingDiffLoad(
-        state({ expanded: false, workdirDiff: undefined, stagedDiff: undefined }),
+        state({
+          expanded: false,
+          workdirDiff: undefined,
+          stagedDiff: undefined,
+        }),
       ),
     ).toBeNull();
   });

@@ -2,11 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { planReveal, type RevealMode } from "../src/reveal-session";
 
 /** Concise helper for table-style assertions over the 2×2×2 matrix. */
-function plan(
-  mode: RevealMode,
-  rowFolded: boolean,
-  isOpen: boolean,
-) {
+function plan(mode: RevealMode, rowFolded: boolean, isOpen: boolean) {
   return planReveal({ mode, rowFolded, isOpen });
 }
 

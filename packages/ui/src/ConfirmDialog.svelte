@@ -62,7 +62,9 @@
     >
       <h2 id="confirm-title" class="confirm-title">{$activeConfirm.title}</h2>
       {#if $activeConfirm.message}
-        <p id="confirm-message" class="confirm-message">{$activeConfirm.message}</p>
+        <p id="confirm-message" class="confirm-message">
+          {$activeConfirm.message}
+        </p>
       {/if}
       <div class="confirm-buttons">
         <button
@@ -70,14 +72,16 @@
           class="confirm-btn confirm-cancel"
           bind:this={cancelButton}
           on:click={() => resolve(false)}
-        >{$activeConfirm.cancelLabel ?? "Cancel"}</button>
+          >{$activeConfirm.cancelLabel ?? "Cancel"}</button
+        >
         <button
           type="button"
           class="confirm-btn confirm-ok"
           class:danger={$activeConfirm.danger}
           bind:this={confirmButton}
           on:click={() => resolve(true)}
-        >{$activeConfirm.confirmLabel ?? "Confirm"}</button>
+          >{$activeConfirm.confirmLabel ?? "Confirm"}</button
+        >
       </div>
     </div>
   </div>

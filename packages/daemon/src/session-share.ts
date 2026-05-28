@@ -49,9 +49,7 @@ export interface SessionShareManifest {
   redactionCount?: number;
 }
 
-export type ValidateResult =
-  | { ok: true }
-  | { ok: false; error: string };
+export type ValidateResult = { ok: true } | { ok: false; error: string };
 
 /** Result of `prepareOutgoingJsonl` — what to ship + a side-report
  *  the UI can render so the sender knows exactly what got scrubbed. */
@@ -132,7 +130,9 @@ export function normalizeRemote(url: string): string {
   }
 
   // ssh://git@host[:port]/owner/repo(.git)
-  const sshLong = trimmed.match(/^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(\.git)?$/);
+  const sshLong = trimmed.match(
+    /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(\.git)?$/,
+  );
   if (sshLong && sshLong[1] && sshLong[2]) {
     return `https://${sshLong[1].toLowerCase()}/${sshLong[2]}`;
   }
@@ -484,7 +484,11 @@ export function validateManifest(m: unknown): ValidateResult {
   // `secrets` and `redactionCount` are optional for backward-compat
   // with manifests built before the toggle split. When present they
   // must be sane.
-  if (obj.secrets !== undefined && obj.secrets !== "redacted" && obj.secrets !== "raw") {
+  if (
+    obj.secrets !== undefined &&
+    obj.secrets !== "redacted" &&
+    obj.secrets !== "raw"
+  ) {
     return { ok: false, error: `unknown secrets: ${obj.secrets}` };
   }
   if (
@@ -501,13 +505,21 @@ export function validateManifest(m: unknown): ValidateResult {
     return { ok: false, error: "bytes must be a non-negative number" };
   }
   if (obj.bytes > MAX_OFFER_BYTES) {
-    return { ok: false, error: `bytes exceeds MAX_OFFER_BYTES (${MAX_OFFER_BYTES})` };
+    return {
+      ok: false,
+      error: `bytes exceeds MAX_OFFER_BYTES (${MAX_OFFER_BYTES})`,
+    };
   }
   if (typeof obj.strippedCount !== "number" || obj.strippedCount < 0) {
     return { ok: false, error: "strippedCount must be a non-negative number" };
   }
 
-  if (!isAbsolutePath(obj.originRepoPath as string, obj.originPlatform as SharePlatform)) {
+  if (
+    !isAbsolutePath(
+      obj.originRepoPath as string,
+      obj.originPlatform as SharePlatform,
+    )
+  ) {
     return {
       ok: false,
       error: `originRepoPath must be absolute for platform ${obj.originPlatform}`,
@@ -518,7 +530,10 @@ export function validateManifest(m: unknown): ValidateResult {
       return { ok: false, error: "originWorktreePath must be a string" };
     }
     if (
-      !isAbsolutePath(obj.originWorktreePath, obj.originPlatform as SharePlatform)
+      !isAbsolutePath(
+        obj.originWorktreePath,
+        obj.originPlatform as SharePlatform,
+      )
     ) {
       return { ok: false, error: "originWorktreePath must be absolute" };
     }

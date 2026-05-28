@@ -95,7 +95,9 @@ export class PeerRegistry {
     }
   }
 
-  addPeer(peer: Omit<Peer, "lastSeen" | "frontendPort"> & { frontendPort?: number }): void {
+  addPeer(
+    peer: Omit<Peer, "lastSeen" | "frontendPort"> & { frontendPort?: number },
+  ): void {
     if (!peer.id || !peer.host || !peer.port || !peer.label) return;
     if (peer.id === this.selfId) return;
     const k = key(peer.id, peer.port);
@@ -120,11 +122,7 @@ export class PeerRegistry {
    *  `port` is required: removal targets a specific `(id, port)`
    *  pair, not every advert from that id, so a dev daemon going down
    *  doesn't take its sibling prod daemon's entry with it. */
-  removePeer(
-    id: string,
-    port: number,
-    opts: { graceMs?: number } = {},
-  ): void {
+  removePeer(id: string, port: number, opts: { graceMs?: number } = {}): void {
     const k = key(id, port);
     const graceMs = opts.graceMs ?? 0;
     if (graceMs <= 0) {

@@ -399,7 +399,10 @@ interface ClaudeUserScanResult {
  *  because some agents rewrite files in place; mtime catches that. */
 const claudeMetaCache = new Map<
   string,
-  { mtimeMs: number; result: { cwd?: string; title?: string; lastUserMessage?: string } }
+  {
+    mtimeMs: number;
+    result: { cwd?: string; title?: string; lastUserMessage?: string };
+  }
 >();
 const MAX_CLAUDE_META_CACHE = 5000;
 
@@ -503,7 +506,8 @@ function ingestUserScanLines(
           }
         | undefined;
       if (usage && typeof usage === "object") {
-        const inp = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+        const inp =
+          typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
         const cr =
           typeof usage.cache_read_input_tokens === "number"
             ? usage.cache_read_input_tokens
@@ -515,10 +519,7 @@ function ingestUserScanLines(
         result.lastContextTokens = inp + cr + cc;
         result.model = typeof msg?.model === "string" ? msg.model : undefined;
       }
-    } else if (
-      obj.type === "system" &&
-      obj.subtype === "compact_boundary"
-    ) {
+    } else if (obj.type === "system" && obj.subtype === "compact_boundary") {
       result.lastContextTokens = undefined;
     }
   }
@@ -701,7 +702,11 @@ async function ensureCodexScanCached(
       mtimeMs: mtimeMs ?? 0,
       messageCount: 0,
       contextChars: 0,
-      usage: { lastInputTokens: undefined, modelContextWindow: undefined, model: undefined },
+      usage: {
+        lastInputTokens: undefined,
+        modelContextWindow: undefined,
+        model: undefined,
+      },
       meta: {},
       lastUserMessages: [],
     };
@@ -710,9 +715,8 @@ async function ensureCodexScanCached(
   }
 
   const head = await readHead(path, CODEX_HEAD_BYTES);
-  const tail = fileSize > CODEX_HEAD_BYTES
-    ? await readTail(path, CODEX_TAIL_BYTES)
-    : null;
+  const tail =
+    fileSize > CODEX_HEAD_BYTES ? await readTail(path, CODEX_TAIL_BYTES) : null;
 
   let meta: { cwd?: string; id?: string } = {};
   let lastInputTokens: number | undefined;
@@ -808,13 +812,25 @@ async function ensureCodexScanCached(
     try {
       const obj = JSON.parse(line) as Record<string, unknown>;
       // 0.130+
-      if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+      if (
+        obj.type === "response_item" &&
+        typeof obj.payload === "object" &&
+        obj.payload
+      ) {
         const p = obj.payload as Record<string, unknown>;
-        if (p.type === "message" && p.role === "user" && Array.isArray(p.content)) {
+        if (
+          p.type === "message" &&
+          p.role === "user" &&
+          Array.isArray(p.content)
+        ) {
           for (const block of p.content) {
             if (typeof block === "object" && block !== null) {
               const t = (block as { text?: unknown }).text;
-              if (typeof t === "string" && t.length > 0 && !isSystemInjected(t)) {
+              if (
+                typeof t === "string" &&
+                t.length > 0 &&
+                !isSystemInjected(t)
+              ) {
                 return t.length > MSG_CAP ? t.slice(0, MSG_CAP) + "…" : t;
               }
             }
@@ -822,10 +838,19 @@ async function ensureCodexScanCached(
         }
       }
       // Pre-0.130
-      if (obj.role === "user" && typeof obj.content === "string" && obj.content.length > 0 && !isSystemInjected(obj.content)) {
-        return obj.content.length > MSG_CAP ? obj.content.slice(0, MSG_CAP) + "…" : obj.content;
+      if (
+        obj.role === "user" &&
+        typeof obj.content === "string" &&
+        obj.content.length > 0 &&
+        !isSystemInjected(obj.content)
+      ) {
+        return obj.content.length > MSG_CAP
+          ? obj.content.slice(0, MSG_CAP) + "…"
+          : obj.content;
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
     return undefined;
   }
 
@@ -857,7 +882,11 @@ async function ensureCodexScanCached(
             if (needContextChars) {
               try {
                 const obj = JSON.parse(line) as Record<string, unknown>;
-                if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+                if (
+                  obj.type === "response_item" &&
+                  typeof obj.payload === "object" &&
+                  obj.payload
+                ) {
                   const p = obj.payload as Record<string, unknown>;
                   if (p.type === "message") {
                     if (Array.isArray(p.content)) {
@@ -872,31 +901,46 @@ async function ensureCodexScanCached(
                     }
                   }
                 }
-              } catch { /* count stands */ }
+              } catch {
+                /* count stands */
+              }
             }
           }
           continue;
         }
-        if (line.includes('"role"') && (line.includes('"user"') || line.includes('"assistant"'))) {
+        if (
+          line.includes('"role"') &&
+          (line.includes('"user"') || line.includes('"assistant"'))
+        ) {
           messageCount++;
           if (line.includes('"user"')) trackUserMessage(line);
           if (needContextChars) {
             try {
               const obj = JSON.parse(line) as Record<string, unknown>;
-              if (typeof obj.content === "string") contextChars += obj.content.length;
-            } catch { /* skip */ }
+              if (typeof obj.content === "string")
+                contextChars += obj.content.length;
+            } catch {
+              /* skip */
+            }
           }
         }
       }
     }
-    if (leftover && (leftover.includes('"response_item"') || leftover.includes('"role"'))) {
+    if (
+      leftover &&
+      (leftover.includes('"response_item"') || leftover.includes('"role"'))
+    ) {
       if (leftover.includes('"user"') || leftover.includes('"assistant"')) {
         messageCount++;
         if (leftover.includes('"user"')) trackUserMessage(leftover);
         if (needContextChars) {
           try {
             const obj = JSON.parse(leftover) as Record<string, unknown>;
-            if (obj.type === "response_item" && typeof obj.payload === "object" && obj.payload) {
+            if (
+              obj.type === "response_item" &&
+              typeof obj.payload === "object" &&
+              obj.payload
+            ) {
               const p = obj.payload as Record<string, unknown>;
               if (p.type === "message") {
                 if (Array.isArray(p.content)) {
@@ -913,7 +957,9 @@ async function ensureCodexScanCached(
             } else if (typeof obj.content === "string") {
               contextChars += obj.content.length;
             }
-          } catch { /* partial line */ }
+          } catch {
+            /* partial line */
+          }
         }
       }
     }
@@ -966,7 +1012,8 @@ export async function scanCodexContextTokens(
 }
 
 /** UUID pattern — Claude uses v4 UUIDs for session directories. */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** For a directory-based session (`<project>/<uuid>/`), find the most
  *  recently modified `.jsonl` inside `<uuid>/subagents/` and return its
@@ -1006,10 +1053,7 @@ async function claudeSessionFromFile(
 ): Promise<AgentSession | null> {
   const meta = await readClaudeSessionMeta(sessionPath, fileStat.mtimeMs);
   if (!meta.cwd) return null;
-  const userStats = await scanClaudeUserMessages(
-    sessionPath,
-    fileStat.mtimeMs,
-  );
+  const userStats = await scanClaudeUserMessages(sessionPath, fileStat.mtimeMs);
   return {
     agent: "claude",
     cwd: resolve(meta.cwd),
@@ -1019,18 +1063,18 @@ async function claudeSessionFromFile(
     title: meta.title,
     lastUserMessage: meta.lastUserMessage,
     firstUserMessage: userStats.firstUserMessage,
-    lastUserMessages: userStats.lastUserMessages.length > 0
-      ? userStats.lastUserMessages
-      : undefined,
-    userMessageCount: userStats.userMessageCount > 0
-      ? userStats.userMessageCount
-      : undefined,
-    messageCount: userStats.totalMessageCount > 0
-      ? userStats.totalMessageCount
-      : undefined,
-    recentMessageCount: userStats.recentMessageCount > 0
-      ? userStats.recentMessageCount
-      : undefined,
+    lastUserMessages:
+      userStats.lastUserMessages.length > 0
+        ? userStats.lastUserMessages
+        : undefined,
+    userMessageCount:
+      userStats.userMessageCount > 0 ? userStats.userMessageCount : undefined,
+    messageCount:
+      userStats.totalMessageCount > 0 ? userStats.totalMessageCount : undefined,
+    recentMessageCount:
+      userStats.recentMessageCount > 0
+        ? userStats.recentMessageCount
+        : undefined,
     contextTokens: userStats.lastContextTokens,
     contextTokensExact:
       userStats.lastContextTokens !== undefined ? true : undefined,
@@ -1087,10 +1131,7 @@ export async function scanClaude(
       }
       // Pass 2: directory-based sessions (newer Claude format) — parallel.
       const dirEntries = entries.filter(
-        (e) =>
-          e.isDirectory() &&
-          UUID_RE.test(e.name) &&
-          !seenIds.has(e.name),
+        (e) => e.isDirectory() && UUID_RE.test(e.name) && !seenIds.has(e.name),
       );
       const dirResults = await Promise.all(
         dirEntries.map(async (entry) => {
@@ -1202,20 +1243,29 @@ export async function scanCodex(
           }
         }
         const fileMs = performance.now() - tFile;
-        if (fileMs > slowestMs) { slowestMs = fileMs; slowestFile = sessionPath; }
+        if (fileMs > slowestMs) {
+          slowestMs = fileMs;
+          slowestFile = sessionPath;
+        }
         const cached = codexScanCache.get(sessionPath);
         const lastMsgs = cached?.lastUserMessages ?? [];
         sessions.push({
           agent: "codex",
           cwd: resolve(meta.cwd),
           lastActive: stats.mtime.toISOString(),
-          sessionId: meta.id ?? sessionPath.split(/[/\\]/).pop()!.replace(/\.(jsonl|json)$/, ""),
+          sessionId:
+            meta.id ??
+            sessionPath
+              .split(/[/\\]/)
+              .pop()!
+              .replace(/\.(jsonl|json)$/, ""),
           source: sessionPath,
           title: cached?.firstUserMessage,
           firstUserMessage: cached?.firstUserMessage,
           lastUserMessage: lastMsgs[lastMsgs.length - 1],
           lastUserMessages: lastMsgs.length > 0 ? lastMsgs : undefined,
-          userMessageCount: messageCount > 0 ? Math.ceil(messageCount / 2) : undefined,
+          userMessageCount:
+            messageCount > 0 ? Math.ceil(messageCount / 2) : undefined,
           messageCount: messageCount > 0 ? messageCount : undefined,
           contextTokens,
           contextTokensExact,
@@ -1230,8 +1280,10 @@ export async function scanCodex(
     if (totalMs > 500) {
       console.log(
         `supergit daemon: scanCodex ${totalMs.toFixed(0)}ms — ` +
-        `collect=${tCollect.toFixed(0)}ms files=${files.length} sessions=${sessions.length}` +
-        (slowestFile ? ` slowest=${slowestMs.toFixed(0)}ms ${slowestFile.split("/").pop()}` : "")
+          `collect=${tCollect.toFixed(0)}ms files=${files.length} sessions=${sessions.length}` +
+          (slowestFile
+            ? ` slowest=${slowestMs.toFixed(0)}ms ${slowestFile.split("/").pop()}`
+            : ""),
       );
     }
     // Detect Codex subagent batches: multiple sessions sharing the
@@ -1308,7 +1360,9 @@ export async function scanCopilot(
  *  the picked model (used as the title), worktree, cwd, and the file's
  *  mtime as lastActive. `sessionId` is the termId — unique per spawn —
  *  so the UI's per-worktree picker can deduplicate against live PTYs. */
-export async function scanOllama(workspacePath: string): Promise<AgentSession[]> {
+export async function scanOllama(
+  workspacePath: string,
+): Promise<AgentSession[]> {
   const dir = join(workspacePath, "ollama");
   let entries: string[];
   try {
@@ -1375,7 +1429,9 @@ export async function scanOllama(workspacePath: string): Promise<AgentSession[]>
  *
  *  Orphans (a `.jsonl` with no sidecar) get a best-effort entry so the
  *  file isn't invisible. */
-export async function scanImported(workspacePath: string): Promise<AgentSession[]> {
+export async function scanImported(
+  workspacePath: string,
+): Promise<AgentSession[]> {
   const root = join(workspacePath, "imported-sessions");
   let machines: string[];
   try {
@@ -1392,7 +1448,12 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
       continue;
     }
     for (const agentDir of agentDirs) {
-      if (agentDir !== "claude" && agentDir !== "codex" && agentDir !== "ollama") continue;
+      if (
+        agentDir !== "claude" &&
+        agentDir !== "codex" &&
+        agentDir !== "ollama"
+      )
+        continue;
       const dir = join(root, machine, agentDir);
       let entries: string[];
       try {
@@ -1477,7 +1538,9 @@ export async function scanImported(workspacePath: string): Promise<AgentSession[
   return out;
 }
 
-export async function detectAgents(workspacePath?: string): Promise<AgentSession[]> {
+export async function detectAgents(
+  workspacePath?: string,
+): Promise<AgentSession[]> {
   const t0 = performance.now();
   const [claude, codex, copilot, ollama, imported] = await Promise.all([
     scanClaude().catch(() => []),
@@ -1494,8 +1557,8 @@ export async function detectAgents(workspacePath?: string): Promise<AgentSession
   if (elapsed > 500) {
     console.log(
       `supergit daemon: detectAgents ${elapsed.toFixed(0)}ms — ` +
-      `claude=${claude.length} codex=${codex.length} copilot=${copilot.length} ` +
-      `ollama=${ollama.length} imported=${imported.length}`
+        `claude=${claude.length} codex=${codex.length} copilot=${copilot.length} ` +
+        `ollama=${ollama.length} imported=${imported.length}`,
     );
   }
   // Imported claude sessions live under `~/.claude/projects/...` and so
@@ -1530,9 +1593,10 @@ export async function detectAgents(workspacePath?: string): Promise<AgentSession
 // On Windows, drive letters can differ in case (c:\ vs C:\) and the
 // filesystem is case-insensitive, so all path comparisons must be
 // case-insensitive. On Unix, paths are case-sensitive.
-const normCase = process.platform === "win32"
-  ? (s: string) => s.toLowerCase()
-  : (s: string) => s;
+const normCase =
+  process.platform === "win32"
+    ? (s: string) => s.toLowerCase()
+    : (s: string) => s;
 
 export function agentsForWorktree(
   worktreePath: string,

@@ -11,10 +11,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  loadOrCreatePeerIdentity,
-  setPeerLabel,
-} from "../src/peer-identity";
+import { loadOrCreatePeerIdentity, setPeerLabel } from "../src/peer-identity";
 
 async function ws(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-identity-"));
@@ -79,7 +76,9 @@ describe("setPeerLabel", () => {
     expect(b.id).toBe(a.id);
     expect(b.label).toBe("second");
 
-    const reloaded = await loadOrCreatePeerIdentity(w, { defaultLabel: "ignored" });
+    const reloaded = await loadOrCreatePeerIdentity(w, {
+      defaultLabel: "ignored",
+    });
     expect(reloaded.label).toBe("second");
   });
 

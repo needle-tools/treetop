@@ -3,8 +3,7 @@ import { aheadAged, BLINK_AHEAD_MINUTES } from "../src/ahead-age";
 
 const ANCHOR = Date.parse("2026-05-14T12:00:00Z");
 const minutes = (n: number) => n * 60_000;
-const ago = (mins: number) =>
-  new Date(ANCHOR - minutes(mins)).toISOString();
+const ago = (mins: number) => new Date(ANCHOR - minutes(mins)).toISOString();
 
 describe("aheadAged", () => {
   test("returns false when aheadOldestTime is missing", () => {
@@ -31,9 +30,7 @@ describe("aheadAged", () => {
       aheadAged({ aheadOldestTime: ago(BLINK_AHEAD_MINUTES + 1) }, ANCHOR),
     ).toBe(true);
     // Days-old commits still age in (the helper has no upper bound).
-    expect(
-      aheadAged({ aheadOldestTime: ago(60 * 24 * 7) }, ANCHOR),
-    ).toBe(true);
+    expect(aheadAged({ aheadOldestTime: ago(60 * 24 * 7) }, ANCHOR)).toBe(true);
   });
 
   test("a commit timestamped in the future stays calm (negative age)", () => {

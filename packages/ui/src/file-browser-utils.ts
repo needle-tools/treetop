@@ -61,7 +61,8 @@ export function formatSize(bytes?: number): string {
   if (bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
@@ -162,7 +163,11 @@ export class NavHistory {
   }
 
   serialize(): NavHistoryState {
-    return { back: [...this.back], forward: [...this.forward], current: this._current };
+    return {
+      back: [...this.back],
+      forward: [...this.forward],
+      current: this._current,
+    };
   }
 
   static fromSerialized(data: unknown): NavHistory {
@@ -328,9 +333,14 @@ export class StarStore {
   }
 }
 
-export async function fetchGitStatus(path: string, gitWt: string): Promise<Map<string, string>> {
+export async function fetchGitStatus(
+  path: string,
+  gitWt: string,
+): Promise<Map<string, string>> {
   try {
-    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`);
+    const res = await fetch(
+      `/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`,
+    );
     if (!res.ok) return new Map();
     const data = await res.json();
     const map = new Map<string, string>();
@@ -374,7 +384,9 @@ export interface SshSessionInfo {
   cwd?: string;
 }
 
-export async function fetchSshSessions(): Promise<Record<string, SshSessionInfo>> {
+export async function fetchSshSessions(): Promise<
+  Record<string, SshSessionInfo>
+> {
   try {
     const res = await fetch("/api/ssh/sessions");
     if (!res.ok) return {};
@@ -384,7 +396,10 @@ export async function fetchSshSessions(): Promise<Record<string, SshSessionInfo>
   }
 }
 
-export async function fetchRemoteDir(termId: string, path: string): Promise<FileEntry[]> {
+export async function fetchRemoteDir(
+  termId: string,
+  path: string,
+): Promise<FileEntry[]> {
   const res = await fetch(
     `/api/ssh/files?term=${encodeURIComponent(termId)}&path=${encodeURIComponent(path)}`,
   );
@@ -420,9 +435,20 @@ export async function dismissRemoteUpload(localPath: string): Promise<void> {
   });
 }
 
-export async function fetchSshStatus(termId: string): Promise<{ remotePath: string; localCachePath: string; state: string; error?: string }[]> {
+export async function fetchSshStatus(
+  termId: string,
+): Promise<
+  {
+    remotePath: string;
+    localCachePath: string;
+    state: string;
+    error?: string;
+  }[]
+> {
   try {
-    const res = await fetch(`/api/ssh/status?term=${encodeURIComponent(termId)}`);
+    const res = await fetch(
+      `/api/ssh/status?term=${encodeURIComponent(termId)}`,
+    );
     if (!res.ok) return [];
     const data = await res.json();
     return data.files ?? [];
@@ -431,7 +457,10 @@ export async function fetchSshStatus(termId: string): Promise<{ remotePath: stri
   }
 }
 
-export async function openRemoteFile(termId: string, remotePath: string): Promise<void> {
+export async function openRemoteFile(
+  termId: string,
+  remotePath: string,
+): Promise<void> {
   const res = await fetch("/api/ssh/open", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

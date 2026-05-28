@@ -31,8 +31,12 @@ describe("keyForSource", () => {
     // Windows filesystems are case-insensitive; the same session
     // referenced via "C:\…" and "c:\…" must hash to the same key
     // so a cached summary survives drive-letter casing drift.
-    const k1 = keyForSource("C:\\git\\supergit\\workspaces\\default\\session.jsonl");
-    const k2 = keyForSource("c:\\git\\supergit\\workspaces\\default\\session.jsonl");
+    const k1 = keyForSource(
+      "C:\\git\\supergit\\workspaces\\default\\session.jsonl",
+    );
+    const k2 = keyForSource(
+      "c:\\git\\supergit\\workspaces\\default\\session.jsonl",
+    );
     expect(k1).toBe(k2);
   });
 });
@@ -170,7 +174,10 @@ describe("SummariesStore", () => {
     const ws = await tempWorkspace();
     const store = await SummariesStore.open(ws);
     const key = keyForSource("/x/session.jsonl");
-    await writeFile(join(store.dir, `${key}.md`), "this is not yaml\nno frontmatter at all\n");
+    await writeFile(
+      join(store.dir, `${key}.md`),
+      "this is not yaml\nno frontmatter at all\n",
+    );
     expect(await store.read("/x/session.jsonl")).toBeNull();
   });
 
@@ -274,7 +281,9 @@ describe("RepoSummariesStore", () => {
     expect(got!.frontmatter.repoName).toBe("supergit");
     expect(got!.frontmatter.lastSha).toBe("2c7f8501a9b2e3f4");
     expect(got!.frontmatter.commitCount).toBe(7);
-    expect(got!.body).toBe("You spent yesterday landing the Ollama summary feature.");
+    expect(got!.body).toBe(
+      "You spent yesterday landing the Ollama summary feature.",
+    );
   });
 
   test("read returns null when no repo summary exists", async () => {

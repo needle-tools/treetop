@@ -75,7 +75,10 @@ describe("OllamaSessionsLog", () => {
       );
     }
     await Promise.all(writes);
-    const raw = await readFile(join(workspace, "ollama", "race.jsonl"), "utf-8");
+    const raw = await readFile(
+      join(workspace, "ollama", "race.jsonl"),
+      "utf-8",
+    );
     const lines = raw.split("\n").filter((l) => l.length > 0);
     expect(lines.length).toBe(51); // header + 50 turns
     // Every line must parse cleanly — interleaved bytes would surface

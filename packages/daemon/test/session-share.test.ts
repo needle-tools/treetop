@@ -169,9 +169,7 @@ describe("stripToolOutputs", () => {
         type: "user",
         message: {
           role: "user",
-          content: [
-            { type: "tool_result", tool_use_id: id, content: body },
-          ],
+          content: [{ type: "tool_result", tool_use_id: id, content: body }],
         },
       });
     const input = [mk("a", "AAA"), mk("b", "BBB"), mk("c", "CCC")].join("\n");
@@ -263,9 +261,7 @@ describe("rewritePaths", () => {
       JSON.stringify({ cwd: `${from}/src` }),
       JSON.stringify({
         message: {
-          content: [
-            { type: "text", text: `read ${from}/src/file.ts ok` },
-          ],
+          content: [{ type: "text", text: `read ${from}/src/file.ts ok` }],
         },
       }),
     ].join("\n");
@@ -424,7 +420,9 @@ describe("prepareOutgoingJsonl — strip + redact composed", () => {
     expect(out.jsonl.includes(stripSecret)).toBe(false);
     expect(out.jsonl.includes(ghToken)).toBe(false);
     expect(out.jsonl.includes("[REDACTED:github_token]")).toBe(true);
-    expect(out.redactions.find((r) => r.kind === "github_token")?.count).toBe(1);
+    expect(out.redactions.find((r) => r.kind === "github_token")?.count).toBe(
+      1,
+    );
   });
 
   test("includeToolOutputs:true keeps tool_result, still redacts secrets", () => {

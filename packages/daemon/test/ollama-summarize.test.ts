@@ -114,10 +114,7 @@ describe("sampleSessionForSummary", () => {
     // Two omission markers, in order, with non-zero counts.
     const matches = [...s.prompt.matchAll(/\[… (\d+) messages omitted …\]/g)];
     expect(matches.length).toBe(2);
-    const omittedTotal = matches.reduce(
-      (acc, m) => acc + Number(m[1]),
-      0,
-    );
+    const omittedTotal = matches.reduce((acc, m) => acc + Number(m[1]), 0);
     // 100 total - 30 included = 70 omitted (sum across both markers).
     expect(omittedTotal).toBe(70);
   });
@@ -143,7 +140,9 @@ describe("sampleSessionForSummary", () => {
     // surface a prompt within budget.
     const messages: NormalizedMessage[] = [];
     for (let i = 0; i < 50; i++) {
-      messages.push(txt(i % 2 === 0 ? "user" : "assistant", `[${i}] ` + "y".repeat(1024)));
+      messages.push(
+        txt(i % 2 === 0 ? "user" : "assistant", `[${i}] ` + "y".repeat(1024)),
+      );
     }
     const s = sampleSessionForSummary(messages, {
       targetMessages: 30,
@@ -174,9 +173,10 @@ describe("sampleSessionForSummary", () => {
   });
 
   test("renders role labels as `User:` / `Assistant:` separated by blank lines", () => {
-    const s = sampleSessionForSummary(
-      [txt("user", "hello"), txt("assistant", "hi")],
-    );
+    const s = sampleSessionForSummary([
+      txt("user", "hello"),
+      txt("assistant", "hi"),
+    ]);
     // Blank line between turns so a small model parses them cleanly.
     expect(s.prompt).toBe("User: hello\n\nAssistant: hi");
   });

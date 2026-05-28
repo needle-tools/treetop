@@ -1,13 +1,13 @@
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 export const INLINE_ATTACHMENT_DRAG_MIME =
   "application/x-supergit-inline-attachment+json";
-export const LINK_TARGET_DRAG_MIME =
-  "application/x-supergit-link-target+json";
+export const LINK_TARGET_DRAG_MIME = "application/x-supergit-link-target+json";
 export const SESSION_LINK_DRAG_MIME =
   "application/x-supergit-session-link+json";
 export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
 
-const ATTACHMENT_LINK_RE = /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
+const ATTACHMENT_LINK_RE =
+  /\[((?:\\.|[^\]\n])*)\]\(supergit:\/\/attachment\/([A-Za-z0-9_-]+)\)/g;
 
 export interface AttachmentSource {
   kind: "clipboard" | "drop" | "copy";
@@ -124,14 +124,15 @@ export function inferPastedTextMimeType(
   // a real language detector. Replace this with Monaco, Shiki, or a
   // similar proven estimator once pasted snippets need richer typing.
   const lowerTypes = sourceTypes.map((type) => type.toLowerCase());
-  const explicit = lowerTypes.find((type) =>
-    type.includes("javascript") ||
-    type.includes("ecmascript") ||
-    type.includes("typescript") ||
-    type.includes("markdown") ||
-    type.includes("json") ||
-    type.includes("xml") ||
-    type === "text/css",
+  const explicit = lowerTypes.find(
+    (type) =>
+      type.includes("javascript") ||
+      type.includes("ecmascript") ||
+      type.includes("typescript") ||
+      type.includes("markdown") ||
+      type.includes("json") ||
+      type.includes("xml") ||
+      type === "text/css",
   );
   if (explicit) return explicit;
 
@@ -146,7 +147,11 @@ export function inferPastedTextMimeType(
         return "application/json";
       } catch {}
     }
-    if (/^```/m.test(text) || /^#{1,6}\s+\S/m.test(text) || /^\s*[-*]\s+\S/m.test(text)) {
+    if (
+      /^```/m.test(text) ||
+      /^#{1,6}\s+\S/m.test(text) ||
+      /^\s*[-*]\s+\S/m.test(text)
+    ) {
       return "text/markdown";
     }
     if (/^\s*<([a-z][\w:-]*)(\s|>|\/>)/i.test(text)) {
@@ -158,7 +163,8 @@ export function inferPastedTextMimeType(
 
 export function pastedTextFilenameForMime(mimeType: string): string {
   const mime = mimeType.toLowerCase();
-  if (mime.includes("javascript") || mime.includes("ecmascript")) return "pasted-content.js";
+  if (mime.includes("javascript") || mime.includes("ecmascript"))
+    return "pasted-content.js";
   if (mime.includes("typescript")) return "pasted-content.ts";
   if (mime.includes("html")) return "pasted-content.html";
   if (mime.includes("css")) return "pasted-content.css";
@@ -170,7 +176,8 @@ export function pastedTextFilenameForMime(mimeType: string): string {
 
 export function pastedTextTitleForMime(mimeType?: string): string {
   const mime = (mimeType ?? "text/plain").toLowerCase();
-  if (mime.includes("javascript") || mime.includes("ecmascript")) return "Pasted Javascript";
+  if (mime.includes("javascript") || mime.includes("ecmascript"))
+    return "Pasted Javascript";
   if (mime.includes("typescript")) return "Pasted TypeScript";
   if (mime.includes("html")) return "Pasted HTML";
   if (mime.includes("css")) return "Pasted CSS";
@@ -222,7 +229,9 @@ export function resolveLiveCommandLink(
   const command = target.command?.trim();
   const label = target.label?.trim();
   for (const repo of candidateRepos) {
-    const links = (repo.customLinks ?? []).filter((link) => link.kind === "command");
+    const links = (repo.customLinks ?? []).filter(
+      (link) => link.kind === "command",
+    );
     const byId = links.find((link) => link.id === target.value);
     if (byId) return { repo, link: byId };
     if (command) {
@@ -230,8 +239,8 @@ export function resolveLiveCommandLink(
       if (byCommand) return { repo, link: byCommand };
     }
     if (label) {
-      const byLabel = links.find((link) =>
-        link.name?.trim() === label || link.cmd?.trim() === label
+      const byLabel = links.find(
+        (link) => link.name?.trim() === label || link.cmd?.trim() === label,
       );
       if (byLabel) return { repo, link: byLabel };
     }
@@ -254,12 +263,14 @@ export function textAttachmentMeta(
   attachment: TextInlineAttachment,
   stats?: { lineCount?: number; charCount?: number },
 ): string {
-  const lineCount = typeof attachment.lineCount === "number"
-    ? attachment.lineCount
-    : stats?.lineCount;
-  const lines = typeof lineCount === "number"
-    ? `${lineCount.toLocaleString()} ${lineCount === 1 ? "line" : "lines"}`
-    : "";
+  const lineCount =
+    typeof attachment.lineCount === "number"
+      ? attachment.lineCount
+      : stats?.lineCount;
+  const lines =
+    typeof lineCount === "number"
+      ? `${lineCount.toLocaleString()} ${lineCount === 1 ? "line" : "lines"}`
+      : "";
   if (typeof attachment.size === "number") {
     const size = humanAttachmentBytes(attachment.size);
     return lines ? `${lines}, ${size}` : size;
@@ -269,17 +280,15 @@ export function textAttachmentMeta(
   return `${charCount.toLocaleString()} chars`;
 }
 
-export function makeTextAttachmentRef(
-  input: {
-    path: string;
-    filename?: string;
-    mimeType?: string;
-    size?: number;
-    charCount: number;
-    lineCount?: number;
-    source?: AttachmentSource;
-  },
-): string {
+export function makeTextAttachmentRef(input: {
+  path: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  charCount: number;
+  lineCount?: number;
+  source?: AttachmentSource;
+}): string {
   return makeAttachmentRef({
     kind: "text",
     path: input.path,
@@ -287,7 +296,9 @@ export function makeTextAttachmentRef(
     ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     ...(typeof input.size === "number" ? { size: input.size } : {}),
     charCount: input.charCount,
-    ...(typeof input.lineCount === "number" ? { lineCount: input.lineCount } : {}),
+    ...(typeof input.lineCount === "number"
+      ? { lineCount: input.lineCount }
+      : {}),
     ...(input.source ? { source: input.source } : {}),
   });
 }
@@ -317,7 +328,9 @@ export function makeEmojiAttachmentRef(input: { body: string }): string {
   return makeAttachmentRef({ kind: "emoji", body: input.body });
 }
 
-export function makeLinkAttachmentRef(input: { target: InlineLinkTarget }): string {
+export function makeLinkAttachmentRef(input: {
+  target: InlineLinkTarget;
+}): string {
   return makeAttachmentRef({ kind: "link", target: input.target });
 }
 
@@ -327,8 +340,13 @@ export function parseInlineAttachments(body: string): InlineAttachmentPart[] {
   let last = 0;
   for (const match of matches) {
     if (match.start < last) continue;
-    if (match.start > last) parts.push({ kind: "text", text: body.slice(last, match.start) });
-    parts.push({ kind: "attachment", raw: match.raw, attachment: match.attachment });
+    if (match.start > last)
+      parts.push({ kind: "text", text: body.slice(last, match.start) });
+    parts.push({
+      kind: "attachment",
+      raw: match.raw,
+      attachment: match.attachment,
+    });
     last = match.start + match.raw.length;
   }
   if (last < body.length) parts.push({ kind: "text", text: body.slice(last) });
@@ -392,7 +410,10 @@ export function removeInlineAttachmentRef(body: string, raw: string): string {
     .join("");
 }
 
-export function moveInlineAttachmentRefToEnd(body: string, raw: string): string {
+export function moveInlineAttachmentRefToEnd(
+  body: string,
+  raw: string,
+): string {
   const without = removeInlineAttachmentRef(body, raw);
   if (without === body) return body;
   return appendInlineAttachmentRef(without, raw);
@@ -469,9 +490,10 @@ export async function expandNoteBodyForTerminalPasteChunks(
 
   for (const part of parseInlineAttachments(body)) {
     if (part.kind === "text") {
-      const nextText = skipNextLeadingNewline && text.endsWith("\n")
-        ? part.text.replace(/^\r?\n/, "")
-        : part.text;
+      const nextText =
+        skipNextLeadingNewline && text.endsWith("\n")
+          ? part.text.replace(/^\r?\n/, "")
+          : part.text;
       skipNextLeadingNewline = false;
       text += nextText;
     } else if (part.attachment.kind === "text") {
@@ -500,9 +522,14 @@ function shouldOmitFromTerminalPaste(
   attachment: InlineAttachment,
   opts: TerminalPasteExpansionOptions,
 ): boolean {
-  return attachment.kind === "link" &&
+  return (
+    attachment.kind === "link" &&
     attachment.target.type === "session" &&
-    sessionLinkTargetMatchesSource(attachment.target, opts.omitTargetSessionSource);
+    sessionLinkTargetMatchesSource(
+      attachment.target,
+      opts.omitTargetSessionSource,
+    )
+  );
 }
 
 export function sessionLinkTargetMatchesSource(
@@ -511,7 +538,10 @@ export function sessionLinkTargetMatchesSource(
 ): boolean {
   if (target.type !== "session" || !source) return false;
   if (target.value === source) return true;
-  const sourceBasename = source.split("/").pop()?.replace(/\.jsonl$/i, "");
+  const sourceBasename = source
+    .split("/")
+    .pop()
+    ?.replace(/\.jsonl$/i, "");
   return !!sourceBasename && target.value === sourceBasename;
 }
 
@@ -526,7 +556,11 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
     return `Pasted Content, ${attachment.charCount} chars`;
   }
   if (attachment.kind === "image") {
-    return attachment.filename ?? attachment.path.split("/").pop() ?? "Image attachment";
+    return (
+      attachment.filename ??
+      attachment.path.split("/").pop() ??
+      "Image attachment"
+    );
   }
   if (attachment.kind === "emoji") return attachment.body || "Emoji";
   if (attachment.kind === "note") {
@@ -534,7 +568,11 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
     return firstLine ? `Note: ${firstLine.slice(0, 40)}` : "Note";
   }
   if (attachment.target.type === "command") {
-    return attachment.target.label ?? attachment.target.command ?? attachment.target.value;
+    return (
+      attachment.target.label ??
+      attachment.target.command ??
+      attachment.target.value
+    );
   }
   return attachment.target.label ?? attachment.target.value;
 }
@@ -589,8 +627,9 @@ export function makeNoteClipboardPayload(input: {
     text: input.text ?? expandNoteBodyForCopy(input.body),
     copiedAt: input.copiedAt ?? new Date().toISOString(),
     attachments: parseInlineAttachments(input.body)
-      .filter((part): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
-        part.kind === "attachment",
+      .filter(
+        (part): part is Extract<InlineAttachmentPart, { kind: "attachment" }> =>
+          part.kind === "attachment",
       )
       .map((part) => part.attachment),
   };
@@ -612,7 +651,8 @@ export function extractNoteClipboardPayloadFromHtml(
     const value = JSON.parse(decodeBase64Url(match[1]!)) as unknown;
     if (!value || typeof value !== "object") return null;
     const obj = value as Record<string, unknown>;
-    if (obj.type !== "supergit-note" || typeof obj.body !== "string") return null;
+    if (obj.type !== "supergit-note" || typeof obj.body !== "string")
+      return null;
     return makeNoteClipboardPayload({
       ...(typeof obj.id === "string" ? { id: obj.id } : {}),
       body: obj.body,
@@ -634,7 +674,11 @@ function attachmentMatches(body: string): Array<{
   raw: string;
   attachment: InlineAttachment;
 }> {
-  const matches: Array<{ start: number; raw: string; attachment: InlineAttachment }> = [];
+  const matches: Array<{
+    start: number;
+    raw: string;
+    attachment: InlineAttachment;
+  }> = [];
   for (const match of body.matchAll(ATTACHMENT_LINK_RE)) {
     const attachment = parseAttachmentPayload(match[2]!);
     if (attachment) {
@@ -651,18 +695,21 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
     const obj = value as Record<string, unknown>;
     const source = parseSource(obj.source);
     if (obj.kind === "text" && typeof obj.path === "string" && obj.path) {
-      const charCount =
-        typeof obj.charCount === "number"
-          ? obj.charCount
-          : 0;
+      const charCount = typeof obj.charCount === "number" ? obj.charCount : 0;
       return {
         kind: "text",
         path: obj.path,
-        ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
-        ...(typeof obj.mimeType === "string" && obj.mimeType ? { mimeType: obj.mimeType } : {}),
+        ...(typeof obj.filename === "string" && obj.filename
+          ? { filename: obj.filename }
+          : {}),
+        ...(typeof obj.mimeType === "string" && obj.mimeType
+          ? { mimeType: obj.mimeType }
+          : {}),
         ...(typeof obj.size === "number" ? { size: obj.size } : {}),
         charCount,
-        ...(typeof obj.lineCount === "number" ? { lineCount: obj.lineCount } : {}),
+        ...(typeof obj.lineCount === "number"
+          ? { lineCount: obj.lineCount }
+          : {}),
         ...(source ? { source } : {}),
       };
     }
@@ -670,8 +717,12 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
       return {
         kind: "image",
         path: obj.path,
-        ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
-        ...(typeof obj.mimeType === "string" && obj.mimeType ? { mimeType: obj.mimeType } : {}),
+        ...(typeof obj.filename === "string" && obj.filename
+          ? { filename: obj.filename }
+          : {}),
+        ...(typeof obj.mimeType === "string" && obj.mimeType
+          ? { mimeType: obj.mimeType }
+          : {}),
         ...(typeof obj.size === "number" ? { size: obj.size } : {}),
         ...(source ? { source } : {}),
       };
@@ -716,7 +767,9 @@ function parseLinkTarget(value: unknown): InlineLinkTarget | null {
     ...(typeof obj.repoId === "string" ? { repoId: obj.repoId } : {}),
     ...(typeof obj.cwd === "string" ? { cwd: obj.cwd } : {}),
     ...(typeof obj.command === "string" ? { command: obj.command } : {}),
-    ...(obj.runMode === "internal" || obj.runMode === "external" || obj.runMode === "shell"
+    ...(obj.runMode === "internal" ||
+    obj.runMode === "external" ||
+    obj.runMode === "shell"
       ? { runMode: obj.runMode }
       : {}),
   };
@@ -752,7 +805,9 @@ function parseSource(value: unknown): AttachmentSource | undefined {
     ...(Array.isArray(obj.types)
       ? { types: obj.types.filter((x): x is string => typeof x === "string") }
       : {}),
-    ...(typeof obj.filename === "string" && obj.filename ? { filename: obj.filename } : {}),
+    ...(typeof obj.filename === "string" && obj.filename
+      ? { filename: obj.filename }
+      : {}),
   };
 }
 
@@ -786,10 +841,10 @@ function encodeBase64Url(s: string): string {
 }
 
 function decodeBase64Url(s: string): string {
-  const padded = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(
-    Math.ceil(s.length / 4) * 4,
-    "=",
-  );
+  const padded = s
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(s.length / 4) * 4, "=");
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -797,10 +852,7 @@ function decodeBase64Url(s: string): string {
 }
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function escapeMarkdownLabel(s: string): string {

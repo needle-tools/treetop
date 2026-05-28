@@ -80,10 +80,7 @@
   // `summary.text !== "clean"` is what the inline-diff block guards on
   // in the original template — we replicate that boolean here.
   $: dirty =
-    wt.fileStatus.staged +
-      wt.fileStatus.unstaged +
-      wt.fileStatus.untracked >
-    0;
+    wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked > 0;
   $: anyChanges = dirty || wt.fileStatus.staged > 0;
 
   // Track which `path / expanded / fsChangeKey` state we've already
@@ -100,7 +97,12 @@
    *  future UI refactor can't accidentally desync the three call sites.
    *  See `packages/ui/test/source-control.test.ts` for the spec. */
   function ensureActiveDiffLoaded(): void {
-    const next = pendingDiffLoad({ expanded, diffTab, workdirDiff, stagedDiff });
+    const next = pendingDiffLoad({
+      expanded,
+      diffTab,
+      workdirDiff,
+      stagedDiff,
+    });
     if (next === "workdir") void loadWorkdirDiff();
     else if (next === "staged") void loadStagedDiff();
   }
@@ -207,7 +209,8 @@
           context: String(contextLines()),
         });
         const res = await fetch(`/api/commit?${qs.toString()}`);
-        if (res.ok) commitDiff = { ...commitDiff, [openCommitSha]: await res.text() };
+        if (res.ok)
+          commitDiff = { ...commitDiff, [openCommitSha]: await res.text() };
       } catch (e) {
         reportError(e);
       }
@@ -319,8 +322,8 @@
       <button
         class="hide-history-btn"
         title="Hide source control"
-        on:click={() => dispatch("toggle")}
-      >Hide ✕</button>
+        on:click={() => dispatch("toggle")}>Hide ✕</button
+      >
     {/if}
     {#if anyChanges}
       <div class="inline-diff">
@@ -333,7 +336,9 @@
             >
               Unstaged
               {#if dirty}
-                <span class="tab-count">{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span>
+                <span class="tab-count"
+                  >{wt.fileStatus.unstaged + wt.fileStatus.untracked}</span
+                >
               {/if}
             </button>
             <button
@@ -354,7 +359,8 @@
               ? "Showing whole file — click for ±2 lines"
               : "Showing ±2 lines context — click for whole file"}
             on:click={() => void toggleFullFile()}
-          >{fullFile ? "Full file" : "±2 lines"}</button>
+            >{fullFile ? "Full file" : "±2 lines"}</button
+          >
         </div>
 
         {#if diffTab === "workdir"}

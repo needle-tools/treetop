@@ -113,7 +113,9 @@ describe("watchWorktree", () => {
   test("ignores chatty writes inside .git/ (objects, logs, lock files)", async () => {
     const dir = await tempDir();
     await mkdir(join(dir, ".git", "objects", "ab"), { recursive: true });
-    await mkdir(join(dir, ".git", "logs", "refs", "heads"), { recursive: true });
+    await mkdir(join(dir, ".git", "logs", "refs", "heads"), {
+      recursive: true,
+    });
     let calls = 0;
     const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
     try {
@@ -160,7 +162,10 @@ describe("watchWorktree", () => {
     const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
     try {
       await writeFile(join(dir, ".git", "packed-refs"), "# pack-refs\n");
-      await writeFile(join(dir, ".git", "FETCH_HEAD"), "abc123\trefs/heads/main\n");
+      await writeFile(
+        join(dir, ".git", "FETCH_HEAD"),
+        "abc123\trefs/heads/main\n",
+      );
       await sleep(SETTLE_MS);
       expect(calls).toBe(1);
     } finally {

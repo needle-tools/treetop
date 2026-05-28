@@ -37,25 +37,45 @@ describe("titleForCount", () => {
 describe("titleForState", () => {
   test("returns the base title when nothing is active", () => {
     expect(
-      titleForState("supergit", { awaiting: 0, working: 0, unread: 0, idle: 0 }),
+      titleForState("supergit", {
+        awaiting: 0,
+        working: 0,
+        unread: 0,
+        idle: 0,
+      }),
     ).toBe("supergit");
   });
 
   test("keeps the awaiting-count prefix so the tab strip still flags attention", () => {
     expect(
-      titleForState("supergit", { awaiting: 2, working: 0, unread: 0, idle: 0 }),
+      titleForState("supergit", {
+        awaiting: 2,
+        working: 0,
+        unread: 0,
+        idle: 0,
+      }),
     ).toBe("(2) supergit — 2 waiting");
   });
 
   test("appends a tooltip-friendly breakdown after the base title", () => {
     expect(
-      titleForState("supergit", { awaiting: 1, working: 2, unread: 1, idle: 3 }),
+      titleForState("supergit", {
+        awaiting: 1,
+        working: 2,
+        unread: 1,
+        idle: 3,
+      }),
     ).toBe("(1) supergit — 1 waiting, 2 working, 1 unread, 3 idle");
   });
 
   test("omits the prefix when only working/idle are active", () => {
     expect(
-      titleForState("supergit", { awaiting: 0, working: 2, unread: 0, idle: 1 }),
+      titleForState("supergit", {
+        awaiting: 0,
+        working: 2,
+        unread: 0,
+        idle: 1,
+      }),
     ).toBe("supergit — 2 working, 1 idle");
   });
 });
@@ -142,7 +162,9 @@ describe("titleForSessions", () => {
 
   test("falls back to the agent name when the session has no name yet", () => {
     expect(
-      titleForSessions("supergit", [{ state: "working", name: "", agent: "codex" }]),
+      titleForSessions("supergit", [
+        { state: "working", name: "", agent: "codex" },
+      ]),
     ).toBe("supergit — working: codex");
   });
 

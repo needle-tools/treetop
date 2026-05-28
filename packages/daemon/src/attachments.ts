@@ -72,7 +72,10 @@ export async function serveAttachment(
   }
 }
 
-function sanitizeName(filename: string | undefined, mimeType: string | undefined): string {
+function sanitizeName(
+  filename: string | undefined,
+  mimeType: string | undefined,
+): string {
   if (filename) {
     // basename() strips any path component a malicious or naive caller
     // included (e.g. "../../etc/passwd" → "passwd"); then replace any

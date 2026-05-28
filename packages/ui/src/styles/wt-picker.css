@@ -124,9 +124,15 @@
 
 /* Brief highlight pulse when the picker scrolls to a worktree row. */
 @keyframes wt-row-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 50%, transparent); }
-  40%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand) 30%, transparent); }
-  100% { box-shadow: 0 0 0 0 transparent; }
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 50%, transparent);
+  }
+  40% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand) 30%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 .wt-row-pulse {
   animation: wt-row-pulse 1.2s ease-out;

@@ -35,12 +35,16 @@ describe("isLockError", () => {
 
   test("matches a shallow.lock / packed-refs.lock too", () => {
     expect(
-      isLockError("fatal: Unable to create '/r/.git/shallow.lock': File exists"),
+      isLockError(
+        "fatal: Unable to create '/r/.git/shallow.lock': File exists",
+      ),
     ).toBe(true);
   });
 
   test("does not match unrelated failures", () => {
-    expect(isLockError("fatal: Not possible to fast-forward, aborting.")).toBe(false);
+    expect(isLockError("fatal: Not possible to fast-forward, aborting.")).toBe(
+      false,
+    );
     expect(isLockError("Authentication failed for 'https://...'")).toBe(false);
     expect(isLockError("")).toBe(false);
   });
@@ -288,13 +292,19 @@ describe("parseShortstatLines", () => {
     expect(parseShortstatLines("")).toBe(0);
   });
   test("insertions only", () => {
-    expect(parseShortstatLines(" 3 files changed, 45 insertions(+)\n")).toBe(45);
+    expect(parseShortstatLines(" 3 files changed, 45 insertions(+)\n")).toBe(
+      45,
+    );
   });
   test("deletions only", () => {
     expect(parseShortstatLines(" 1 file changed, 12 deletions(-)\n")).toBe(12);
   });
   test("both insertions and deletions", () => {
-    expect(parseShortstatLines(" 5 files changed, 100 insertions(+), 50 deletions(-)\n")).toBe(150);
+    expect(
+      parseShortstatLines(
+        " 5 files changed, 100 insertions(+), 50 deletions(-)\n",
+      ),
+    ).toBe(150);
   });
 });
 
@@ -381,10 +391,7 @@ describe("parseChangedFiles", () => {
       "src/both.ts",
       "src/added.ts",
     ]);
-    expect(r.unstaged).toEqual([
-      "src/unstaged-only.ts",
-      "src/both.ts",
-    ]);
+    expect(r.unstaged).toEqual(["src/unstaged-only.ts", "src/both.ts"]);
     expect(r.untracked).toEqual(["src/new-file.ts"]);
   });
 
@@ -516,8 +523,16 @@ describe("parseUnpushedCommits", () => {
 
 describe("parseRemoteUrl", () => {
   test("returns null fields for an empty / unparseable input", () => {
-    expect(parseRemoteUrl("")).toEqual({ webUrl: null, provider: null, host: null });
-    expect(parseRemoteUrl("   ")).toEqual({ webUrl: null, provider: null, host: null });
+    expect(parseRemoteUrl("")).toEqual({
+      webUrl: null,
+      provider: null,
+      host: null,
+    });
+    expect(parseRemoteUrl("   ")).toEqual({
+      webUrl: null,
+      provider: null,
+      host: null,
+    });
     expect(parseRemoteUrl("not a url at all")).toEqual({
       webUrl: null,
       provider: null,
@@ -603,7 +618,9 @@ describe("parseRemoteUrl", () => {
   });
 
   test("sourcehut", () => {
-    expect(parseRemoteUrl("git@git.sr.ht:~user/repo").provider).toBe("sourcehut");
+    expect(parseRemoteUrl("git@git.sr.ht:~user/repo").provider).toBe(
+      "sourcehut",
+    );
   });
 
   test("Azure DevOps SSH v3 form rewrites to dev.azure.com/_git/", () => {

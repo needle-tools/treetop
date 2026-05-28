@@ -136,10 +136,14 @@ describe("computeAgentUsage — Claude (per-date buckets)", () => {
 
   test("omits claude from report when there are no in-window dates", async () => {
     const now = Date.UTC(2026, 4, 22, 15, 0, 0);
-    const r = await computeAgentUsageSilent([session("claude", 100 * DAY)], now, {
-      preComputedClaudeDailyTotals: new Map(),
-      preComputedClaudeSessionsByDate: new Map(),
-    });
+    const r = await computeAgentUsageSilent(
+      [session("claude", 100 * DAY)],
+      now,
+      {
+        preComputedClaudeDailyTotals: new Map(),
+        preComputedClaudeSessionsByDate: new Map(),
+      },
+    );
     expect(r.agents.claude).toBeUndefined();
   });
 });

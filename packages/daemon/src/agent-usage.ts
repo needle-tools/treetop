@@ -287,7 +287,8 @@ export async function scanClaudeSessionTokenTotals(
       continue;
     }
     if (obj.type !== "assistant") continue;
-    const ts = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : NaN;
+    const ts =
+      typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : NaN;
     if (Number.isNaN(ts) || ts < sinceMs) continue;
     const msg = obj.message as { usage?: unknown } | undefined;
     const usage = msg?.usage as
@@ -299,8 +300,10 @@ export async function scanClaudeSessionTokenTotals(
         }
       | undefined;
     if (!usage || typeof usage !== "object") continue;
-    if (typeof usage.input_tokens === "number") inputTokens += usage.input_tokens;
-    if (typeof usage.output_tokens === "number") outputTokens += usage.output_tokens;
+    if (typeof usage.input_tokens === "number")
+      inputTokens += usage.input_tokens;
+    if (typeof usage.output_tokens === "number")
+      outputTokens += usage.output_tokens;
     if (typeof usage.cache_read_input_tokens === "number")
       cacheReadTokens += usage.cache_read_input_tokens;
     if (typeof usage.cache_creation_input_tokens === "number")
@@ -352,7 +355,11 @@ export async function topClaudeSessionsByTokens(
       } catch {
         return null;
       }
-      const totals = await scanClaudeSessionTokenTotals(s.source, mtimeMs, sinceMs);
+      const totals = await scanClaudeSessionTokenTotals(
+        s.source,
+        mtimeMs,
+        sinceMs,
+      );
       if (totals.totalTokens === 0) return null;
       return {
         sessionId: s.sessionId,
@@ -367,9 +374,7 @@ export async function topClaudeSessionsByTokens(
       };
     }),
   );
-  const populated = results.filter(
-    (r): r is ClaudeTopSession => r !== null,
-  );
+  const populated = results.filter((r): r is ClaudeTopSession => r !== null);
   populated.sort((a, b) => b.totalTokens - a.totalTokens);
   return populated.slice(0, limit);
 }
@@ -380,7 +385,10 @@ export async function topClaudeSessionsByTokens(
 async function buildClaudeDailyTotals(
   sessions: AgentSession[],
   now: number,
-): Promise<{ totals: Map<string, number>; sessionsByDate: Map<string, Set<string>> }> {
+): Promise<{
+  totals: Map<string, number>;
+  sessionsByDate: Map<string, Set<string>>;
+}> {
   const totals = new Map<string, number>();
   const sessionsByDate = new Map<string, Set<string>>();
   const cutoff = now - PEAK_WEEK_LOOKBACK_MS - WEEK_MS;
@@ -495,8 +503,18 @@ function aggregateClaude(
 function aggregateByMtime(list: AgentSession[], now: number): AgentUsage {
   const today = mtimeWindow(list, now - DAY_MS, now);
   const week = mtimeWindow(list, now - WEEK_MS, now);
-  const peakDayMs = peakMtimeWindow(list, now - PEAK_DAY_LOOKBACK_MS, now, DAY_MS);
-  const peakWeekMs = peakMtimeWindow(list, now - PEAK_WEEK_LOOKBACK_MS, now, WEEK_MS);
+  const peakDayMs = peakMtimeWindow(
+    list,
+    now - PEAK_DAY_LOOKBACK_MS,
+    now,
+    DAY_MS,
+  );
+  const peakWeekMs = peakMtimeWindow(
+    list,
+    now - PEAK_WEEK_LOOKBACK_MS,
+    now,
+    WEEK_MS,
+  );
   return { today, week, peakDay: peakDayMs, peakWeek: peakWeekMs };
 }
 
@@ -567,7 +585,10 @@ export async function computeAgentUsage(
   let claudeTotals = opts.preComputedClaudeDailyTotals;
   let claudeSessions = opts.preComputedClaudeSessionsByDate;
   if (!claudeTotals || !claudeSessions) {
-    const built = await buildClaudeDailyTotals(byAgent.get("claude") ?? [], now);
+    const built = await buildClaudeDailyTotals(
+      byAgent.get("claude") ?? [],
+      now,
+    );
     claudeTotals = built.totals;
     claudeSessions = built.sessionsByDate;
   }
@@ -677,7 +698,8 @@ async function readClaudePlanTier(): Promise<
   if (!oauth || typeof oauth !== "object") return undefined;
   const o = oauth as { subscriptionType?: unknown; rateLimitTier?: unknown };
   const out: { subscriptionType?: string; rateLimitTier?: string } = {};
-  if (typeof o.subscriptionType === "string") out.subscriptionType = o.subscriptionType;
+  if (typeof o.subscriptionType === "string")
+    out.subscriptionType = o.subscriptionType;
   if (typeof o.rateLimitTier === "string") out.rateLimitTier = o.rateLimitTier;
   return Object.keys(out).length > 0 ? out : undefined;
 }

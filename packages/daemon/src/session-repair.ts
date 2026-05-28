@@ -102,8 +102,7 @@ export function diagnoseClaudeSession(text: string): SessionDiagnosis {
   // messageCount drop in turn_duration entries. These are messages
   // generated while the chain was broken and the model had amnesia.
   let orphanedTail: OrphanedTail | null = null;
-  const turnDurations: Array<{ lineIndex: number; messageCount: number }> =
-    [];
+  const turnDurations: Array<{ lineIndex: number; messageCount: number }> = [];
   for (let i = 0; i < lines.length; i++) {
     let obj: Record<string, unknown>;
     try {
@@ -123,10 +122,7 @@ export function diagnoseClaudeSession(text: string): SessionDiagnosis {
     const prev = turnDurations[i - 1]!;
     const curr = turnDurations[i]!;
     // A drop of >80% in messageCount signals the model lost its context.
-    if (
-      prev.messageCount > 50 &&
-      curr.messageCount < prev.messageCount * 0.2
-    ) {
+    if (prev.messageCount > 50 && curr.messageCount < prev.messageCount * 0.2) {
       // The orphaned region starts after the last healthy turn_duration.
       // Find the first non-metadata line after it.
       let startIdx = prev.lineIndex + 1;
@@ -292,8 +288,7 @@ export async function repairClaudeSession(
         content: [
           {
             type: "tool_result",
-            content:
-              "[supergit session repair: original tool output was lost]",
+            content: "[supergit session repair: original tool output was lost]",
             is_error: true,
             tool_use_id: toolUseId,
           },

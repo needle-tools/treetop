@@ -39,12 +39,32 @@ interface EditorSpec {
 
 const KNOWN_EDITORS: readonly EditorSpec[] = [
   { name: "Cursor", cmd: "cursor", app: "Cursor", winProcess: "Cursor" },
-  { name: "VSCode", cmd: "code", app: "Visual Studio Code", winProcess: "Code" },
+  {
+    name: "VSCode",
+    cmd: "code",
+    app: "Visual Studio Code",
+    winProcess: "Code",
+  },
   { name: "Rider", cmd: "rider", app: "Rider", winProcess: "rider64" },
   { name: "IntelliJ", cmd: "idea", app: "IntelliJ IDEA", winProcess: "idea64" },
-  { name: "IntelliJ CE", cmd: "idea-ce", app: "IntelliJ IDEA CE", winProcess: "idea64" },
-  { name: "WebStorm", cmd: "webstorm", app: "WebStorm", winProcess: "webstorm64" },
-  { name: "Sublime Text", cmd: "subl", app: "Sublime Text", winProcess: "sublime_text" },
+  {
+    name: "IntelliJ CE",
+    cmd: "idea-ce",
+    app: "IntelliJ IDEA CE",
+    winProcess: "idea64",
+  },
+  {
+    name: "WebStorm",
+    cmd: "webstorm",
+    app: "WebStorm",
+    winProcess: "webstorm64",
+  },
+  {
+    name: "Sublime Text",
+    cmd: "subl",
+    app: "Sublime Text",
+    winProcess: "sublime_text",
+  },
   { name: "Neovim", cmd: "nvim" },
 ];
 
@@ -241,7 +261,9 @@ export async function openIn(
   // the wrong dir" / "Finder opens some git path" reports — almost
   // always a misunderstanding about which path supergit sent vs which
   // path the OS expanded it to.
-  console.log(`openIn: app=${app} path=${path}${command ? ` command=${command}` : ""}`);
+  console.log(
+    `openIn: app=${app} path=${path}${command ? ` command=${command}` : ""}`,
+  );
   if (app === "fork") {
     if (process.platform === "darwin") {
       const proc = Bun.spawn(["open", "-a", "Fork", path], {
@@ -264,9 +286,7 @@ export async function openIn(
       try {
         await access(forkExe);
       } catch {
-        throw new Error(
-          "Fork not found at " + forkExe,
-        );
+        throw new Error("Fork not found at " + forkExe);
       }
       Bun.spawn([forkExe, path], {
         stdout: "ignore",
@@ -376,7 +396,17 @@ export async function openIn(
       if (await which("wt")) {
         if (command) {
           Bun.spawn(
-            [CMD_EXE, "/c", "wt", "-d", path, "powershell", "-NoExit", "-Command", command],
+            [
+              CMD_EXE,
+              "/c",
+              "wt",
+              "-d",
+              path,
+              "powershell",
+              "-NoExit",
+              "-Command",
+              command,
+            ],
             { stdout: "ignore", stderr: "ignore" },
           );
         } else {
@@ -392,15 +422,27 @@ export async function openIn(
       if (command) {
         Bun.spawn(
           [
-            CMD_EXE, "/c", "start", "powershell", "-NoExit",
-            "-Command", `Set-Location '${psPath}'; ${command}`,
+            CMD_EXE,
+            "/c",
+            "start",
+            "powershell",
+            "-NoExit",
+            "-Command",
+            `Set-Location '${psPath}'; ${command}`,
           ],
           { stdout: "ignore", stderr: "ignore" },
         );
       } else {
         Bun.spawn(
-          [CMD_EXE, "/c", "start", "powershell", "-NoExit", "-Command",
-            `Set-Location '${psPath}'`],
+          [
+            CMD_EXE,
+            "/c",
+            "start",
+            "powershell",
+            "-NoExit",
+            "-Command",
+            `Set-Location '${psPath}'`,
+          ],
           { stdout: "ignore", stderr: "ignore" },
         );
       }
@@ -415,17 +457,13 @@ export async function openIn(
   // launching the .app bundle so users don't have to install the shell CLI.
   const spec = CMD_TO_SPEC.get(app);
   if (!spec) {
-    const allowed = [
-      ...[...CMD_TO_SPEC.keys()],
-      ...SPECIAL_APPS,
-    ].join(", ");
+    const allowed = [...[...CMD_TO_SPEC.keys()], ...SPECIAL_APPS].join(", ");
     throw new Error(`unknown app: ${app} (allowed: ${allowed})`);
   }
 
   // VSCode and Cursor open `.code-workspace` files as full project workspaces;
   // prefer those when present.
-  const supportsWorkspaceFile =
-    spec.cmd === "code" || spec.cmd === "cursor";
+  const supportsWorkspaceFile = spec.cmd === "code" || spec.cmd === "cursor";
   const target =
     (supportsWorkspaceFile ? await findWorkspaceFile(path) : null) ?? path;
 

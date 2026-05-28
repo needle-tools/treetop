@@ -111,9 +111,12 @@ export function formatActivityPrompt(activity: RepoActivity): string {
     lines.push("Commits, newest first:");
     const shown = activity.commits.slice(0, COMMIT_LIST_CAP);
     for (const c of shown) {
-      const sub = c.subject.length > 120 ? `${c.subject.slice(0, 120)}…` : c.subject;
+      const sub =
+        c.subject.length > 120 ? `${c.subject.slice(0, 120)}…` : c.subject;
       lines.push(`  - ${shortSha(c.sha)}  ${c.author}  ${c.relTime}  ${sub}`);
-      lines.push(`    +${c.insertions} / -${c.deletions} across ${c.files} files`);
+      lines.push(
+        `    +${c.insertions} / -${c.deletions} across ${c.files} files`,
+      );
     }
     const extra = activity.commits.length - shown.length;
     if (extra > 0) {
@@ -201,14 +204,20 @@ export async function collectRepoActivity(
 
   const branchCounts = new Map<string, number>();
   const commitMap = new Map<string, RepoCommit>();
-  const fileTotals = new Map<string, { insertions: number; deletions: number }>();
+  const fileTotals = new Map<
+    string,
+    { insertions: number; deletions: number }
+  >();
   const dirty: RepoDirtyWorktree[] = [];
 
   for (const wtPath of wtPaths) {
     const branch = await currentBranch(wtPath);
     const commits = await commitsInWindow(wtPath, sinceArg);
     if (commits.length > 0 && branch) {
-      branchCounts.set(branch, (branchCounts.get(branch) ?? 0) + commits.length);
+      branchCounts.set(
+        branch,
+        (branchCounts.get(branch) ?? 0) + commits.length,
+      );
     }
     for (const c of commits) {
       // De-dup across worktrees that share the same commits (merged
@@ -279,9 +288,10 @@ async function commitsInWindow(
 ): Promise<RepoCommit[]> {
   try {
     // %H sha · %an author · %aI iso-author-date · %s subject
-    const out = await $`git -C ${worktreePath} log --since=${sinceArg} --format=%H%x00%an%x00%aI%x00%s --no-merges`
-      .quiet()
-      .text();
+    const out =
+      await $`git -C ${worktreePath} log --since=${sinceArg} --format=%H%x00%an%x00%aI%x00%s --no-merges`
+        .quiet()
+        .text();
     const commits: RepoCommit[] = [];
     for (const line of out.split("\n")) {
       if (!line) continue;
@@ -310,9 +320,10 @@ async function commitShortStat(
   sha: string,
 ): Promise<{ insertions: number; deletions: number; files: number }> {
   try {
-    const out = await $`git -C ${worktreePath} show --shortstat --format= ${sha}`
-      .quiet()
-      .text();
+    const out =
+      await $`git -C ${worktreePath} show --shortstat --format= ${sha}`
+        .quiet()
+        .text();
     return parseShortStat(out);
   } catch {
     return { insertions: 0, deletions: 0, files: 0 };

@@ -1,10 +1,5 @@
 import { join } from "node:path";
-import {
-  appendFile,
-  readFile,
-  access,
-  writeFile,
-} from "node:fs/promises";
+import { appendFile, readFile, access, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 export type ErrorKind = "server" | "fetch" | "uncaught" | "rejection";

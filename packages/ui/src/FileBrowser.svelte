@@ -3,7 +3,30 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, fetchPathStats, shouldDeferToNativeCopy, cleanCopiedPathSelection, type FileEntry, type PathStat, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import {
+    joinPath,
+    formatSize,
+    formatMtime,
+    fetchDir,
+    fetchRemoteDir,
+    fetchGitStatus,
+    NavHistory,
+    StarStore,
+    breadcrumbs,
+    normalizePath,
+    computeStarredList,
+    splitParent,
+    fetchPathStats,
+    shouldDeferToNativeCopy,
+    cleanCopiedPathSelection,
+    type FileEntry,
+    type PathStat,
+    openRemoteFile,
+    fetchSshHome,
+    fetchSshStatus,
+    confirmRemoteUpload,
+    dismissRemoteUpload,
+  } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -28,9 +51,11 @@
   }
 
   $: resolvedRemoteCwd = remoteCwd
-    ? remoteCwd === "~" ? remoteHome
-    : remoteCwd.startsWith("~/") ? remoteHome + "/" + remoteCwd.slice(2)
-    : remoteCwd
+    ? remoteCwd === "~"
+      ? remoteHome
+      : remoteCwd.startsWith("~/")
+        ? remoteHome + "/" + remoteCwd.slice(2)
+        : remoteCwd
     : null;
 
   function doFollowNav(path: string | null) {
@@ -45,7 +70,11 @@
 
   function toggleFollow() {
     followTerminal = !followTerminal;
-    if (followTerminal && resolvedRemoteCwd && resolvedRemoteCwd !== currentDir) {
+    if (
+      followTerminal &&
+      resolvedRemoteCwd &&
+      resolvedRemoteCwd !== currentDir
+    ) {
       doFollowNav(resolvedRemoteCwd);
     }
   }
@@ -74,7 +103,12 @@
   }
 
   /** Tracked remote files with sync state (modified/uploading/etc). */
-  let syncFiles: { remotePath: string; localCachePath: string; state: string; error?: string }[] = [];
+  let syncFiles: {
+    remotePath: string;
+    localCachePath: string;
+    state: string;
+    error?: string;
+  }[] = [];
   let syncPollTimer: ReturnType<typeof setInterval> | null = null;
 
   function startSyncPolling() {
@@ -84,9 +118,14 @@
       if (syncFiles.length > 0 && entries.length > 0) {
         entries = entries.map((e) => {
           const remoteFull = currentDir.endsWith("/")
-            ? currentDir + e.name : currentDir + "/" + e.name;
+            ? currentDir + e.name
+            : currentDir + "/" + e.name;
           const s = syncFiles.find((f) => f.remotePath === remoteFull);
-          return s ? { ...e, sync: s.state } : e.sync ? { ...e, sync: undefined } : e;
+          return s
+            ? { ...e, sync: s.state }
+            : e.sync
+              ? { ...e, sync: undefined }
+              : e;
         });
       }
     };
@@ -95,14 +134,19 @@
   }
 
   function stopSyncPolling() {
-    if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+    if (syncPollTimer) {
+      clearInterval(syncPollTimer);
+      syncPollTimer = null;
+    }
   }
 
   $: if (isRemote && remoteTermId) startSyncPolling();
   onDestroy(stopSyncPolling);
 
   /** Get sync state for a file by its full remote path. */
-  function syncStateFor(remotePath: string): { state: string; localCachePath: string } | null {
+  function syncStateFor(
+    remotePath: string,
+  ): { state: string; localCachePath: string } | null {
     const f = syncFiles.find((s) => s.remotePath === remotePath);
     return f ? { state: f.state, localCachePath: f.localCachePath } : null;
   }
@@ -124,12 +168,19 @@
         currentDir = state.currentDir;
       }
       if (Array.isArray(state.expanded)) {
-        savedExpandedPaths = state.expanded.filter((x: unknown): x is string => typeof x === "string");
+        savedExpandedPaths = state.expanded.filter(
+          (x: unknown): x is string => typeof x === "string",
+        );
       }
       if (Array.isArray(state.selected)) {
-        selected = new Set(state.selected.filter((x: unknown): x is string => typeof x === "string"));
+        selected = new Set(
+          state.selected.filter(
+            (x: unknown): x is string => typeof x === "string",
+          ),
+        );
       }
-      if (typeof state.showDotfiles === "boolean") showDotfiles = state.showDotfiles;
+      if (typeof state.showDotfiles === "boolean")
+        showDotfiles = state.showDotfiles;
     } catch {}
   }
 
@@ -153,9 +204,10 @@
     error = null;
     entries = [];
     try {
-      entries = isRemote && remoteTermId
-        ? await fetchRemoteDir(remoteTermId, currentDir)
-        : await fetchDir(currentDir);
+      entries =
+        isRemote && remoteTermId
+          ? await fetchRemoteDir(remoteTermId, currentDir)
+          : await fetchDir(currentDir);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       entries = [];
@@ -174,9 +226,10 @@
   }
 
   async function restoreExpanded(paths: string[]) {
-    const fetcher = isRemote && remoteTermId
-      ? (p: string) => fetchRemoteDir(remoteTermId!, p)
-      : fetchDir;
+    const fetcher =
+      isRemote && remoteTermId
+        ? (p: string) => fetchRemoteDir(remoteTermId!, p)
+        : fetchDir;
     const results = await Promise.all(
       paths.map(async (p) => {
         try {
@@ -235,14 +288,16 @@
       expanded = next;
     } else {
       try {
-        const fetcher = isRemote && remoteTermId
-          ? (p: string) => fetchRemoteDir(remoteTermId!, p)
-          : fetchDir;
+        const fetcher =
+          isRemote && remoteTermId
+            ? (p: string) => fetchRemoteDir(remoteTermId!, p)
+            : fetchDir;
         const children = await fetcher(fullPath);
         expanded = { ...expanded, [fullPath]: children };
-        if (!isRemote) fetchGitStatus(fullPath, wtPath).then((m) => {
-          gitStatusByDir = { ...gitStatusByDir, [fullPath]: m };
-        });
+        if (!isRemote)
+          fetchGitStatus(fullPath, wtPath).then((m) => {
+            gitStatusByDir = { ...gitStatusByDir, [fullPath]: m };
+          });
       } catch {}
     }
     persistState();
@@ -343,14 +398,15 @@
 
   function copyPaths() {
     if (hasAddressBarTextSelection()) return;
-    const text = selected.size > 0
-      ? [...selected].join("\n")
-      : currentDir;
+    const text = selected.size > 0 ? [...selected].join("\n") : currentDir;
     void navigator.clipboard.writeText(text).then(() => {
       copied = true;
       copiedPaths = new Set(selected);
       clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
+      copiedTimer = setTimeout(() => {
+        copied = false;
+        copiedPaths = new Set();
+      }, 1200);
     });
   }
 
@@ -371,7 +427,10 @@
       copied = true;
       copiedPaths = new Set([path]);
       clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
+      copiedTimer = setTimeout(() => {
+        copied = false;
+        copiedPaths = new Set();
+      }, 1200);
     });
   }
 
@@ -477,7 +536,9 @@
     return list.filter((e) => !e.name.startsWith("."));
   }
 
-  $: visibleEntries = showDotfiles ? entries : entries.filter((e) => !e.name.startsWith("."));
+  $: visibleEntries = showDotfiles
+    ? entries
+    : entries.filter((e) => !e.name.startsWith("."));
 
   /** All starred items, with paths inside wtPath listed first (showing
    *  a worktree-relative path) and items outside (parent dirs, sibling
@@ -498,7 +559,13 @@
   }
   $: canBack = (navTick, nav.canGoBack());
   $: canForward = (navTick, nav.canGoForward());
-  $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
+  $: visibleSelected = [...selected].filter((p) =>
+    visibleEntries.some(
+      (e) =>
+        joinPath(currentDir, e.name) === p ||
+        p.startsWith(joinPath(currentDir, e.name) + "/"),
+    ),
+  );
   $: selectedNames = visibleSelected.map((p) => splitParent(p).name);
 
   loadPersistedState();
@@ -538,27 +605,42 @@
         label: showDotfiles ? "Hide dotfiles" : "Show dotfiles",
         icon: showDotfiles ? "●" : "○",
         keepOpen: true,
-        onSelect: () => { showDotfiles = !showDotfiles; persistState(); },
+        onSelect: () => {
+          showDotfiles = !showDotfiles;
+          persistState();
+        },
       },
     ] satisfies SessionMenuItem[]}
   />
 
   <nav class="fb-breadcrumbs">
-    <button
-      class="fb-nav-btn"
-      on:click={goBack}
-      disabled={!canBack}
-    ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="6,1 1,4 6,7"/></svg></button>
-    <button
-      class="fb-nav-btn"
-      on:click={goForward}
-      disabled={!canForward}
-    ><svg class="fb-nav-arrow" viewBox="0 0 8 8"><polygon points="2,1 7,4 2,7"/></svg></button>
+    <button class="fb-nav-btn" on:click={goBack} disabled={!canBack}
+      ><svg class="fb-nav-arrow" viewBox="0 0 8 8"
+        ><polygon points="6,1 1,4 6,7" /></svg
+      ></button
+    >
+    <button class="fb-nav-btn" on:click={goForward} disabled={!canForward}
+      ><svg class="fb-nav-arrow" viewBox="0 0 8 8"
+        ><polygon points="2,1 7,4 2,7" /></svg
+      ></button
+    >
     <button
       class="fb-nav-btn"
       on:click={() => navigateTo(wtPath)}
       disabled={currentDir === wtPath}
-    ><svg class="fb-nav-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></button>
+      ><svg
+        class="fb-nav-home"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        ><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline
+          points="9 22 9 12 15 12 15 22"
+        /></svg
+      ></button
+    >
     <div
       class="fb-path"
       role="button"
@@ -574,11 +656,12 @@
         {#if i > 0}<span class="fb-sep">/</span>{/if}
         <button
           class="fb-crumb"
-          class:fb-crumb-active={i === breadcrumbs(currentDir).length - 1 && selected.size === 0}
+          class:fb-crumb-active={i === breadcrumbs(currentDir).length - 1 &&
+            selected.size === 0}
           on:click|stopPropagation={() => handleCrumbClick(crumb.path)}
           on:dragstart|preventDefault
-          title={crumb.path}
-        >{crumb.name}</button>
+          title={crumb.path}>{crumb.name}</button
+        >
       {/each}
       {#if selectedNames.length > 0}
         <span class="fb-sep">/</span>
@@ -601,9 +684,22 @@
       aria-label="Toggle starred-only view"
     >
       {#if starredOnly}
-        <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+        <svg viewBox="0 0 24 24" fill="currentColor"
+          ><polygon
+            points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"
+          /></svg
+        >
       {:else}
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linejoin="round"
+          ><polygon
+            points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"
+          /></svg
+        >
       {/if}
     </button>
     {#if isRemote}
@@ -613,7 +709,22 @@
           on:click={onFocusTerminal}
           title="Go to terminal"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><polyline points="4 17 10 11 4 5" /><line
+              x1="12"
+              y1="19"
+              x2="20"
+              y2="19"
+            /></svg
+          >
           Terminal
         </button>
       {/if}
@@ -621,9 +732,25 @@
         class="fb-follow-btn"
         class:fb-follow-btn-active={followTerminal}
         on:click={toggleFollow}
-        title={followTerminal ? "Click to stop following terminal cwd" : "Click to follow terminal cwd"}
+        title={followTerminal
+          ? "Click to stop following terminal cwd"
+          : "Click to follow terminal cwd"}
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><circle cx="12" cy="12" r="10" /><circle
+            cx="12"
+            cy="12"
+            r="3"
+          /></svg
+        >
         {followTerminal ? "Following" : "Follow"}
       </button>
     {/if}
@@ -634,12 +761,31 @@
       <span class="fb-sync-confirm-text">
         <strong>{mod.remotePath.split("/").pop()}</strong> modified — upload to remote?
       </span>
-      <button class="fb-sync-confirm-btn fb-sync-confirm-upload" on:click={() => { void confirmRemoteUpload(mod.localCachePath).then(() => loadCurrentDir()); }}>Upload</button>
-      <button class="fb-sync-confirm-btn" on:click={() => {
-        const fullPath = mod.localCachePath;
-        void fetch("/api/open-default", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: fullPath }) });
-      }}>Open</button>
-      <button class="fb-sync-confirm-btn" on:click={() => { void dismissRemoteUpload(mod.localCachePath); }}>Dismiss</button>
+      <button
+        class="fb-sync-confirm-btn fb-sync-confirm-upload"
+        on:click={() => {
+          void confirmRemoteUpload(mod.localCachePath).then(() =>
+            loadCurrentDir(),
+          );
+        }}>Upload</button
+      >
+      <button
+        class="fb-sync-confirm-btn"
+        on:click={() => {
+          const fullPath = mod.localCachePath;
+          void fetch("/api/open-default", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: fullPath }),
+          });
+        }}>Open</button
+      >
+      <button
+        class="fb-sync-confirm-btn"
+        on:click={() => {
+          void dismissRemoteUpload(mod.localCachePath);
+        }}>Dismiss</button
+      >
     </div>
   {/each}
 
@@ -654,18 +800,47 @@
             {@const isDir = stat?.type === "directory"}
             {@const missing = stat !== undefined && !stat.exists}
             <li>
-              <div class="fb-row" class:fb-missing={missing} role="button" tabindex="0"
+              <div
+                class="fb-row"
+                class:fb-missing={missing}
+                role="button"
+                tabindex="0"
                 on:click={() => handleNavigateToFile(item.fullPath)}
                 on:dblclick={() => handleStarredDblClick(item.fullPath, stat)}
-                on:keydown={(e) => { if (e.key === "Enter") handleStarredDblClick(item.fullPath, stat); }}
-                title={missing ? `File not found: ${item.fullPath}` : item.fullPath}
+                on:keydown={(e) => {
+                  if (e.key === "Enter")
+                    handleStarredDblClick(item.fullPath, stat);
+                }}
+                title={missing
+                  ? `File not found: ${item.fullPath}`
+                  : item.fullPath}
               >
                 <span class="fb-arrow-spacer" aria-hidden="true"></span>
                 <span class="fb-icon">
                   {#if isDir}
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.folder.paths ?? [] as d}<path {d}/>{/each}</svg>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      >{#each ICONS.folder.paths ?? [] as d}<path
+                          {d}
+                        />{/each}</svg
+                    >
                   {:else}
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      >{#each ICONS.document.paths ?? [] as d}<path
+                          {d}
+                        />{/each}</svg
+                    >
                   {/if}
                 </span>
                 <span class="fb-name fb-name-rel">{item.rel}</span>
@@ -679,9 +854,27 @@
                   aria-label="Copy path"
                 >
                   {#if copiedPaths.has(item.fullPath)}
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><polyline points="4 12 10 18 20 6" /></svg
+                    >
                   {:else}
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><rect x="9" y="9" width="11" height="11" rx="2" /><path
+                        d="M5 15V5a2 2 0 0 1 2-2h10"
+                      /></svg
+                    >
                   {/if}
                 </button>
                 <button
@@ -690,7 +883,11 @@
                   title="Unstar"
                   aria-label="Unstar"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+                  <svg viewBox="0 0 24 24" fill="currentColor"
+                    ><polygon
+                      points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"
+                    /></svg
+                  >
                 </button>
               </div>
             </li>

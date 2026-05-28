@@ -81,7 +81,10 @@ describe("initDaemonKV — daemon has prefs (seed direction)", () => {
   });
 
   test("seeds window.localStorage from the daemon prefs", async () => {
-    stubFetch({ "supergit:foldedRows": "[1,2]", "supergit:notesHidden": "true" });
+    stubFetch({
+      "supergit:foldedRows": "[1,2]",
+      "supergit:notesHidden": "true",
+    });
     await initDaemonKV();
     expect(ls.getItem("supergit:foldedRows")).toBe("[1,2]");
     expect(ls.getItem("supergit:notesHidden")).toBe("true");
@@ -122,14 +125,18 @@ describe("initDaemonKV — daemon empty (migrate direction)", () => {
       "supergit:foldedRows": "[3]",
     });
     // The non-migrated key is left out of the patch.
-    expect((patch!.body as Record<string, string>)["unrelated:key"]).toBeUndefined();
+    expect(
+      (patch!.body as Record<string, string>)["unrelated:key"],
+    ).toBeUndefined();
   });
 
   test("the migrated values are readable from the store immediately", async () => {
     ls.setItem("supergit:onboardingWalkthroughSeen", "1");
     stubFetch({});
     await initDaemonKV();
-    expect(getDaemonKV().getItem("supergit:onboardingWalkthroughSeen")).toBe("1");
+    expect(getDaemonKV().getItem("supergit:onboardingWalkthroughSeen")).toBe(
+      "1",
+    );
   });
 
   test("no PATCH when there is nothing local to migrate", async () => {

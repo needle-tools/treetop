@@ -57,7 +57,7 @@ describe("readJsonlField", () => {
   test("skips non-JSON lines without throwing", async () => {
     const dir = await tempDir();
     const file = join(dir, "s.jsonl");
-    await writeFile(file, "garbage\n{not json\n{\"cwd\":\"/ok\"}\n");
+    await writeFile(file, 'garbage\n{not json\n{"cwd":"/ok"}\n');
     expect(await readJsonlField(file, "cwd")).toBe("/ok");
   });
 });
@@ -218,14 +218,19 @@ describe("readClaudeSessionMeta", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "user", cwd: "/proj", message: { role: "user", content: "<ide_opened_file>/a.ts</ide_opened_file>" } }),
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: {
+            role: "user",
+            content: "<ide_opened_file>/a.ts</ide_opened_file>",
+          },
+        }),
         JSON.stringify({
           type: "assistant",
           message: {
             role: "assistant",
-            content: [
-              { type: "text", text: "I'll read the file first." },
-            ],
+            content: [{ type: "text", text: "I'll read the file first." }],
           },
         }),
       ].join("\n"),
@@ -247,7 +252,10 @@ describe("readClaudeSessionMeta", () => {
     expect(first.cwd).toBe("/a");
     expect(first.title).toBe("hello");
     // Overwrite file with different content but same mtimeMs → cache hit
-    await writeFile(file, '{"cwd":"/b"}\n{"type":"user","message":{"content":[{"type":"text","text":"world"}]}}\n');
+    await writeFile(
+      file,
+      '{"cwd":"/b"}\n{"type":"user","message":{"content":[{"type":"text","text":"world"}]}}\n',
+    );
     const second = await readClaudeSessionMeta(file, 1000);
     expect(second.cwd).toBe("/a");
     expect(second.title).toBe("hello");
@@ -732,7 +740,10 @@ describe("scanCodexMessageCount", () => {
           type: "session_meta",
           payload: { id: "x", cwd: "/p" },
         }),
-        JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_started" },
+        }),
         JSON.stringify({
           type: "response_item",
           payload: {
@@ -782,16 +793,21 @@ describe("scanCodexMessageCount", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "x", cwd: "/p" } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "x", cwd: "/p" },
+        }),
         JSON.stringify({
           type: "response_item",
           payload: {
             type: "message",
             role: "developer",
-            content: [{
-              type: "input_text",
-              text: '<permissions instructions>\nFilesystem sandboxing defines which files can be read or written.\n</permissions>',
-            }],
+            content: [
+              {
+                type: "input_text",
+                text: "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written.\n</permissions>",
+              },
+            ],
           },
         }),
         JSON.stringify({
@@ -799,10 +815,12 @@ describe("scanCodexMessageCount", () => {
           payload: {
             type: "message",
             role: "developer",
-            content: [{
-              type: "input_text",
-              text: '<app-context>\n# Codex desktop context\n- You are running inside the Codex desktop app\n</app-context>',
-            }],
+            content: [
+              {
+                type: "input_text",
+                text: "<app-context>\n# Codex desktop context\n- You are running inside the Codex desktop app\n</app-context>",
+              },
+            ],
           },
         }),
         JSON.stringify({
@@ -810,10 +828,12 @@ describe("scanCodexMessageCount", () => {
           payload: {
             type: "message",
             role: "user",
-            content: [{
-              type: "input_text",
-              text: '<environment_context>\n  <cwd>/Users/test/proj</cwd>\n  <shell>zsh</shell>\n</environment_context>\nFix the bug in main.ts',
-            }],
+            content: [
+              {
+                type: "input_text",
+                text: "<environment_context>\n  <cwd>/Users/test/proj</cwd>\n  <shell>zsh</shell>\n</environment_context>\nFix the bug in main.ts",
+              },
+            ],
           },
         }),
         JSON.stringify({
@@ -836,11 +856,17 @@ describe("scanCodexMessageCount", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "x", cwd: "/p" } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "x", cwd: "/p" },
+        }),
         // An event_msg that happens to contain "user" and "assistant" in its data
         JSON.stringify({
           type: "event_msg",
-          payload: { type: "tool_result", data: 'The user said hello to the assistant.' },
+          payload: {
+            type: "tool_result",
+            data: "The user said hello to the assistant.",
+          },
         }),
         // A real user message
         JSON.stringify({
@@ -874,11 +900,19 @@ describe("scanCodexMessageCount", () => {
         bigMeta,
         JSON.stringify({
           type: "response_item",
-          payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
         }),
         JSON.stringify({
           type: "response_item",
-          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "hello" }],
+          },
         }),
       ].join("\n"),
     );
@@ -1091,8 +1125,20 @@ describe("scanCodexTokenUsage", () => {
           payload: {
             type: "token_count",
             info: {
-              total_token_usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 1 },
-              last_token_usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 1 },
+              total_token_usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 1,
+              },
+              last_token_usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 1,
+              },
               model_context_window: 200_000,
             },
           },
@@ -1137,7 +1183,10 @@ describe("scanCodex", () => {
     const dated = join(root, "2026", "05", "12");
     await mkdir(dated, { recursive: true });
     await writeFile(
-      join(dated, "rollout-2026-05-12T17-35-32-019e1bc1-9658-7a70-8529-42744e0c08ed.jsonl"),
+      join(
+        dated,
+        "rollout-2026-05-12T17-35-32-019e1bc1-9658-7a70-8529-42744e0c08ed.jsonl",
+      ),
       JSON.stringify({
         timestamp: "2026-05-12T10:35:34.510Z",
         type: "session_meta",
@@ -1154,9 +1203,7 @@ describe("scanCodex", () => {
     // Prefer the payload.id (what `codex resume <id>` accepts) over
     // the filename, which is "rollout-<iso>-<id>" — calling resume
     // with that would fail.
-    expect(sessions[0]?.sessionId).toBe(
-      "019e1bc1-9658-7a70-8529-42744e0c08ed",
-    );
+    expect(sessions[0]?.sessionId).toBe("019e1bc1-9658-7a70-8529-42744e0c08ed");
   });
 
   test("the global history.jsonl is not treated as a session", async () => {
@@ -1194,15 +1241,81 @@ describe("scanCodex", () => {
     await writeFile(
       join(root, "session.jsonl"),
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "preview-test", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions>sandbox policy</permissions>" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the login bug in auth.ts" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "I'll fix that." }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Now add tests for it" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Also update the README" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Updated." }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Ship it!" }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "preview-test", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [
+              {
+                type: "input_text",
+                text: "<permissions>sandbox policy</permissions>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "Fix the login bug in auth.ts" },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "I'll fix that." }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Now add tests for it" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Done." }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Also update the README" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Updated." }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Ship it!" }],
+          },
+        }),
       ].join("\n"),
     );
     const sessions = await scanCodex([root]);
@@ -1225,14 +1338,55 @@ describe("scanCodex", () => {
     await writeFile(
       join(root, "session.jsonl"),
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "sys-test", cwd: "/proj" } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "sys-test", cwd: "/proj" },
+        }),
         // System-injected "user" message (AGENTS.md instructions)
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /proj\n\n<INSTRUCTIONS>\nDo things\n</INSTRUCTIONS>" }] } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "# AGENTS.md instructions for /proj\n\n<INSTRUCTIONS>\nDo things\n</INSTRUCTIONS>",
+              },
+            ],
+          },
+        }),
         // System-injected "user" message (environment_context XML)
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>\nReal user prompt here" }] } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>\nReal user prompt here",
+              },
+            ],
+          },
+        }),
         // Real user message
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the auth bug" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Fix the auth bug" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Done." }],
+          },
+        }),
       ].join("\n"),
     );
     const sessions = await scanCodex([root]);
@@ -1248,23 +1402,51 @@ describe("scanCodex", () => {
     await writeFile(
       join(root, "session.jsonl"),
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "abort-test", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the overlay" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Working." }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "abort-test", cwd: "/proj" },
+        }),
         JSON.stringify({
           type: "response_item",
           payload: {
             type: "message",
             role: "user",
-            content: [{
-              type: "input_text",
-              text:
-                "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
-            }],
+            content: [{ type: "input_text", text: "Fix the overlay" }],
           },
         }),
-        JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted", reason: "interrupted" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "continue plz" }] } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Working." }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "turn_aborted", reason: "interrupted" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "continue plz" }],
+          },
+        }),
       ].join("\n"),
     );
     const sessions = await scanCodex([root]);
@@ -1284,20 +1466,73 @@ describe("scanCodex", () => {
     await writeFile(
       join(dated, "rollout-2026-04-16T13-29-16-parent-uuid.jsonl"),
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "parent-uuid", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Build the feature" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "On it." }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Also add tests" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "parent-uuid", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Build the feature" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "On it." }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Also add tests" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Done." }],
+          },
+        }),
       ].join("\n"),
     );
     // Subagent session (fewer messages, same rollout timestamp)
     await writeFile(
       join(dated, "rollout-2026-04-16T13-29-16-sub-uuid.jsonl"),
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "sub-uuid", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context><cwd>/proj</cwd></environment_context>" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Searched files." }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "sub-uuid", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "<environment_context><cwd>/proj</cwd></environment_context>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Searched files." }],
+          },
+        }),
       ].join("\n"),
     );
     const sessions = await scanCodex([root]);
@@ -1315,7 +1550,11 @@ describe("scanCodex", () => {
     await writeFile(
       join(root, "old.jsonl"),
       [
-        JSON.stringify({ cwd: "/proj", role: "user", content: "Refactor the database layer" }),
+        JSON.stringify({
+          cwd: "/proj",
+          role: "user",
+          content: "Refactor the database layer",
+        }),
         JSON.stringify({ role: "assistant", content: "Sure." }),
         JSON.stringify({ role: "user", content: "Add connection pooling" }),
       ].join("\n"),
@@ -1569,7 +1808,6 @@ describe("scanImported", () => {
   });
 });
 
-
 describe("groupSessionsByFolder", () => {
   function s(
     cwd: string,
@@ -1594,7 +1832,12 @@ describe("groupSessionsByFolder", () => {
 
   test("skips sessions with empty cwd", () => {
     const sessions = [
-      { agent: "claude", cwd: "", lastActive: "2026-05-12T01:00:00Z", source: "" } as AgentSession,
+      {
+        agent: "claude",
+        cwd: "",
+        lastActive: "2026-05-12T01:00:00Z",
+        source: "",
+      } as AgentSession,
       s("/repo/b"),
     ];
     const result = groupSessionsByFolder(sessions);
@@ -1652,114 +1895,155 @@ async function synthesizeLargeCodexSession(
   const lines: string[] = [];
 
   // session_meta with a realistic 20KB+ base_instructions (like real Codex)
-  const baseInstructions = "You are Codex, a coding agent.\n" + "x".repeat(20_000);
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T10:00:00.000Z",
-    type: "session_meta",
-    payload: {
-      id: "synth-large-test",
+  const baseInstructions =
+    "You are Codex, a coding agent.\n" + "x".repeat(20_000);
+  lines.push(
+    JSON.stringify({
       timestamp: "2026-05-25T10:00:00.000Z",
-      cwd: "/Users/test/git/large-project",
-      originator: "Codex Desktop",
-      cli_version: "0.130.0",
-      source: "vscode",
-      model_provider: "openai",
-      base_instructions: { text: baseInstructions },
-    },
-  }));
+      type: "session_meta",
+      payload: {
+        id: "synth-large-test",
+        timestamp: "2026-05-25T10:00:00.000Z",
+        cwd: "/Users/test/git/large-project",
+        originator: "Codex Desktop",
+        cli_version: "0.130.0",
+        source: "vscode",
+        model_provider: "openai",
+        base_instructions: { text: baseInstructions },
+      },
+    }),
+  );
 
   // event_msg: task_started
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T10:00:01.000Z",
-    type: "event_msg",
-    payload: { type: "task_started" },
-  }));
+  lines.push(
+    JSON.stringify({
+      timestamp: "2026-05-25T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "task_started" },
+    }),
+  );
 
   // developer message with XML-like permission tags (real Codex does this)
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T10:00:01.100Z",
-    type: "response_item",
-    payload: {
-      type: "message",
-      role: "developer",
-      content: [{ type: "input_text", text: "<permissions instructions>\nFilesystem sandboxing policy…\n</permissions>" }],
-    },
-  }));
+  lines.push(
+    JSON.stringify({
+      timestamp: "2026-05-25T10:00:01.100Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "<permissions instructions>\nFilesystem sandboxing policy…\n</permissions>",
+          },
+        ],
+      },
+    }),
+  );
 
   // turn_context with model
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T10:00:01.200Z",
-    type: "turn_context",
-    payload: {
-      turn_id: "turn-001",
-      cwd: "/Users/test/git/large-project",
-      model: "gpt-5.5",
-    },
-  }));
+  lines.push(
+    JSON.stringify({
+      timestamp: "2026-05-25T10:00:01.200Z",
+      type: "turn_context",
+      payload: {
+        turn_id: "turn-001",
+        cwd: "/Users/test/git/large-project",
+        model: "gpt-5.5",
+      },
+    }),
+  );
 
   // User + assistant message pairs with XML-like environment_context tags
   let msgCount = 0;
   for (let i = 0; i < opts.messageCount; i++) {
     // User message with XML tags (like real sessions)
-    lines.push(JSON.stringify({
-      timestamp: new Date(Date.parse("2026-05-25T10:00:02.000Z") + i * 60_000).toISOString(),
-      type: "response_item",
-      payload: {
-        type: "message",
-        role: "user",
-        content: [{
-          type: "input_text",
-          text: `<environment_context>\n  <cwd>/Users/test/git/large-project</cwd>\n</environment_context>\nUser prompt number ${i + 1}: ${"lorem ipsum ".repeat(20)}`,
-        }],
-      },
-    }));
+    lines.push(
+      JSON.stringify({
+        timestamp: new Date(
+          Date.parse("2026-05-25T10:00:02.000Z") + i * 60_000,
+        ).toISOString(),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `<environment_context>\n  <cwd>/Users/test/git/large-project</cwd>\n</environment_context>\nUser prompt number ${i + 1}: ${"lorem ipsum ".repeat(20)}`,
+            },
+          ],
+        },
+      }),
+    );
     msgCount++;
 
     // Assistant response
-    lines.push(JSON.stringify({
-      timestamp: new Date(Date.parse("2026-05-25T10:00:32.000Z") + i * 60_000).toISOString(),
-      type: "response_item",
-      payload: {
-        type: "message",
-        role: "assistant",
-        content: [{
-          type: "output_text",
-          text: `Response ${i + 1}: ${"The quick brown fox jumps. ".repeat(30)}`,
-        }],
-      },
-    }));
+    lines.push(
+      JSON.stringify({
+        timestamp: new Date(
+          Date.parse("2026-05-25T10:00:32.000Z") + i * 60_000,
+        ).toISOString(),
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: `Response ${i + 1}: ${"The quick brown fox jumps. ".repeat(30)}`,
+            },
+          ],
+        },
+      }),
+    );
     msgCount++;
 
     // Sprinkle filler event_msg lines between turns (tool calls, etc.)
     for (let j = 0; j < (opts.fillerEvents ?? 3); j++) {
-      lines.push(JSON.stringify({
-        timestamp: new Date(Date.parse("2026-05-25T10:00:33.000Z") + i * 60_000 + j * 100).toISOString(),
-        type: "event_msg",
-        payload: { type: "tool_call", data: { tool: "shell", args: "ls -la ".repeat(50) } },
-      }));
+      lines.push(
+        JSON.stringify({
+          timestamp: new Date(
+            Date.parse("2026-05-25T10:00:33.000Z") + i * 60_000 + j * 100,
+          ).toISOString(),
+          type: "event_msg",
+          payload: {
+            type: "tool_call",
+            data: { tool: "shell", args: "ls -la ".repeat(50) },
+          },
+        }),
+      );
     }
   }
 
   // Final turn_context (model might change mid-session)
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T12:00:00.000Z",
-    type: "turn_context",
-    payload: { turn_id: "turn-final", cwd: "/Users/test/git/large-project", model: "gpt-5.5" },
-  }));
+  lines.push(
+    JSON.stringify({
+      timestamp: "2026-05-25T12:00:00.000Z",
+      type: "turn_context",
+      payload: {
+        turn_id: "turn-final",
+        cwd: "/Users/test/git/large-project",
+        model: "gpt-5.5",
+      },
+    }),
+  );
 
   // token_count event near the end
-  lines.push(JSON.stringify({
-    timestamp: "2026-05-25T12:00:01.000Z",
-    type: "event_msg",
-    payload: {
-      type: "token_count",
-      info: {
-        total_token_usage: { input_tokens: 200_000, output_tokens: 50_000 },
-        last_token_usage: { input_tokens: 185_000, output_tokens: 3_000 },
-        model_context_window: 258_400,
+  lines.push(
+    JSON.stringify({
+      timestamp: "2026-05-25T12:00:01.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: { input_tokens: 200_000, output_tokens: 50_000 },
+          last_token_usage: { input_tokens: 185_000, output_tokens: 3_000 },
+          model_context_window: 258_400,
+        },
       },
-    },
-  }));
+    }),
+  );
 
   await writeFile(file, lines.join("\n") + "\n");
   return { path: file, expectedMessages: msgCount };
@@ -1773,9 +2057,26 @@ describe("Codex scan cache (memory regression)", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "yo" }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "abc", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "yo" }],
+          },
+        }),
       ].join("\n"),
     );
     const { statSync } = await import("node:fs");
@@ -1785,7 +2086,13 @@ describe("Codex scan cache (memory regression)", () => {
     expect(count1).toBe(2);
 
     // Overwrite with different content but pass stale mtime — cache hit.
-    await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }) + "\n");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "abc", cwd: "/proj" },
+      }) + "\n",
+    );
     const count2 = await scanCodexMessageCount(file, mt);
     expect(count2).toBe(2); // cached, not re-read
   });
@@ -1797,8 +2104,18 @@ describe("Codex scan cache (memory regression)", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "abc", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
+        }),
       ].join("\n"),
     );
     const { statSync } = await import("node:fs");
@@ -1810,9 +2127,26 @@ describe("Codex scan cache (memory regression)", () => {
     await writeFile(
       file,
       [
-        JSON.stringify({ type: "session_meta", payload: { id: "abc", cwd: "/proj" } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] } }),
-        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "yo" }] } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "abc", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hi" }],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "yo" }],
+          },
+        }),
       ].join("\n"),
     );
     const mt2 = statSync(file).mtimeMs;
@@ -1823,10 +2157,13 @@ describe("Codex scan cache (memory regression)", () => {
   test("large synthesized session: correct meta, usage, and message count", async () => {
     clearCodexScanCache();
     const dir = await tempDir();
-    const { path: file, expectedMessages } = await synthesizeLargeCodexSession(dir, {
-      messageCount: 200,
-      fillerEvents: 5,
-    });
+    const { path: file, expectedMessages } = await synthesizeLargeCodexSession(
+      dir,
+      {
+        messageCount: 200,
+        fillerEvents: 5,
+      },
+    );
 
     const { statSync } = await import("node:fs");
     const st = statSync(file);
@@ -1846,7 +2183,9 @@ describe("Codex scan cache (memory regression)", () => {
   test("large session: session_meta with 20KB+ base_instructions parses correctly", async () => {
     clearCodexScanCache();
     const dir = await tempDir();
-    const { path: file } = await synthesizeLargeCodexSession(dir, { messageCount: 10 });
+    const { path: file } = await synthesizeLargeCodexSession(dir, {
+      messageCount: 10,
+    });
     const { statSync } = await import("node:fs");
 
     // Scan through scanCodex to exercise the full pipeline including

@@ -50,7 +50,9 @@ describe("listWorktrees against real git", () => {
 
   test("picks up an additional worktree on a new branch", async () => {
     const repo = await tempRepo();
-    const wtParent = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const wtParent = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
     const wtPath = join(wtParent, "feat");
     await $`git -C ${repo} worktree add ${wtPath} -b feat/audio -q`.quiet();
 
@@ -63,14 +65,26 @@ describe("listWorktrees against real git", () => {
   test("returns a synthetic nonGit entry for a plain directory", async () => {
     // Lets the UI render terminals/agents in plain folders. The user can
     // `git init` later and the next refresh picks up the real worktrees.
-    const notARepo = await realpath(await mkdtemp(join(tmpdir(), "supergit-notrepo-")));
+    const notARepo = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-notrepo-")),
+    );
     expect(await listWorktrees(notARepo)).toEqual([
-      { path: notARepo, branch: "", head: "", bare: false, detached: false, nonGit: true },
+      {
+        path: notARepo,
+        branch: "",
+        head: "",
+        bare: false,
+        detached: false,
+        nonGit: true,
+      },
     ]);
   });
 
   test("returns empty array for a path that does not exist", async () => {
-    const missing = join(tmpdir(), "supergit-missing-" + Date.now() + "-" + Math.random());
+    const missing = join(
+      tmpdir(),
+      "supergit-missing-" + Date.now() + "-" + Math.random(),
+    );
     expect(await listWorktrees(missing)).toEqual([]);
   });
 
@@ -93,7 +107,9 @@ describe("listWorktrees against real git", () => {
 
 describe("listRemotes against real git", () => {
   test("returns [] for a plain non-git directory", async () => {
-    const d = await realpath(await mkdtemp(join(tmpdir(), "supergit-noremote-")));
+    const d = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-noremote-")),
+    );
     expect(await listRemotes(d)).toEqual([]);
   });
 
@@ -145,7 +161,14 @@ describe("getWorktreeDetails against real git", () => {
   test("reports clean workdir and last commit for a fresh repo", async () => {
     const repo = await tempRepo();
     const details = await getWorktreeDetails(repo);
-    expect(details.fileStatus).toEqual({ staged: 0, unstaged: 0, untracked: 0, submodules: 0, submoduleChanges: 0, dirtyLines: 0 });
+    expect(details.fileStatus).toEqual({
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+      submodules: 0,
+      submoduleChanges: 0,
+      dirtyLines: 0,
+    });
     expect(details.branchStatus?.branch).toBe("main");
     expect(details.lastCommit?.subject).toBe("initial");
   });
@@ -174,7 +197,9 @@ describe("getWorktreeDetails against real git", () => {
   // can compute "N hours unpushed" from the moment the first one
   // landed). When ahead === 0 or there's no upstream, it's null.
   test("aheadOldestTime is null when in sync with upstream", async () => {
-    const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-bare-")));
+    const bare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-bare-")),
+    );
     await $`git -C ${bare} init -q --bare -b main`.quiet();
     const repo = await tempRepo();
     await $`git -C ${repo} remote add origin ${bare}`.quiet();
@@ -193,7 +218,9 @@ describe("getWorktreeDetails against real git", () => {
   });
 
   test("aheadOldestTime is the OLDEST unpushed commit when ahead", async () => {
-    const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-bare-")));
+    const bare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-bare-")),
+    );
     await $`git -C ${bare} init -q --bare -b main`.quiet();
     const repo = await tempRepo();
     await $`git -C ${repo} remote add origin ${bare}`.quiet();
@@ -206,18 +233,24 @@ describe("getWorktreeDetails against real git", () => {
     // "N hours unpushed" countdown from.
     const olderDate = "2026-01-01T10:00:00+02:00";
     const newerDate = "2026-01-01T11:00:00+02:00";
-    await $`git -C ${repo} commit --allow-empty -m older -q --date=${olderDate}`.env({
-      ...process.env,
-      GIT_COMMITTER_DATE: olderDate,
-    }).quiet();
-    await $`git -C ${repo} commit --allow-empty -m newer -q --date=${newerDate}`.env({
-      ...process.env,
-      GIT_COMMITTER_DATE: newerDate,
-    }).quiet();
+    await $`git -C ${repo} commit --allow-empty -m older -q --date=${olderDate}`
+      .env({
+        ...process.env,
+        GIT_COMMITTER_DATE: olderDate,
+      })
+      .quiet();
+    await $`git -C ${repo} commit --allow-empty -m newer -q --date=${newerDate}`
+      .env({
+        ...process.env,
+        GIT_COMMITTER_DATE: newerDate,
+      })
+      .quiet();
 
     const details = await getWorktreeDetails(repo);
     expect(details.branchStatus?.ahead).toBe(2);
-    expect(details.branchStatus?.aheadOldestTime).toBe("2026-01-01T10:00:00+02:00");
+    expect(details.branchStatus?.aheadOldestTime).toBe(
+      "2026-01-01T10:00:00+02:00",
+    );
   });
 });
 
@@ -240,7 +273,7 @@ describe("listCommits against real git", () => {
     for (const msg of ["a", "b", "c", "d"]) {
       await $`git -C ${repo} commit --allow-empty -m ${msg} -q`.quiet();
     }
-    expect((await listCommits(repo, { limit: 2 }))).toHaveLength(2);
+    expect(await listCommits(repo, { limit: 2 })).toHaveLength(2);
   });
 
   test("paginates with the `before` option", async () => {
@@ -414,7 +447,10 @@ describe("getFileDiff against real git", () => {
     const diff = await getFileDiff(repo, "a.txt", "workdir", 0);
     // The hunk body (everything after the first `@@ … @@`) must
     // contain only the -/+ pair for line 2 — no surrounding context.
-    const hunkBody = diff.split(/^@@.*@@.*$/m).slice(1).join("\n");
+    const hunkBody = diff
+      .split(/^@@.*@@.*$/m)
+      .slice(1)
+      .join("\n");
     const bodyLines = hunkBody.split("\n").filter((l) => l.length > 0);
     expect(bodyLines).toEqual(["-line2", "+CHANGED"]);
   });
@@ -479,8 +515,7 @@ describe("resolveSubmoduleWorktreePaths", () => {
     const sub = await tempRepo();
     // Move the submodule contents into <parent>/sub/ via `git submodule add`.
     // Use file:// URL since the submodule is local on disk.
-    await $`git -C ${parent} -c protocol.file.allow=always submodule add ${sub} sub`
-      .quiet();
+    await $`git -C ${parent} -c protocol.file.allow=always submodule add ${sub} sub`.quiet();
     await $`git -C ${parent} commit -q -m add-sub`.quiet();
     const submoduleWorkdir = join(parent, "sub");
     const list = await listWorktrees(submoduleWorkdir);
@@ -499,7 +534,9 @@ describe("resolveSubmoduleWorktreePaths", () => {
 describe("createWorktree against real git", () => {
   test("creates a NEW branch when the requested branch doesn't exist", async () => {
     const repo = await tempRepo();
-    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const wtRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
     const result = await createWorktree(repo, "fresh-branch", { wtRoot });
     expect(result.created).toBe(true);
     // The branch ref now exists.
@@ -517,7 +554,9 @@ describe("createWorktree against real git", () => {
     // a worktree on the same name. Previously this would error out
     // with `a branch named '<x>' already exists`.
     await $`git -C ${repo} branch existing-branch`.quiet();
-    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const wtRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
     const result = await createWorktree(repo, "existing-branch", { wtRoot });
     expect(result.created).toBe(false);
     expect(result.branch).toBe("existing-branch");
@@ -531,29 +570,43 @@ describe("createWorktree against real git", () => {
 describe("removeWorktree against real git", () => {
   test("clean removal deletes the directory and the .git slot", async () => {
     const repo = await tempRepo();
-    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const wtRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
     const created = await createWorktree(repo, "feature-a", { wtRoot });
 
     // sanity: dir exists, listWorktrees sees it
     expect((await stat(created.path)).isDirectory()).toBe(true);
-    expect((await listWorktrees(repo)).some((w) => w.path === created.path)).toBe(true);
+    expect(
+      (await listWorktrees(repo)).some((w) => w.path === created.path),
+    ).toBe(true);
 
     await removeWorktree(repo, created.path);
 
     // dir gone
     let dirGone = false;
-    try { await stat(created.path); } catch { dirGone = true; }
+    try {
+      await stat(created.path);
+    } catch {
+      dirGone = true;
+    }
     expect(dirGone).toBe(true);
     // listWorktrees no longer references it
-    expect((await listWorktrees(repo)).some((w) => w.path === created.path)).toBe(false);
+    expect(
+      (await listWorktrees(repo)).some((w) => w.path === created.path),
+    ).toBe(false);
     // branch ref preserved
-    const branches = (await $`git -C ${repo} branch --list feature-a`.quiet()).stdout.toString();
+    const branches = (
+      await $`git -C ${repo} branch --list feature-a`.quiet()
+    ).stdout.toString();
     expect(branches).toContain("feature-a");
   });
 
   test("refuses to remove when the worktree has uncommitted changes", async () => {
     const repo = await tempRepo();
-    const wtRoot = await realpath(await mkdtemp(join(tmpdir(), "supergit-wt-")));
+    const wtRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
     const created = await createWorktree(repo, "dirty-branch", { wtRoot });
     await writeFile(join(created.path, "dirty.txt"), "uncommitted\n");
 
@@ -570,7 +623,11 @@ describe("removeWorktree against real git", () => {
     // force=true overrides
     await removeWorktree(repo, created.path, { force: true });
     let dirGone = false;
-    try { await stat(created.path); } catch { dirGone = true; }
+    try {
+      await stat(created.path);
+    } catch {
+      dirGone = true;
+    }
     expect(dirGone).toBe(true);
   });
 });
@@ -631,7 +688,9 @@ describe("listBranches against real git", () => {
 
   test("returns current=null when HEAD is detached", async () => {
     const repo = await tempRepo();
-    const head = (await $`git -C ${repo} rev-parse HEAD`.quiet()).stdout.toString().trim();
+    const head = (await $`git -C ${repo} rev-parse HEAD`.quiet()).stdout
+      .toString()
+      .trim();
     await $`git -C ${repo} checkout --detach ${head}`.quiet().nothrow();
     const b = await listBranches(repo);
     expect(b.current).toBeNull();
@@ -643,7 +702,11 @@ describe("checkoutBranch against real git", () => {
     const repo = await tempRepo();
     await $`git -C ${repo} branch feat-x`.quiet();
     await checkoutBranch(repo, "feat-x");
-    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    const head = (
+      await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()
+    ).stdout
+      .toString()
+      .trim();
     expect(head).toBe("feat-x");
   });
 
@@ -659,7 +722,11 @@ describe("checkoutBranch against real git", () => {
     }
     expect(thrown).not.toBeNull();
     // still on main
-    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    const head = (
+      await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()
+    ).stdout
+      .toString()
+      .trim();
     expect(head).toBe("main");
   });
 
@@ -685,8 +752,9 @@ describe("checkoutBranch against real git", () => {
     expect(onDisk).toBe("v1");
 
     // The stash should be present with our recognizable supergit-auto tag.
-    const stashList = (await $`git -C ${repo} stash list`.quiet()).stdout
-      .toString();
+    const stashList = (
+      await $`git -C ${repo} stash list`.quiet()
+    ).stdout.toString();
     expect(stashList).toContain("supergit-auto");
   });
 
@@ -695,7 +763,11 @@ describe("checkoutBranch against real git", () => {
     await $`git -C ${repo} branch feat-z`.quiet();
     await writeFile(join(repo, "stray.txt"), "untracked\n");
     await checkoutBranch(repo, "feat-z", { force: true });
-    const head = (await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()).stdout.toString().trim();
+    const head = (
+      await $`git -C ${repo} symbolic-ref --short HEAD`.quiet()
+    ).stdout
+      .toString()
+      .trim();
     expect(head).toBe("feat-z");
   });
 });
@@ -705,7 +777,9 @@ describe("checkoutBranch against real git", () => {
  * main. Returns the bare path and the two clone paths.
  */
 async function tempRepoTrio(): Promise<{ bare: string; a: string; b: string }> {
-  const bare = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-bare-")));
+  const bare = await realpath(
+    await mkdtemp(join(tmpdir(), "supergit-pp-bare-")),
+  );
   await $`git -C ${bare} init -q --bare -b main`.quiet();
   // Seed via a scratch repo so the bare has at least one commit on main.
   const seed = await tempRepo();
@@ -713,8 +787,12 @@ async function tempRepoTrio(): Promise<{ bare: string; a: string; b: string }> {
   await $`git -C ${seed} push -u origin main -q`.quiet();
   // Clone twice so we have two independent worktrees pointing at the
   // same upstream — lets us simulate "remote has new commits."
-  const aParent = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-a-")));
-  const bParent = await realpath(await mkdtemp(join(tmpdir(), "supergit-pp-b-")));
+  const aParent = await realpath(
+    await mkdtemp(join(tmpdir(), "supergit-pp-a-")),
+  );
+  const bParent = await realpath(
+    await mkdtemp(join(tmpdir(), "supergit-pp-b-")),
+  );
   const a = join(aParent, "a");
   const b = join(bParent, "b");
   await $`git clone -q ${bare} ${a}`.quiet();
@@ -748,7 +826,9 @@ describe("pullFastForward against real git", () => {
     expect(r.ok).toBe(true);
     expect(r.kind).toBe("updated");
     // file should now exist in a
-    const exists = await stat(join(a, "from-b.txt")).then(() => true).catch(() => false);
+    const exists = await stat(join(a, "from-b.txt"))
+      .then(() => true)
+      .catch(() => false);
     expect(exists).toBe(true);
   });
 
@@ -810,8 +890,9 @@ describe("pullFastForward against real git", () => {
     expect(r.kind).toBe("updated");
     expect(r.stashed).toBe(true);
     // Stash should exist with the recognizable supergit-auto tag.
-    const stashList = (await $`git -C ${a} stash list`.quiet()).stdout
-      .toString();
+    const stashList = (
+      await $`git -C ${a} stash list`.quiet()
+    ).stdout.toString();
     expect(stashList).toContain("supergit-auto");
   });
 });
@@ -832,8 +913,14 @@ describe("pushUpstream against real git", () => {
     const r = await pushUpstream(a);
     expect(r.ok).toBe(true);
     // The bare's main ref should now resolve to the same SHA as a's HEAD.
-    const localHead = (await $`git -C ${a} rev-parse HEAD`.quiet()).stdout.toString().trim();
-    const remoteHead = (await $`git -C ${bare} rev-parse refs/heads/main`.quiet()).stdout.toString().trim();
+    const localHead = (await $`git -C ${a} rev-parse HEAD`.quiet()).stdout
+      .toString()
+      .trim();
+    const remoteHead = (
+      await $`git -C ${bare} rev-parse refs/heads/main`.quiet()
+    ).stdout
+      .toString()
+      .trim();
     expect(remoteHead).toBe(localHead);
   });
 

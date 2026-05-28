@@ -47,8 +47,7 @@ export function statusSummary(
   fileStatus: FileStatus,
   wtSummary?: StatusSummarySource | "loading",
 ): StatusSummary {
-  const fresh =
-    wtSummary && wtSummary !== "loading" ? wtSummary : null;
+  const fresh = wtSummary && wtSummary !== "loading" ? wtSummary : null;
   const staged = fresh ? fresh.staged.length : fileStatus.staged;
   const unstaged = fresh ? fresh.unstaged.length : fileStatus.unstaged;
   const untracked = fresh ? fresh.untracked.length : fileStatus.untracked;

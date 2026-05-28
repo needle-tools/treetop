@@ -82,7 +82,12 @@ interface RenderedItem extends Item {
 }
 
 type SeqEntry =
-  | { kind: "msg"; role: "user" | "assistant"; text: string; truncated: boolean }
+  | {
+      kind: "msg";
+      role: "user" | "assistant";
+      text: string;
+      truncated: boolean;
+    }
   | { kind: "gap"; count: number };
 
 function buildSequence(

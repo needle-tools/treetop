@@ -101,21 +101,14 @@ describe("splitDockEntries", () => {
   });
 
   test("all entries from one repo → no split possible", () => {
-    const entries = [
-      entry("r1", "s1"),
-      entry("r1", "s2"),
-      entry("r1", "s3"),
-    ];
+    const entries = [entry("r1", "s1"), entry("r1", "s2"), entry("r1", "s3")];
     const result = splitDockEntries(entries, true);
     expect(result.top).toEqual(entries);
     expect(result.bottom).toEqual([]);
   });
 
   test("all exited with showInactive=false → empty", () => {
-    const entries = [
-      entry("r1", "s1", true),
-      entry("r2", "s2", true),
-    ];
+    const entries = [entry("r1", "s1", true), entry("r2", "s2", true)];
     const result = splitDockEntries(entries, false);
     expect(result.top).toEqual([]);
     expect(result.bottom).toEqual([]);

@@ -33,7 +33,9 @@ export type NormalizedBlockKind =
  *  as quiet annotations instead of bold message text. */
 export function isMarker(text: string): boolean {
   const t = text.trim();
-  return /^\[(Request interrupted|Tool use rejected|Tool use was rejected|Request interrupted by user)\b/i.test(t);
+  return /^\[(Request interrupted|Tool use rejected|Tool use was rejected|Request interrupted by user)\b/i.test(
+    t,
+  );
 }
 
 export interface NormalizedBlock {
@@ -178,8 +180,7 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
 
   const msg = obj.message as Record<string, unknown> | undefined;
   if (!msg) return;
-  const role: NormalizedRole =
-    msg.role === "assistant" ? "assistant" : "user";
+  const role: NormalizedRole = msg.role === "assistant" ? "assistant" : "user";
   const content = msg.content;
   const blocks: NormalizedBlock[] = [];
 
@@ -388,7 +389,11 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   // first; non-matching shapes fall through to the older flat
   // format below for backwards compat with the pre-0.130 layout
   // and our own test fixtures.
-  if (obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+  if (
+    obj.type === "session_meta" &&
+    obj.payload &&
+    typeof obj.payload === "object"
+  ) {
     const p = obj.payload as Record<string, unknown>;
     if (typeof p.cwd === "string" && !out.cwd) out.cwd = p.cwd;
     if (typeof p.id === "string" && !out.sessionId) out.sessionId = p.id;
@@ -402,7 +407,11 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
     if (ts) out.endedAt = ts;
     return;
   }
-  if (obj.type === "response_item" && obj.payload && typeof obj.payload === "object") {
+  if (
+    obj.type === "response_item" &&
+    obj.payload &&
+    typeof obj.payload === "object"
+  ) {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
     if (p.type === "function_call" || p.type === "custom_tool_call") {
@@ -416,14 +425,19 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         p.type === "function_call"
           ? codexToolInput(p.arguments)
           : clipToolInput(p.input);
-      pushCodexMessage(out, "assistant", [
-        {
-          type: "tool_use",
-          toolName: name,
-          toolInput: input,
-          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-        },
-      ], ts);
+      pushCodexMessage(
+        out,
+        "assistant",
+        [
+          {
+            type: "tool_use",
+            toolName: name,
+            toolInput: input,
+            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+          },
+        ],
+        ts,
+      );
       return;
     }
     if (
@@ -431,27 +445,37 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       p.type === "custom_tool_call_output"
     ) {
       const text = typeof p.output === "string" ? p.output : "";
-      pushCodexMessage(out, "tool", [
-        {
-          type: "tool_result",
-          text: clipText(text),
-          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-        },
-      ], ts);
+      pushCodexMessage(
+        out,
+        "tool",
+        [
+          {
+            type: "tool_result",
+            text: clipText(text),
+            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+          },
+        ],
+        ts,
+      );
       return;
     }
     if (p.type === "web_search_call") {
-      pushCodexMessage(out, "assistant", [
-        {
-          type: "tool_use",
-          toolName: "web_search",
-          toolInput: clipToolInput({
-            status: p.status,
-            action: p.action,
-          }),
-          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-        },
-      ], ts);
+      pushCodexMessage(
+        out,
+        "assistant",
+        [
+          {
+            type: "tool_use",
+            toolName: "web_search",
+            toolInput: clipToolInput({
+              status: p.status,
+              action: p.action,
+            }),
+            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+          },
+        ],
+        ts,
+      );
       return;
     }
     if (p.type !== "message") return;
@@ -477,12 +501,19 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
     return;
   }
   if (obj.type === "compacted") {
-    pushCodexMessage(out, "system", [
-      { type: "marker", text: "[Codex context compacted]" },
-    ], codexTimestamp(obj));
+    pushCodexMessage(
+      out,
+      "system",
+      [{ type: "marker", text: "[Codex context compacted]" }],
+      codexTimestamp(obj),
+    );
     return;
   }
-  if (obj.type === "event_msg" && obj.payload && typeof obj.payload === "object") {
+  if (
+    obj.type === "event_msg" &&
+    obj.payload &&
+    typeof obj.payload === "object"
+  ) {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
     const marker = codexEventMarker(p);
@@ -491,23 +522,33 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       return;
     }
     if (p.type === "patch_apply_end") {
-      pushCodexMessage(out, "tool", [
-        {
-          type: "tool_result",
-          text: clipText(codexPatchApplyText(p)),
-          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-        },
-      ], ts);
+      pushCodexMessage(
+        out,
+        "tool",
+        [
+          {
+            type: "tool_result",
+            text: clipText(codexPatchApplyText(p)),
+            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+          },
+        ],
+        ts,
+      );
       return;
     }
     if (p.type === "web_search_end") {
-      pushCodexMessage(out, "tool", [
-        {
-          type: "tool_result",
-          text: clipText(codexWebSearchText(p)),
-          toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-        },
-      ], ts);
+      pushCodexMessage(
+        out,
+        "tool",
+        [
+          {
+            type: "tool_result",
+            text: clipText(codexWebSearchText(p)),
+            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+          },
+        ],
+        ts,
+      );
       return;
     }
     return;
@@ -620,7 +661,10 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       // A garbled turn shouldn't lose the rest of the conversation.
       const role = obj.role;
       const content = obj.content;
-      if ((role !== "user" && role !== "assistant") || typeof content !== "string") {
+      if (
+        (role !== "user" && role !== "assistant") ||
+        typeof content !== "string"
+      ) {
         continue;
       }
       const msg: NormalizedMessage = {
@@ -629,7 +673,8 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       };
       if (typeof obj.ts === "string") msg.timestamp = obj.ts;
       if (role === "assistant") {
-        const turnModel = typeof obj.model === "string" ? obj.model : headerModel;
+        const turnModel =
+          typeof obj.model === "string" ? obj.model : headerModel;
         if (turnModel) msg.author = turnModel;
       }
       out.messages.push(msg);
@@ -695,7 +740,8 @@ const MAX_CACHED_MESSAGES = 100;
  *  to TEXT_CLIP_BYTES bytes with a marker; the user can re-open the file
  *  in their editor for the full content. */
 const TEXT_CLIP_BYTES = 16 * 1024;
-const TEXT_CLIP_SUFFIX = "\n\n… [truncated by supergit; full content available in the source file]";
+const TEXT_CLIP_SUFFIX =
+  "\n\n… [truncated by supergit; full content available in the source file]";
 interface SessionCacheEntry {
   mtimeMs: number;
   /** Number of bytes from the file we have already parsed into `parsed`. */
@@ -869,13 +915,20 @@ async function readSessionHeadMeta(
     }
     if (!cwd && typeof obj.cwd === "string") cwd = obj.cwd;
     // Codex 0.130+ puts cwd under payload.cwd on a session_meta event.
-    if (!cwd && obj.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+    if (
+      !cwd &&
+      obj.type === "session_meta" &&
+      obj.payload &&
+      typeof obj.payload === "object"
+    ) {
       const p = obj.payload as Record<string, unknown>;
       if (typeof p.cwd === "string") cwd = p.cwd;
       if (!sessionId && typeof p.id === "string") sessionId = p.id;
     }
-    if (!sessionId && typeof obj.sessionId === "string") sessionId = obj.sessionId;
-    if (!startedAt && typeof obj.timestamp === "string") startedAt = obj.timestamp;
+    if (!sessionId && typeof obj.sessionId === "string")
+      sessionId = obj.sessionId;
+    if (!startedAt && typeof obj.timestamp === "string")
+      startedAt = obj.timestamp;
     if (cwd && sessionId && startedAt) break;
   }
   return { cwd, sessionId, startedAt };
@@ -914,7 +967,8 @@ export async function tailParseSessionFile(
       }
       text = text.slice(firstNewline + 1);
     }
-    const parsed = agent === "claude" ? parseClaudeJsonl(text) : parseCodexJsonl(text);
+    const parsed =
+      agent === "claude" ? parseClaudeJsonl(text) : parseCodexJsonl(text);
     // Overlay head meta — the head wins for identity fields. The tail
     // keeps the messages (those are the recent ones the UI wants).
     if (headMeta.cwd) parsed.cwd = headMeta.cwd;
@@ -937,7 +991,10 @@ export async function getSessionResponseJson(
 ): Promise<{ body: string; etag: string }> {
   const st = await stat(path).catch(() => null);
   if (!st) {
-    const body = injectManualTitle(JSON.stringify(emptySession(agent)), manualTitle);
+    const body = injectManualTitle(
+      JSON.stringify(emptySession(agent)),
+      manualTitle,
+    );
     return { body, etag: `"0-0"` };
   }
   const etag = `"${st.mtimeMs}-${st.size}"`;
@@ -953,7 +1010,10 @@ export async function getSessionResponseJson(
     const text = await readFile(path, "utf-8").catch(() => "");
     const parsed = parseOllamaJsonl(text);
     trimMessages(parsed);
-    return { body: injectManualTitle(JSON.stringify(parsed), manualTitle), etag };
+    return {
+      body: injectManualTitle(JSON.stringify(parsed), manualTitle),
+      etag,
+    };
   }
 
   const cached = sessionCache.get(path);
@@ -984,7 +1044,10 @@ export async function getSessionResponseJson(
         trimMessages(cached.parsed);
         cached.jsonNoTitle = JSON.stringify(cached.parsed);
         touch(path, cached);
-        return { body: injectManualTitle(cached.jsonNoTitle, manualTitle), etag };
+        return {
+          body: injectManualTitle(cached.jsonNoTitle, manualTitle),
+          etag,
+        };
       } finally {
         await fh.close();
       }

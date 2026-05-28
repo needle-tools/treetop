@@ -1,11 +1,20 @@
 import { test, expect, describe } from "bun:test";
-import { resolveTermIdFromSource, parseRemoteSource } from "../src/file-browser-utils";
-import { SYNTHETIC_SOURCE_PREFIXES, filterToExistingSessions } from "../src/storage";
+import {
+  resolveTermIdFromSource,
+  parseRemoteSource,
+} from "../src/file-browser-utils";
+import {
+  SYNTHETIC_SOURCE_PREFIXES,
+  filterToExistingSessions,
+} from "../src/storage";
 
 describe("SSH event chain", () => {
   describe("resolveTermIdFromSource covers all session source formats", () => {
     test("__attached__:shell:<termId> — saved command / promoted shell", () => {
-      const termId = resolveTermIdFromSource("__attached__:shell:t_mpn90di8_5", {});
+      const termId = resolveTermIdFromSource(
+        "__attached__:shell:t_mpn90di8_5",
+        {},
+      );
       expect(termId).toBe("t_mpn90di8_5");
     });
 
@@ -62,7 +71,11 @@ describe("SSH event chain", () => {
       let openedWith: { wtPath: string; termId: string } | null = null;
 
       // Simulate openRemoteBrowser
-      const openRemoteBrowser = (wtPath: string, termId: string, host: string) => {
+      const openRemoteBrowser = (
+        wtPath: string,
+        termId: string,
+        host: string,
+      ) => {
         openedWith = { wtPath, termId };
       };
 
@@ -99,7 +112,11 @@ describe("SSH event chain", () => {
 
   describe("__remote__: source survives filterToExistingSessions", () => {
     test("__remote__: is in SYNTHETIC_SOURCE_PREFIXES", () => {
-      expect(SYNTHETIC_SOURCE_PREFIXES.some((p) => "__remote__:t_abc:rb_123".startsWith(p))).toBe(true);
+      expect(
+        SYNTHETIC_SOURCE_PREFIXES.some((p) =>
+          "__remote__:t_abc:rb_123".startsWith(p),
+        ),
+      ).toBe(true);
     });
 
     test("filterToExistingSessions keeps __remote__: sources", () => {

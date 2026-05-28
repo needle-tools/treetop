@@ -99,14 +99,21 @@ export function normalizeApiModels(body: unknown): OllamaModel[] {
   for (const m of raw) {
     if (!m || typeof m !== "object") continue;
     const rec = m as Record<string, unknown>;
-    const name = typeof rec.name === "string" ? rec.name : typeof rec.model === "string" ? rec.model : null;
+    const name =
+      typeof rec.name === "string"
+        ? rec.name
+        : typeof rec.model === "string"
+          ? rec.model
+          : null;
     if (!name) continue;
     const details = rec.details as Record<string, unknown> | undefined;
     out.push({
       name,
       size: typeof rec.size === "number" ? rec.size : undefined,
       parameterSize:
-        details && typeof details.parameter_size === "string" ? details.parameter_size : undefined,
+        details && typeof details.parameter_size === "string"
+          ? details.parameter_size
+          : undefined,
     });
   }
   return out;

@@ -158,9 +158,7 @@
    *  than a generic "claude". Falls back to undefined (⇒ "claude") when
    *  unknown, and stays undefined for non-claude agents. */
   $: pillLabel =
-    agent === "claude"
-      ? claudeModelAlias(claudeModel ?? model)
-      : undefined;
+    agent === "claude" ? claudeModelAlias(claudeModel ?? model) : undefined;
 
   /** Colour-coded effort glyph shown in the pill after the model name.
    *  Only when an effort override is set (the default is unknown). */
@@ -230,10 +228,7 @@
   }
 </script>
 
-<div
-  class="session new-session-col"
-  class:awaiting-input={awaiting}
->
+<div class="session new-session-col" class:awaiting-input={awaiting}>
   <SessionHeader
     {agent}
     agentLabel={pillLabel}
@@ -269,7 +264,13 @@
       ? "Close this column and dispose the terminal.\nThe transcript is kept on disk and can be reopened from the worktree's session picker."
       : "Close this column and stop the agent.\nOnce the agent has written its first message you can also reopen the session later from the worktree's picker."}
     sshConnected={!!sshSession}
-    onSshBrowse={() => { console.debug("[NewSessionCol] onSshBrowse → dispatching sshBrowse, sshSession=", sshSession); dispatch("sshBrowse", sshSession); }}
+    onSshBrowse={() => {
+      console.debug(
+        "[NewSessionCol] onSshBrowse → dispatching sshBrowse, sshSession=",
+        sshSession,
+      );
+      dispatch("sshBrowse", sshSession);
+    }}
   />
 
   <TerminalView
@@ -284,7 +285,10 @@
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}
-    onSshChange={(ssh) => { sshSession = ssh; if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd }); }}
+    onSshChange={(ssh) => {
+      sshSession = ssh;
+      if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
+    }}
     onExit={() => {
       /* Deliberately NOT closing the column on PTY exit. Some agents
          (notably `codex`) restart themselves after an in-place update —

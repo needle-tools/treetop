@@ -28,7 +28,14 @@
   import { ICONS } from "./icons";
   import { contextChip } from "./context-tokens";
 
-  export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell" | "files" | "history";
+  export let agent:
+    | "claude"
+    | "codex"
+    | "copilot"
+    | "ollama"
+    | "shell"
+    | "files"
+    | "history";
   /** Overrides the lowercase agent name in the agent-pill. Used by
    *  Ollama columns to show the model tag (e.g. `qwen3-coder:30b`)
    *  instead of the generic "ollama" — for an Ollama column the
@@ -40,7 +47,9 @@
    *  label (e.g. the colour-coded effort indicator after "opus"). The
    *  `paths` are filled SVG `d`-strings in a 24×24 viewBox; `color` tints
    *  them. Undefined ⇒ nothing rendered. */
-  export let agentIcon: { paths: string[]; trackPaths?: string[]; color: string; title?: string } | undefined = undefined;
+  export let agentIcon:
+    | { paths: string[]; trackPaths?: string[]; color: string; title?: string }
+    | undefined = undefined;
   export let source: string;
   export let manualTitle: string = "";
   /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
@@ -105,7 +114,11 @@
   export let onResume: () => void = () => {};
   export let onEndSession: () => void = () => {};
   export let onSshBrowse: (() => void) | undefined = undefined;
-  $: if (sshConnected) console.debug("[SessionHeader] sshConnected=true, onSshBrowse=", !!onSshBrowse);
+  $: if (sshConnected)
+    console.debug(
+      "[SessionHeader] sshConnected=true, onSshBrowse=",
+      !!onSshBrowse,
+    );
   export let sshConnected = false;
   export let onCancelInflight: () => void = () => {};
   export let onClose: () => void = () => {};
@@ -115,7 +128,8 @@
    *  texts work for SessionView; NewSessionCol can override. */
   export let endSessionTitle: string =
     "SIGTERM the PTY and flip back to the chat view";
-  export let resumeTitle: string = "Spawn a live resume PTY in this session's cwd";
+  export let resumeTitle: string =
+    "Spawn a live resume PTY in this session's cwd";
   /** Tooltip for the × close button. Default reflects SessionView's
    *  semantics: the column unmounts but the JSONL stays on disk, so
    *  reopening the session from the worktree's picker resumes the
@@ -167,7 +181,11 @@
    *  entry on top of whatever the parent passed in. Keeps the action
    *  reachable for keyboard users (the burger is focusable) and trims
    *  the right-side button cluster down to just Stop Session + ×. */
-  $: isAgentSession = agent === "claude" || agent === "codex" || agent === "copilot" || agent === "ollama";
+  $: isAgentSession =
+    agent === "claude" ||
+    agent === "codex" ||
+    agent === "copilot" ||
+    agent === "ollama";
 
   let starJumping = false;
   let starFixedStyle = "";
@@ -179,22 +197,26 @@
       const r = starBtnEl.getBoundingClientRect();
       starFixedStyle = `position:fixed;left:${r.left}px;top:${r.top}px;z-index:9999;`;
       starJumping = true;
-      setTimeout(() => { starJumping = false; starFixedStyle = ""; }, 1800);
+      setTimeout(() => {
+        starJumping = false;
+        starFixedStyle = "";
+      }, 1800);
     }
   }
 
-  $: effectiveMenuItems = mode === "terminal"
-    ? ([
-        {
-          kind: "action",
-          label: "Toggle fullscreen",
-          icon: "⛶",
-          title: "Fill the viewport with this column (Esc to exit)",
-          onSelect: () => toggleFullscreen(),
-        },
-        ...menuItems,
-      ] satisfies SessionMenuItem[])
-    : menuItems;
+  $: effectiveMenuItems =
+    mode === "terminal"
+      ? ([
+          {
+            kind: "action",
+            label: "Toggle fullscreen",
+            icon: "⛶",
+            title: "Fill the viewport with this column (Esc to exit)",
+            onSelect: () => toggleFullscreen(),
+          },
+          ...menuItems,
+        ] satisfies SessionMenuItem[])
+      : menuItems;
 </script>
 
 <header bind:this={headerEl} draggable="true" on:dragstart={onDragStart}>
@@ -203,24 +225,33 @@
       class="agent-pill agent-{agent}"
       class:working={mode === "terminal" && working}
       class:idle={mode === "terminal" && !working}
-    >{#if sshConnected}<svg
-        class="ssh-conn-icon"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-label="SSH connection active"
-      ><title>SSH connection active</title>{#each ICONS.monitor.paths ?? [] as d}<path {d}/>{/each}</svg>{/if}{agentLabel ?? agent}{#if agentIcon}<svg
-        class="agent-pill-icon"
-        viewBox="0.5 6 23 12"
-        style="color:{agentIcon.color}"
-        aria-hidden="true"
-      >{#if agentIcon.title}<title>{agentIcon.title}</title>{/if}{#each agentIcon.trackPaths ?? [] as d}<path {d} class="gauge-track"/>{/each}{#each agentIcon.paths as d}<path {d}/>{/each}</svg>{/if}{#if mode === "terminal"}<span
-        class="sleep-slot"
-        title={!working ? "Idle — waiting for input" : ""}
-      ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
+      >{#if sshConnected}<svg
+          class="ssh-conn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-label="SSH connection active"
+          ><title>SSH connection active</title
+          >{#each ICONS.monitor.paths ?? [] as d}<path {d} />{/each}</svg
+        >{/if}{agentLabel ?? agent}{#if agentIcon}<svg
+          class="agent-pill-icon"
+          viewBox="0.5 6 23 12"
+          style="color:{agentIcon.color}"
+          aria-hidden="true"
+          >{#if agentIcon.title}<title>{agentIcon.title}</title
+            >{/if}{#each agentIcon.trackPaths ?? [] as d}<path
+              {d}
+              class="gauge-track"
+            />{/each}{#each agentIcon.paths as d}<path {d} />{/each}</svg
+        >{/if}{#if mode === "terminal"}<span
+          class="sleep-slot"
+          title={!working ? "Idle — waiting for input" : ""}
+          ><SleepIndicationAnimation visible={!working} /></span
+        >{/if}</span
+    >
     {#if isAgentSession}
       <span class="star-slot">
         <button
@@ -230,15 +261,26 @@
           class:jump={starJumping}
           style={starFixedStyle}
           type="button"
-          title={starred ? "Unstar this session" : "Star this session — pinned to the top of the session picker"}
+          title={starred
+            ? "Unstar this session"
+            : "Star this session — pinned to the top of the session picker"}
           on:click|stopPropagation={handleStarClick}
           aria-label={starred ? "Unstar session" : "Star session"}
         >
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             {#if starred}
-              <path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+              <path
+                fill="currentColor"
+                d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"
+              />
             {:else}
-              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linejoin="round"
+                d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"
+              />
             {/if}
           </svg>
         </button>
@@ -255,11 +297,12 @@
     />
     {#if ctxChip}
       <Tooltip variant="wide" placement="bottom" escapeClip>
-
         <span
           slot="trigger"
           class="ctx-bar"
-          class:warn={ctxChip.ratio !== undefined && ctxChip.ratio > 0.6 && ctxChip.ratio <= 0.85}
+          class:warn={ctxChip.ratio !== undefined &&
+            ctxChip.ratio > 0.6 &&
+            ctxChip.ratio <= 0.85}
           class:hot={ctxChip.ratio !== undefined && ctxChip.ratio > 0.85}
           class:unknown={ctxChip.ratio === undefined}
           aria-label={ctxChip.text}
@@ -271,7 +314,8 @@
               : "100%"}
           ></span>
           <span class="ctx-bar-text muted small">
-            <span class="ctx-bar-now">{ctxChip.absolute}</span><!--
+            <span class="ctx-bar-now">{ctxChip.absolute}</span
+            ><!--
             --><span class="ctx-bar-rest">
               {#if ctxChip.capText}
                 {` / ${ctxChip.capText} ctx (${Math.round((ctxChip.ratio ?? 0) * 100)}%)`}
@@ -282,15 +326,21 @@
           </span>
         </span>
         <div slot="content" class="ctx-tt">
-          <div class="ctx-tt-head">Estimated context size at the start of the next turn</div>
+          <div class="ctx-tt-head">
+            Estimated context size at the start of the next turn
+          </div>
           <dl class="ctx-tt-kv">
             <dt>Model</dt>
             <dd>{model ?? "(unknown)"}</dd>
             <dt>Tokens</dt>
             <dd>
-              {contextTokens !== undefined ? contextTokens.toLocaleString() : "—"}
+              {contextTokens !== undefined
+                ? contextTokens.toLocaleString()
+                : "—"}
               {#if ctxChip.ratio !== undefined}
-                <span class="muted small">({Math.round(ctxChip.ratio * 100)}% of cap)</span>
+                <span class="muted small"
+                  >({Math.round(ctxChip.ratio * 100)}% of cap)</span
+                >
               {/if}
             </dd>
           </dl>
@@ -298,15 +348,36 @@
             <div class="ctx-tt-section-head">How it's computed</div>
             {#if contextTokensExact}
               <ul>
-                <li>Read from the most recent assistant turn's <code>message.usage</code> in the session JSONL.</li>
-                <li>Sum of <code>input_tokens</code> + <code>cache_read_input_tokens</code> + <code>cache_creation_input_tokens</code> — the three disjoint slices Anthropic reports for that request, so their sum is everything the model saw as input.</li>
-                <li>Output tokens are excluded (they're generated, not in-context yet).</li>
-                <li>Lagged by one turn: your next prompt adds a bit more on top.</li>
+                <li>
+                  Read from the most recent assistant turn's <code
+                    >message.usage</code
+                  > in the session JSONL.
+                </li>
+                <li>
+                  Sum of <code>input_tokens</code> +
+                  <code>cache_read_input_tokens</code>
+                  + <code>cache_creation_input_tokens</code> — the three disjoint
+                  slices Anthropic reports for that request, so their sum is everything
+                  the model saw as input.
+                </li>
+                <li>
+                  Output tokens are excluded (they're generated, not in-context
+                  yet).
+                </li>
+                <li>
+                  Lagged by one turn: your next prompt adds a bit more on top.
+                </li>
               </ul>
             {:else}
               <ul>
-                <li>Codex's JSONL doesn't carry a usage block, so this is a rough estimate.</li>
-                <li>Sum of every user/assistant message's content length ÷ 4 (OpenAI's chars-per-token rule of thumb).</li>
+                <li>
+                  Codex's JSONL doesn't carry a usage block, so this is a rough
+                  estimate.
+                </li>
+                <li>
+                  Sum of every user/assistant message's content length ÷ 4
+                  (OpenAI's chars-per-token rule of thumb).
+                </li>
                 <li>Developer / system / event messages are excluded.</li>
               </ul>
             {/if}
@@ -317,7 +388,9 @@
               <li>Opus / Sonnet 4.6+ → 1,000,000</li>
               <li>Haiku 4.5 → 200,000</li>
               <li>Legacy Opus / Sonnet (≤4.5) → 200,000</li>
-              <li>Unknown model → shown as <code>???</code> (no fabricated denominator).</li>
+              <li>
+                Unknown model → shown as <code>???</code> (no fabricated denominator).
+              </li>
             </ul>
           </div>
         </div>
@@ -344,19 +417,20 @@
     {#if lastActivityIso}
       {#if lastUserMessage && lastUserMessage.trim().length > 0}
         <Tooltip variant="wide" placement="bottom" escapeClip>
-          <span
-            slot="trigger"
-            class="muted small last-activity"
-          >last activity {relTimeFromIso(lastActivityIso)}</span>
+          <span slot="trigger" class="muted small last-activity"
+            >last activity {relTimeFromIso(lastActivityIso)}</span
+          >
           <pre slot="content" class="la-tt-msg">{lastUserMessage}</pre>
         </Tooltip>
       {:else}
-        <span
-          class="muted small last-activity"
-        >last activity {relTimeFromIso(lastActivityIso)}</span>
+        <span class="muted small last-activity"
+          >last activity {relTimeFromIso(lastActivityIso)}</span
+        >
       {/if}
     {:else if lastActivityFallback}
-      <span class="muted small last-activity placeholder">{lastActivityFallback}</span>
+      <span class="muted small last-activity placeholder"
+        >{lastActivityFallback}</span
+      >
     {/if}
     {#if loadedMessageCount !== undefined}
       <span
@@ -376,32 +450,49 @@
       <span
         class="muted small msg-count"
         title={`${totalMessageCount.toLocaleString()} message${totalMessageCount === 1 ? "" : "s"} in this session`}
-      >{totalMessageCount.toLocaleString()} messages</span>
+        >{totalMessageCount.toLocaleString()} messages</span
+      >
     {:else if messageCountFallback}
-      <span class="muted small msg-count placeholder">{messageCountFallback}</span>
+      <span class="muted small msg-count placeholder"
+        >{messageCountFallback}</span
+      >
     {/if}
   </div>
   <div class="hdr-col col-actions">
     {#if mode === "read" && canResume}
-      <button
-        class="resume-btn"
-        on:click={onResume}
-        title={resumeTitle}
-      >Resume</button>
+      <button class="resume-btn" on:click={onResume} title={resumeTitle}
+        >Resume</button
+      >
     {:else if mode === "terminal"}
       {#if awaitingInput}
         <span
           class="awaiting-pill"
           title="The agent is paused on a prompt — focus the terminal and respond."
-        >needs input</span>
+          >needs input</span
+        >
       {/if}
       {#if sshConnected && onSshBrowse}
         <button
           class="resume-btn ssh-browse-btn"
-          on:click={() => { console.debug("[SessionHeader] Browse Files clicked"); onSshBrowse?.(); }}
+          on:click={() => {
+            console.debug("[SessionHeader] Browse Files clicked");
+            onSshBrowse?.();
+          }}
           title="Browse remote filesystem"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path
+              d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+            /></svg
+          >
           Browse Files
         </button>
       {/if}
@@ -426,7 +517,12 @@
     {#if effectiveMenuItems.length > 0}
       <SessionMenu items={effectiveMenuItems} />
     {/if}
-    <button class="close" on:click={onClose} title={closeTitle} aria-label="Close column">×</button>
+    <button
+      class="close"
+      on:click={onClose}
+      title={closeTitle}
+      aria-label="Close column">×</button
+    >
   </div>
 </header>
 
@@ -665,7 +761,9 @@
     animation: pill-sweep 3.2s linear infinite;
   }
   @keyframes pill-sweep {
-    to { --pill-sweep-angle: 360deg; }
+    to {
+      --pill-sweep-angle: 360deg;
+    }
   }
   /* Idle / waiting: a static border in a dim variant of the agent's
      colour. Previously this also rendered an opacity-pulsing overlay
@@ -717,30 +815,70 @@
   }
   @keyframes star-jump {
     /* spin up */
-    0%   { transform: scale(1)   rotate(0deg); }
-    4%   { transform: scale(1)   rotate(180deg); }
-    8%   { transform: scale(1)   rotate(540deg); }
-    14%  { transform: scale(1)   rotate(1080deg); }
+    0% {
+      transform: scale(1) rotate(0deg);
+    }
+    4% {
+      transform: scale(1) rotate(180deg);
+    }
+    8% {
+      transform: scale(1) rotate(540deg);
+    }
+    14% {
+      transform: scale(1) rotate(1080deg);
+    }
     /* pump — catching air */
-    18%  { transform: scale(1.9) rotate(1080deg); }
-    22%  { transform: scale(0.7) rotate(1080deg); }
-    26%  { transform: scale(2.2) rotate(1080deg); }
-    30%  { transform: scale(0.6) rotate(1080deg); }
-    34%  { transform: scale(2.5) rotate(1080deg); }
-    38%  { transform: scale(1)   rotate(1080deg); }
+    18% {
+      transform: scale(1.9) rotate(1080deg);
+    }
+    22% {
+      transform: scale(0.7) rotate(1080deg);
+    }
+    26% {
+      transform: scale(2.2) rotate(1080deg);
+    }
+    30% {
+      transform: scale(0.6) rotate(1080deg);
+    }
+    34% {
+      transform: scale(2.5) rotate(1080deg);
+    }
+    38% {
+      transform: scale(1) rotate(1080deg);
+    }
     /* happy bounces */
-    46%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
-    52%  { transform: scale(1.1) translateY(-10px) rotate(1080deg); }
-    58%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
-    66%  { transform: scale(1.1) translateY(-7px)  rotate(1080deg); }
-    72%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
-    80%  { transform: scale(1.05) translateY(-4px) rotate(1080deg); }
-    86%  { transform: scale(1)   translateY(0)    rotate(1080deg); }
-    93%  { transform: scale(1.02) translateY(-2px) rotate(1080deg); }
-    100% { transform: scale(1)   translateY(0)    rotate(1080deg); }
+    46% {
+      transform: scale(1) translateY(0) rotate(1080deg);
+    }
+    52% {
+      transform: scale(1.1) translateY(-10px) rotate(1080deg);
+    }
+    58% {
+      transform: scale(1) translateY(0) rotate(1080deg);
+    }
+    66% {
+      transform: scale(1.1) translateY(-7px) rotate(1080deg);
+    }
+    72% {
+      transform: scale(1) translateY(0) rotate(1080deg);
+    }
+    80% {
+      transform: scale(1.05) translateY(-4px) rotate(1080deg);
+    }
+    86% {
+      transform: scale(1) translateY(0) rotate(1080deg);
+    }
+    93% {
+      transform: scale(1.02) translateY(-2px) rotate(1080deg);
+    }
+    100% {
+      transform: scale(1) translateY(0) rotate(1080deg);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
-    .star-btn.jump { animation: none; }
+    .star-btn.jump {
+      animation: none;
+    }
   }
   /* Thin wrapper around <SleepIndicationAnimation>. The component owns
      its own layout reservation + animation; we only set the colour so
@@ -801,7 +939,9 @@
     background: var(--text-faint);
     /* No own width — set inline via `style:width`. Transitions so a
        poll-cycle bump doesn't jitter the bar. */
-    transition: width 200ms ease, background 200ms ease;
+    transition:
+      width 200ms ease,
+      background 200ms ease;
   }
   .ctx-bar.warn .ctx-bar-fill {
     background: var(--ctx-warn);
@@ -966,7 +1106,9 @@
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   .close {
     flex: 0 0 auto;

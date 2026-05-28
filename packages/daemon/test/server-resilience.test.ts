@@ -77,7 +77,9 @@ describe("Bun.serve wedge workaround stays in place", () => {
     const m = SERVER_TS.match(/idleTimeout\s*:\s*(\d+)/);
     expect(m, "expected `idleTimeout: N` in Bun.serve config").not.toBeNull();
     const seconds = Number(m![1]);
-    expect(seconds, "idleTimeout must be > 10 (Bun's default)").toBeGreaterThan(10);
+    expect(seconds, "idleTimeout must be > 10 (Bun's default)").toBeGreaterThan(
+      10,
+    );
   });
 
   test("Bun.serve has an error() escape-hatch callback", () => {
@@ -85,16 +87,23 @@ describe("Bun.serve wedge workaround stays in place", () => {
     const hasErrorCb =
       /\berror\s*\(\s*\w+\s*:\s*Error\s*\)/.test(SERVER_TS) ||
       /\berror\s*:\s*(?:async\s+)?\(/.test(SERVER_TS);
-    expect(hasErrorCb, "Bun.serve must have an error() callback to log + persist escapes")
-      .toBe(true);
+    expect(
+      hasErrorCb,
+      "Bun.serve must have an error() callback to log + persist escapes",
+    ).toBe(true);
   });
 
   test("error() callback records into the errors log", () => {
     // The error callback funnels through `errors.append({ kind: 'server',
     // source: 'daemon', … })`. The exact whitespace varies (multi-line
     // chained call), so match a regex that tolerates newlines.
-    const cbBlockMatch = SERVER_TS.match(/error\s*\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
-    expect(cbBlockMatch, "couldn't isolate the error() callback body").not.toBeNull();
+    const cbBlockMatch = SERVER_TS.match(
+      /error\s*\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/,
+    );
+    expect(
+      cbBlockMatch,
+      "couldn't isolate the error() callback body",
+    ).not.toBeNull();
     const body = cbBlockMatch![1]!;
     expect(/errors\s*[\.\n]\s*\.?\s*append\s*\(/.test(body)).toBe(true);
     expect(body).toContain('kind: "server"');

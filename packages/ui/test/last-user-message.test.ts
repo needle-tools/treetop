@@ -78,9 +78,9 @@ describe("lastUserMessageBurst", () => {
       msg("user", "continue plz", ts(-5000)),
     ];
     expect(lastUserMessageBurst(msgs)).toBe("continue plz");
-    expect(
-      lastUserMessageWithContext(msgs, lastUserMessageBurst(msgs)),
-    ).toBe("continue plz");
+    expect(lastUserMessageWithContext(msgs, lastUserMessageBurst(msgs))).toBe(
+      "continue plz",
+    );
   });
 });
 

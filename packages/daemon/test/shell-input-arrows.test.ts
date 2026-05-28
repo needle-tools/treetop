@@ -17,9 +17,12 @@ describe("shell-input arrow key handling", () => {
     clearShellInputBuffer(id);
     // Type "ls", then arrow up, then Enter
     const input = new Uint8Array([
-      0x6c, 0x73,             // "ls"
-      0x1b, 0x5b, 0x41,       // arrow up (skipped)
-      0x0d,                    // Enter
+      0x6c,
+      0x73, // "ls"
+      0x1b,
+      0x5b,
+      0x41, // arrow up (skipped)
+      0x0d, // Enter
     ]);
     const lines = feedShellInput(id, input);
     expect(lines).toEqual(["ls"]);

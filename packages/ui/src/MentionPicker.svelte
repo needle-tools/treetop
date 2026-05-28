@@ -322,7 +322,9 @@
                      layout so picker rows + saved chips read the same. -->
                 <span class="attach-row-meta">
                   {#if it.meta}{it.meta}{/if}
-                  {#if it.meta && it.subtitle} · {/if}
+                  {#if it.meta && it.subtitle}
+                    ·
+                  {/if}
                   {#if it.subtitle}{it.subtitle}{/if}
                 </span>
               {/if}

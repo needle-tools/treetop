@@ -43,7 +43,10 @@ export class SoundMarkerScanner {
     if (afterLast.length > 0 && !afterLast.endsWith("§")) {
       // Might be a partial marker — hold it back
       const prefix = "§play-sound:";
-      if (prefix.startsWith(afterLast) || afterLast.startsWith(prefix.slice(0, afterLast.length))) {
+      if (
+        prefix.startsWith(afterLast) ||
+        afterLast.startsWith(prefix.slice(0, afterLast.length))
+      ) {
         this.residual = afterLast;
         const before = text.slice(0, lastSection);
         return this.extract(before);

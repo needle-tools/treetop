@@ -16,7 +16,9 @@ describe("classifyLine", () => {
     expect(classifyLine("new file mode 100644").kind).toBe("meta");
     expect(classifyLine("deleted file mode 100644").kind).toBe("meta");
     expect(classifyLine("rename from a.txt").kind).toBe("meta");
-    expect(classifyLine("Binary files a/foo and b/foo differ").kind).toBe("meta");
+    expect(classifyLine("Binary files a/foo and b/foo differ").kind).toBe(
+      "meta",
+    );
     expect(classifyLine("--- a/foo").kind).toBe("meta");
     expect(classifyLine("+++ b/foo").kind).toBe("meta");
   });
@@ -47,7 +49,9 @@ describe("classifyLine", () => {
   });
 
   test("classifies our # untracked-files preamble", () => {
-    expect(classifyLine("# untracked files (3):").kind).toBe("untracked-header");
+    expect(classifyLine("# untracked files (3):").kind).toBe(
+      "untracked-header",
+    );
     expect(classifyLine("?  README.md").kind).toBe("untracked-file");
   });
 });

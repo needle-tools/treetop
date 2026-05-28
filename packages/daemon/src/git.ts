@@ -42,11 +42,16 @@ export async function runGitWithLockRetry<T extends GitResult>(
   return run();
 }
 
-function raceTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   let timer: Timer;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      () =>
+        reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
       ms,
     );
   });
@@ -144,7 +149,16 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
       const isSubmoduleGitdir = /[/\\]\.git[/\\]/.test(worktrees[0]!.path);
       if (!isSubmoduleGitdir) {
         if (await fileExists(repoPath)) {
-          return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+          return [
+            {
+              path: normalRepo,
+              branch: "",
+              head: "",
+              bare: false,
+              detached: false,
+              nonGit: true,
+            },
+          ];
         }
         return [];
       }
@@ -154,7 +168,16 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
     // Path exists on disk but isn't a git repo — return a synthetic entry so
     // the UI can still open terminals/agents there.
     if (await fileExists(repoPath)) {
-      return [{ path: normalRepo, branch: "", head: "", bare: false, detached: false, nonGit: true }];
+      return [
+        {
+          path: normalRepo,
+          branch: "",
+          head: "",
+          bare: false,
+          detached: false,
+          nonGit: true,
+        },
+      ];
     }
     return [];
   }
@@ -222,9 +245,10 @@ export async function branchExists(
   repoPath: string,
   branch: string,
 ): Promise<boolean> {
-  const r = await $`git -C ${repoPath} show-ref --verify --quiet refs/heads/${branch}`
-    .quiet()
-    .nothrow();
+  const r =
+    await $`git -C ${repoPath} show-ref --verify --quiet refs/heads/${branch}`
+      .quiet()
+      .nothrow();
   return r.exitCode === 0;
 }
 
@@ -267,7 +291,9 @@ export async function createWorktree(
   const stderr = await new Response(proc.stderr).text();
   const exit = await proc.exited;
   if (exit !== 0) {
-    throw new Error(`git worktree add failed: ${stderr.trim() || "exit " + exit}`);
+    throw new Error(
+      `git worktree add failed: ${stderr.trim() || "exit " + exit}`,
+    );
   }
   return { path: wtPath, branch, created: !exists };
 }
@@ -323,9 +349,10 @@ export async function listBranches(repoPath: string): Promise<BranchListing> {
     // Sort by committer date descending so the branch picker shows
     // recently-touched branches first — most "switch to X" intents
     // target something the user worked on lately.
-    const out = await $`git -C ${repoPath} for-each-ref --sort=-committerdate --format=${"%(refname)"} refs/heads refs/remotes`
-      .quiet()
-      .nothrow();
+    const out =
+      await $`git -C ${repoPath} for-each-ref --sort=-committerdate --format=${"%(refname)"} refs/heads refs/remotes`
+        .quiet()
+        .nothrow();
     for (const raw of out.stdout.toString().split("\n")) {
       const line = raw.trim();
       if (!line) continue;
@@ -462,13 +489,19 @@ export async function pullFastForward(
     try {
       r = await runGitWithLockRetry(() =>
         raceTimeout(
-          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
+          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`
+            .quiet()
+            .nothrow(),
           PUSH_PULL_TIMEOUT_MS,
           "git pull",
         ),
       );
     } catch (e) {
-      return { ok: false, kind: "error", message: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
     }
     const stdout = r.stdout.toString();
     const stderr = r.stderr.toString();
@@ -487,8 +520,9 @@ export async function pullFastForward(
       return { ok: false, kind: "no_upstream", message: msg };
     }
     if (
-      /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i
-        .test(combined)
+      /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i.test(
+        combined,
+      )
     ) {
       return { ok: false, kind: "auth", message: msg };
     }
@@ -500,8 +534,9 @@ export async function pullFastForward(
       return { ok: false, kind: "diverged", message: msg };
     }
     if (
-      /local changes.*would be overwritten|untracked working tree files.*would be overwritten|Please commit your changes or stash them/i
-        .test(combined)
+      /local changes.*would be overwritten|untracked working tree files.*would be overwritten|Please commit your changes or stash them/i.test(
+        combined,
+      )
     ) {
       return { ok: false, kind: "dirty", message: msg };
     }
@@ -531,8 +566,9 @@ export async function pullFastForward(
       return {
         ok: false,
         kind: "error",
-        message: `git stash failed: ${stashRes.stderr.toString().trim() ||
-          "exit " + stashRes.exitCode}`,
+        message: `git stash failed: ${
+          stashRes.stderr.toString().trim() || "exit " + stashRes.exitCode
+        }`,
       };
     }
     result = await run();
@@ -568,8 +604,9 @@ export async function pushUpstream(worktreePath: string): Promise<PushResult> {
   const message = `${stdout}${stderr}`.trim();
   if (
     r.exitCode !== 0 &&
-    /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i
-      .test(message)
+    /could not read Username|could not read Password|terminal prompts disabled|Permission denied \(publickey\)|Authentication failed|invalid credentials/i.test(
+      message,
+    )
   ) {
     return { ok: false, message, kind: "auth" };
   }
@@ -595,7 +632,11 @@ export interface RemoteRef {
 function detectProvider(host: string): string | null {
   const h = host.toLowerCase();
   if (h === "github.com" || h.endsWith(".github.com")) return "github";
-  if (h === "ssh.dev.azure.com" || h === "dev.azure.com" || h.endsWith(".visualstudio.com")) {
+  if (
+    h === "ssh.dev.azure.com" ||
+    h === "dev.azure.com" ||
+    h.endsWith(".visualstudio.com")
+  ) {
     return "azure";
   }
   if (h === "bitbucket.org" || h.includes("bitbucket.")) return "bitbucket";
@@ -682,7 +723,9 @@ export function parseRemoteUrl(raw: string): {
 
 /** Parse `git remote -v` output into `{name, url}` pairs, deduping fetch/push
  *  entries (each remote appears twice — we keep the fetch URL only). */
-export function parseRemotesOutput(out: string): { name: string; url: string }[] {
+export function parseRemotesOutput(
+  out: string,
+): { name: string; url: string }[] {
   const seen = new Set<string>();
   const result: { name: string; url: string }[] = [];
   for (const rawLine of out.split("\n")) {
@@ -731,9 +774,10 @@ export function parseUpstreamRemote(out: string): string | null {
 export async function getUpstreamRemoteName(
   worktreePath: string,
 ): Promise<string | null> {
-  const r = await $`git -C ${worktreePath} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`
-    .quiet()
-    .nothrow();
+  const r =
+    await $`git -C ${worktreePath} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`
+      .quiet()
+      .nothrow();
   if (r.exitCode !== 0) return null;
   return parseUpstreamRemote(r.stdout.toString());
 }
@@ -822,21 +866,23 @@ export async function getWorktreeDetails(
     // Speculative third call: oldest local commit not on upstream. Errors
     // when there's no upstream — caught into "" and discarded. Running
     // it in parallel with status keeps the happy path one round-trip.
-    const [statusOut, logOut, aheadOldestOut, shortstatOut] = await Promise.all([
-      $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
-      $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
-        .quiet()
-        .text()
-        .catch(() => ""),
-      $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
-        .quiet()
-        .text()
-        .catch(() => ""),
-      $`git -C ${worktreePath} diff --shortstat HEAD`
-        .quiet()
-        .text()
-        .catch(() => ""),
-    ]);
+    const [statusOut, logOut, aheadOldestOut, shortstatOut] = await Promise.all(
+      [
+        $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
+        $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
+          .quiet()
+          .text()
+          .catch(() => ""),
+        $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
+          .quiet()
+          .text()
+          .catch(() => ""),
+        $`git -C ${worktreePath} diff --shortstat HEAD`
+          .quiet()
+          .text()
+          .catch(() => ""),
+      ],
+    );
     const branchStatus = parseBranchStatus(statusOut);
     if (branchStatus && branchStatus.ahead > 0) {
       const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
@@ -851,7 +897,14 @@ export async function getWorktreeDetails(
     };
   } catch {
     return {
-      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0, submoduleChanges: 0, dirtyLines: 0 },
+      fileStatus: {
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        submodules: 0,
+        submoduleChanges: 0,
+        dirtyLines: 0,
+      },
       branchStatus: null,
       lastCommit: null,
     };
@@ -899,7 +952,14 @@ export function parseFileStatus(porcelain: string): FileStatus {
       unstaged++;
     }
   }
-  return { staged, unstaged, untracked, submodules, submoduleChanges, dirtyLines: 0 };
+  return {
+    staged,
+    unstaged,
+    untracked,
+    submodules,
+    submoduleChanges,
+    dirtyLines: 0,
+  };
 }
 
 export function parseShortstatLines(shortstat: string): number {
@@ -951,7 +1011,14 @@ export async function listCommits(
   options: { before?: string; limit?: number; all?: boolean } = {},
 ): Promise<LastCommit[]> {
   const limit = options.limit ?? 20;
-  const args = ["-C", worktreePath, "log", `--format=%H%x00%s%x00%an%x00%aI%x00%P%x00%D`, "-n", String(limit)];
+  const args = [
+    "-C",
+    worktreePath,
+    "log",
+    `--format=%H%x00%s%x00%an%x00%aI%x00%P%x00%D`,
+    "-n",
+    String(limit),
+  ];
   if (options.all) args.push("--all");
   if (options.before) args.push(`${options.before}^`);
   else if (!options.all) args.push("HEAD");
@@ -972,9 +1039,16 @@ export function parseCommitList(logOut: string): LastCommit[] {
       if (parts.length < 4) return null;
       const sha = parts[0]!;
       const parentStr = parts[4] ?? "";
-      const parentCount = parentStr.length === 0 ? 0 : parentStr.split(" ").length;
+      const parentCount =
+        parentStr.length === 0 ? 0 : parentStr.split(" ").length;
       const refStr = parts[5] ?? "";
-      const refs = refStr.length === 0 ? [] : refStr.split(", ").map((r) => r.trim()).filter(Boolean);
+      const refs =
+        refStr.length === 0
+          ? []
+          : refStr
+              .split(", ")
+              .map((r) => r.trim())
+              .filter(Boolean);
       return {
         sha,
         shortSha: sha.slice(0, 7),
@@ -1139,14 +1213,16 @@ export async function getFileDiff(
       // --no-index exits 1 when the two paths differ (always true for
       // /dev/null vs a real file); .nothrow() prevents Bun from
       // promoting that into a thrown error.
-      const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
-        .quiet()
-        .nothrow();
+      const result =
+        await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
+          .quiet()
+          .nothrow();
       return result.stdout.toString();
     }
-    const cmd = kind === "staged"
-      ? $`git -C ${worktreePath} diff --staged --no-color ${ctx} -- ${file}`
-      : $`git -C ${worktreePath} diff --no-color ${ctx} -- ${file}`;
+    const cmd =
+      kind === "staged"
+        ? $`git -C ${worktreePath} diff --staged --no-color ${ctx} -- ${file}`
+        : $`git -C ${worktreePath} diff --no-color ${ctx} -- ${file}`;
     return await cmd.quiet().text();
   } catch {
     return "";
@@ -1202,17 +1278,22 @@ export async function getDiff(
 ): Promise<string> {
   const ctx = `--unified=${clampContext(context)}`;
   try {
-    const diff = await (kind === "staged"
-      ? $`git -C ${worktreePath} diff --staged --no-color ${ctx}`
-      : $`git -C ${worktreePath} diff --no-color ${ctx}`)
+    const diff = await (
+      kind === "staged"
+        ? $`git -C ${worktreePath} diff --staged --no-color ${ctx}`
+        : $`git -C ${worktreePath} diff --no-color ${ctx}`
+    )
       .quiet()
       .text();
 
     if (kind === "workdir") {
-      const untracked = await $`git -C ${worktreePath} ls-files --others --exclude-standard`
-        .quiet()
-        .text();
-      const untrackedEntries = untracked.split("\n").filter((l) => l.length > 0);
+      const untracked =
+        await $`git -C ${worktreePath} ls-files --others --exclude-standard`
+          .quiet()
+          .text();
+      const untrackedEntries = untracked
+        .split("\n")
+        .filter((l) => l.length > 0);
       if (untrackedEntries.length > 0) {
         // Spawn one git subprocess per entry in parallel. With many
         // untracked files (e.g. 50+) the previous serial loop dominated
@@ -1248,9 +1329,10 @@ export async function getDiff(
               // Regular file — `git diff --no-index` exits 1 when files
               // differ (which is always, for /dev/null vs a real file).
               // .nothrow() lets us capture the body without throwing.
-              const result = await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
-                .quiet()
-                .nothrow();
+              const result =
+                await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
+                  .quiet()
+                  .nothrow();
               return result.stdout.toString();
             }),
           )

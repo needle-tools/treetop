@@ -14,9 +14,7 @@
 import { test, expect, describe } from "bun:test";
 import { redactLikelySecrets } from "../src/secret-redactor";
 
-function totalCount(
-  out: ReturnType<typeof redactLikelySecrets>,
-): number {
+function totalCount(out: ReturnType<typeof redactLikelySecrets>): number {
   return out.redactions.reduce((n, r) => n + r.count, 0);
 }
 
@@ -87,7 +85,9 @@ describe("redactLikelySecrets — covered key formats", () => {
     const live = "sk_live_" + "A".repeat(30);
     const testk = "sk_test_" + "B".repeat(30);
     expect(redactLikelySecrets(live).text).toBe("[REDACTED:stripe_secret_key]");
-    expect(redactLikelySecrets(testk).text).toBe("[REDACTED:stripe_secret_key]");
+    expect(redactLikelySecrets(testk).text).toBe(
+      "[REDACTED:stripe_secret_key]",
+    );
   });
 
   test("JWT (three base64url segments separated by dots)", () => {
@@ -121,7 +121,9 @@ describe("redactLikelySecrets — counts and reporting", () => {
       "ghp_" + "y".repeat(36),
     ].join("\n");
     const r = redactLikelySecrets(input);
-    const byKind = Object.fromEntries(r.redactions.map((x) => [x.kind, x.count]));
+    const byKind = Object.fromEntries(
+      r.redactions.map((x) => [x.kind, x.count]),
+    );
     expect(byKind.anthropic_api_key).toBe(1);
     expect(byKind.github_token).toBe(2);
   });
@@ -157,7 +159,9 @@ describe("redactLikelySecrets — false-positive guards", () => {
   });
 
   test("the word 'token' alone is not redacted", () => {
-    const r = redactLikelySecrets("authentication tokens are issued per request");
+    const r = redactLikelySecrets(
+      "authentication tokens are issued per request",
+    );
     expect(r.text.includes("[REDACTED")).toBe(false);
   });
 });

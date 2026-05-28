@@ -23,7 +23,12 @@
         };
       }
     | { kind: "repairing" }
-    | { kind: "done"; repairedCount: number; trimmedLines: number; backupPath: string }
+    | {
+        kind: "done";
+        repairedCount: number;
+        trimmedLines: number;
+        backupPath: string;
+      }
     | { kind: "error"; message: string }
     | { kind: "healthy" };
 
@@ -52,7 +57,8 @@
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(
-          (body as Record<string, string> | null)?.error ?? `HTTP ${res.status}`,
+          (body as Record<string, string> | null)?.error ??
+            `HTTP ${res.status}`,
         );
       }
       const body = (await res.json()) as {
@@ -100,7 +106,8 @@
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(
-          (body as Record<string, string> | null)?.error ?? `HTTP ${res.status}`,
+          (body as Record<string, string> | null)?.error ??
+            `HTTP ${res.status}`,
         );
       }
       const body = (await res.json()) as {
@@ -164,32 +171,32 @@
           <span class="repair-spinner"></span>
           <span>Diagnosing parent chain…</span>
         </div>
-
       {:else if phase.kind === "healthy"}
         <p class="repair-blurb">
           No broken parent links found — this session's chain is intact.
         </p>
-
       {:else if phase.kind === "diagnosed"}
         <p class="repair-blurb">
           Session with {phase.diagnosis.totalEntries} entries —
           {#if phase.diagnosis.brokenLinks > 0}
-            found <strong>{phase.diagnosis.brokenLinks}</strong> broken
-            parent {phase.diagnosis.brokenLinks === 1 ? "link" : "links"}.
+            found <strong>{phase.diagnosis.brokenLinks}</strong> broken parent {phase
+              .diagnosis.brokenLinks === 1
+              ? "link"
+              : "links"}.
           {/if}
           {#if phase.diagnosis.orphanedTail}
             {#if phase.diagnosis.brokenLinks > 0}Also found{:else}Found{/if}
             <strong>{phase.diagnosis.orphanedTail.lineCount}</strong>
-            orphaned lines where the model had amnesia
-            (context dropped from {phase.diagnosis.orphanedTail.messageCountBefore}
+            orphaned lines where the model had amnesia (context dropped from {phase
+              .diagnosis.orphanedTail.messageCountBefore}
             to {phase.diagnosis.orphanedTail.messageCountAfter} messages).
           {/if}
         </p>
         <p class="repair-blurb">
-          Claude Code traces messages by following parent UUIDs. When a
-          link is missing, the loader can only see messages after the
-          break. The amnesiac messages that follow actively poison the
-          context ("I don't have history") and must be trimmed.
+          Claude Code traces messages by following parent UUIDs. When a link is
+          missing, the loader can only see messages after the break. The
+          amnesiac messages that follow actively poison the context ("I don't
+          have history") and must be trimmed.
         </p>
         {#if phase.diagnosis.details.length > 0}
           <div class="repair-details">
@@ -204,16 +211,15 @@
         {/if}
         <p class="repair-blurb repair-note">
           A <code>.bak</code> backup is created before any changes.
-          {#if phase.diagnosis.brokenLinks > 0}Synthetic bridge nodes are inserted.{/if}
+          {#if phase.diagnosis.brokenLinks > 0}Synthetic bridge nodes are
+            inserted.{/if}
           {#if phase.diagnosis.orphanedTail}Amnesiac tail is trimmed.{/if}
         </p>
-
       {:else if phase.kind === "repairing"}
         <div class="repair-loading">
           <span class="repair-spinner"></span>
           <span>Repairing…</span>
         </div>
-
       {:else if phase.kind === "done"}
         <p class="repair-result repair-ok">
           {#if phase.repairedCount > 0}
@@ -229,7 +235,6 @@
         <p class="repair-blurb repair-note">
           Backup: <code>{shortPath(phase.backupPath)}</code>
         </p>
-
       {:else if phase.kind === "error"}
         <p class="repair-result repair-err" role="alert">{phase.message}</p>
       {/if}

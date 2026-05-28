@@ -14,7 +14,8 @@ describe("cleanSelection", () => {
   test("strips soft-wrap newlines", () => {
     // Simulates a long command that wrapped at column 40:
     // "sed -i '/<haystack_readonly>/,/<\\/has" + wrap + "tack>/...'
-    const raw = "sed -i 'some very long command that wr\naps at the column boundary'";
+    const raw =
+      "sed -i 'some very long command that wr\naps at the column boundary'";
     // Line 1 (index 1) is a continuation of line 0
     expect(cleanSelection(raw, (i) => i === 1)).toBe(
       "sed -i 'some very long command that wraps at the column boundary'",
@@ -23,11 +24,11 @@ describe("cleanSelection", () => {
 
   test("handles mix of real and soft-wrap newlines", () => {
     const raw = [
-      "first line that is very long and wra",  // real line start
-      "ps to the next row",                    // soft wrap (index 1)
-      "second real line",                      // real newline (index 2)
-      "third line also wraps at the col bo",   // real newline (index 3)
-      "undary here",                           // soft wrap (index 4)
+      "first line that is very long and wra", // real line start
+      "ps to the next row", // soft wrap (index 1)
+      "second real line", // real newline (index 2)
+      "third line also wraps at the col bo", // real newline (index 3)
+      "undary here", // soft wrap (index 4)
     ].join("\n");
 
     const wrapped = new Set([1, 4]);
@@ -35,8 +36,8 @@ describe("cleanSelection", () => {
 
     expect(result).toBe(
       "first line that is very long and wraps to the next row\n" +
-      "second real line\n" +
-      "third line also wraps at the col boundary here",
+        "second real line\n" +
+        "third line also wraps at the col boundary here",
     );
   });
 

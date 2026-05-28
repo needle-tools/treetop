@@ -1,5 +1,12 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, readFile, writeFile, readdir, mkdir, realpath } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  readdir,
+  mkdir,
+  realpath,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { $ } from "bun";
@@ -165,7 +172,9 @@ describe("Workspace", () => {
 
   test("setRepoColor throws when id is unknown", async () => {
     const ws = await Workspace.open(await tempDir());
-    await expect(ws.setRepoColor("nope", "#112233")).rejects.toThrow(/not found/);
+    await expect(ws.setRepoColor("nope", "#112233")).rejects.toThrow(
+      /not found/,
+    );
   });
 
   test("session titles start empty", async () => {
@@ -252,9 +261,9 @@ describe("Workspace", () => {
     await ws.setSessionTitle("/b.jsonl", "beta");
     // Simulate a half-written / corrupt file (or a parse failure of any kind).
     await writeFile(join(path, "session-titles.json"), "{ this is not json");
-    await expect(
-      ws.setSessionTitle("/c.jsonl", "gamma"),
-    ).rejects.toThrow(/session-titles/i);
+    await expect(ws.setSessionTitle("/c.jsonl", "gamma")).rejects.toThrow(
+      /session-titles/i,
+    );
     // File contents are untouched — recovery is still possible by hand.
     const raw = await readFile(join(path, "session-titles.json"), "utf-8");
     expect(raw).toBe("{ this is not json");
@@ -328,9 +337,9 @@ describe("Workspace", () => {
     await expect(
       ws.addCustomLink(repo.id, { url: "not a url" }),
     ).rejects.toThrow(/url/i);
-    await expect(
-      ws.addCustomLink(repo.id, { url: "" }),
-    ).rejects.toThrow(/url/i);
+    await expect(ws.addCustomLink(repo.id, { url: "" })).rejects.toThrow(
+      /url/i,
+    );
     await expect(
       ws.addCustomLink(repo.id, { url: "ftp://example.com/x" }),
     ).rejects.toThrow(/http/i);
@@ -403,21 +412,25 @@ describe("Workspace", () => {
     const a = await ws.addCustomLink(repo.id, { url: "https://a.test/" });
     const b = await ws.addCustomLink(repo.id, { url: "https://b.test/" });
     // wrong length
-    await expect(ws.reorderCustomLinks(repo.id, [a.id])).rejects.toThrow(/length/);
+    await expect(ws.reorderCustomLinks(repo.id, [a.id])).rejects.toThrow(
+      /length/,
+    );
     // unknown id
     await expect(
       ws.reorderCustomLinks(repo.id, [a.id, "ghost"]),
     ).rejects.toThrow(/Unknown link id/);
     // duplicates
-    await expect(
-      ws.reorderCustomLinks(repo.id, [a.id, a.id]),
-    ).rejects.toThrow(/unique/);
+    await expect(ws.reorderCustomLinks(repo.id, [a.id, a.id])).rejects.toThrow(
+      /unique/,
+    );
     void b;
   });
 
   test("reorderCustomLinks throws when the repo id is unknown", async () => {
     const ws = await Workspace.open(await tempDir());
-    await expect(ws.reorderCustomLinks("nope", [])).rejects.toThrow(/not found/);
+    await expect(ws.reorderCustomLinks("nope", [])).rejects.toThrow(
+      /not found/,
+    );
   });
 
   test("reorderRepos rewrites the repo order to match the id list", async () => {
@@ -649,7 +662,11 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo("/tmp/foo");
     await expect(
-      ws.addCustomLink(repo.id, { kind: "command", cmd: "ls", cwd: "relative/dir" }),
+      ws.addCustomLink(repo.id, {
+        kind: "command",
+        cmd: "ls",
+        cwd: "relative/dir",
+      }),
     ).rejects.toThrow(/absolute/i);
   });
 

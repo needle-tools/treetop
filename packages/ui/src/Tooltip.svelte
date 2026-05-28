@@ -177,8 +177,14 @@
   }
 
   setContext<TooltipHoverCtx>(TOOLTIP_HOVER_CTX, {
-    cancelHide() { cancelHide(); parentCtx?.cancelHide(); },
-    scheduleHide() { stop(); parentCtx?.scheduleHide(); },
+    cancelHide() {
+      cancelHide();
+      parentCtx?.cancelHide();
+    },
+    scheduleHide() {
+      stop();
+      parentCtx?.scheduleHide();
+    },
   });
 </script>
 
@@ -197,7 +203,10 @@
     // user is interacting with it. Cancel any pending hide (e.g.
     // from a disabled-button focusout) and force open immediately.
     cancelHide();
-    if (!open) { open = true; onShow(); }
+    if (!open) {
+      open = true;
+      onShow();
+    }
   }}
   on:focusin={start}
   on:focusout={(ev) => {

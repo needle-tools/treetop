@@ -50,11 +50,20 @@ export function sanitizeJsonl(jsonl: string): string {
     .map((line) => {
       if (!line.trim()) return line;
       let obj: any;
-      try { obj = JSON.parse(line); } catch { return line; }
-      if (!obj?.message?.content || !Array.isArray(obj.message.content)) return line;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        return line;
+      }
+      if (!obj?.message?.content || !Array.isArray(obj.message.content))
+        return line;
       let changed = false;
       for (const block of obj.message.content) {
-        if ((block.type === "text" || block.type === "thinking") && typeof block.text === "string" && HTML_TAG_RE.test(block.text)) {
+        if (
+          (block.type === "text" || block.type === "thinking") &&
+          typeof block.text === "string" &&
+          HTML_TAG_RE.test(block.text)
+        ) {
           block.text = block.text.replace(HTML_TAG_RE, "");
           changed = true;
         }
@@ -111,7 +120,12 @@ export interface AcceptOfferArgs {
 export type AcceptResult =
   | { ok: true; manifest: SessionShareManifest; importedPath: string }
   | { ok: false; error: "not_found" | "needs_clone" }
-  | { ok: false; error: "exists"; divergence: Divergence; existingPath: string };
+  | {
+      ok: false;
+      error: "exists";
+      divergence: Divergence;
+      existingPath: string;
+    };
 
 /** Persist an incoming offer in the pending inbox. Idempotent on `offerId`. */
 export async function storePendingOffer(
@@ -190,7 +204,9 @@ export async function listPendingOffers(
  *   - `replace`: overwrites the existing file.
  *   - `keep_both`: writes to a sibling path so both copies survive.
  */
-export async function acceptOffer(args: AcceptOfferArgs): Promise<AcceptResult> {
+export async function acceptOffer(
+  args: AcceptOfferArgs,
+): Promise<AcceptResult> {
   const {
     workspaceDir,
     offerId,

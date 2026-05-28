@@ -11,7 +11,11 @@
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { $ } from "bun";
-import { NodePtyBackend, detectAgentLabel, detectConfigError } from "../src/terminals/node-pty-backend";
+import {
+  NodePtyBackend,
+  detectAgentLabel,
+  detectConfigError,
+} from "../src/terminals/node-pty-backend";
 import {
   sampleProcs,
   shQuote,
@@ -19,7 +23,15 @@ import {
   resolveAgentBinary,
   wrapWindowsCmd,
 } from "../src/procs";
-import { mkdtemp, writeFile, readFile, mkdir, chmod, utimes, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  readFile,
+  mkdir,
+  chmod,
+  utimes,
+  rm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -34,18 +46,17 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     await backend.shutdown();
   });
 
-  test(
-    "spawn → write → onData round-trip; pid is alive between spawn and exit",
-    async () => {
-      const handle = await backend.spawn({
-        cmd: ["bash", "-c", "echo hello-pty; sleep 0.05; echo done"],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
-      });
-      expect(handle.pid).toBeGreaterThan(0);
+  test("spawn → write → onData round-trip; pid is alive between spawn and exit", async () => {
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", "echo hello-pty; sleep 0.05; echo done"],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    expect(handle.pid).toBeGreaterThan(0);
 
-      const seen: string[] = [];
-      const exitWait = new Promise<{ code: number; signal?: string }>((resolve) => {
+    const seen: string[] = [];
+    const exitWait = new Promise<{ code: number; signal?: string }>(
+      (resolve) => {
         handle.subscribe({
           onData(chunk) {
             seen.push(new TextDecoder().decode(chunk));
@@ -54,148 +65,156 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
             resolve(info);
           },
         });
+      },
+    );
+
+    const info = await exitWait;
+    const combined = seen.join("");
+    expect(combined).toContain("hello-pty");
+    expect(combined).toContain("done");
+    expect(info.code).toBe(0);
+  }, 10_000);
+
+  test("spawned PTYs get a color-capable terminal env", async () => {
+    const handle = await backend.spawn({
+      cmd: [
+        "bash",
+        "-c",
+        'printf "TERM=%s\\nCOLORTERM=%s\\nNO_COLOR=%s\\nCOLOR=%s\\n" "$TERM" "$COLORTERM" "${NO_COLOR-unset}" "${COLOR-unset}"',
+      ],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const out: string[] = [];
+    await new Promise<void>((resolve) => {
+      handle.subscribe({
+        onData(chunk) {
+          out.push(new TextDecoder().decode(chunk));
+        },
+        onExit() {
+          resolve();
+        },
       });
+    });
+    const combined = out.join("");
+    expect(combined).toContain("TERM=xterm-256color");
+    expect(combined).toContain("COLORTERM=truecolor");
+    expect(combined).toContain("NO_COLOR=unset");
+    expect(combined).toContain("COLOR=unset");
+  }, 10_000);
 
-      const info = await exitWait;
-      const combined = seen.join("");
-      expect(combined).toContain("hello-pty");
-      expect(combined).toContain("done");
-      expect(info.code).toBe(0);
-    },
-    10_000,
-  );
+  test("kill() actually terminates a long-running process — no zombies", async () => {
+    const handle = await backend.spawn({
+      // 60s sleep that ignores SIGTERM until SIGKILL falls back. We
+      // pick something noisy so a leaked process would obviously
+      // linger past test exit.
+      cmd: ["bash", "-c", 'trap "" TERM; sleep 60'],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const pid = handle.pid;
+    expect(pid).toBeGreaterThan(0);
 
-  test(
-    "spawned PTYs get a color-capable terminal env",
-    async () => {
-      const handle = await backend.spawn({
-        cmd: [
-          "bash",
-          "-c",
-          'printf "TERM=%s\\nCOLORTERM=%s\\nNO_COLOR=%s\\nCOLOR=%s\\n" "$TERM" "$COLORTERM" "${NO_COLOR-unset}" "${COLOR-unset}"',
-        ],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
+    // Confirm it's actually running.
+    let alivePre = false;
+    try {
+      process.kill(pid, 0);
+      alivePre = true;
+    } catch {}
+    expect(alivePre).toBe(true);
+
+    const exitWait = new Promise<void>((resolve) => {
+      handle.subscribe({
+        onData() {},
+        onExit() {
+          resolve();
+        },
       });
-      const out: string[] = [];
-      await new Promise<void>((resolve) => {
-        handle.subscribe({
-          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-          onExit() { resolve(); },
-        });
+    });
+
+    await handle.kill();
+    // kill() does SIGTERM then SIGKILL after 500ms. Give it some slack
+    // for the helper round-trip + signal delivery.
+    await Promise.race([
+      exitWait,
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("did not exit")), 5_000),
+      ),
+    ]);
+
+    // The process should now be reaped. `kill -0` raises ESRCH on a
+    // dead pid; if it succeeds, we leaked.
+    let stillAlive = false;
+    try {
+      process.kill(pid, 0);
+      stillAlive = true;
+    } catch {}
+    expect(stillAlive).toBe(false);
+  }, 10_000);
+
+  test("lastOutputAt advances when the PTY emits output, and equals createdAt before any output", async () => {
+    const handle = await backend.spawn({
+      // Wait a beat so `lastOutputAt` after the first byte is
+      // measurably later than `createdAt`. 80ms is comfortably above
+      // the helper/IPC round-trip jitter on macOS+Linux CI.
+      cmd: ["bash", "-c", "sleep 0.08; echo first; sleep 0.08; echo second"],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+
+    // Record taken immediately after spawn (before any data event has
+    // arrived) should still show lastOutputAt == createdAt.
+    const beforeAny = backend.list().find((r) => r.id === handle.id);
+    expect(beforeAny).toBeDefined();
+    expect(beforeAny!.lastOutputAt).toBe(beforeAny!.createdAt);
+
+    let firstChunkAt = 0;
+    const exitWait = new Promise<void>((resolve) => {
+      handle.subscribe({
+        onData() {
+          if (!firstChunkAt) firstChunkAt = Date.now();
+        },
+        onExit() {
+          resolve();
+        },
       });
-      const combined = out.join("");
-      expect(combined).toContain("TERM=xterm-256color");
-      expect(combined).toContain("COLORTERM=truecolor");
-      expect(combined).toContain("NO_COLOR=unset");
-      expect(combined).toContain("COLOR=unset");
-    },
-    10_000,
-  );
+    });
+    await exitWait;
 
-  test(
-    "kill() actually terminates a long-running process — no zombies",
-    async () => {
-      const handle = await backend.spawn({
-        // 60s sleep that ignores SIGTERM until SIGKILL falls back. We
-        // pick something noisy so a leaked process would obviously
-        // linger past test exit.
-        cmd: ["bash", "-c", 'trap "" TERM; sleep 60'],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
+    const after = backend.list().find((r) => r.id === handle.id);
+    expect(after).toBeDefined();
+    // Output happened, so lastOutputAt must have advanced past createdAt.
+    expect(Date.parse(after!.lastOutputAt)).toBeGreaterThan(
+      Date.parse(after!.createdAt),
+    );
+    // And the final lastOutputAt must be at or after the first chunk
+    // we observed in the subscriber — both timestamps come from the
+    // same data path.
+    expect(Date.parse(after!.lastOutputAt)).toBeGreaterThanOrEqual(
+      firstChunkAt - 50,
+    );
+  }, 10_000);
+
+  test("list() drops terminals from the alive set once they exit", async () => {
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", "true"],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const exitWait = new Promise<void>((resolve) => {
+      handle.subscribe({
+        onData() {},
+        onExit() {
+          resolve();
+        },
       });
-      const pid = handle.pid;
-      expect(pid).toBeGreaterThan(0);
-
-      // Confirm it's actually running.
-      let alivePre = false;
-      try { process.kill(pid, 0); alivePre = true; } catch {}
-      expect(alivePre).toBe(true);
-
-      const exitWait = new Promise<void>((resolve) => {
-        handle.subscribe({
-          onData() {},
-          onExit() { resolve(); },
-        });
-      });
-
-      await handle.kill();
-      // kill() does SIGTERM then SIGKILL after 500ms. Give it some slack
-      // for the helper round-trip + signal delivery.
-      await Promise.race([
-        exitWait,
-        new Promise((_, rej) => setTimeout(() => rej(new Error("did not exit")), 5_000)),
-      ]);
-
-      // The process should now be reaped. `kill -0` raises ESRCH on a
-      // dead pid; if it succeeds, we leaked.
-      let stillAlive = false;
-      try { process.kill(pid, 0); stillAlive = true; } catch {}
-      expect(stillAlive).toBe(false);
-    },
-    10_000,
-  );
-
-  test(
-    "lastOutputAt advances when the PTY emits output, and equals createdAt before any output",
-    async () => {
-      const handle = await backend.spawn({
-        // Wait a beat so `lastOutputAt` after the first byte is
-        // measurably later than `createdAt`. 80ms is comfortably above
-        // the helper/IPC round-trip jitter on macOS+Linux CI.
-        cmd: ["bash", "-c", "sleep 0.08; echo first; sleep 0.08; echo second"],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
-      });
-
-      // Record taken immediately after spawn (before any data event has
-      // arrived) should still show lastOutputAt == createdAt.
-      const beforeAny = backend.list().find((r) => r.id === handle.id);
-      expect(beforeAny).toBeDefined();
-      expect(beforeAny!.lastOutputAt).toBe(beforeAny!.createdAt);
-
-      let firstChunkAt = 0;
-      const exitWait = new Promise<void>((resolve) => {
-        handle.subscribe({
-          onData() {
-            if (!firstChunkAt) firstChunkAt = Date.now();
-          },
-          onExit() { resolve(); },
-        });
-      });
-      await exitWait;
-
-      const after = backend.list().find((r) => r.id === handle.id);
-      expect(after).toBeDefined();
-      // Output happened, so lastOutputAt must have advanced past createdAt.
-      expect(Date.parse(after!.lastOutputAt)).toBeGreaterThan(
-        Date.parse(after!.createdAt),
-      );
-      // And the final lastOutputAt must be at or after the first chunk
-      // we observed in the subscriber — both timestamps come from the
-      // same data path.
-      expect(Date.parse(after!.lastOutputAt)).toBeGreaterThanOrEqual(firstChunkAt - 50);
-    },
-    10_000,
-  );
-
-  test(
-    "list() drops terminals from the alive set once they exit",
-    async () => {
-      const handle = await backend.spawn({
-        cmd: ["bash", "-c", "true"],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
-      });
-      const exitWait = new Promise<void>((resolve) => {
-        handle.subscribe({ onData() {}, onExit() { resolve(); } });
-      });
-      await exitWait;
-      const stillAlive = backend.list().filter((r) => r.id === handle.id && !r.exitedAt);
-      expect(stillAlive).toEqual([]);
-    },
-    10_000,
-  );
+    });
+    await exitWait;
+    const stillAlive = backend
+      .list()
+      .filter((r) => r.id === handle.id && !r.exitedAt);
+    expect(stillAlive).toEqual([]);
+  }, 10_000);
 
   // End-to-end check: when we spawn a zsh shell, the injected ZDOTDIR
   // pins HISTFILE to "$ZDOTDIR/.histfile" (per-column scope) and
@@ -214,7 +233,9 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
         // the per-PTY ZDOTDIR (the marker `supergit-zsh-` is in our
         // mkdtemp prefix).
         cmd: [
-          "zsh", "-i", "-c",
+          "zsh",
+          "-i",
+          "-c",
           'echo "::HISTFILE::${HISTFILE}::"; setopt; exit',
         ],
         cwd: "/tmp",
@@ -223,8 +244,12 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
       const out: string[] = [];
       const exitWait = new Promise<void>((resolve) => {
         handle.subscribe({
-          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-          onExit() { resolve(); },
+          onData(chunk) {
+            out.push(new TextDecoder().decode(chunk));
+          },
+          onExit() {
+            resolve();
+          },
         });
       });
       await exitWait;
@@ -235,7 +260,9 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
       // SHARE_HISTORY is explicitly unsetopt'd by the snippet.
       expect(combined.toLowerCase()).not.toContain("sharehistory");
       // HISTFILE lives inside the per-PTY temp ZDOTDIR.
-      expect(combined).toMatch(/::HISTFILE::.*supergit-zsh-[^/]+\/\.histfile::/);
+      expect(combined).toMatch(
+        /::HISTFILE::.*supergit-zsh-[^/]+\/\.histfile::/,
+      );
     },
     15_000,
   );
@@ -281,8 +308,12 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
         const out: string[] = [];
         const exitWait = new Promise<void>((resolve) => {
           handle.subscribe({
-            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-            onExit() { resolve(); },
+            onData(chunk) {
+              out.push(new TextDecoder().decode(chunk));
+            },
+            onExit() {
+              resolve();
+            },
           });
         });
         await exitWait;
@@ -327,16 +358,19 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
         const out: string[] = [];
         await new Promise<void>((resolve) => {
           handle.subscribe({
-            onData(c) { out.push(new TextDecoder().decode(c)); },
-            onExit() { resolve(); },
+            onData(c) {
+              out.push(new TextDecoder().decode(c));
+            },
+            onExit() {
+              resolve();
+            },
           });
         });
         const combined = out.join("");
 
         // Both seeded lines must show up between the START/END markers.
-        const histSection = combined
-          .split("::HIST::START::")[1]
-          ?.split("::HIST::END::")[0] ?? "";
+        const histSection =
+          combined.split("::HIST::START::")[1]?.split("::HIST::END::")[0] ?? "";
         expect(histSection).toContain("echo from_prev_session");
         expect(histSection).toContain("ls -la");
 
@@ -407,8 +441,12 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
         const out: string[] = [];
         await new Promise<void>((resolve) => {
           handle.subscribe({
-            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-            onExit() { resolve(); },
+            onData(chunk) {
+              out.push(new TextDecoder().decode(chunk));
+            },
+            onExit() {
+              resolve();
+            },
           });
         });
         const combined = out.join("");
@@ -474,8 +512,12 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
         const out: string[] = [];
         await new Promise<void>((resolve) => {
           handle.subscribe({
-            onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-            onExit() { resolve(); },
+            onData(chunk) {
+              out.push(new TextDecoder().decode(chunk));
+            },
+            onExit() {
+              resolve();
+            },
           });
         });
         const combined = out.join("");
@@ -497,37 +539,41 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
   // bash startup files behave unexpectedly (it would just ignore
   // ZDOTDIR, but a future shell-init might key off it). Pin the
   // contract: bash sees an empty ZDOTDIR in its env.
-  test(
-    "non-zsh shell (bash) is spawned without a ZDOTDIR injected",
-    async () => {
-      const handle = await backend.spawn({
-        // `printf` (not `echo -n`) to keep output free of trailing
-        // newline ambiguity. Markers bracket the value so a stray
-        // empty line in PTY output can't be confused with success.
-        cmd: ["bash", "-c", 'printf "::ZDOTDIR::%s::\\n" "$ZDOTDIR"'],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
+  test("non-zsh shell (bash) is spawned without a ZDOTDIR injected", async () => {
+    const handle = await backend.spawn({
+      // `printf` (not `echo -n`) to keep output free of trailing
+      // newline ambiguity. Markers bracket the value so a stray
+      // empty line in PTY output can't be confused with success.
+      cmd: ["bash", "-c", 'printf "::ZDOTDIR::%s::\\n" "$ZDOTDIR"'],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const out: string[] = [];
+    const exitWait = new Promise<void>((resolve) => {
+      handle.subscribe({
+        onData(chunk) {
+          out.push(new TextDecoder().decode(chunk));
+        },
+        onExit() {
+          resolve();
+        },
       });
-      const out: string[] = [];
-      const exitWait = new Promise<void>((resolve) => {
-        handle.subscribe({
-          onData(chunk) { out.push(new TextDecoder().decode(chunk)); },
-          onExit() { resolve(); },
-        });
-      });
-      await exitWait;
-      const combined = out.join("");
-      expect(combined).toContain("::ZDOTDIR::::");
-      // And specifically NOT a supergit-zsh-* temp dir leaking in.
-      expect(combined).not.toMatch(/supergit-zsh-/);
-    },
-    10_000,
-  );
+    });
+    await exitWait;
+    const combined = out.join("");
+    expect(combined).toContain("::ZDOTDIR::::");
+    // And specifically NOT a supergit-zsh-* temp dir leaking in.
+    expect(combined).not.toMatch(/supergit-zsh-/);
+  }, 10_000);
 });
 
 describe("renameArgv", () => {
   test("wraps cmd into bash -c 'exec -a NAME …'", () => {
-    const out = renameArgv("supergit-tui-abc-claude", ["claude", "--resume", "x"]);
+    const out = renameArgv("supergit-tui-abc-claude", [
+      "claude",
+      "--resume",
+      "x",
+    ]);
     expect(out[0]).toBe("bash");
     expect(out[1]).toBe("-c");
     expect(out[2]).toContain("exec -a 'supergit-tui-abc-claude'");
@@ -550,34 +596,34 @@ describe("renameArgv", () => {
     expect(renameArgv("name", [])).toEqual([]);
   });
 
-  test(
-    "spawned PTY shows the renamed argv[0] in ps",
-    async () => {
-      // Skip on Windows (no bash by default; renameArgv is unix-only).
-      if (process.platform === "win32") return;
-      const backend = new NodePtyBackend();
-      const procName = `supergit-tui-test-${Date.now().toString(36)}`;
-      // Wrap a leaf command (not another shell) so the renamed argv[0]
-      // sticks — bash rewrites its own process title on exec, which
-      // would hide the rename if we'd wrapped `bash -c sleep`.
-      const cmd = renameArgv(procName, ["sleep", "5"]);
-      const handle = await backend.spawn({
-        cmd,
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
-      });
-      try {
-        // Give the kernel a moment to commit the rename.
-        await new Promise((r) => setTimeout(r, 100));
-        const psOut = (await $`ps -o command= -p ${handle.pid}`.quiet().nothrow()).stdout.toString().trim();
-        expect(psOut).toContain(procName);
-      } finally {
-        await handle.kill();
-        await backend.shutdown();
-      }
-    },
-    10_000,
-  );
+  test("spawned PTY shows the renamed argv[0] in ps", async () => {
+    // Skip on Windows (no bash by default; renameArgv is unix-only).
+    if (process.platform === "win32") return;
+    const backend = new NodePtyBackend();
+    const procName = `supergit-tui-test-${Date.now().toString(36)}`;
+    // Wrap a leaf command (not another shell) so the renamed argv[0]
+    // sticks — bash rewrites its own process title on exec, which
+    // would hide the rename if we'd wrapped `bash -c sleep`.
+    const cmd = renameArgv(procName, ["sleep", "5"]);
+    const handle = await backend.spawn({
+      cmd,
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    try {
+      // Give the kernel a moment to commit the rename.
+      await new Promise((r) => setTimeout(r, 100));
+      const psOut = (
+        await $`ps -o command= -p ${handle.pid}`.quiet().nothrow()
+      ).stdout
+        .toString()
+        .trim();
+      expect(psOut).toContain(procName);
+    } finally {
+      await handle.kill();
+      await backend.shutdown();
+    }
+  }, 10_000);
 });
 
 describe("resolveAgentBinary", () => {
@@ -594,81 +640,77 @@ describe("resolveAgentBinary", () => {
     expect(r!.includes(sep)).toBe(true);
   });
 
-  test(
-    "picks the newest mtime when multiple installs are present (via PATH)",
-    async () => {
-      // Build two fake "agent" files in temp dirs, prepend both to
-      // PATH, set distinct mtimes so the newer one wins regardless of
-      // path order. Uses a deliberately unusual name so it doesn't
-      // shadow any real binary on disk.
-      //
-      // Cross-platform notes:
-      //   - chmod is a no-op on Windows (filesystem permissions are
-      //     ACLs there). We still call it for parity but `stat` works
-      //     regardless of the executable bit, which is what
-      //     resolveAgentBinary cares about.
-      //   - PATH separator is ":" on Unix and ";" on Windows.
-      //   - File extension: on Windows we MUST use ".cmd" (or ".exe")
-      //     here because resolveAgentBinary excludes bare-extension
-      //     candidates on Windows — CreateProcess can't spawn them,
-      //     so picking one would just produce error 193 downstream.
-      const agentName = `supergit-test-agent-${Date.now().toString(36)}`;
-      const agent = agentName;
-      const fileExt = isWin ? ".cmd" : "";
-      const dirA = await mkdtemp(join(tmpdir(), "supergit-bin-a-"));
-      const dirB = await mkdtemp(join(tmpdir(), "supergit-bin-b-"));
-      const pathA = join(dirA, agent + fileExt);
-      const pathB = join(dirB, agent + fileExt);
-      await writeFile(pathA, "#!/bin/sh\necho A\n");
-      await writeFile(pathB, "#!/bin/sh\necho B\n");
-      try { await chmod(pathA, 0o755); } catch {}
-      try { await chmod(pathB, 0o755); } catch {}
-      const older = new Date("2026-01-01T00:00:00Z");
-      const newer = new Date("2026-06-01T00:00:00Z");
-      await utimes(pathA, older, older);
-      await utimes(pathB, newer, newer);
-      const sep = process.platform === "win32" ? ";" : ":";
-      const origPath = process.env.PATH ?? "";
-      process.env.PATH = [dirA, dirB, origPath].filter(Boolean).join(sep);
-      try {
-        const r = await resolveAgentBinary(agent);
-        expect(r).toBe(pathB);
-      } finally {
-        process.env.PATH = origPath;
-      }
-    },
-    10_000,
-  );
+  test("picks the newest mtime when multiple installs are present (via PATH)", async () => {
+    // Build two fake "agent" files in temp dirs, prepend both to
+    // PATH, set distinct mtimes so the newer one wins regardless of
+    // path order. Uses a deliberately unusual name so it doesn't
+    // shadow any real binary on disk.
+    //
+    // Cross-platform notes:
+    //   - chmod is a no-op on Windows (filesystem permissions are
+    //     ACLs there). We still call it for parity but `stat` works
+    //     regardless of the executable bit, which is what
+    //     resolveAgentBinary cares about.
+    //   - PATH separator is ":" on Unix and ";" on Windows.
+    //   - File extension: on Windows we MUST use ".cmd" (or ".exe")
+    //     here because resolveAgentBinary excludes bare-extension
+    //     candidates on Windows — CreateProcess can't spawn them,
+    //     so picking one would just produce error 193 downstream.
+    const agentName = `supergit-test-agent-${Date.now().toString(36)}`;
+    const agent = agentName;
+    const fileExt = isWin ? ".cmd" : "";
+    const dirA = await mkdtemp(join(tmpdir(), "supergit-bin-a-"));
+    const dirB = await mkdtemp(join(tmpdir(), "supergit-bin-b-"));
+    const pathA = join(dirA, agent + fileExt);
+    const pathB = join(dirB, agent + fileExt);
+    await writeFile(pathA, "#!/bin/sh\necho A\n");
+    await writeFile(pathB, "#!/bin/sh\necho B\n");
+    try {
+      await chmod(pathA, 0o755);
+    } catch {}
+    try {
+      await chmod(pathB, 0o755);
+    } catch {}
+    const older = new Date("2026-01-01T00:00:00Z");
+    const newer = new Date("2026-06-01T00:00:00Z");
+    await utimes(pathA, older, older);
+    await utimes(pathB, newer, newer);
+    const sep = process.platform === "win32" ? ";" : ":";
+    const origPath = process.env.PATH ?? "";
+    process.env.PATH = [dirA, dirB, origPath].filter(Boolean).join(sep);
+    try {
+      const r = await resolveAgentBinary(agent);
+      expect(r).toBe(pathB);
+    } finally {
+      process.env.PATH = origPath;
+    }
+  }, 10_000);
 });
 
 describe.skipIf(!isWin)("resolveAgentBinary on Windows", () => {
-  test(
-    "prefers a spawnable .cmd over a bare bash script with equal mtime",
-    async () => {
-      // npm installs CLIs as a bash script + a .cmd + a .ps1, all
-      // sharing one mtime. CreateProcess can't execute the bash
-      // script (ERROR_BAD_EXE_FORMAT 193) — only .exe/.cmd/.bat/.ps1
-      // are spawnable. The resolver must skip the bare script.
-      const agent = `supergit-test-winagent-${Date.now().toString(36)}`;
-      const dir = await mkdtemp(join(tmpdir(), "supergit-winbin-"));
-      const bare = join(dir, agent);
-      const cmdFile = join(dir, agent + ".cmd");
-      await writeFile(bare, "#!/bin/sh\necho A\n");
-      await writeFile(cmdFile, "@echo off\r\necho A\r\n");
-      const same = new Date("2026-04-01T00:00:00Z");
-      await utimes(bare, same, same);
-      await utimes(cmdFile, same, same);
-      const origPath = process.env.PATH ?? "";
-      process.env.PATH = [dir, origPath].filter(Boolean).join(";");
-      try {
-        const r = await resolveAgentBinary(agent);
-        expect(r).toBe(cmdFile);
-      } finally {
-        process.env.PATH = origPath;
-      }
-    },
-    10_000,
-  );
+  test("prefers a spawnable .cmd over a bare bash script with equal mtime", async () => {
+    // npm installs CLIs as a bash script + a .cmd + a .ps1, all
+    // sharing one mtime. CreateProcess can't execute the bash
+    // script (ERROR_BAD_EXE_FORMAT 193) — only .exe/.cmd/.bat/.ps1
+    // are spawnable. The resolver must skip the bare script.
+    const agent = `supergit-test-winagent-${Date.now().toString(36)}`;
+    const dir = await mkdtemp(join(tmpdir(), "supergit-winbin-"));
+    const bare = join(dir, agent);
+    const cmdFile = join(dir, agent + ".cmd");
+    await writeFile(bare, "#!/bin/sh\necho A\n");
+    await writeFile(cmdFile, "@echo off\r\necho A\r\n");
+    const same = new Date("2026-04-01T00:00:00Z");
+    await utimes(bare, same, same);
+    await utimes(cmdFile, same, same);
+    const origPath = process.env.PATH ?? "";
+    process.env.PATH = [dir, origPath].filter(Boolean).join(";");
+    try {
+      const r = await resolveAgentBinary(agent);
+      expect(r).toBe(cmdFile);
+    } finally {
+      process.env.PATH = origPath;
+    }
+  }, 10_000);
 });
 
 describe("wrapWindowsCmd", () => {
@@ -676,7 +718,10 @@ describe("wrapWindowsCmd", () => {
 
   test("wraps a .cmd file in cmd.exe /d /s /c", () => {
     expect(
-      wrapWindowsCmd(["C:\\Users\\m\\AppData\\Roaming\\npm\\codex.cmd", "exec"]),
+      wrapWindowsCmd([
+        "C:\\Users\\m\\AppData\\Roaming\\npm\\codex.cmd",
+        "exec",
+      ]),
     ).toEqual([
       cmdExe,
       "/d",
@@ -689,7 +734,13 @@ describe("wrapWindowsCmd", () => {
 
   test("wraps a .bat file the same way", () => {
     expect(wrapWindowsCmd(["foo.bat", "a", "b"])).toEqual([
-      cmdExe, "/d", "/s", "/c", "foo.bat", "a", "b",
+      cmdExe,
+      "/d",
+      "/s",
+      "/c",
+      "foo.bat",
+      "a",
+      "b",
     ]);
   });
 
@@ -707,14 +758,16 @@ describe("wrapWindowsCmd", () => {
   });
 
   test("passes a .exe through unchanged", () => {
-    expect(wrapWindowsCmd(["C:\\Windows\\System32\\cmd.exe", "/c", "dir"])).toEqual([
-      "C:\\Windows\\System32\\cmd.exe", "/c", "dir",
-    ]);
+    expect(
+      wrapWindowsCmd(["C:\\Windows\\System32\\cmd.exe", "/c", "dir"]),
+    ).toEqual(["C:\\Windows\\System32\\cmd.exe", "/c", "dir"]);
   });
 
   test("passes an extensionless head through unchanged (caller decides)", () => {
     expect(wrapWindowsCmd(["bash", "-c", "echo hi"])).toEqual([
-      "bash", "-c", "echo hi",
+      "bash",
+      "-c",
+      "echo hi",
     ]);
   });
 
@@ -724,7 +777,11 @@ describe("wrapWindowsCmd", () => {
 
   test("ext check is case-insensitive (.CMD treated as .cmd)", () => {
     expect(wrapWindowsCmd(["C:\\Tools\\AGENT.CMD"])).toEqual([
-      cmdExe, "/d", "/s", "/c", "C:\\Tools\\AGENT.CMD",
+      cmdExe,
+      "/d",
+      "/s",
+      "/c",
+      "C:\\Tools\\AGENT.CMD",
     ]);
   });
 });
@@ -768,48 +825,44 @@ describe.skipIf(isWin)("/api/processes report shape (integration)", () => {
   // spawn a real PTY → list backend records → sample procs → combine.
   // The actual HTTP route is a 5-line wrapper around this; if the
   // building blocks line up here, the route does too.
-  test(
-    "combines backend.list() with sampleProcs samples",
-    async () => {
-      const backend = new NodePtyBackend();
-      const handle = await backend.spawn({
-        cmd: ["bash", "-c", "sleep 5"],
-        cwd: "/tmp",
-        size: { cols: 80, rows: 24 },
-        ownerId: "test-owner",
+  test("combines backend.list() with sampleProcs samples", async () => {
+    const backend = new NodePtyBackend();
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", "sleep 5"],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+      ownerId: "test-owner",
+    });
+    try {
+      const records = backend.list().filter((r) => !r.exitedAt);
+      expect(records).toHaveLength(1);
+      const samples = await sampleProcs(records.map((r) => r.pid));
+      const report = records.map((r) => {
+        const s = samples.get(r.pid);
+        return {
+          id: r.id,
+          pid: r.pid,
+          ownerId: r.ownerId,
+          agent: r.agent,
+          cmd: r.cmd,
+          cwd: r.cwd,
+          createdAt: r.createdAt,
+          cpuPercent: s?.cpuPercent ?? 0,
+          memBytes: s?.memBytes ?? 0,
+        };
       });
-      try {
-        const records = backend.list().filter((r) => !r.exitedAt);
-        expect(records).toHaveLength(1);
-        const samples = await sampleProcs(records.map((r) => r.pid));
-        const report = records.map((r) => {
-          const s = samples.get(r.pid);
-          return {
-            id: r.id,
-            pid: r.pid,
-            ownerId: r.ownerId,
-            agent: r.agent,
-            cmd: r.cmd,
-            cwd: r.cwd,
-            createdAt: r.createdAt,
-            cpuPercent: s?.cpuPercent ?? 0,
-            memBytes: s?.memBytes ?? 0,
-          };
-        });
-        expect(report[0]?.id).toBe(handle.id);
-        expect(report[0]?.pid).toBe(handle.pid);
-        expect(report[0]?.ownerId).toBe("test-owner");
-        if (process.platform !== "win32") {
-          // Real sleep child should report > 0 RSS.
-          expect(report[0]?.memBytes).toBeGreaterThan(0);
-        }
-      } finally {
-        await handle.kill();
-        await backend.shutdown();
+      expect(report[0]?.id).toBe(handle.id);
+      expect(report[0]?.pid).toBe(handle.pid);
+      expect(report[0]?.ownerId).toBe("test-owner");
+      if (process.platform !== "win32") {
+        // Real sleep child should report > 0 RSS.
+        expect(report[0]?.memBytes).toBeGreaterThan(0);
       }
-    },
-    10_000,
-  );
+    } finally {
+      await handle.kill();
+      await backend.shutdown();
+    }
+  }, 10_000);
 });
 
 // Platform-agnostic: detectAgentLabel is what gates the "this is a
@@ -830,7 +883,11 @@ describe("detectAgentLabel", () => {
   test("recognizes Windows shells (with or without .exe, any case)", () => {
     expect(detectAgentLabel("powershell.exe")).toBe("shell");
     expect(detectAgentLabel("PowerShell.exe")).toBe("shell");
-    expect(detectAgentLabel("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")).toBe("shell");
+    expect(
+      detectAgentLabel(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      ),
+    ).toBe("shell");
     expect(detectAgentLabel("pwsh.exe")).toBe("shell");
     expect(detectAgentLabel("pwsh")).toBe("shell");
     expect(detectAgentLabel("cmd.exe")).toBe("shell");
@@ -861,12 +918,12 @@ describe("detectConfigError", () => {
   test("detects Claude config error with file path", () => {
     const [buf, len] = bufferFrom(
       "Configuration Error\n\n" +
-      "The configuration file at C:\\Users\\marce\\.claude.json contains invalid JSON.\n\n" +
-      "JSON Parse error: Unable to parse JSON string\n\n" +
-      "Choose an option:\n" +
-      "❯ 1. Exit and fix manually\n" +
-      "  2. Reset with default configuration\n\n" +
-      "Enter to confirm · Esc to cancel",
+        "The configuration file at C:\\Users\\marce\\.claude.json contains invalid JSON.\n\n" +
+        "JSON Parse error: Unable to parse JSON string\n\n" +
+        "Choose an option:\n" +
+        "❯ 1. Exit and fix manually\n" +
+        "  2. Reset with default configuration\n\n" +
+        "Enter to confirm · Esc to cancel",
     );
     const result = detectConfigError(buf, len);
     expect(result).not.toBeNull();
@@ -876,8 +933,8 @@ describe("detectConfigError", () => {
   test("detects Unix-style path", () => {
     const [buf, len] = bufferFrom(
       "Configuration Error\n" +
-      "The configuration file at /home/user/.claude.json contains invalid JSON.\n" +
-      "JSON Parse error: foo",
+        "The configuration file at /home/user/.claude.json contains invalid JSON.\n" +
+        "JSON Parse error: foo",
     );
     const result = detectConfigError(buf, len);
     expect(result).not.toBeNull();

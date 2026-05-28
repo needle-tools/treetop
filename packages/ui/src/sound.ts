@@ -87,31 +87,167 @@ let drainScheduled = false;
 let activeSources: ActiveSource[] = [];
 
 export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
-  "folder-add-first": { files: ["/sounds/folder-add-first.mp3", "/sounds/folder-add-first-alt1.mp3"], volume: 0.3, selfCooldown: 20_000, globalCooldown: 2000, maxDelay: 500, fadeOutMs: 3000 },
-  "folder-add":       { files: ["/sounds/folder-add.mp3"],       volume: 0.3, selfCooldown: 5000,   globalCooldown: 1000, maxDelay: 1000, fadeOutMs: 1500 },
-  "note-edit-start":  { files: ["/sounds/note-edit-start.mp3"],  volume: 0.35, overlay: true },
-  "note-edit-end":    { files: ["/sounds/note-edit-end.mp3", "/sounds/note-edit-end-alt1.mp3"], volume: 0.5, overlay: true },
-  "message-receive":  { files: ["/sounds/message-receive.mp3"],  volume: 0.5, selfCooldown: 2000, overlay: true },
-  "error":            { files: ["/sounds/error.mp3"],            volume: 0.4, selfCooldown: 1000, overlay: true },
-  "peer-session":     { files: ["/sounds/peer-session.mp3"],     volume: 0.4, selfCooldown: 3000, maxDelay: 500, overlay: true, fadeOutMs: 1000 },
+  "folder-add-first": {
+    files: [
+      "/sounds/folder-add-first.mp3",
+      "/sounds/folder-add-first-alt1.mp3",
+    ],
+    volume: 0.3,
+    selfCooldown: 20_000,
+    globalCooldown: 2000,
+    maxDelay: 500,
+    fadeOutMs: 3000,
+  },
+  "folder-add": {
+    files: ["/sounds/folder-add.mp3"],
+    volume: 0.3,
+    selfCooldown: 5000,
+    globalCooldown: 1000,
+    maxDelay: 1000,
+    fadeOutMs: 1500,
+  },
+  "note-edit-start": {
+    files: ["/sounds/note-edit-start.mp3"],
+    volume: 0.35,
+    overlay: true,
+  },
+  "note-edit-end": {
+    files: ["/sounds/note-edit-end.mp3", "/sounds/note-edit-end-alt1.mp3"],
+    volume: 0.5,
+    overlay: true,
+  },
+  "message-receive": {
+    files: ["/sounds/message-receive.mp3"],
+    volume: 0.5,
+    selfCooldown: 2000,
+    overlay: true,
+  },
+  error: {
+    files: ["/sounds/error.mp3"],
+    volume: 0.4,
+    selfCooldown: 1000,
+    overlay: true,
+  },
+  "peer-session": {
+    files: ["/sounds/peer-session.mp3"],
+    volume: 0.4,
+    selfCooldown: 3000,
+    maxDelay: 500,
+    overlay: true,
+    fadeOutMs: 1000,
+  },
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
-  "ai-disagree":      { files: ["/sounds/ai-disagree.mp3"],     volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-tired":         { files: ["/sounds/ai-tired.mp3"],        volume: 0.4, overlay: true, selfCooldown: 60_000 },
-  "ai-uh-oh":         { files: ["/sounds/ai-uh-oh.mp3"],        volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "session-stop":     { files: ["/sounds/session-stop.mp3"],    volume: 0.4, overlay: true, selfCooldown: 2000, fadeOutMs: 1000 },
-  "ai-funny":         { files: ["/sounds/ai-howl.mp3"],        volume: 0.3, overlay: true, selfCooldown: 60_000, fadeOutMs: 1000 },
-  "ai-omg":           { files: ["/sounds/ai-omg.mp3"],         volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-ascend":        { files: ["/sounds/ai-ascend.mp3", "/sounds/ai-ascend-short.mp3"], volume: 0.3, overlay: true, selfCooldown: 30_000, fadeOutMs: 1000 },
-  "ai-eureka":        { files: ["/sounds/ai-eureka.mp3"],      volume: 0.3, overlay: true, selfCooldown: 30_000, fadeOutMs: 1500 },
-  "ai-confused":      { files: ["/sounds/ai-confused.mp3"],    volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-surprised":     { files: ["/sounds/ai-surprised.mp3"],   volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-wow":           { files: ["/sounds/ai-wow.mp3"],         volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-gulp":          { files: ["/sounds/ai-gulp.mp3"],        volume: 0.4, overlay: true, selfCooldown: 30_000 },
-  "ai-applause":      { files: ["/sounds/ai-applause.mp3"],    volume: 0.3, overlay: true, selfCooldown: 60_000, fadeOutMs: 1500 },
-  "ai-crickets":      { files: ["/sounds/ai-crickets.mp3"],    volume: 0.3, overlay: true, selfCooldown: 60_000, fadeOutMs: 1500 },
-  "ai-boxing-bell":   { files: ["/sounds/ai-boxing-bell.mp3"], volume: 0.3, overlay: true, selfCooldown: 60_000, fadeOutMs: 2000 },
-  "ai-braam":         { files: ["/sounds/ai-braam.mp3"],       volume: 0.25, overlay: true, selfCooldown: 60_000, fadeOutMs: 3000 },
-  "ai-crowd-gasp":    { files: ["/sounds/ai-crowd-gasp.mp3"], volume: 0.3, overlay: true, selfCooldown: 30_000, fadeOutMs: 1000 },
+  "ai-disagree": {
+    files: ["/sounds/ai-disagree.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-tired": {
+    files: ["/sounds/ai-tired.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 60_000,
+  },
+  "ai-uh-oh": {
+    files: ["/sounds/ai-uh-oh.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "session-stop": {
+    files: ["/sounds/session-stop.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 2000,
+    fadeOutMs: 1000,
+  },
+  "ai-funny": {
+    files: ["/sounds/ai-howl.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 1000,
+  },
+  "ai-omg": {
+    files: ["/sounds/ai-omg.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-ascend": {
+    files: ["/sounds/ai-ascend.mp3", "/sounds/ai-ascend-short.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 30_000,
+    fadeOutMs: 1000,
+  },
+  "ai-eureka": {
+    files: ["/sounds/ai-eureka.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 30_000,
+    fadeOutMs: 1500,
+  },
+  "ai-confused": {
+    files: ["/sounds/ai-confused.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-surprised": {
+    files: ["/sounds/ai-surprised.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-wow": {
+    files: ["/sounds/ai-wow.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-gulp": {
+    files: ["/sounds/ai-gulp.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 30_000,
+  },
+  "ai-applause": {
+    files: ["/sounds/ai-applause.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 1500,
+  },
+  "ai-crickets": {
+    files: ["/sounds/ai-crickets.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 1500,
+  },
+  "ai-boxing-bell": {
+    files: ["/sounds/ai-boxing-bell.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 2000,
+  },
+  "ai-braam": {
+    files: ["/sounds/ai-braam.mp3"],
+    volume: 0.25,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 3000,
+  },
+  "ai-crowd-gasp": {
+    files: ["/sounds/ai-crowd-gasp.mp3"],
+    volume: 0.3,
+    overlay: true,
+    selfCooldown: 30_000,
+    fadeOutMs: 1000,
+  },
 };
 
 export function getAudioContext(): AudioContext | null {
@@ -134,11 +270,15 @@ export function setMasterVolume(v: number): void {
   masterVolume = Math.max(0, Math.min(1, v));
 }
 
-export function configure(mappings: Partial<Record<SoundTag, SoundMapping>>): void {
+export function configure(
+  mappings: Partial<Record<SoundTag, SoundMapping>>,
+): void {
   soundMappings = { ...mappings };
 }
 
-export function getMappings(): Readonly<Partial<Record<SoundTag, SoundMapping>>> {
+export function getMappings(): Readonly<
+  Partial<Record<SoundTag, SoundMapping>>
+> {
   return soundMappings;
 }
 
@@ -175,7 +315,10 @@ function ensureContext(): AudioContext | null {
   return audioCtx;
 }
 
-async function loadBuffer(ctx: AudioContext, file: string): Promise<AudioBuffer> {
+async function loadBuffer(
+  ctx: AudioContext,
+  file: string,
+): Promise<AudioBuffer> {
   const cached = bufferCache.get(file);
   if (cached) return cached;
   const res = await fetch(file);
@@ -241,10 +384,16 @@ function playBuffer(
   return { source, gain, promise };
 }
 
-async function playOverlay(tag: SoundTag, mapping: SoundMapping): Promise<void> {
+async function playOverlay(
+  tag: SoundTag,
+  mapping: SoundMapping,
+): Promise<void> {
   try {
     const ctx = ensureContext();
-    if (!ctx) { console.debug("[sound] no AudioContext for %s", tag); return; }
+    if (!ctx) {
+      console.debug("[sound] no AudioContext for %s", tag);
+      return;
+    }
     const file = pickFile(mapping);
     console.debug("[sound] loading %s → %s", tag, file);
     const buffer = await loadBuffer(ctx, file);
@@ -300,13 +449,22 @@ function scheduleDrain(): void {
 }
 
 export function play(tag: SoundTag): void {
-  if (!enabled) { console.debug("[sound] skip %s (disabled)", tag); return; }
+  if (!enabled) {
+    console.debug("[sound] skip %s (disabled)", tag);
+    return;
+  }
   const mapping = soundMappings[tag];
-  if (!mapping) { console.debug("[sound] skip %s (no mapping)", tag); return; }
+  if (!mapping) {
+    console.debug("[sound] skip %s (no mapping)", tag);
+    return;
+  }
   const now = Date.now();
   const selfCd = mapping.selfCooldown ?? DEFAULT_SELF_COOLDOWN_MS;
   const lastSelf = lastPlayedAt.get(tag) ?? 0;
-  if (now - lastSelf < selfCd) { console.debug("[sound] skip %s (selfCooldown %dms)", tag, selfCd); return; }
+  if (now - lastSelf < selfCd) {
+    console.debug("[sound] skip %s (selfCooldown %dms)", tag, selfCd);
+    return;
+  }
 
   if (mapping.overlay) {
     console.debug("[sound] play %s (overlay)", tag);
@@ -315,8 +473,14 @@ export function play(tag: SoundTag): void {
     return;
   }
 
-  if (pending.length >= MAX_QUEUE_SIZE) { console.debug("[sound] skip %s (queue full)", tag); return; }
-  if (pending.length > 0 && now - lastAnyQueuedAt < lastQueuedGlobalCooldown) { console.debug("[sound] skip %s (globalCooldown)", tag); return; }
+  if (pending.length >= MAX_QUEUE_SIZE) {
+    console.debug("[sound] skip %s (queue full)", tag);
+    return;
+  }
+  if (pending.length > 0 && now - lastAnyQueuedAt < lastQueuedGlobalCooldown) {
+    console.debug("[sound] skip %s (globalCooldown)", tag);
+    return;
+  }
   console.debug("[sound] queue %s", tag);
   lastAnyQueuedAt = now;
   lastQueuedGlobalCooldown = mapping.globalCooldown ?? MIN_INTERVAL_MS;
@@ -371,12 +535,14 @@ export function sound(node: HTMLElement, opts: SoundActionOptions) {
 
   return {
     update(newOpts: SoundActionOptions) {
-      const oldEvent = (opts.trigger ?? "click") === "hover" ? "pointerenter" : "click";
+      const oldEvent =
+        (opts.trigger ?? "click") === "hover" ? "pointerenter" : "click";
       if (opts.trigger !== "appear") {
         node.removeEventListener(oldEvent, handler);
       }
       opts = newOpts;
-      const newEvent = (opts.trigger ?? "click") === "hover" ? "pointerenter" : "click";
+      const newEvent =
+        (opts.trigger ?? "click") === "hover" ? "pointerenter" : "click";
       if (opts.trigger !== "appear") {
         node.addEventListener(newEvent, handler);
       } else {

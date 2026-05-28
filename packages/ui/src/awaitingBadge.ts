@@ -598,7 +598,13 @@ function drawIndicator(state: TabState, tMs: number): void {
     ctx.save();
     ctx.globalAlpha = 0.78;
     try {
-      ctx.drawImage(baseImage, inset, inset, size - inset * 2, size - inset * 2);
+      ctx.drawImage(
+        baseImage,
+        inset,
+        inset,
+        size - inset * 2,
+        size - inset * 2,
+      );
     } catch {
       ctx.restore();
       return;

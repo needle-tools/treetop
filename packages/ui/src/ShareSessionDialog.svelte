@@ -12,7 +12,12 @@
    * receipt.
    */
   import { onDestroy } from "svelte";
-  import { activeShare, closeShare, rememberPeer, recallPeer } from "./share-session-dialog";
+  import {
+    activeShare,
+    closeShare,
+    rememberPeer,
+    recallPeer,
+  } from "./share-session-dialog";
 
   interface DiscoveredPeer {
     id: string;
@@ -182,16 +187,14 @@
           redactSecrets,
         }),
       });
-      const body = (await res.json().catch(() => null)) as
-        | {
-            offerId?: string;
-            toolOutputs?: "stripped" | "included";
-            strippedCount?: number;
-            secrets?: "redacted" | "raw";
-            redactions?: Array<{ kind: string; count: number }>;
-            error?: string;
-          }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        offerId?: string;
+        toolOutputs?: "stripped" | "included";
+        strippedCount?: number;
+        secrets?: "redacted" | "raw";
+        redactions?: Array<{ kind: string; count: number }>;
+        error?: string;
+      } | null;
       if (res.status !== 202) {
         result = {
           kind: "error",
@@ -203,13 +206,17 @@
       result = {
         kind: "ok",
         offerId: body?.offerId ?? "",
-        toolOutputs: body?.toolOutputs ?? (includeToolOutputs ? "included" : "stripped"),
+        toolOutputs:
+          body?.toolOutputs ?? (includeToolOutputs ? "included" : "stripped"),
         strippedCount: body?.strippedCount ?? 0,
         secrets: body?.secrets ?? (redactSecrets ? "redacted" : "raw"),
         redactions: body?.redactions ?? [],
       };
     } catch (e) {
-      result = { kind: "error", message: e instanceof Error ? e.message : String(e) };
+      result = {
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       sending = false;
     }
@@ -243,11 +250,13 @@
       aria-labelledby="share-title"
       on:click|stopPropagation
     >
-      <h2 id="share-title" class="share-title">Share session in local network</h2>
+      <h2 id="share-title" class="share-title">
+        Share session in local network
+      </h2>
       <p class="share-blurb">
-        Ship this session to another supergit on your LAN. Tool outputs
-        are stripped and common secrets (GitHub, npm, Stripe, AWS, …)
-        are redacted before send.
+        Ship this session to another supergit on your LAN. Tool outputs are
+        stripped and common secrets (GitHub, npm, Stripe, AWS, …) are redacted
+        before send.
       </p>
 
       <div class="share-field">
@@ -262,7 +271,8 @@
               <button
                 type="button"
                 class="share-peer"
-                class:share-peer-selected={selectedPeerKey === `${p.id}:${p.port}`}
+                class:share-peer-selected={selectedPeerKey ===
+                  `${p.id}:${p.port}`}
                 on:click={() => pickPeer(p)}
               >
                 <span class="share-peer-label">{p.label}</span>
@@ -296,7 +306,9 @@
           class="share-input"
           placeholder="192.168.1.42:27787"
           bind:value={peerInput}
-          on:input={() => { selectedPeerKey = null; }}
+          on:input={() => {
+            selectedPeerKey = null;
+          }}
           autocomplete="off"
           spellcheck="false"
         />
@@ -307,9 +319,9 @@
         <span class="share-check-text">
           <span class="share-check-label">Include tool outputs</span>
           <span class="share-check-help">
-            Off (recommended): tool result blocks are stripped before
-            send. On: the full transcript (env dumps, file contents,
-            command output) goes through as-is.
+            Off (recommended): tool result blocks are stripped before send. On:
+            the full transcript (env dumps, file contents, command output) goes
+            through as-is.
           </span>
         </span>
       </label>
@@ -319,9 +331,9 @@
         <span class="share-check-text">
           <span class="share-check-label">Strip recognised secrets</span>
           <span class="share-check-help">
-            On (recommended): keys matching known formats (GitHub, npm,
-            Stripe, AWS, Anthropic, OpenAI, JWT, PEM, …) get redacted.
-            Off: the transcript is shipped verbatim.
+            On (recommended): keys matching known formats (GitHub, npm, Stripe,
+            AWS, Anthropic, OpenAI, JWT, PEM, …) get redacted. Off: the
+            transcript is shipped verbatim.
           </span>
         </span>
       </label>
@@ -332,13 +344,23 @@
         <p class="share-result share-ok">
           Offer sent.
           {#if result.toolOutputs === "stripped"}
-            Stripped {result.strippedCount} tool output{result.strippedCount === 1 ? "" : "s"}.
+            Stripped {result.strippedCount} tool output{result.strippedCount ===
+            1
+              ? ""
+              : "s"}.
           {:else}
             Tool outputs included.
           {/if}
           {#if result.secrets === "redacted" && result.redactions.length > 0}
-            Redacted {result.redactions.reduce((n, r) => n + r.count, 0)} likely secret{result.redactions.reduce((n, r) => n + r.count, 0) === 1 ? "" : "s"}
-            ({result.redactions.map((r) => `${r.count}× ${r.kind}`).join(", ")}).
+            Redacted {result.redactions.reduce((n, r) => n + r.count, 0)} likely secret{result.redactions.reduce(
+              (n, r) => n + r.count,
+              0,
+            ) === 1
+              ? ""
+              : "s"}
+            ({result.redactions
+              .map((r) => `${r.count}× ${r.kind}`)
+              .join(", ")}).
           {:else if result.secrets === "raw"}
             Secrets NOT redacted.
           {/if}
@@ -346,7 +368,11 @@
       {/if}
 
       <div class="share-buttons">
-        <button type="button" class="share-btn share-cancel" on:click={closeShare}>
+        <button
+          type="button"
+          class="share-btn share-cancel"
+          on:click={closeShare}
+        >
           {result.kind === "ok" ? "Close" : "Cancel"}
         </button>
         <button
@@ -435,7 +461,10 @@
     border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
   }
   .share-peer-selected {
-    border-color: var(--brand, color-mix(in srgb, var(--text-muted) 70%, transparent));
+    border-color: var(
+      --brand,
+      color-mix(in srgb, var(--text-muted) 70%, transparent)
+    );
     background: color-mix(in srgb, var(--brand) 14%, transparent);
   }
   /* Defined AFTER `.share-peer:hover` so it wins on equal specificity
@@ -443,7 +472,10 @@
      strip the brand tint and the row looks unselected mid-hover. */
   .share-peer-selected:hover {
     background: color-mix(in srgb, var(--brand) 22%, transparent);
-    border-color: var(--brand, color-mix(in srgb, var(--text-muted) 70%, transparent));
+    border-color: var(
+      --brand,
+      color-mix(in srgb, var(--text-muted) 70%, transparent)
+    );
   }
   .share-peer-label {
     font-weight: 500;

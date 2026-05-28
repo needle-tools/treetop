@@ -8,7 +8,14 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, readFile, writeFile, mkdir, stat, readdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  mkdir,
+  stat,
+  readdir,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -74,9 +81,11 @@ function jsonlMentioning(repoPath: string): string {
   ].join("\n");
 }
 
-const repoFound = (localPath: string): RepoLookup => async () => ({
-  localRepoPath: localPath,
-});
+const repoFound =
+  (localPath: string): RepoLookup =>
+  async () => ({
+    localRepoPath: localPath,
+  });
 const repoMissing: RepoLookup = async () => null;
 
 describe("storePendingOffer", () => {
@@ -164,7 +173,13 @@ describe("acceptOffer", () => {
 
     const sidecar = JSON.parse(
       await readFile(
-        join(ws, "imported-sessions", "marcels-laptop", "claude", "sid-aaa.manifest.json"),
+        join(
+          ws,
+          "imported-sessions",
+          "marcels-laptop",
+          "claude",
+          "sid-aaa.manifest.json",
+        ),
         "utf-8",
       ),
     );
@@ -441,7 +456,13 @@ describe("acceptOffer", () => {
     // Sidecar stays under imported-sessions/, carries the pointer.
     const sidecar = JSON.parse(
       await readFile(
-        join(ws, "imported-sessions", "marcels-laptop", "ollama", "sid-aaa.manifest.json"),
+        join(
+          ws,
+          "imported-sessions",
+          "marcels-laptop",
+          "ollama",
+          "sid-aaa.manifest.json",
+        ),
         "utf-8",
       ),
     );
@@ -449,7 +470,9 @@ describe("acceptOffer", () => {
     expect(sidecar.localRepoPath).toBe(localPath);
 
     // The rewritten JSONL's spawnCwd now points at the receiver's path.
-    const header = JSON.parse((await readFile(r.importedPath, "utf-8")).split("\n")[0]!);
+    const header = JSON.parse(
+      (await readFile(r.importedPath, "utf-8")).split("\n")[0]!,
+    );
     expect(header.spawnCwd).toBe(localPath);
   });
 });
@@ -570,7 +593,12 @@ describe("sanitizeJsonl", () => {
     const ws = await tempWorkspace();
     const malicious = JSON.stringify({
       message: {
-        content: [{ type: "text", text: '<img src=x onerror="fetch(\\"/api/shutdown\\")"> hello' }],
+        content: [
+          {
+            type: "text",
+            text: '<img src=x onerror="fetch(\\"/api/shutdown\\")"> hello',
+          },
+        ],
       },
     });
     await storePendingOffer(ws, manifest(), malicious);

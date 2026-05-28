@@ -205,18 +205,29 @@ describe("TerminalView clipboard copy + paste", () => {
     // The handler must live inside the capture-phase container listener
     // (third arg `true` to addEventListener), not in attachCustomKeyEventHandler
     // — that's the whole point of the redundancy.
-    const captureIdx = SOURCE.indexOf('containerEl.addEventListener("keydown"');
+    // Match against a whitespace-collapsed copy so Prettier's wrapping
+    // (splitting `addEventListener("keydown", handler, true)` across lines
+    // and adding trailing commas) doesn't break this structural check —
+    // the contract is the handler's placement, not its line layout.
+    const flat = SOURCE.replace(/\s+/g, " ");
+    const captureIdx = flat.search(
+      /containerEl\.addEventListener\(\s*"keydown"/,
+    );
     expect(captureIdx).toBeGreaterThan(-1);
-    const captureClose = SOURCE.indexOf("}, true);", captureIdx);
-    expect(captureClose).toBeGreaterThan(captureIdx);
-    const captureBlock = SOURCE.slice(captureIdx, captureClose);
+    // The capture-phase registration closes with `, true)` (capture=true),
+    // possibly with a trailing comma before the paren.
+    const closeRel = flat.slice(captureIdx).search(/}\s*,\s*true\s*,?\s*\)/);
+    expect(closeRel).toBeGreaterThan(-1);
+    const captureBlock = flat.slice(captureIdx, captureIdx + closeRel);
     // The non-Mac branch must gate on ctrlKey (not metaKey), require
     // an existing selection, and route through copyToClipboard (which
     // owns the async-API + execCommand fallback). If any of these are
     // missing the handler is either Mac-only or silently overwrites
     // the clipboard with an empty string.
     expect(captureBlock).toMatch(/!isMac[\s\S]*ev\.ctrlKey/);
-    expect(captureBlock).toMatch(/code\s*===\s*["']KeyC["'][\s\S]*hasSelection\(\)/);
+    expect(captureBlock).toMatch(
+      /code\s*===\s*["']KeyC["'][\s\S]*hasSelection\(\)/,
+    );
     expect(captureBlock).toMatch(/getCleanedSelection\(xterm\)/);
     expect(captureBlock).toContain("copyToClipboard(sel)");
   });

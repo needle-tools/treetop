@@ -27,7 +27,10 @@
   let pinnedAgent: string | null = null;
 
   function onAnchorEnter(agent: string): void {
-    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
+    if (hoverCloseTimer) {
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = null;
+    }
     openAgent = agent;
     if (agent === "claude") ensureTopSessionsLoaded();
   }
@@ -227,7 +230,12 @@
         (a) =>
           [
             a,
-            report!.agents[a] ?? { today: { sessions: 0, messages: 0 }, week: { sessions: 0, messages: 0 }, peakDay: 0, peakWeek: 0 },
+            report!.agents[a] ?? {
+              today: { sessions: 0, messages: 0 },
+              week: { sessions: 0, messages: 0 },
+              peakDay: 0,
+              peakWeek: 0,
+            },
           ] as const,
       )
     : [];
@@ -250,7 +258,10 @@
    *  that's actually a 7-day budget, while paid plans return both 5h
    *  and 7d — so a fixed "Session (5h) / Weekly" labeling would lie
    *  to Free users. */
-  function codexWindowLabel(seconds: number | undefined, fallback: string): string {
+  function codexWindowLabel(
+    seconds: number | undefined,
+    fallback: string,
+  ): string {
     if (!seconds || seconds <= 0) return fallback;
     if (seconds <= 60) return `Session (${seconds}s)`;
     if (seconds < 3600) return `Session (${Math.round(seconds / 60)}m)`;
@@ -263,11 +274,17 @@
     ? (
         [
           {
-            label: codexWindowLabel(codexLive.primaryWindow?.windowSeconds, "Primary"),
+            label: codexWindowLabel(
+              codexLive.primaryWindow?.windowSeconds,
+              "Primary",
+            ),
             window: codexLive.primaryWindow,
           },
           {
-            label: codexWindowLabel(codexLive.secondaryWindow?.windowSeconds, "Secondary"),
+            label: codexWindowLabel(
+              codexLive.secondaryWindow?.windowSeconds,
+              "Secondary",
+            ),
             window: codexLive.secondaryWindow,
           },
         ] as const
@@ -431,7 +448,6 @@
     return t.slice(0, max - 1) + "…";
   }
 
-
   function liveBarWidth(util: number | undefined): string {
     if (typeof util !== "number") return "0%";
     if (util > 0 && util < 0.01) return "1%";
@@ -519,14 +535,16 @@
   // Live rows are filtered per Claude's tooltip — only present
   // windows render. Matches claude.ai's ordering.
   $: liveRows = claudeLive
-    ? ([
-        { label: "Session (5h)", window: claudeLive.fiveHour },
-        { label: "Week — all models", window: claudeLive.sevenDay },
-        { label: "Week — Sonnet", window: claudeLive.sevenDaySonnet },
-        { label: "Week — Opus", window: claudeLive.sevenDayOpus },
-        { label: "Design", window: claudeLive.sevenDayDesign },
-        { label: "Routines", window: claudeLive.sevenDayRoutines },
-      ] as const).filter((r) => r.window !== undefined)
+    ? (
+        [
+          { label: "Session (5h)", window: claudeLive.fiveHour },
+          { label: "Week — all models", window: claudeLive.sevenDay },
+          { label: "Week — Sonnet", window: claudeLive.sevenDaySonnet },
+          { label: "Week — Opus", window: claudeLive.sevenDayOpus },
+          { label: "Design", window: claudeLive.sevenDayDesign },
+          { label: "Routines", window: claudeLive.sevenDayRoutines },
+        ] as const
+      ).filter((r) => r.window !== undefined)
     : [];
 </script>
 
@@ -553,52 +571,57 @@
       <Popover variant="actions" extraClass="usage-popover brand-{agent}">
         <svelte:fragment slot="head">
           <div class="usage-tt-head brand-{agent}">
-          <AgentIcon {agent} size={14} />
-          {#if usageUrl(agent)}
-            <a
-              href={usageUrl(agent)}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="usage-agent-link"
-            >{agentLabel(agent)}</a>
-          {:else}
-            <span>{agentLabel(agent)}</span>
-          {/if}
-          {#if agent === "claude" && planLabel(report?.claudePlan)}
-            <span class="usage-plan">· {planLabel(report?.claudePlan)}</span>
-          {:else if agent === "codex" && codexLive?.planType}
-            <span class="usage-plan">· {codexPlanLabel(codexLive.planType)}</span>
-          {/if}
-          <span
-            class="usage-source"
-            class:source-live={hasLiveData(agent)}
-            aria-label={hasLiveData(agent)
-              ? "Real plan usage from the provider's API."
-              : "Counted from local JSONL turns; no public usage API for this agent."}
-          >
-            {hasLiveData(agent) ? "live" : "local"}
-          </span>
-          {#if pinnedAgent === agent}
-            <button
-              type="button"
-              class="usage-pin-btn"
-              aria-label="Unpin this popover"
-              on:click|stopPropagation={() => { pinnedAgent = null; openAgent = null; }}
-            >
-              <svg
-                class="usage-pin-icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+            <AgentIcon {agent} size={14} />
+            {#if usageUrl(agent)}
+              <a
+                href={usageUrl(agent)}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="usage-agent-link">{agentLabel(agent)}</a
               >
-                {#each ICONS.pin.paths ?? [] as d}<path {d}/>{/each}
-              </svg>
-            </button>
-          {/if}
-        </div>
+            {:else}
+              <span>{agentLabel(agent)}</span>
+            {/if}
+            {#if agent === "claude" && planLabel(report?.claudePlan)}
+              <span class="usage-plan">· {planLabel(report?.claudePlan)}</span>
+            {:else if agent === "codex" && codexLive?.planType}
+              <span class="usage-plan"
+                >· {codexPlanLabel(codexLive.planType)}</span
+              >
+            {/if}
+            <span
+              class="usage-source"
+              class:source-live={hasLiveData(agent)}
+              aria-label={hasLiveData(agent)
+                ? "Real plan usage from the provider's API."
+                : "Counted from local JSONL turns; no public usage API for this agent."}
+            >
+              {hasLiveData(agent) ? "live" : "local"}
+            </span>
+            {#if pinnedAgent === agent}
+              <button
+                type="button"
+                class="usage-pin-btn"
+                aria-label="Unpin this popover"
+                on:click|stopPropagation={() => {
+                  pinnedAgent = null;
+                  openAgent = null;
+                }}
+              >
+                <svg
+                  class="usage-pin-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  {#each ICONS.pin.paths ?? [] as d}<path {d} />{/each}
+                </svg>
+              </button>
+            {/if}
+          </div>
         </svelte:fragment>
 
         <!-- Unified 4-column bar grid. Same template across live +
@@ -609,10 +632,19 @@
             {#each liveRows as row (row.label)}
               <span class="usage-bars-label">{row.label}</span>
               <span class="usage-bar live">
-                <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
+                <span
+                  class="usage-bar-fill live"
+                  style:width={liveBarWidth(row.window?.utilization)}
+                ></span>
               </span>
-              <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-bars-detail" title={fmtResetsLong(row.window?.resetsAt)}>{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-value"
+                >{pct(row.window?.utilization ?? 0)}</span
+              >
+              <span
+                class="usage-bars-detail"
+                title={fmtResetsLong(row.window?.resetsAt)}
+                >{fmtResets(row.window?.resetsAt)}</span
+              >
             {/each}
           </div>
           {@const weekProj = projectWeekly(
@@ -620,10 +652,18 @@
             claudeLive.sevenDay?.resetsAt,
           )}
           {#if weekProj}
-            <div class="usage-projection" class:over-pace={weekProj.isOverPace} class:early={weekProj.isEarly}>
+            <div
+              class="usage-projection"
+              class:over-pace={weekProj.isOverPace}
+              class:early={weekProj.isEarly}
+            >
               <span class="usage-projection-label">{weekProj.label}</span>
               {#if claudeLive.fetchedAt}
-                <span class="usage-projection-fetched" title={fmtResetsLong(claudeLive.fetchedAt)}>updated {fmtAgo(claudeLive.fetchedAt)}</span>
+                <span
+                  class="usage-projection-fetched"
+                  title={fmtResetsLong(claudeLive.fetchedAt)}
+                  >updated {fmtAgo(claudeLive.fetchedAt)}</span
+                >
               {/if}
             </div>
           {/if}
@@ -631,7 +671,10 @@
             <div class="usage-extra">
               Extra usage: {pct(claudeLive.extraUsage.utilization ?? 0)}
               {#if claudeLive.extraUsage.usedCredits !== undefined && claudeLive.extraUsage.monthlyLimit !== undefined}
-                · {claudeLive.extraUsage.usedCredits.toFixed(2)} / {claudeLive.extraUsage.monthlyLimit.toFixed(0)} {claudeLive.extraUsage.currency ?? ""}
+                · {claudeLive.extraUsage.usedCredits.toFixed(2)} / {claudeLive.extraUsage.monthlyLimit.toFixed(
+                  0,
+                )}
+                {claudeLive.extraUsage.currency ?? ""}
               {/if}
             </div>
           {/if}
@@ -640,23 +683,40 @@
             {#each codexLiveRows as row (row.label)}
               <span class="usage-bars-label">{row.label}</span>
               <span class="usage-bar live">
-                <span class="usage-bar-fill live" style:width={liveBarWidth(row.window?.utilization)}></span>
+                <span
+                  class="usage-bar-fill live"
+                  style:width={liveBarWidth(row.window?.utilization)}
+                ></span>
               </span>
-              <span class="usage-bars-value">{pct(row.window?.utilization ?? 0)}</span>
-              <span class="usage-bars-detail" title={fmtResetsLong(row.window?.resetsAt)}>{fmtResets(row.window?.resetsAt)}</span>
+              <span class="usage-bars-value"
+                >{pct(row.window?.utilization ?? 0)}</span
+              >
+              <span
+                class="usage-bars-detail"
+                title={fmtResetsLong(row.window?.resetsAt)}
+                >{fmtResets(row.window?.resetsAt)}</span
+              >
             {/each}
           </div>
-          {@const codexWeekWin = codexLive.secondaryWindow ?? codexLive.primaryWindow}
+          {@const codexWeekWin =
+            codexLive.secondaryWindow ?? codexLive.primaryWindow}
           {@const codexProj = projectWeekly(
             codexWeekWin?.utilization,
             codexWeekWin?.resetsAt,
             codexWeekWin?.windowSeconds,
           )}
           {#if codexProj}
-            <div class="usage-projection" class:over-pace={codexProj.isOverPace}>
+            <div
+              class="usage-projection"
+              class:over-pace={codexProj.isOverPace}
+            >
               <span class="usage-projection-label">{codexProj.label}</span>
               {#if codexLive.fetchedAt}
-                <span class="usage-projection-fetched" title={fmtResetsLong(codexLive.fetchedAt)}>updated {fmtAgo(codexLive.fetchedAt)}</span>
+                <span
+                  class="usage-projection-fetched"
+                  title={fmtResetsLong(codexLive.fetchedAt)}
+                  >updated {fmtAgo(codexLive.fetchedAt)}</span
+                >
               {/if}
             </div>
           {/if}
@@ -683,16 +743,32 @@
           <div class="usage-bars-grid">
             <span class="usage-bars-label">Today</span>
             <span class="usage-bar">
-              <span class="usage-bar-fill" style:width={usage.peakDay > 0 ? `${Math.round(todayR * 100)}%` : "0%"}></span>
+              <span
+                class="usage-bar-fill"
+                style:width={usage.peakDay > 0
+                  ? `${Math.round(todayR * 100)}%`
+                  : "0%"}
+              ></span>
             </span>
-            <span class="usage-bars-value">{usage.today.messages} <span class="usage-bars-unit">msg</span></span>
+            <span class="usage-bars-value"
+              >{usage.today.messages}
+              <span class="usage-bars-unit">msg</span></span
+            >
             <span class="usage-bars-detail">{usage.today.sessions} sess</span>
 
             <span class="usage-bars-label">Week</span>
             <span class="usage-bar">
-              <span class="usage-bar-fill" style:width={usage.peakWeek > 0 ? `${Math.round(weekR * 100)}%` : "0%"}></span>
+              <span
+                class="usage-bar-fill"
+                style:width={usage.peakWeek > 0
+                  ? `${Math.round(weekR * 100)}%`
+                  : "0%"}
+              ></span>
             </span>
-            <span class="usage-bars-value">{usage.week.messages} <span class="usage-bars-unit">msg</span></span>
+            <span class="usage-bars-value"
+              >{usage.week.messages}
+              <span class="usage-bars-unit">msg</span></span
+            >
             <span class="usage-bars-detail">{usage.week.sessions} sess</span>
           </div>
         {/if}
@@ -736,16 +812,24 @@
                 <span>Scanning sessions…</span>
               </div>
             {:else if topSessionsState === "error"}
-              <div class="usage-top-status usage-top-status-error" aria-live="polite">
+              <div
+                class="usage-top-status usage-top-status-error"
+                aria-live="polite"
+              >
                 Couldn't load top sessions.
                 <button
                   type="button"
                   class="usage-retry-btn"
-                  on:click={() => { topSessionsState = "idle"; void loadTopSessions(); }}
-                >retry</button>
+                  on:click={() => {
+                    topSessionsState = "idle";
+                    void loadTopSessions();
+                  }}>retry</button
+                >
               </div>
             {:else if (claudeTopSessions?.length ?? 0) === 0}
-              <div class="usage-top-status">No Claude sessions with usage in window.</div>
+              <div class="usage-top-status">
+                No Claude sessions with usage in window.
+              </div>
             {:else if claudeTopSessions}
               {#each claudeTopSessions as s (s.source)}
                 <!-- Per-row Tooltip: hovering reveals the raw breakdown
@@ -766,28 +850,42 @@
                   >
                     <span class="usage-top-title">{truncTitle(s.title)}</span>
                     <span class="usage-top-cwd">{cwdTail(s.cwd)}</span>
-                    <span class="usage-top-tokens">{fmtTokens(s.totalTokens)}</span>
+                    <span class="usage-top-tokens"
+                      >{fmtTokens(s.totalTokens)}</span
+                    >
                   </button>
                   <div slot="content" class="usage-top-breakdown">
                     <div class="usage-top-breakdown-row">
                       <span class="usage-top-breakdown-k">input</span>
-                      <span class="usage-top-breakdown-v">{fmtTokens(s.inputTokens)}</span>
+                      <span class="usage-top-breakdown-v"
+                        >{fmtTokens(s.inputTokens)}</span
+                      >
                     </div>
                     <div class="usage-top-breakdown-row">
                       <span class="usage-top-breakdown-k">output</span>
-                      <span class="usage-top-breakdown-v">{fmtTokens(s.outputTokens)}</span>
+                      <span class="usage-top-breakdown-v"
+                        >{fmtTokens(s.outputTokens)}</span
+                      >
                     </div>
                     <div class="usage-top-breakdown-row">
                       <span class="usage-top-breakdown-k">cache write</span>
-                      <span class="usage-top-breakdown-v">{fmtTokens(s.cacheCreationTokens)}</span>
+                      <span class="usage-top-breakdown-v"
+                        >{fmtTokens(s.cacheCreationTokens)}</span
+                      >
                     </div>
                     <div class="usage-top-breakdown-row">
                       <span class="usage-top-breakdown-k">cache read</span>
-                      <span class="usage-top-breakdown-v">{fmtTokens(s.cacheReadTokens)}</span>
+                      <span class="usage-top-breakdown-v"
+                        >{fmtTokens(s.cacheReadTokens)}</span
+                      >
                     </div>
-                    <div class="usage-top-breakdown-row usage-top-breakdown-total">
+                    <div
+                      class="usage-top-breakdown-row usage-top-breakdown-total"
+                    >
                       <span class="usage-top-breakdown-k">weighted</span>
-                      <span class="usage-top-breakdown-v">{fmtTokens(s.totalTokens)}</span>
+                      <span class="usage-top-breakdown-v"
+                        >{fmtTokens(s.totalTokens)}</span
+                      >
                     </div>
                   </div>
                 </Tooltip>
@@ -869,7 +967,8 @@
       to right,
       var(--bar-color, currentColor) 0%,
       var(--bar-color, currentColor) var(--usage-bar-pct, 0%),
-      color-mix(in srgb, var(--text-1) 14%, transparent) var(--usage-bar-pct, 0%),
+      color-mix(in srgb, var(--text-1) 14%, transparent)
+        var(--usage-bar-pct, 0%),
       color-mix(in srgb, var(--text-1) 14%, transparent) 100%
     );
     opacity: 0.9;
@@ -877,7 +976,10 @@
   }
 
   .usage-tt {
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
     min-width: 17rem;
   }
   .usage-tt-head {
@@ -1092,14 +1194,21 @@
   .usage-bar-fill {
     grid-area: bar;
     background: var(--bar-color, var(--text-2));
-    transition: width 220ms ease, background 200ms ease;
+    transition:
+      width 220ms ease,
+      background 200ms ease;
     border-radius: 999px;
   }
   .usage-bar.live {
-    border-color: color-mix(in srgb, var(--bar-color, #60a5fa) 50%, transparent);
+    border-color: color-mix(
+      in srgb,
+      var(--bar-color, #60a5fa) 50%,
+      transparent
+    );
   }
   .usage-bar.live .usage-bar-fill {
-    box-shadow: 0 0 6px color-mix(in srgb, var(--bar-color, #60a5fa) 55%, transparent);
+    box-shadow: 0 0 6px
+      color-mix(in srgb, var(--bar-color, #60a5fa) 55%, transparent);
   }
 
   /* Top-sessions list — 3-column grid per row: title (1fr, ellipsised),

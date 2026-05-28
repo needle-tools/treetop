@@ -24,7 +24,8 @@ describe("iconFor", () => {
       expect(def).not.toBeNull();
       // Each icon contributes at least one drawable primitive — otherwise
       // the SVG would render empty and the button would look broken.
-      const primitives = (def!.paths?.length ?? 0) + (def!.circles?.length ?? 0);
+      const primitives =
+        (def!.paths?.length ?? 0) + (def!.circles?.length ?? 0);
       expect(primitives).toBeGreaterThan(0);
     }
   });
@@ -47,7 +48,8 @@ describe("iconFor", () => {
     ]) {
       const def = iconFor(key);
       expect(def).not.toBeNull();
-      const primitives = (def!.paths?.length ?? 0) + (def!.circles?.length ?? 0);
+      const primitives =
+        (def!.paths?.length ?? 0) + (def!.circles?.length ?? 0);
       expect(primitives).toBeGreaterThan(0);
     }
   });
@@ -55,7 +57,9 @@ describe("iconFor", () => {
   test("brand colours, when present, are valid hex strings", () => {
     for (const [key, def] of Object.entries(ICONS)) {
       if (def.brand === undefined) continue;
-      expect(def.brand, `${key} brand`).toMatch(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+      expect(def.brand, `${key} brand`).toMatch(
+        /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/,
+      );
     }
   });
 

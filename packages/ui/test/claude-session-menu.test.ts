@@ -22,7 +22,10 @@ describe("claudeSessionMenuItems", () => {
       onPickModel: noop,
       onPickEffort: noop,
     });
-    expect(items.map((i) => i.label)).toEqual(["Claude: Model", "Claude: Effort"]);
+    expect(items.map((i) => i.label)).toEqual([
+      "Claude: Model",
+      "Claude: Effort",
+    ]);
     expect(items.every((i) => i.kind === "submenu")).toBe(true);
     // Headers carry a filled SVG glyph (not emoji).
     for (const header of items) {
@@ -78,14 +81,18 @@ describe("claudeSessionMenuItems", () => {
     const colors = effort.children.map((c) =>
       c.kind === "action" ? c.iconColor : undefined,
     );
-    expect(colors.every((c) => typeof c === "string" && c.length > 0)).toBe(true);
+    expect(colors.every((c) => typeof c === "string" && c.length > 0)).toBe(
+      true,
+    );
     expect(new Set(colors).size).toBe(colors.length);
     // Each level is a single filled gauge-arc path…
     expect(effort.children.every((c) => c.iconSvg?.length === 1)).toBe(true);
     expect(effort.children.every((c) => c.iconFilled === true)).toBe(true);
     // …over a shared dim full-sweep track (same for every level)…
     const tracks = effort.children.map((c) => c.iconTrackPaths?.[0]);
-    expect(tracks.every((t) => typeof t === "string" && t.length > 0)).toBe(true);
+    expect(tracks.every((t) => typeof t === "string" && t.length > 0)).toBe(
+      true,
+    );
     expect(new Set(tracks).size).toBe(1);
     // …and the fill arc geometry differs per level (a growing sweep), so no
     // two levels render the same coloured glyph.

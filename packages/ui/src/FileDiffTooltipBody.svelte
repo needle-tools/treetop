@@ -19,7 +19,12 @@
   export let kind: "workdir" | "staged" | "untracked";
 
   type Row =
-    | { kind: "add" | "del"; oldLn: number | null; newLn: number | null; text: string }
+    | {
+        kind: "add" | "del";
+        oldLn: number | null;
+        newLn: number | null;
+        text: string;
+      }
     | { kind: "hunk"; text: string }
     | { kind: "binary"; text: string };
 
@@ -37,7 +42,12 @@
     rows = [];
     binary = false;
     try {
-      const params = new URLSearchParams({ path: wt, file: f, kind: k, context: "0" });
+      const params = new URLSearchParams({
+        path: wt,
+        file: f,
+        kind: k,
+        context: "0",
+      });
       const r = await fetch(`/api/file-diff?${params.toString()}`);
       if (!r.ok) {
         state = "error";
@@ -121,15 +131,19 @@
         <span
           class="fd-ln fd-ln-old"
           class:fd-add={r.kind === "add"}
-          class:fd-del={r.kind === "del"}>{r.oldLn ?? ""}</span>
+          class:fd-del={r.kind === "del"}>{r.oldLn ?? ""}</span
+        >
         <span
           class="fd-ln fd-ln-new"
           class:fd-add={r.kind === "add"}
-          class:fd-del={r.kind === "del"}>{r.newLn ?? ""}</span>
+          class:fd-del={r.kind === "del"}>{r.newLn ?? ""}</span
+        >
         <span
           class="fd-line"
           class:fd-add={r.kind === "add"}
-          class:fd-del={r.kind === "del"}>{r.kind === "add" ? "+" : "−"}{r.text}</span>
+          class:fd-del={r.kind === "del"}
+          >{r.kind === "add" ? "+" : "−"}{r.text}</span
+        >
       {/if}
     {/each}
   </div>

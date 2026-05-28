@@ -105,9 +105,13 @@
     animation: shell-preview-spin 0.8s linear infinite;
   }
   @keyframes shell-preview-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
-    .shell-preview-spinner { animation: none; }
+    .shell-preview-spinner {
+      animation: none;
+    }
   }
 </style>

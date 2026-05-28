@@ -1,6 +1,12 @@
 import { watch, type FSWatcher } from "node:fs";
 
-export type SyncState = "downloading" | "editing" | "modified" | "uploading" | "synced" | "error";
+export type SyncState =
+  | "downloading"
+  | "editing"
+  | "modified"
+  | "uploading"
+  | "synced"
+  | "error";
 
 export interface TrackedFile {
   hostKey: string;
@@ -121,7 +127,11 @@ export class SyncTracker {
     entry.error = undefined;
 
     try {
-      await this.uploadFn(entry.hostKey, entry.remotePath, entry.localCachePath);
+      await this.uploadFn(
+        entry.hostKey,
+        entry.remotePath,
+        entry.localCachePath,
+      );
       entry.state = "editing";
     } catch (err: unknown) {
       entry.state = "error";

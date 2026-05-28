@@ -8,7 +8,14 @@
  * view. These tests pin that contract.
  */
 
-import { test, expect, describe, beforeEach, afterEach, setSystemTime } from "bun:test";
+import {
+  test,
+  expect,
+  describe,
+  beforeEach,
+  afterEach,
+  setSystemTime,
+} from "bun:test";
 import { get } from "svelte/store";
 import {
   sessionFocusRequest,
@@ -43,8 +50,14 @@ test("re-requesting the same source emits a new value (reactivity must re-fire)"
   // Initial null + two requests = three emissions; the two requests
   // differ by ts so a store consumer sees a distinct value each time.
   expect(seen.length).toBe(3);
-  expect(seen[1]).toEqual({ source: "/x.jsonl", ts: Date.parse("2026-05-28T12:00:00.000Z") });
-  expect(seen[2]).toEqual({ source: "/x.jsonl", ts: Date.parse("2026-05-28T12:00:01.000Z") });
+  expect(seen[1]).toEqual({
+    source: "/x.jsonl",
+    ts: Date.parse("2026-05-28T12:00:00.000Z"),
+  });
+  expect(seen[2]).toEqual({
+    source: "/x.jsonl",
+    ts: Date.parse("2026-05-28T12:00:01.000Z"),
+  });
 });
 
 test("each request is a fresh object reference", () => {

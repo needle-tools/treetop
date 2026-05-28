@@ -26,7 +26,14 @@
 
   marked.setOptions({ breaks: true, gfm: true });
 
-  type State = "probing" | "cached" | "install" | "pulling" | "ready" | "running" | "error";
+  type State =
+    | "probing"
+    | "cached"
+    | "install"
+    | "pulling"
+    | "ready"
+    | "running"
+    | "error";
 
   interface Frontmatter {
     source: string;
@@ -89,13 +96,18 @@
       return !name.endsWith("-embed") && !name.endsWith(":embed");
     });
     if (usable.length === 0) return undefined;
-    usable.sort((a, b) => (a.size ?? Number.MAX_SAFE_INTEGER) - (b.size ?? Number.MAX_SAFE_INTEGER));
+    usable.sort(
+      (a, b) =>
+        (a.size ?? Number.MAX_SAFE_INTEGER) -
+        (b.size ?? Number.MAX_SAFE_INTEGER),
+    );
     return usable[0]?.name;
   }
 
   function pickDefault(list: ModelInfo[]): string | undefined {
     const remembered = localStorage.getItem("supergit:summarize:lastModel");
-    if (remembered && list.some((m) => m.name === remembered)) return remembered;
+    if (remembered && list.some((m) => m.name === remembered))
+      return remembered;
     if (list.some((m) => m.name === DEFAULT_MODEL_TO_INSTALL)) {
       return DEFAULT_MODEL_TO_INSTALL;
     }
@@ -115,11 +127,19 @@
 
     const qs = new URLSearchParams({ source: src });
     const [cachedRes, modelsRes] = await Promise.allSettled([
-      fetch(`/api/sessions/summarize?${qs.toString()}`).then((r) => r.json() as Promise<CachedResponse>),
-      fetch(`/api/ollama/models`).then((r) => r.json() as Promise<{ models?: ModelInfo[] }>),
+      fetch(`/api/sessions/summarize?${qs.toString()}`).then(
+        (r) => r.json() as Promise<CachedResponse>,
+      ),
+      fetch(`/api/ollama/models`).then(
+        (r) => r.json() as Promise<{ models?: ModelInfo[] }>,
+      ),
     ]);
-    models = (modelsRes.status === "fulfilled" ? modelsRes.value.models ?? [] : []) ?? [];
-    const cachedBody = cachedRes.status === "fulfilled" ? cachedRes.value : null;
+    models =
+      (modelsRes.status === "fulfilled"
+        ? (modelsRes.value.models ?? [])
+        : []) ?? [];
+    const cachedBody =
+      cachedRes.status === "fulfilled" ? cachedRes.value : null;
     if (cachedBody && cachedBody.summary) {
       cached = cachedBody.summary;
       stale = cachedBody.stale === true;
@@ -171,7 +191,9 @@
   async function deleteSummary(): Promise<void> {
     if (!source) return;
     const qs = new URLSearchParams({ source });
-    await fetch(`/api/sessions/summarize?${qs.toString()}`, { method: "DELETE" });
+    await fetch(`/api/sessions/summarize?${qs.toString()}`, {
+      method: "DELETE",
+    });
     // After delete, drop back to ready (or install if no models).
     cached = null;
     stale = false;
@@ -299,7 +321,9 @@
     }
   }
 
-  async function consumePullSse(stream: ReadableStream<Uint8Array>): Promise<void> {
+  async function consumePullSse(
+    stream: ReadableStream<Uint8Array>,
+  ): Promise<void> {
     const reader = stream.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -319,7 +343,10 @@
         }
         if (!data) continue;
         try {
-          const payload = JSON.parse(data) as { line?: string; message?: string };
+          const payload = JSON.parse(data) as {
+            line?: string;
+            message?: string;
+          };
           if (event === "progress" && payload.line) {
             pullLines = [...pullLines, payload.line].slice(-20);
           } else if (event === "error") {
@@ -368,7 +395,9 @@
     >
       <header class="header">
         <h2 id="summarize-title">Summarize with Ollama</h2>
-        <button type="button" class="close" on:click={close} aria-label="Close">×</button>
+        <button type="button" class="close" on:click={close} aria-label="Close"
+          >×</button
+        >
       </header>
 
       {#if state === "probing"}
@@ -385,15 +414,21 @@
         </div>
         <footer class="actions">
           <button type="button" class="btn" on:click={close}>Cancel</button>
-          <button type="button" class="btn primary" on:click={installAndRun}>Install &amp; summarize</button>
+          <button type="button" class="btn primary" on:click={installAndRun}
+            >Install &amp; summarize</button
+          >
         </footer>
       {:else if state === "pulling"}
         <div class="body pulling">
-          <p class="muted">Downloading <code>{DEFAULT_MODEL_TO_INSTALL}</code>…</p>
+          <p class="muted">
+            Downloading <code>{DEFAULT_MODEL_TO_INSTALL}</code>…
+          </p>
           <pre class="log">{pullLines.join("\n")}</pre>
         </div>
         <footer class="actions">
-          <button type="button" class="btn" on:click={close}>Cancel — already-downloaded chunks are kept</button>
+          <button type="button" class="btn" on:click={close}
+            >Cancel — already-downloaded chunks are kept</button
+          >
         </footer>
       {:else if state === "ready" || state === "running" || state === "cached" || state === "error"}
         <div class="picker">
@@ -401,12 +436,20 @@
             Model
             <select bind:value={chosenModel} disabled={state === "running"}>
               {#each models as m (m.name)}
-                <option value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""}</option>
+                <option value={m.name}
+                  >{m.name}{m.parameterSize
+                    ? ` · ${m.parameterSize}`
+                    : ""}</option
+                >
               {/each}
             </select>
           </label>
           {#if state === "cached" && stale}
-            <span class="badge stale" title="Source session has new turns since this summary was generated">Stale</span>
+            <span
+              class="badge stale"
+              title="Source session has new turns since this summary was generated"
+              >Stale</span
+            >
           {:else if state === "cached"}
             <span class="badge ok">Cached</span>
           {/if}
@@ -419,7 +462,10 @@
           {:else if state === "running"}
             <p class="muted">Generating…</p>
           {:else}
-            <p class="muted">Click <strong>Generate</strong> to summarize {meta?.totalMessages ?? "this session"}.</p>
+            <p class="muted">
+              Click <strong>Generate</strong> to summarize {meta?.totalMessages ??
+                "this session"}.
+            </p>
           {/if}
         </div>
         {#if meta}
@@ -441,17 +487,44 @@
         <footer class="actions">
           <button type="button" class="btn" on:click={close}>Close</button>
           {#if state === "cached" || state === "error"}
-            <button type="button" class="btn" on:click={deleteSummary} disabled={!cached}>Delete</button>
-            <button type="button" class="btn" on:click={copySummary} disabled={!body}>
+            <button
+              type="button"
+              class="btn"
+              on:click={deleteSummary}
+              disabled={!cached}>Delete</button
+            >
+            <button
+              type="button"
+              class="btn"
+              on:click={copySummary}
+              disabled={!body}
+            >
               {copyFlash ? "✓ Copied" : "Copy"}
             </button>
-            <button type="button" class="btn primary" on:click={runSummary} disabled={!chosenModel}>
+            <button
+              type="button"
+              class="btn primary"
+              on:click={runSummary}
+              disabled={!chosenModel}
+            >
               {cached ? "Refresh" : "Generate"}
             </button>
           {:else if state === "running"}
-            <button type="button" class="btn" on:click={() => { aborter?.abort(); state = "ready"; }}>Stop</button>
+            <button
+              type="button"
+              class="btn"
+              on:click={() => {
+                aborter?.abort();
+                state = "ready";
+              }}>Stop</button
+            >
           {:else}
-            <button type="button" class="btn primary" on:click={runSummary} disabled={!chosenModel}>Generate</button>
+            <button
+              type="button"
+              class="btn primary"
+              on:click={runSummary}
+              disabled={!chosenModel}>Generate</button
+            >
           {/if}
         </footer>
       {/if}
@@ -501,7 +574,9 @@
     cursor: pointer;
     line-height: 1;
   }
-  .close:hover { color: var(--text-1); }
+  .close:hover {
+    color: var(--text-1);
+  }
   .picker {
     display: flex;
     align-items: center;
@@ -532,9 +607,17 @@
     border: 1px solid transparent;
   }
   .badge.ok {
-    background: color-mix(in srgb, var(--status-clean, #2ecc71) 22%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--status-clean, #2ecc71) 22%,
+      transparent
+    );
     color: var(--status-clean, #2ecc71);
-    border-color: color-mix(in srgb, var(--status-clean, #2ecc71) 35%, transparent);
+    border-color: color-mix(
+      in srgb,
+      var(--status-clean, #2ecc71) 35%,
+      transparent
+    );
   }
   .badge.stale {
     background: color-mix(in srgb, #d9822b 22%, transparent);
@@ -548,20 +631,34 @@
     font-size: 0.88rem;
     line-height: 1.55;
   }
-  .body.status { color: var(--text-muted); }
-  .body p { margin: 0 0 0.7rem; }
-  .body .muted { color: var(--text-muted); }
-  .body .error { color: #e74c3c; }
+  .body.status {
+    color: var(--text-muted);
+  }
+  .body p {
+    margin: 0 0 0.7rem;
+  }
+  .body .muted {
+    color: var(--text-muted);
+  }
+  .body .error {
+    color: #e74c3c;
+  }
   .body code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     background: var(--surface-2);
     padding: 0.05rem 0.3rem;
     border-radius: 3px;
   }
-  .summary :global(p) { margin: 0 0 0.7rem; }
+  .summary :global(p) {
+    margin: 0 0 0.7rem;
+  }
   .summary :global(ul),
-  .summary :global(ol) { margin: 0 0 0.7rem 1.2rem; }
-  .summary :global(li) { margin: 0.15rem 0; }
+  .summary :global(ol) {
+    margin: 0 0 0.7rem 1.2rem;
+  }
+  .summary :global(li) {
+    margin: 0.15rem 0;
+  }
   .pulling .log {
     background: var(--surface-2);
     color: var(--text-2, var(--text-muted));

@@ -1,10 +1,15 @@
 import type { SessionMenuItem } from "./SessionMenu.svelte";
-import { CLAUDE_MODEL_ALIASES, CLAUDE_EFFORT_LEVELS, claudeModelAlias } from "./storage";
+import {
+  CLAUDE_MODEL_ALIASES,
+  CLAUDE_EFFORT_LEVELS,
+  claudeModelAlias,
+} from "./storage";
 
 /** SVG path glyphs (24×24 viewBox), rendered via SessionMenu's iconSvg
  *  slot so the menu never falls back to emoji. */
 // AI "sparkle" four-point star (same mark as ICONS.ai) — the model picker.
-const SPARKLE_PATH = "M12 1l2.35 8.65L23 12l-8.65 2.35L12 23l-2.35-8.65L1 12l8.65-2.35z";
+const SPARKLE_PATH =
+  "M12 1l2.35 8.65L23 12l-8.65 2.35L12 23l-2.35-8.65L1 12l8.65-2.35z";
 // Lucide "zap" lightning bolt — the effort picker.
 const ZAP_PATH =
   "M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z";
@@ -103,7 +108,8 @@ export function claudeSessionMenuItems(opts: {
       label: "Claude: Model",
       iconSvg: [SPARKLE_PATH],
       iconFilled: true,
-      title: "Switch the model for this Claude session — restarts it via resume",
+      title:
+        "Switch the model for this Claude session — restarts it via resume",
       children: CLAUDE_MODEL_ALIASES.map((m) => ({
         kind: "action" as const,
         label: m,
@@ -117,7 +123,8 @@ export function claudeSessionMenuItems(opts: {
       label: "Claude: Effort",
       iconSvg: [ZAP_PATH],
       iconFilled: true,
-      title: "Set the reasoning effort for this Claude session — restarts it via resume",
+      title:
+        "Set the reasoning effort for this Claude session — restarts it via resume",
       children: effortsHighToLow.map((e) => {
         const meta = EFFORT_META[e]!;
         return {

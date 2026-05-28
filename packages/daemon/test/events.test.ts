@@ -100,7 +100,11 @@ describe("EventLog", () => {
       inverse: { repoId: "abc" },
     });
     for (const t of ["undo", "redo", "undo"] as const) {
-      await log.append({ type: t, actor: "user", payload: { eventId: original.id } });
+      await log.append({
+        type: t,
+        actor: "user",
+        payload: { eventId: original.id },
+      });
     }
     const found = await log.findById(original.id);
     expect(found?.undone).toBe(true);

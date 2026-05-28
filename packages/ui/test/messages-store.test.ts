@@ -52,7 +52,10 @@ describe("totalCount", () => {
 
   test("counts every inbound message across senders", () => {
     const s = snap([
-      { peer: "alice", msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }] },
+      {
+        peer: "alice",
+        msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }],
+      },
       { peer: "bob", msgs: [{ at: "2026-01-03T00:00:00Z" }] },
     ]);
     expect(totalCount(s)).toBe(3);
@@ -81,7 +84,11 @@ describe("totalCount", () => {
 
   test("a muted sender contributes nothing", () => {
     const s = snap([
-      { peer: "alice", muted: true, msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }] },
+      {
+        peer: "alice",
+        muted: true,
+        msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }],
+      },
       { peer: "bob", msgs: [{ at: "2026-01-03T00:00:00Z" }] },
     ]);
     expect(totalCount(s)).toBe(1);
@@ -91,7 +98,10 @@ describe("totalCount", () => {
 describe("unreadCount", () => {
   test("with no baseline, falls back to totalCount (every inbound is unread)", () => {
     const s = snap([
-      { peer: "alice", msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }] },
+      {
+        peer: "alice",
+        msgs: [{ at: "2026-01-01T00:00:00Z" }, { at: "2026-01-02T00:00:00Z" }],
+      },
     ]);
     expect(unreadCount(s, null)).toBe(2);
   });
@@ -112,7 +122,9 @@ describe("unreadCount", () => {
   });
 
   test("a message exactly at the baseline is considered read (strict >)", () => {
-    const s = snap([{ peer: "alice", msgs: [{ at: "2026-01-02T00:00:00.000Z" }] }]);
+    const s = snap([
+      { peer: "alice", msgs: [{ at: "2026-01-02T00:00:00.000Z" }] },
+    ]);
     expect(unreadCount(s, "2026-01-02T00:00:00.000Z")).toBe(0);
   });
 
@@ -146,7 +158,10 @@ describe("unreadCount", () => {
 
   test("skips inbound messages whose receivedAt is unparseable", () => {
     const s = snap([
-      { peer: "alice", msgs: [{ at: "garbage" }, { at: "2026-01-05T00:00:00Z" }] },
+      {
+        peer: "alice",
+        msgs: [{ at: "garbage" }, { at: "2026-01-05T00:00:00Z" }],
+      },
     ]);
     expect(unreadCount(s, "2026-01-01T00:00:00Z")).toBe(1);
   });
@@ -162,7 +177,9 @@ describe("messages store", () => {
   test("set notifies subscribers (reactivity)", () => {
     const seen: InboxSnapshot[] = [];
     const unsub = messages.subscribe((v) => seen.push(v));
-    messages.set(snap([{ peer: "alice", msgs: [{ at: "2026-01-01T00:00:00Z" }] }]));
+    messages.set(
+      snap([{ peer: "alice", msgs: [{ at: "2026-01-01T00:00:00Z" }] }]),
+    );
     unsub();
     // Initial emission + the set = two values.
     expect(seen.length).toBe(2);

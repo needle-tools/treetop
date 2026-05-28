@@ -61,8 +61,9 @@ describe("PeerDiscovery (mDNS integration)", () => {
     bob.start();
 
     await pollUntil(
-      () => alice.peers().some((p) => p.label === "bob") &&
-            bob.peers().some((p) => p.label === "alice"),
+      () =>
+        alice.peers().some((p) => p.label === "bob") &&
+        bob.peers().some((p) => p.label === "alice"),
     );
 
     const bobSeenByAlice = alice.peers().find((p) => p.label === "bob")!;
@@ -160,13 +161,26 @@ describe("PeerDiscovery (mDNS integration)", () => {
 
     await pollUntil(
       () =>
-        a.peers().length >= 2 &&
-        b.peers().length >= 2 &&
-        c.peers().length >= 2,
+        a.peers().length >= 2 && b.peers().length >= 2 && c.peers().length >= 2,
     );
 
-    expect(a.peers().map((p) => p.label).sort()).toEqual(["bravo", "charlie"]);
-    expect(b.peers().map((p) => p.label).sort()).toEqual(["alpha", "charlie"]);
-    expect(c.peers().map((p) => p.label).sort()).toEqual(["alpha", "bravo"]);
+    expect(
+      a
+        .peers()
+        .map((p) => p.label)
+        .sort(),
+    ).toEqual(["bravo", "charlie"]);
+    expect(
+      b
+        .peers()
+        .map((p) => p.label)
+        .sort(),
+    ).toEqual(["alpha", "charlie"]);
+    expect(
+      c
+        .peers()
+        .map((p) => p.label)
+        .sort(),
+    ).toEqual(["alpha", "bravo"]);
   });
 });

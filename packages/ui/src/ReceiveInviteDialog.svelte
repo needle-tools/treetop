@@ -49,7 +49,10 @@
   let invite: InviteCard | null = null;
   let loading = false;
   let actionPending = false;
-  let action: { kind: "ok"; message: string } | { kind: "err"; message: string } | null = null;
+  let action:
+    | { kind: "ok"; message: string }
+    | { kind: "err"; message: string }
+    | null = null;
   /** Set when a previous accept attempt returned 409 "exists" — the
    *  dialog then shows the conflict view with three buttons (replace
    *  / keep both / cancel) instead of the normal Accept button. */
@@ -74,14 +77,18 @@
     loading = true;
     try {
       const res = await fetch("/api/sessions/invites");
-      const body = (await res.json().catch(() => null)) as
-        | { invites?: InviteCard[] }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        invites?: InviteCard[];
+      } | null;
       const match = body?.invites?.find((i) => i.manifest.offerId === offerId);
       invite = match ?? null;
-      if (!match) action = { kind: "err", message: "Invite no longer pending." };
+      if (!match)
+        action = { kind: "err", message: "Invite no longer pending." };
     } catch (e) {
-      action = { kind: "err", message: e instanceof Error ? e.message : String(e) };
+      action = {
+        kind: "err",
+        message: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       loading = false;
     }
@@ -101,9 +108,11 @@
         },
       );
       if (res.status === 409) {
-        const body = (await res.json().catch(() => null)) as
-          | { error?: string; remote?: string; divergence?: Divergence }
-          | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          remote?: string;
+          divergence?: Divergence;
+        } | null;
         if (body?.error === "exists" && body.divergence) {
           // Surface the three-button conflict view instead of an error.
           conflict = body.divergence;
@@ -116,13 +125,16 @@
         return;
       }
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         action = { kind: "err", message: body?.error ?? `HTTP ${res.status}` };
         return;
       }
-      const body = (await res.json().catch(() => null)) as
-        | { sid?: string; importedAs?: string }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        sid?: string;
+        importedAs?: string;
+      } | null;
       action = {
         kind: "ok",
         message:
@@ -143,7 +155,10 @@
       // and so a fresh invite doesn't open over a stale state.
       setTimeout(() => closeInvite(), 1200);
     } catch (e) {
-      action = { kind: "err", message: e instanceof Error ? e.message : String(e) };
+      action = {
+        kind: "err",
+        message: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       actionPending = false;
     }
@@ -165,7 +180,10 @@
       action = { kind: "ok", message: "Declined." };
       setTimeout(() => closeInvite(), 800);
     } catch (e) {
-      action = { kind: "err", message: e instanceof Error ? e.message : String(e) };
+      action = {
+        kind: "err",
+        message: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       actionPending = false;
     }
@@ -207,26 +225,50 @@
       {:else if !invite}
         <h2 id="invite-title" class="invite-title">Invite not found</h2>
         <p class="invite-body">
-          {action?.kind === "err" ? action.message : "It may have been accepted or declined already."}
+          {action?.kind === "err"
+            ? action.message
+            : "It may have been accepted or declined already."}
         </p>
         <div class="invite-buttons">
-          <button type="button" class="invite-btn" on:click={closeInvite}>Close</button>
+          <button type="button" class="invite-btn" on:click={closeInvite}
+            >Close</button
+          >
         </div>
       {:else}
         <h2 id="invite-title" class="invite-title">{invite.manifest.title}</h2>
 
         <dl class="invite-meta">
-          <div><dt>from</dt><dd>{invite.manifest.originMachineLabel}</dd></div>
-          <div><dt>repo</dt><dd>{invite.manifest.originRepoName}</dd></div>
-          <div><dt>remote</dt><dd class="invite-remote">{invite.manifest.originRepoRemote}</dd></div>
-          <div><dt>agent</dt><dd>{invite.manifest.agent}</dd></div>
-          <div><dt>turns</dt><dd>{invite.manifest.turnCount}</dd></div>
-          <div><dt>size</dt><dd>{fmtBytes(invite.manifest.bytes)}</dd></div>
+          <div>
+            <dt>from</dt>
+            <dd>{invite.manifest.originMachineLabel}</dd>
+          </div>
+          <div>
+            <dt>repo</dt>
+            <dd>{invite.manifest.originRepoName}</dd>
+          </div>
+          <div>
+            <dt>remote</dt>
+            <dd class="invite-remote">{invite.manifest.originRepoRemote}</dd>
+          </div>
+          <div>
+            <dt>agent</dt>
+            <dd>{invite.manifest.agent}</dd>
+          </div>
+          <div>
+            <dt>turns</dt>
+            <dd>{invite.manifest.turnCount}</dd>
+          </div>
+          <div>
+            <dt>size</dt>
+            <dd>{fmtBytes(invite.manifest.bytes)}</dd>
+          </div>
           <div>
             <dt>tool outputs</dt>
             <dd>
               {#if invite.manifest.toolOutputs === "stripped"}
-                <span class="invite-pill ok">stripped ({invite.manifest.strippedCount})</span>
+                <span class="invite-pill ok"
+                  >stripped ({invite.manifest.strippedCount})</span
+                >
               {:else}
                 <span class="invite-pill warn">included — full transcript</span>
               {/if}
@@ -239,7 +281,8 @@
                 <span class="invite-pill warn">NOT redacted</span>
               {:else}
                 <span class="invite-pill ok">
-                  redacted{#if (invite.manifest.redactionCount ?? 0) > 0} ({invite.manifest.redactionCount}){/if}
+                  redacted{#if (invite.manifest.redactionCount ?? 0) > 0}
+                    ({invite.manifest.redactionCount}){/if}
                 </span>
               {/if}
             </dd>
@@ -252,12 +295,17 @@
 
         {#if invite.needsClone}
           <p class="invite-warn">
-            This repo isn't cloned locally. Add <code>{invite.manifest.originRepoRemote}</code> as a repo first, then re-open this invite.
+            This repo isn't cloned locally. Add <code
+              >{invite.manifest.originRepoRemote}</code
+            > as a repo first, then re-open this invite.
           </p>
         {/if}
 
         {#if action}
-          <p class="invite-result {action.kind === 'ok' ? 'ok' : 'err'}" role="alert">
+          <p
+            class="invite-result {action.kind === 'ok' ? 'ok' : 'err'}"
+            role="alert"
+          >
             {action.message}
           </p>
         {/if}
@@ -266,24 +314,26 @@
           <div class="invite-conflict">
             {#if conflict.supersetOfExisting}
               <p class="invite-conflict-head">
-                You already have this session.
-                The new offer adds <strong>{conflict.incomingAfter}</strong>
-                message{conflict.incomingAfter === 1 ? "" : "s"} on top of the
-                existing {conflict.commonPrefix} you have.
+                You already have this session. The new offer adds <strong
+                  >{conflict.incomingAfter}</strong
+                >
+                message{conflict.incomingAfter === 1 ? "" : "s"} on top of the existing
+                {conflict.commonPrefix} you have.
               </p>
             {:else}
               <p class="invite-conflict-head">
-                Diverged from your copy at message {conflict.commonPrefix}.
-                You have <strong>{conflict.existingAfter}</strong>
-                message{conflict.existingAfter === 1 ? "" : "s"} the sender
-                doesn't; sender has
+                Diverged from your copy at message {conflict.commonPrefix}. You
+                have <strong>{conflict.existingAfter}</strong>
+                message{conflict.existingAfter === 1 ? "" : "s"} the sender doesn't;
+                sender has
                 <strong>{conflict.incomingAfter}</strong>
                 message{conflict.incomingAfter === 1 ? "" : "s"} you don't.
               </p>
             {/if}
             <p class="invite-conflict-help">
               <strong>Replace</strong> overwrites your local copy.
-              <strong>Keep both</strong> saves the incoming next to it as a sibling file.
+              <strong>Keep both</strong> saves the incoming next to it as a
+              sibling file.
               <strong>Cancel</strong> leaves everything alone.
             </p>
             <div class="invite-buttons">
@@ -291,20 +341,23 @@
                 type="button"
                 class="invite-btn"
                 disabled={actionPending}
-                on:click={() => { conflict = null; }}
-              >Cancel</button>
+                on:click={() => {
+                  conflict = null;
+                }}>Cancel</button
+              >
               <button
                 type="button"
                 class="invite-btn"
                 disabled={actionPending}
-                on:click={() => accept("keep_both")}
-              >Keep both</button>
+                on:click={() => accept("keep_both")}>Keep both</button
+              >
               <button
                 type="button"
                 class="invite-btn invite-accept"
                 disabled={actionPending}
                 on:click={() => accept("replace")}
-              >{conflict.supersetOfExisting ? "Update" : "Replace"}</button>
+                >{conflict.supersetOfExisting ? "Update" : "Replace"}</button
+              >
             </div>
           </div>
         {:else}
@@ -313,14 +366,15 @@
               type="button"
               class="invite-btn invite-decline"
               disabled={actionPending}
-              on:click={decline}
-            >Decline</button>
+              on:click={decline}>Decline</button
+            >
             <button
               type="button"
               class="invite-btn invite-accept"
               disabled={actionPending || invite.needsClone}
               on:click={() => accept()}
-            >{invite.needsClone ? "Clone first" : "Accept"}</button>
+              >{invite.needsClone ? "Clone first" : "Accept"}</button
+            >
           </div>
         {/if}
       {/if}

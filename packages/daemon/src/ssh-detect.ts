@@ -26,8 +26,26 @@ export function parseSshArgs(
   let user: string | undefined;
 
   const FLAGS_WITH_ARG = new Set([
-    "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J",
-    "-L", "-l", "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+    "-b",
+    "-c",
+    "-D",
+    "-E",
+    "-e",
+    "-F",
+    "-I",
+    "-i",
+    "-J",
+    "-L",
+    "-l",
+    "-m",
+    "-O",
+    "-o",
+    "-p",
+    "-Q",
+    "-R",
+    "-S",
+    "-W",
+    "-w",
   ]);
 
   let i = 1;
@@ -78,7 +96,13 @@ export function parseSshArgs(
 export function detectSshFromCmd(cmd: string[]): SshSession | null {
   const joined = cmd.join(" ");
   const parsed = parseSshArgs(joined);
-  if (parsed) return { sshPid: 0, user: parsed.user, host: parsed.host, port: parsed.port };
+  if (parsed)
+    return {
+      sshPid: 0,
+      user: parsed.user,
+      host: parsed.host,
+      port: parsed.port,
+    };
   for (const arg of cmd) {
     const p = parseSshArgs(arg);
     if (p) return { sshPid: 0, user: p.user, host: p.host, port: p.port };

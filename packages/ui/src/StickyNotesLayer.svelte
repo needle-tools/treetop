@@ -75,7 +75,9 @@
    *  to front — same animation the picker path uses, just no human
    *  in the loop. */
   export async function spawnLinkWithTarget(
-    args: Omit<SpawnArgs, "kind"> & { target: NonNullable<SpawnArgs["target"]> },
+    args: Omit<SpawnArgs, "kind"> & {
+      target: NonNullable<SpawnArgs["target"]>;
+    },
   ): Promise<void> {
     await spawnNote({ ...args, kind: "link" });
   }
@@ -188,22 +190,15 @@
   }
   export let repos: AnchorableRepo[] = [];
   export let onCommandLinkOpen:
-    | ((
-        payload: {
-          linkId: string;
-          repoId?: string;
-          wtPath?: string;
-          revealTerminal?: boolean;
-        },
-      ) => void)
+    | ((payload: {
+        linkId: string;
+        repoId?: string;
+        wtPath?: string;
+        revealTerminal?: boolean;
+      }) => void)
     | null = null;
   export let onCommandLinkEdit:
-    | ((
-        payload: {
-          linkId: string;
-          repoId?: string;
-        },
-      ) => void)
+    | ((payload: { linkId: string; repoId?: string }) => void)
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
@@ -220,7 +215,7 @@
    *  and rewrites the entry so the legacy field disappears on first
    *  read. */
   interface NoteOffset {
-    offsetXFrac?: number;    // 0..1 of row width
+    offsetXFrac?: number; // 0..1 of row width
     offsetY?: number;
     /** Persisted user-chosen rotation in degrees (±30 max). Set by
      *  the drag's `rotate` event when the user releases the note —
@@ -270,7 +265,10 @@
   let attachmentDropCandidateNoteId: string | null = null;
   let attachmentDragAvailable = false;
   let attachmentDragSourceNoteId: string | null = null;
-  let dragStartOffsets: Record<string, (NoteOffset & { offsetX?: number }) | null> = {};
+  let dragStartOffsets: Record<
+    string,
+    (NoteOffset & { offsetX?: number }) | null
+  > = {};
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
@@ -315,7 +313,7 @@
   function tiltFor(id: string): number {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
-    return ((h % 5) - 2);
+    return (h % 5) - 2;
   }
 
   function loadOffsets(): void {
@@ -421,7 +419,9 @@
   }
 
   function primaryDropAnchor(note: NoteShape): string | undefined {
-    return note.anchors.find((a) => a.startsWith("worktree:") || a.startsWith("repo:"));
+    return note.anchors.find(
+      (a) => a.startsWith("worktree:") || a.startsWith("repo:"),
+    );
   }
 
   function noteCanDropOnAnchor(note: NoteShape, anchor: string): boolean {
@@ -439,7 +439,11 @@
   ): { anchor: string; li: HTMLElement } | null {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
       const li = (el as HTMLElement).closest<HTMLElement>("[data-wt-row]");
-      if (!li || li.classList.contains("row-folded") || li.classList.contains("row-notes-hidden")) {
+      if (
+        !li ||
+        li.classList.contains("row-folded") ||
+        li.classList.contains("row-notes-hidden")
+      ) {
         continue;
       }
       const anchor = anchorFromRow(li);
@@ -448,7 +452,8 @@
 
     for (const li of visibleWorktreeRows()) {
       const r = li.getBoundingClientRect();
-      const ownedBottom = r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
+      const ownedBottom =
+        r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
       if (
         clientX >= r.left &&
         clientX <= r.right &&
@@ -463,15 +468,20 @@
     let best: { li: HTMLElement; dist: number } | null = null;
     for (const li of visibleWorktreeRows()) {
       const r = li.getBoundingClientRect();
-      const ownedBottom = r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
+      const ownedBottom =
+        r.bottom + (parseFloat(li.style.marginBottom || "0") || 0);
       const dy =
-        clientY < r.top ? r.top - clientY :
-        clientY > ownedBottom ? clientY - ownedBottom :
-        0;
+        clientY < r.top
+          ? r.top - clientY
+          : clientY > ownedBottom
+            ? clientY - ownedBottom
+            : 0;
       const dx =
-        clientX < r.left ? r.left - clientX :
-        clientX > r.right ? clientX - r.right :
-        0;
+        clientX < r.left
+          ? r.left - clientX
+          : clientX > r.right
+            ? clientX - r.right
+            : 0;
       const dist = dy * dy + dx * dx * 0.15;
       if (!best || dist < best.dist) best = { li, dist };
     }
@@ -484,12 +494,14 @@
     clientX: number,
     clientY: number,
   ): { anchor: string; li: HTMLElement } | null {
-    const rows = visibleWorktreeRows()
-      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const rows = visibleWorktreeRows().sort(
+      (a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top,
+    );
     for (let i = 0; i < rows.length; i++) {
       const li = rows[i]!;
       const r = li.getBoundingClientRect();
-      const nextTop = rows[i + 1]?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
+      const nextTop =
+        rows[i + 1]?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
       const ownedBottom = Math.max(
         r.bottom + (parseFloat(li.style.marginBottom || "0") || 0),
         Math.min(nextTop, r.bottom + 24),
@@ -529,15 +541,23 @@
     );
   }
 
-  function noteAtPoint(clientX: number, clientY: number, excludeId?: string): NoteShape | null {
+  function noteAtPoint(
+    clientX: number,
+    clientY: number,
+    excludeId?: string,
+  ): NoteShape | null {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
-      const sticky = (el as HTMLElement).closest<HTMLElement>(".sticky[data-note-id]");
+      const sticky = (el as HTMLElement).closest<HTMLElement>(
+        ".sticky[data-note-id]",
+      );
       const id = sticky?.dataset.noteId;
       if (!id || id === excludeId) continue;
       const note = notes.find((n) => n.id === id);
       if (note) return note;
     }
-    for (const sticky of document.querySelectorAll<HTMLElement>(".sticky[data-note-id]")) {
+    for (const sticky of document.querySelectorAll<HTMLElement>(
+      ".sticky[data-note-id]",
+    )) {
       const id = sticky.dataset.noteId;
       if (!id || id === excludeId) continue;
       const r = sticky.getBoundingClientRect();
@@ -560,7 +580,9 @@
     excludeId?: string,
   ): NoteShape | null {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
-      const zone = (el as HTMLElement).closest<HTMLElement>("[data-note-attachment-zone]");
+      const zone = (el as HTMLElement).closest<HTMLElement>(
+        "[data-note-attachment-zone]",
+      );
       if (!zone) continue;
       const sticky = zone.closest<HTMLElement>(".sticky[data-note-id]");
       const id = sticky?.dataset.noteId;
@@ -571,12 +593,14 @@
     return null;
   }
 
-  function attachmentZoneNoteFromEventTarget(target: EventTarget | null): NoteShape | null {
+  function attachmentZoneNoteFromEventTarget(
+    target: EventTarget | null,
+  ): NoteShape | null {
     if (!(target instanceof Element)) return null;
     const zone = target.closest<HTMLElement>("[data-note-attachment-zone]");
     const sticky = zone?.closest<HTMLElement>(".sticky[data-note-id]");
     const id = sticky?.dataset.noteId;
-    const note = id ? notes.find((n) => n.id === id) ?? null : null;
+    const note = id ? (notes.find((n) => n.id === id) ?? null) : null;
     return note && note.kind !== "link" && note.kind !== "emoji" ? note : null;
   }
 
@@ -596,11 +620,18 @@
     excludeId?: string,
   ): NoteShape | null {
     let best: { note: NoteShape; dist: number } | null = null;
-    for (const sticky of document.querySelectorAll<HTMLElement>(".sticky[data-note-id]")) {
+    for (const sticky of document.querySelectorAll<HTMLElement>(
+      ".sticky[data-note-id]",
+    )) {
       const id = sticky.dataset.noteId;
       if (!id || id === excludeId) continue;
       const note = notes.find((n) => n.id === id);
-      if (!note || !noteCanReceiveAttachments(note) || noteIsDetachedAttachment(note)) continue;
+      if (
+        !note ||
+        !noteCanReceiveAttachments(note) ||
+        noteIsDetachedAttachment(note)
+      )
+        continue;
       const r = sticky.getBoundingClientRect();
       const xSlack = 45;
       const yAbove = 118;
@@ -614,9 +645,11 @@
         continue;
       }
       const dx =
-        clientX < r.left ? r.left - clientX :
-        clientX > r.right ? clientX - r.right :
-        0;
+        clientX < r.left
+          ? r.left - clientX
+          : clientX > r.right
+            ? clientX - r.right
+            : 0;
       const dy = Math.abs(clientY - r.bottom);
       const dist = dy * dy + dx * dx * 0.25;
       if (!best || dist < best.dist) best = { note, dist };
@@ -625,11 +658,16 @@
   }
 
   function isTerminalEventTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && !!target.closest(".xterm-host, .terminal-wrap");
+    return (
+      target instanceof Element &&
+      !!target.closest(".xterm-host, .terminal-wrap")
+    );
   }
 
   function isAttachmentModalEventTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && !!target.closest(".attachment-media-scrim");
+    return (
+      target instanceof Element && !!target.closest(".attachment-media-scrim")
+    );
   }
 
   function isEditableEventTarget(target: EventTarget | null): boolean {
@@ -643,14 +681,19 @@
     sourceRaw: string,
   ): string | null {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
-      const chip = (el as HTMLElement).closest<HTMLElement>("[data-inline-attachment-raw]");
+      const chip = (el as HTMLElement).closest<HTMLElement>(
+        "[data-inline-attachment-raw]",
+      );
       const raw = chip?.dataset.inlineAttachmentRaw;
       if (raw && raw !== sourceRaw) return raw;
     }
     return null;
   }
 
-  function sessionColumnAtPoint(clientX: number, clientY: number): HTMLElement | null {
+  function sessionColumnAtPoint(
+    clientX: number,
+    clientY: number,
+  ): HTMLElement | null {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
       const col = (el as HTMLElement).closest<HTMLElement>(
         ".session-col[data-session-source]",
@@ -733,19 +776,25 @@
     const rowRect = li.getBoundingClientRect();
     const rowDocLeft = rowRect.left + window.scrollX;
     const rowDocBottom = rowRect.bottom + window.scrollY;
-    const grabX = grab?.grabXFrac !== undefined && grab.width !== undefined
-      ? grab.grabXFrac * grab.width
-      : NOTE_W / 2;
-    const grabY = grab?.grabYFrac !== undefined && grab.height !== undefined
-      ? grab.grabYFrac * grab.height
-      : 28;
+    const grabX =
+      grab?.grabXFrac !== undefined && grab.width !== undefined
+        ? grab.grabXFrac * grab.width
+        : NOTE_W / 2;
+    const grabY =
+      grab?.grabYFrac !== undefined && grab.height !== undefined
+        ? grab.grabYFrac * grab.height
+        : 28;
     const desiredX = clientX + window.scrollX - grabX;
     const desiredY = clientY + window.scrollY - grabY;
-    const offsetXFrac = rowRect.width > 0
-      ? Math.min(1, Math.max(0, (desiredX - rowDocLeft) / rowRect.width))
-      : DEFAULT_OFFSET_X_FRAC;
+    const offsetXFrac =
+      rowRect.width > 0
+        ? Math.min(1, Math.max(0, (desiredX - rowDocLeft) / rowRect.width))
+        : DEFAULT_OFFSET_X_FRAC;
     const baseY = rowDocBottom - NOTE_OVERLAP;
-    const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
+    const wiggleUp = Math.min(
+      NOTE_WIGGLE_UP_PX,
+      rowRect.height * NOTE_WIGGLE_UP_PCT,
+    );
     const offsetY = Math.min(
       NOTE_WIGGLE_DOWN_PX,
       Math.max(-wiggleUp, desiredY - baseY),
@@ -910,8 +959,7 @@
             continue;
           }
           const w = n.kind === "link" ? LINK_W : NOTE_W;
-          const docX =
-            rect.left + rect.width / 2 - w / 2 + window.scrollX;
+          const docX = rect.left + rect.width / 2 - w / 2 + window.scrollX;
           const docY = rect.bottom + 8 + window.scrollY;
           nextStaging[n.id] = { docX, docY, anchor };
           stagingChanged = true;
@@ -998,9 +1046,15 @@
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
       const docX =
-        args.originRect.left + args.originRect.width / 2 - NOTE_W / 2 + window.scrollX;
+        args.originRect.left +
+        args.originRect.width / 2 -
+        NOTE_W / 2 +
+        window.scrollX;
       const docY = args.originRect.bottom + 8 + window.scrollY;
-      staging = { ...staging, [created.id]: { docX, docY, anchor: args.anchor } };
+      staging = {
+        ...staging,
+        [created.id]: { docX, docY, anchor: args.anchor },
+      };
       if (kind === "emoji") {
         const scale = 0.85 + Math.random() * 0.3;
         const prev = offsets[created.id] ?? {};
@@ -1062,10 +1116,14 @@
   }
 
   function hasInlineAttachmentDrag(e: DragEvent): boolean {
-    return Array.from(e.dataTransfer?.types ?? []).includes(INLINE_ATTACHMENT_DRAG_MIME);
+    return Array.from(e.dataTransfer?.types ?? []).includes(
+      INLINE_ATTACHMENT_DRAG_MIME,
+    );
   }
 
-  function parseInlineAttachmentDrag(e: DragEvent): InlineAttachmentDragPayload | null {
+  function parseInlineAttachmentDrag(
+    e: DragEvent,
+  ): InlineAttachmentDragPayload | null {
     const raw = e.dataTransfer?.getData(INLINE_ATTACHMENT_DRAG_MIME);
     if (!raw) return null;
     try {
@@ -1092,7 +1150,10 @@
 
   function hasLinkTargetDrag(e: DragEvent): boolean {
     const types = Array.from(e.dataTransfer?.types ?? []);
-    return types.includes(LINK_TARGET_DRAG_MIME) || types.includes(SESSION_LINK_DRAG_MIME);
+    return (
+      types.includes(LINK_TARGET_DRAG_MIME) ||
+      types.includes(SESSION_LINK_DRAG_MIME)
+    );
   }
 
   function imageFileFromTransfer(dt: DataTransfer | null): File | null {
@@ -1119,8 +1180,12 @@
   function hasImageFileTransfer(dt: DataTransfer | null): boolean {
     if (!dt) return false;
     return (
-      Array.from(dt.files ?? []).some((file) => file.type.startsWith("image/")) ||
-      Array.from(dt.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))
+      Array.from(dt.files ?? []).some((file) =>
+        file.type.startsWith("image/"),
+      ) ||
+      Array.from(dt.items ?? []).some(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      )
     );
   }
 
@@ -1141,7 +1206,8 @@
   ): Promise<string | null> {
     try {
       const shrunk = await shrinkImageBlob(file);
-      const filename = file.name && file.name !== "blob" ? file.name : undefined;
+      const filename =
+        file.name && file.name !== "blob" ? file.name : undefined;
       const form = new FormData();
       form.append(
         "file",
@@ -1165,13 +1231,18 @@
     }
   }
 
-  async function appendImageAttachmentToNote(note: NoteShape, raw: string): Promise<void> {
+  async function appendImageAttachmentToNote(
+    note: NoteShape,
+    raw: string,
+  ): Promise<void> {
     if (note.kind === "link" || note.kind === "emoji") return;
     try {
       const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: appendInlineAttachmentRef(note.body, raw) }),
+        body: JSON.stringify({
+          body: appendInlineAttachmentRef(note.body, raw),
+        }),
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
@@ -1215,12 +1286,17 @@
     const targetNote =
       attachmentZoneNoteFromEventTarget(eventTarget) ||
       attachmentZoneNoteAtPoint(clientX, clientY);
-    if (targetNote && targetNote.kind !== "link" && targetNote.kind !== "emoji") {
+    if (
+      targetNote &&
+      targetNote.kind !== "link" &&
+      targetNote.kind !== "emoji"
+    ) {
       await appendImageAttachmentToNote(targetNote, raw);
       return;
     }
     const rowTarget = dropTargetAt(clientX, clientY);
-    if (rowTarget) await createImageAttachmentNote(raw, rowTarget, clientX, clientY);
+    if (rowTarget)
+      await createImageAttachmentNote(raw, rowTarget, clientX, clientY);
   }
 
   function parseLinkTargetDrag(e: DragEvent): NoteShape["target"] | null {
@@ -1257,7 +1333,9 @@
         ...(typeof obj.repoId === "string" ? { repoId: obj.repoId } : {}),
         ...(typeof obj.cwd === "string" ? { cwd: obj.cwd } : {}),
         ...(typeof obj.command === "string" ? { command: obj.command } : {}),
-        ...(obj.runMode === "internal" || obj.runMode === "external" || obj.runMode === "shell"
+        ...(obj.runMode === "internal" ||
+        obj.runMode === "external" ||
+        obj.runMode === "shell"
           ? { runMode: obj.runMode }
           : {}),
       };
@@ -1267,16 +1345,19 @@
   }
 
   function onWindowDragOver(e: DragEvent): void {
-    if (isTerminalEventTarget(e.target) || isAttachmentModalEventTarget(e.target)) {
+    if (
+      isTerminalEventTarget(e.target) ||
+      isAttachmentModalEventTarget(e.target)
+    ) {
       resetAttachmentDrag();
       return;
     }
     attachmentDragAvailable = transferCanAppendToNote(e);
     attachmentDropCandidateNoteId = attachmentDragAvailable
-      ? attachmentCandidateNoteAtPoint(e.clientX, e.clientY)?.id ?? null
+      ? (attachmentCandidateNoteAtPoint(e.clientX, e.clientY)?.id ?? null)
       : null;
     attachmentDropNoteId = attachmentDragAvailable
-      ? attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null
+      ? (attachmentZoneNoteAtPoint(e.clientX, e.clientY)?.id ?? null)
       : null;
     if (hasInlineAttachmentDrag(e)) {
       e.preventDefault();
@@ -1285,7 +1366,8 @@
     }
     if (
       hasLinkTargetDrag(e) &&
-      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
+      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) ||
+        dropTargetAt(e.clientX, e.clientY))
     ) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
@@ -1293,7 +1375,8 @@
     }
     if (
       hasImageFileTransfer(e.dataTransfer) &&
-      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) || dropTargetAt(e.clientX, e.clientY))
+      (attachmentZoneNoteAtPoint(e.clientX, e.clientY) ||
+        dropTargetAt(e.clientX, e.clientY))
     ) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
@@ -1305,18 +1388,21 @@
     }
   }
 
-  function updatePinnedNoteAttachmentTarget(clientX: number, clientY: number): void {
+  function updatePinnedNoteAttachmentTarget(
+    clientX: number,
+    clientY: number,
+  ): void {
     if (!draggingPinnedNoteId) return;
     const source = notes.find((n) => n.id === draggingPinnedNoteId);
     attachmentDragAvailable = !!source && pinnedNoteCanAppend(source);
-    attachmentDropCandidateNoteId =
-      attachmentDragAvailable
-        ? attachmentCandidateNoteAtPoint(clientX, clientY, draggingPinnedNoteId)?.id ?? null
-        : null;
-    attachmentDropNoteId =
-      attachmentDragAvailable
-        ? attachmentZoneNoteAtPoint(clientX, clientY, draggingPinnedNoteId)?.id ?? null
-        : null;
+    attachmentDropCandidateNoteId = attachmentDragAvailable
+      ? (attachmentCandidateNoteAtPoint(clientX, clientY, draggingPinnedNoteId)
+          ?.id ?? null)
+      : null;
+    attachmentDropNoteId = attachmentDragAvailable
+      ? (attachmentZoneNoteAtPoint(clientX, clientY, draggingPinnedNoteId)
+          ?.id ?? null)
+      : null;
   }
 
   async function onWindowDrop(e: DragEvent): Promise<void> {
@@ -1426,7 +1512,12 @@
       types: e.clipboardData ? Array.from(e.clipboardData.types) : [],
     }).then(async (raw) => {
       if (!raw) return;
-      await placeImageAttachment(raw, lastPointer.clientX, lastPointer.clientY, e.target);
+      await placeImageAttachment(
+        raw,
+        lastPointer.clientX,
+        lastPointer.clientY,
+        e.target,
+      );
     });
   }
 
@@ -1455,7 +1546,9 @@
         const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ anchors: [target.anchor, ...auxiliaryAnchors] }),
+          body: JSON.stringify({
+            anchors: [target.anchor, ...auxiliaryAnchors],
+          }),
         });
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
@@ -1468,11 +1561,14 @@
     }
 
     try {
-      const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: nextSourceBody }),
-      });
+      const sourceRes = await fetch(
+        `/api/notes/${encodeURIComponent(source.id)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: nextSourceBody }),
+        },
+      );
       if (!sourceRes.ok) return;
       const updatedSource = (await sourceRes.json()) as NoteShape;
       notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
@@ -1510,10 +1606,16 @@
   ): Promise<void> {
     const source = notes.find((n) => n.id === payload.sourceNoteId);
     if (!source) return;
-    if (payload.sourceNoteId !== targetNote.id && payload.attachment.kind === "note") {
+    if (
+      payload.sourceNoteId !== targetNote.id &&
+      payload.attachment.kind === "note"
+    ) {
       return;
     }
-    if (payload.sourceNoteId !== targetNote.id && !notesShareDropAnchor(source, targetNote)) {
+    if (
+      payload.sourceNoteId !== targetNote.id &&
+      !notesShareDropAnchor(source, targetNote)
+    ) {
       return;
     }
     if (payload.sourceNoteId === targetNote.id) {
@@ -1535,7 +1637,10 @@
       } catch {}
       return;
     }
-    const nextTargetBody = appendInlineAttachmentRef(targetNote.body, payload.raw);
+    const nextTargetBody = appendInlineAttachmentRef(
+      targetNote.body,
+      payload.raw,
+    );
     const sourceParts = parseInlineAttachments(source.body);
     const sourceIsStandalone =
       sourceParts.length === 1 &&
@@ -1547,11 +1652,14 @@
     if (!sourceIsStandalone && nextSourceBody === source.body) return;
 
     try {
-      const targetRes = await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: nextTargetBody }),
-      });
+      const targetRes = await fetch(
+        `/api/notes/${encodeURIComponent(targetNote.id)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: nextTargetBody }),
+        },
+      );
       if (!targetRes.ok) return;
       const updatedTarget = (await targetRes.json()) as NoteShape;
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
@@ -1571,11 +1679,14 @@
         }
         notes = notes.filter((n) => n.id !== source.id);
       } else {
-        const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: nextSourceBody }),
-        });
+        const sourceRes = await fetch(
+          `/api/notes/${encodeURIComponent(source.id)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: nextSourceBody }),
+          },
+        );
         if (!sourceRes.ok) {
           await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
             method: "PUT",
@@ -1586,7 +1697,9 @@
           return;
         }
         const updatedSource = (await sourceRes.json()) as NoteShape;
-        notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
+        notes = notes.map((n) =>
+          n.id === updatedSource.id ? updatedSource : n,
+        );
       }
       bringToFront(targetNote.id);
       tick++;
@@ -1620,10 +1733,7 @@
         0,
         document.documentElement.scrollWidth - NOTE_W - 4,
       );
-      const toX = Math.min(
-        Math.max(0, docLeft + offsetXFrac * r.width),
-        maxX,
-      );
+      const toX = Math.min(Math.max(0, docLeft + offsetXFrac * r.width), maxX);
       const toY = docBottom - NOTE_OVERLAP;
       flyingNotes = {
         ...flyingNotes,
@@ -1662,7 +1772,8 @@
     const max = Math.max(0, 1 - noteFrac);
     const occupied = notes
       .filter(
-        (n) => n.id !== excludeId && n.anchors.includes(anchor) && !staging[n.id],
+        (n) =>
+          n.id !== excludeId && n.anchors.includes(anchor) && !staging[n.id],
       )
       .map((n) => offsets[n.id]?.offsetXFrac)
       .filter((f): f is number => typeof f === "number")
@@ -1696,9 +1807,10 @@
     e: CustomEvent<{
       id: string;
       body: string;
-      target?:
-        | { type: "url" | "commit" | "session" | "file" | "command"; value: string }
-        | null;
+      target?: {
+        type: "url" | "commit" | "session" | "file" | "command";
+        value: string;
+      } | null;
       kind?: "note" | "link";
     }>,
   ): Promise<void> {
@@ -1758,9 +1870,9 @@
    *  is deleted: any undo path (toast, events badge, Ctrl+Z) finds
    *  the entry waiting and restores the note to its old spot. */
   interface Undoable {
-    key: number;            // stable {#each} key
-    eventId: string;        // /api/events/<eventId>/undo target
-    body: string;           // for the toast text only
+    key: number; // stable {#each} key
+    eventId: string; // /api/events/<eventId>/undo target
+    body: string; // for the toast text only
     timeoutId: ReturnType<typeof setTimeout>;
   }
   let undoables: Undoable[] = [];
@@ -1774,7 +1886,9 @@
     const isStaging = !!staging[id];
     if (isStaging) {
       try {
-        await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
+        await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+        });
       } catch {}
       notes = notes.filter((n) => n.id !== id);
       const next = { ...staging };
@@ -1817,10 +1931,7 @@
       const timeoutId = setTimeout(() => {
         undoables = undoables.filter((u) => u.key !== key);
       }, UNDO_GRACE_MS);
-      undoables = [
-        ...undoables,
-        { key, eventId, body: note.body, timeoutId },
-      ];
+      undoables = [...undoables, { key, eventId, body: note.body, timeoutId }];
     } catch {}
   }
 
@@ -1847,7 +1958,13 @@
   }
 
   function handleMove(
-    e: CustomEvent<{ id: string; x: number; y: number; clientX?: number; clientY?: number }>,
+    e: CustomEvent<{
+      id: string;
+      x: number;
+      y: number;
+      clientX?: number;
+      clientY?: number;
+    }>,
   ): void {
     // e.detail.{x,y} arrive in document coordinates (StickyNote's
     // drag handler adds window.scrollX/Y). Translate them back to
@@ -1861,12 +1978,16 @@
     const rowRect = li.getBoundingClientRect();
     const rowDocLeft = rowRect.left + window.scrollX;
     const rowDocBottom = rowRect.bottom + window.scrollY;
-    const rawFrac = rowRect.width > 0
-      ? (e.detail.x - rowDocLeft) / rowRect.width
-      : DEFAULT_OFFSET_X_FRAC;
+    const rawFrac =
+      rowRect.width > 0
+        ? (e.detail.x - rowDocLeft) / rowRect.width
+        : DEFAULT_OFFSET_X_FRAC;
     const offsetXFrac = Math.min(1, Math.max(0, rawFrac));
     const baseY = rowDocBottom - NOTE_OVERLAP;
-    const wiggleUp = Math.min(NOTE_WIGGLE_UP_PX, rowRect.height * NOTE_WIGGLE_UP_PCT);
+    const wiggleUp = Math.min(
+      NOTE_WIGGLE_UP_PX,
+      rowRect.height * NOTE_WIGGLE_UP_PCT,
+    );
     // Both kinds use the same generous downward range now —
     // applyRowMargins' vh-based cap (70vh for notes, 40vh for
     // links) is the real bound on how far the row can grow, so
@@ -1900,7 +2021,9 @@
 
   /** Drag-end rotation snapshot from StickyNote. Persist verbatim;
    *  the child already clamped to ±30° before dispatching. */
-  function handleRotate(e: CustomEvent<{ id: string; rotation: number }>): void {
+  function handleRotate(
+    e: CustomEvent<{ id: string; rotation: number }>,
+  ): void {
     const prev = offsets[e.detail.id] ?? {};
     offsets = {
       ...offsets,
@@ -1909,7 +2032,9 @@
     saveOffsets();
   }
 
-  function handleScale(e: CustomEvent<{ id: string; emojiScale: number }>): void {
+  function handleScale(
+    e: CustomEvent<{ id: string; emojiScale: number }>,
+  ): void {
     const prev = offsets[e.detail.id] ?? {};
     const oldScale = prev.emojiScale ?? 1;
     const newScale = e.detail.emojiScale;
@@ -1940,7 +2065,9 @@
       [e.detail.id]: {
         ...prev,
         emojiScale: newScale,
-        ...(nextOffsetXFrac !== undefined ? { offsetXFrac: nextOffsetXFrac } : {}),
+        ...(nextOffsetXFrac !== undefined
+          ? { offsetXFrac: nextOffsetXFrac }
+          : {}),
         ...(nextOffsetY !== undefined ? { offsetY: nextOffsetY } : {}),
       },
     };
@@ -2006,7 +2133,9 @@
       return makeEmojiAttachmentRef({ body: note.body });
     }
     if (note.kind === "link") {
-      return note.target ? makeLinkAttachmentRef({ target: note.target }) : null;
+      return note.target
+        ? makeLinkAttachmentRef({ target: note.target })
+        : null;
     }
     const parts = parseInlineAttachments(note.body);
     if (parts.length === 1 && parts[0]?.kind === "attachment") {
@@ -2028,10 +2157,12 @@
     if (attachmentDropCandidateNoteId !== note.id) return false;
     if (draggingPinnedNoteId) {
       const source = notes.find((n) => n.id === draggingPinnedNoteId);
-      return !!source &&
+      return (
+        !!source &&
         source.id !== note.id &&
         pinnedNoteCanAppend(source) &&
-        notesShareDropAnchor(source, note);
+        notesShareDropAnchor(source, note)
+      );
     }
     return attachmentDragAvailable;
   }
@@ -2053,7 +2184,9 @@
       const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: appendInlineAttachmentRef(note.body, raw) }),
+        body: JSON.stringify({
+          body: appendInlineAttachmentRef(note.body, raw),
+        }),
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
@@ -2096,16 +2229,18 @@
   ): Promise<void> {
     if (note.kind === "emoji") return;
     if (note.kind === "link") {
-      if (note.target?.type !== "session" && note.target?.type !== "command") return;
+      if (note.target?.type !== "session" && note.target?.type !== "command")
+        return;
       if (
         note.target.type === "session" &&
         sessionLinkTargetMatchesSource(note.target, sessionSource)
       ) {
         return;
       }
-      const text = note.target.type === "session"
-        ? `Session: ${note.target.value}`
-        : `Command: ${note.target.command ?? note.target.label ?? note.target.value}`;
+      const text =
+        note.target.type === "session"
+          ? `Session: ${note.target.value}`
+          : `Command: ${note.target.command ?? note.target.label ?? note.target.value}`;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {
           detail: { source: sessionSource, chunks: [text] },
@@ -2141,7 +2276,11 @@
       await stageNoteBodyIntoSessionPrompt(source, sessionSource);
       return;
     }
-    const target = attachmentZoneNoteAtPoint(e.detail.clientX, e.detail.clientY, source.id);
+    const target = attachmentZoneNoteAtPoint(
+      e.detail.clientX,
+      e.detail.clientY,
+      source.id,
+    );
     if (target && target.kind !== "link" && target.kind !== "emoji") {
       if (!notesShareDropAnchor(source, target)) {
         restoreDragStartOffset(source.id);
@@ -2166,7 +2305,12 @@
     }
     const rowTarget = dropTargetAt(e.detail.clientX, e.detail.clientY);
     if (rowTarget) {
-      await movePinnedNoteToRow(source, rowTarget, e.detail.clientX, e.detail.clientY);
+      await movePinnedNoteToRow(
+        source,
+        rowTarget,
+        e.detail.clientX,
+        e.detail.clientY,
+      );
       clearDragState(source.id);
       return;
     }
@@ -2179,18 +2323,26 @@
     raw: string,
   ): Promise<void> {
     try {
-      const targetRes = await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: appendInlineAttachmentRef(target.body, raw) }),
-      });
+      const targetRes = await fetch(
+        `/api/notes/${encodeURIComponent(target.id)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: appendInlineAttachmentRef(target.body, raw),
+          }),
+        },
+      );
       if (!targetRes.ok) return;
       const updatedTarget = (await targetRes.json()) as NoteShape;
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
-      const sourceRes = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
-        method: "DELETE",
-      });
+      const sourceRes = await fetch(
+        `/api/notes/${encodeURIComponent(source.id)}`,
+        {
+          method: "DELETE",
+        },
+      );
       if (!sourceRes.ok) {
         await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
           method: "PUT",
@@ -2221,7 +2373,9 @@
       const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ anchors: [rowTarget.anchor, ...auxiliaryAnchors] }),
+        body: JSON.stringify({
+          anchors: [rowTarget.anchor, ...auxiliaryAnchors],
+        }),
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
@@ -2373,8 +2527,7 @@
       // "constant breathing room between chip and next row"
       // regardless of how far the user pulled the chip.
       //
-      const wantUnclamped =
-        stickyRect.bottom + ROW_SAFETY - liRect.bottom;
+      const wantUnclamped = stickyRect.bottom + ROW_SAFETY - liRect.bottom;
       const want = Math.max(0, wantUnclamped);
       const prev = need.get(li) ?? 0;
       if (want > prev) need.set(li, want);
@@ -2486,7 +2639,10 @@
 
   onMount(() => {
     loadOffsets();
-    lastPointer = { clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 };
+    lastPointer = {
+      clientX: window.innerWidth / 2,
+      clientY: window.innerHeight / 2,
+    };
     _registerLayer(handleSpawn);
     _registerFlyRestore(handleFlyRestore);
     void refresh();
@@ -2594,7 +2750,8 @@
         attachmentDropAvailable={attachmentDropAvailableById[note.id] ?? false}
         attachmentDropActive={attachmentDropNoteId === note.id}
         attachmentDropSourceActive={!!attachmentDropNoteId &&
-          (draggingPinnedNoteId === note.id || attachmentDragSourceNoteId === note.id)}
+          (draggingPinnedNoteId === note.id ||
+            attachmentDragSourceNoteId === note.id)}
         startEditing={editingId === note.id}
         removeIfEmpty={!!staging[note.id]}
         flying={!!flyingNotes[note.id]}
@@ -2624,10 +2781,10 @@
       <div class="undo-toast">
         <span class="undo-toast-text">
           Note deleted{u.body
-            ? ` · \u201C${u.body.split('\n')[0].slice(0, 32)}${
-                u.body.length > 32 ? '\u2026' : ''
+            ? ` · \u201C${u.body.split("\n")[0].slice(0, 32)}${
+                u.body.length > 32 ? "\u2026" : ""
               }\u201D`
-            : ''}
+            : ""}
         </span>
         <button class="undo-toast-btn" on:click={() => void undoDelete(u.key)}>
           Undo
@@ -2635,8 +2792,8 @@
         <button
           class="undo-toast-dismiss"
           on:click={() => dismissUndo(u.key)}
-          aria-label="Dismiss"
-        >×</button>
+          aria-label="Dismiss">×</button
+        >
       </div>
     {/each}
   </div>

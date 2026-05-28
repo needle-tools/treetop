@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { DismissedSessionsStore, ExpandedStore, StarredSessionsStore, CommandTermStore } from "./storage";
+  import {
+    DismissedSessionsStore,
+    ExpandedStore,
+    StarredSessionsStore,
+    CommandTermStore,
+  } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
@@ -19,7 +24,10 @@
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
-  import { resolveTermIdFromSource, parseRemoteSource } from "./file-browser-utils";
+  import {
+    resolveTermIdFromSource,
+    parseRemoteSource,
+  } from "./file-browser-utils";
   import GitHistory from "./GitHistory.svelte";
   import ProcessList from "./ProcessList.svelte";
   import StatusBadge from "./StatusBadge.svelte";
@@ -64,7 +72,10 @@
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
   import { relativeAge } from "./mention-providers";
-  import { LINK_TARGET_DRAG_MIME, SESSION_LINK_DRAG_MIME } from "./note-inline-attachments";
+  import {
+    LINK_TARGET_DRAG_MIME,
+    SESSION_LINK_DRAG_MIME,
+  } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
   import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
   import {
@@ -191,7 +202,14 @@
     | { id: string; kind?: "url"; url: string; name?: string }
     | { id: string; kind: "file"; path: string; name?: string }
     | { id: string; kind: "folder"; path: string; name?: string }
-    | { id: string; kind: "command"; cmd: string; cwd?: string; runMode: CommandRunMode; name?: string };
+    | {
+        id: string;
+        kind: "command";
+        cmd: string;
+        cwd?: string;
+        runMode: CommandRunMode;
+        name?: string;
+      };
   interface Repo {
     id: string;
     path: string;
@@ -230,7 +248,11 @@
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
   let commandUrls: Record<string, string[]> = {};
-  let commandEditRequest: { repoId: string; linkId: string; nonce: number } | null = null;
+  let commandEditRequest: {
+    repoId: string;
+    linkId: string;
+    nonce: number;
+  } | null = null;
   /** Shells (Terminal columns the daemon is hosting / has hosted). Used
    *  by the worktree session picker so past + live shells appear next
    *  to Claude/Codex agent sessions instead of hiding under a separate
@@ -600,7 +622,8 @@
   let ollamaSubmenuOpen: Record<string, boolean> = {};
   // Cached list of installed Ollama models for the picker submenu.
   // Lazy-loaded the first time the user expands the Ollama row.
-  let ollamaModels: { name: string; size?: number; parameterSize?: string }[] = [];
+  let ollamaModels: { name: string; size?: number; parameterSize?: string }[] =
+    [];
   let ollamaModelsLoaded = false;
   let ollamaModelsLoading = false;
   let ollamaModelsError: string | null = null;
@@ -648,10 +671,18 @@
    *  are deferred while the user is mid-edit so the input isn't ripped
    *  away. Queued promotions fire when editing stops. */
   const editingTitleSources = new Set<string>();
-  type DeferredPromotion = { stampedSource: string; realSource: string; cwd: string };
+  type DeferredPromotion = {
+    stampedSource: string;
+    realSource: string;
+    cwd: string;
+  };
   let deferredPromotions: DeferredPromotion[] = [];
 
-  function executePromotion(stampedSource: string, realSource: string, cwd: string) {
+  function executePromotion(
+    stampedSource: string,
+    realSource: string,
+    cwd: string,
+  ) {
     promotedSources.add(stampedSource);
     const termId = newTermIds[stampedSource];
     openSessionsByWt = {
@@ -669,22 +700,30 @@
     };
     {
       const w = { ...transientWorking };
-      if (w[stampedSource] !== undefined) { w[realSource] = w[stampedSource]; delete w[stampedSource]; }
+      if (w[stampedSource] !== undefined) {
+        w[realSource] = w[stampedSource];
+        delete w[stampedSource];
+      }
       transientWorking = w;
     }
     {
       const a = { ...transientAwaiting };
-      if (a[stampedSource] !== undefined) { a[realSource] = a[stampedSource]; delete a[stampedSource]; }
+      if (a[stampedSource] !== undefined) {
+        a[realSource] = a[stampedSource];
+        delete a[stampedSource];
+      }
       transientAwaiting = a;
     }
     if (transientExited[stampedSource] !== undefined) {
       const e = { ...transientExited };
-      e[realSource] = e[stampedSource]; delete e[stampedSource];
+      e[realSource] = e[stampedSource];
+      delete e[stampedSource];
       transientExited = e;
     }
     if (transientFinishedAt[stampedSource] !== undefined) {
       const f = { ...transientFinishedAt };
-      f[realSource] = f[stampedSource]; delete f[stampedSource];
+      f[realSource] = f[stampedSource];
+      delete f[stampedSource];
       transientFinishedAt = f;
     }
     if (workingStartedAt[stampedSource] !== undefined) {
@@ -695,8 +734,12 @@
   }
 
   function flushDeferredPromotions(source: string) {
-    const pending = deferredPromotions.filter((p) => p.stampedSource === source);
-    deferredPromotions = deferredPromotions.filter((p) => p.stampedSource !== source);
+    const pending = deferredPromotions.filter(
+      (p) => p.stampedSource === source,
+    );
+    deferredPromotions = deferredPromotions.filter(
+      (p) => p.stampedSource !== source,
+    );
     for (const p of pending) {
       executePromotion(p.stampedSource, p.realSource, p.cwd);
     }
@@ -728,7 +771,10 @@
    *  dock would pulse on every tool-call boundary and clicking
    *  to dismiss would never feel sticky. */
   const FINISH_DEBOUNCE_MS = 8_000;
-  const finishedTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  const finishedTimers: Record<
+    string,
+    ReturnType<typeof setTimeout> | undefined
+  > = {};
   function scheduleFinished(source: string): void {
     cancelFinishedTimer(source);
     finishedTimers[source] = setTimeout(() => {
@@ -747,7 +793,10 @@
    *  must keep the session focused for this long — a quick click
    *  that immediately navigates away doesn't count. */
   const READ_GRACE_MS = 20_000;
-  const readGraceTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  const readGraceTimers: Record<
+    string,
+    ReturnType<typeof setTimeout> | undefined
+  > = {};
   function startReadGrace(source: string): void {
     cancelReadGrace(source);
     if (transientFinishedAt[source] === undefined) return;
@@ -766,9 +815,9 @@
   function handleFocusInForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
-    const col = t.closest?.(".session-col[data-session-source]") as
-      | HTMLElement
-      | null;
+    const col = t.closest?.(
+      ".session-col[data-session-source]",
+    ) as HTMLElement | null;
     if (!col) return;
     const src = col.getAttribute("data-session-source");
     if (!src) return;
@@ -777,9 +826,9 @@
   function handleFocusOutForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
-    const col = t.closest?.(".session-col[data-session-source]") as
-      | HTMLElement
-      | null;
+    const col = t.closest?.(
+      ".session-col[data-session-source]",
+    ) as HTMLElement | null;
     if (!col) return;
     const src = col.getAttribute("data-session-source");
     if (!src) return;
@@ -874,7 +923,10 @@
         // close the column.
         let isCommandPty = false;
         for (const [, entry] of commandTermSources) {
-          if (entry.source === s.source) { isCommandPty = true; break; }
+          if (entry.source === s.source) {
+            isCommandPty = true;
+            break;
+          }
         }
         if (isCommandPty) {
           closeSessionInWt(wtPath, s);
@@ -968,14 +1020,12 @@
   // Dirty-state checkout dialog: the user clicked a branch, the daemon
   // refused because the worktree is dirty; we surface a modal with
   // explicit Stash / Force / Cancel choices.
-  let dirtyCheckout:
-    | null
-    | {
-        repoId: string;
-        wtPath: string;
-        branch: string;
-        message: string;
-      } = null;
+  let dirtyCheckout: null | {
+    repoId: string;
+    wtPath: string;
+    branch: string;
+    message: string;
+  } = null;
 
   /** Surface a successful "stash & switch" as a toast. Uses the generic
    *  toast stack so dismiss + ttl behave consistently with errors. */
@@ -993,7 +1043,12 @@
     wtPath: string,
     branch: string,
     options: { force?: boolean; preStash?: boolean } = {},
-  ): Promise<{ ok: boolean; dirty?: boolean; error?: string; stashed?: boolean }> {
+  ): Promise<{
+    ok: boolean;
+    dirty?: boolean;
+    error?: string;
+    stashed?: boolean;
+  }> {
     try {
       const res = await fetch(`/api/repos/${repoId}/checkout`, {
         method: "POST",
@@ -1001,14 +1056,20 @@
         body: JSON.stringify({ path: wtPath, branch, ...options }),
       });
       if (res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { stashed?: boolean };
+        const body = (await res.json().catch(() => ({}))) as {
+          stashed?: boolean;
+        };
         return { ok: true, stashed: body.stashed };
       }
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
         dirty?: boolean;
       };
-      return { ok: false, dirty: body.dirty, error: body.error ?? `HTTP ${res.status}` };
+      return {
+        ok: false,
+        dirty: body.dirty,
+        error: body.error ?? `HTTP ${res.status}`,
+      };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -1080,17 +1141,19 @@
    *  because the worktree has local changes that overlap the incoming
    *  commits. Same shape as `dirtyCheckout` — explicit Stash & pull /
    *  Cancel choices. */
-  let dirtyPull:
-    | null
-    | { repoId: string; wtPath: string; message: string } = null;
+  let dirtyPull: null | { repoId: string; wtPath: string; message: string } =
+    null;
 
   async function doPull(
     repoId: string,
     wtPath: string,
     options: { preStash?: boolean } = {},
-  ): Promise<
-    { ok: boolean; kind?: string; stashed?: boolean; error?: string }
-  > {
+  ): Promise<{
+    ok: boolean;
+    kind?: string;
+    stashed?: boolean;
+    error?: string;
+  }> {
     try {
       const res = await fetch(`/api/repos/${repoId}/pull`, {
         method: "POST",
@@ -1113,9 +1176,12 @@
         error: body.error ?? `HTTP ${res.status}`,
       };
     } catch (e) {
-      const msg = e instanceof DOMException && e.name === "TimeoutError"
-        ? "Pull timed out — the remote may be unreachable."
-        : e instanceof Error ? e.message : String(e);
+      const msg =
+        e instanceof DOMException && e.name === "TimeoutError"
+          ? "Pull timed out — the remote may be unreachable."
+          : e instanceof Error
+            ? e.message
+            : String(e);
       return { ok: false, error: msg };
     }
   }
@@ -1299,9 +1365,12 @@
         ttlMs: 14_000,
       });
     } catch (e) {
-      const msg = e instanceof DOMException && e.name === "TimeoutError"
-        ? "Push timed out — the remote may be unreachable."
-        : e instanceof Error ? e.message : String(e);
+      const msg =
+        e instanceof DOMException && e.name === "TimeoutError"
+          ? "Push timed out — the remote may be unreachable."
+          : e instanceof Error
+            ? e.message
+            : String(e);
       addToast({
         kind: "error",
         title: "Push failed.",
@@ -1333,10 +1402,7 @@
    *  column and the next fully visible one). Otherwise insert at that
    *  column's index. Falls back to 0 when the strip isn't laid out yet
    *  (e.g. row currently folded). */
-  function visibleLeftInsertIndex(
-    wtPath: string,
-    list: OpenSession[],
-  ): number {
+  function visibleLeftInsertIndex(wtPath: string, list: OpenSession[]): number {
     const strip = document.querySelector(
       `[data-wt-strip="${CSS.escape(wtPath)}"]`,
     ) as HTMLElement | null;
@@ -1444,10 +1510,7 @@
    *  open-session entry whose source is sentinel-prefixed with
    *  `__new__:` — the column rendering branches on that to render
    *  TerminalView directly instead of the read-mode SessionView. */
-  function openNewAgentSession(
-    wtPath: string,
-    agent: "claude" | "codex",
-  ) {
+  function openNewAgentSession(wtPath: string, agent: "claude" | "codex") {
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:${agent}:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
@@ -1485,7 +1548,10 @@
    *  composer at the bottom of SessionView and the conversation is
    *  driven via /api/ollama/chat instead of a PTY. See
    *  plans/ollama.md "Plan: API-driven chat mode". */
-  async function openNewOllamaChat(wtPath: string, model: string): Promise<void> {
+  async function openNewOllamaChat(
+    wtPath: string,
+    model: string,
+  ): Promise<void> {
     try {
       const res = await fetch("/api/ollama/sessions", {
         method: "POST",
@@ -1638,18 +1704,26 @@
             model = (payload.model as string) ?? "";
             onboardingByWt = {
               ...onboardingByWt,
-              [wtPath]: { status: "streaming", text: collected, provider, model },
+              [wtPath]: {
+                status: "streaming",
+                text: collected,
+                provider,
+                model,
+              },
             };
           } else if (event === "chunk" && typeof payload.delta === "string") {
             collected += payload.delta;
             onboardingByWt = {
               ...onboardingByWt,
-              [wtPath]: { status: "streaming", text: collected, provider, model },
+              [wtPath]: {
+                status: "streaming",
+                text: collected,
+                provider,
+                model,
+              },
             };
           } else if (event === "error") {
-            throw new Error(
-              (payload.message as string) ?? "stream error",
-            );
+            throw new Error((payload.message as string) ?? "stream error");
           } else if (event === "done") {
             // done
           }
@@ -1682,7 +1756,10 @@
         `/api/session/context?source=${encodeURIComponent(sessionSource)}`,
       );
       if (!res.ok) return;
-      const body = (await res.json()) as { contextPath?: string; context?: string };
+      const body = (await res.json()) as {
+        contextPath?: string;
+        context?: string;
+      };
       contextPath = body.contextPath ?? "";
       contextText = body.context;
     } catch {
@@ -1695,9 +1772,13 @@
       const model = ollamaModel ?? ollamaModels[0]?.name ?? "gemma3:4b";
       await openNewOllamaChat(wtPath, model);
       const lastWt = openSessionsByWt[wtPath] ?? [];
-      const ollamaEntry = [...lastWt].reverse().find(
-        (s) => s.agent === "ollama" && s.source.startsWith("__transcript__:ollama:"),
-      );
+      const ollamaEntry = [...lastWt]
+        .reverse()
+        .find(
+          (s) =>
+            s.agent === "ollama" &&
+            s.source.startsWith("__transcript__:ollama:"),
+        );
       if (ollamaEntry) {
         const termId = ollamaEntry.source.replace("__transcript__:ollama:", "");
         const prompt =
@@ -1750,7 +1831,11 @@
     const existing = openSessionsByWt[wtPath] ?? [];
     // Don't open a duplicate for the same terminal
     if (existing.some((s) => s.source.startsWith(`__remote__:${termId}:`))) {
-      scrollNewColIntoView(wtPath, existing.find((s) => s.source.startsWith(`__remote__:${termId}:`))!.source);
+      scrollNewColIntoView(
+        wtPath,
+        existing.find((s) => s.source.startsWith(`__remote__:${termId}:`))!
+          .source,
+      );
       return;
     }
     const entry: OpenSession = { agent: "files", source: synthetic };
@@ -1813,18 +1898,27 @@
       const raw = getDaemonKV().getItem(DISMISSED_KEY);
       if (!raw) return new Set();
       const arr = JSON.parse(raw);
-      return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
+      return new Set(
+        Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [],
+      );
     } catch {
       return new Set();
     }
   })();
   function saveDismissedShells() {
     try {
-      getDaemonKV().setItem(DISMISSED_KEY, JSON.stringify([...dismissedShells]));
+      getDaemonKV().setItem(
+        DISMISSED_KEY,
+        JSON.stringify([...dismissedShells]),
+      );
     } catch {}
   }
   function dismissShellSource(source: string): void {
-    if (!source.startsWith("__attached__:shell:") && !source.startsWith("__transcript__:shell:")) return;
+    if (
+      !source.startsWith("__attached__:shell:") &&
+      !source.startsWith("__transcript__:shell:")
+    )
+      return;
     if (dismissedShells.has(source)) return;
     dismissedShells = new Set([...dismissedShells, source]);
     saveDismissedShells();
@@ -1860,14 +1954,29 @@
   }
 
   /** Persisted terminal info for __restore__: columns. */
-  let persistedTerminals: Record<string, { cmd: string[]; cwd: string; title?: string; firstCmd?: string; lastCmd?: string }> = {};
+  let persistedTerminals: Record<
+    string,
+    {
+      cmd: string[];
+      cwd: string;
+      title?: string;
+      firstCmd?: string;
+      lastCmd?: string;
+    }
+  > = {};
 
   async function restorePersistedTerminals() {
     try {
       const res = await fetch("/api/terminals/persisted");
       if (!res.ok) return;
       const list = (await res.json()) as Array<{
-        termId: string; cmd: string[]; cwd: string; wtPath: string; title?: string; firstCmd?: string; lastCmd?: string;
+        termId: string;
+        cmd: string[];
+        cwd: string;
+        wtPath: string;
+        title?: string;
+        firstCmd?: string;
+        lastCmd?: string;
       }>;
       if (list.length === 0) return;
       // Stash metadata for each persisted termId so the __restore__
@@ -1906,7 +2015,9 @@
     const existing = openSessionsByWt[wtPath] ?? [];
     openSessionsByWt = {
       ...openSessionsByWt,
-      [wtPath]: existing.map((s) => s.source === restoreSource ? { ...s, source: newSource } : s),
+      [wtPath]: existing.map((s) =>
+        s.source === restoreSource ? { ...s, source: newSource } : s,
+      ),
     };
     delete persistedTerminals[restoreSource];
     void fetch("/api/terminals/persisted/remove", {
@@ -1983,7 +2094,10 @@
    *  mounts a new one with the same cmd[]. Used when an agent
    *  self-updates and exits — codex prints "restart Codex" and we
    *  want a one-click rerun without losing the user's column slot. */
-  function restartNewAgentSession(wtPath: string, current: { agent: string; source: string }) {
+  function restartNewAgentSession(
+    wtPath: string,
+    current: { agent: string; source: string },
+  ) {
     const existing = openSessionsByWt[wtPath] ?? [];
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const replacement: {
@@ -2036,7 +2150,10 @@
         ? { claudeModel: patch.claudeModel as PersistedSession["claudeModel"] }
         : {}),
       ...(patch.claudeEffort !== undefined
-        ? { claudeEffort: patch.claudeEffort as PersistedSession["claudeEffort"] }
+        ? {
+            claudeEffort:
+              patch.claudeEffort as PersistedSession["claudeEffort"],
+          }
         : {}),
     };
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
@@ -2142,15 +2259,26 @@
               ...next,
               [wtPath]: next[wtPath]!.map((x) =>
                 x.source === s.source
-                  ? { ...x, source: match.source, mode: "terminal" as const, attachTermId: termId }
+                  ? {
+                      ...x,
+                      source: match.source,
+                      mode: "terminal" as const,
+                      attachTermId: termId,
+                    }
                   : x,
               ),
             };
             if (transientWorking[s.source] !== undefined) {
-              transientWorking = { ...transientWorking, [match.source]: transientWorking[s.source] };
+              transientWorking = {
+                ...transientWorking,
+                [match.source]: transientWorking[s.source],
+              };
             }
             if (transientAwaiting[s.source] !== undefined) {
-              transientAwaiting = { ...transientAwaiting, [match.source]: transientAwaiting[s.source] };
+              transientAwaiting = {
+                ...transientAwaiting,
+                [match.source]: transientAwaiting[s.source],
+              };
             }
             void migrateSessionTitleOnServer(s.source, match.source);
             promoted = true;
@@ -2162,7 +2290,11 @@
   }
 
   function repoName(repo: Repo): string {
-    return (repo as { name?: string }).name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+    return (
+      (repo as { name?: string }).name ??
+      repo.path.split("/").filter(Boolean).pop() ??
+      repo.path
+    );
   }
 
   /** Smooth-scroll the dashboard to the row representing this worktree
@@ -2202,7 +2334,9 @@
       // existing one. (Daemon's createWorktree now auto-detects.)
       addToast({
         kind: "success",
-        title: body.created ? "Worktree created." : "Worktree for existing branch.",
+        title: body.created
+          ? "Worktree created."
+          : "Worktree for existing branch.",
         message: body.created
           ? `New branch \`${body.branch ?? branch}\` and worktree at ${body.path ?? ""}`
           : `Checked out existing \`${body.branch ?? branch}\` into ${body.path ?? ""}`,
@@ -2266,10 +2400,12 @@
    *  /api/shell-default. The daemon resolves $SHELL / COMSPEC with
    *  platform-appropriate flags so the UI doesn't need to know about
    *  powershell vs zsh vs cmd. */
-  let defaultShell: string =
-    navigator.platform?.startsWith("Win") ? "powershell.exe" : "/bin/zsh";
-  let defaultShellArgs: string[] =
-    navigator.platform?.startsWith("Win") ? ["-NoLogo"] : ["-l"];
+  let defaultShell: string = navigator.platform?.startsWith("Win")
+    ? "powershell.exe"
+    : "/bin/zsh";
+  let defaultShellArgs: string[] = navigator.platform?.startsWith("Win")
+    ? ["-NoLogo"]
+    : ["-l"];
 
   function isOpenInWt(wtPath: string, source: string): boolean {
     return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
@@ -2298,12 +2434,18 @@
     // Header path is `<workspace>/ollama/<termId>.jsonl`. The termId is
     // the basename without the extension.
     const base = s.source.split(/[\\/]/).pop() ?? "";
-    const termId = base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
+    const termId = base.endsWith(".jsonl")
+      ? base.slice(0, -".jsonl".length)
+      : base;
     if (!termId) return s;
-    const wt = repos.flatMap((r) => r.worktrees ?? []).find((w) => w.path === wtPath);
+    const wt = repos
+      .flatMap((r) => r.worktrees ?? [])
+      .find((w) => w.path === wtPath);
     const agents = wt?.agents ?? [];
     const match = agents.find(
-      (a) => a.agent === "ollama" && (a.sessionId === termId || a.source === s.source),
+      (a) =>
+        a.agent === "ollama" &&
+        (a.sessionId === termId || a.source === s.source),
     );
     return {
       agent: "ollama",
@@ -2346,7 +2488,10 @@
    *  newTermIds) so the live PTY's own listing entry stays away. */
   function dismissIfShell(s: OpenSession): void {
     if (s.agent !== "shell") return;
-    if (s.source.startsWith("__attached__:shell:") || s.source.startsWith("__transcript__:shell:")) {
+    if (
+      s.source.startsWith("__attached__:shell:") ||
+      s.source.startsWith("__transcript__:shell:")
+    ) {
       dismissShellSource(s.source);
     } else if (s.source.startsWith("__new__:shell:")) {
       const termId = newTermIds[s.source];
@@ -2389,9 +2534,16 @@
    *  hovered column. `side: "left"` means the dragged column will
    *  land BEFORE this column; `"right"` means AFTER. Cleared on
    *  drop, dragend, and dragleave-from-strip. */
-  let dragOverTarget: { wtPath: string; index: number; side: "left" | "right" } | null = null;
+  let dragOverTarget: {
+    wtPath: string;
+    index: number;
+    side: "left" | "right";
+  } | null = null;
 
-  function sessionDragLinkTarget(wtPath: string, index: number): {
+  function sessionDragLinkTarget(
+    wtPath: string,
+    index: number,
+  ): {
     type: "session";
     value: string;
     label: string;
@@ -2661,7 +2813,8 @@
     visibleWorktreesByRepo = visibleWorktreesPersistence.load();
     visibleHydrated = true;
   }
-  $: if (visibleHydrated) visibleWorktreesPersistence.save(visibleWorktreesByRepo);
+  $: if (visibleHydrated)
+    visibleWorktreesPersistence.save(visibleWorktreesByRepo);
 
   function restoreFoldedRepos() {
     const keys = foldedRowsStore.load();
@@ -2764,12 +2917,13 @@
    *  closes the session — always brings it into view. The `×` on the
    *  session column is the only path to close it; the badge is a
    *  one-way "show me this" affordance. */
-  function revealSession(
-    rowKey: string,
-    wtPath: string,
-    s: OpenSession,
-  ): void {
-    applyRevealPlan(rowKey, wtPath, normalizeSessionForOpen(wtPath, s), "reveal");
+  function revealSession(rowKey: string, wtPath: string, s: OpenSession): void {
+    applyRevealPlan(
+      rowKey,
+      wtPath,
+      normalizeSessionForOpen(wtPath, s),
+      "reveal",
+    );
   }
 
   /** Dock click handler. The scroll-and-flash path silently returns
@@ -2925,7 +3079,10 @@
         target = colOffsetInStrip - (stripRect.width - colRect.width) / 2;
       }
       strip.scrollTo({
-        left: Math.max(0, Math.min(target, strip.scrollWidth - strip.clientWidth)),
+        left: Math.max(
+          0,
+          Math.min(target, strip.scrollWidth - strip.clientWidth),
+        ),
         behavior: "smooth",
       });
       // Also vertically center the column in the viewport so a click
@@ -2935,8 +3092,7 @@
       // scroll we already handled above. Use the column's row-body
       // ancestor as the scroll anchor when present so a short column
       // doesn't park the row's chrome (header, etc.) above the fold.
-      const anchor =
-        (col.closest(".row-body") as HTMLElement | null) ?? col;
+      const anchor = (col.closest(".row-body") as HTMLElement | null) ?? col;
       anchor.scrollIntoView({
         block: "center",
         inline: "nearest",
@@ -2996,15 +3152,31 @@
   /** Hide a worktree row from the dashboard. Disk is untouched; the
    *  worktree still exists, just not displayed. Re-show via the
    *  worktrees picker. */
-  function hideWorktreeRow(repoId: string, wtPath: string, diskPaths: string[]) {
-    const current = effectiveVisibleWorktrees(repoId, diskPaths, visibleWorktreesByRepo);
+  function hideWorktreeRow(
+    repoId: string,
+    wtPath: string,
+    diskPaths: string[],
+  ) {
+    const current = effectiveVisibleWorktrees(
+      repoId,
+      diskPaths,
+      visibleWorktreesByRepo,
+    );
     const next = current.filter((p) => p !== wtPath);
     visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
   }
 
   /** Toggle a worktree's visibility in the dashboard from the picker. */
-  function toggleWorktreeVisibility(repoId: string, wtPath: string, diskPaths: string[]) {
-    const current = effectiveVisibleWorktrees(repoId, diskPaths, visibleWorktreesByRepo);
+  function toggleWorktreeVisibility(
+    repoId: string,
+    wtPath: string,
+    diskPaths: string[],
+  ) {
+    const current = effectiveVisibleWorktrees(
+      repoId,
+      diskPaths,
+      visibleWorktreesByRepo,
+    );
     const isVisible = current.includes(wtPath);
     const next = isVisible
       ? current.filter((p) => p !== wtPath)
@@ -3113,7 +3285,9 @@
     loadingTotal = 0;
     loadingDone = 0;
     if (loadingSlowTimer) clearTimeout(loadingSlowTimer);
-    loadingSlowTimer = setTimeout(() => { loadingSlow = true; }, 5000);
+    loadingSlowTimer = setTimeout(() => {
+      loadingSlow = true;
+    }, 5000);
     error = "";
     // Browser-side timing for the initial dashboard load. Pair with the
     // daemon's `/api/repos total=…` line — together they tell you
@@ -3132,9 +3306,10 @@
         onManifest: (skel) => {
           tManifest = performance.now() - tStart;
           loadingTotal = skel.length;
-          const filtered = pendingRemoval.size > 0
-            ? skel.filter((s) => !pendingRemoval.has(s.id))
-            : skel;
+          const filtered =
+            pendingRemoval.size > 0
+              ? skel.filter((s) => !pendingRemoval.has(s.id))
+              : skel;
           if (repos.length === 0) {
             repos = filtered;
           } else {
@@ -3204,12 +3379,15 @@
     } finally {
       loading = false;
       loadingSlow = false;
-      if (loadingSlowTimer) { clearTimeout(loadingSlowTimer); loadingSlowTimer = null; }
+      if (loadingSlowTimer) {
+        clearTimeout(loadingSlowTimer);
+        loadingSlowTimer = null;
+      }
       const totalMs = performance.now() - tStart;
       if (totalMs > 200) {
         console.log(
           `[load] slow: ${totalMs.toFixed(0)}ms ` +
-          `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`
+            `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`,
         );
       }
     }
@@ -3342,8 +3520,7 @@
       const btn = e.currentTarget as HTMLElement | null;
       if (btn) {
         const rect = btn.getBoundingClientRect();
-        importFlipUp =
-          rect.top + rect.height / 2 > window.innerHeight / 2;
+        importFlipUp = rect.top + rect.height / 2 > window.innerHeight / 2;
       }
       importQuery = "";
       void openImportSessions();
@@ -3563,7 +3740,13 @@
       | { kind: "url"; url: string; name?: string }
       | { kind: "file"; path: string; name?: string }
       | { kind: "folder"; path: string; name?: string }
-      | { kind: "command"; cmd: string; cwd?: string; runMode?: string; name?: string },
+      | {
+          kind: "command";
+          cmd: string;
+          cwd?: string;
+          runMode?: string;
+          name?: string;
+        },
   ): Promise<boolean> {
     try {
       const res = await fetch(`/api/repos/${repoId}/custom-links`, {
@@ -3643,14 +3826,11 @@
     },
   ): Promise<boolean> {
     try {
-      const res = await fetch(
-        `/api/repos/${repoId}/custom-links/${linkId}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(input),
-        },
-      );
+      const res = await fetch(`/api/repos/${repoId}/custom-links/${linkId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -3670,12 +3850,14 @@
     }
   }
 
-  async function removeCustomLink(repoId: string, linkId: string): Promise<void> {
+  async function removeCustomLink(
+    repoId: string,
+    linkId: string,
+  ): Promise<void> {
     try {
-      const res = await fetch(
-        `/api/repos/${repoId}/custom-links/${linkId}`,
-        { method: "DELETE" },
-      );
+      const res = await fetch(`/api/repos/${repoId}/custom-links/${linkId}`, {
+        method: "DELETE",
+      });
       if (!res.ok && res.status !== 204) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -3690,12 +3872,16 @@
     }
   }
 
-  const commandTermStore = new CommandTermStore(getDaemonKV(), "supergit:commandTermSources");
-  const commandTermSources: Map<string, { wtPath: string; source: string }> = (() => {
-    const m = new Map<string, { wtPath: string; source: string }>();
-    for (const [k, v] of Object.entries(commandTermStore.load())) m.set(k, v);
-    return m;
-  })();
+  const commandTermStore = new CommandTermStore(
+    getDaemonKV(),
+    "supergit:commandTermSources",
+  );
+  const commandTermSources: Map<string, { wtPath: string; source: string }> =
+    (() => {
+      const m = new Map<string, { wtPath: string; source: string }>();
+      for (const [k, v] of Object.entries(commandTermStore.load())) m.set(k, v);
+      return m;
+    })();
   function persistCommandTermSources() {
     const map: Record<string, { wtPath: string; source: string }> = {};
     for (const [k, v] of commandTermSources) map[k] = v;
@@ -3715,7 +3901,10 @@
     }
   }
 
-  function forgetCommandTerm(linkId: string, entry: { wtPath: string; source: string }): void {
+  function forgetCommandTerm(
+    linkId: string,
+    entry: { wtPath: string; source: string },
+  ): void {
     commandTermSources.delete(linkId);
     persistCommandTermSources();
     const nextSet = new Set(runningCommandIds);
@@ -3723,21 +3912,31 @@
     runningCommandIds = nextSet;
     openSessionsByWt = {
       ...openSessionsByWt,
-      [entry.wtPath]: (openSessionsByWt[entry.wtPath] ?? []).filter((s) => s.source !== entry.source),
+      [entry.wtPath]: (openSessionsByWt[entry.wtPath] ?? []).filter(
+        (s) => s.source !== entry.source,
+      ),
     };
   }
 
-  async function stopInternalCommand(linkId: string, entry: { wtPath: string; source: string }): Promise<void> {
+  async function stopInternalCommand(
+    linkId: string,
+    entry: { wtPath: string; source: string },
+  ): Promise<void> {
     const termId = entry.source.replace("__attached__:shell:", "");
     if (termId && termId !== entry.source) {
       play("session-stop");
-      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, { method: "DELETE" }).catch(() => {});
+      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, {
+        method: "DELETE",
+      }).catch(() => {});
       dismissShellSource(entry.source);
     }
     forgetCommandTerm(linkId, entry);
   }
 
-  async function revealInternalCommand(entry: { wtPath: string; source: string }): Promise<void> {
+  async function revealInternalCommand(entry: {
+    wtPath: string;
+    source: string;
+  }): Promise<void> {
     undismissShellSource(entry.source);
     const existing = openSessionsByWt[entry.wtPath] ?? [];
     if (!existing.some((s) => s.source === entry.source)) {
@@ -3751,9 +3950,14 @@
     scrollNewColIntoView(entry.wtPath, entry.source);
   }
 
-  function isInternalCommandVisible(entry: { wtPath: string; source: string }): boolean {
+  function isInternalCommandVisible(entry: {
+    wtPath: string;
+    source: string;
+  }): boolean {
     if (dismissedShells.has(entry.source)) return false;
-    return (openSessionsByWt[entry.wtPath] ?? []).some((s) => s.source === entry.source);
+    return (openSessionsByWt[entry.wtPath] ?? []).some(
+      (s) => s.source === entry.source,
+    );
   }
 
   async function handleCommandClick(
@@ -3765,7 +3969,12 @@
     } = {},
   ) {
     if (link.kind !== "command") return;
-    const cmdLink = link as { cmd: string; cwd?: string; runMode: string; id: string };
+    const cmdLink = link as {
+      cmd: string;
+      cwd?: string;
+      runMode: string;
+      id: string;
+    };
     const isRunning = runningCommandIds.has(link.id);
     const revealInternalTerminal = opts.revealInternalTerminal ?? true;
     const runningInternalAction = opts.runningInternalAction ?? "reveal";
@@ -3785,7 +3994,10 @@
       if (prev) {
         const alive = await commandTermAlive(prev.source);
         if (alive) {
-          if (runningInternalAction === "stop" || isInternalCommandVisible(prev)) {
+          if (
+            runningInternalAction === "stop" ||
+            isInternalCommandVisible(prev)
+          ) {
             await stopInternalCommand(link.id, prev);
           } else {
             await revealInternalCommand(prev);
@@ -3808,7 +4020,10 @@
       });
       const body = await res.json();
       if (!res.ok) {
-        addToast({ kind: "error", message: `Command failed: ${body.error ?? `HTTP ${res.status}`}` });
+        addToast({
+          kind: "error",
+          message: `Command failed: ${body.error ?? `HTTP ${res.status}`}`,
+        });
         return;
       }
 
@@ -3833,7 +4048,10 @@
         void refreshRunningCommands();
       }
     } catch (e) {
-      addToast({ kind: "error", message: `Command failed: ${e instanceof Error ? e.message : String(e)}` });
+      addToast({
+        kind: "error",
+        message: `Command failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
   }
 
@@ -3845,10 +4063,15 @@
   }): void {
     const repo = payload.repoId
       ? repos.find((r) => r.id === payload.repoId)
-      : repos.find((r) => (r.customLinks ?? []).some((l) => l.id === payload.linkId));
+      : repos.find((r) =>
+          (r.customLinks ?? []).some((l) => l.id === payload.linkId),
+        );
     const link = repo?.customLinks?.find((l) => l.id === payload.linkId);
     if (!repo || !link || link.kind !== "command") {
-      addToast({ kind: "error", message: "Command reference no longer exists" });
+      addToast({
+        kind: "error",
+        message: "Command reference no longer exists",
+      });
       return;
     }
     const wtPath =
@@ -3868,10 +4091,15 @@
   }): void {
     const repo = payload.repoId
       ? repos.find((r) => r.id === payload.repoId)
-      : repos.find((r) => (r.customLinks ?? []).some((l) => l.id === payload.linkId));
+      : repos.find((r) =>
+          (r.customLinks ?? []).some((l) => l.id === payload.linkId),
+        );
     const link = repo?.customLinks?.find((l) => l.id === payload.linkId);
     if (!repo || !link || link.kind !== "command") {
-      addToast({ kind: "error", message: "Command reference no longer exists" });
+      addToast({
+        kind: "error",
+        message: "Command reference no longer exists",
+      });
       return;
     }
     commandEditRequest = {
@@ -3901,9 +4129,16 @@
    *  {dirty: true} in that case so we can offer a forced retry behind
    *  an extra confirm. Branch itself is never deleted; just the
    *  on-disk working tree. */
-  async function removeWorktreeInRow(repoId: string, wt: { path: string; branch: string }) {
+  async function removeWorktreeInRow(
+    repoId: string,
+    wt: { path: string; branch: string },
+  ) {
     error = "";
-    if (!confirm(`Remove worktree on branch \`${wt.branch}\`?\n\n${wt.path}\n\nThe directory will be deleted. The branch ref is kept and can be checked out again later.`)) {
+    if (
+      !confirm(
+        `Remove worktree on branch \`${wt.branch}\`?\n\n${wt.path}\n\nThe directory will be deleted. The branch ref is kept and can be checked out again later.`,
+      )
+    ) {
       return;
     }
     async function call(force: boolean) {
@@ -3949,7 +4184,9 @@
    *  snapshot before picking, so a Ctrl+Z pressed in the gap between
    *  a POST/DELETE response and the SSE-triggered refresh still hits
    *  the latest event instead of an older sibling. */
-  async function runWorkspaceUndoRedo(direction: "undo" | "redo"): Promise<void> {
+  async function runWorkspaceUndoRedo(
+    direction: "undo" | "redo",
+  ): Promise<void> {
     let liveEvents: Event[];
     try {
       const res = await fetch("/api/events");
@@ -3958,9 +4195,10 @@
     } catch {
       liveEvents = events;
     }
-    const target = direction === "redo"
-      ? liveEvents.find((ev) => ev.reversible && ev.undone)
-      : liveEvents.find((ev) => ev.reversible && !ev.undone);
+    const target =
+      direction === "redo"
+        ? liveEvents.find((ev) => ev.reversible && ev.undone)
+        : liveEvents.find((ev) => ev.reversible && !ev.undone);
     if (!target) return;
     await toggleEvent(target.id, direction);
   }
@@ -3995,7 +4233,10 @@
    *  powers `+ note` / `+ link` plays in reverse-of-delete. The
    *  origin rect is the Undo button itself, so the user's eye
    *  follows the chip from the popover row down to its pin. */
-  async function undoNoteDelete(ev: Event, triggerEl: HTMLElement): Promise<void> {
+  async function undoNoteDelete(
+    ev: Event,
+    triggerEl: HTMLElement,
+  ): Promise<void> {
     const note = ev.inverse?.note as
       | { id?: string; anchors?: string[] }
       | undefined;
@@ -4124,7 +4365,10 @@
    *  SourceControlPane's job — it reacts to the `expanded` prop. */
   function toggleCommits(wtPath: string) {
     error = "";
-    commitsExpanded = { ...commitsExpanded, [wtPath]: !commitsExpanded[wtPath] };
+    commitsExpanded = {
+      ...commitsExpanded,
+      [wtPath]: !commitsExpanded[wtPath],
+    };
     persistExpanded();
   }
 
@@ -4200,8 +4444,9 @@
         if (!tag) return;
         if (!document.hasFocus()) return;
         if (tid) {
-          const col =
-            document.querySelector(`.session-col[data-session-source*="${CSS.escape(tid)}"]`);
+          const col = document.querySelector(
+            `.session-col[data-session-source*="${CSS.escape(tid)}"]`,
+          );
           if (!col) return;
           const rect = col.getBoundingClientRect();
           if (rect.right < 0 || rect.left > window.innerWidth) return;
@@ -4263,12 +4508,17 @@
         }
         return;
       }
-      if (payload.kind === "message_mute" || payload.kind === "message_unmute" || payload.kind === "message_deleted") {
+      if (
+        payload.kind === "message_mute" ||
+        payload.kind === "message_unmute" ||
+        payload.kind === "message_deleted"
+      ) {
         void refreshMessages();
         return;
       }
       if (payload.kind === "peerDiscovery") {
-        peerDiscoveryEnabled = (payload as { enabled?: unknown }).enabled === true;
+        peerDiscoveryEnabled =
+          (payload as { enabled?: unknown }).enabled === true;
         return;
       }
       if (payload.kind === "command_start" || payload.kind === "command_exit") {
@@ -4276,19 +4526,29 @@
         return;
       }
       if (payload.kind === "command_url") {
-        const { linkId, urls } = payload as { linkId?: string; urls?: string[] };
+        const { linkId, urls } = payload as {
+          linkId?: string;
+          urls?: string[];
+        };
         if (linkId && urls) {
           commandUrls = { ...commandUrls, [linkId]: urls };
         }
         return;
       }
-      if (payload.kind === "session_copied" || payload.kind === "session_imported") {
+      if (
+        payload.kind === "session_copied" ||
+        payload.kind === "session_imported"
+      ) {
         void load();
         return;
       }
-      if (payload.kind !== "fs_change" || typeof payload.path !== "string") return;
+      if (payload.kind !== "fs_change" || typeof payload.path !== "string")
+        return;
       const wtPath = payload.path;
-      fsChangeKey = { ...fsChangeKey, [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1 };
+      fsChangeKey = {
+        ...fsChangeKey,
+        [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1,
+      };
       // Refresh the tooltip cache in place if we have data for this
       // worktree. Without this the row badge updates (load() refetches
       // /api/repos) but the tooltip body keeps showing the file list
@@ -4455,7 +4715,14 @@
         glyph: targetGlyph(t.type),
       };
     }
-    return { kind, text: excerpt, title: n.body, agent: "", provider: "", glyph: "" };
+    return {
+      kind,
+      text: excerpt,
+      title: n.body,
+      agent: "",
+      provider: "",
+      glyph: "",
+    };
   }
 
   /** First non-empty line of a note's body, trimmed to a length that
@@ -4506,9 +4773,7 @@
     if (!a) return true;
     if (a.startsWith("worktree:")) {
       const path = a.slice("worktree:".length);
-      return !repos.some((r) =>
-        r.worktrees?.some((w) => w.path === path),
-      );
+      return !repos.some((r) => r.worktrees?.some((w) => w.path === path));
     }
     if (a.startsWith("repo:")) {
       const path = a.slice("repo:".length);
@@ -4684,9 +4949,7 @@
     // count ≤ 4 the first IS one of the "last 3", so we just print the
     // messages in order. For count > 4 we insert a [… N more …]
     // separator between the first and the tail.
-    const tailExcludingFirst = first
-      ? last.filter((m) => m !== first)
-      : last;
+    const tailExcludingFirst = first ? last.filter((m) => m !== first) : last;
     const lines: string[] = [headline];
     if (count <= 4) {
       // Print every captured message once, oldest-first.
@@ -4696,7 +4959,10 @@
       if (first) lines.push("", first);
       const skipped = count - 1 - tailExcludingFirst.length;
       if (skipped > 0) {
-        lines.push("", `[… ${skipped} more message${skipped === 1 ? "" : "s"} …]`);
+        lines.push(
+          "",
+          `[… ${skipped} more message${skipped === 1 ? "" : "s"} …]`,
+        );
       }
       for (const m of tailExcludingFirst) lines.push("", m);
     }
@@ -4935,7 +5201,8 @@
             s.source.startsWith("__remote__:") ||
             s.source.startsWith("__restore__:") ||
             s.source.startsWith("__history__:")
-          ) continue;
+          )
+            continue;
           // Same lookup precedence as the NewSessionCol render: once a
           // sid is stamped onto a `__new__:` column, prefer the matched
           // real-source agent's metadata so the dock shows the title
@@ -4943,8 +5210,7 @@
           // on the disposable synthetic key.
           const realMeta = s.resumeSessionId
             ? known.find(
-                (a) =>
-                  a.agent === s.agent && a.sessionId === s.resumeSessionId,
+                (a) => a.agent === s.agent && a.sessionId === s.resumeSessionId,
               )
             : undefined;
           const meta = realMeta ?? bySource.get(s.source);
@@ -4967,15 +5233,16 @@
             lastActive: meta?.lastActive,
             recentMessageCount: meta?.recentMessageCount,
             transcriptSource:
-              meta?.source && !meta.source.startsWith("__") ? meta.source : undefined,
+              meta?.source && !meta.source.startsWith("__")
+                ? meta.source
+                : undefined,
             // Shells emit output continuously (log tails, dev-server
             // streams, REPLs) — none of that is "thinking", so we
             // never surface a working/awaiting state for them in the
             // dock. The shell dot stays static; its live-PTY state
             // is conveyed by its dedicated terminal-style square
             // (vs. the round agent dot) and the `exited` shrink.
-            working:
-              s.agent === "shell" ? false : !!transientWorking[s.source],
+            working: s.agent === "shell" ? false : !!transientWorking[s.source],
             awaiting:
               s.agent === "shell" ? false : !!transientAwaiting[s.source],
             // "Small dot" mode covers everything that isn't a live
@@ -5075,7 +5342,9 @@
     // Close any open "new agent" picker the click landed outside of.
     for (const key of Object.keys(newAgentPopoverOpen)) {
       if (!newAgentPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-new-agent-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-new-agent-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         newAgentPopoverOpen = { ...newAgentPopoverOpen, [key]: false };
       }
@@ -5083,7 +5352,9 @@
     // Close any open branch picker the click landed outside of.
     for (const key of Object.keys(branchPickerOpen)) {
       if (!branchPickerOpen[key]) continue;
-      const anchor = target?.closest(`[data-branch-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-branch-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         branchPickerOpen = { ...branchPickerOpen, [key]: false };
       }
@@ -5100,7 +5371,9 @@
     // Close any open worktree-picker popover the click landed outside of.
     for (const key of Object.keys(wtPickerOpen)) {
       if (!wtPickerOpen[key]) continue;
-      const anchor = target?.closest(`[data-wt-picker-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-wt-picker-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         wtPickerOpen = { ...wtPickerOpen, [key]: false };
       }
@@ -5113,7 +5386,9 @@
     // until the user re-opens.
     for (const key of Object.keys(notesListOpen)) {
       if (!notesListOpen[key]) continue;
-      const anchor = target?.closest(`[data-notes-list-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-notes-list-anchor="${CSS.escape(key)}"]`,
+      );
       const inSticky = target?.closest(".sticky");
       if (!anchor && !inSticky) {
         notesListOpen = { ...notesListOpen, [key]: false };
@@ -5122,7 +5397,9 @@
     // Close any open emoji picker the click landed outside of.
     for (const key of Object.keys(emojiPickerOpen)) {
       if (!emojiPickerOpen[key]) continue;
-      const anchor = target?.closest(`[data-emoji-picker-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-emoji-picker-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         emojiPickerOpen = { ...emojiPickerOpen, [key]: false };
       }
@@ -5130,7 +5407,9 @@
     // Any open agents popovers that the click landed outside of: close them.
     for (const key of Object.keys(agentsPopoverOpen)) {
       if (!agentsPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-agents-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-agents-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         agentsPopoverOpen = { ...agentsPopoverOpen, [key]: false };
       }
@@ -5138,7 +5417,9 @@
     // Same dance for the badge's active-TUIs jump popover.
     for (const key of Object.keys(activeTuisPopoverOpen)) {
       if (!activeTuisPopoverOpen[key]) continue;
-      const anchor = target?.closest(`[data-active-tuis-anchor="${CSS.escape(key)}"]`);
+      const anchor = target?.closest(
+        `[data-active-tuis-anchor="${CSS.escape(key)}"]`,
+      );
       if (!anchor) {
         activeTuisPopoverOpen = { ...activeTuisPopoverOpen, [key]: false };
       }
@@ -5410,8 +5691,11 @@
     void refreshRunningCommands();
     void refreshCommandUrls();
     void restoreLiveShells().then(() => restorePersistedTerminals());
-    fetch("/api/peer-discovery").then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) peerDiscoveryEnabled = d.enabled === true; })
+    fetch("/api/peer-discovery")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) peerDiscoveryEnabled = d.enabled === true;
+      })
       .catch(() => {});
     // Global focus listener — whenever the user puts focus into a
     // session column (typing, clicking into the terminal, etc.)
@@ -5508,7 +5792,9 @@
       // doesn't show outdated data.
       void load();
     });
-    const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
+    const nowTimer = setInterval(() => {
+      nowMs = Date.now();
+    }, 3000);
     // Click-on-saved-session-link → bring the session into view.
     // The chip writes a {source, ts} request into the focus store;
     // we locate which worktree it belongs to (via the live
@@ -5593,7 +5879,11 @@
       `.session-col[data-session-source="${CSS.escape(source)}"]`,
     ) as HTMLElement | null;
     if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    el.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "center",
+    });
     el.classList.add("session-col-focused");
     setTimeout(() => el.classList.remove("session-col-focused"), 1800);
   }
@@ -5605,13 +5895,26 @@
       <img src="/needle-logo.svg" alt="" class="brand-mark" />
       supergit
     </h1>
-    <p class="muted tagline-text">multi-repo, multi-agent, worktree-first dashboard</p>
+    <p class="muted tagline-text">
+      multi-repo, multi-agent, worktree-first dashboard
+    </p>
     {#if daemonVersion || daemonBuildTime}
       <p class="tagline-build">
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
-        {#if daemonVersion && daemonBuildTime} – {/if}
-        {#if daemonBuildTime}<code>built {new Date(daemonBuildTime).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</code>{/if}
-        {#if (daemonVersion || daemonBuildTime) && typeof window !== "undefined" && window.location.port} – <code title="daemon port">:{window.location.port}</code>{/if}
+        {#if daemonVersion && daemonBuildTime}
+          –
+        {/if}
+        {#if daemonBuildTime}<code
+            >built {new Date(daemonBuildTime).toLocaleString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}</code
+          >{/if}
+        {#if (daemonVersion || daemonBuildTime) && typeof window !== "undefined" && window.location.port}
+          – <code title="daemon port">:{window.location.port}</code>{/if}
       </p>
     {/if}
   </header>
@@ -5661,9 +5964,9 @@
           <span slot="head">Orphaned notes</span>
           {#if orphanNotes.length === 0}
             <p class="muted small nopad">
-              No orphaned notes. When a repo or worktree gets removed,
-              any notes anchored there land in this tray so you can
-              re-anchor or delete them.
+              No orphaned notes. When a repo or worktree gets removed, any notes
+              anchored there land in this tray so you can re-anchor or delete
+              them.
             </p>
           {:else}
             <ul class="orphan-list">
@@ -5683,12 +5986,14 @@
                       on:click={() =>
                         (orphanReanchorFor =
                           orphanReanchorFor === n.id ? null : n.id)}
-                    >Re-anchor…</button>
+                      >Re-anchor…</button
+                    >
                     <button
                       class="undo"
                       on:click={() => void deleteOrphan(n.id)}
                       title="Delete (an Undo toast lets you bring it back)"
-                    >Delete</button>
+                      >Delete</button
+                    >
                   </div>
                   {#if orphanReanchorFor === n.id}
                     <AnchorPicker
@@ -5715,64 +6020,233 @@
           class:peer-on={peerDiscoveryEnabled}
           disabled={peerToggleBusy}
           on:click={togglePeerDiscovery}
-        >{#if peerDiscoveryEnabled}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>{:else}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>{/if}</button>
+          >{#if peerDiscoveryEnabled}<svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+              ><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path
+                d="M1.42 9a16 16 0 0 1 21.16 0"
+              /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><circle
+                cx="12"
+                cy="20"
+                r="1"
+              /></svg
+            >{:else}<svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+              ><line x1="1" y1="1" x2="23" y2="23" /><path
+                d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"
+              /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path
+                d="M10.71 5.05A16 16 0 0 1 22.56 9"
+              /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path
+                d="M8.53 16.11a6 6 0 0 1 6.95 0"
+              /><line x1="12" y1="20" x2="12.01" y2="20" /></svg
+            >{/if}</button
+        >
         <span slot="content" class="peer-tooltip">
-          <svg class="peer-tooltip-illustration" viewBox="0 0 180 64" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg
+            class="peer-tooltip-illustration"
+            viewBox="0 0 180 64"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
             <!-- house roof -->
-            <path d="M8 30L90 6l82 24" opacity="0.12" stroke-width="1.5"/>
+            <path d="M8 30L90 6l82 24" opacity="0.12" stroke-width="1.5" />
             <!-- left person: head, body, arms relaxed, sitting -->
-            <circle cx="36" cy="24" r="4.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M36 28.5v7" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M31 31c2 1.5 8 1.5 10 0" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M32 35.5l-1 6M40 35.5l1 6" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <circle
+              cx="36"
+              cy="24"
+              r="4.5"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M36 28.5v7"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M31 31c2 1.5 8 1.5 10 0"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M32 35.5l-1 6M40 35.5l1 6"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
             <!-- left laptop -->
-            <rect x="24" y="44" width="24" height="14" rx="2.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <rect x="27" y="46.5" width="18" height="9" rx="1.5" opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}/>
+            <rect
+              x="24"
+              y="44"
+              width="24"
+              height="14"
+              rx="2.5"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <rect
+              x="27"
+              y="46.5"
+              width="18"
+              height="9"
+              rx="1.5"
+              opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
+            />
             {#if peerDiscoveryEnabled}
               <!-- small wifi dot on left screen -->
-              <circle cx="36" cy="51" r="1.2" fill="currentColor" stroke="none" opacity="0.6"/>
-              <path d="M33 49a4.2 4.2 0 0 1 6 0" opacity="0.4" stroke-width="1"/>
+              <circle
+                cx="36"
+                cy="51"
+                r="1.2"
+                fill="currentColor"
+                stroke="none"
+                opacity="0.6"
+              />
+              <path
+                d="M33 49a4.2 4.2 0 0 1 6 0"
+                opacity="0.4"
+                stroke-width="1"
+              />
             {/if}
             <!-- connection between laptops -->
             {#if peerDiscoveryEnabled}
               <!-- dashed path the envelope travels along -->
-              <path d="M50 36 Q90 18 130 36" opacity="0.12" stroke-dasharray="3 3" stroke-width="1" fill="none"/>
+              <path
+                d="M50 36 Q90 18 130 36"
+                opacity="0.12"
+                stroke-dasharray="3 3"
+                stroke-width="1"
+                fill="none"
+              />
               <!-- envelope flying left→right -->
               <g opacity="0.6">
-                <rect x="-5" y="-3.5" width="10" height="7" rx="1"/>
-                <path d="M-5-3.5l5 4 5-4"/>
-                <animateMotion dur="3s" repeatCount="indefinite" path="M50,36 Q90,18 130,36" rotate="auto"/>
+                <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
+                <path d="M-5-3.5l5 4 5-4" />
+                <animateMotion
+                  dur="3s"
+                  repeatCount="indefinite"
+                  path="M50,36 Q90,18 130,36"
+                  rotate="auto"
+                />
               </g>
               <!-- envelope flying right→left (offset) -->
               <g opacity="0.4">
-                <rect x="-5" y="-3.5" width="10" height="7" rx="1"/>
-                <path d="M-5-3.5l5 4 5-4"/>
-                <animateMotion dur="3.4s" repeatCount="indefinite" path="M130,36 Q90,18 50,36" rotate="auto" begin="0.8s"/>
+                <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
+                <path d="M-5-3.5l5 4 5-4" />
+                <animateMotion
+                  dur="3.4s"
+                  repeatCount="indefinite"
+                  path="M130,36 Q90,18 50,36"
+                  rotate="auto"
+                  begin="0.8s"
+                />
               </g>
             {:else}
               <!-- broken / no signal -->
-              <line x1="60" y1="32" x2="120" y2="32" opacity="0.1" stroke-dasharray="3 4"/>
-              <line x1="84" y1="26" x2="96" y2="38" opacity="0.25" stroke-width="1.5"/>
-              <line x1="84" y1="38" x2="96" y2="26" opacity="0.25" stroke-width="1.5"/>
+              <line
+                x1="60"
+                y1="32"
+                x2="120"
+                y2="32"
+                opacity="0.1"
+                stroke-dasharray="3 4"
+              />
+              <line
+                x1="84"
+                y1="26"
+                x2="96"
+                y2="38"
+                opacity="0.25"
+                stroke-width="1.5"
+              />
+              <line
+                x1="84"
+                y1="38"
+                x2="96"
+                y2="26"
+                opacity="0.25"
+                stroke-width="1.5"
+              />
             {/if}
             <!-- right person: head, body, arms relaxed, sitting -->
-            <circle cx="144" cy="24" r="4.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M144 28.5v7" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M139 31c2 1.5 8 1.5 10 0" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <path d="M140 35.5l-1 6M148 35.5l1 6" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
+            <circle
+              cx="144"
+              cy="24"
+              r="4.5"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M144 28.5v7"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M139 31c2 1.5 8 1.5 10 0"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <path
+              d="M140 35.5l-1 6M148 35.5l1 6"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
             <!-- right laptop -->
-            <rect x="132" y="44" width="24" height="14" rx="2.5" opacity={peerDiscoveryEnabled ? "1" : "0.35"}/>
-            <rect x="135" y="46.5" width="18" height="9" rx="1.5" opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}/>
+            <rect
+              x="132"
+              y="44"
+              width="24"
+              height="14"
+              rx="2.5"
+              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+            />
+            <rect
+              x="135"
+              y="46.5"
+              width="18"
+              height="9"
+              rx="1.5"
+              opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
+            />
             {#if peerDiscoveryEnabled}
               <!-- small wifi dot on right screen -->
-              <circle cx="144" cy="51" r="1.2" fill="currentColor" stroke="none" opacity="0.6"/>
-              <path d="M141 49a4.2 4.2 0 0 1 6 0" opacity="0.4" stroke-width="1"/>
+              <circle
+                cx="144"
+                cy="51"
+                r="1.2"
+                fill="currentColor"
+                stroke="none"
+                opacity="0.6"
+              />
+              <path
+                d="M141 49a4.2 4.2 0 0 1 6 0"
+                opacity="0.4"
+                stroke-width="1"
+              />
             {/if}
           </svg>
           {#if peerDiscoveryEnabled}
-            <span>LAN discovery is <span class="peer-badge peer-badge-on">ON</span> — other supergit instances on your local network can see this workspace and exchange messages. Click to disable.</span>
+            <span
+              >LAN discovery is <span class="peer-badge peer-badge-on">ON</span> —
+              other supergit instances on your local network can see this workspace
+              and exchange messages. Click to disable.</span
+            >
           {:else}
-            <span>LAN discovery is <span class="peer-badge peer-badge-off">OFF</span> — this workspace is invisible to others on your network. Click to enable peer-to-peer messaging.</span>
+            <span
+              >LAN discovery is <span class="peer-badge peer-badge-off"
+                >OFF</span
+              > — this workspace is invisible to others on your network. Click to
+              enable peer-to-peer messaging.</span
+            >
           {/if}
         </span>
       </Tooltip>
@@ -5810,12 +6284,14 @@
                       {#if ev.undone}
                         <button
                           class="undo"
-                          on:click={() => toggleEvent(ev.id, "redo")}>Redo</button
+                          on:click={() => toggleEvent(ev.id, "redo")}
+                          >Redo</button
                         >
                       {:else}
                         <button
                           class="undo"
-                          on:click={() => toggleEvent(ev.id, "undo")}>Undo</button
+                          on:click={() => toggleEvent(ev.id, "undo")}
+                          >Undo</button
                         >
                       {/if}
                     {/if}
@@ -5849,8 +6325,8 @@
               <button
                 class="undo events-clear"
                 on:click={clearAllErrors}
-                title="Clear the recorded error log"
-              >Clear</button>
+                title="Clear the recorded error log">Clear</button
+              >
             {/if}
           </svelte:fragment>
           {#if errorEntries.length === 0}
@@ -5864,11 +6340,17 @@
                     class:expanded={errorExpanded[e.id]}
                     on:click={() => toggleErrorExpanded(e.id)}
                   >
-                    <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
+                    <span class="err-kind err-kind-{e.kind}"
+                      >{errorKindLabel(e)}</span
+                    >
                     <span class="err-msg" title={e.message}>
                       {e.message}
                       {#if e.count && e.count > 1}
-                        <span class="err-count" title={`${e.count} occurrences in the coalesce window`}>× {e.count}</span>
+                        <span
+                          class="err-count"
+                          title={`${e.count} occurrences in the coalesce window`}
+                          >× {e.count}</span
+                        >
                       {/if}
                     </span>
                     <span class="muted ev-time">{relTime(e.timestamp)}</span>
@@ -5876,9 +6358,15 @@
                   {#if errorExpanded[e.id]}
                     <div class="err-detail">
                       <div class="err-meta">
-                        <span class="actor actor-{e.source === 'daemon' ? 'supergit' : 'user'}">{e.source}</span>
+                        <span
+                          class="actor actor-{e.source === 'daemon'
+                            ? 'supergit'
+                            : 'user'}">{e.source}</span
+                        >
                         {#if e.method || e.route}
-                          <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code>
+                          <code class="err-route"
+                            >{e.method ?? ""} {e.route ?? ""}</code
+                          >
                         {/if}
                         {#if e.status !== undefined}
                           <span class="err-status">{e.status}</span>
@@ -5888,7 +6376,11 @@
                         <pre class="err-stack">{e.stack}</pre>
                       {/if}
                       {#if e.extra && Object.keys(e.extra).length > 0}
-                        <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
+                        <pre class="err-stack">{JSON.stringify(
+                            e.extra,
+                            null,
+                            2,
+                          )}</pre>
                       {/if}
                     </div>
                   {/if}
@@ -5905,7 +6397,21 @@
       class:tour-active={tourRunning}
       on:click={restartTutorial}
       title={tourRunning ? "Stop the walkthrough" : "Start the UI walkthrough"}
-    ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
+      ><svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+        ><circle cx="12" cy="12" r="10" /><path
+          d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"
+        /><line x1="12" y1="17" x2="12.01" y2="17" /></svg
+      ></button
+    >
   </nav>
 
   {#if loading && repos.length === 0}
@@ -5915,11 +6421,15 @@
         <span>loading…</span>
       </div>
       {#if loadingTotal > 0}
-        <p class="loading-slow">Scanning repos {loadingDone} / {loadingTotal}</p>
+        <p class="loading-slow">
+          Scanning repos {loadingDone} / {loadingTotal}
+        </p>
         <div class="loading-progress-track">
           <div
             class="loading-progress-bar"
-            style="width: {loadingTotal > 0 ? (loadingDone / loadingTotal) * 100 : 0}%"
+            style="width: {loadingTotal > 0
+              ? (loadingDone / loadingTotal) * 100
+              : 0}%"
           ></div>
         </div>
       {:else if loadingSlow}
@@ -5951,7 +6461,9 @@
               stroke-linejoin="round"
               aria-hidden="true"
             >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              <path
+                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+              />
               <path d="M12 11v6" />
               <path d="M9 14h6" />
             </svg>
@@ -5999,7 +6511,9 @@
                     on:keydown|stopPropagation
                   />
                   {#if importQuery.trim()}
-                    <span class="import-search-count">{importFiltered.length}/{importSuggestions.length}</span>
+                    <span class="import-search-count"
+                      >{importFiltered.length}/{importSuggestions.length}</span
+                    >
                   {/if}
                 </div>
               </svelte:fragment>
@@ -6034,24 +6548,35 @@
                       >
                         <span class="import-row-main">
                           {#if busy}
-                            <span class="import-row-name"><LoadingSpinner size="0.75rem" /> Importing…</span>
+                            <span class="import-row-name"
+                              ><LoadingSpinner size="0.75rem" /> Importing…</span
+                            >
                           {:else}
                             <span class="import-row-name">{sug.name}</span>
                           {/if}
-                          <span class="import-row-path muted small">{sug.path}</span>
+                          <span class="import-row-path muted small"
+                            >{sug.path}</span
+                          >
                           {#if sug.repoUrl}
-                            <span class="import-row-url muted small">{sug.repoUrl}</span>
+                            <span class="import-row-url muted small"
+                              >{sug.repoUrl}</span
+                            >
                           {/if}
                         </span>
                         <span class="import-row-meta">
                           <span class="import-row-count">
-                            <span class="import-row-agents-icons" aria-hidden="true">
+                            <span
+                              class="import-row-agents-icons"
+                              aria-hidden="true"
+                            >
                               {#each sug.agents as agent (agent)}
                                 <AgentIcon {agent} size={14} />
                               {/each}
                             </span>
                             <span>
-                              {sug.sessionCount} session{sug.sessionCount === 1 ? "" : "s"}
+                              {sug.sessionCount} session{sug.sessionCount === 1
+                                ? ""
+                                : "s"}
                             </span>
                           </span>
                           <span class="import-row-time muted small">
@@ -6078,7 +6603,9 @@
     <ul class="rows">
       {#each rows as row, rowIdx (row.key)}
         {@const { repo, wt } = row}
-        {@const summary = wt ? statusSummary(wt.fileStatus, wtSummaryByPath[wt.path]) : null}
+        {@const summary = wt
+          ? statusSummary(wt.fileStatus, wtSummaryByPath[wt.path])
+          : null}
         {@const noteAnchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`}
         {@const noteCount = $notesCountByAnchor[noteAnchor] ?? 0}
         {@const isFirstOfRepo =
@@ -6095,658 +6622,883 @@
           use:rowVisibility={{ repoId: repo.id, rowKey: row.key }}
         >
           <div class="row-content">
-          <div class="row-head">
-            <button
-              class="chevron fold-toggle"
-              class:open={!rowFolded[row.key]}
-              title={rowFolded[row.key]
-                ? `Expand \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\``
-                : `Fold \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` to a minimal row`}
-              aria-label={rowFolded[row.key] ? "Expand row" : "Fold row"}
-              on:click|stopPropagation={() => toggleRowFolded(row.key, wt?.path)}
-            >
-              <span class="arrow">▸</span>
-            </button>
-            <!-- Clicking the chip opens an edit popover (name + accent
+            <div class="row-head">
+              <button
+                class="chevron fold-toggle"
+                class:open={!rowFolded[row.key]}
+                title={rowFolded[row.key]
+                  ? `Expand \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\``
+                  : `Fold \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` to a minimal row`}
+                aria-label={rowFolded[row.key] ? "Expand row" : "Fold row"}
+                on:click|stopPropagation={() =>
+                  toggleRowFolded(row.key, wt?.path)}
+              >
+                <span class="arrow">▸</span>
+              </button>
+              <!-- Clicking the chip opens an edit popover (name + accent
                  colour + a "Reorder repos…" entry point). The colour
                  picker's `input` fires continuously while dragging (live
                  chip preview via `repos = repos`); `change` fires once on
                  commit (when we persist). Right-click on it clears. -->
-            <span class="repo-chip-anchor" data-repo-edit-anchor={row.key}>
-              <button
-                class="repo-chip"
-                class:repo-chip-colored={!!repo.color}
-                title="Edit repo"
-                style={repo.color
-                  ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
-                  : ""}
-                on:click|stopPropagation={() =>
-                  editingRowKey === row.key
-                    ? cancelRenameRepo()
-                    : openRepoEdit(repo, row.key)}
-              >
-                {repo.name}
-                <span class="chip-tail">
-                  <span class="pencil">✎</span>
-                </span>
-              </button>
-              {#if editingRowKey === row.key}
-                <Popover variant="agents" extraClass="repo-edit-popover" headClass="repo-edit-popover-head">
-                  <svelte:fragment slot="head">
-                    <span>Edit repo</span>
-                  </svelte:fragment>
-                  <div class="repo-edit-body">
-                    <label class="repo-edit-field">
-                      <span class="repo-edit-label">Name</span>
-                      <input
-                        class="repo-edit-name"
-                        use:focusAndSelect
-                        bind:value={editRepoName}
-                        on:keydown={(e) => {
-                          if (e.key === "Enter") commitRenameRepo(repo.id);
-                          if (e.key === "Escape") cancelRenameRepo();
-                        }}
-                      />
-                    </label>
-                    <div class="repo-edit-field">
-                      <span class="repo-edit-label">Color</span>
-                      <span class="repo-edit-color">
+              <span class="repo-chip-anchor" data-repo-edit-anchor={row.key}>
+                <button
+                  class="repo-chip"
+                  class:repo-chip-colored={!!repo.color}
+                  title="Edit repo"
+                  style={repo.color
+                    ? `--repo-bg: ${repo.color}; --repo-fg: ${repoChipFg(repo.color)}`
+                    : ""}
+                  on:click|stopPropagation={() =>
+                    editingRowKey === row.key
+                      ? cancelRenameRepo()
+                      : openRepoEdit(repo, row.key)}
+                >
+                  {repo.name}
+                  <span class="chip-tail">
+                    <span class="pencil">✎</span>
+                  </span>
+                </button>
+                {#if editingRowKey === row.key}
+                  <Popover
+                    variant="agents"
+                    extraClass="repo-edit-popover"
+                    headClass="repo-edit-popover-head"
+                  >
+                    <svelte:fragment slot="head">
+                      <span>Edit repo</span>
+                    </svelte:fragment>
+                    <div class="repo-edit-body">
+                      <label class="repo-edit-field">
+                        <span class="repo-edit-label">Name</span>
                         <input
-                          class="repo-color-swatch"
-                          type="color"
-                          aria-label="Repo accent color"
-                          title={repo.color
-                            ? `Repo color (${repo.color}) — right-click to clear`
-                            : "Set a repo accent color (right-click to clear)"}
-                          value={repo.color ?? defaultChipHex}
-                          style={repo.color
-                            ? `--swatch-bg: ${repo.color}`
-                            : `--swatch-bg: ${defaultChipHex}`}
-                          on:input={(e) => {
-                            const v = (e.currentTarget as HTMLInputElement).value;
-                            repo.color = v;
-                            repos = repos;
+                          class="repo-edit-name"
+                          use:focusAndSelect
+                          bind:value={editRepoName}
+                          on:keydown={(e) => {
+                            if (e.key === "Enter") commitRenameRepo(repo.id);
+                            if (e.key === "Escape") cancelRenameRepo();
                           }}
-                          on:change={(e) =>
-                            setRepoColor(repo.id, (e.currentTarget as HTMLInputElement).value)}
-                          on:contextmenu|preventDefault={() => setRepoColor(repo.id, null)}
                         />
-                        {#if repo.color}
-                          <button
-                            class="repo-edit-clear"
-                            title="Clear accent color"
-                            on:click|stopPropagation={() => setRepoColor(repo.id, null)}
-                          >Clear</button>
-                        {/if}
-                      </span>
-                    </div>
-                    <button
-                      class="repo-edit-reorder"
-                      on:click|stopPropagation={() => {
-                        void commitRenameRepo(repo.id);
-                        // Key the highlight on repo.id (not row.key) so a
-                        // repo with multiple worktree rows still maps to
-                        // its single entry in the reorder list.
-                        reorderHighlightRepoId = repo.id;
-                        reorderDialogOpen = true;
-                      }}
-                    >
-                      <svg class="repo-edit-reorder-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M8 5v14M8 5L4 9M8 5l4 4M16 19V5m0 14l-4-4m4 4l4-4" /></svg>
-                      Reorder repos…
-                    </button>
-                  </div>
-                </Popover>
-              {/if}
-            </span>
-
-            {#if wt}
-              {#if wt.nonGit}
-                <span class="branch muted">folder</span>
-              {:else if wt.detached}
-                <span class="branch detached">detached @ {wt.head.slice(0, 7)}</span>
-              {:else if wt.bare}
-                <span class="branch bare">bare</span>
-              {:else}
-                <span class="branch-anchor" data-branch-anchor={wt.path}>
-                  <button
-                    class="branch branch-button"
-                    title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
-                    on:click|stopPropagation={() => {
-                      const opening = !branchPickerOpen[wt.path];
-                      branchPickerOpen = { ...branchPickerOpen, [wt.path]: opening };
-                      if (opening) void loadBranchesFor(repo.id, wt.path);
-                    }}
-                  ><svg class="branch-icon" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9c0 4-4 6-12 6"/></svg>{wt.branch} <span class="branch-caret" aria-hidden="true">▾</span></button>
-                  {#if branchPickerOpen[wt.path]}
-                    <Popover variant="agents" extraClass="branch-popover" headClass="branch-popover-head">
-                      <svelte:fragment slot="head">
-                        <span>Switch branch in {wt.branch}</span>
-                        <button
-                          class="branch-sort-toggle"
-                          title="Toggle branch sort order"
-                          on:click|stopPropagation={() => {
-                            branchSortMode = branchSortMode === "recency" ? "alpha" : "recency";
-                          }}
-                        >
-                          sort: {branchSortMode === "recency" ? "recency" : "A–Z"} ↻
-                        </button>
-                      </svelte:fragment>
-                      {#if branchesLoading[wt.path]}
-                        <p class="muted small nopad">Loading branches…</p>
-                      {:else}
-                        {@const b = branchesByWt[wt.path]}
-                        {#if !b || (b.local.length === 0 && b.remote.length === 0)}
-                          <p class="muted small nopad">No branches found.</p>
-                        {:else}
-                          {@const sortedLocal = sortBranches(b.local, branchSortMode)}
-                          {@const sortedRemote = sortBranches(b.remote, branchSortMode)}
-                          <ul class="agents-list">
-                            {#each sortedLocal as bname (bname)}
-                              <li>
-                                <button
-                                  class="agent-row branch-row"
-                                  class:branch-row-current={bname === b.current}
-                                  disabled={bname === b.current}
-                                  on:click={() => tryCheckout(repo.id, wt.path, bname)}
-                                  title={bname === b.current
-                                    ? "Currently checked out"
-                                    : `Run \`git checkout ${bname}\` here`}
-                                >
-                                  <span class="branch-tick" aria-hidden="true">
-                                    {bname === b.current ? "●" : ""}
-                                  </span>
-                                  <span class="agent-row-name">{bname}</span>
-                                  <span class="agent-title muted">local</span>
-                                </button>
-                              </li>
-                            {/each}
-                            {#each sortedRemote as bname (bname)}
-                              <li>
-                                <button
-                                  class="agent-row branch-row"
-                                  on:click={() => tryCheckout(repo.id, wt.path, bname)}
-                                  title={`Create local tracking branch from \`${bname}\` and check it out`}
-                                >
-                                  <span class="branch-tick" aria-hidden="true"></span>
-                                  <span class="agent-row-name">{bname}</span>
-                                  <span class="agent-title muted">remote</span>
-                                </button>
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
-                      {/if}
-                    </Popover>
-                  {/if}
-                </span>
-              {/if}
-              {#if wt && badgeAnimDebug}
-                <span class="status-badge-debug-row">
-                  <StatusBadge ahead={1} behind={0} dirty={0} pulsate={pulsateDebug} />
-                  <StatusBadge ahead={0} behind={1} dirty={0} />
-                </span>
-              {:else if wt && !wt.nonGit}
-                {@const fAhead = wt.branchStatus?.ahead ?? 0}
-                {@const fBehind = wt.branchStatus?.behind ?? 0}
-                {@const fDirty = wt.fileStatus.staged + wt.fileStatus.unstaged + wt.fileStatus.untracked}
-                {@const fDirtyWarn = fDirty > 3 || (wt.fileStatus.dirtyLines ?? 0) > 200}
-                {#if fAhead > 0}
-                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                    <span slot="trigger" class="status-badge-trigger">
-                      <StatusBadge
-                        ahead={fAhead}
-                        pulsate={wt.branchStatus ? aheadAged(wt.branchStatus) : false}
-                        onClick={() => tryPush(repo.id, wt.path)}
-                        busy={!!pushBusy[wt.path]}
-                        title={`Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`}
-                      />
-                    </span>
-                    <span slot="content" class="wt-tt-content">
-                      <div class="wt-tt-section-head">{aheadTooltip(wt.branchStatus)}</div>
-                      {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                        <span class="muted small">Loading commits…</span>
-                      {:else}
-                        {@const s = wtSummaryByPath[wt.path]}
-                        {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
-                          <div class="wt-tt-commits">
-                            {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                              <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                              <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                              <span class="wt-tt-date">{c.date ? relTime(c.date) : ""}</span>
-                              <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                            {/each}
-                          </div>
-                          {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                            <div class="wt-tt-more">
-                              +{s.unpushedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                            </div>
+                      </label>
+                      <div class="repo-edit-field">
+                        <span class="repo-edit-label">Color</span>
+                        <span class="repo-edit-color">
+                          <input
+                            class="repo-color-swatch"
+                            type="color"
+                            aria-label="Repo accent color"
+                            title={repo.color
+                              ? `Repo color (${repo.color}) — right-click to clear`
+                              : "Set a repo accent color (right-click to clear)"}
+                            value={repo.color ?? defaultChipHex}
+                            style={repo.color
+                              ? `--swatch-bg: ${repo.color}`
+                              : `--swatch-bg: ${defaultChipHex}`}
+                            on:input={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement)
+                                .value;
+                              repo.color = v;
+                              repos = repos;
+                            }}
+                            on:change={(e) =>
+                              setRepoColor(
+                                repo.id,
+                                (e.currentTarget as HTMLInputElement).value,
+                              )}
+                            on:contextmenu|preventDefault={() =>
+                              setRepoColor(repo.id, null)}
+                          />
+                          {#if repo.color}
+                            <button
+                              class="repo-edit-clear"
+                              title="Clear accent color"
+                              on:click|stopPropagation={() =>
+                                setRepoColor(repo.id, null)}>Clear</button
+                            >
                           {/if}
-                        {/if}
-                      {/if}
-                    </span>
-                  </Tooltip>
-                {/if}
-                {#if fBehind > 0}
-                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                    <span slot="trigger" class="status-badge-trigger">
-                      <StatusBadge
-                        behind={fBehind}
-                        onClick={() => tryPull(repo.id, wt.path)}
-                        busy={!!pullBusy[wt.path]}
-                        title={`Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`}
-                      />
-                    </span>
-                    <span slot="content" class="wt-tt-content">
-                      <div class="wt-tt-section-head">
-                        {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from {wt.branchStatus?.upstream ?? "upstream"}
+                        </span>
                       </div>
-                      {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                        <span class="muted small">Loading commits…</span>
-                      {:else}
-                        {@const s = wtSummaryByPath[wt.path]}
-                        {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
-                          <div class="wt-tt-commits">
-                            {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                              <span class="wt-tt-sha">{c.sha.slice(0, 7)}</span>
-                              <span class="wt-tt-author" title={c.author ?? ""}>{c.author ?? ""}</span>
-                              <span class="wt-tt-date">{c.date ? relTime(c.date) : ""}</span>
-                              <span class="wt-tt-subject" title={c.subject}>{clampSubject(c.subject)}</span>
-                            {/each}
-                          </div>
-                          {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                            <div class="wt-tt-more">
-                              +{s.unfetchedCommits.length - COMMIT_TOOLTIP_LIMIT} more
-                            </div>
+                      <button
+                        class="repo-edit-reorder"
+                        on:click|stopPropagation={() => {
+                          void commitRenameRepo(repo.id);
+                          // Key the highlight on repo.id (not row.key) so a
+                          // repo with multiple worktree rows still maps to
+                          // its single entry in the reorder list.
+                          reorderHighlightRepoId = repo.id;
+                          reorderDialogOpen = true;
+                        }}
+                      >
+                        <svg
+                          class="repo-edit-reorder-icon"
+                          viewBox="0 0 24 24"
+                          width="13"
+                          height="13"
+                          aria-hidden="true"
+                          ><path
+                            d="M8 5v14M8 5L4 9M8 5l4 4M16 19V5m0 14l-4-4m4 4l4-4"
+                          /></svg
+                        >
+                        Reorder repos…
+                      </button>
+                    </div>
+                  </Popover>
+                {/if}
+              </span>
+
+              {#if wt}
+                {#if wt.nonGit}
+                  <span class="branch muted">folder</span>
+                {:else if wt.detached}
+                  <span class="branch detached"
+                    >detached @ {wt.head.slice(0, 7)}</span
+                  >
+                {:else if wt.bare}
+                  <span class="branch bare">bare</span>
+                {:else}
+                  <span class="branch-anchor" data-branch-anchor={wt.path}>
+                    <button
+                      class="branch branch-button"
+                      title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
+                      on:click|stopPropagation={() => {
+                        const opening = !branchPickerOpen[wt.path];
+                        branchPickerOpen = {
+                          ...branchPickerOpen,
+                          [wt.path]: opening,
+                        };
+                        if (opening) void loadBranchesFor(repo.id, wt.path);
+                      }}
+                      ><svg
+                        class="branch-icon"
+                        viewBox="0 0 24 24"
+                        width="12"
+                        height="12"
+                        aria-hidden="true"
+                        ><path
+                          d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9c0 4-4 6-12 6"
+                        /></svg
+                      >{wt.branch}
+                      <span class="branch-caret" aria-hidden="true">▾</span
+                      ></button
+                    >
+                    {#if branchPickerOpen[wt.path]}
+                      <Popover
+                        variant="agents"
+                        extraClass="branch-popover"
+                        headClass="branch-popover-head"
+                      >
+                        <svelte:fragment slot="head">
+                          <span>Switch branch in {wt.branch}</span>
+                          <button
+                            class="branch-sort-toggle"
+                            title="Toggle branch sort order"
+                            on:click|stopPropagation={() => {
+                              branchSortMode =
+                                branchSortMode === "recency"
+                                  ? "alpha"
+                                  : "recency";
+                            }}
+                          >
+                            sort: {branchSortMode === "recency"
+                              ? "recency"
+                              : "A–Z"} ↻
+                          </button>
+                        </svelte:fragment>
+                        {#if branchesLoading[wt.path]}
+                          <p class="muted small nopad">Loading branches…</p>
+                        {:else}
+                          {@const b = branchesByWt[wt.path]}
+                          {#if !b || (b.local.length === 0 && b.remote.length === 0)}
+                            <p class="muted small nopad">No branches found.</p>
+                          {:else}
+                            {@const sortedLocal = sortBranches(
+                              b.local,
+                              branchSortMode,
+                            )}
+                            {@const sortedRemote = sortBranches(
+                              b.remote,
+                              branchSortMode,
+                            )}
+                            <ul class="agents-list">
+                              {#each sortedLocal as bname (bname)}
+                                <li>
+                                  <button
+                                    class="agent-row branch-row"
+                                    class:branch-row-current={bname ===
+                                      b.current}
+                                    disabled={bname === b.current}
+                                    on:click={() =>
+                                      tryCheckout(repo.id, wt.path, bname)}
+                                    title={bname === b.current
+                                      ? "Currently checked out"
+                                      : `Run \`git checkout ${bname}\` here`}
+                                  >
+                                    <span
+                                      class="branch-tick"
+                                      aria-hidden="true"
+                                    >
+                                      {bname === b.current ? "●" : ""}
+                                    </span>
+                                    <span class="agent-row-name">{bname}</span>
+                                    <span class="agent-title muted">local</span>
+                                  </button>
+                                </li>
+                              {/each}
+                              {#each sortedRemote as bname (bname)}
+                                <li>
+                                  <button
+                                    class="agent-row branch-row"
+                                    on:click={() =>
+                                      tryCheckout(repo.id, wt.path, bname)}
+                                    title={`Create local tracking branch from \`${bname}\` and check it out`}
+                                  >
+                                    <span class="branch-tick" aria-hidden="true"
+                                    ></span>
+                                    <span class="agent-row-name">{bname}</span>
+                                    <span class="agent-title muted">remote</span
+                                    >
+                                  </button>
+                                </li>
+                              {/each}
+                            </ul>
                           {/if}
                         {/if}
-                      {/if}
-                    </span>
-                  </Tooltip>
-                {/if}
-                {#if fDirty > 0}
-                  <Tooltip variant="wide" onShow={() => loadWtSummary(wt.path)}>
-                    <span slot="trigger" class="status-badge-trigger">
-                      <StatusBadge dirty={fDirty} warn={fDirtyWarn} />
-                    </span>
-                    <span slot="content" class="wt-tt-content">
-                      <ChangedFilesTooltipBody summary={wtSummaryByPath[wt.path]} worktreePath={wt.path} />
-                    </span>
-                  </Tooltip>
-                {/if}
-                {#if fAhead === 0 && fBehind === 0 && fDirty === 0 && wt.branchStatus?.upstream}
-                  <span class="status-badge status-badge-sync" title="In sync with {wt.branchStatus.upstream}">
-                    <svg class="sync-check-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5"/></svg>
+                      </Popover>
+                    {/if}
                   </span>
                 {/if}
-              {/if}
-              {#if wt}
-                {@const a = (wt.agents && wt.agents.length > 0) ? wt.agents[0] : null}
-                {@const pickerSessions = pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
-                {@const activeTuis = activeTuisByWt[wt.path] ?? []}
-                <span
-                  class="agent-wrap"
-                  style={repo.color ? `--repo-bg: ${repo.color}` : ""}
-                  data-agents-anchor={wt.path}
-                  data-active-tuis-anchor={wt.path}
-                  data-new-agent-anchor={wt.path}
-                >
-                  <button
-                    class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
-                    title="Start a new session in this worktree"
-                    on:click|stopPropagation={() => {
-                      newAgentPopoverOpen = {
-                        ...newAgentPopoverOpen,
-                        [wt.path]: !newAgentPopoverOpen[wt.path],
-                      };
-                    }}
-                  >+</button>
-                  {#if newAgentPopoverOpen[wt.path]}
-                    <Popover variant="agents" extraClass="new-agent-popover">
-                      <svelte:fragment slot="head">Start a new session</svelte:fragment>
-                      <ul class="agents-list">
-                        {#each installedAgents as ag (ag.name)}
-                          <li>
-                            {#if ag.name === "ollama"}
-                              <button
-                                class="agent-row new-agent-row"
-                                on:click={() => {
-                                  ollamaSubmenuOpen = {
-                                    ...ollamaSubmenuOpen,
-                                    [wt.path]: !ollamaSubmenuOpen[wt.path],
-                                  };
-                                  if (ollamaSubmenuOpen[wt.path]) {
-                                    void ensureOllamaModelsLoaded();
-                                  }
-                                }}
-                                title={`Pick an Ollama model to spawn \`ollama run <model>\` in ${wt.path}`}
-                              >
-                                <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
-                                <span class="agent-row-name">Ollama</span>
-                                <span class="agent-title muted">
-                                  {ollamaSubmenuOpen[wt.path] ? "▾" : "▸"} pick model
-                                </span>
-                              </button>
-                              {#if ollamaSubmenuOpen[wt.path]}
-                                <ul class="agents-list ollama-models-list">
-                                  {#if ollamaModelsLoading}
-                                    <li class="muted ollama-models-info">loading models…</li>
-                                  {:else if ollamaModelsError}
-                                    <li class="muted ollama-models-info">
-                                      couldn't load models ({ollamaModelsError}).
-                                      <button
-                                        class="link-btn"
-                                        on:click={() => void ensureOllamaModelsLoaded(true)}
-                                      >retry</button>
-                                    </li>
-                                  {:else if ollamaModels.length === 0}
-                                    <li class="muted ollama-models-info">
-                                      no models found. Run <code>ollama pull &lt;model&gt;</code> first.
-                                    </li>
-                                  {:else}
-                                    {#each ollamaModels as m (m.name)}
-                                      <li>
-                                        <button
-                                          class="agent-row new-agent-row ollama-model-row"
-                                          on:click={() => {
-                                            newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                                            ollamaSubmenuOpen = { ...ollamaSubmenuOpen, [wt.path]: false };
-                                            unfoldRowIfFolded(row.key);
-                                            void openNewOllamaChat(wt.path, m.name);
-                                          }}
-                                          title={`Open a chat with ${m.name} in ${wt.path} (API-driven, full memory)`}
-                                        >
-                                          <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
-                                          <span class="agent-row-name">{m.name}</span>
-                                          <span class="agent-title muted">
-                                            {m.parameterSize ?? ""}
-                                          </span>
-                                        </button>
-                                      </li>
-                                    {/each}
-                                  {/if}
-                                </ul>
-                              {/if}
-                            {:else}
-                              <button
-                                class="agent-row new-agent-row"
-                                on:click={() => {
-                                  newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                                  unfoldRowIfFolded(row.key);
-                                  openNewAgentSession(wt.path, ag.name as "claude" | "codex");
-                                }}
-                                title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
-                              >
-                                {#if ag.name === "claude"}
-                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                                {:else if ag.name === "codex"}
-                                  <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                                {:else}
-                                  <span class="agent-dot agent-shell"></span>
-                                {/if}
-                                <span class="agent-row-name">
-                                  {ag.name === "claude" ? "Claude"
-                                    : ag.name === "codex" ? "Codex"
-                                    : ag.name}
-                                </span>
-                                <span class="agent-title muted">{ag.path}</span>
-                              </button>
+                {#if wt && badgeAnimDebug}
+                  <span class="status-badge-debug-row">
+                    <StatusBadge
+                      ahead={1}
+                      behind={0}
+                      dirty={0}
+                      pulsate={pulsateDebug}
+                    />
+                    <StatusBadge ahead={0} behind={1} dirty={0} />
+                  </span>
+                {:else if wt && !wt.nonGit}
+                  {@const fAhead = wt.branchStatus?.ahead ?? 0}
+                  {@const fBehind = wt.branchStatus?.behind ?? 0}
+                  {@const fDirty =
+                    wt.fileStatus.staged +
+                    wt.fileStatus.unstaged +
+                    wt.fileStatus.untracked}
+                  {@const fDirtyWarn =
+                    fDirty > 3 || (wt.fileStatus.dirtyLines ?? 0) > 200}
+                  {#if fAhead > 0}
+                    <Tooltip
+                      variant="wide"
+                      onShow={() => loadWtSummary(wt.path)}
+                    >
+                      <span slot="trigger" class="status-badge-trigger">
+                        <StatusBadge
+                          ahead={fAhead}
+                          pulsate={wt.branchStatus
+                            ? aheadAged(wt.branchStatus)
+                            : false}
+                          onClick={() => tryPush(repo.id, wt.path)}
+                          busy={!!pushBusy[wt.path]}
+                          title={`Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`}
+                        />
+                      </span>
+                      <span slot="content" class="wt-tt-content">
+                        <div class="wt-tt-section-head">
+                          {aheadTooltip(wt.branchStatus)}
+                        </div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
+                            <div class="wt-tt-commits">
+                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                                <span class="wt-tt-sha"
+                                  >{c.sha.slice(0, 7)}</span
+                                >
+                                <span
+                                  class="wt-tt-author"
+                                  title={c.author ?? ""}>{c.author ?? ""}</span
+                                >
+                                <span class="wt-tt-date"
+                                  >{c.date ? relTime(c.date) : ""}</span
+                                >
+                                <span class="wt-tt-subject" title={c.subject}
+                                  >{clampSubject(c.subject)}</span
+                                >
+                              {/each}
+                            </div>
+                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unpushedCommits.length -
+                                  COMMIT_TOOLTIP_LIMIT} more
+                              </div>
                             {/if}
-                          </li>
-                        {/each}
-                        <!-- Always-present Terminal entry. Spawns the user's
+                          {/if}
+                        {/if}
+                      </span>
+                    </Tooltip>
+                  {/if}
+                  {#if fBehind > 0}
+                    <Tooltip
+                      variant="wide"
+                      onShow={() => loadWtSummary(wt.path)}
+                    >
+                      <span slot="trigger" class="status-badge-trigger">
+                        <StatusBadge
+                          behind={fBehind}
+                          onClick={() => tryPull(repo.id, wt.path)}
+                          busy={!!pullBusy[wt.path]}
+                          title={`Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`}
+                        />
+                      </span>
+                      <span slot="content" class="wt-tt-content">
+                        <div class="wt-tt-section-head">
+                          {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from
+                          {wt.branchStatus?.upstream ?? "upstream"}
+                        </div>
+                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
+                          <span class="muted small">Loading commits…</span>
+                        {:else}
+                          {@const s = wtSummaryByPath[wt.path]}
+                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
+                            <div class="wt-tt-commits">
+                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
+                                <span class="wt-tt-sha"
+                                  >{c.sha.slice(0, 7)}</span
+                                >
+                                <span
+                                  class="wt-tt-author"
+                                  title={c.author ?? ""}>{c.author ?? ""}</span
+                                >
+                                <span class="wt-tt-date"
+                                  >{c.date ? relTime(c.date) : ""}</span
+                                >
+                                <span class="wt-tt-subject" title={c.subject}
+                                  >{clampSubject(c.subject)}</span
+                                >
+                              {/each}
+                            </div>
+                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
+                              <div class="wt-tt-more">
+                                +{s.unfetchedCommits.length -
+                                  COMMIT_TOOLTIP_LIMIT} more
+                              </div>
+                            {/if}
+                          {/if}
+                        {/if}
+                      </span>
+                    </Tooltip>
+                  {/if}
+                  {#if fDirty > 0}
+                    <Tooltip
+                      variant="wide"
+                      onShow={() => loadWtSummary(wt.path)}
+                    >
+                      <span slot="trigger" class="status-badge-trigger">
+                        <StatusBadge dirty={fDirty} warn={fDirtyWarn} />
+                      </span>
+                      <span slot="content" class="wt-tt-content">
+                        <ChangedFilesTooltipBody
+                          summary={wtSummaryByPath[wt.path]}
+                          worktreePath={wt.path}
+                        />
+                      </span>
+                    </Tooltip>
+                  {/if}
+                  {#if fAhead === 0 && fBehind === 0 && fDirty === 0 && wt.branchStatus?.upstream}
+                    <span
+                      class="status-badge status-badge-sync"
+                      title="In sync with {wt.branchStatus.upstream}"
+                    >
+                      <svg
+                        class="sync-check-icon"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        ><polyline points="3.5 8.5 6.5 11.5 12.5 5" /></svg
+                      >
+                    </span>
+                  {/if}
+                {/if}
+                {#if wt}
+                  {@const a =
+                    wt.agents && wt.agents.length > 0 ? wt.agents[0] : null}
+                  {@const pickerSessions =
+                    pickerSessionsByWt[wt.path] ?? wt.agents ?? []}
+                  {@const activeTuis = activeTuisByWt[wt.path] ?? []}
+                  <span
+                    class="agent-wrap"
+                    style={repo.color ? `--repo-bg: ${repo.color}` : ""}
+                    data-agents-anchor={wt.path}
+                    data-active-tuis-anchor={wt.path}
+                    data-new-agent-anchor={wt.path}
+                  >
+                    <button
+                      class="agent-add {a ? `agent-${a.agent}` : 'agent-empty'}"
+                      title="Start a new session in this worktree"
+                      on:click|stopPropagation={() => {
+                        newAgentPopoverOpen = {
+                          ...newAgentPopoverOpen,
+                          [wt.path]: !newAgentPopoverOpen[wt.path],
+                        };
+                      }}>+</button
+                    >
+                    {#if newAgentPopoverOpen[wt.path]}
+                      <Popover variant="agents" extraClass="new-agent-popover">
+                        <svelte:fragment slot="head"
+                          >Start a new session</svelte:fragment
+                        >
+                        <ul class="agents-list">
+                          {#each installedAgents as ag (ag.name)}
+                            <li>
+                              {#if ag.name === "ollama"}
+                                <button
+                                  class="agent-row new-agent-row"
+                                  on:click={() => {
+                                    ollamaSubmenuOpen = {
+                                      ...ollamaSubmenuOpen,
+                                      [wt.path]: !ollamaSubmenuOpen[wt.path],
+                                    };
+                                    if (ollamaSubmenuOpen[wt.path]) {
+                                      void ensureOllamaModelsLoaded();
+                                    }
+                                  }}
+                                  title={`Pick an Ollama model to spawn \`ollama run <model>\` in ${wt.path}`}
+                                >
+                                  <img
+                                    class="agent-row-icon"
+                                    src="/agents/ollama.svg"
+                                    alt=""
+                                  />
+                                  <span class="agent-row-name">Ollama</span>
+                                  <span class="agent-title muted">
+                                    {ollamaSubmenuOpen[wt.path] ? "▾" : "▸"} pick
+                                    model
+                                  </span>
+                                </button>
+                                {#if ollamaSubmenuOpen[wt.path]}
+                                  <ul class="agents-list ollama-models-list">
+                                    {#if ollamaModelsLoading}
+                                      <li class="muted ollama-models-info">
+                                        loading models…
+                                      </li>
+                                    {:else if ollamaModelsError}
+                                      <li class="muted ollama-models-info">
+                                        couldn't load models ({ollamaModelsError}).
+                                        <button
+                                          class="link-btn"
+                                          on:click={() =>
+                                            void ensureOllamaModelsLoaded(true)}
+                                          >retry</button
+                                        >
+                                      </li>
+                                    {:else if ollamaModels.length === 0}
+                                      <li class="muted ollama-models-info">
+                                        no models found. Run <code
+                                          >ollama pull &lt;model&gt;</code
+                                        > first.
+                                      </li>
+                                    {:else}
+                                      {#each ollamaModels as m (m.name)}
+                                        <li>
+                                          <button
+                                            class="agent-row new-agent-row ollama-model-row"
+                                            on:click={() => {
+                                              newAgentPopoverOpen = {
+                                                ...newAgentPopoverOpen,
+                                                [wt.path]: false,
+                                              };
+                                              ollamaSubmenuOpen = {
+                                                ...ollamaSubmenuOpen,
+                                                [wt.path]: false,
+                                              };
+                                              unfoldRowIfFolded(row.key);
+                                              void openNewOllamaChat(
+                                                wt.path,
+                                                m.name,
+                                              );
+                                            }}
+                                            title={`Open a chat with ${m.name} in ${wt.path} (API-driven, full memory)`}
+                                          >
+                                            <img
+                                              class="agent-row-icon"
+                                              src="/agents/ollama.svg"
+                                              alt=""
+                                            />
+                                            <span class="agent-row-name"
+                                              >{m.name}</span
+                                            >
+                                            <span class="agent-title muted">
+                                              {m.parameterSize ?? ""}
+                                            </span>
+                                          </button>
+                                        </li>
+                                      {/each}
+                                    {/if}
+                                  </ul>
+                                {/if}
+                              {:else}
+                                <button
+                                  class="agent-row new-agent-row"
+                                  on:click={() => {
+                                    newAgentPopoverOpen = {
+                                      ...newAgentPopoverOpen,
+                                      [wt.path]: false,
+                                    };
+                                    unfoldRowIfFolded(row.key);
+                                    openNewAgentSession(
+                                      wt.path,
+                                      ag.name as "claude" | "codex",
+                                    );
+                                  }}
+                                  title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
+                                >
+                                  {#if ag.name === "claude"}
+                                    <img
+                                      class="agent-row-icon"
+                                      src="/agents/claude.svg"
+                                      alt=""
+                                    />
+                                  {:else if ag.name === "codex"}
+                                    <img
+                                      class="agent-row-icon"
+                                      src="/agents/codex.svg"
+                                      alt=""
+                                    />
+                                  {:else}
+                                    <span class="agent-dot agent-shell"></span>
+                                  {/if}
+                                  <span class="agent-row-name">
+                                    {ag.name === "claude"
+                                      ? "Claude"
+                                      : ag.name === "codex"
+                                        ? "Codex"
+                                        : ag.name}
+                                  </span>
+                                  <span class="agent-title muted"
+                                    >{ag.path}</span
+                                  >
+                                </button>
+                              {/if}
+                            </li>
+                          {/each}
+                          <!-- Always-present Terminal entry. Spawns the user's
                              $SHELL (resolved server-side via /api/shell-default)
                              as a plain PTY in this worktree — no JSONL
                              transcript, just an interactive shell column. -->
-                        <li>
-                          <button
-                            class="agent-row new-agent-row"
-                            on:click={() => {
-                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                              unfoldRowIfFolded(row.key);
-                              openNewTerminalInWt(wt.path);
-                            }}
-                            title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
-                          >
-                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l5-5-5-5"/><path d="M11 19h8"/></svg>
-                            <span class="agent-row-name">Terminal</span>
-                            <span class="agent-title muted">{defaultShell}</span>
-                          </button>
-                        </li>
-                        <li>
-                          <button
-                            class="agent-row new-agent-row"
-                            on:click={() => {
-                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                              unfoldRowIfFolded(row.key);
-                              openFileBrowser(wt.path);
-                            }}
-                            title={`Browse files in ${wt.path}`}
-                          >
-                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                            <span class="agent-row-name">Files</span>
-                            <span class="agent-title muted">browse</span>
-                          </button>
-                        </li>
-                        <li>
-                          <button
-                            class="agent-row new-agent-row"
-                            on:click={() => {
-                              newAgentPopoverOpen = { ...newAgentPopoverOpen, [wt.path]: false };
-                              unfoldRowIfFolded(row.key);
-                              openGitHistory(wt.path);
-                            }}
-                            title={`Git commit history for ${wt.path}`}
-                          >
-                            <svg class="agent-row-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/></svg>
-                            <span class="agent-row-name">History</span>
-                            <span class="agent-title muted">commits</span>
-                          </button>
-                        </li>
-                      </ul>
-                    </Popover>
-                  {/if}
-                  {#if a}
-                  <button
-                    class="agent-badge agent-{a.agent}"
-                    class:active={isOpenInWt(wt.path, a.source)}
-                    title={activeTuis.length > 1
-                      ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
-                      : `${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
-                    on:click|stopPropagation={() => {
-                      // With several live TUIs, the badge becomes a
-                      // jumper popover — listing only sessions whose
-                      // PTY is mounted right now — so the user can hop
-                      // between them in one click instead of cycling
-                      // via revealSession. With ≤1 active TUI the
-                      // popover would be empty/redundant, so fall
-                      // through to the classic reveal behavior.
-                      if (activeTuis.length > 1) {
-                        // Mutually exclusive with the count-chip's
-                        // "all sessions" popover — only one of the two
-                        // row-head popovers should be open at a time.
-                        agentsPopoverOpen = {
-                          ...agentsPopoverOpen,
-                          [wt.path]: false,
-                        };
-                        activeTuisPopoverOpen = {
-                          ...activeTuisPopoverOpen,
-                          [wt.path]: !activeTuisPopoverOpen[wt.path],
-                        };
-                        return;
-                      }
-                      revealSession(row.key, wt.path, {
-                        agent: a.agent,
-                        source: a.source,
-                      });
-                    }}
-                  >
-                    {#if a.manualTitle}
-                      <span class="agent-manual-title">{a.manualTitle}</span>
-                      <span class="muted small">{relTime(a.lastActive)}</span>
-                    {:else if a.title}
-                      <span class="agent-manual-title">{a.title}</span>
-                      <span class="muted small">{relTime(a.lastActive)}</span>
-                    {:else}
-                      {a.agent} {relTime(a.lastActive)}
+                          <li>
+                            <button
+                              class="agent-row new-agent-row"
+                              on:click={() => {
+                                newAgentPopoverOpen = {
+                                  ...newAgentPopoverOpen,
+                                  [wt.path]: false,
+                                };
+                                unfoldRowIfFolded(row.key);
+                                openNewTerminalInWt(wt.path);
+                              }}
+                              title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
+                            >
+                              <svg
+                                class="agent-row-icon-svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                                ><path d="M4 17l5-5-5-5" /><path
+                                  d="M11 19h8"
+                                /></svg
+                              >
+                              <span class="agent-row-name">Terminal</span>
+                              <span class="agent-title muted"
+                                >{defaultShell}</span
+                              >
+                            </button>
+                          </li>
+                          <li>
+                            <button
+                              class="agent-row new-agent-row"
+                              on:click={() => {
+                                newAgentPopoverOpen = {
+                                  ...newAgentPopoverOpen,
+                                  [wt.path]: false,
+                                };
+                                unfoldRowIfFolded(row.key);
+                                openFileBrowser(wt.path);
+                              }}
+                              title={`Browse files in ${wt.path}`}
+                            >
+                              <svg
+                                class="agent-row-icon-svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                                ><path
+                                  d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+                                /></svg
+                              >
+                              <span class="agent-row-name">Files</span>
+                              <span class="agent-title muted">browse</span>
+                            </button>
+                          </li>
+                          <li>
+                            <button
+                              class="agent-row new-agent-row"
+                              on:click={() => {
+                                newAgentPopoverOpen = {
+                                  ...newAgentPopoverOpen,
+                                  [wt.path]: false,
+                                };
+                                unfoldRowIfFolded(row.key);
+                                openGitHistory(wt.path);
+                              }}
+                              title={`Git commit history for ${wt.path}`}
+                            >
+                              <svg
+                                class="agent-row-icon-svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                                ><circle cx="12" cy="12" r="3" /><line
+                                  x1="12"
+                                  y1="3"
+                                  x2="12"
+                                  y2="9"
+                                /><line x1="12" y1="15" x2="12" y2="21" /></svg
+                              >
+                              <span class="agent-row-name">History</span>
+                              <span class="agent-title muted">commits</span>
+                            </button>
+                          </li>
+                        </ul>
+                      </Popover>
                     {/if}
-                  </button>
-                  {#if activeTuisPopoverOpen[wt.path] && activeTuis.length > 1}
-                    <SessionSearchList
-                      sessions={activeTuis}
-                      headText={`${activeTuis.length} active TUIs in this worktree`}
-                      dismissedSources={dismissedSessions}
-                      starredSources={starredSessions}
-                      isOpen={(s) => isOpenInWt(wt.path, s.source)}
-                      tooltipFor={(s) => sessionTooltip(s)}
-                      on:pick={(e) => {
-                        activeTuisPopoverOpen = {
-                          ...activeTuisPopoverOpen,
-                          [wt.path]: false,
-                        };
-                        revealSession(row.key, wt.path, {
-                          agent: e.detail.agent,
-                          source: e.detail.source,
-                        });
-                      }}
-                      on:close={(e) => {
-                        toggleOpenSessionInWt(wt.path, {
-                          agent: e.detail.agent,
-                          source: e.detail.source,
-                        });
-                      }}
-                      on:dismiss={(e) => dismissSession(e.detail.source)}
-                      on:restore={(e) => restoreSession(e.detail.source)}
-                    />
-                  {/if}
-                  {/if}
-                  {#if a && pickerSessions.length > 1}
-                    <button
-                      class="agent-more agent-{a.agent}"
-                      class:has-search={stripSearchOpen[wt.path]}
-                      title={`Pick from ${pickerSessions.length} sessions in this worktree`}
-                      on:click|stopPropagation={() => {
-                        // Mutually exclusive with the agent-badge's
-                        // active-TUIs jumper — only one of the two
-                        // row-head popovers should be open at a time.
-                        activeTuisPopoverOpen = {
-                          ...activeTuisPopoverOpen,
-                          [wt.path]: false,
-                        };
-                        agentsPopoverOpen = {
-                          ...agentsPopoverOpen,
-                          [wt.path]: !agentsPopoverOpen[wt.path],
-                        };
-                      }}
-                    >{pickerSessions.length}</button>
-                    <button
-                      class="agent-search agent-{a.agent}"
-                      class:active={stripSearchOpen[wt.path]}
-                      title="Filter this row's sessions by title or message"
-                      aria-label="Filter sessions"
-                      on:click|stopPropagation={() => {
-                        if (stripSearchOpen[wt.path]) {
-                          closeStripSearch(row.key, wt.path);
-                        } else {
-                          openStripSearch(row.key, wt.path);
-                        }
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" aria-hidden="true" width="11" height="11">
-                        <path
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.8"
-                          stroke-linecap="round"
-                          d="M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zM13.5 13.5l-3-3"
-                        />
-                      </svg>
-                    </button>
-                    {#if stripSearchOpen[wt.path]}
-                      <input
-                        class="agent-search-input"
-                        type="search"
-                        placeholder="filter…"
-                        bind:value={stripSearchQuery[wt.path]}
-                        on:click|stopPropagation
-                        on:keydown|stopPropagation={(e) => {
-                          if (e.key === "Escape") {
-                            closeStripSearch(row.key, wt.path);
-                          } else if (e.key === "Enter") {
-                            // Enter picks the top "not in strip" match —
-                            // matches users typing to find a chat, then
-                            // hitting return to open it without grabbing
-                            // the mouse. No-op when there's no such match.
-                            const top =
-                              stripFilterByWt[wt.path]?.notOpen[0];
-                            if (top) {
-                              pinRowOpenAfterPick(row.key);
-                              revealSession(row.key, wt.path, {
-                                agent: top.agent,
-                                source: top.source,
-                              });
-                            }
+                    {#if a}
+                      <button
+                        class="agent-badge agent-{a.agent}"
+                        class:active={isOpenInWt(wt.path, a.source)}
+                        title={activeTuis.length > 1
+                          ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
+                          : `${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
+                        on:click|stopPropagation={() => {
+                          // With several live TUIs, the badge becomes a
+                          // jumper popover — listing only sessions whose
+                          // PTY is mounted right now — so the user can hop
+                          // between them in one click instead of cycling
+                          // via revealSession. With ≤1 active TUI the
+                          // popover would be empty/redundant, so fall
+                          // through to the classic reveal behavior.
+                          if (activeTuis.length > 1) {
+                            // Mutually exclusive with the count-chip's
+                            // "all sessions" popover — only one of the two
+                            // row-head popovers should be open at a time.
+                            agentsPopoverOpen = {
+                              ...agentsPopoverOpen,
+                              [wt.path]: false,
+                            };
+                            activeTuisPopoverOpen = {
+                              ...activeTuisPopoverOpen,
+                              [wt.path]: !activeTuisPopoverOpen[wt.path],
+                            };
+                            return;
                           }
+                          revealSession(row.key, wt.path, {
+                            agent: a.agent,
+                            source: a.source,
+                          });
                         }}
-                        use:focusOnMount
-                      />
+                      >
+                        {#if a.manualTitle}
+                          <span class="agent-manual-title">{a.manualTitle}</span
+                          >
+                          <span class="muted small"
+                            >{relTime(a.lastActive)}</span
+                          >
+                        {:else if a.title}
+                          <span class="agent-manual-title">{a.title}</span>
+                          <span class="muted small"
+                            >{relTime(a.lastActive)}</span
+                          >
+                        {:else}
+                          {a.agent} {relTime(a.lastActive)}
+                        {/if}
+                      </button>
+                      {#if activeTuisPopoverOpen[wt.path] && activeTuis.length > 1}
+                        <SessionSearchList
+                          sessions={activeTuis}
+                          headText={`${activeTuis.length} active TUIs in this worktree`}
+                          dismissedSources={dismissedSessions}
+                          starredSources={starredSessions}
+                          isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                          tooltipFor={(s) => sessionTooltip(s)}
+                          on:pick={(e) => {
+                            activeTuisPopoverOpen = {
+                              ...activeTuisPopoverOpen,
+                              [wt.path]: false,
+                            };
+                            revealSession(row.key, wt.path, {
+                              agent: e.detail.agent,
+                              source: e.detail.source,
+                            });
+                          }}
+                          on:close={(e) => {
+                            toggleOpenSessionInWt(wt.path, {
+                              agent: e.detail.agent,
+                              source: e.detail.source,
+                            });
+                          }}
+                          on:dismiss={(e) => dismissSession(e.detail.source)}
+                          on:restore={(e) => restoreSession(e.detail.source)}
+                        />
+                      {/if}
                     {/if}
-                    {#if agentsPopoverOpen[wt.path]}
-                      <SessionSearchList
-                        sessions={pickerSessions}
-                        headText={`${pickerSessions.length} sessions in this worktree`}
-                        dismissedSources={dismissedSessions}
-                        starredSources={starredSessions}
-                        isOpen={(s) => isOpenInWt(wt.path, s.source)}
-                        tooltipFor={(s) => sessionTooltip(s)}
-                        on:pick={(e) => {
-                          agentsPopoverOpen = {
-                            ...agentsPopoverOpen,
+                    {#if a && pickerSessions.length > 1}
+                      <button
+                        class="agent-more agent-{a.agent}"
+                        class:has-search={stripSearchOpen[wt.path]}
+                        title={`Pick from ${pickerSessions.length} sessions in this worktree`}
+                        on:click|stopPropagation={() => {
+                          // Mutually exclusive with the agent-badge's
+                          // active-TUIs jumper — only one of the two
+                          // row-head popovers should be open at a time.
+                          activeTuisPopoverOpen = {
+                            ...activeTuisPopoverOpen,
                             [wt.path]: false,
                           };
-                          // `revealSession` (mode "reveal") forces the
-                          // scroll-to-center + flash cue even when the
-                          // column is already open. The user's just
-                          // pointed at a row in the picker — they need
-                          // a clear visual confirmation of which one
-                          // they chose, same affordance the synthetic
-                          // not-in-strip list uses.
-                          revealSession(row.key, wt.path, {
-                            agent: e.detail.agent,
-                            source: e.detail.source,
-                          });
+                          agentsPopoverOpen = {
+                            ...agentsPopoverOpen,
+                            [wt.path]: !agentsPopoverOpen[wt.path],
+                          };
+                        }}>{pickerSessions.length}</button
+                      >
+                      <button
+                        class="agent-search agent-{a.agent}"
+                        class:active={stripSearchOpen[wt.path]}
+                        title="Filter this row's sessions by title or message"
+                        aria-label="Filter sessions"
+                        on:click|stopPropagation={() => {
+                          if (stripSearchOpen[wt.path]) {
+                            closeStripSearch(row.key, wt.path);
+                          } else {
+                            openStripSearch(row.key, wt.path);
+                          }
                         }}
-                        on:close={(e) => {
-                          toggleOpenSessionInWt(wt.path, {
-                            agent: e.detail.agent,
-                            source: e.detail.source,
-                          });
-                        }}
-                        on:dismiss={(e) => dismissSession(e.detail.source)}
-                        on:restore={(e) => restoreSession(e.detail.source)}
-                      />
+                      >
+                        <svg
+                          viewBox="0 0 16 16"
+                          aria-hidden="true"
+                          width="11"
+                          height="11"
+                        >
+                          <path
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            d="M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zM13.5 13.5l-3-3"
+                          />
+                        </svg>
+                      </button>
+                      {#if stripSearchOpen[wt.path]}
+                        <input
+                          class="agent-search-input"
+                          type="search"
+                          placeholder="filter…"
+                          bind:value={stripSearchQuery[wt.path]}
+                          on:click|stopPropagation
+                          on:keydown|stopPropagation={(e) => {
+                            if (e.key === "Escape") {
+                              closeStripSearch(row.key, wt.path);
+                            } else if (e.key === "Enter") {
+                              // Enter picks the top "not in strip" match —
+                              // matches users typing to find a chat, then
+                              // hitting return to open it without grabbing
+                              // the mouse. No-op when there's no such match.
+                              const top = stripFilterByWt[wt.path]?.notOpen[0];
+                              if (top) {
+                                pinRowOpenAfterPick(row.key);
+                                revealSession(row.key, wt.path, {
+                                  agent: top.agent,
+                                  source: top.source,
+                                });
+                              }
+                            }
+                          }}
+                          use:focusOnMount
+                        />
+                      {/if}
+                      {#if agentsPopoverOpen[wt.path]}
+                        <SessionSearchList
+                          sessions={pickerSessions}
+                          headText={`${pickerSessions.length} sessions in this worktree`}
+                          dismissedSources={dismissedSessions}
+                          starredSources={starredSessions}
+                          isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                          tooltipFor={(s) => sessionTooltip(s)}
+                          on:pick={(e) => {
+                            agentsPopoverOpen = {
+                              ...agentsPopoverOpen,
+                              [wt.path]: false,
+                            };
+                            // `revealSession` (mode "reveal") forces the
+                            // scroll-to-center + flash cue even when the
+                            // column is already open. The user's just
+                            // pointed at a row in the picker — they need
+                            // a clear visual confirmation of which one
+                            // they chose, same affordance the synthetic
+                            // not-in-strip list uses.
+                            revealSession(row.key, wt.path, {
+                              agent: e.detail.agent,
+                              source: e.detail.source,
+                            });
+                          }}
+                          on:close={(e) => {
+                            toggleOpenSessionInWt(wt.path, {
+                              agent: e.detail.agent,
+                              source: e.detail.source,
+                            });
+                          }}
+                          on:dismiss={(e) => dismissSession(e.detail.source)}
+                          on:restore={(e) => restoreSession(e.detail.source)}
+                        />
+                      {/if}
                     {/if}
-                  {/if}
-                </span>
-              {/if}
-              {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
-                <!-- Lives right of the agent-wrap (sessions dropdown +
+                  </span>
+                {/if}
+                {#if rowFolded[row.key] && wtHasRecentActivity(wt, nowMs)}
+                  <!-- Lives right of the agent-wrap (sessions dropdown +
                      "+ new" cluster) and just before the wt-path, so
                      when an agent is mid-output the spinner sits with
                      the other agent UI instead of squeezing between
                      the branch chip and the dropdown. -->
-                <span
-                  class="popover-spinner row-activity-spinner"
-                  title="An agent in this row had output in the last 10s"
-                  aria-label="agent activity"
-                ></span>
+                  <span
+                    class="popover-spinner row-activity-spinner"
+                    title="An agent in this row had output in the last 10s"
+                    aria-label="agent activity"
+                  ></span>
+                {/if}
+                <code class="wt-path">{wt.path}</code>
+              {:else}
+                <code class="wt-path">{repo.path}</code>
+                <span class="branch warn">no worktrees</span>
               {/if}
-              <code class="wt-path">{wt.path}</code>
-            {:else}
-              <code class="wt-path">{repo.path}</code>
-              <span class="branch warn">no worktrees</span>
-            {/if}
 
-            <!-- Three-piece notes tag, fused via flex like the
+              <!-- Three-piece notes tag, fused via flex like the
                  repo-chip + color-swatch pair: count attachment on
                  the LEFT (only when there's at least one note),
                  `notes` toggle in the MIDDLE (CSS-only hide of this
@@ -6754,187 +7506,242 @@
                  the RIGHT. Same .new-wt dashed-tag styling as the
                  worktrees button so the row's action group reads as
                  a single family. -->
-            {#if !rowFolded[row.key]}
-            <span class="note-add-stack">
-              {#if noteCount > 0}
-                <span
-                  class="row-note-count-anchor"
-                  data-notes-list-anchor={row.key}
-                >
-                  <button
-                    type="button"
-                    class="row-note-count"
-                    class:open={!!notesListOpen[row.key]}
-                    title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"} — click to list / undo deletes`}
-                    on:click|stopPropagation={() => {
-                      notesListOpen = {
-                        ...notesListOpen,
-                        [row.key]: !notesListOpen[row.key],
-                      };
-                    }}
-                  >{noteCount}</button>
-                  {#if notesListOpen[row.key]}
-                    {@const anchorStr = noteAnchor}
-                    {@const rowNotes = $notesAll.filter((n) =>
-                      n.anchors.some((a) => a === anchorStr),
-                    )}
-                    {@const rowDeletes = removeNoteEventsByAnchor[anchorStr] ?? []}
-                    {@const visibleNotes = rowNotes
-                      .filter((n) => n.kind !== "emoji")
-                      .map((n) => ({ n, display: notesListDisplay(n) }))
-                      .filter((row) => row.display.text.length > 0)}
-                    {@const visibleDeletes = rowDeletes
-                      .filter((ev) => ev.inverse?.note?.kind !== "emoji")
-                      .slice(0, 20)
-                      .map((ev) => ({
-                        ev,
-                        display: notesListDisplay({
-                          body: (ev.inverse?.note?.body as string | undefined) ?? "",
-                          kind: ev.inverse?.note?.kind,
-                          target: ev.inverse?.note?.target,
-                        }),
-                      }))
-                      .filter((r) => r.display.text.length > 0)}
-                    <Popover variant="agents" extraClass="notes-list-popover">
-                      <svelte:fragment slot="head">
-                        Notes on {wt ? `${repo.name ?? repoName(repo)} · ${wt.branch ?? "?"}` : (repo.name ?? repoName(repo))}
-                      </svelte:fragment>
-                      <div class="notes-list-section">
-                        {#if visibleNotes.length === 0}
-                          <p class="muted small nopad">No notes with content.</p>
-                        {:else}
-                          <ul class="notes-list">
-                            {#each visibleNotes as row (row.n.id)}
-                              {@const n = row.n}
-                              <li class="notes-list-row" class:is-link={row.display.kind === "link"}>
-                                <span class="notes-list-kind" aria-hidden="true">
-                                  {#if row.display.kind === "link"}
-                                    {#if row.display.agent || row.display.provider || row.display.glyph}
-                                      <AttachmentIcon
-                                        agent={row.display.agent}
-                                        provider={row.display.provider}
-                                        glyph={row.display.glyph}
-                                        size={14}
-                                      />
-                                    {:else}
-                                      <svg
-                                        viewBox="0 0 24 24"
-                                        width="12"
-                                        height="12"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2.2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                      >
-                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                      </svg>
-                                    {/if}
-                                  {:else}
-                                    <NoteIcon size={13} />
-                                  {/if}
-                                </span>
-                                <span class="notes-list-body" title={row.display.title}
-                                  >{row.display.text}</span>
-                                <span class="muted ev-time">{relTime(n.updatedAt)}</span>
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
-                      </div>
-                      <div class="notes-list-section">
-                        <div class="notes-list-section-head">
-                          Recently deleted ({visibleDeletes.length})
-                        </div>
-                        {#if visibleDeletes.length === 0}
-                          <p class="muted small nopad">None.</p>
-                        {:else}
-                          <ul class="notes-list">
-                            {#each visibleDeletes as r (r.ev.id)}
-                              <li class="notes-list-row deleted" class:is-link={r.display.kind === "link"}>
-                                <span class="notes-list-kind" aria-hidden="true">
-                                  {#if r.display.kind === "link"}
-                                    {#if r.display.agent || r.display.provider || r.display.glyph}
-                                      <AttachmentIcon
-                                        agent={r.display.agent}
-                                        provider={r.display.provider}
-                                        glyph={r.display.glyph}
-                                        size={14}
-                                      />
-                                    {:else}
-                                      <svg
-                                        viewBox="0 0 24 24"
-                                        width="12"
-                                        height="12"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2.2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                      >
-                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                      </svg>
-                                    {/if}
-                                  {:else}
-                                    <NoteIcon size={13} />
-                                  {/if}
-                                </span>
-                                <span class="notes-list-body" title={r.display.title}
-                                  >{r.display.text}</span>
-                                <span class="muted ev-time">{relTime(r.ev.timestamp)}</span>
-                                <button
-                                  class="undo"
-                                  on:click={(e) =>
-                                    void undoNoteDelete(
-                                      r.ev,
-                                      e.currentTarget as HTMLElement,
-                                    )}
-                                  title="Restore this deleted note"
-                                >Undo</button>
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
-                      </div>
-                    </Popover>
+              {#if !rowFolded[row.key]}
+                <span class="note-add-stack">
+                  {#if noteCount > 0}
+                    <span
+                      class="row-note-count-anchor"
+                      data-notes-list-anchor={row.key}
+                    >
+                      <button
+                        type="button"
+                        class="row-note-count"
+                        class:open={!!notesListOpen[row.key]}
+                        title={`${noteCount} sticky note${noteCount === 1 ? "" : "s"} pinned to this ${wt ? "worktree" : "repo"} — click to list / undo deletes`}
+                        on:click|stopPropagation={() => {
+                          notesListOpen = {
+                            ...notesListOpen,
+                            [row.key]: !notesListOpen[row.key],
+                          };
+                        }}>{noteCount}</button
+                      >
+                      {#if notesListOpen[row.key]}
+                        {@const anchorStr = noteAnchor}
+                        {@const rowNotes = $notesAll.filter((n) =>
+                          n.anchors.some((a) => a === anchorStr),
+                        )}
+                        {@const rowDeletes =
+                          removeNoteEventsByAnchor[anchorStr] ?? []}
+                        {@const visibleNotes = rowNotes
+                          .filter((n) => n.kind !== "emoji")
+                          .map((n) => ({ n, display: notesListDisplay(n) }))
+                          .filter((row) => row.display.text.length > 0)}
+                        {@const visibleDeletes = rowDeletes
+                          .filter((ev) => ev.inverse?.note?.kind !== "emoji")
+                          .slice(0, 20)
+                          .map((ev) => ({
+                            ev,
+                            display: notesListDisplay({
+                              body:
+                                (ev.inverse?.note?.body as
+                                  | string
+                                  | undefined) ?? "",
+                              kind: ev.inverse?.note?.kind,
+                              target: ev.inverse?.note?.target,
+                            }),
+                          }))
+                          .filter((r) => r.display.text.length > 0)}
+                        <Popover
+                          variant="agents"
+                          extraClass="notes-list-popover"
+                        >
+                          <svelte:fragment slot="head">
+                            Notes on {wt
+                              ? `${repo.name ?? repoName(repo)} · ${wt.branch ?? "?"}`
+                              : (repo.name ?? repoName(repo))}
+                          </svelte:fragment>
+                          <div class="notes-list-section">
+                            {#if visibleNotes.length === 0}
+                              <p class="muted small nopad">
+                                No notes with content.
+                              </p>
+                            {:else}
+                              <ul class="notes-list">
+                                {#each visibleNotes as row (row.n.id)}
+                                  {@const n = row.n}
+                                  <li
+                                    class="notes-list-row"
+                                    class:is-link={row.display.kind === "link"}
+                                  >
+                                    <span
+                                      class="notes-list-kind"
+                                      aria-hidden="true"
+                                    >
+                                      {#if row.display.kind === "link"}
+                                        {#if row.display.agent || row.display.provider || row.display.glyph}
+                                          <AttachmentIcon
+                                            agent={row.display.agent}
+                                            provider={row.display.provider}
+                                            glyph={row.display.glyph}
+                                            size={14}
+                                          />
+                                        {:else}
+                                          <svg
+                                            viewBox="0 0 24 24"
+                                            width="12"
+                                            height="12"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2.2"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            aria-hidden="true"
+                                          >
+                                            <path
+                                              d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+                                            />
+                                            <path
+                                              d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                                            />
+                                          </svg>
+                                        {/if}
+                                      {:else}
+                                        <NoteIcon size={13} />
+                                      {/if}
+                                    </span>
+                                    <span
+                                      class="notes-list-body"
+                                      title={row.display.title}
+                                      >{row.display.text}</span
+                                    >
+                                    <span class="muted ev-time"
+                                      >{relTime(n.updatedAt)}</span
+                                    >
+                                  </li>
+                                {/each}
+                              </ul>
+                            {/if}
+                          </div>
+                          <div class="notes-list-section">
+                            <div class="notes-list-section-head">
+                              Recently deleted ({visibleDeletes.length})
+                            </div>
+                            {#if visibleDeletes.length === 0}
+                              <p class="muted small nopad">None.</p>
+                            {:else}
+                              <ul class="notes-list">
+                                {#each visibleDeletes as r (r.ev.id)}
+                                  <li
+                                    class="notes-list-row deleted"
+                                    class:is-link={r.display.kind === "link"}
+                                  >
+                                    <span
+                                      class="notes-list-kind"
+                                      aria-hidden="true"
+                                    >
+                                      {#if r.display.kind === "link"}
+                                        {#if r.display.agent || r.display.provider || r.display.glyph}
+                                          <AttachmentIcon
+                                            agent={r.display.agent}
+                                            provider={r.display.provider}
+                                            glyph={r.display.glyph}
+                                            size={14}
+                                          />
+                                        {:else}
+                                          <svg
+                                            viewBox="0 0 24 24"
+                                            width="12"
+                                            height="12"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2.2"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            aria-hidden="true"
+                                          >
+                                            <path
+                                              d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+                                            />
+                                            <path
+                                              d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                                            />
+                                          </svg>
+                                        {/if}
+                                      {:else}
+                                        <NoteIcon size={13} />
+                                      {/if}
+                                    </span>
+                                    <span
+                                      class="notes-list-body"
+                                      title={r.display.title}
+                                      >{r.display.text}</span
+                                    >
+                                    <span class="muted ev-time"
+                                      >{relTime(r.ev.timestamp)}</span
+                                    >
+                                    <button
+                                      class="undo"
+                                      on:click={(e) =>
+                                        void undoNoteDelete(
+                                          r.ev,
+                                          e.currentTarget as HTMLElement,
+                                        )}
+                                      title="Restore this deleted note"
+                                      >Undo</button
+                                    >
+                                  </li>
+                                {/each}
+                              </ul>
+                            {/if}
+                          </div>
+                        </Popover>
+                      {/if}
+                    </span>
                   {/if}
-                </span>
-              {/if}
-              <button
-                class="new-wt notes-toggle"
-                class:active={zenRowKey === row.key
-                  ? notesShownInZen
-                  : !notesHiddenByRow[row.key]}
-                title={(zenRowKey === row.key ? notesShownInZen : !notesHiddenByRow[row.key])
-                  ? "Hide this row's sticky notes"
-                  : "Show this row's sticky notes"}
-                on:click|stopPropagation={() => {
-                  if (zenRowKey === row.key) notesShownInZen = !notesShownInZen;
-                  else toggleNotesHidden(row.key);
-                }}
-              >notes</button>
-              <button
-                class="new-wt notes-add"
-                title={wt
-                  ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
-                  : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
-                on:click|stopPropagation={(e) => {
-                  // Un-hide first so the freshly-spawned note is visible.
-                  if (zenRowKey === row.key) {
-                    notesShownInZen = true;
-                  } else if (notesHiddenByRow[row.key]) {
-                    notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
-                  }
-                  const btn = e.currentTarget as HTMLButtonElement;
-                  const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
-                  void spawnNote({ anchor, originRect: btn.getBoundingClientRect() });
-                }}
-              >+</button>
-              <!-- Link companion — same spawn machinery, kind: "link"
+                  <button
+                    class="new-wt notes-toggle"
+                    class:active={zenRowKey === row.key
+                      ? notesShownInZen
+                      : !notesHiddenByRow[row.key]}
+                    title={(
+                      zenRowKey === row.key
+                        ? notesShownInZen
+                        : !notesHiddenByRow[row.key]
+                    )
+                      ? "Hide this row's sticky notes"
+                      : "Show this row's sticky notes"}
+                    on:click|stopPropagation={() => {
+                      if (zenRowKey === row.key)
+                        notesShownInZen = !notesShownInZen;
+                      else toggleNotesHidden(row.key);
+                    }}>notes</button
+                  >
+                  <button
+                    class="new-wt notes-add"
+                    title={wt
+                      ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
+                      : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
+                    on:click|stopPropagation={(e) => {
+                      // Un-hide first so the freshly-spawned note is visible.
+                      if (zenRowKey === row.key) {
+                        notesShownInZen = true;
+                      } else if (notesHiddenByRow[row.key]) {
+                        notesHiddenByRow = {
+                          ...notesHiddenByRow,
+                          [row.key]: false,
+                        };
+                      }
+                      const btn = e.currentTarget as HTMLButtonElement;
+                      const anchor = wt
+                        ? `worktree:${wt.path}`
+                        : `repo:${repo.path}`;
+                      void spawnNote({
+                        anchor,
+                        originRect: btn.getBoundingClientRect(),
+                      });
+                    }}>+</button
+                  >
+                  <!-- Link companion — same spawn machinery, kind: "link"
                    instead. Docked to + so the action group reads as
                    one family (count · notes · + · ⛓); the chip vs
                    paper-sticky render decision happens inside
@@ -6948,497 +7755,634 @@
                    and ignores `color`, which is why the previous
                    text-shadow workaround looked off-weight next to
                    the "+". -->
-              <button
-                class="new-wt notes-add notes-add-link"
-                title={wt
-                  ? `Pin a link to this worktree (\`${wt.branch}\`) — URL, commit SHA, session, or file path`
-                  : `Pin a link to \`${repo.name ?? repo.path}\` — URL, commit SHA, session, or file path`}
-                on:click|stopPropagation={(e) => {
-                  if (zenRowKey === row.key) {
-                    notesShownInZen = true;
-                  } else if (notesHiddenByRow[row.key]) {
-                    notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
-                  }
-                  const btn = e.currentTarget as HTMLButtonElement;
-                  const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
-                  void spawnNote({
-                    anchor,
-                    originRect: btn.getBoundingClientRect(),
-                    kind: "link",
-                  });
-                }}
-                aria-label="Add link"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="11"
-                  height="11"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                </svg>
-              </button>
-              <span class="emoji-picker-anchor" data-emoji-picker-anchor={row.key}>
-                <button
-                  class="new-wt notes-add notes-add-emoji"
-                  title="Add an emoji sticker"
-                  on:click|stopPropagation={() => {
-                    emojiPickerOpen = { ...emojiPickerOpen, [row.key]: !emojiPickerOpen[row.key] };
-                  }}
-                  aria-label="Add emoji sticker"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="11"
-                    height="11"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <circle cx="9" cy="9" r="1" />
-                    <circle cx="15" cy="9" r="1" />
-                    <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-                  </svg>
-                </button>
-                {#if emojiPickerOpen[row.key]}
-                  <EmojiPicker
-                    on:pick={(e) => {
-                      emojiPickerOpen = { ...emojiPickerOpen, [row.key]: false };
+                  <button
+                    class="new-wt notes-add notes-add-link"
+                    title={wt
+                      ? `Pin a link to this worktree (\`${wt.branch}\`) — URL, commit SHA, session, or file path`
+                      : `Pin a link to \`${repo.name ?? repo.path}\` — URL, commit SHA, session, or file path`}
+                    on:click|stopPropagation={(e) => {
                       if (zenRowKey === row.key) {
                         notesShownInZen = true;
                       } else if (notesHiddenByRow[row.key]) {
-                        notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+                        notesHiddenByRow = {
+                          ...notesHiddenByRow,
+                          [row.key]: false,
+                        };
                       }
-                      const anchor = wt ? `worktree:${wt.path}` : `repo:${repo.path}`;
-                      const btn = document.querySelector(`[data-wt-row="${CSS.escape(wt?.path ?? repo.id)}"] .notes-add-emoji`) as HTMLElement | null;
-                      const rect = btn?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
+                      const btn = e.currentTarget as HTMLButtonElement;
+                      const anchor = wt
+                        ? `worktree:${wt.path}`
+                        : `repo:${repo.path}`;
                       void spawnNote({
                         anchor,
-                        originRect: rect,
-                        kind: "emoji",
-                        body: e.detail,
+                        originRect: btn.getBoundingClientRect(),
+                        kind: "link",
                       });
                     }}
-                    on:cancel={() => {
-                      emojiPickerOpen = { ...emojiPickerOpen, [row.key]: false };
-                    }}
-                  />
-                {/if}
-              </span>
-            </span>
-            {/if}
-            {#if !rowFolded[row.key]}
-            <span class="wt-picker-anchor" data-wt-picker-anchor={wt ? wt.path : repo.id}>
-              <button
-                class="new-wt"
-                title="Worktrees of this repo (switch to / remove / create new)"
-                on:click|stopPropagation={() => {
-                  const key = wt ? wt.path : repo.id;
-                  wtPickerOpen = { ...wtPickerOpen, [key]: !wtPickerOpen[key] };
-                }}
-              >worktrees ({repo.worktrees.length})</button>
-              {#if wtPickerOpen[wt ? wt.path : repo.id]}
-                {@const diskPaths = repo.worktrees.map((w) => w.path)}
-                {@const visibleSet = new Set(
-                  effectiveVisibleWorktrees(repo.id, diskPaths, visibleWorktreesByRepo),
-                )}
-                <Popover variant="agents" extraClass="wt-picker-popover">
-                  <svelte:fragment slot="head">Worktrees of {repo.name ?? repoName(repo)}</svelte:fragment>
-                  <ul class="agents-list">
-                    {#each repo.worktrees as wOption (wOption.path)}
-                      <li>
-                        <div
-                          class="agent-row wt-pick-row"
-                          class:wt-pick-visible={visibleSet.has(wOption.path)}
-                          role="button"
-                          tabindex="0"
-                          on:click={() => {
-                            toggleWorktreeVisibility(repo.id, wOption.path, diskPaths);
-                          }}
-                          on:keydown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              toggleWorktreeVisibility(repo.id, wOption.path, diskPaths);
-                            }
-                          }}
-                          title={visibleSet.has(wOption.path)
-                            ? `${wOption.path}\n\nVisible in the dashboard. Click to hide this row. The worktree itself stays on disk.`
-                            : `${wOption.path}\n\nHidden. Click to show as a row in the dashboard.`}
-                        >
-                          <span class="wt-pick-tick" aria-hidden="true">
-                            {visibleSet.has(wOption.path) ? "✓" : ""}
-                          </span>
-                          <span class="agent-row-name">{wOption.nonGit ? "—" : wOption.branch}</span>
-                          <span class="agent-title">{wOption.path}</span>
-                          {#if !wOption.nonGit}
-                            <button
-                              class="row-close wt-pick-kill"
-                              on:click|stopPropagation={() => {
-                                wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
-                                void removeWorktreeInRow(repo.id, {
-                                  path: wOption.path,
-                                  branch: wOption.branch,
-                                });
-                              }}
-                              title="Remove this worktree's directory from disk (branch ref is kept)"
-                              aria-label="Remove worktree from disk"
-                            >×</button>
-                          {/if}
-                        </div>
-                      </li>
-                    {/each}
-                  </ul>
-                  {#if !repo.worktrees.some((w) => w.nonGit)}
-                    <form
-                      class="wt-pick-create-row"
-                      on:submit|preventDefault={() => {
-                        const branch = (newWtBranch[repo.id] ?? "").trim();
-                        if (!branch) return;
-                        const key = wt ? wt.path : repo.id;
-                        wtPickerOpen = { ...wtPickerOpen, [key]: false };
-                        void createWorktree(repo.id);
-                      }}
+                    aria-label="Add link"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="11"
+                      height="11"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
                     >
-                      <input
-                        type="text"
-                        placeholder="new branch — creates worktree on it"
-                        bind:value={newWtBranch[repo.id]}
-                        on:click|stopPropagation
-                        class="wt-pick-create-input"
-                        title={`Runs \`git worktree add ~/wt/${repoName(repo)}/<branch> -b <branch>\` — creates BOTH the new branch and a worktree directory for it.`}
+                      <path
+                        d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
                       />
-                      <button
-                        type="submit"
-                        class="wt-pick-create-go"
-                        disabled={!((newWtBranch[repo.id] ?? "").trim())}
-                        title="git worktree add ~/wt/<repo>/<branch> -b <branch>"
-                      >+ create</button>
-                    </form>
-                  {/if}
-                  <button
-                    class="wt-pick-remove-repo"
-                    on:click|stopPropagation={() => {
-                      const ok = confirm(
-                        `Remove repository \`${repoName(repo)}\` and all its worktree rows from supergit?\n\n` +
-                        `This only untracks the repo from supergit's workspace — your repo at\n  ${repo.path}\nand any worktree directories on disk are NOT deleted.\n\n` +
-                        `You can re-add it later via "+ Add" if you change your mind.`,
-                      );
-                      if (!ok) return;
-                      wtPickerOpen = { ...wtPickerOpen, [wt ? wt.path : repo.id]: false };
-                      void removeRepo(repo.id);
-                    }}
-                    title="Untrack the repo from supergit (the repo dir + worktrees on disk are kept)"
-                  >Remove repository and all worktree rows from supergit</button>
-                </Popover>
-              {/if}
-            </span>
-            {/if}
-            {#if rowFolded[row.key] && wt}
-              <OpenInActions
-                path={wt.path}
-                repoId={repo.id}
-                {editors}
-                remotes={repo.remotes ?? []}
-                customLinks={repo.customLinks ?? []}
-                {runningCommandIds}
-                editRequest={commandEditRequest}
-                onCommandClick={(l) => handleCommandClick(wt.path, l)}
-                {commandUrls}
-                {openIn}
-                {openRemote}
-                onAddCustomLink={(input) => addCustomLink(repo.id, input)}
-                onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
-                onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
-                onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
-                iconOnly
-              />
-            {/if}
-            <button
-              class="row-zen-btn"
-              class:open={zenRowKey === row.key}
-              title={zenRowKey === row.key
-                ? "Exit zen — restore the rest of the dashboard (Esc)"
-                : `Zen — make \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` fill the viewport`}
-              aria-label={zenRowKey === row.key ? "Exit zen" : "Enter zen"}
-              on:click|stopPropagation={() => toggleZenRow(row.key)}
-            >{zenRowKey === row.key ? "◱" : "▣"}</button>
-            <button
-              class="row-remove"
-              title={wt && !wt.nonGit
-                ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
-                : "Remove this folder from supergit's workspace. The folder on disk is NOT deleted."}
-              on:click={() => {
-                if (wt && !wt.nonGit && repo.worktrees.length > 1) {
-                  hideWorktreeRow(
-                    repo.id,
-                    wt.path,
-                    repo.worktrees.map((w) => w.path),
-                  );
-                } else {
-                  void removeRepo(repo.id);
-                }
-              }}>×</button
-            >
-          </div>
-
-          <div class="row-body">
-          {#if newWtOpen[repo.id]}
-            <div class="new-wt-form">
-              <input
-                type="text"
-                class="new-wt-input"
-                placeholder="new branch name (e.g. feat/audio)"
-                bind:value={newWtBranch[repo.id]}
-                disabled={newWtBusy[repo.id]}
-                on:keydown={(e) => {
-                  if (e.key === "Enter") createWorktree(repo.id);
-                  if (e.key === "Escape") {
-                    newWtOpen = { ...newWtOpen, [repo.id]: false };
-                  }
-                }}
-              />
-              <button
-                class="tiny"
-                disabled={!newWtBranch[repo.id]?.trim() || newWtBusy[repo.id]}
-                on:click={() => createWorktree(repo.id)}
-              >
-                {newWtBusy[repo.id] ? "Creating…" : "Create"}
-              </button>
-              <span class="muted small">
-                will live at ~/wt/{repo.name}/{(newWtBranch[repo.id] ?? "")
-                  .trim()
-                  .replace(/[\/\\]/g, "-") || "…"}
-              </span>
-            </div>
-          {/if}
-
-          {#if wt && summary}
-            <div class="row-status">
-              {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
-                <RepoRecentSummary repoId={repo.id} repoName={repo.name} inline />
-              {/if}
-
-              <OpenInActions
-                path={wt.path}
-                repoId={repo.id}
-                {editors}
-                remotes={repo.remotes ?? []}
-                customLinks={repo.customLinks ?? []}
-                {runningCommandIds}
-                editRequest={commandEditRequest}
-                onCommandClick={(l) => handleCommandClick(wt.path, l)}
-                {commandUrls}
-                {openIn}
-                {openRemote}
-                onAddCustomLink={(input) => addCustomLink(repo.id, input)}
-                onRemoveCustomLink={(linkId) => removeCustomLink(repo.id, linkId)}
-                onReorderCustomLinks={(orderedIds) => reorderCustomLinks(repo.id, orderedIds)}
-                onEditCustomLink={(linkId, input) => updateCustomLink(repo.id, linkId, input)}
-              />
-            </div>
-          {/if}
-
-          {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path] || walkthroughByWt[wt.path] != null)}
-            {@const ob = onboardingByWt[wt.path]}
-            <div class="onboarding-section">
-              {#if ob && (ob.status === "streaming" || ob.status === "done")}
-                <div class="onboarding-response">
-                  <span class="onboarding-provider-badge">
-                    {#if ob.provider === "ollama"}
-                      <img src="/agents/ollama.svg" alt="" class="onboarding-provider-icon" />
-                    {:else if ob.provider === "claude"}
-                      <img src="/agents/claude.svg" alt="" class="onboarding-provider-icon" />
-                    {/if}
-                    <span class="muted small">{ob.model ?? ob.provider}</span>
-                    {#if ob.status === "streaming"}
-                      <LoadingSpinner size="0.7rem" />
+                      <path
+                        d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                      />
+                    </svg>
+                  </button>
+                  <span
+                    class="emoji-picker-anchor"
+                    data-emoji-picker-anchor={row.key}
+                  >
+                    <button
+                      class="new-wt notes-add notes-add-emoji"
+                      title="Add an emoji sticker"
+                      on:click|stopPropagation={() => {
+                        emojiPickerOpen = {
+                          ...emojiPickerOpen,
+                          [row.key]: !emojiPickerOpen[row.key],
+                        };
+                      }}
+                      aria-label="Add emoji sticker"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        width="11"
+                        height="11"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <circle cx="9" cy="9" r="1" />
+                        <circle cx="15" cy="9" r="1" />
+                        <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                      </svg>
+                    </button>
+                    {#if emojiPickerOpen[row.key]}
+                      <EmojiPicker
+                        on:pick={(e) => {
+                          emojiPickerOpen = {
+                            ...emojiPickerOpen,
+                            [row.key]: false,
+                          };
+                          if (zenRowKey === row.key) {
+                            notesShownInZen = true;
+                          } else if (notesHiddenByRow[row.key]) {
+                            notesHiddenByRow = {
+                              ...notesHiddenByRow,
+                              [row.key]: false,
+                            };
+                          }
+                          const anchor = wt
+                            ? `worktree:${wt.path}`
+                            : `repo:${repo.path}`;
+                          const btn = document.querySelector(
+                            `[data-wt-row="${CSS.escape(wt?.path ?? repo.id)}"] .notes-add-emoji`,
+                          ) as HTMLElement | null;
+                          const rect =
+                            btn?.getBoundingClientRect() ??
+                            new DOMRect(0, 0, 0, 0);
+                          void spawnNote({
+                            anchor,
+                            originRect: rect,
+                            kind: "emoji",
+                            body: e.detail,
+                          });
+                        }}
+                        on:cancel={() => {
+                          emojiPickerOpen = {
+                            ...emojiPickerOpen,
+                            [row.key]: false,
+                          };
+                        }}
+                      />
                     {/if}
                   </span>
-                  <div class="onboarding-text">{@html DOMPurify.sanitize(marked.parse(ob.text || "", { async: false, breaks: true, gfm: true }) as string)}</div>
-                </div>
-                {#if ob.status === "done" && walkthroughByWt[wt.path] == null && !walkthroughSeen(wt.path)}
-                  <div class="onboarding-tour-buttons">
-                    <button class="onboarding-btn" on:click={() => {
-                      walkthroughByWt = { [wt.path]: 0 };
-                    }}>Tour the UI</button>
-                    <button class="walkthrough-btn-skip" on:click={() => {
-                      markWalkthroughSeen(wt.path);
-                      delete onboardingByWt[wt.path];
-                      onboardingByWt = onboardingByWt;
-                    }}>Skip onboarding</button>
-                  </div>
-                {/if}
-              {:else if ob && ob.status === "error"}
-                <div class="onboarding-error muted small">{ob.error}</div>
-                <button
-                  class="onboarding-btn"
-                  on:click={() => startOnboarding(wt.path)}
-                >Retry</button>
-              {:else if walkthroughByWt[wt.path] == null}
-                <div class="onboarding-cta-row">
-                  <button
-                    class="onboarding-btn"
-                    on:click={() => {
-                      walkthroughByWt = { [wt.path]: 0 };
-                    }}
-                  >Tour the UI</button>
-                  <button
-                    class="walkthrough-btn-skip"
-                    on:click={() => {
-                      newlyAddedRepoPaths.delete(wt.path);
-                      newlyAddedRepoPaths.delete(repo.path);
-                      markWalkthroughSeen(wt.path);
-                      delete onboardingByWt[wt.path];
-                      onboardingByWt = onboardingByWt;
-                    }}
-                  >Skip</button>
-                </div>
+                </span>
               {/if}
-              {#if walkthroughByWt[wt.path] != null}
-                <OnboardingWalkthrough
-                  wtPath={wt.path}
-                  currentStep={walkthroughByWt[wt.path] ?? 0}
-                  on:next={() => {
-                    const s = (walkthroughByWt[wt.path] ?? 0) + 1;
-                    if (s >= WALKTHROUGH_STEPS.length) {
-                      markWalkthroughSeen(wt.path);
-                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: null };
-                      delete onboardingByWt[wt.path];
-                      onboardingByWt = onboardingByWt;
-                    } else {
-                      walkthroughByWt = { ...walkthroughByWt, [wt.path]: s };
-                    }
-                  }}
-                  on:skip={() => {
-                    markWalkthroughSeen(wt.path);
-                    walkthroughByWt = { ...walkthroughByWt, [wt.path]: null };
-                    delete onboardingByWt[wt.path];
-                    onboardingByWt = onboardingByWt;
-                  }}
+              {#if !rowFolded[row.key]}
+                <span
+                  class="wt-picker-anchor"
+                  data-wt-picker-anchor={wt ? wt.path : repo.id}
+                >
+                  <button
+                    class="new-wt"
+                    title="Worktrees of this repo (switch to / remove / create new)"
+                    on:click|stopPropagation={() => {
+                      const key = wt ? wt.path : repo.id;
+                      wtPickerOpen = {
+                        ...wtPickerOpen,
+                        [key]: !wtPickerOpen[key],
+                      };
+                    }}>worktrees ({repo.worktrees.length})</button
+                  >
+                  {#if wtPickerOpen[wt ? wt.path : repo.id]}
+                    {@const diskPaths = repo.worktrees.map((w) => w.path)}
+                    {@const visibleSet = new Set(
+                      effectiveVisibleWorktrees(
+                        repo.id,
+                        diskPaths,
+                        visibleWorktreesByRepo,
+                      ),
+                    )}
+                    <Popover variant="agents" extraClass="wt-picker-popover">
+                      <svelte:fragment slot="head"
+                        >Worktrees of {repo.name ??
+                          repoName(repo)}</svelte:fragment
+                      >
+                      <ul class="agents-list">
+                        {#each repo.worktrees as wOption (wOption.path)}
+                          <li>
+                            <div
+                              class="agent-row wt-pick-row"
+                              class:wt-pick-visible={visibleSet.has(
+                                wOption.path,
+                              )}
+                              role="button"
+                              tabindex="0"
+                              on:click={() => {
+                                toggleWorktreeVisibility(
+                                  repo.id,
+                                  wOption.path,
+                                  diskPaths,
+                                );
+                              }}
+                              on:keydown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  toggleWorktreeVisibility(
+                                    repo.id,
+                                    wOption.path,
+                                    diskPaths,
+                                  );
+                                }
+                              }}
+                              title={visibleSet.has(wOption.path)
+                                ? `${wOption.path}\n\nVisible in the dashboard. Click to hide this row. The worktree itself stays on disk.`
+                                : `${wOption.path}\n\nHidden. Click to show as a row in the dashboard.`}
+                            >
+                              <span class="wt-pick-tick" aria-hidden="true">
+                                {visibleSet.has(wOption.path) ? "✓" : ""}
+                              </span>
+                              <span class="agent-row-name"
+                                >{wOption.nonGit ? "—" : wOption.branch}</span
+                              >
+                              <span class="agent-title">{wOption.path}</span>
+                              {#if !wOption.nonGit}
+                                <button
+                                  class="row-close wt-pick-kill"
+                                  on:click|stopPropagation={() => {
+                                    wtPickerOpen = {
+                                      ...wtPickerOpen,
+                                      [wt ? wt.path : repo.id]: false,
+                                    };
+                                    void removeWorktreeInRow(repo.id, {
+                                      path: wOption.path,
+                                      branch: wOption.branch,
+                                    });
+                                  }}
+                                  title="Remove this worktree's directory from disk (branch ref is kept)"
+                                  aria-label="Remove worktree from disk"
+                                  >×</button
+                                >
+                              {/if}
+                            </div>
+                          </li>
+                        {/each}
+                      </ul>
+                      {#if !repo.worktrees.some((w) => w.nonGit)}
+                        <form
+                          class="wt-pick-create-row"
+                          on:submit|preventDefault={() => {
+                            const branch = (newWtBranch[repo.id] ?? "").trim();
+                            if (!branch) return;
+                            const key = wt ? wt.path : repo.id;
+                            wtPickerOpen = { ...wtPickerOpen, [key]: false };
+                            void createWorktree(repo.id);
+                          }}
+                        >
+                          <input
+                            type="text"
+                            placeholder="new branch — creates worktree on it"
+                            bind:value={newWtBranch[repo.id]}
+                            on:click|stopPropagation
+                            class="wt-pick-create-input"
+                            title={`Runs \`git worktree add ~/wt/${repoName(repo)}/<branch> -b <branch>\` — creates BOTH the new branch and a worktree directory for it.`}
+                          />
+                          <button
+                            type="submit"
+                            class="wt-pick-create-go"
+                            disabled={!(newWtBranch[repo.id] ?? "").trim()}
+                            title="git worktree add ~/wt/<repo>/<branch> -b <branch>"
+                            >+ create</button
+                          >
+                        </form>
+                      {/if}
+                      <button
+                        class="wt-pick-remove-repo"
+                        on:click|stopPropagation={() => {
+                          const ok = confirm(
+                            `Remove repository \`${repoName(repo)}\` and all its worktree rows from supergit?\n\n` +
+                              `This only untracks the repo from supergit's workspace — your repo at\n  ${repo.path}\nand any worktree directories on disk are NOT deleted.\n\n` +
+                              `You can re-add it later via "+ Add" if you change your mind.`,
+                          );
+                          if (!ok) return;
+                          wtPickerOpen = {
+                            ...wtPickerOpen,
+                            [wt ? wt.path : repo.id]: false,
+                          };
+                          void removeRepo(repo.id);
+                        }}
+                        title="Untrack the repo from supergit (the repo dir + worktrees on disk are kept)"
+                        >Remove repository and all worktree rows from supergit</button
+                      >
+                    </Popover>
+                  {/if}
+                </span>
+              {/if}
+              {#if rowFolded[row.key] && wt}
+                <OpenInActions
+                  path={wt.path}
+                  repoId={repo.id}
+                  {editors}
+                  remotes={repo.remotes ?? []}
+                  customLinks={repo.customLinks ?? []}
+                  {runningCommandIds}
+                  editRequest={commandEditRequest}
+                  onCommandClick={(l) => handleCommandClick(wt.path, l)}
+                  {commandUrls}
+                  {openIn}
+                  {openRemote}
+                  onAddCustomLink={(input) => addCustomLink(repo.id, input)}
+                  onRemoveCustomLink={(linkId) =>
+                    removeCustomLink(repo.id, linkId)}
+                  onReorderCustomLinks={(orderedIds) =>
+                    reorderCustomLinks(repo.id, orderedIds)}
+                  onEditCustomLink={(linkId, input) =>
+                    updateCustomLink(repo.id, linkId, input)}
+                  iconOnly
                 />
               {/if}
+              <button
+                class="row-zen-btn"
+                class:open={zenRowKey === row.key}
+                title={zenRowKey === row.key
+                  ? "Exit zen — restore the rest of the dashboard (Esc)"
+                  : `Zen — make \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` fill the viewport`}
+                aria-label={zenRowKey === row.key ? "Exit zen" : "Enter zen"}
+                on:click|stopPropagation={() => toggleZenRow(row.key)}
+                >{zenRowKey === row.key ? "◱" : "▣"}</button
+              >
+              <button
+                class="row-remove"
+                title={wt && !wt.nonGit
+                  ? "Hide this worktree's row from the dashboard. Worktree directory on disk is NOT deleted; the repo stays in supergit. Re-show via the worktrees picker."
+                  : "Remove this folder from supergit's workspace. The folder on disk is NOT deleted."}
+                on:click={() => {
+                  if (wt && !wt.nonGit && repo.worktrees.length > 1) {
+                    hideWorktreeRow(
+                      repo.id,
+                      wt.path,
+                      repo.worktrees.map((w) => w.path),
+                    );
+                  } else {
+                    void removeRepo(repo.id);
+                  }
+                }}>×</button
+              >
             </div>
-          {/if}
 
-          {#if wt && summary}
-            {#if wt}
-              {@const stripFilter = stripFilterByWt[wt.path]}
-              {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
-                {@const existingSources = new Set(
-                  (wt.agents ?? []).map((a) => a.source),
-                )}
-                {@const visibleSessions = filterToExistingSessions(
-                  openSessionsByWt[wt.path] ?? [],
-                  existingSources,
-                )}
-                {#if visibleSessions.length > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
-                  <div
-                    class="sessions-strip"
-                    data-wt-strip={wt.path}
-                    on:dragleave={(e) => handleStripDragLeave(e, wt.path)}
+            <div class="row-body">
+              {#if newWtOpen[repo.id]}
+                <div class="new-wt-form">
+                  <input
+                    type="text"
+                    class="new-wt-input"
+                    placeholder="new branch name (e.g. feat/audio)"
+                    bind:value={newWtBranch[repo.id]}
+                    disabled={newWtBusy[repo.id]}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") createWorktree(repo.id);
+                      if (e.key === "Escape") {
+                        newWtOpen = { ...newWtOpen, [repo.id]: false };
+                      }
+                    }}
+                  />
+                  <button
+                    class="tiny"
+                    disabled={!newWtBranch[repo.id]?.trim() ||
+                      newWtBusy[repo.id]}
+                    on:click={() => createWorktree(repo.id)}
                   >
-                    <!-- Trailing spacer (the leading inset is handled by
+                    {newWtBusy[repo.id] ? "Creating…" : "Create"}
+                  </button>
+                  <span class="muted small">
+                    will live at ~/wt/{repo.name}/{(newWtBranch[repo.id] ?? "")
+                      .trim()
+                      .replace(/[\/\\]/g, "-") || "…"}
+                  </span>
+                </div>
+              {/if}
+
+              {#if wt && summary}
+                <div class="row-status">
+                  {#if isFirstOfRepo && !newlyAddedRepoPaths.has(wt?.path ?? "") && !newlyAddedRepoPaths.has(repo.path)}
+                    <RepoRecentSummary
+                      repoId={repo.id}
+                      repoName={repo.name}
+                      inline
+                    />
+                  {/if}
+
+                  <OpenInActions
+                    path={wt.path}
+                    repoId={repo.id}
+                    {editors}
+                    remotes={repo.remotes ?? []}
+                    customLinks={repo.customLinks ?? []}
+                    {runningCommandIds}
+                    editRequest={commandEditRequest}
+                    onCommandClick={(l) => handleCommandClick(wt.path, l)}
+                    {commandUrls}
+                    {openIn}
+                    {openRemote}
+                    onAddCustomLink={(input) => addCustomLink(repo.id, input)}
+                    onRemoveCustomLink={(linkId) =>
+                      removeCustomLink(repo.id, linkId)}
+                    onReorderCustomLinks={(orderedIds) =>
+                      reorderCustomLinks(repo.id, orderedIds)}
+                    onEditCustomLink={(linkId, input) =>
+                      updateCustomLink(repo.id, linkId, input)}
+                  />
+                </div>
+              {/if}
+
+              {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path] || walkthroughByWt[wt.path] != null)}
+                {@const ob = onboardingByWt[wt.path]}
+                <div class="onboarding-section">
+                  {#if ob && (ob.status === "streaming" || ob.status === "done")}
+                    <div class="onboarding-response">
+                      <span class="onboarding-provider-badge">
+                        {#if ob.provider === "ollama"}
+                          <img
+                            src="/agents/ollama.svg"
+                            alt=""
+                            class="onboarding-provider-icon"
+                          />
+                        {:else if ob.provider === "claude"}
+                          <img
+                            src="/agents/claude.svg"
+                            alt=""
+                            class="onboarding-provider-icon"
+                          />
+                        {/if}
+                        <span class="muted small"
+                          >{ob.model ?? ob.provider}</span
+                        >
+                        {#if ob.status === "streaming"}
+                          <LoadingSpinner size="0.7rem" />
+                        {/if}
+                      </span>
+                      <div class="onboarding-text">
+                        {@html DOMPurify.sanitize(
+                          marked.parse(ob.text || "", {
+                            async: false,
+                            breaks: true,
+                            gfm: true,
+                          }) as string,
+                        )}
+                      </div>
+                    </div>
+                    {#if ob.status === "done" && walkthroughByWt[wt.path] == null && !walkthroughSeen(wt.path)}
+                      <div class="onboarding-tour-buttons">
+                        <button
+                          class="onboarding-btn"
+                          on:click={() => {
+                            walkthroughByWt = { [wt.path]: 0 };
+                          }}>Tour the UI</button
+                        >
+                        <button
+                          class="walkthrough-btn-skip"
+                          on:click={() => {
+                            markWalkthroughSeen(wt.path);
+                            delete onboardingByWt[wt.path];
+                            onboardingByWt = onboardingByWt;
+                          }}>Skip onboarding</button
+                        >
+                      </div>
+                    {/if}
+                  {:else if ob && ob.status === "error"}
+                    <div class="onboarding-error muted small">{ob.error}</div>
+                    <button
+                      class="onboarding-btn"
+                      on:click={() => startOnboarding(wt.path)}>Retry</button
+                    >
+                  {:else if walkthroughByWt[wt.path] == null}
+                    <div class="onboarding-cta-row">
+                      <button
+                        class="onboarding-btn"
+                        on:click={() => {
+                          walkthroughByWt = { [wt.path]: 0 };
+                        }}>Tour the UI</button
+                      >
+                      <button
+                        class="walkthrough-btn-skip"
+                        on:click={() => {
+                          newlyAddedRepoPaths.delete(wt.path);
+                          newlyAddedRepoPaths.delete(repo.path);
+                          markWalkthroughSeen(wt.path);
+                          delete onboardingByWt[wt.path];
+                          onboardingByWt = onboardingByWt;
+                        }}>Skip</button
+                      >
+                    </div>
+                  {/if}
+                  {#if walkthroughByWt[wt.path] != null}
+                    <OnboardingWalkthrough
+                      wtPath={wt.path}
+                      currentStep={walkthroughByWt[wt.path] ?? 0}
+                      on:next={() => {
+                        const s = (walkthroughByWt[wt.path] ?? 0) + 1;
+                        if (s >= WALKTHROUGH_STEPS.length) {
+                          markWalkthroughSeen(wt.path);
+                          walkthroughByWt = {
+                            ...walkthroughByWt,
+                            [wt.path]: null,
+                          };
+                          delete onboardingByWt[wt.path];
+                          onboardingByWt = onboardingByWt;
+                        } else {
+                          walkthroughByWt = {
+                            ...walkthroughByWt,
+                            [wt.path]: s,
+                          };
+                        }
+                      }}
+                      on:skip={() => {
+                        markWalkthroughSeen(wt.path);
+                        walkthroughByWt = {
+                          ...walkthroughByWt,
+                          [wt.path]: null,
+                        };
+                        delete onboardingByWt[wt.path];
+                        onboardingByWt = onboardingByWt;
+                      }}
+                    />
+                  {/if}
+                </div>
+              {/if}
+
+              {#if wt && summary}
+                {#if wt}
+                  {@const stripFilter = stripFilterByWt[wt.path]}
+                  {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
+                    {@const existingSources = new Set(
+                      (wt.agents ?? []).map((a) => a.source),
+                    )}
+                    {@const visibleSessions = filterToExistingSessions(
+                      openSessionsByWt[wt.path] ?? [],
+                      existingSources,
+                    )}
+                    {#if visibleSessions.length > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
+                      <div
+                        class="sessions-strip"
+                        data-wt-strip={wt.path}
+                        on:dragleave={(e) => handleStripDragLeave(e, wt.path)}
+                      >
+                        <!-- Trailing spacer (the leading inset is handled by
                          `.sessions-strip { padding-left }`). Can't use
                          padding-right here — horizontally scrolling flex
                          containers drop it — so a real flex item gives
                          the last column the same breathing room. -->
-                    {#each visibleSessions as s, i (s.source)}
-                      <div
-                        class="session-col"
-                        class:session-col-filtered={stripFilter && !stripFilter.matched.has(s.source)}
-                        class:session-col-pickable={!!stripFilter && stripFilter.matched.has(s.source)}
-                        class:drop-before={dragOverTarget?.wtPath === wt.path
-                          && dragOverTarget.index === i
-                          && dragOverTarget.side === "left"
-                          && dragSource?.index !== i}
-                        class:drop-after={dragOverTarget?.wtPath === wt.path
-                          && dragOverTarget.index === i
-                          && dragOverTarget.side === "right"
-                          && dragSource?.index !== i}
-                        data-session-source={s.source}
-                        animate:flip={{ duration: 220 }}
-                        on:dragover={(e) => handleSessionDragOver(e, wt.path, i)}
-                        on:drop={(e) =>
-                          handleSessionDrop(e, wt.path, i)}
-                        on:dragend={handleSessionDragEnd}
-                        on:click={() => {
-                          commitStripSearch(row.key, wt.path, s.source);
-                          // Bubbles from any click inside the column — a
-                          // child handler that closes the session will
-                          // have run first, so guard with isOpenInWt so
-                          // we don't park `focusedSource` on a source
-                          // that's already been removed.
-                          if (isOpenInWt(wt.path, s.source)) {
-                            focusedSource = s.source;
-                          }
-                        }}
-                        out:closeColumn
-                      >
-                        {#if s.source.startsWith("__restore__:")}
-                          {@const rInfo = persistedTerminals[s.source]}
-                          <div class="session restore-card">
-                            <div class="restore-header">
-                              <span class="restore-title">{rInfo?.title || "Terminal"}</span>
-                              <span class="restore-status">disconnected</span>
-                            </div>
-                            <code class="restore-cmd">{rInfo?.firstCmd || rInfo?.lastCmd || rInfo?.cmd?.join(" ") || ""}</code>
-                            <div class="restore-actions">
-                              <button
-                                class="restore-btn restore-resume"
-                                on:click={() => resumePersistedTerminal(wt.path, s.source)}
-                              >Resume</button>
-                              <button
-                                class="restore-btn"
-                                on:click={() => dismissPersistedTerminal(wt.path, s.source)}
-                              >Dismiss</button>
-                            </div>
-                          </div>
-                        {:else if s.source.startsWith("__remote__:")}
-                          {@const remoteTermId = parseRemoteSource(s.source) ?? ""}
-                          {@const termSource = `__attached__:shell:${remoteTermId}`}
-                          <FileBrowser
-                            wtPath="/"
-                            source={s.source}
-                            {remoteTermId}
-                            remoteCwd={sshCwdByTermId[remoteTermId] ?? null}
-                            onClose={() => closeSessionInWt(wt.path, s)}
-                            onFocusTerminal={() => {
-                              focusedSource = termSource;
-                              const el = document.querySelector(`[data-session-source="${termSource}"]`);
-                              el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+                        {#each visibleSessions as s, i (s.source)}
+                          <div
+                            class="session-col"
+                            class:session-col-filtered={stripFilter &&
+                              !stripFilter.matched.has(s.source)}
+                            class:session-col-pickable={!!stripFilter &&
+                              stripFilter.matched.has(s.source)}
+                            class:drop-before={dragOverTarget?.wtPath ===
+                              wt.path &&
+                              dragOverTarget.index === i &&
+                              dragOverTarget.side === "left" &&
+                              dragSource?.index !== i}
+                            class:drop-after={dragOverTarget?.wtPath ===
+                              wt.path &&
+                              dragOverTarget.index === i &&
+                              dragOverTarget.side === "right" &&
+                              dragSource?.index !== i}
+                            data-session-source={s.source}
+                            animate:flip={{ duration: 220 }}
+                            on:dragover={(e) =>
+                              handleSessionDragOver(e, wt.path, i)}
+                            on:drop={(e) => handleSessionDrop(e, wt.path, i)}
+                            on:dragend={handleSessionDragEnd}
+                            on:click={() => {
+                              commitStripSearch(row.key, wt.path, s.source);
+                              // Bubbles from any click inside the column — a
+                              // child handler that closes the session will
+                              // have run first, so guard with isOpenInWt so
+                              // we don't park `focusedSource` on a source
+                              // that's already been removed.
+                              if (isOpenInWt(wt.path, s.source)) {
+                                focusedSource = s.source;
+                              }
                             }}
-                            onDragStart={(e) =>
-                              handleSessionDragStart(e, wt.path, i)}
-                          />
-                        {:else if s.source.startsWith("__files__:")}
-                          <FileBrowser
-                            wtPath={wt.path}
-                            source={s.source}
-                            onClose={() => closeSessionInWt(wt.path, s)}
-                            onDragStart={(e) =>
-                              handleSessionDragStart(e, wt.path, i)}
-                          />
-                        {:else if s.source.startsWith("__history__:")}
-                          <GitHistory
-                            wtPath={wt.path}
-                            source={s.source}
-                            onClose={() => closeSessionInWt(wt.path, s)}
-                            onDragStart={(e) =>
-                              handleSessionDragStart(e, wt.path, i)}
-                            fsChangeKey={fsChangeKey[wt.path] ?? 0}
-                          />
-                        {:else if s.source.startsWith("__transcript__:ollama:")}
-                          <!-- Read-mode column for a stopped (or live)
+                            out:closeColumn
+                          >
+                            {#if s.source.startsWith("__restore__:")}
+                              {@const rInfo = persistedTerminals[s.source]}
+                              <div class="session restore-card">
+                                <div class="restore-header">
+                                  <span class="restore-title"
+                                    >{rInfo?.title || "Terminal"}</span
+                                  >
+                                  <span class="restore-status"
+                                    >disconnected</span
+                                  >
+                                </div>
+                                <code class="restore-cmd"
+                                  >{rInfo?.firstCmd ||
+                                    rInfo?.lastCmd ||
+                                    rInfo?.cmd?.join(" ") ||
+                                    ""}</code
+                                >
+                                <div class="restore-actions">
+                                  <button
+                                    class="restore-btn restore-resume"
+                                    on:click={() =>
+                                      resumePersistedTerminal(
+                                        wt.path,
+                                        s.source,
+                                      )}>Resume</button
+                                  >
+                                  <button
+                                    class="restore-btn"
+                                    on:click={() =>
+                                      dismissPersistedTerminal(
+                                        wt.path,
+                                        s.source,
+                                      )}>Dismiss</button
+                                  >
+                                </div>
+                              </div>
+                            {:else if s.source.startsWith("__remote__:")}
+                              {@const remoteTermId =
+                                parseRemoteSource(s.source) ?? ""}
+                              {@const termSource = `__attached__:shell:${remoteTermId}`}
+                              <FileBrowser
+                                wtPath="/"
+                                source={s.source}
+                                {remoteTermId}
+                                remoteCwd={sshCwdByTermId[remoteTermId] ?? null}
+                                onClose={() => closeSessionInWt(wt.path, s)}
+                                onFocusTerminal={() => {
+                                  focusedSource = termSource;
+                                  const el = document.querySelector(
+                                    `[data-session-source="${termSource}"]`,
+                                  );
+                                  el?.scrollIntoView({
+                                    behavior: "smooth",
+                                    inline: "center",
+                                    block: "nearest",
+                                  });
+                                }}
+                                onDragStart={(e) =>
+                                  handleSessionDragStart(e, wt.path, i)}
+                              />
+                            {:else if s.source.startsWith("__files__:")}
+                              <FileBrowser
+                                wtPath={wt.path}
+                                source={s.source}
+                                onClose={() => closeSessionInWt(wt.path, s)}
+                                onDragStart={(e) =>
+                                  handleSessionDragStart(e, wt.path, i)}
+                              />
+                            {:else if s.source.startsWith("__history__:")}
+                              <GitHistory
+                                wtPath={wt.path}
+                                source={s.source}
+                                onClose={() => closeSessionInWt(wt.path, s)}
+                                onDragStart={(e) =>
+                                  handleSessionDragStart(e, wt.path, i)}
+                                fsChangeKey={fsChangeKey[wt.path] ?? 0}
+                              />
+                            {:else if s.source.startsWith("__transcript__:ollama:")}
+                              <!-- Read-mode column for a stopped (or live)
                                Ollama session. OllamaTranscriptView is a
                                thin wrapper around SessionView so the
                                read view looks identical to Claude /
@@ -7446,400 +8390,492 @@
                                specific Resume actions. Needs the
                                on-disk JSONL path so SessionView's
                                /api/session fetch can parse it. -->
-                          {@const ollamaTermId = s.source.slice("__transcript__:ollama:".length)}
-                          {@const ollamaMeta = (wt.agents ?? []).find(
-                            (a) => a.agent === "ollama" && a.sessionId === ollamaTermId,
-                          )}
-                          {@const ollamaModelLabel = s.ollamaModel ?? ollamaMeta?.model ?? ollamaMeta?.title ?? "ollama"}
-                          {@const ollamaSourcePath = ollamaMeta?.source ?? ollamaSourcePathOverride[s.source]}
-                          {#if ollamaSourcePath}
-                            <OllamaTranscriptView
-                              termId={ollamaTermId}
-                              wt={wt.path}
-                              model={ollamaModelLabel}
-                              sourcePath={ollamaSourcePath}
-                              starred={starredSessions.has(ollamaSourcePath)}
-                              onToggleStar={() => toggleStarSession(ollamaSourcePath)}
-                              onContinueWith={(targetAgent, ollamaModel) =>
-                                void continueSessionWith(wt.path, ollamaSourcePath, targetAgent, ollamaModel)}
-                              on:close={() => closeSessionInWt(wt.path, s)}
-                            />
-                          {:else}
-                            <!-- No matching AgentSession yet (still
+                              {@const ollamaTermId = s.source.slice(
+                                "__transcript__:ollama:".length,
+                              )}
+                              {@const ollamaMeta = (wt.agents ?? []).find(
+                                (a) =>
+                                  a.agent === "ollama" &&
+                                  a.sessionId === ollamaTermId,
+                              )}
+                              {@const ollamaModelLabel =
+                                s.ollamaModel ??
+                                ollamaMeta?.model ??
+                                ollamaMeta?.title ??
+                                "ollama"}
+                              {@const ollamaSourcePath =
+                                ollamaMeta?.source ??
+                                ollamaSourcePathOverride[s.source]}
+                              {#if ollamaSourcePath}
+                                <OllamaTranscriptView
+                                  termId={ollamaTermId}
+                                  wt={wt.path}
+                                  model={ollamaModelLabel}
+                                  sourcePath={ollamaSourcePath}
+                                  starred={starredSessions.has(
+                                    ollamaSourcePath,
+                                  )}
+                                  onToggleStar={() =>
+                                    toggleStarSession(ollamaSourcePath)}
+                                  onContinueWith={(targetAgent, ollamaModel) =>
+                                    void continueSessionWith(
+                                      wt.path,
+                                      ollamaSourcePath,
+                                      targetAgent,
+                                      ollamaModel,
+                                    )}
+                                  on:close={() => closeSessionInWt(wt.path, s)}
+                                />
+                              {:else}
+                                <!-- No matching AgentSession yet (still
                                  mid-spawn or /api/repos hasn't
                                  rescanned). Show a brief placeholder
                                  instead of an empty frame. -->
-                            <div class="session muted small" style="padding: 0.75rem 1rem;">
-                              starting…
-                            </div>
-                          {/if}
-                        {:else if s.source.startsWith("__transcript__:")}
-                          <!-- Read-mode column for a past shell session.
+                                <div
+                                  class="session muted small"
+                                  style="padding: 0.75rem 1rem;"
+                                >
+                                  starting…
+                                </div>
+                              {/if}
+                            {:else if s.source.startsWith("__transcript__:")}
+                              <!-- Read-mode column for a past shell session.
                                Renders the captured commands from the
                                JSONL and exposes a Resume button that
                                spawns a new PTY at the last cwd. -->
-                          <div class="session shell-transcript-col">
-                            <ShellView
-                              termId={s.source.split(":").pop() ?? ""}
-                              wt={wt.path}
-                              onResume={(lastCwd) =>
-                                resumePastShell(wt.path, s.source, lastCwd)}
-                              onClose={() => closeSessionInWt(wt.path, s)}
-                            />
-                          </div>
-                        {:else if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
-                          <!-- Transient column: a brand-new agent we just
+                              <div class="session shell-transcript-col">
+                                <ShellView
+                                  termId={s.source.split(":").pop() ?? ""}
+                                  wt={wt.path}
+                                  onResume={(lastCwd) =>
+                                    resumePastShell(wt.path, s.source, lastCwd)}
+                                  onClose={() => closeSessionInWt(wt.path, s)}
+                                />
+                              </div>
+                            {:else if s.source.startsWith("__new__:") || s.source.startsWith("__attached__:")}
+                              <!-- Transient column: a brand-new agent we just
                                spawned, before its JSONL has been created on
                                disk. NewSessionCol.svelte handles the shell
                                + claude/codex variants; we just feed it
                                props and react to its events. -->
-                          {@const newAgentMeta = s.resumeSessionId
-                            ? (wt.agents ?? []).find(
-                                (a) =>
-                                  a.agent === s.agent &&
-                                  a.sessionId === s.resumeSessionId,
-                              )
-                            : undefined}
-                          {@const titleSource = resolveTitleSource(
-                            s,
-                            wt.agents ?? [],
-                          )}
-                          <!-- {#key} on a per-source generation counter so a
+                              {@const newAgentMeta = s.resumeSessionId
+                                ? (wt.agents ?? []).find(
+                                    (a) =>
+                                      a.agent === s.agent &&
+                                      a.sessionId === s.resumeSessionId,
+                                  )
+                                : undefined}
+                              {@const titleSource = resolveTitleSource(
+                                s,
+                                wt.agents ?? [],
+                              )}
+                              <!-- {#key} on a per-source generation counter so a
                                model/effort switch (setClaudeSessionFlag) tears
                                down the TerminalView and respawns it via resume
                                with the new --model/--effort flag. -->
-                          {#key claudeColGen[s.source] ?? 0}
-                          <NewSessionCol
-                            agent={s.agent}
-                            source={titleSource}
-                            wtPath={wt.path}
-                            cmd={cmdForOpenSession(s, defaultShell, defaultShellArgs)}
-                            cwd={shellResumeCwd[s.source] ?? wt.path}
-                            procName={`supergit-tui-new-${s.agent}`}
-                            attachTermId={s.source.startsWith("__attached__:")
-                              ? s.source.split(":").pop()
-                              : undefined}
-                            resumeFromTermId={shellResumeFromTermId[s.source]}
-                            prefillCmd={shellPrefillCmd[s.source]}
-                            manualTitle={newAgentMeta?.manualTitle ??
-                              newSessionTitles[titleSource] ??
-                              newSessionTitles[s.source]}
-                            awaiting={!!transientAwaiting[s.source]}
-                            working={!!transientWorking[s.source]}
-                            totalMessageCount={newAgentMeta?.messageCount}
-                            contextTokens={newAgentMeta?.contextTokens}
-                            contextTokensExact={newAgentMeta?.contextTokensExact}
-                            contextWindow={newAgentMeta?.contextWindow}
-                            model={newAgentMeta?.model}
-                            claudeModel={s.claudeModel}
-                            claudeEffort={s.claudeEffort}
-                            lastActivityIso={newAgentMeta?.lastActive}
-                            lastUserMessage={newAgentMeta?.lastUserMessage}
-                            starred={starredSessions.has(titleSource) || starredSessions.has(s.source)}
-                            onToggleStar={() => toggleStarSession(titleSource)}
-                            on:close={() => closeSessionInWt(wt.path, s)}
-                            on:dispose={() =>
-                              disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}
-                            on:restart={() => restartNewAgentSession(wt.path, s)}
-                            on:setModel={(e) =>
-                              setClaudeSessionFlag(wt.path, s.source, { claudeModel: e.detail.model })}
-                            on:setEffort={(e) =>
-                              setClaudeSessionFlag(wt.path, s.source, { claudeEffort: e.detail.effort })}
-                            on:spawn={(e) => {
-                              // Capture the daemon-assigned termId for
-                              // every `__new__:` source (any agent) so
-                              // disposeNewSessionColumn can DELETE
-                              // /api/terminals/:id later.
-                              if (s.source.startsWith("__new__:")) {
-                                newTermIds = {
-                                  ...newTermIds,
-                                  [s.source]: e.detail.id,
-                                };
-                              }
-                              // Claude with a preassignedSessionId: by
-                              // this point claude has been exec'd with
-                              // `--session-id <uuid>` and has created
-                              // the JSONL. Promote the preassigned id to
-                              // resumeSessionId so a reload spawns
-                              // `claude --resume <uuid>` instead of
-                              // re-passing `--session-id` (which now
-                              // errors with "Session ID is already in
-                              // use"). The activity-tail stamping does
-                              // the same thing eventually, but it's
-                              // racy — the user can reload faster than
-                              // the SSE event arrives.
-                              if (
-                                s.source.startsWith("__new__:claude:") &&
-                                s.preassignedSessionId &&
-                                !s.resumeSessionId
-                              ) {
-                                const sid = s.preassignedSessionId;
-                                openSessionsByWt = {
-                                  ...openSessionsByWt,
-                                  [wt.path]: (openSessionsByWt[wt.path] ?? []).map(
-                                    (x) =>
-                                      x.source === s.source
-                                        ? { ...x, resumeSessionId: sid }
-                                        : x,
-                                  ),
-                                };
-                              }
-                              // SHELLS only: also swap the persisted
-                              // source from `__new__:shell:<random>` to
-                              // `__attached__:shell:<termId>`. This is
-                              // the canonical "reattach to existing PTY"
-                              // form. Without the swap, a reload spawns a
-                              // fresh PTY (via the lingering __new__:
-                              // entry) *and* restoreLiveShells adds the
-                              // still-alive old PTY as a separate
-                              // __attached__:shell:<oldTermId> — the
-                              // "regular terminal duplicates after
-                              // reload" bug. The each-block remounts
-                              // briefly (key change), but TerminalView's
-                              // attach path reconnects via WS to the
-                              // same termId without killing the PTY
-                              // (daemon supports multiple subscribers).
-                              // Claude/Codex don't get this swap: they
-                              // use the activity-tail's resumeSessionId
-                              // mechanism for reload continuity.
-                              if (s.source.startsWith("__new__:shell:")) {
-                                const attachedSource = `__attached__:shell:${e.detail.id}`;
-                                promotedSources.add(s.source);
-                                openSessionsByWt = {
-                                  ...openSessionsByWt,
-                                  [wt.path]: (openSessionsByWt[wt.path] ?? []).map(
-                                    (x) =>
-                                      x.source === s.source
-                                        ? { ...x, source: attachedSource }
-                                        : x,
-                                  ),
-                                };
-                                // If the user already named this column during
-                                // the brief "starting" phase before the PTY
-                                // came up, migrate the title to the new source
-                                // key so it survives the swap (otherwise the
-                                // synthetic-source title gets orphaned and the
-                                // header reverts to "Name this session…").
-                                void migrateSessionTitleOnServer(
-                                  s.source,
-                                  attachedSource,
-                                );
-                              }
-                            }}
-                            on:awaitingChange={(e) => {
-                              transientAwaiting = {
-                                ...transientAwaiting,
-                                [s.source]: e.detail.awaiting,
-                              };
-                            }}
-                            on:workingChange={(e) => {
-                              const wasWorking = !!transientWorking[s.source];
-                              const nowWorking = e.detail.working;
-                              transientWorking = {
-                                ...transientWorking,
-                                [s.source]: nowWorking,
-                              };
-                              if (wasWorking && !nowWorking) {
-                                const start = workingStartedAt[s.source];
-                                const worked = start ? Date.now() - start : 0;
-                                if (worked >= MIN_WORKING_FOR_PULSE_MS) {
-                                  scheduleFinished(s.source);
-                                }
-                                workingStartedAt[s.source] = undefined;
-                              } else if (nowWorking && !wasWorking) {
-                                workingStartedAt[s.source] = Date.now();
-                                clearFinishedFor(s.source);
-                              }
-                            }}
-                            on:exit={() => {
-                              transientExited = {
-                                ...transientExited,
-                                [s.source]: true,
-                              };
-                              if (transientWorking[s.source]) {
-                                transientWorking = {
-                                  ...transientWorking,
-                                  [s.source]: false,
-                                };
-                              }
-                              workingStartedAt[s.source] = undefined;
-                              clearFinishedFor(s.source);
-                              if (transientAwaiting[s.source]) {
-                                transientAwaiting = {
-                                  ...transientAwaiting,
-                                  [s.source]: false,
-                                };
-                              }
-                            }}
-                            on:sshBrowse={() => {
-                              const termId = resolveTermIdFromSource(s.source, newTermIds);
-                              if (termId) openRemoteBrowser(wt.path, termId, "");
-                            }}
-                            on:sshCwd={(e) => {
-                              const termId = resolveTermIdFromSource(s.source, newTermIds);
-                              if (termId) sshCwdByTermId = { ...sshCwdByTermId, [termId]: e.detail.cwd };
-                            }}
-                            on:titleSave={(e) =>
-                              void saveNewSessionTitle(titleSource, e.detail.title)}
-                            on:titleEditingChange={(e) => {
-                              if (e.detail.editing) {
-                                editingTitleSources.add(s.source);
-                              } else {
-                                editingTitleSources.delete(s.source);
-                                flushDeferredPromotions(s.source);
-                              }
-                            }}
-                            onDragStart={(e) =>
-                              handleSessionDragStart(e, wt.path, i)}
-                          />
-                          {/key}
-                        {:else}
-                          {@const agentMeta = (wt.agents ?? []).find(
-                            (a) => a.source === s.source,
-                          )}
-                          {#key claudeColGen[s.source] ?? 0}
-                          <SessionView
-                            agent={s.agent as "claude" | "codex" | "copilot"}
-                            source={s.source}
-                            wtPath={wt.path}
-                            totalMessageCount={agentMeta?.messageCount}
-                            contextTokens={agentMeta?.contextTokens}
-                            contextTokensExact={agentMeta?.contextTokensExact}
-                            contextWindow={agentMeta?.contextWindow}
-                            model={agentMeta?.model}
-                            claudeModel={s.claudeModel}
-                            claudeEffort={s.claudeEffort}
-                            onSetClaudeModel={(m) =>
-                              setClaudeSessionFlag(wt.path, s.source, { claudeModel: m })}
-                            onSetClaudeEffort={(e) =>
-                              setClaudeSessionFlag(wt.path, s.source, { claudeEffort: e })}
-                            attachTermId={(s as any).attachTermId}
-                            initialMode={s.mode === "terminal" ? "terminal" : "read"}
-                            onModeChange={(m) => {
-                              // Persist so a reload restores the same view —
-                              // otherwise a user who clicked "Resume in
-                              // terminal" before refreshing lands back in
-                              // history view.
-                              const next = setSessionMode(
-                                openSessionsByWt,
-                                wt.path,
-                                s.source,
-                                m,
-                              );
-                              if (next !== openSessionsByWt) openSessionsByWt = next;
-                            }}
-                            onWorkingChange={(w) => {
-                              const wasWorking = !!transientWorking[s.source];
-                              transientWorking = {
-                                ...transientWorking,
-                                [s.source]: w,
-                              };
-                              if (wasWorking && !w) {
-                                const start = workingStartedAt[s.source];
-                                const worked = start ? Date.now() - start : 0;
-                                if (worked >= MIN_WORKING_FOR_PULSE_MS) {
-                                  scheduleFinished(s.source);
-                                }
-                                workingStartedAt[s.source] = undefined;
-                              } else if (w && !wasWorking) {
-                                workingStartedAt[s.source] = Date.now();
-                                clearFinishedFor(s.source);
-                              }
-                            }}
-                            onAwaitingChange={(a) => {
-                              transientAwaiting = {
-                                ...transientAwaiting,
-                                [s.source]: a,
-                              };
-                            }}
-                            starred={starredSessions.has(s.source)}
-                            onToggleStar={() => toggleStarSession(s.source)}
-                            onContinueWith={(targetAgent, ollamaModel) =>
-                              void continueSessionWith(wt.path, s.source, targetAgent, ollamaModel)}
-                            onClose={() => closeSessionInWt(wt.path, s)}
-                            onDragStart={(e) =>
-                              handleSessionDragStart(e, wt.path, i)}
-                            onTitleChange={() => void load()}
-                          />
-                          {/key}
-                        {/if}
-                      </div>
-                    {/each}
-                    {#if stripFilter && stripFilter.notOpen.length > 0}
-                      <!-- Synthetic column: matches that exist for this
+                              {#key claudeColGen[s.source] ?? 0}
+                                <NewSessionCol
+                                  agent={s.agent}
+                                  source={titleSource}
+                                  wtPath={wt.path}
+                                  cmd={cmdForOpenSession(
+                                    s,
+                                    defaultShell,
+                                    defaultShellArgs,
+                                  )}
+                                  cwd={shellResumeCwd[s.source] ?? wt.path}
+                                  procName={`supergit-tui-new-${s.agent}`}
+                                  attachTermId={s.source.startsWith(
+                                    "__attached__:",
+                                  )
+                                    ? s.source.split(":").pop()
+                                    : undefined}
+                                  resumeFromTermId={shellResumeFromTermId[
+                                    s.source
+                                  ]}
+                                  prefillCmd={shellPrefillCmd[s.source]}
+                                  manualTitle={newAgentMeta?.manualTitle ??
+                                    newSessionTitles[titleSource] ??
+                                    newSessionTitles[s.source]}
+                                  awaiting={!!transientAwaiting[s.source]}
+                                  working={!!transientWorking[s.source]}
+                                  totalMessageCount={newAgentMeta?.messageCount}
+                                  contextTokens={newAgentMeta?.contextTokens}
+                                  contextTokensExact={newAgentMeta?.contextTokensExact}
+                                  contextWindow={newAgentMeta?.contextWindow}
+                                  model={newAgentMeta?.model}
+                                  claudeModel={s.claudeModel}
+                                  claudeEffort={s.claudeEffort}
+                                  lastActivityIso={newAgentMeta?.lastActive}
+                                  lastUserMessage={newAgentMeta?.lastUserMessage}
+                                  starred={starredSessions.has(titleSource) ||
+                                    starredSessions.has(s.source)}
+                                  onToggleStar={() =>
+                                    toggleStarSession(titleSource)}
+                                  on:close={() => closeSessionInWt(wt.path, s)}
+                                  on:dispose={() =>
+                                    disposeNewSessionColumn(
+                                      wt.path,
+                                      s,
+                                      wt.agents ?? [],
+                                    )}
+                                  on:restart={() =>
+                                    restartNewAgentSession(wt.path, s)}
+                                  on:setModel={(e) =>
+                                    setClaudeSessionFlag(wt.path, s.source, {
+                                      claudeModel: e.detail.model,
+                                    })}
+                                  on:setEffort={(e) =>
+                                    setClaudeSessionFlag(wt.path, s.source, {
+                                      claudeEffort: e.detail.effort,
+                                    })}
+                                  on:spawn={(e) => {
+                                    // Capture the daemon-assigned termId for
+                                    // every `__new__:` source (any agent) so
+                                    // disposeNewSessionColumn can DELETE
+                                    // /api/terminals/:id later.
+                                    if (s.source.startsWith("__new__:")) {
+                                      newTermIds = {
+                                        ...newTermIds,
+                                        [s.source]: e.detail.id,
+                                      };
+                                    }
+                                    // Claude with a preassignedSessionId: by
+                                    // this point claude has been exec'd with
+                                    // `--session-id <uuid>` and has created
+                                    // the JSONL. Promote the preassigned id to
+                                    // resumeSessionId so a reload spawns
+                                    // `claude --resume <uuid>` instead of
+                                    // re-passing `--session-id` (which now
+                                    // errors with "Session ID is already in
+                                    // use"). The activity-tail stamping does
+                                    // the same thing eventually, but it's
+                                    // racy — the user can reload faster than
+                                    // the SSE event arrives.
+                                    if (
+                                      s.source.startsWith("__new__:claude:") &&
+                                      s.preassignedSessionId &&
+                                      !s.resumeSessionId
+                                    ) {
+                                      const sid = s.preassignedSessionId;
+                                      openSessionsByWt = {
+                                        ...openSessionsByWt,
+                                        [wt.path]: (
+                                          openSessionsByWt[wt.path] ?? []
+                                        ).map((x) =>
+                                          x.source === s.source
+                                            ? { ...x, resumeSessionId: sid }
+                                            : x,
+                                        ),
+                                      };
+                                    }
+                                    // SHELLS only: also swap the persisted
+                                    // source from `__new__:shell:<random>` to
+                                    // `__attached__:shell:<termId>`. This is
+                                    // the canonical "reattach to existing PTY"
+                                    // form. Without the swap, a reload spawns a
+                                    // fresh PTY (via the lingering __new__:
+                                    // entry) *and* restoreLiveShells adds the
+                                    // still-alive old PTY as a separate
+                                    // __attached__:shell:<oldTermId> — the
+                                    // "regular terminal duplicates after
+                                    // reload" bug. The each-block remounts
+                                    // briefly (key change), but TerminalView's
+                                    // attach path reconnects via WS to the
+                                    // same termId without killing the PTY
+                                    // (daemon supports multiple subscribers).
+                                    // Claude/Codex don't get this swap: they
+                                    // use the activity-tail's resumeSessionId
+                                    // mechanism for reload continuity.
+                                    if (s.source.startsWith("__new__:shell:")) {
+                                      const attachedSource = `__attached__:shell:${e.detail.id}`;
+                                      promotedSources.add(s.source);
+                                      openSessionsByWt = {
+                                        ...openSessionsByWt,
+                                        [wt.path]: (
+                                          openSessionsByWt[wt.path] ?? []
+                                        ).map((x) =>
+                                          x.source === s.source
+                                            ? { ...x, source: attachedSource }
+                                            : x,
+                                        ),
+                                      };
+                                      // If the user already named this column during
+                                      // the brief "starting" phase before the PTY
+                                      // came up, migrate the title to the new source
+                                      // key so it survives the swap (otherwise the
+                                      // synthetic-source title gets orphaned and the
+                                      // header reverts to "Name this session…").
+                                      void migrateSessionTitleOnServer(
+                                        s.source,
+                                        attachedSource,
+                                      );
+                                    }
+                                  }}
+                                  on:awaitingChange={(e) => {
+                                    transientAwaiting = {
+                                      ...transientAwaiting,
+                                      [s.source]: e.detail.awaiting,
+                                    };
+                                  }}
+                                  on:workingChange={(e) => {
+                                    const wasWorking =
+                                      !!transientWorking[s.source];
+                                    const nowWorking = e.detail.working;
+                                    transientWorking = {
+                                      ...transientWorking,
+                                      [s.source]: nowWorking,
+                                    };
+                                    if (wasWorking && !nowWorking) {
+                                      const start = workingStartedAt[s.source];
+                                      const worked = start
+                                        ? Date.now() - start
+                                        : 0;
+                                      if (worked >= MIN_WORKING_FOR_PULSE_MS) {
+                                        scheduleFinished(s.source);
+                                      }
+                                      workingStartedAt[s.source] = undefined;
+                                    } else if (nowWorking && !wasWorking) {
+                                      workingStartedAt[s.source] = Date.now();
+                                      clearFinishedFor(s.source);
+                                    }
+                                  }}
+                                  on:exit={() => {
+                                    transientExited = {
+                                      ...transientExited,
+                                      [s.source]: true,
+                                    };
+                                    if (transientWorking[s.source]) {
+                                      transientWorking = {
+                                        ...transientWorking,
+                                        [s.source]: false,
+                                      };
+                                    }
+                                    workingStartedAt[s.source] = undefined;
+                                    clearFinishedFor(s.source);
+                                    if (transientAwaiting[s.source]) {
+                                      transientAwaiting = {
+                                        ...transientAwaiting,
+                                        [s.source]: false,
+                                      };
+                                    }
+                                  }}
+                                  on:sshBrowse={() => {
+                                    const termId = resolveTermIdFromSource(
+                                      s.source,
+                                      newTermIds,
+                                    );
+                                    if (termId)
+                                      openRemoteBrowser(wt.path, termId, "");
+                                  }}
+                                  on:sshCwd={(e) => {
+                                    const termId = resolveTermIdFromSource(
+                                      s.source,
+                                      newTermIds,
+                                    );
+                                    if (termId)
+                                      sshCwdByTermId = {
+                                        ...sshCwdByTermId,
+                                        [termId]: e.detail.cwd,
+                                      };
+                                  }}
+                                  on:titleSave={(e) =>
+                                    void saveNewSessionTitle(
+                                      titleSource,
+                                      e.detail.title,
+                                    )}
+                                  on:titleEditingChange={(e) => {
+                                    if (e.detail.editing) {
+                                      editingTitleSources.add(s.source);
+                                    } else {
+                                      editingTitleSources.delete(s.source);
+                                      flushDeferredPromotions(s.source);
+                                    }
+                                  }}
+                                  onDragStart={(e) =>
+                                    handleSessionDragStart(e, wt.path, i)}
+                                />
+                              {/key}
+                            {:else}
+                              {@const agentMeta = (wt.agents ?? []).find(
+                                (a) => a.source === s.source,
+                              )}
+                              {#key claudeColGen[s.source] ?? 0}
+                                <SessionView
+                                  agent={s.agent as
+                                    | "claude"
+                                    | "codex"
+                                    | "copilot"}
+                                  source={s.source}
+                                  wtPath={wt.path}
+                                  totalMessageCount={agentMeta?.messageCount}
+                                  contextTokens={agentMeta?.contextTokens}
+                                  contextTokensExact={agentMeta?.contextTokensExact}
+                                  contextWindow={agentMeta?.contextWindow}
+                                  model={agentMeta?.model}
+                                  claudeModel={s.claudeModel}
+                                  claudeEffort={s.claudeEffort}
+                                  onSetClaudeModel={(m) =>
+                                    setClaudeSessionFlag(wt.path, s.source, {
+                                      claudeModel: m,
+                                    })}
+                                  onSetClaudeEffort={(e) =>
+                                    setClaudeSessionFlag(wt.path, s.source, {
+                                      claudeEffort: e,
+                                    })}
+                                  attachTermId={(s as any).attachTermId}
+                                  initialMode={s.mode === "terminal"
+                                    ? "terminal"
+                                    : "read"}
+                                  onModeChange={(m) => {
+                                    // Persist so a reload restores the same view —
+                                    // otherwise a user who clicked "Resume in
+                                    // terminal" before refreshing lands back in
+                                    // history view.
+                                    const next = setSessionMode(
+                                      openSessionsByWt,
+                                      wt.path,
+                                      s.source,
+                                      m,
+                                    );
+                                    if (next !== openSessionsByWt)
+                                      openSessionsByWt = next;
+                                  }}
+                                  onWorkingChange={(w) => {
+                                    const wasWorking =
+                                      !!transientWorking[s.source];
+                                    transientWorking = {
+                                      ...transientWorking,
+                                      [s.source]: w,
+                                    };
+                                    if (wasWorking && !w) {
+                                      const start = workingStartedAt[s.source];
+                                      const worked = start
+                                        ? Date.now() - start
+                                        : 0;
+                                      if (worked >= MIN_WORKING_FOR_PULSE_MS) {
+                                        scheduleFinished(s.source);
+                                      }
+                                      workingStartedAt[s.source] = undefined;
+                                    } else if (w && !wasWorking) {
+                                      workingStartedAt[s.source] = Date.now();
+                                      clearFinishedFor(s.source);
+                                    }
+                                  }}
+                                  onAwaitingChange={(a) => {
+                                    transientAwaiting = {
+                                      ...transientAwaiting,
+                                      [s.source]: a,
+                                    };
+                                  }}
+                                  starred={starredSessions.has(s.source)}
+                                  onToggleStar={() =>
+                                    toggleStarSession(s.source)}
+                                  onContinueWith={(targetAgent, ollamaModel) =>
+                                    void continueSessionWith(
+                                      wt.path,
+                                      s.source,
+                                      targetAgent,
+                                      ollamaModel,
+                                    )}
+                                  onClose={() => closeSessionInWt(wt.path, s)}
+                                  onDragStart={(e) =>
+                                    handleSessionDragStart(e, wt.path, i)}
+                                  onTitleChange={() => void load()}
+                                />
+                              {/key}
+                            {/if}
+                          </div>
+                        {/each}
+                        {#if stripFilter && stripFilter.notOpen.length > 0}
+                          <!-- Synthetic column: matches that exist for this
                            worktree but aren't currently mounted in the
                            strip. Click a row → reveal it as a real
                            column (the row vanishes from this list
                            because the matched-but-open partition flips).
                            Lives inside the same flex strip so it scrolls
                            with everything else. -->
-                      <div class="session-col session-col-extra">
-                        <div class="session-col-extra-head">
-                          {stripFilter.notOpen.length} match{stripFilter.notOpen.length === 1 ? "" : "es"} not in strip
-                        </div>
-                        <ul class="session-col-extra-list">
-                          {#each stripFilter.notOpen as extra (extra.source)}
-                            <li>
-                              <button
-                                class="session-col-extra-row brand-{extra.agent}"
-                                title={sessionTooltip(extra)}
-                                on:click={() => {
-                                  pinRowOpenAfterPick(row.key);
-                                  // Picking from the synthetic list is a
-                                  // definitive selection — exit filter
-                                  // mode in the same gesture so the strip
-                                  // returns to its full view with the
-                                  // just-revealed column centered. Without
-                                  // this the user has to click the search
-                                  // ×/Esc to leave the filtered state.
-                                  stripSearchOpen = {
-                                    ...stripSearchOpen,
-                                    [wt.path]: false,
-                                  };
-                                  stripSearchQuery = {
-                                    ...stripSearchQuery,
-                                    [wt.path]: "",
-                                  };
-                                  // Use `revealSession` (mode "reveal") so
-                                  // the just-mounted column gets the
-                                  // outline-flash cue — same affordance the
-                                  // header-bar "most recent session" badge
-                                  // uses. `revealOrToggleSession` would
-                                  // skip the flash on an already-expanded
-                                  // row, which is wrong here: the column
-                                  // is new on screen and the user needs to
-                                  // find it.
-                                  revealSession(row.key, wt.path, {
-                                    agent: extra.agent,
-                                    source: extra.source,
-                                  });
-                                }}
-                              >
-                                {#if extra.agent === "claude"}
-                                  <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                                {:else}
-                                  <span class="agent-dot agent-{extra.agent}"></span>
-                                {/if}
-                                <span class="session-col-extra-title">
-                                  {extra.manualTitle ?? extra.title ?? "(no title)"}
-                                </span>
-                                <span class="session-col-extra-meta">{relTime(extra.lastActive)}</span>
-                              </button>
-                            </li>
-                          {/each}
-                        </ul>
+                          <div class="session-col session-col-extra">
+                            <div class="session-col-extra-head">
+                              {stripFilter.notOpen.length} match{stripFilter
+                                .notOpen.length === 1
+                                ? ""
+                                : "es"} not in strip
+                            </div>
+                            <ul class="session-col-extra-list">
+                              {#each stripFilter.notOpen as extra (extra.source)}
+                                <li>
+                                  <button
+                                    class="session-col-extra-row brand-{extra.agent}"
+                                    title={sessionTooltip(extra)}
+                                    on:click={() => {
+                                      pinRowOpenAfterPick(row.key);
+                                      // Picking from the synthetic list is a
+                                      // definitive selection — exit filter
+                                      // mode in the same gesture so the strip
+                                      // returns to its full view with the
+                                      // just-revealed column centered. Without
+                                      // this the user has to click the search
+                                      // ×/Esc to leave the filtered state.
+                                      stripSearchOpen = {
+                                        ...stripSearchOpen,
+                                        [wt.path]: false,
+                                      };
+                                      stripSearchQuery = {
+                                        ...stripSearchQuery,
+                                        [wt.path]: "",
+                                      };
+                                      // Use `revealSession` (mode "reveal") so
+                                      // the just-mounted column gets the
+                                      // outline-flash cue — same affordance the
+                                      // header-bar "most recent session" badge
+                                      // uses. `revealOrToggleSession` would
+                                      // skip the flash on an already-expanded
+                                      // row, which is wrong here: the column
+                                      // is new on screen and the user needs to
+                                      // find it.
+                                      revealSession(row.key, wt.path, {
+                                        agent: extra.agent,
+                                        source: extra.source,
+                                      });
+                                    }}
+                                  >
+                                    {#if extra.agent === "claude"}
+                                      <img
+                                        class="agent-row-icon"
+                                        src="/agents/claude.svg"
+                                        alt=""
+                                      />
+                                    {:else}
+                                      <span
+                                        class="agent-dot agent-{extra.agent}"
+                                      ></span>
+                                    {/if}
+                                    <span class="session-col-extra-title">
+                                      {extra.manualTitle ??
+                                        extra.title ??
+                                        "(no title)"}
+                                    </span>
+                                    <span class="session-col-extra-meta"
+                                      >{relTime(extra.lastActive)}</span
+                                    >
+                                  </button>
+                                </li>
+                              {/each}
+                            </ul>
+                          </div>
+                        {/if}
+                        <span class="sessions-strip-pad" aria-hidden="true"
+                        ></span>
                       </div>
                     {/if}
-                    <span class="sessions-strip-pad" aria-hidden="true"></span>
-                  </div>
+                  {/if}
+
+                  <!-- Source-control foldout removed — git history now lives
+                   in a session column (GitHistory.svelte). -->
                 {/if}
               {/if}
-
-              <!-- Source-control foldout removed — git history now lives
-                   in a session column (GitHistory.svelte). -->
-            {/if}
-          {/if}
-          </div>
+            </div>
           </div>
         </li>
       {/each}
@@ -7868,7 +8904,9 @@
               stroke-linejoin="round"
               aria-hidden="true"
             >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              <path
+                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+              />
               <path d="M12 11v6" />
               <path d="M9 14h6" />
             </svg>
@@ -7916,7 +8954,9 @@
                     on:keydown|stopPropagation
                   />
                   {#if importQuery.trim()}
-                    <span class="import-search-count">{importFiltered.length}/{importSuggestions.length}</span>
+                    <span class="import-search-count"
+                      >{importFiltered.length}/{importSuggestions.length}</span
+                    >
                   {/if}
                 </div>
               </svelte:fragment>
@@ -7951,24 +8991,35 @@
                       >
                         <span class="import-row-main">
                           {#if busy}
-                            <span class="import-row-name"><LoadingSpinner size="0.75rem" /> Importing…</span>
+                            <span class="import-row-name"
+                              ><LoadingSpinner size="0.75rem" /> Importing…</span
+                            >
                           {:else}
                             <span class="import-row-name">{sug.name}</span>
                           {/if}
-                          <span class="import-row-path muted small">{sug.path}</span>
+                          <span class="import-row-path muted small"
+                            >{sug.path}</span
+                          >
                           {#if sug.repoUrl}
-                            <span class="import-row-url muted small">{sug.repoUrl}</span>
+                            <span class="import-row-url muted small"
+                              >{sug.repoUrl}</span
+                            >
                           {/if}
                         </span>
                         <span class="import-row-meta">
                           <span class="import-row-count">
-                            <span class="import-row-agents-icons" aria-hidden="true">
+                            <span
+                              class="import-row-agents-icons"
+                              aria-hidden="true"
+                            >
                               {#each sug.agents as agent (agent)}
                                 <AgentIcon {agent} size={14} />
                               {/each}
                             </span>
                             <span>
-                              {sug.sessionCount} session{sug.sessionCount === 1 ? "" : "s"}
+                              {sug.sessionCount} session{sug.sessionCount === 1
+                                ? ""
+                                : "s"}
                             </span>
                           </span>
                           <span class="import-row-time muted small">
@@ -8025,7 +9076,7 @@
 <RepairSessionDialog />
 <RepoReorderDialog
   bind:open={reorderDialogOpen}
-  repos={repos}
+  {repos}
   onReorder={reorderRepos}
   defaultColor={defaultChipHex}
   highlightId={reorderHighlightRepoId}
@@ -8052,8 +9103,8 @@
       <p class="modal-body">
         Switching to <code>{dirtyCheckout.branch}</code> in
         <code class="muted small">{dirtyCheckout.wtPath}</code>
-        is blocked because the worktree is dirty. How would you like to handle
-        your local changes?
+        is blocked because the worktree is dirty. How would you like to handle your
+        local changes?
       </p>
       <p class="modal-meta muted small">
         {dirtyCheckout.message}
@@ -8064,13 +9115,23 @@
           on:click={() => resolveDirty("stash")}
         >
           Stash &amp; switch
-          <span class="modal-hint">git stash push (recoverable with stash pop)</span>
+          <span class="modal-hint"
+            >git stash push (recoverable with stash pop)</span
+          >
         </button>
-        <button class="modal-action modal-action-danger" on:click={() => resolveDirty("force")}>
+        <button
+          class="modal-action modal-action-danger"
+          on:click={() => resolveDirty("force")}
+        >
           Force &amp; switch
-          <span class="modal-hint">discards uncommitted changes — cannot be undone</span>
+          <span class="modal-hint"
+            >discards uncommitted changes — cannot be undone</span
+          >
         </button>
-        <button class="modal-action modal-action-neutral" on:click={() => resolveDirty("cancel")}>
+        <button
+          class="modal-action modal-action-neutral"
+          on:click={() => resolveDirty("cancel")}
+        >
           Cancel
         </button>
       </div>
@@ -8097,8 +9158,8 @@
       <p class="modal-body">
         Fast-forwarding
         <code class="muted small">{dirtyPull.wtPath}</code>
-        is blocked because your local edits overlap the incoming commits.
-        How would you like to handle your local changes?
+        is blocked because your local edits overlap the incoming commits. How would
+        you like to handle your local changes?
       </p>
       <p class="modal-meta muted small">
         {dirtyPull.message}
@@ -8109,9 +9170,14 @@
           on:click={() => resolveDirtyPull("stash")}
         >
           Stash &amp; pull
-          <span class="modal-hint">git stash push (recoverable with stash pop)</span>
+          <span class="modal-hint"
+            >git stash push (recoverable with stash pop)</span
+          >
         </button>
-        <button class="modal-action modal-action-neutral" on:click={() => resolveDirtyPull("cancel")}>
+        <button
+          class="modal-action modal-action-neutral"
+          on:click={() => resolveDirtyPull("cancel")}
+        >
           Cancel
         </button>
       </div>
@@ -8134,7 +9200,12 @@
         <div
           class="toast-body"
           class:toast-body-stacked={!!t.title}
-          on:click={t.onClick ? () => { t.onClick?.(); dismissToast(t.id); } : undefined}
+          on:click={t.onClick
+            ? () => {
+                t.onClick?.();
+                dismissToast(t.id);
+              }
+            : undefined}
         >
           {#if t.title}<strong class="toast-title">{t.title}</strong>{/if}
           <span class="toast-message">{t.message}</span>
@@ -8142,8 +9213,8 @@
         <button
           class="toast-close"
           on:click={() => dismissToast(t.id)}
-          aria-label="Dismiss"
-        >×</button>
+          aria-label="Dismiss">×</button
+        >
       </div>
     {/each}
   </div>

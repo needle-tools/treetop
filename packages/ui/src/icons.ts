@@ -77,10 +77,7 @@ export const ICONS: Record<string, IconDef> = {
   },
   gitea: {
     brand: "#609926",
-    paths: [
-      "M5 5h10v8a5 5 0 0 1-10 0z",
-      "M15 7h3a2 2 0 0 1 0 4h-3",
-    ],
+    paths: ["M5 5h10v8a5 5 0 0 1-10 0z", "M15 7h3a2 2 0 0 1 0 4h-3"],
   },
   // Fallback when the host doesn't map to a known provider. Generic git
   // branch glyph. Git-the-tool brand red works on the dark UI.
@@ -244,16 +241,10 @@ export const ICONS: Record<string, IconDef> = {
 
   // ---- UI chrome -------------------------------------------------------
   pin: {
-    paths: [
-      "M9 4v6l-2 4v2h10v-2l-2-4V4",
-      "M12 16v5",
-      "M8 4h8",
-    ],
+    paths: ["M9 4v6l-2 4v2h10v-2l-2-4V4", "M12 16v5", "M8 4h8"],
   },
   emoji: {
-    paths: [
-      "M8 14s1.5 2 4 2 4-2 4-2",
-    ],
+    paths: ["M8 14s1.5 2 4 2 4-2 4-2"],
     circles: [
       { cx: 12, cy: 12, r: 10 },
       { cx: 9, cy: 9, r: 1 },
@@ -268,11 +259,7 @@ export const ICONS: Record<string, IconDef> = {
   },
   // Lucide "monitor" — used as the SSH active indicator in the shell pill.
   monitor: {
-    paths: [
-      "M2 3h20v14H2z",
-      "M8 21h8",
-      "M12 17v4",
-    ],
+    paths: ["M2 3h20v14H2z", "M8 21h8", "M12 17v4"],
   },
 };
 

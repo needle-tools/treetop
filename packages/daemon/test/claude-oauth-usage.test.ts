@@ -81,7 +81,9 @@ describe("decodeUsage", () => {
       five_hour: { utilization: 10, resets_at: 1748311200 },
     };
     const out = _internal.decodeUsage(raw)!;
-    expect(out.fiveHour?.resetsAt).toBe(new Date(1748311200 * 1000).toISOString());
+    expect(out.fiveHour?.resetsAt).toBe(
+      new Date(1748311200 * 1000).toISOString(),
+    );
   });
 
   test("resets_at as bare ISO string without Z gets UTC suffix", () => {
@@ -150,8 +152,7 @@ describe("fetchClaudeOAuthUsage — injected fetcher", () => {
   });
 
   test("401 returns kind=unauthorized", async () => {
-    const fetcher = async () =>
-      new Response("nope", { status: 401 });
+    const fetcher = async () => new Response("nope", { status: 401 });
     const result = await fetchClaudeOAuthUsage({ fetcher });
     if (result.error?.kind === "no-credentials") return;
     expect(result.usage).toBeNull();
@@ -168,8 +169,7 @@ describe("fetchClaudeOAuthUsage — injected fetcher", () => {
   });
 
   test("non-200/401 status surfaces as kind=server with body excerpt", async () => {
-    const fetcher = async () =>
-      new Response("boom", { status: 503 });
+    const fetcher = async () => new Response("boom", { status: 503 });
     const result = await fetchClaudeOAuthUsage({ fetcher });
     if (result.error?.kind === "no-credentials") return;
     expect(result.error?.kind).toBe("server");

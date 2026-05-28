@@ -47,9 +47,15 @@ const PATTERNS: Pattern[] = [
   // Google
   { kind: "google_api_key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   // Stripe
-  { kind: "stripe_secret_key", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
+  {
+    kind: "stripe_secret_key",
+    re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g,
+  },
   // JWT (three base64url segments)
-  { kind: "jwt", re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  {
+    kind: "jwt",
+    re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  },
   // PEM private key (multi-line — single regex with [\s\S])
   {
     kind: "private_key_block",

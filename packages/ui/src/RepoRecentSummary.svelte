@@ -74,7 +74,9 @@
 
   async function fetchCached(): Promise<GetResponse | null> {
     try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summary`);
+      const res = await fetch(
+        `/api/repos/${encodeURIComponent(repoId)}/summary`,
+      );
       if (!res.ok) return null;
       return (await res.json()) as GetResponse;
     } catch {
@@ -198,12 +200,15 @@
     try {
       let res: Response;
       try {
-        res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/summarize`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: pick }),
-          signal: aborter.signal,
-        });
+        res = await fetch(
+          `/api/repos/${encodeURIComponent(repoId)}/summarize`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: pick }),
+            signal: aborter.signal,
+          },
+        );
       } catch (e) {
         // Connect-time failure: the daemon refused the connection or
         // the SPA's tab is older than the current daemon. Either way
@@ -266,16 +271,20 @@
                 commitCount?: number;
                 dirtyWorktreeCount?: number;
               };
-              if (typeof m.sinceHours === "number") liveSinceHours = m.sinceHours;
-              if (typeof m.commitCount === "number") liveCommitCount = m.commitCount;
-              if (typeof m.dirtyWorktreeCount === "number") liveDirtyCount = m.dirtyWorktreeCount;
+              if (typeof m.sinceHours === "number")
+                liveSinceHours = m.sinceHours;
+              if (typeof m.commitCount === "number")
+                liveCommitCount = m.commitCount;
+              if (typeof m.dirtyWorktreeCount === "number")
+                liveDirtyCount = m.dirtyWorktreeCount;
             } catch {
               // ignore malformed meta
             }
           } else if (event === "prompt") {
             try {
               const p = JSON.parse(data) as { estimatedTokens?: number };
-              if (typeof p.estimatedTokens === "number") liveEstimatedTokens = p.estimatedTokens;
+              if (typeof p.estimatedTokens === "number")
+                liveEstimatedTokens = p.estimatedTokens;
             } catch {
               // ignore malformed prompt event
             }
@@ -450,12 +459,19 @@
       {:else if body}
         <Tooltip variant="wide" escapeClip>
           <span slot="trigger" class="inline-text"
-            >{#if frontmatter}{rangeLabel(frontmatter.sinceHours)}: {/if}{body}</span>
-          <div slot="content" class="tooltip-body"
-            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}
+            >{#if frontmatter}{rangeLabel(frontmatter.sinceHours)}:
+            {/if}{body}</span
+          >
+          <div slot="content" class="tooltip-body">
+            {#each splitBody(body) as part, i}{#if i > 0}<span class="sep"
+                  >–</span
+                >{/if}{part}{/each}
             {#if frontmatter}
               <div class="tooltip-meta">
-                {rangeLabel(frontmatter.sinceHours)} · {frontmatter.commitCount} commits · {frontmatter.model} · {relTimeFromIso(frontmatter.generatedAt)}
+                {rangeLabel(frontmatter.sinceHours)} · {frontmatter.commitCount} commits
+                · {frontmatter.model} · {relTimeFromIso(
+                  frontmatter.generatedAt,
+                )}
               </div>
             {/if}
           </div>
@@ -473,7 +489,17 @@
           }}
           aria-label="Re-summarise"
         >
-          <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="10"
+            height="10"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
             <polyline points="23 4 23 10 17 10" />
             <polyline points="1 20 1 14 7 14" />
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
@@ -491,7 +517,11 @@
     >
       {#if generating || queued}
         <span class="status">
-          <LoadingSpinner size="0.7rem" thickness="2px" label="Summarising recent activity" />
+          <LoadingSpinner
+            size="0.7rem"
+            thickness="2px"
+            label="Summarising recent activity"
+          />
           <span class="dim">
             {#if queued && !generating}
               queued…
@@ -507,13 +537,18 @@
                 <span class="sep">–</span>{rangeLabel(liveSinceHours)}
               {/if}
               {#if liveCommitCount != null}
-                <span class="sep">–</span>{liveCommitCount} commit{liveCommitCount === 1 ? "" : "s"}
+                <span class="sep">–</span>{liveCommitCount} commit{liveCommitCount ===
+                1
+                  ? ""
+                  : "s"}
               {/if}
               {#if liveDirtyCount != null && liveDirtyCount > 0}
                 <span class="sep">–</span>{liveDirtyCount} dirty
               {/if}
               {#if liveEstimatedTokens != null}
-                <span class="sep">–</span>context ~{fmtTokens(liveEstimatedTokens)} tok
+                <span class="sep">–</span>context ~{fmtTokens(
+                  liveEstimatedTokens,
+                )} tok
               {/if}
             </span>
           {/if}
@@ -530,14 +565,20 @@
               frontmatter.estimatedTokens
                 ? `context ~${fmtTokens(frontmatter.estimatedTokens)} tokens, took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`
                 : `took ${(frontmatter.elapsedMs / 1000).toFixed(1)}s`,
-            ].join(" · ")}
-          >{rangeLabel(frontmatter.sinceHours)}:</span>
+            ].join(" · ")}>{rangeLabel(frontmatter.sinceHours)}:</span
+          >
         {/if}
         <Tooltip variant="wide" escapeClip>
           <span slot="trigger" class="body"
-            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</span>
-          <div slot="content" class="tooltip-body"
-            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep">–</span>{/if}{part}{/each}</div>
+            >{#each splitBody(body) as part, i}{#if i > 0}<span class="sep"
+                  >–</span
+                >{/if}{part}{/each}</span
+          >
+          <div slot="content" class="tooltip-body">
+            {#each splitBody(body) as part, i}{#if i > 0}<span class="sep"
+                  >–</span
+                >{/if}{part}{/each}
+          </div>
         </Tooltip>
       {/if}
       {#if !generating && !queued && (body || errorMsg)}
@@ -664,7 +705,9 @@
     flex: 0 0 auto;
     font-size: 0.7rem;
   }
-  .dim { color: var(--text-muted); }
+  .dim {
+    color: var(--text-muted);
+  }
   /* Model name inside "summarising with …" — slightly brighter than
      the surrounding muted text so the eye picks it up, but still
      in the muted family so the status stays peripheral. */

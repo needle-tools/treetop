@@ -104,11 +104,12 @@
     !isHot &&
     (warmDebug ||
       procs.some(
-        (p) =>
-          p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT,
+        (p) => p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT,
       ));
 
-  $: visibleProcs = showExternal ? procs : procs.filter((p) => p.kind !== "external");
+  $: visibleProcs = showExternal
+    ? procs
+    : procs.filter((p) => p.kind !== "external");
   $: grouped = groupByRepo(visibleProcs);
 
   function groupByRepo(list: TuiProc[]): RepoGroup[] {
@@ -132,7 +133,8 @@
       group.procs.push({ ...p, ctx });
     }
     for (const repo of repos) {
-      const name = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+      const name =
+        repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
       if (!map.has(name)) {
         map.set(name, {
           repoName: name,
@@ -277,22 +279,32 @@
       for (const wt of repo.worktrees ?? []) {
         const match = p.cwd === wt.path || p.cwd.startsWith(wt.path + "/");
         if (!match) continue;
-        repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
+        repoName =
+          repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
         repoColor = repo.color ?? null;
         wtBranch = wt.branch ?? null;
         relCwd = p.cwd === wt.path ? null : p.cwd.slice(wt.path.length + 1);
         if (p.ownerId) {
           for (const a of wt.agents ?? []) {
             if (a.sessionId === p.ownerId) {
-              title = a.manualTitle ?? a.title ?? a.firstUserMessage ?? a.lastUserMessage ?? null;
+              title =
+                a.manualTitle ??
+                a.title ??
+                a.firstUserMessage ??
+                a.lastUserMessage ??
+                null;
               break;
             }
           }
         }
         break outer;
       }
-      if (!repoName && (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))) {
-        repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
+      if (
+        !repoName &&
+        (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))
+      ) {
+        repoName =
+          repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
         repoColor = repo.color ?? null;
         relCwd = p.cwd === repo.path ? null : p.cwd.slice(repo.path.length + 1);
       }
@@ -355,9 +367,17 @@
       <svelte:fragment slot="head">
         <span class="proc-head-row">
           <span>Processes</span>
-          <span class="popover-spinner" class:popover-spinner-hidden={!loading} aria-label="loading" title="refreshing"></span>
+          <span
+            class="popover-spinner"
+            class:popover-spinner-hidden={!loading}
+            aria-label="loading"
+            title="refreshing"
+          ></span>
           <span class="proc-head-spacer"></span>
-          <label class="proc-toggle" title="Show processes discovered in repo directories (not spawned by supergit)">
+          <label
+            class="proc-toggle"
+            title="Show processes discovered in repo directories (not spawned by supergit)"
+          >
             <input type="checkbox" bind:checked={showExternal} />
             Subprocesses
           </label>
@@ -375,102 +395,202 @@
                 class="proc-group-header"
                 on:click={() => toggleGroup(group.repoName)}
               >
-                <span class="proc-group-toggle">{collapsed[group.repoName] ? "▸" : "▾"}</span>
+                <span class="proc-group-toggle"
+                  >{collapsed[group.repoName] ? "▸" : "▾"}</span
+                >
                 <span
                   class="proc-group-name"
                   style={group.repoColor ? `color: ${group.repoColor}` : ""}
-                >{group.repoName}</span>
+                  >{group.repoName}</span
+                >
                 <span class="proc-group-count">{group.procs.length}</span>
                 <span class="proc-group-spacer"></span>
-                <span class="proc-group-stat">{group.totalCpu.toFixed(1)}%</span>
-                <span class="proc-group-stat">{formatBytes(group.totalMem)}</span>
+                <span class="proc-group-stat">{group.totalCpu.toFixed(1)}%</span
+                >
+                <span class="proc-group-stat"
+                  >{formatBytes(group.totalMem)}</span
+                >
               </button>
               {#if !collapsed[group.repoName]}
                 {#if group.procs.length === 0}
                   <p class="muted small proc-empty">No processes running</p>
                 {:else}
-                <ul class="agents-list">
-                  <li class="proc-col-header">
-                    <span></span>
-                    <span>Name</span>
-                    <span>Info</span>
-                    <span>CPU</span>
-                    <span>Mem</span>
-                    <span>Up</span>
-                    <span></span>
-                    <span></span>
-                  </li>
-                  {#each group.procs as p (p.id)}
-                    {@const ctx = p.ctx}
-                    {@const source = p.kind !== "external" ? procSource(p) : null}
-                    {@const isExternal = p.kind === "external"}
-                    {@const procWarm = p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT}
-                    {@const procHot = p.memBytes > hotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT}
-                    <li>
-                      <div
-                        class="agent-row tui-row-static"
-                        class:proc-warm={procWarm && !procHot}
-                        class:proc-hot={procHot}
-                        class:tui-row-focusable={source !== null}
-                        role={source !== null ? "button" : undefined}
-                        tabindex={source !== null ? 0 : -1}
-                        on:click={() => { if (!isExternal) void focusProc(p); }}
-                        on:keydown={(e) => {
-                          if (source !== null && (e.key === "Enter" || e.key === " ")) {
-                            e.preventDefault();
-                            void focusProc(p);
-                          }
-                        }}
-                        title={isExternal
-                          ? `pid ${p.pid} — ${p.cmd.join(" ")}\n${p.cwd}`
-                          : source !== null
-                            ? "Click to jump to this session in its worktree strip"
-                            : undefined}
-                      >
-                        {#if p.agent === "claude"}
-                          <img class="agent-row-icon" src="/agents/claude.svg" alt="" />
-                        {:else if p.agent === "codex"}
-                          <img class="agent-row-icon" src="/agents/codex.svg" alt="" />
-                        {:else if p.agent === "ollama"}
-                          <img class="agent-row-icon" src="/agents/ollama.svg" alt="" />
-                        {:else}
-                          <svg class="agent-row-icon proc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M4 17l5-5-5-5" /><path d="M11 19h8" />
-                          </svg>
-                        {/if}
-                        <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyName(p)}</span>
-                        <span class="tui-inline-title" title={`${ctx.title ?? p.cmd.join(" ")}\n${p.cwd}`}>
-                          {#if ctx.title}{ctx.title}{:else}{p.cmd.join(" ")}{/if}
-                          {#if ctx.relCwd}<span class="tui-inline-cwd">· {ctx.relCwd}</span>{/if}
-                        </span>
-                        <span
-                          class="tui-stat tui-cpu"
-                          title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
-                        >{p.cpuPercent.toFixed(1)}%</span>
-                        <span class="tui-stat tui-mem">{formatBytes(p.memBytes)}</span>
-                        {#if p.createdAt}
-                          <span class="tui-stat tui-uptime">{formatUptime(p.createdAt)}</span>
-                        {/if}
-                        {#if !isExternal && p.lastOutputAt && isIdle(p)}
-                          <span class="tui-stat tui-idle">idle {formatUptime(p.lastOutputAt)}</span>
-                        {/if}
-                        <button
-                          class="row-close tui-kill-x"
-                          class:tui-kill-closing={closing[p.id]}
-                          class:tui-kill-pending={pendingKill[p.id]}
-                          on:click|stopPropagation={() => closeProc(p)}
-                          on:dblclick|stopPropagation={() => forceKillProc(p)}
-                          title={pendingKill[p.id]
-                            ? "Process didn't exit — click to force kill (SIGKILL)"
-                            : closing[p.id]
-                              ? "Closing… waiting for process to exit"
-                              : "Close process (SIGTERM). Double-click to force kill."}
-                          aria-label={pendingKill[p.id] ? "Force kill" : closing[p.id] ? "Closing" : "Close process"}
-                        >{#if closing[p.id]}<svg class="kill-spinner" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="28" stroke-dashoffset="8" /></svg>{:else if pendingKill[p.id]}<svg class="kill-skull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="7" /><circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none" /><circle cx="15" cy="9" r="1.2" fill="currentColor" stroke="none" /><path d="M9.5 14.5 L12 13 L14.5 14.5" /><path d="M9 17v3" /><path d="M12 17v3" /><path d="M15 17v3" /></svg>{:else}×{/if}</button>
-                      </div>
+                  <ul class="agents-list">
+                    <li class="proc-col-header">
+                      <span></span>
+                      <span>Name</span>
+                      <span>Info</span>
+                      <span>CPU</span>
+                      <span>Mem</span>
+                      <span>Up</span>
+                      <span></span>
+                      <span></span>
                     </li>
-                  {/each}
-                </ul>
+                    {#each group.procs as p (p.id)}
+                      {@const ctx = p.ctx}
+                      {@const source =
+                        p.kind !== "external" ? procSource(p) : null}
+                      {@const isExternal = p.kind === "external"}
+                      {@const procWarm =
+                        p.memBytes > warmMemBytes ||
+                        p.cpuPercent > TUI_WARM_CPU_PERCENT}
+                      {@const procHot =
+                        p.memBytes > hotMemBytes ||
+                        p.cpuPercent > TUI_HOT_CPU_PERCENT}
+                      <li>
+                        <div
+                          class="agent-row tui-row-static"
+                          class:proc-warm={procWarm && !procHot}
+                          class:proc-hot={procHot}
+                          class:tui-row-focusable={source !== null}
+                          role={source !== null ? "button" : undefined}
+                          tabindex={source !== null ? 0 : -1}
+                          on:click={() => {
+                            if (!isExternal) void focusProc(p);
+                          }}
+                          on:keydown={(e) => {
+                            if (
+                              source !== null &&
+                              (e.key === "Enter" || e.key === " ")
+                            ) {
+                              e.preventDefault();
+                              void focusProc(p);
+                            }
+                          }}
+                          title={isExternal
+                            ? `pid ${p.pid} — ${p.cmd.join(" ")}\n${p.cwd}`
+                            : source !== null
+                              ? "Click to jump to this session in its worktree strip"
+                              : undefined}
+                        >
+                          {#if p.agent === "claude"}
+                            <img
+                              class="agent-row-icon"
+                              src="/agents/claude.svg"
+                              alt=""
+                            />
+                          {:else if p.agent === "codex"}
+                            <img
+                              class="agent-row-icon"
+                              src="/agents/codex.svg"
+                              alt=""
+                            />
+                          {:else if p.agent === "ollama"}
+                            <img
+                              class="agent-row-icon"
+                              src="/agents/ollama.svg"
+                              alt=""
+                            />
+                          {:else}
+                            <svg
+                              class="agent-row-icon proc-icon"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M4 17l5-5-5-5" /><path d="M11 19h8" />
+                            </svg>
+                          {/if}
+                          <span class="agent-row-name"
+                            >{isExternal
+                              ? (p.comm ?? p.cmd[0] ?? "process")
+                              : prettyName(p)}</span
+                          >
+                          <span
+                            class="tui-inline-title"
+                            title={`${ctx.title ?? p.cmd.join(" ")}\n${p.cwd}`}
+                          >
+                            {#if ctx.title}{ctx.title}{:else}{p.cmd.join(
+                                " ",
+                              )}{/if}
+                            {#if ctx.relCwd}<span class="tui-inline-cwd"
+                                >· {ctx.relCwd}</span
+                              >{/if}
+                          </span>
+                          <span
+                            class="tui-stat tui-cpu"
+                            title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
+                            >{p.cpuPercent.toFixed(1)}%</span
+                          >
+                          <span class="tui-stat tui-mem"
+                            >{formatBytes(p.memBytes)}</span
+                          >
+                          {#if p.createdAt}
+                            <span class="tui-stat tui-uptime"
+                              >{formatUptime(p.createdAt)}</span
+                            >
+                          {/if}
+                          {#if !isExternal && p.lastOutputAt && isIdle(p)}
+                            <span class="tui-stat tui-idle"
+                              >idle {formatUptime(p.lastOutputAt)}</span
+                            >
+                          {/if}
+                          <button
+                            class="row-close tui-kill-x"
+                            class:tui-kill-closing={closing[p.id]}
+                            class:tui-kill-pending={pendingKill[p.id]}
+                            on:click|stopPropagation={() => closeProc(p)}
+                            on:dblclick|stopPropagation={() => forceKillProc(p)}
+                            title={pendingKill[p.id]
+                              ? "Process didn't exit — click to force kill (SIGKILL)"
+                              : closing[p.id]
+                                ? "Closing… waiting for process to exit"
+                                : "Close process (SIGTERM). Double-click to force kill."}
+                            aria-label={pendingKill[p.id]
+                              ? "Force kill"
+                              : closing[p.id]
+                                ? "Closing"
+                                : "Close process"}
+                            >{#if closing[p.id]}<svg
+                                class="kill-spinner"
+                                viewBox="0 0 16 16"
+                                aria-hidden="true"
+                                ><circle
+                                  cx="8"
+                                  cy="8"
+                                  r="6"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="1.5"
+                                  stroke-dasharray="28"
+                                  stroke-dashoffset="8"
+                                /></svg
+                              >{:else if pendingKill[p.id]}<svg
+                                class="kill-skull"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                                ><circle cx="12" cy="10" r="7" /><circle
+                                  cx="9"
+                                  cy="9"
+                                  r="1.2"
+                                  fill="currentColor"
+                                  stroke="none"
+                                /><circle
+                                  cx="15"
+                                  cy="9"
+                                  r="1.2"
+                                  fill="currentColor"
+                                  stroke="none"
+                                /><path d="M9.5 14.5 L12 13 L14.5 14.5" /><path
+                                  d="M9 17v3"
+                                /><path d="M12 17v3" /><path
+                                  d="M15 17v3"
+                                /></svg
+                              >{:else}×{/if}</button
+                          >
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
                 {/if}
               {/if}
             </div>

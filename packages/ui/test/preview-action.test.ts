@@ -14,14 +14,20 @@ import {
  * tests, both for privacy and so the assertions don't drift if the
  * real-world data changes.
  */
-function userMsg(text: string, opts: { timestamp?: string } = {}): PreviewActionMessage {
+function userMsg(
+  text: string,
+  opts: { timestamp?: string } = {},
+): PreviewActionMessage {
   return {
     role: "user",
     timestamp: opts.timestamp,
     blocks: [{ type: "text", text }],
   };
 }
-function aiText(text: string, opts: { timestamp?: string } = {}): PreviewActionMessage {
+function aiText(
+  text: string,
+  opts: { timestamp?: string } = {},
+): PreviewActionMessage {
   return {
     role: "assistant",
     timestamp: opts.timestamp,
@@ -60,7 +66,9 @@ describe("summarizeToolInput", () => {
 
   test("falls through to path / command / pattern in priority order", () => {
     // path beats command (it's earlier in the allowlist)
-    expect(summarizeToolInput({ path: "/tmp/x", command: "ls" })).toBe("/tmp/x");
+    expect(summarizeToolInput({ path: "/tmp/x", command: "ls" })).toBe(
+      "/tmp/x",
+    );
     expect(summarizeToolInput({ command: "git status" })).toBe("git status");
     expect(summarizeToolInput({ pattern: "*.svelte" })).toBe("*.svelte");
     expect(summarizeToolInput({ url: "https://example.com" })).toBe(
@@ -92,7 +100,9 @@ describe("summarizeToolInput", () => {
 describe("extractLatestAction", () => {
   test("returns null for empty / non-array input", () => {
     expect(extractLatestAction([])).toBeNull();
-    expect(extractLatestAction(undefined as unknown as PreviewActionMessage[])).toBeNull();
+    expect(
+      extractLatestAction(undefined as unknown as PreviewActionMessage[]),
+    ).toBeNull();
   });
 
   test("returns null when there are no tool_use blocks", () => {
@@ -110,7 +120,9 @@ describe("extractLatestAction", () => {
     const msgs: PreviewActionMessage[] = [
       {
         role: "user",
-        blocks: [{ type: "tool_use", toolName: "Edit", toolInput: { file_path: "x" } }],
+        blocks: [
+          { type: "tool_use", toolName: "Edit", toolInput: { file_path: "x" } },
+        ],
       },
     ];
     expect(extractLatestAction(msgs)).toBeNull();
@@ -131,7 +143,11 @@ describe("extractLatestAction", () => {
       {
         role: "assistant",
         blocks: [
-          { type: "tool_use", toolName: "Read", toolInput: { file_path: "a.ts" } },
+          {
+            type: "tool_use",
+            toolName: "Read",
+            toolInput: { file_path: "a.ts" },
+          },
         ],
       },
       { role: "user", blocks: [{ type: "text" }] },
@@ -139,7 +155,11 @@ describe("extractLatestAction", () => {
         role: "assistant",
         blocks: [
           { type: "text" },
-          { type: "tool_use", toolName: "Edit", toolInput: { file_path: "b.ts" } },
+          {
+            type: "tool_use",
+            toolName: "Edit",
+            toolInput: { file_path: "b.ts" },
+          },
         ],
       },
     ];
@@ -158,7 +178,11 @@ describe("extractLatestAction", () => {
       {
         role: "assistant",
         blocks: [
-          { type: "tool_use", toolName: "Read", toolInput: { file_path: "a.ts" } },
+          {
+            type: "tool_use",
+            toolName: "Read",
+            toolInput: { file_path: "a.ts" },
+          },
           { type: "tool_use", toolName: "Bash", toolInput: { command: "ls" } },
         ],
       },
@@ -188,7 +212,13 @@ describe("extractLatestAction", () => {
     const msgs: PreviewActionMessage[] = [
       {
         role: "assistant",
-        blocks: [{ type: "tool_use", toolName: "Edit", toolInput: { file_path: "x.ts" } }],
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "Edit",
+            toolInput: { file_path: "x.ts" },
+          },
+        ],
       },
       { role: "assistant" },
       { role: "assistant", blocks: [{ type: "text" }] },
@@ -204,7 +234,9 @@ describe("extractLatestAction", () => {
 describe("buildPreviewItems", () => {
   test("empty / non-array input → empty list (no preview)", () => {
     expect(buildPreviewItems([])).toEqual([]);
-    expect(buildPreviewItems(undefined as unknown as PreviewActionMessage[])).toEqual([]);
+    expect(
+      buildPreviewItems(undefined as unknown as PreviewActionMessage[]),
+    ).toEqual([]);
   });
 
   test("typical conversation: user → AI text → user → AI text", () => {
@@ -221,7 +253,13 @@ describe("buildPreviewItems", () => {
     expect(items).toEqual([
       // r1 precedes the latest user message (q2) → tagged `older`
       // so the preview renders it dimmed as background context.
-      { kind: "msg", role: "assistant", text: "r1", timestamp: undefined, older: true },
+      {
+        kind: "msg",
+        role: "assistant",
+        text: "r1",
+        timestamp: undefined,
+        older: true,
+      },
       { kind: "msg", role: "user", text: "q2", timestamp: undefined },
       // r2 lands after the latest user message — the current reply,
       // shown at full contrast.
@@ -354,9 +392,17 @@ describe("buildPreviewItems", () => {
     const items = buildPreviewItems([
       aiMixed([
         { type: "text", text: "starting" },
-        { type: "tool_use", toolName: "Read", toolInput: { file_path: "a.ts" } },
+        {
+          type: "tool_use",
+          toolName: "Read",
+          toolInput: { file_path: "a.ts" },
+        },
         { type: "text", text: "ok found it" },
-        { type: "tool_use", toolName: "Edit", toolInput: { file_path: "a.ts" } },
+        {
+          type: "tool_use",
+          toolName: "Edit",
+          toolInput: { file_path: "a.ts" },
+        },
         { type: "text", text: "done" },
       ]),
     ]);
@@ -381,7 +427,12 @@ describe("buildPreviewItems", () => {
       ]),
     ]);
     expect(items).toEqual([
-      { kind: "msg", role: "assistant", text: "first second third", timestamp: undefined },
+      {
+        kind: "msg",
+        role: "assistant",
+        text: "first second third",
+        timestamp: undefined,
+      },
     ]);
   });
 
@@ -457,7 +508,11 @@ describe("buildPreviewItems", () => {
     const items = buildPreviewItems([
       userMsg("apply the change"),
       aiMixed([
-        { type: "tool_use", toolName: "Read", toolInput: { file_path: "x.ts" } },
+        {
+          type: "tool_use",
+          toolName: "Read",
+          toolInput: { file_path: "x.ts" },
+        },
         { type: "text", text: "found the spot" },
         {
           type: "tool_use",
@@ -538,7 +593,13 @@ describe("buildPreviewItems", () => {
       { role: "user", blocks: [{ type: "text", text: "please refactor X" }] },
       {
         role: "assistant",
-        blocks: [{ type: "tool_use", toolName: "Read", toolInput: { file_path: "x.ts" } }],
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "Read",
+            toolInput: { file_path: "x.ts" },
+          },
+        ],
       },
       {
         role: "user",
