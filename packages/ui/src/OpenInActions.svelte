@@ -66,6 +66,8 @@
   import { openUrl } from "./open-url";
   import { filterNpmSuggestions, npmScriptsPlaceholder } from "./npm-suggestions";
   import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
+  import { CommandUrlPickStore } from "./storage";
+  import { getDaemonKV } from "./daemon-kv";
 
   export let path: string;
   export let repoId: string = "";
@@ -259,7 +261,15 @@
    *  time — opening one closes any other. Anchor refs live in a map
    *  so the outside-click handler can scope its `contains()` check to
    *  the active editor without touching the other chips' wraps. */
-  let cmdUrlOverride: Record<string, string> = {};
+  /** Which detected URL the user pinned to each command link's open
+   *  button. Seeded from daemon prefs so the pick survives daemon runs
+   *  and the terminal session that surfaced the URLs being closed — the
+   *  URLs are re-detected on the next run, but the choice persists. */
+  const cmdUrlPicks = new CommandUrlPickStore(
+    getDaemonKV(),
+    "supergit:commandUrlPicks",
+  );
+  let cmdUrlOverride: Record<string, string> = cmdUrlPicks.load();
   let cmdUrlHover = false;
   let cmdUrlHoverTimer: ReturnType<typeof setTimeout> | null = null;
   function cmdUrlEnter() {
@@ -1343,7 +1353,7 @@
                     type="button"
                     class="cmd-url-option"
                     class:active={u === cmdUrl}
-                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; }}
+                    on:click|stopPropagation={() => { openUrl(u); cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u }; cmdUrlPicks.set(link.id, u); }}
                   >
                     {new URL(u).host}
                     {#if u === cmdUrl}

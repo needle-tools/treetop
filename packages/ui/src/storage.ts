@@ -134,6 +134,30 @@ export class DismissedSessionsStore {
  */
 export type PersistedAgent = "claude" | "codex" | "copilot" | "ollama" | "shell" | "files" | "history";
 
+/** Model tier aliases offered for Claude sessions. We deliberately stick
+ *  to the CLI's stable aliases rather than pinned versions so the menu
+ *  keeps mapping to the latest model of each tier without code changes. */
+export const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"] as const;
+export type ClaudeModelAlias = (typeof CLAUDE_MODEL_ALIASES)[number];
+
+/** Effort levels the Claude CLI accepts via `--effort`. */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ClaudeEffort = (typeof CLAUDE_EFFORT_LEVELS)[number];
+
+/** Collapse a model id — either a bare alias ("opus") or a full id
+ *  ("claude-opus-4-8") — down to its tier alias for display in the agent
+ *  pill. Returns undefined when the input is empty or doesn't match a
+ *  known tier, so callers can fall back to the generic "claude" label
+ *  rather than showing a fabricated tier. */
+export function claudeModelAlias(model: string | undefined): ClaudeModelAlias | undefined {
+  if (!model) return undefined;
+  const m = model.toLowerCase();
+  if (m.includes("opus")) return "opus";
+  if (m.includes("sonnet")) return "sonnet";
+  if (m.includes("haiku")) return "haiku";
+  return undefined;
+}
+
 export interface PersistedSession {
   agent: PersistedAgent;
   source: string;
@@ -141,6 +165,15 @@ export interface PersistedSession {
    *  (e.g. `"llama3.2:3b"`). Persisted so a reload re-spawns
    *  `ollama run <model>` instead of a bare `ollama` prompt. */
   ollamaModel?: string;
+  /** Optional. For `agent === "claude"` sessions, the model tier alias
+   *  (`opus` / `sonnet` / `haiku`) the user picked from the session
+   *  header menu. Passed as `claude --model <alias>` on spawn/resume.
+   *  Absence ⇒ no `--model` flag, i.e. claude's configured default. */
+  claudeModel?: ClaudeModelAlias;
+  /** Optional. For `agent === "claude"` sessions, the effort level
+   *  (`low`/`medium`/`high`/`xhigh`/`max`) picked from the header menu.
+   *  Passed as `claude --effort <level>`. Absence ⇒ claude's default. */
+  claudeEffort?: ClaudeEffort;
   /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
    *  the first time the daemon's activity-tail surfaces a real agent-side
    *  session id for that (cwd, agent). On a subsequent mount (notably
@@ -205,6 +238,18 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   }
   if (typeof o.ollamaModel === "string" && o.ollamaModel.length > 0) {
     out.ollamaModel = o.ollamaModel;
+  }
+  if (
+    typeof o.claudeModel === "string" &&
+    (CLAUDE_MODEL_ALIASES as readonly string[]).includes(o.claudeModel)
+  ) {
+    out.claudeModel = o.claudeModel as ClaudeModelAlias;
+  }
+  if (
+    typeof o.claudeEffort === "string" &&
+    (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(o.claudeEffort)
+  ) {
+    out.claudeEffort = o.claudeEffort as ClaudeEffort;
   }
   return out;
 }
@@ -348,6 +393,8 @@ export function cmdForOpenSession(
     resumeSessionId?: string;
     preassignedSessionId?: string;
     contextFilePath?: string;
+    claudeModel?: string;
+    claudeEffort?: string;
   },
   defaultShell: string,
   defaultShellArgs: string[] = ["-l"],
@@ -358,18 +405,27 @@ export function cmdForOpenSession(
   if (s.agent === "shell") return [defaultShell, ...defaultShellArgs];
   const sid = s.resumeSessionId;
   if (s.agent === "claude") {
+    // Model/effort flags apply to both the fresh-spawn and resume paths
+    // (switching model mid-thread is the "restart via resume" UX). They
+    // must land before any trailing positional prompt (the contextFile
+    // "Pick up where…" line) or claude reads the prompt as a flag value.
+    const modelFlags: string[] = [];
+    if (s.claudeModel) modelFlags.push("--model", s.claudeModel);
+    if (s.claudeEffort) modelFlags.push("--effort", s.claudeEffort);
     if (sid) {
       return [
         "claude",
         "--resume",
         sid,
         "--allow-dangerously-skip-permissions",
+        ...modelFlags,
       ];
     }
     const cmd = ["claude"];
     if (s.preassignedSessionId) {
       cmd.push("--session-id", s.preassignedSessionId);
     }
+    cmd.push(...modelFlags);
     if (s.contextFilePath) {
       cmd.push("--append-system-prompt-file", s.contextFilePath);
       cmd.push("--allow-dangerously-skip-permissions");
@@ -594,4 +650,65 @@ export function effectiveVisibleWorktrees(
   }
   const onDisk = new Set(diskWorktreePaths);
   return entry.filter((p) => onDisk.has(p));
+}
+
+/**
+ * Persisted map of "which detected URL the user pinned to a command
+ * link's open button", keyed by the custom-link's stable id. A command
+ * link can surface several URLs while it runs (dev server, preview,
+ * tunnel, …); clicking one in the dropdown both opens it and assigns it
+ * to the open button. That choice belongs in daemon prefs (`getDaemonKV`),
+ * not in-memory component state: the URLs are re-detected every time the
+ * command runs, but the *pick* must outlive the terminal session that
+ * surfaced them and the daemon run itself, so re-running the command
+ * later keeps the open button pointing at the user's chosen URL.
+ *
+ * Same KVStore-injection + corruption tolerance as the other stores.
+ */
+export class CommandUrlPickStore {
+  constructor(
+    private readonly storage: KVStore,
+    private readonly key: string,
+  ) {}
+
+  /** Returns the linkId → pinned-URL map. Tolerates garbage at any level. */
+  load(): Record<string, string> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return {};
+    }
+    if (raw === null) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    const out: Record<string, string> = {};
+    for (const [linkId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof linkId === "string" && linkId.length > 0 && typeof value === "string") {
+        out[linkId] = value;
+      }
+    }
+    return out;
+  }
+
+  /** Pins `url` to `linkId`'s open button, leaving every other pick
+   *  untouched (read-modify-write so concurrent component instances
+   *  sharing the same storage don't clobber each other's entries). */
+  set(linkId: string, url: string): void {
+    const map = this.load();
+    if (map[linkId] === url) return;
+    map[linkId] = url;
+    try {
+      this.storage.setItem(this.key, JSON.stringify(map));
+    } catch {
+      // ignore — best-effort; the pick just won't carry over next time
+    }
+  }
 }

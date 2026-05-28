@@ -1,10 +1,12 @@
 import { test, expect, describe } from "bun:test";
 import {
+  CommandUrlPickStore,
   DismissedSessionsStore,
   ExpandedStore,
   OpenSessionsStore,
   StarredSessionsStore,
   VisibleWorktreesStore,
+  claudeModelAlias,
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
@@ -335,6 +337,53 @@ describe("OpenSessionsStore", () => {
     });
   });
 
+  test("round-trips claudeModel + claudeEffort", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/a": [
+        {
+          agent: "claude",
+          source: "/x.jsonl",
+          claudeModel: "opus",
+          claudeEffort: "max",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/a": [
+        {
+          agent: "claude",
+          source: "/x.jsonl",
+          claudeModel: "opus",
+          claudeEffort: "max",
+        },
+      ],
+    });
+  });
+
+  test("drops out-of-range claudeModel / claudeEffort values", () => {
+    const m = new MemStore();
+    m.setItem(
+      KEY,
+      JSON.stringify({
+        "/a": [
+          {
+            agent: "claude",
+            source: "/x.jsonl",
+            claudeModel: "gpt-5",
+            claudeEffort: "turbo",
+          },
+        ],
+      }),
+    );
+    // Unknown values are stripped; the session still loads (it just falls
+    // back to claude's configured default at spawn).
+    expect(new OpenSessionsStore(m, KEY).load()).toEqual({
+      "/a": [{ agent: "claude", source: "/x.jsonl" }],
+    });
+  });
+
   test("swallows storage errors on save and load", () => {
     const s = new OpenSessionsStore(new ThrowingStore(), KEY);
     s.save({ "/x": [{ agent: "claude", source: "/y.jsonl" }] });
@@ -619,6 +668,95 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
+  test("brand-new claude column with claudeModel appends `--model <alias>`", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          preassignedSessionId: "11111111-2222-3333-4444-555555555555",
+          claudeModel: "opus",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--session-id",
+      "11111111-2222-3333-4444-555555555555",
+      "--model",
+      "opus",
+    ]);
+  });
+
+  test("brand-new claude column with claudeEffort appends `--effort <level>`", () => {
+    expect(
+      cmdForOpenSession(
+        { agent: "claude", claudeEffort: "high" },
+        "/bin/zsh",
+      ),
+    ).toEqual(["claude", "--effort", "high"]);
+  });
+
+  test("resumed claude column threads --model/--effort after the dangerously flag", () => {
+    // The model/effort flags must come *after* --allow-dangerously-skip-
+    // permissions but they apply to the resumed conversation — switching
+    // model mid-thread is exactly the "restart via resume" UX.
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          resumeSessionId: "abc-123",
+          claudeModel: "sonnet",
+          claudeEffort: "max",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--resume",
+      "abc-123",
+      "--allow-dangerously-skip-permissions",
+      "--model",
+      "sonnet",
+      "--effort",
+      "max",
+    ]);
+  });
+
+  test("claudeModel/effort flags precede the contextFilePath positional prompt", () => {
+    // Flags must land before the trailing positional ("Pick up where…")
+    // or claude treats the prompt as the value of the last flag.
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          preassignedSessionId: "aaaa-bbbb",
+          claudeModel: "haiku",
+          contextFilePath: "/tmp/ctx.md",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--session-id",
+      "aaaa-bbbb",
+      "--model",
+      "haiku",
+      "--append-system-prompt-file",
+      "/tmp/ctx.md",
+      "--allow-dangerously-skip-permissions",
+      "Pick up where the previous conversation left off.",
+    ]);
+  });
+
+  test("model/effort flags are claude-only (codex ignores them)", () => {
+    expect(
+      cmdForOpenSession(
+        { agent: "codex", claudeModel: "opus", claudeEffort: "high" } as never,
+        "/bin/zsh",
+      ),
+    ).toEqual(["codex"]);
+  });
+
   test("brand-new codex column (no sid) spawns bare `codex`", () => {
     expect(cmdForOpenSession({ agent: "codex" }, "/bin/zsh")).toEqual(["codex"]);
   });
@@ -710,6 +848,30 @@ describe("cmdForOpenSession", () => {
         "/bin/zsh",
       ),
     ).toEqual(["codex", "resume", "ses_99"]);
+  });
+});
+
+describe("claudeModelAlias", () => {
+  test("maps full model ids to their tier alias", () => {
+    expect(claudeModelAlias("claude-opus-4-8")).toBe("opus");
+    expect(claudeModelAlias("claude-sonnet-4-6")).toBe("sonnet");
+    expect(claudeModelAlias("claude-haiku-4-5-20251001")).toBe("haiku");
+  });
+
+  test("passes the bare aliases through", () => {
+    expect(claudeModelAlias("opus")).toBe("opus");
+    expect(claudeModelAlias("sonnet")).toBe("sonnet");
+    expect(claudeModelAlias("haiku")).toBe("haiku");
+  });
+
+  test("is case-insensitive", () => {
+    expect(claudeModelAlias("Claude-OPUS-4-8")).toBe("opus");
+  });
+
+  test("returns undefined for unknown or empty input", () => {
+    expect(claudeModelAlias(undefined)).toBeUndefined();
+    expect(claudeModelAlias("")).toBeUndefined();
+    expect(claudeModelAlias("gpt-5")).toBeUndefined();
   });
 });
 
@@ -1471,5 +1633,72 @@ describe("effectiveVisibleWorktrees", () => {
         { rA: ["/wt/A/feature-deleted", "/repos/A"] },
       ),
     ).toEqual(["/repos/A"]);
+  });
+});
+
+describe("CommandUrlPickStore", () => {
+  const PICK_KEY = "supergit:commandUrlPicks";
+
+  test("returns empty map when nothing is stored", () => {
+    const s = new CommandUrlPickStore(new MemStore(), PICK_KEY);
+    expect(s.load()).toEqual({});
+  });
+
+  test("set then load round-trips the pick", () => {
+    const m = new MemStore();
+    const s = new CommandUrlPickStore(m, PICK_KEY);
+    s.set("link-1", "http://localhost:7779");
+    expect(s.load()).toEqual({ "link-1": "http://localhost:7779" });
+  });
+
+  test("the pick survives across instances pointing at the same storage", () => {
+    // This is the bug: the pick must outlive the daemon run / terminal
+    // session that surfaced the URLs. Two store instances over the same
+    // backing storage stand in for "before reload" and "after reload".
+    const m = new MemStore();
+    new CommandUrlPickStore(m, PICK_KEY).set("link-1", "http://192.168.0.174:7779");
+    const reopened = new CommandUrlPickStore(m, PICK_KEY);
+    expect(reopened.load()["link-1"]).toBe("http://192.168.0.174:7779");
+  });
+
+  test("set updates one link's pick without clobbering the others", () => {
+    const m = new MemStore();
+    const s = new CommandUrlPickStore(m, PICK_KEY);
+    s.set("link-1", "http://localhost:7779");
+    s.set("link-2", "http://localhost:5173");
+    s.set("link-1", "http://localhost:3000"); // re-pick link-1
+    expect(s.load()).toEqual({
+      "link-1": "http://localhost:3000",
+      "link-2": "http://localhost:5173",
+    });
+  });
+
+  test("returns empty map when stored value is not JSON", () => {
+    const m = new MemStore();
+    m.setItem(PICK_KEY, "{not json");
+    expect(new CommandUrlPickStore(m, PICK_KEY).load()).toEqual({});
+  });
+
+  test("returns empty map when stored value is an array", () => {
+    const m = new MemStore();
+    m.setItem(PICK_KEY, JSON.stringify(["a", "b"]));
+    expect(new CommandUrlPickStore(m, PICK_KEY).load()).toEqual({});
+  });
+
+  test("drops non-string values from the stored map", () => {
+    const m = new MemStore();
+    m.setItem(PICK_KEY, JSON.stringify({ a: "http://x", b: 1, c: null, d: { x: 1 } }));
+    expect(new CommandUrlPickStore(m, PICK_KEY).load()).toEqual({ a: "http://x" });
+  });
+
+  test("swallows storage errors on set", () => {
+    const s = new CommandUrlPickStore(new ThrowingStore(), PICK_KEY);
+    // Should not throw.
+    s.set("link-1", "http://localhost:7779");
+  });
+
+  test("returns empty map when storage throws on read", () => {
+    const s = new CommandUrlPickStore(new ThrowingStore(), PICK_KEY);
+    expect(s.load()).toEqual({});
   });
 });
