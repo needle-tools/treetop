@@ -20,6 +20,7 @@ import type {
 } from "./types";
 import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
 import { wrapWindowsCmd } from "../procs";
+import { UserBoxRemap, CLAUDE_USER_BOX_THEME } from "./sgr-remap";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 
@@ -43,6 +44,11 @@ interface InternalTerm {
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
   configError: { file: string } | null;
+  /** When this PTY runs an agent TUI whose user-message box we recolour
+   *  (currently Claude), the stateful byte-stream filter that rewrites
+   *  the box's truecolour SGR sequences. Undefined for shells and other
+   *  agents — their bytes pass through unchanged. */
+  remap?: UserBoxRemap;
   /** When this PTY is a zsh shell, the temp ZDOTDIR we built for it
    *  (a `.zshrc` that sources the user's real one then adds history
    *  hardening). Cleaned up on exit. Undefined for non-zsh PTYs. */
@@ -331,9 +337,13 @@ export class NodePtyBackend implements PtyBackend {
       case "data": {
         const t = this.terms.get(evt.id as string);
         if (!t) return;
-        const buf = Uint8Array.from(
+        let buf: Uint8Array = Uint8Array.from(
           Buffer.from((evt.dataB64 as string) ?? "", "base64"),
         );
+        // Recolour the agent's user-message box (Claude) before it lands
+        // in the replay buffer or reaches any client, so the rewrite is
+        // applied exactly once and identically for every subscriber.
+        if (t.remap) buf = t.remap.transform(buf);
         t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
@@ -425,6 +435,10 @@ export class NodePtyBackend implements PtyBackend {
       awaitingInput: false,
       configError: null,
     };
+    // Claude paints its user-message box with truecolour SGR the xterm
+    // theme can't reach (see sgr-remap.ts) — attach a stream filter that
+    // recolours it so the user's own turns stand out.
+    if (t.agent === "claude") t.remap = new UserBoxRemap(CLAUDE_USER_BOX_THEME);
     // For zsh shells, build a temp ZDOTDIR whose .zshrc sources the
     // user's real ~/.zshrc and then forces INC_APPEND_HISTORY /
     // SHARE_HISTORY. Without this, stock-macOS users get arrow-up
