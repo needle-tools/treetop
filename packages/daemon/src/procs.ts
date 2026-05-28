@@ -275,28 +275,30 @@ export async function sampleProcs(pids: number[]): Promise<Map<number, ProcUsage
   if (pids.length === 0) return out;
   if (process.platform === "win32") {
     try {
-      // Use PowerShell's Get-Process — available on all modern Windows.
-      // CPU: Get-Process returns TotalProcessorTime (TimeSpan); computing a
-      // delta over a sample interval is expensive. Instead, use Get-CimInstance
-      // Win32_PerfFormattedData_PerfProc_Process which gives an instant %.
-      // But matching by PID there is tricky. Simpler: just grab WorkingSet64
-      // (private bytes) from Get-Process and skip CPU (leave 0). The UI already
-      // handles 0% gracefully — it just hides the CPU badge.
-      const pidFilter = pids.map((p) => `$_.Id -eq ${p}`).join(" -or ");
-      const ps = `Get-Process | Where-Object { ${pidFilter} } | ForEach-Object { "$($_.Id) $($_.WorkingSet64)" }`;
+      // Memory + CPU in one PowerShell pass. Memory comes from Get-Process
+      // (WorkingSet64 = private bytes). CPU comes from Win32_PerfFormattedData
+      // _PerfProc_Process.PercentProcessorTime, which is normalized to 0–100
+      // across all cores by Windows itself. We join the two by PID and emit
+      // "pid mem cpu" per line. Falls back to mem-only if perf counters fail.
+      const pidArr = `@(${pids.join(",")})`;
+      const ps =
+        `$m = @{}; Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { $m[$_.Id] = $_.WorkingSet64 }; ` +
+        `$c = @{}; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue | Where-Object { $m.ContainsKey([int]$_.IDProcess) } | ForEach-Object { $c[[int]$_.IDProcess] = $_.PercentProcessorTime }; ` +
+        `foreach ($pid in $m.Keys) { $cpu = if ($c.ContainsKey($pid)) { $c[$pid] } else { 0 }; "$pid $($m[$pid]) $cpu" }`;
       const result = await $`powershell -NoProfile -Command ${ps}`.quiet().nothrow();
       const text = result.stdout.toString();
       for (const line of text.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         const parts = trimmed.split(/\s+/);
-        if (parts.length < 2) continue;
+        if (parts.length < 3) continue;
         const pid = Number(parts[0]);
         const memBytes = Number(parts[1]);
+        const cpuPercent = Number(parts[2]);
         if (!Number.isFinite(pid)) continue;
         out.set(pid, {
           pid,
-          cpuPercent: 0, // not cheaply available; UI degrades to hidden badge
+          cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : 0,
           memBytes: Number.isFinite(memBytes) ? memBytes : 0,
         });
       }

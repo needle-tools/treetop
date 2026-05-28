@@ -439,12 +439,8 @@
                           <span class="tui-inline-title" title={ctx.title}>
                             {ctx.title}
                           </span>
-                        {:else if ctx.wtBranch}
-                          <span class="tui-inline-title" title={p.cwd}>
-                            {ctx.wtBranch}
-                          </span>
-                        {:else if isExternal}
-                          <span class="tui-inline-title tui-inline-args" title={p.cmd.join(" ")}>
+                        {:else if p.cmd.length > 0}
+                          <span class="tui-inline-title tui-inline-args" title={`${p.cmd.join(" ")}\n${p.cwd}`}>
                             {p.cmd.join(" ")}
                           </span>
                         {/if}
