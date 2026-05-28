@@ -1780,6 +1780,16 @@
     border: 0;
     background: var(--surface-1);
   }
+  /* TerminalView caps itself at 60vh so a TUI never dominates the
+     normal dashboard. In fullscreen that cap leaves dead space below
+     the terminal — lift it so the TUI fills the viewport, same as zen
+     does (zen-row.css). FitAddon re-fits via TerminalView's
+     ResizeObserver. */
+  .session:fullscreen :global(.terminal-wrap) {
+    max-height: none;
+    min-height: 0;
+    flex: 1 1 0;
+  }
   @keyframes session-awaiting-pulse {
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent); }
     50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-dirty) 25%, transparent); }

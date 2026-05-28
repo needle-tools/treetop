@@ -39,6 +39,17 @@
   background: var(--surface-1);
 }
 
+/* TerminalView caps itself at 60vh so a TUI never dominates the
+   normal dashboard. In fullscreen that cap leaves dead space below
+   the terminal — lift it so the TUI fills the viewport, same as zen
+   does (zen-row.css). FitAddon re-fits via TerminalView's
+   ResizeObserver. */
+.new-session-col:fullscreen .terminal-wrap {
+  max-height: none;
+  min-height: 0;
+  flex: 1 1 0;
+}
+
 /* Restore card — disconnected terminal awaiting user resume */
 .restore-card {
   height: 100%;
