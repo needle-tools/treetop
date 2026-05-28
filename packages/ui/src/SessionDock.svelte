@@ -85,6 +85,12 @@
     staged: number;
     unstaged: number;
     untracked: number;
+    /** Count of submodule entries (any kind — internal-dirt OR
+     *  pointer-bump) that the host already folded into the
+     *  staged/unstaged totals. Subtracted out when deciding whether
+     *  to flash the dock's dirty wave so a registered submodule
+     *  doing its own thing doesn't keep the parent's row lit up. */
+    submoduleChanges?: number;
   }
   /** Per-repo push/pull status. Repos with ahead or behind > 0 get
    *  an animated arrow; all counts show in the hover label. */
@@ -132,24 +138,48 @@
 
   $: split = splitDockEntries(entries, showInactive);
 
+  /** Non-submodule dirty count for the dock — subtracts any S-prefix
+   *  entries (internal-dirt and pointer-bumps) so registered
+   *  submodules don't keep the parent's dirty wave lit up. */
+  function dockDirtyOf(s: DockRepoStatus): number {
+    return Math.max(
+      0,
+      s.staged + s.unstaged + s.untracked - (s.submoduleChanges ?? 0),
+    );
+  }
+
   /** Quick lookup: repoId → status. Used in the template to render
-   *  arrows at repo-group boundaries. */
+   *  arrows at repo-group boundaries. A repo qualifies if it has any
+   *  of push, pull, or (when inactive sessions are also shown)
+   *  uncommitted non-submodule changes. The dirty signal is gated on
+   *  showInactive — active-TUIs-only mode is meant to be quiet, so
+   *  push/pull stays (still actionable) but dirty repos are hidden. */
   $: repoStatusMap = new Map(
     dockRepoStatuses
-      .filter((s) => s.ahead > 0 || s.behind > 0)
+      .filter(
+        (s) =>
+          s.ahead > 0 ||
+          s.behind > 0 ||
+          (showInactive && dockDirtyOf(s) > 0),
+      )
       .map((s) => [s.repoId, s]),
   );
 
-  /** Repos that have push/pull arrows but no session dots — they
-   *  still need a row in the dock. Built from repoStatuses minus
-   *  any repoId that appears in the current split. */
+  /** Repos that have a status badge but no session dots — they still
+   *  need a row in the dock. Built from repoStatuses minus any repoId
+   *  that appears in the current split. Same showInactive gating as
+   *  the main filter. */
   $: orphanRepoArrows = (() => {
     const inDock = new Set([
       ...split.top.map((e) => e.repoId),
       ...split.bottom.map((e) => e.repoId),
     ]);
     return dockRepoStatuses.filter(
-      (s) => (s.ahead > 0 || s.behind > 0) && !inDock.has(s.repoId),
+      (s) =>
+        (s.ahead > 0 ||
+          s.behind > 0 ||
+          (showInactive && dockDirtyOf(s) > 0)) &&
+        !inDock.has(s.repoId),
     );
   })();
 
@@ -656,7 +686,7 @@
     {#each split.top as e, i (e.source)}
       {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
         {@const rs = repoStatusMap.get(e.repoId)}
-        {@const dirtyCount = (rs?.staged ?? 0) + (rs?.unstaged ?? 0) + (rs?.untracked ?? 0)}
+        {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
         <span
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
@@ -666,13 +696,14 @@
           <span class="dock-dot-inner dock-arrow-inner">
             {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
             {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
+            {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
             <span class="dock-label-badges">
               {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
               {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-              {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+              {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
             </span>
           </span>
         </span>
@@ -746,7 +777,7 @@
     {#each split.bottom as e, i (e.source)}
       {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
         {@const rs = repoStatusMap.get(e.repoId)}
-        {@const dirtyCount = (rs?.staged ?? 0) + (rs?.unstaged ?? 0) + (rs?.untracked ?? 0)}
+        {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
         <span
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
@@ -756,13 +787,14 @@
           <span class="dock-dot-inner dock-arrow-inner">
             {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
             {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
+            {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
             <span class="dock-label-badges">
               {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
               {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-              {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+              {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
             </span>
           </span>
         </span>
@@ -819,7 +851,7 @@
     {/each}
     <!-- Orphan arrows: repos with push/pull but no session dots. -->
     {#each orphanRepoArrows as rs (rs.repoId)}
-      {@const dirtyCount = (rs.staged ?? 0) + (rs.unstaged ?? 0) + (rs.untracked ?? 0)}
+      {@const dirtyCount = dockDirtyOf(rs)}
       <span
         class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
         style:--arrow-color={brightenIfDark(rs.repoColor)}
@@ -829,13 +861,14 @@
         <span class="dock-dot-inner dock-arrow-inner">
           {#if rs.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
           {#if rs.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
+          {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<svg class="dock-arrow-glyph dock-arrow-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{/if}
         </span>
         <span class="dock-label">
           <span class="dock-label-repo">{rs.repoName}</span>
           <span class="dock-label-badges">
             {#if rs.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
             {#if rs.behind}<StatusBadge compact behind={rs.behind} />{/if}
-            {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+            {#if dirtyCount && showInactive}<StatusBadge compact dirty={dirtyCount} />{/if}
           </span>
         </span>
       </span>

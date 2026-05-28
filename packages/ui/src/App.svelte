@@ -76,6 +76,7 @@
     setSessionMode,
     stampDiscoveredSessionIdWithDetail,
     resolveTitleSource,
+    type PersistedSession,
   } from "./storage";
   import {
     installFetchTracking,
@@ -1996,6 +1997,44 @@
       [wtPath]: existing.map((x) =>
         x.source === current.source ? replacement : x,
       ),
+    };
+  }
+
+  /** Per-source remount counter for Claude columns. Bumped whenever the
+   *  user switches model/effort so the `{#key}` wrapping the column tears
+   *  down its TerminalView and spawns a fresh one — which, because the
+   *  session already has a resumeSessionId, comes back as
+   *  `claude --resume <sid> --model <new>` and continues the same thread.
+   *  This is the exact lifecycle a page reload of a live TUI already
+   *  uses (unmount closes the WS → daemon grace-reaps the old PTY → the
+   *  remount resumes), so no extra PTY-kill plumbing is needed. */
+  let claudeColGen: Record<string, number> = {};
+
+  /** Persist a Claude model/effort choice onto the open-session entry and
+   *  remount the column so the change takes effect immediately. */
+  function setClaudeSessionFlag(
+    wtPath: string,
+    source: string,
+    patch: { claudeModel?: string; claudeEffort?: string },
+  ) {
+    const list = openSessionsByWt[wtPath];
+    if (!list) return;
+    const idx = list.findIndex((s) => s.source === source);
+    if (idx === -1) return;
+    const next = list.slice();
+    next[idx] = {
+      ...next[idx]!,
+      ...(patch.claudeModel !== undefined
+        ? { claudeModel: patch.claudeModel as PersistedSession["claudeModel"] }
+        : {}),
+      ...(patch.claudeEffort !== undefined
+        ? { claudeEffort: patch.claudeEffort as PersistedSession["claudeEffort"] }
+        : {}),
+    };
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    claudeColGen = {
+      ...claudeColGen,
+      [source]: (claudeColGen[source] ?? 0) + 1,
     };
   }
 
@@ -4923,6 +4962,7 @@
     let staged = 0;
     let unstaged = 0;
     let untracked = 0;
+    let submoduleChanges = 0;
     for (const wt of repo.worktrees ?? []) {
       if (!visible.has(wt.path)) continue;
       if (wt.branchStatus) {
@@ -4933,6 +4973,7 @@
         staged += wt.fileStatus.staged;
         unstaged += wt.fileStatus.unstaged;
         untracked += wt.fileStatus.untracked;
+        submoduleChanges += wt.fileStatus.submoduleChanges ?? 0;
       }
     }
     return {
@@ -4944,6 +4985,7 @@
       staged,
       unstaged,
       untracked,
+      submoduleChanges,
     };
   });
 
@@ -7374,6 +7416,11 @@
                             s,
                             wt.agents ?? [],
                           )}
+                          <!-- {#key} on a per-source generation counter so a
+                               model/effort switch (setClaudeSessionFlag) tears
+                               down the TerminalView and respawns it via resume
+                               with the new --model/--effort flag. -->
+                          {#key claudeColGen[s.source] ?? 0}
                           <NewSessionCol
                             agent={s.agent}
                             source={titleSource}
@@ -7396,6 +7443,8 @@
                             contextTokensExact={newAgentMeta?.contextTokensExact}
                             contextWindow={newAgentMeta?.contextWindow}
                             model={newAgentMeta?.model}
+                            claudeModel={s.claudeModel}
+                            claudeEffort={s.claudeEffort}
                             lastActivityIso={newAgentMeta?.lastActive}
                             lastUserMessage={newAgentMeta?.lastUserMessage}
                             starred={starredSessions.has(titleSource) || starredSessions.has(s.source)}
@@ -7404,6 +7453,10 @@
                             on:dispose={() =>
                               disposeNewSessionColumn(wt.path, s, wt.agents ?? [])}
                             on:restart={() => restartNewAgentSession(wt.path, s)}
+                            on:setModel={(e) =>
+                              setClaudeSessionFlag(wt.path, s.source, { claudeModel: e.detail.model })}
+                            on:setEffort={(e) =>
+                              setClaudeSessionFlag(wt.path, s.source, { claudeEffort: e.detail.effort })}
                             on:spawn={(e) => {
                               // Capture the daemon-assigned termId for
                               // every `__new__:` source (any agent) so
@@ -7551,10 +7604,12 @@
                             onDragStart={(e) =>
                               handleSessionDragStart(e, wt.path, i)}
                           />
+                          {/key}
                         {:else}
                           {@const agentMeta = (wt.agents ?? []).find(
                             (a) => a.source === s.source,
                           )}
+                          {#key claudeColGen[s.source] ?? 0}
                           <SessionView
                             agent={s.agent as "claude" | "codex" | "copilot"}
                             source={s.source}
@@ -7564,6 +7619,12 @@
                             contextTokensExact={agentMeta?.contextTokensExact}
                             contextWindow={agentMeta?.contextWindow}
                             model={agentMeta?.model}
+                            claudeModel={s.claudeModel}
+                            claudeEffort={s.claudeEffort}
+                            onSetClaudeModel={(m) =>
+                              setClaudeSessionFlag(wt.path, s.source, { claudeModel: m })}
+                            onSetClaudeEffort={(e) =>
+                              setClaudeSessionFlag(wt.path, s.source, { claudeEffort: e })}
                             attachTermId={(s as any).attachTermId}
                             initialMode={s.mode === "terminal" ? "terminal" : "read"}
                             onModeChange={(m) => {
@@ -7612,6 +7673,7 @@
                               handleSessionDragStart(e, wt.path, i)}
                             onTitleChange={() => void load()}
                           />
+                          {/key}
                         {/if}
                       </div>
                     {/each}

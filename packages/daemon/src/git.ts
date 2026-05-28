@@ -48,6 +48,16 @@ export interface FileStatus {
    *  HAS moved (sub field's commit-changed flag is 'C'), the entry
    *  counts toward staged/unstaged like any other file. */
   submodules: number;
+  /** Count of *every* tracked entry whose sub-field starts with `S`
+   *  — i.e. any submodule activity, whether the parent's recorded
+   *  SHA moved or only the child's working tree drifted. Overlaps
+   *  with `submodules` (those rows also count here) and additionally
+   *  captures the pointer-bump case that gets folded into
+   *  staged/unstaged. Surfaces as a "subtract me to ignore
+   *  submodules" knob (e.g. SessionDock uses it to gate the dock
+   *  dirty signal without losing the row-level badge for pointer
+   *  bumps). */
+  submoduleChanges: number;
   /** Total insertions + deletions across staged + unstaged diffs. */
   dirtyLines: number;
 }
@@ -799,7 +809,7 @@ export async function getWorktreeDetails(
     };
   } catch {
     return {
-      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0, dirtyLines: 0 },
+      fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0, submoduleChanges: 0, dirtyLines: 0 },
       branchStatus: null,
       lastCommit: null,
     };
@@ -811,6 +821,7 @@ export function parseFileStatus(porcelain: string): FileStatus {
   let unstaged = 0;
   let untracked = 0;
   let submodules = 0;
+  let submoduleChanges = 0;
   for (const line of porcelain.split("\n")) {
     if (line.length === 0 || line.startsWith("#")) continue;
     if (line.startsWith("? ")) {
@@ -823,11 +834,16 @@ export function parseFileStatus(porcelain: string): FileStatus {
     // submodules where <c> = 'C' means the parent's recorded SHA moved.
     // When the only difference is *inside* the submodule (<c> = '.'),
     // bucket as "submodules" so the parent doesn't get tagged as dirty
-    // for a child repo's own uncommitted work.
+    // for a child repo's own uncommitted work. Every S-prefix entry
+    // — pointer-bump or not — also increments `submoduleChanges` so
+    // callers (e.g. the dock) can ignore submodule activity entirely.
     if (line.startsWith("1 ") || line.startsWith("2 ")) {
-      if (line.charAt(5) === "S" && line.charAt(6) === ".") {
-        submodules++;
-        continue;
+      if (line.charAt(5) === "S") {
+        submoduleChanges++;
+        if (line.charAt(6) === ".") {
+          submodules++;
+          continue;
+        }
       }
       const x = line.charAt(2);
       const y = line.charAt(3);
@@ -841,7 +857,7 @@ export function parseFileStatus(porcelain: string): FileStatus {
       unstaged++;
     }
   }
-  return { staged, unstaged, untracked, submodules, dirtyLines: 0 };
+  return { staged, unstaged, untracked, submodules, submoduleChanges, dirtyLines: 0 };
 }
 
 export function parseShortstatLines(shortstat: string): number {
