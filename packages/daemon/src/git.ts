@@ -4,6 +4,44 @@ import { join as joinPath, resolve as resolvePath } from "node:path";
 
 const PUSH_PULL_TIMEOUT_MS = 60_000;
 
+/** Delay before retrying a git op that failed on a stale `*.lock` file.
+ *  Short enough that the user doesn't notice, long enough that a
+ *  concurrent git process (another agent, an editor, our own background
+ *  fetch) has usually finished and released the lock. */
+const LOCK_RETRY_DELAY_MS = 350;
+
+/** True when git failed because a `.git/*.lock` file already existed —
+ *  the classic "Unable to create '…/index.lock': File exists. Another git
+ *  process seems to be running" error. This is almost always transient:
+ *  two git processes (multiple agents, an editor, our own background
+ *  fetch) raced for the same lock. Retrying once usually clears it. */
+export function isLockError(text: string): boolean {
+  return (
+    /Unable to create '[^']*\.lock': File exists/i.test(text) ||
+    /Another git process seems to be running/i.test(text)
+  );
+}
+
+interface GitResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
+/** Run a git command via `run`; if it fails with a transient lock error
+ *  (see {@link isLockError}), wait `delayMs` and retry exactly once.
+ *  `run` is a thunk so the retry re-spawns the command from scratch. */
+export async function runGitWithLockRetry<T extends GitResult>(
+  run: () => Promise<T>,
+  delayMs: number = LOCK_RETRY_DELAY_MS,
+): Promise<T> {
+  const r = await run();
+  if (r.exitCode === 0) return r;
+  if (!isLockError(`${r.stdout.toString()}${r.stderr.toString()}`)) return r;
+  if (delayMs > 0) await Bun.sleep(delayMs);
+  return run();
+}
+
 function raceTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: Timer;
   const timeout = new Promise<never>((_, reject) => {
@@ -422,10 +460,12 @@ export async function pullFastForward(
   const run = async (): Promise<PullResult> => {
     let r;
     try {
-      r = await raceTimeout(
-        $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
-        PUSH_PULL_TIMEOUT_MS,
-        "git pull",
+      r = await runGitWithLockRetry(() =>
+        raceTimeout(
+          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`.quiet().nothrow(),
+          PUSH_PULL_TIMEOUT_MS,
+          "git pull",
+        ),
       );
     } catch (e) {
       return { ok: false, kind: "error", message: e instanceof Error ? e.message : String(e) };
@@ -513,10 +553,12 @@ export interface PushResult {
 export async function pushUpstream(worktreePath: string): Promise<PushResult> {
   let r;
   try {
-    r = await raceTimeout(
-      $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`.quiet().nothrow(),
-      PUSH_PULL_TIMEOUT_MS,
-      "git push",
+    r = await runGitWithLockRetry(() =>
+      raceTimeout(
+        $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`.quiet().nothrow(),
+        PUSH_PULL_TIMEOUT_MS,
+        "git push",
+      ),
     );
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
