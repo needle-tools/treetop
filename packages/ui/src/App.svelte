@@ -9,6 +9,7 @@
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
   } from "./sse-change-kinds";
+  import { installIdleTracker, isUiIdle, onResume } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
@@ -2078,6 +2079,10 @@
   );
   $: if (hasTransientSessions && !newSessionPollTimer) {
     newSessionPollTimer = setInterval(() => {
+      // Skip while idle/hidden — the user isn't looking and the
+      // transient session will still be promoted on the next
+      // wake-up load() (registered via onResume).
+      if (isUiIdle()) return;
       void load();
     }, 3_000);
   } else if (!hasTransientSessions && newSessionPollTimer) {
@@ -5153,6 +5158,11 @@
   >();
 
   async function fetchVisibleRepo(repoId: string): Promise<void> {
+    // Skip while the UI is idle/hidden. Each `git fetch` triggers a
+    // worktree-watcher fs_change burst + a /api/repos rebuild — the
+    // dominant source of the daemon's "idle 20% CPU" before this gate.
+    // On resume we fire load() once which catches up via cache.
+    if (isUiIdle()) return;
     try {
       await fetch("/api/fetch", {
         method: "POST",
@@ -5407,6 +5417,16 @@
       window.addEventListener("beforeunload", handleBeforeUnload);
     }
     const unsubStream = subscribeToStream();
+    // UI-idle gate: pauses visible-fetch + newSessionPoll while the tab
+    // is hidden or the user hasn't interacted in the last 10 s. Avoids
+    // the 15-20% daemon CPU pulse from background git fetches when
+    // nobody's looking. SSE-driven refreshes still flow.
+    const uninstallIdle = installIdleTracker();
+    const unsubResume = onResume(() => {
+      // User came back; refresh once so the stale-while-idle window
+      // doesn't show outdated data.
+      void load();
+    });
     const nowTimer = setInterval(() => { nowMs = Date.now(); }, 3000);
     // Click-on-saved-session-link → bring the session into view.
     // The chip writes a {source, ts} request into the focus store;
@@ -5427,6 +5447,8 @@
       unsubStream();
       unsubErrors();
       unsubFocus();
+      unsubResume();
+      uninstallIdle();
       clearInterval(nowTimer);
     };
   });
