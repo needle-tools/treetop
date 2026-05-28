@@ -78,7 +78,7 @@
    * Part of v1.y (floating-overlay phase) of the notes feature — see
    * plans/PLAN.md §"Notes with anchors + floating overlay".
    */
-  import { onMount, onDestroy, createEventDispatcher } from "svelte";
+  import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
   import { apiUrl } from "./api";
   import { marked } from "marked";
   import {
@@ -2510,9 +2510,33 @@
 
   $: isCommandLink = note.kind === "link" && note.target?.type === "command";
   let messageOpen = false;
+  let messageRevealToken = 0;
   $: isMessageNote = !isLink && !isEmoji && !isDetachedAttachment && !!(note.receiver || note.sender);
   $: if (!isMessageNote || editing) {
     messageOpen = false;
+  }
+  $: if (messageOpen) {
+    revealOpenMessage();
+  }
+
+  async function revealOpenMessage(): Promise<void> {
+    const token = ++messageRevealToken;
+    await tick();
+    const reveal = () => {
+      if (token !== messageRevealToken || !messageOpen || !stickyEl) return;
+      const rect = stickyEl.getBoundingClientRect();
+      const margin = 24;
+      if (rect.bottom > window.innerHeight - margin) {
+        window.scrollBy({
+          top: rect.bottom - window.innerHeight + margin,
+          behavior: "smooth",
+        });
+      } else if (rect.top < margin) {
+        window.scrollBy({ top: rect.top - margin, behavior: "smooth" });
+      }
+    };
+    requestAnimationFrame(reveal);
+    window.setTimeout(reveal, 560);
   }
 
   $: commandStateKey = [
@@ -2884,27 +2908,6 @@
     </div>
     <div class="message-envelope-flap" aria-hidden="true"></div>
     <div class="message-letter">
-      <header class="message-letter-head">
-        <div class="message-window message-window-letter">
-          <span class="message-window-row">
-            <span>From:</span>
-            <strong>{messageFromLabel()}</strong>
-          </span>
-          <span class="message-window-row">
-            <span>To:</span>
-            <strong>{messageToLabel()}</strong>
-          </span>
-          <span class="message-window-row">
-            <span>Title:</span>
-            <strong>{messageTitle()}</strong>
-          </span>
-        </div>
-        <div class="message-stamp message-stamp-letter" aria-label={messageWhenLabel()}>
-          <span class="message-stamp-pc">PC</span>
-          <span class="message-stamp-fern" aria-hidden="true"></span>
-          <span class="message-postmark">{messageDeliveryLabel()}</span>
-        </div>
-      </header>
       <div class="message-letter-meta">
         <span>{messageWhenLabel()}</span>
         <button
@@ -3049,7 +3052,8 @@
   class:sticky-emoji={isEmoji}
   class:sticky-detached={isDetachedAttachment}
   class:sticky-command-link={isCommandLink}
-  class:sticky-message={isMessageNote}
+  class:sticky-message={isMessageNote && !editing}
+  class:sticky-message-editing={isMessageNote && editing}
   class:message-open={messageOpen}
   class:attachment-drop-active={showAttachmentDropActive}
   data-note-id={note.id}
