@@ -16,6 +16,7 @@
    */
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
+  import StatusBadge from "./StatusBadge.svelte";
   import { splitDockEntries } from "./dock-split";
   import {
     fetchPreviewItems,
@@ -655,6 +656,7 @@
     {#each split.top as e, i (e.source)}
       {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
         {@const rs = repoStatusMap.get(e.repoId)}
+        {@const dirtyCount = (rs?.staged ?? 0) + (rs?.unstaged ?? 0) + (rs?.untracked ?? 0)}
         <span
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
@@ -667,13 +669,11 @@
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
-            <span class="dock-label-title dock-arrow-label">{[
-              rs?.ahead ? `↑${rs.ahead} push` : "",
-              rs?.behind ? `↓${rs.behind} pull` : "",
-              rs?.staged ? `${rs.staged} staged` : "",
-              rs?.unstaged ? `${rs.unstaged} mod` : "",
-              rs?.untracked ? `${rs.untracked} new` : "",
-            ].filter(Boolean).join(" – ")}</span>
+            <span class="dock-label-badges">
+              {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+              {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
+              {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+            </span>
           </span>
         </span>
       {/if}
@@ -746,6 +746,7 @@
     {#each split.bottom as e, i (e.source)}
       {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
         {@const rs = repoStatusMap.get(e.repoId)}
+        {@const dirtyCount = (rs?.staged ?? 0) + (rs?.unstaged ?? 0) + (rs?.untracked ?? 0)}
         <span
           class="dock-dot dock-repo-arrow"
           style:--arrow-color={brightenIfDark(rs?.repoColor)}
@@ -758,13 +759,11 @@
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
-            <span class="dock-label-title dock-arrow-label">{[
-              rs?.ahead ? `↑${rs.ahead} push` : "",
-              rs?.behind ? `↓${rs.behind} pull` : "",
-              rs?.staged ? `${rs.staged} staged` : "",
-              rs?.unstaged ? `${rs.unstaged} mod` : "",
-              rs?.untracked ? `${rs.untracked} new` : "",
-            ].filter(Boolean).join(" – ")}</span>
+            <span class="dock-label-badges">
+              {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+              {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
+              {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+            </span>
           </span>
         </span>
       {/if}
@@ -820,6 +819,7 @@
     {/each}
     <!-- Orphan arrows: repos with push/pull but no session dots. -->
     {#each orphanRepoArrows as rs (rs.repoId)}
+      {@const dirtyCount = (rs.staged ?? 0) + (rs.unstaged ?? 0) + (rs.untracked ?? 0)}
       <span
         class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
         style:--arrow-color={brightenIfDark(rs.repoColor)}
@@ -832,13 +832,11 @@
         </span>
         <span class="dock-label">
           <span class="dock-label-repo">{rs.repoName}</span>
-          <span class="dock-label-title dock-arrow-label">{[
-            rs.ahead ? `↑${rs.ahead} push` : "",
-            rs.behind ? `↓${rs.behind} pull` : "",
-            rs.staged ? `${rs.staged} staged` : "",
-            rs.unstaged ? `${rs.unstaged} mod` : "",
-            rs.untracked ? `${rs.untracked} new` : "",
-          ].filter(Boolean).join(" · ")}</span>
+          <span class="dock-label-badges">
+            {#if rs.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+            {#if rs.behind}<StatusBadge compact behind={rs.behind} />{/if}
+            {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
+          </span>
         </span>
       </span>
     {/each}
@@ -1109,8 +1107,14 @@
     .dock-arrow-up,
     .dock-arrow-down { animation: none; }
   }
-  .dock-arrow-label {
-    text-decoration: none;
+  /* Wrapper for the StatusBadge compact pills inside a hover label.
+     Inline-flex so the pills sit on the same baseline as the repo
+     name and respect the parent label's gap. */
+  .dock-label-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 0 0 auto;
   }
   /* Shell sessions render as a small terminal-styled square instead
      of the agent's round dot: dark center + repo-coloured border,

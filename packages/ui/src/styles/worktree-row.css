@@ -614,6 +614,23 @@ button.branch-button:hover {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* Compact, static variant used by SessionDock alongside the repo name.
+   Same chip colors + arrow SVG; smaller and with the edge-flow streak
+   pseudo-elements suppressed so it doesn't compete with the row-level
+   badges that own the animation. */
+.status-badge-compact {
+  padding: 0 0.3rem;
+  font-size: 0.62rem;
+  gap: 0.1rem;
+  line-height: 1.4;
+}
+.status-badge-compact.status-badge-clickable {
+  font-size: 0.62rem;
+}
+.status-badge-compact::before,
+.status-badge-compact::after {
+  content: none;
+}
 /* Clickable variant (ahead → push, behind → pull). Strip the
    <button> user-agent defaults; size comes from the shared variable
    so the button reads identically to the span. */

@@ -40,6 +40,11 @@
   export let busy = false;
   /** Escalate the dirty badge to yellow (>3 files or >200 lines). */
   export let warn = false;
+  /** Smaller, static variant — same colors and SVG, no edge-flow streak
+   *  pseudo-element animation. Used by SessionDock to show push/pull/
+   *  dirty alongside the repo name without competing with the
+   *  worktree-row badges. */
+  export let compact = false;
 
   $: kind = pickBadgeKind(ahead, behind, dirty);
   $: clickable = onClick !== null;
@@ -51,27 +56,29 @@
       type="button"
       class="status-badge status-badge-ahead status-badge-clickable"
       class:pulsate={pulsate && !busy}
+      class:status-badge-compact={compact}
       aria-label={title}
       disabled={busy}
       on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
     >{#if busy}<span class="status-badge-spinner" aria-label="pushing"></span>{:else}<svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{ahead}{/if}</button>
   {:else}
-    <span class="status-badge status-badge-ahead" class:pulsate><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{ahead}</span>
+    <span class="status-badge status-badge-ahead" class:pulsate class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{ahead}</span>
   {/if}
 {:else if kind === "behind"}
   {#if clickable}
     <button
       type="button"
       class="status-badge status-badge-behind status-badge-clickable"
+      class:status-badge-compact={compact}
       aria-label={title}
       disabled={busy}
       on:click={(e) => { e.stopPropagation(); onClick?.(e); }}
     >{#if busy}<span class="status-badge-spinner" aria-label="pulling"></span>{:else}<svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{behind}{/if}</button>
   {:else}
-    <span class="status-badge status-badge-behind"><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{behind}</span>
+    <span class="status-badge status-badge-behind" class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{behind}</span>
   {/if}
 {:else if kind === "dirty"}
-  <span class="status-badge" class:status-badge-dirty={!warn} class:status-badge-dirty-warn={warn}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{dirty}</span>
+  <span class="status-badge" class:status-badge-dirty={!warn} class:status-badge-dirty-warn={warn} class:status-badge-compact={compact}><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0"/></svg>{dirty}</span>
 {/if}
 
 <!-- Styles live globally in packages/ui/src/styles/worktree-row.css so
