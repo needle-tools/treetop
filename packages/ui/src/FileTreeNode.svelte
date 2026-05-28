@@ -27,7 +27,7 @@
     : [];
   $: myGitStatus = gitStatusByDir[parentDir]?.get(entry.name);
   $: isDir = entry.type === "directory";
-  $: isStarred = starred.has(fullPath);
+  $: isStarred = starred.has(fullPath) || starred.has(fullPath.replace(/\//g, "\\")) || starred.has(fullPath.replace(/\\/g, "/"));
 
   // --- File diff tooltip ---
   let diffText: string | null = null;

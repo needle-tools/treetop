@@ -3,7 +3,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -381,20 +381,10 @@
 
   $: visibleEntries = showDotfiles ? entries : entries.filter((e) => !e.name.startsWith("."));
 
-  /** Starred paths within this worktree, sorted alphabetically.
-   *  Each item shows its path relative to wtPath when on disk;
-   *  paths outside wtPath are filtered out. */
-  $: starredInWt = (() => {
-    const list: { fullPath: string; rel: string; name: string }[] = [];
-    for (const p of starred) {
-      if (!p.startsWith(wtPath)) continue;
-      const rel = p.slice(wtPath.length).replace(/^[\\/]+/, "") || ".";
-      const name = p.split(/[\\/]/).pop() ?? p;
-      list.push({ fullPath: p, rel, name });
-    }
-    list.sort((a, b) => a.rel.localeCompare(b.rel));
-    return list;
-  })();
+  /** All starred items, with paths inside wtPath listed first (showing
+   *  a worktree-relative path) and items outside (parent dirs, sibling
+   *  repos) after, showing their full normalized path. */
+  $: starredList = computeStarredList(starred, wtPath);
   $: canBack = (navTick, nav.canGoBack());
   $: canForward = (navTick, nav.canGoForward());
   $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
@@ -542,11 +532,11 @@
 
   <div class="fb-content">
     {#if starredOnly}
-      {#if starredInWt.length === 0}
-        <div class="fb-status muted small">No starred items in this worktree</div>
+      {#if starredList.length === 0}
+        <div class="fb-status muted small">No starred items</div>
       {:else}
         <ul class="fb-list">
-          {#each starredInWt as item (item.fullPath)}
+          {#each starredList as item (item.fullPath)}
             <li>
               <div class="fb-row" role="button" tabindex="0"
                 on:click={() => handleNavigateToFile(item.fullPath)}

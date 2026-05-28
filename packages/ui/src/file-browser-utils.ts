@@ -147,6 +147,63 @@ export function breadcrumbs(path: string): { name: string; path: string }[] {
   return crumbs;
 }
 
+/** Normalize a filesystem path's separators so the same logical path
+ *  always serializes the same way. Windows paths (those starting with
+ *  a drive letter or containing a backslash) get all separators
+ *  converted to `\`; Unix paths are left alone. */
+export function normalizePath(path: string): string {
+  const isWindows = /^[a-zA-Z]:/.test(path) || path.includes("\\");
+  if (isWindows) return path.replace(/\//g, "\\");
+  return path;
+}
+
+export interface StarredItem {
+  /** Normalized full path. */
+  fullPath: string;
+  /** Display string: relative to wtPath when inside it, otherwise the
+   *  full normalized path. */
+  rel: string;
+  /** True when the item is somewhere under wtPath; false when it's
+   *  outside (a parent directory, sibling repo, /tmp, etc). */
+  inWt: boolean;
+}
+
+/** Compute the list of starred items to show in the file browser's
+ *  "starred only" view. Includes ALL stars (not just those inside
+ *  wtPath) so items in parent directories or other repos still appear.
+ *  Items inside wtPath are sorted first, then items outside; within each
+ *  group, sorted alphabetically by path. */
+export function computeStarredList(
+  starred: Iterable<string>,
+  wtPath: string,
+): StarredItem[] {
+  const wtNorm = normalizePath(wtPath);
+  const sep = /^[a-zA-Z]:/.test(wtNorm) || wtNorm.includes("\\") ? "\\" : "/";
+  const wtWithSep = wtNorm.endsWith(sep) ? wtNorm : wtNorm + sep;
+  const items: StarredItem[] = [];
+  for (const p of starred) {
+    const norm = normalizePath(p);
+    if (norm === wtNorm) {
+      items.push({ fullPath: norm, rel: ".", inWt: true });
+      continue;
+    }
+    if (norm.startsWith(wtWithSep)) {
+      items.push({
+        fullPath: norm,
+        rel: norm.slice(wtWithSep.length),
+        inWt: true,
+      });
+    } else {
+      items.push({ fullPath: norm, rel: norm, inWt: false });
+    }
+  }
+  items.sort((a, b) => {
+    if (a.inWt !== b.inWt) return a.inWt ? -1 : 1;
+    return a.rel.localeCompare(b.rel);
+  });
+  return items;
+}
+
 export interface SimpleKV {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -173,7 +230,11 @@ export class StarStore {
       return new Set();
     }
     if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+    return new Set(
+      parsed
+        .filter((x): x is string => typeof x === "string")
+        .map(normalizePath),
+    );
   }
 
   save(paths: Iterable<string>): void {
@@ -184,11 +245,14 @@ export class StarStore {
     }
   }
 
-  /** Returns a new Set with `path` toggled. Persists immediately. */
+  /** Returns a new Set with `path` toggled. Persists immediately.
+   *  Both `current` and `path` are normalized so the same logical
+   *  path can't appear twice with different separator styles. */
   toggle(current: Set<string>, path: string): Set<string> {
-    const next = new Set(current);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
+    const norm = normalizePath(path);
+    const next = new Set([...current].map(normalizePath));
+    if (next.has(norm)) next.delete(norm);
+    else next.add(norm);
     this.save(next);
     return next;
   }

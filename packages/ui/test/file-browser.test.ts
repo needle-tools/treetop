@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -413,6 +413,105 @@ describe("breadcrumbs", () => {
   });
 });
 
+describe("computeStarredList", () => {
+  test("returns items inside wtPath with relative path", () => {
+    const stars = new Set(["C:\\git\\repo\\src\\foo.ts"]);
+    const list = computeStarredList(stars, "C:\\git\\repo");
+    expect(list).toEqual([
+      { fullPath: "C:\\git\\repo\\src\\foo.ts", rel: "src\\foo.ts", inWt: true },
+    ]);
+  });
+
+  test("includes items in PARENT directory of wtPath (not filtered out)", () => {
+    // worktree is C:\git\repo\sub; star is one level up in C:\git\repo
+    const stars = new Set(["C:\\git\\repo\\package.json"]);
+    const list = computeStarredList(stars, "C:\\git\\repo\\sub");
+    expect(list.length).toBe(1);
+    expect(list[0]!.fullPath).toBe("C:\\git\\repo\\package.json");
+    expect(list[0]!.inWt).toBe(false);
+  });
+
+  test("includes items in the repo root above wtPath", () => {
+    // User has worktree at C:\git\repo\src, stars C:\git\repo\package.json
+    const stars = new Set(["C:\\git\\repo\\package.json"]);
+    const list = computeStarredList(stars, "C:\\git\\repo\\src");
+    expect(list.length).toBe(1);
+    expect(list[0]!.fullPath).toBe("C:\\git\\repo\\package.json");
+    expect(list[0]!.inWt).toBe(false);
+  });
+
+  test("items outside wtPath get full path as rel (no relativization)", () => {
+    const stars = new Set(["C:\\git\\other-repo\\file.ts"]);
+    const list = computeStarredList(stars, "C:\\git\\repo");
+    expect(list[0]!.rel).toBe("C:\\git\\other-repo\\file.ts");
+  });
+
+  test("normalizes mixed-separator inputs", () => {
+    const stars = new Set(["C:/git/repo/src/foo.ts"]);
+    const list = computeStarredList(stars, "C:\\git\\repo");
+    expect(list[0]!.fullPath).toBe("C:\\git\\repo\\src\\foo.ts");
+    expect(list[0]!.rel).toBe("src\\foo.ts");
+    expect(list[0]!.inWt).toBe(true);
+  });
+
+  test("sorts in-wt items first, then by path", () => {
+    const stars = new Set([
+      "C:\\git\\other\\zfile.md",
+      "C:\\git\\repo\\zfile.md",
+      "C:\\git\\repo\\afile.md",
+    ]);
+    const list = computeStarredList(stars, "C:\\git\\repo");
+    expect(list.map((e) => e.fullPath)).toEqual([
+      "C:\\git\\repo\\afile.md",
+      "C:\\git\\repo\\zfile.md",
+      "C:\\git\\other\\zfile.md",
+    ]);
+  });
+
+  test("unix paths work too", () => {
+    const stars = new Set(["/Users/me/repo/src/foo.ts", "/Users/me/other/bar.ts"]);
+    const list = computeStarredList(stars, "/Users/me/repo");
+    expect(list).toEqual([
+      { fullPath: "/Users/me/repo/src/foo.ts", rel: "src/foo.ts", inWt: true },
+      { fullPath: "/Users/me/other/bar.ts", rel: "/Users/me/other/bar.ts", inWt: false },
+    ]);
+  });
+
+  test("empty star set returns empty list", () => {
+    expect(computeStarredList(new Set(), "C:\\repo")).toEqual([]);
+  });
+
+  test("prefix-but-not-subpath is treated as outside (avoid string prefix bug)", () => {
+    // C:\git\repository starts with C:\git\repo but isn't inside it.
+    const stars = new Set(["C:\\git\\repository\\foo.ts"]);
+    const list = computeStarredList(stars, "C:\\git\\repo");
+    expect(list[0]!.inWt).toBe(false);
+    expect(list[0]!.rel).toBe("C:\\git\\repository\\foo.ts");
+  });
+});
+
+describe("normalizePath", () => {
+  test("unix path unchanged", () => {
+    expect(normalizePath("/Users/me/repo/src/foo.ts")).toBe("/Users/me/repo/src/foo.ts");
+  });
+
+  test("windows path with mixed separators uses backslash", () => {
+    expect(normalizePath("C:\\git\\repo/docs\\foo.md")).toBe("C:\\git\\repo\\docs\\foo.md");
+  });
+
+  test("windows path with forward slashes converts to backslash", () => {
+    expect(normalizePath("C:/git/repo/foo.md")).toBe("C:\\git\\repo\\foo.md");
+  });
+
+  test("path without separators unchanged", () => {
+    expect(normalizePath("foo.md")).toBe("foo.md");
+  });
+
+  test("identifies windows by leading drive letter", () => {
+    expect(normalizePath("D:/foo")).toBe("D:\\foo");
+  });
+});
+
 describe("StarStore", () => {
   const KEY = "supergit:fileBrowser:stars";
 
@@ -463,5 +562,29 @@ describe("StarStore", () => {
     m.setItem(KEY, JSON.stringify(["/a", 42, null, "/b"]));
     const s = new StarStore(m, KEY);
     expect([...s.load()].sort()).toEqual(["/a", "/b"]);
+  });
+
+  test("toggle normalizes windows path separators (no duplicates)", () => {
+    const m = new MemStore();
+    const s = new StarStore(m, KEY);
+    let set = s.toggle(new Set(), "C:\\git\\repo\\foo.md");
+    set = s.toggle(set, "C:/git/repo/foo.md");
+    // Both paths are the same file — toggling the second time should
+    // REMOVE the entry, not add a duplicate.
+    expect(set.size).toBe(0);
+  });
+
+  test("load normalizes legacy mixed-separator entries", () => {
+    const m = new MemStore();
+    m.setItem(KEY, JSON.stringify([
+      "C:\\git\\repo\\foo.md",
+      "C:/git/repo/foo.md",
+      "C:\\git\\repo\\bar.md",
+    ]));
+    const s = new StarStore(m, KEY);
+    expect([...s.load()].sort()).toEqual([
+      "C:\\git\\repo\\bar.md",
+      "C:\\git\\repo\\foo.md",
+    ]);
   });
 });
