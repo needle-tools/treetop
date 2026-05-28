@@ -36,6 +36,11 @@
    *  by; "ollama" is redundant when every Ollama column would carry
    *  the same label. Undefined ⇒ render the agent name. */
   export let agentLabel: string | undefined = undefined;
+  /** Optional small glyph rendered inside the agent-pill right after the
+   *  label (e.g. the colour-coded effort indicator after "opus"). The
+   *  `paths` are filled SVG `d`-strings in a 24×24 viewBox; `color` tints
+   *  them. Undefined ⇒ nothing rendered. */
+  export let agentIcon: { paths: string[]; trackPaths?: string[]; color: string; title?: string } | undefined = undefined;
   export let source: string;
   export let manualTitle: string = "";
   /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
@@ -207,7 +212,12 @@
         stroke-linecap="round"
         stroke-linejoin="round"
         aria-label="SSH connection active"
-      ><title>SSH connection active</title>{#each ICONS.monitor.paths ?? [] as d}<path {d}/>{/each}</svg>{/if}{agentLabel ?? agent}{#if mode === "terminal"}<span
+      ><title>SSH connection active</title>{#each ICONS.monitor.paths ?? [] as d}<path {d}/>{/each}</svg>{/if}{agentLabel ?? agent}{#if agentIcon}<svg
+        class="agent-pill-icon"
+        viewBox="0.5 6 23 12"
+        style="color:{agentIcon.color}"
+        aria-hidden="true"
+      >{#if agentIcon.title}<title>{agentIcon.title}</title>{/if}{#each agentIcon.trackPaths ?? [] as d}<path {d} class="gauge-track"/>{/each}{#each agentIcon.paths as d}<path {d}/>{/each}</svg>{/if}{#if mode === "terminal"}<span
         class="sleep-slot"
         title={!working ? "Idle — waiting for input" : ""}
       ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
@@ -559,6 +569,24 @@
     height: 0.85em;
     flex-shrink: 0;
     opacity: 0.85;
+  }
+  /* Effort glyph after the model name. Filled (matches the menu's bars),
+     tinted via the inline `color` from the effort ramp. Sized a touch
+     taller than the lowercase text so the bars read at pill scale. */
+  /* Wider-than-tall footprint matching the tight gauge viewBox (~2:1) so
+     the semicircle renders large enough to read at pill text size — a
+     square 1em box wasted ~half its height on the gauge's flat bottom. */
+  .agent-pill-icon {
+    width: 1.85em;
+    height: 1em;
+    flex-shrink: 0;
+    fill: currentColor;
+    stroke: none;
+  }
+  /* Dim/neutral gauge remainder behind the coloured fill. */
+  .agent-pill-icon .gauge-track {
+    fill: var(--text-faint);
+    opacity: 0.5;
   }
   .agent-pill.agent-claude {
     background: var(--chip-orange-bg);

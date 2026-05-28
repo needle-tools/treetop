@@ -24,6 +24,8 @@
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
+  import { claudeModelAlias } from "./storage";
+  import { claudeSessionMenuItems, effortIcon } from "./claude-session-menu";
   import type { SshSessionInfo } from "./file-browser-utils";
 
   type AgentKind = "claude" | "codex" | "copilot" | "ollama" | "shell";
@@ -70,6 +72,11 @@
   export let contextTokensExact: boolean | undefined = undefined;
   export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
+  /** Claude model/effort overrides for this session (persisted in
+   *  App.svelte's openSessionsByWt). Drive the agent-pill label and the
+   *  ✓ in the header's Model/Effort menus. claude-only. */
+  export let claudeModel: string | undefined = undefined;
+  export let claudeEffort: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
   /** Text of the user's most recent message in this session — fed
    *  through to SessionHeader so the "last activity" chip's hover
@@ -91,6 +98,8 @@
     close: void;
     dispose: void;
     restart: void;
+    setModel: { model: string };
+    setEffort: { effort: string };
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
@@ -143,7 +152,37 @@
    *  picks up the real session name once the agent writes to disk
    *  (StickyNote resolves the label live from repos[].worktrees[].
    *  agents on every render). */
+  /** The agent-pill label. For Claude, show the model tier alias the
+   *  session is actually running on (the persisted override wins, else
+   *  the tier of the detected model) so the user reads "opus" rather
+   *  than a generic "claude". Falls back to undefined (⇒ "claude") when
+   *  unknown, and stays undefined for non-claude agents. */
+  $: pillLabel =
+    agent === "claude"
+      ? claudeModelAlias(claudeModel ?? model)
+      : undefined;
+
+  /** Colour-coded effort glyph shown in the pill after the model name.
+   *  Only when an effort override is set (the default is unknown). */
+  $: agentEffortIcon = (() => {
+    if (agent !== "claude") return undefined;
+    const ic = effortIcon(claudeEffort);
+    return ic ? { ...ic, title: `effort: ${claudeEffort}` } : undefined;
+  })();
+
+  $: claudeMenuItems =
+    agent === "claude"
+      ? claudeSessionMenuItems({
+          currentModel: claudeModel,
+          detectedModel: model,
+          currentEffort: claudeEffort,
+          onPickModel: (m) => dispatch("setModel", { model: m }),
+          onPickEffort: (e) => dispatch("setEffort", { effort: e }),
+        })
+      : [];
+
   $: menuItems = [
+    ...claudeMenuItems,
     {
       kind: "copy",
       label: "Copy command + cwd",
@@ -197,6 +236,8 @@
 >
   <SessionHeader
     {agent}
+    agentLabel={pillLabel}
+    agentIcon={agentEffortIcon}
     {source}
     manualTitle={manualTitle ?? ""}
     mode="terminal"

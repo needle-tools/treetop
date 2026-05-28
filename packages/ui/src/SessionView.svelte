@@ -9,6 +9,8 @@
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
+  import { claudeModelAlias } from "./storage";
+  import { claudeSessionMenuItems, effortIcon } from "./claude-session-menu";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
@@ -154,6 +156,17 @@
   export let summaryMaxLines: number = 6;
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
+  /** Claude model/effort overrides for this session (persisted by the
+   *  parent in openSessionsByWt). Drive the agent-pill label, the ✓ in
+   *  the header's Model/Effort menus, and the `--model`/`--effort` flags
+   *  on the resume PTY. claude-only — undefined for other agents. */
+  export let claudeModel: string | undefined = undefined;
+  export let claudeEffort: string | undefined = undefined;
+  /** Called when the user picks a model/effort from the header menu.
+   *  The parent persists the choice and re-keys the column so the resume
+   *  PTY respawns with the new flag ("restart via resume"). */
+  export let onSetClaudeModel: (model: string) => void = () => {};
+  export let onSetClaudeEffort: (effort: string) => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -790,7 +803,18 @@
    *  for `kind: "copy"` items. */
   $: menuItems = ((): SessionMenuItem[] => {
     const sid = session?.sessionId;
+    const claudeItems: SessionMenuItem[] =
+      agent === "claude"
+        ? claudeSessionMenuItems({
+            currentModel: claudeModel,
+            detectedModel: model,
+            currentEffort: claudeEffort,
+            onPickModel: (m) => onSetClaudeModel(m),
+            onPickEffort: (e) => onSetClaudeEffort(e),
+          })
+        : [];
     const base: SessionMenuItem[] = [
+      ...claudeItems,
       {
         kind: "action",
         label: "Resume in external terminal",
@@ -902,6 +926,14 @@
       });
     }
     return [...base, ...extraMenuItems];
+  })();
+
+  /** Colour-coded effort glyph shown in the agent pill after the model
+   *  name. Only when an effort override is set (default is unknown). */
+  $: agentEffortIcon = (() => {
+    if (agent !== "claude") return undefined;
+    const ic = effortIcon(claudeEffort);
+    return ic ? { ...ic, title: `effort: ${claudeEffort}` } : undefined;
   })();
 
   /** Pin this session as a sticky-link chip on the current
@@ -1337,7 +1369,12 @@
   <div class="session-head-stack">
     <SessionHeader
       {agent}
-      agentLabel={agent === "ollama" ? (model || undefined) : undefined}
+      agentLabel={agent === "ollama"
+        ? (model || undefined)
+        : agent === "claude"
+          ? claudeModelAlias(claudeModel ?? model)
+          : undefined}
+      agentIcon={agentEffortIcon}
       {source}
       {manualTitle}
       {mode}
@@ -1542,6 +1579,11 @@
             // permission checks as an option, without it being enabled by default".
             // Without it, the slash-command toggle inside the TUI is unavailable.
             "--allow-dangerously-skip-permissions",
+            // Model/effort overrides picked from the header menu. Switching
+            // mid-thread is the "restart via resume" UX: the column remounts
+            // (see App's {#key}) so this PTY respawns with the new flag.
+            ...(claudeModel ? ["--model", claudeModel] : []),
+            ...(claudeEffort ? ["--effort", claudeEffort] : []),
           ]}
       cwd={session.cwd}
       ownerId={session.sessionId}

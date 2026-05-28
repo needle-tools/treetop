@@ -29,6 +29,19 @@
          *  a 24×24 viewBox at 14×14 with `currentColor`. Wins over
          *  `icon` when both are set. */
         iconSvg?: string[];
+        /** Dim/neutral SVG paths drawn *behind* `iconSvg` in the same
+         *  24×24 viewBox — e.g. the unfilled remainder of a gauge track.
+         *  Rendered with a faint neutral fill regardless of `iconColor`. */
+        iconTrackPaths?: string[];
+        /** Render `iconSvg` filled (fill: currentColor, no stroke)
+         *  instead of the default stroke-only outline. */
+        iconFilled?: boolean;
+        /** Inline colour for the icon (overrides the muted default and
+         *  hover colour). Used to colour-code icons, e.g. effort levels. */
+        iconColor?: string;
+        /** When true, a trailing check glyph marks this item as the
+         *  currently-active option (e.g. the model/effort in effect). */
+        selected?: boolean;
         /** When true, the menu stays open after clicking this item.
          *  Useful for toggle-style actions (e.g. show/hide dotfiles). */
         keepOpen?: boolean;
@@ -53,6 +66,12 @@
         title?: string;
         icon?: string;
         iconSvg?: string[];
+        /** Dim track paths drawn behind `iconSvg` (see action variant). */
+        iconTrackPaths?: string[];
+        /** Render `iconSvg` filled instead of stroke-only. */
+        iconFilled?: boolean;
+        /** Inline colour for the icon. */
+        iconColor?: string;
       };
 </script>
 
@@ -177,8 +196,16 @@
                 <span class="label">Copied to clipboard</span>
               {:else}
                 {#if item.iconSvg && item.iconSvg.length > 0}
-                  <span class="icon icon-svg" aria-hidden="true">
+                  <span
+                    class="icon icon-svg"
+                    class:icon-filled={item.iconFilled}
+                    style={item.iconColor ? `color:${item.iconColor}` : undefined}
+                    aria-hidden="true"
+                  >
                     <svg viewBox="0 0 24 24" width="14" height="14">
+                      {#each item.iconTrackPaths ?? [] as d}
+                        <path {d} class="gauge-track" />
+                      {/each}
                       {#each item.iconSvg as d}
                         <path {d} />
                       {/each}
@@ -190,6 +217,11 @@
                   <span class="icon icon-empty" aria-hidden="true"></span>
                 {/if}
                 <span class="label">{item.label}</span>
+                {#if item.kind === "action" && item.selected}
+                  <span class="trailing-check" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="13" height="13"><path d="M20 6 9 17l-5-5" /></svg>
+                  </span>
+                {/if}
                 {#if item.kind === "submenu"}
                   <span class="chevron" aria-hidden="true">▸</span>
                 {/if}
@@ -211,8 +243,16 @@
                       on:click={() => handleSubmenuChildClick(child)}
                     >
                       {#if child.iconSvg && child.iconSvg.length > 0}
-                        <span class="icon icon-svg" aria-hidden="true">
+                        <span
+                          class="icon icon-svg"
+                          class:icon-filled={child.iconFilled}
+                          style={child.iconColor ? `color:${child.iconColor}` : undefined}
+                          aria-hidden="true"
+                        >
                           <svg viewBox="0 0 24 24" width="14" height="14">
+                            {#each child.iconTrackPaths ?? [] as d}
+                              <path {d} class="gauge-track" />
+                            {/each}
                             {#each child.iconSvg as d}
                               <path {d} />
                             {/each}
@@ -224,6 +264,11 @@
                         <span class="icon icon-empty" aria-hidden="true"></span>
                       {/if}
                       <span class="label">{child.label}</span>
+                      {#if child.kind === "action" && child.selected}
+                        <span class="trailing-check" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" width="13" height="13"><path d="M20 6 9 17l-5-5" /></svg>
+                        </span>
+                      {/if}
                     </button>
                   </li>
                 {/each}
@@ -309,6 +354,40 @@
     stroke: currentColor;
     fill: none;
     stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  /* Filled variant — for solid glyphs (the AI sparkle, the effort
+     bolt/bars) the painted body reads better at 14px than an outline. */
+  .menu-item .icon.icon-svg.icon-filled svg {
+    fill: currentColor;
+    stroke: none;
+  }
+  /* Gauge track: the dim/neutral remainder of the sweep drawn behind the
+     coloured fill. Neutral (not the effort colour) and faded so the
+     coloured portion is what draws the eye. */
+  .menu-item .icon.icon-svg svg .gauge-track {
+    fill: var(--text-faint);
+    stroke: none;
+    opacity: 0.45;
+  }
+  /* Trailing check marking the currently-active option in a group
+     (e.g. the model/effort in effect). Pushed flush-right past the
+     label; coloured with the clean/confirm accent so it reads as
+     "this one's on" rather than another decorative glyph. */
+  .menu-item .trailing-check {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding-left: 0.4rem;
+    display: inline-flex;
+    align-items: center;
+    color: var(--status-clean);
+  }
+  .menu-item .trailing-check svg {
+    display: block;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2.5;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
