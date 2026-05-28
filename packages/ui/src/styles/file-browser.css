@@ -71,6 +71,29 @@
 .fb-icon-clickable:hover {
   background: var(--surface-3);
 }
+
+/* Starred-only view: items whose backing file no longer exists.
+ * Strike through the name, fade everything, and surface a small
+ * "missing" tag so the user can tell at a glance which stars are
+ * stale and unstar them. */
+.fb-row.fb-missing {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.fb-row.fb-missing .fb-name {
+  text-decoration: line-through;
+}
+.fb-row.fb-missing:hover {
+  background: transparent;
+}
+.fb-missing-hint {
+  font-size: 0.62rem;
+  color: var(--danger, #d96e6e);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  margin-right: 0.4rem;
+}
 .fb-name {
   font-size: 0.72rem;
   color: var(--text-1);

@@ -3,7 +3,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, fetchPathStats, type FileEntry, type PathStat, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -354,6 +354,22 @@
     }
   }
 
+  /** Double-click handler for the starred-only view. Files open in the
+   *  OS default app (same as the regular tree). Directories navigate
+   *  *and* drop out of the filter — otherwise the user would land in
+   *  the folder view but still only see starred entries, which is
+   *  confusing when most folders aren't starred themselves. */
+  function handleStarredDblClick(fullPath: string, stat: PathStat | undefined) {
+    if (!stat?.exists) return; // missing — nothing to open
+    if (stat.type === "directory") {
+      starredOnly = false;
+      navigateTo(fullPath);
+    } else {
+      const { dir, name } = splitParent(fullPath);
+      openFile(name, dir);
+    }
+  }
+
   function handleNodeToggleExpand(name: string, parentDir: string) {
     toggleExpand(name, parentDir);
   }
@@ -382,6 +398,19 @@
    *  a worktree-relative path) and items outside (parent dirs, sibling
    *  repos) after, showing their full normalized path. */
   $: starredList = computeStarredList(starred, wtPath);
+
+  /** Per-path stat results for items shown in the starred-only view.
+   *  Populated lazily when starredOnly is toggled on or the star set
+   *  changes; used to strike through missing items and to pick a
+   *  folder vs document icon. Local-only — remote SSH stars aren't
+   *  stat'd via this path. */
+  let starredStats: Record<string, PathStat> = {};
+  $: if (starredOnly && !isRemote) {
+    const paths = starredList.map((s) => s.fullPath);
+    void fetchPathStats(paths).then((stats) => {
+      starredStats = stats;
+    });
+  }
   $: canBack = (navTick, nav.canGoBack());
   $: canForward = (navTick, nav.canGoForward());
   $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
@@ -534,14 +563,28 @@
       {:else}
         <ul class="fb-list">
           {#each starredList as item (item.fullPath)}
+            {@const stat = starredStats[item.fullPath]}
+            {@const isDir = stat?.type === "directory"}
+            {@const missing = stat !== undefined && !stat.exists}
             <li>
-              <div class="fb-row" role="button" tabindex="0"
+              <div class="fb-row" class:fb-missing={missing} role="button" tabindex="0"
                 on:click={() => handleNavigateToFile(item.fullPath)}
-                on:keydown={(e) => { if (e.key === "Enter") handleNavigateToFile(item.fullPath); }}
+                on:dblclick={() => handleStarredDblClick(item.fullPath, stat)}
+                on:keydown={(e) => { if (e.key === "Enter") handleStarredDblClick(item.fullPath, stat); }}
+                title={missing ? `File not found: ${item.fullPath}` : item.fullPath}
               >
                 <span class="fb-arrow-spacer" aria-hidden="true"></span>
-                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
+                <span class="fb-icon">
+                  {#if isDir}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.folder.paths ?? [] as d}<path {d}/>{/each}</svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg>
+                  {/if}
+                </span>
                 <span class="fb-name fb-name-rel">{item.rel}</span>
+                {#if missing}
+                  <span class="fb-missing-hint">missing</span>
+                {/if}
                 <button
                   class="fb-star fb-star-on"
                   on:click|stopPropagation={() => toggleStar(item.fullPath)}

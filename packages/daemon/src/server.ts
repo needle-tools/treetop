@@ -1690,6 +1690,7 @@ const server = Bun.serve<TermWsData, never>({
           { method: "POST", path: "/api/pick-file", body: { prompt: "string?", startAt: "string? (file or dir to open the picker in)", fallback: "string? (used when startAt doesn't exist)" }, description: "open OS-native file picker, returns chosen path or 204 if cancelled" },
           { method: "POST", path: "/api/open-default", body: { path: "string" }, description: "open a file with the OS default application (same handler a Finder/Explorer double-click would route to). Used by file-flavoured custom links." },
           { method: "GET", path: "/api/files", description: "?path=<dir> — list directory contents. Returns { entries: [{ name, type, size }] } where type is 'file' | 'directory' | 'symlink'. Used by the file browser panel." },
+          { method: "POST", path: "/api/exists", body: { paths: "string[]" }, description: "bulk stat. Returns { results: { [path]: { exists: bool, type?: 'file'|'directory'|'symlink' } } }. Used by the starred-only view to strike through stars whose files were moved/deleted and to distinguish folders from files in the row icons." },
           { method: "GET", path: "/api/page-title", description: "?url= — best-effort `<title>` extractor for a remote URL. Used by the custom-link 'auto-fill label' path so chips get a friendlier name than the bare host. Returns { url, title } where title may be null." },
           { method: "GET", path: "/api/editors", description: "list editors detected on PATH (cursor, code, rider, ...)" },
           { method: "GET", path: "/api/commits", description: "list commits for a worktree: ?path=<wt>&before=<sha>&limit=<n>" },
@@ -5568,6 +5569,40 @@ const server = Bun.serve<TermWsData, never>({
           { status: 500 },
         );
       }
+    }
+
+    if (url.pathname === "/api/exists" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as
+        | { paths?: unknown }
+        | null;
+      const paths = Array.isArray(body?.paths)
+        ? body.paths.filter((p): p is string => typeof p === "string")
+        : null;
+      if (!paths) {
+        return json({ error: "body.paths must be string[]" }, { status: 400 });
+      }
+      // lstat each path in parallel so symlinks come back as "symlink"
+      // instead of resolving to their target. Any stat error means
+      // "doesn't exist" (covers ENOENT and EACCES — both render as missing).
+      const { lstat } = await import("node:fs/promises");
+      const entries = await Promise.all(
+        paths.map(async (p) => {
+          try {
+            const s = await lstat(p);
+            const type = s.isSymbolicLink()
+              ? "symlink"
+              : s.isDirectory()
+                ? "directory"
+                : "file";
+            return [p, { exists: true, type }] as const;
+          } catch {
+            return [p, { exists: false }] as const;
+          }
+        }),
+      );
+      const results: Record<string, { exists: boolean; type?: string }> = {};
+      for (const [p, info] of entries) results[p] = info;
+      return json({ results });
     }
 
     if (url.pathname === "/api/pick-folder" && req.method === "POST") {

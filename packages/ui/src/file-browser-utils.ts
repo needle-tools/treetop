@@ -55,6 +55,35 @@ export async function fetchDir(path: string): Promise<FileEntry[]> {
   return data.entries ?? [];
 }
 
+export interface PathStat {
+  exists: boolean;
+  type?: "file" | "directory" | "symlink";
+}
+
+/** Bulk-stat a list of paths. Used by the starred-only view to grey
+ *  out stars whose files were moved/deleted and to choose folder vs
+ *  file icons based on the actual on-disk type. Empty input short-
+ *  circuits without a fetch. Errors return all-missing rather than
+ *  throwing — the view degrades to "show stars without status" rather
+ *  than breaking entirely. */
+export async function fetchPathStats(
+  paths: string[],
+): Promise<Record<string, PathStat>> {
+  if (paths.length === 0) return {};
+  try {
+    const res = await fetch("/api/exists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as { results?: Record<string, PathStat> };
+    return data.results ?? {};
+  } catch {
+    return {};
+  }
+}
+
 export interface NavHistoryState {
   back: string[];
   forward: string[];

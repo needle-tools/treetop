@@ -118,3 +118,84 @@ describe.skipIf(!daemonUp)("/api/files", () => {
     }
   });
 });
+
+describe.skipIf(!daemonUp)("/api/exists", () => {
+  type StatEntry = { exists: boolean; type?: "file" | "directory" | "symlink" };
+  async function postExists(paths: string[]): Promise<Record<string, StatEntry>> {
+    const res = await fetch("http://localhost:7777/api/exists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { results: Record<string, StatEntry> };
+    return body.results;
+  }
+
+  test("returns exists:true with type:'file' for existing files", async () => {
+    const real = join(tmpDir, "README.md");
+    const result = await postExists([real]);
+    expect(result[real]).toEqual({ exists: true, type: "file" });
+  });
+
+  test("returns exists:false for missing paths", async () => {
+    const missing = join(tmpDir, "this-file-does-not-exist.txt");
+    const result = await postExists([missing]);
+    expect(result[missing]).toEqual({ exists: false });
+  });
+
+  test("returns type:'directory' for directories", async () => {
+    const result = await postExists([join(tmpDir, "src")]);
+    expect(result[join(tmpDir, "src")]).toEqual({
+      exists: true,
+      type: "directory",
+    });
+  });
+
+  test("returns type:'symlink' for symlinks (lstat, not stat)", async () => {
+    const link = join(tmpDir, "LINK.md");
+    const result = await postExists([link]);
+    // LINK.md is created in beforeAll; on Windows w/o developer mode this
+    // may fall back to a real file copy, in which case "file" is fine.
+    expect(result[link]!.exists).toBe(true);
+    expect(["symlink", "file"]).toContain(result[link]!.type);
+  });
+
+  test("mixed existing + missing paths in one request", async () => {
+    const a = join(tmpDir, "README.md");
+    const b = join(tmpDir, "ghost.md");
+    const c = join(tmpDir, "src");
+    const result = await postExists([a, b, c]);
+    expect(result[a]!.exists).toBe(true);
+    expect(result[a]!.type).toBe("file");
+    expect(result[b]!.exists).toBe(false);
+    expect(result[c]!.type).toBe("directory");
+  });
+
+  test("handles empty input", async () => {
+    const result = await postExists([]);
+    expect(result).toEqual({});
+  });
+
+  test("returns 400 when body.paths is not an array", async () => {
+    const res = await fetch("http://localhost:7777/api/exists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: "not-an-array" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("ignores non-string entries (filtered out)", async () => {
+    const res = await fetch("http://localhost:7777/api/exists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: [join(tmpDir, "README.md"), 42, null] }),
+    });
+    expect(res.ok).toBe(true);
+    const body = (await res.json()) as { results: Record<string, StatEntry> };
+    expect(body.results[join(tmpDir, "README.md")]!.exists).toBe(true);
+    // non-strings dropped — no extra keys
+    expect(Object.keys(body.results).length).toBe(1);
+  });
+});
