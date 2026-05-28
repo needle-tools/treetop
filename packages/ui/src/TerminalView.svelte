@@ -28,6 +28,53 @@
     });
   }
 
+  /** Robust clipboard-write. The async Clipboard API is the modern
+   *  path but it gets silently rejected in WebView2 / strict-Permissions
+   *  contexts even when the keydown is a trusted user gesture — observed
+   *  on Windows where Ctrl+C-with-selection felt like it "did nothing"
+   *  because the write rejected and the `.catch` swallowed it. We fall
+   *  back to the legacy `execCommand("copy")` via a transient offscreen
+   *  textarea, which honors the same trusted-gesture rule but uses the
+   *  selection-based clipboard path the WebView allows. If BOTH fail
+   *  we surface a console warning so the user can see this isn't a
+   *  silent dropped keystroke. */
+  function copyToClipboard(text: string): void {
+    if (!text) return;
+    const tryLegacy = (): boolean => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText =
+          "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+        document.body.appendChild(ta);
+        const prev = document.activeElement as HTMLElement | null;
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        try { prev?.focus(); } catch { /* best-effort restore */ }
+        return ok;
+      } catch {
+        return false;
+      }
+    };
+    const writeText = navigator.clipboard?.writeText;
+    if (writeText) {
+      writeText.call(navigator.clipboard, text).catch(() => {
+        if (!tryLegacy()) {
+          console.warn(
+            "supergit: clipboard write failed via both async Clipboard API and execCommand",
+          );
+        }
+      });
+      return;
+    }
+    if (!tryLegacy()) {
+      console.warn("supergit: clipboard write failed (no async API, execCommand denied)");
+    }
+  }
+
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
   export let cmd: string[];
   /** Working directory for the PTY. */
@@ -484,7 +531,7 @@
           ev.preventDefault();
           ev.stopPropagation();
           const sel = getCleanedSelection(xterm);
-          if (sel) void navigator.clipboard?.writeText(sel).catch(() => {});
+          if (sel) copyToClipboard(sel);
           return;
         }
         if (ev.code === "KeyA") {
@@ -493,11 +540,54 @@
           return;
         }
       }
+
+      // Windows/Linux: Ctrl+C with a TUI selection copies. We mirror the
+      // mac Cmd+C branch in capture phase rather than relying solely on
+      // attachCustomKeyEventHandler because xterm's own keydown handler
+      // can clear / mutate selection state between the raw keydown and
+      // the custom-key callback firing (observed under cmd.exe and
+      // PowerShell PTYs on Windows: selection visibly highlights, plain
+      // Ctrl+C feels like it "did nothing"). Reading + writing in
+      // capture phase pins the selection read and clipboard write to
+      // the earliest possible moment so the convention works the same
+      // way Cmd+C does on macOS. The interrupt path (Ctrl+C with no
+      // selection → 0x03) is left to xterm's default — falling through
+      // is correct and keeps SIGINT working in TUIs.
+      if (!isMac && ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
+        if (ev.code === "KeyC" && xterm?.hasSelection()) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const sel = getCleanedSelection(xterm);
+          if (sel) copyToClipboard(sel);
+          return;
+        }
+      }
     }, true);
 
     xterm.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown" || ev.altKey) return true;
       const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      // Windows console copy/paste conventions: Shift+Insert pastes,
+      // Ctrl+Insert copies the current selection. cmd.exe and the
+      // legacy Win32 console treat these as the canonical clipboard
+      // shortcuts (Ctrl+C is interrupt by default there), and they're
+      // routed through the same async Clipboard API + xterm.paste path
+      // as Ctrl+V / Ctrl+C-with-selection so behavior stays consistent.
+      // We check Insert before the `modOnly` gate because Shift+Insert
+      // has no Ctrl/Cmd, which would otherwise be filtered out.
+      if (ev.code === "Insert") {
+        if (ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
+          ev.preventDefault();
+          void doClipboardPaste();
+          return false;
+        }
+        if (ev.ctrlKey && !ev.metaKey && !ev.shiftKey && xterm?.hasSelection()) {
+          ev.preventDefault();
+          const sel = getCleanedSelection(xterm);
+          if (sel) copyToClipboard(sel);
+          return false;
+        }
+      }
       const modOnly = isMac
         ? ev.metaKey && !ev.ctrlKey
         : ev.ctrlKey && !ev.metaKey;

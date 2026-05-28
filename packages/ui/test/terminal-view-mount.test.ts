@@ -120,7 +120,36 @@ describe("TerminalView clipboard copy + paste", () => {
     expect(SOURCE).toMatch(/code\s*===\s*["']KeyC["']/);
     expect(SOURCE).toMatch(/xterm\??\.hasSelection\(\)/);
     expect(SOURCE).toMatch(/getCleanedSelection\(xterm\)/);
-    expect(SOURCE).toContain("navigator.clipboard?.writeText");
+    expect(SOURCE).toContain("copyToClipboard(sel)");
+  });
+
+  /** copyToClipboard wraps the async Clipboard API with an
+   *  execCommand("copy") fallback. WebView2 and other strict-Permissions
+   *  contexts silently reject `navigator.clipboard.writeText` even when
+   *  the keydown is a trusted user gesture — observed on Windows where
+   *  Ctrl+C-with-selection felt like it "did nothing" because the
+   *  promise rejected and a `.catch(() => {})` swallowed it. The
+   *  legacy execCommand path uses a transient offscreen textarea that
+   *  honors the same trusted-gesture rule but takes the
+   *  selection-based clipboard route the WebView allows. If a future
+   *  refactor drops either path or quietly removes the warning,
+   *  Windows users lose Ctrl+C silently again — this test fails loud. */
+  test("copyToClipboard tries async Clipboard API then execCommand fallback", () => {
+    // Helper exists and is the single point of clipboard-write.
+    expect(SOURCE).toMatch(/function copyToClipboard\(text: string\)/);
+    const fnIdx = SOURCE.indexOf("function copyToClipboard");
+    // 600-char window is comfortably larger than the helper body
+    // (~50 lines) but small enough not to bleed into the next handler.
+    const body = SOURCE.slice(fnIdx, fnIdx + 1600);
+    // Async API attempted first.
+    expect(body).toContain("navigator.clipboard?.writeText");
+    // Legacy fallback wired with the offscreen-textarea + execCommand
+    // dance — required for WebView2 / clipboard-permission lockdowns.
+    expect(body).toContain('document.execCommand("copy")');
+    expect(body).toMatch(/createElement\(["']textarea["']\)/);
+    // Surface failures so a silent dropped Ctrl+C is debuggable
+    // instead of a mystery.
+    expect(body).toContain("console.warn");
   });
 
   test("paste event listener stays in capture phase", () => {
@@ -129,5 +158,79 @@ describe("TerminalView clipboard copy + paste", () => {
     // never fire. Capture phase runs first; without it the image-paste
     // fallback (right-click → Paste, touch paste menus) is dead.
     expect(SOURCE).toContain("on:paste|capture={onPaste}");
+  });
+
+  /** Windows console copy/paste keystrokes — Shift+Insert pastes,
+   *  Ctrl+Insert copies. cmd.exe and the Win32 console treat these as
+   *  the canonical clipboard shortcuts (Ctrl+C is interrupt there by
+   *  default), so a Windows user running `cmd` or `powershell` in a
+   *  terminal column needs them wired. Both route through the same
+   *  doClipboardPaste / selection-writeText path as Ctrl+V / Ctrl+C,
+   *  and the handlers must sit BEFORE the modOnly Ctrl/Cmd gate or
+   *  Shift+Insert (no Ctrl) would get filtered out. */
+  test("intercepts Shift+Insert as paste (Windows console convention)", () => {
+    expect(SOURCE).toMatch(/code\s*===\s*["']Insert["']/);
+    // The Shift+Insert branch must call our async-Clipboard paste path
+    // and live INSIDE the Insert block (between the code === "Insert"
+    // check and its closing brace), not somewhere unrelated in the file.
+    const insertIdx = SOURCE.indexOf('ev.code === "Insert"');
+    expect(insertIdx).toBeGreaterThan(-1);
+    // Grab a generous slice and assert the branch + behavior live together.
+    const block = SOURCE.slice(insertIdx, insertIdx + 800);
+    expect(block).toMatch(/ev\.shiftKey[\s\S]*doClipboardPaste\(\)/);
+  });
+
+  test("intercepts Ctrl+Insert as copy when there is a selection", () => {
+    const insertIdx = SOURCE.indexOf('ev.code === "Insert"');
+    expect(insertIdx).toBeGreaterThan(-1);
+    const block = SOURCE.slice(insertIdx, insertIdx + 800);
+    // Selection-gated copy mirrors the Ctrl+C handler: hasSelection()
+    // first, then getCleanedSelection + copyToClipboard. Same gating
+    // so a bare Ctrl+Insert with no selection becomes a no-op rather
+    // than silently overwriting the clipboard with an empty string.
+    expect(block).toMatch(/ev\.ctrlKey[\s\S]*hasSelection\(\)/);
+    expect(block).toMatch(/getCleanedSelection\(xterm\)/);
+    expect(block).toContain("copyToClipboard(sel)");
+  });
+
+  /** Capture-phase Ctrl+C copy on Windows/Linux. Mirrors the macOS
+   *  Cmd+C branch and exists because xterm.js's own keydown handler
+   *  can clear / mutate selection state between the raw keydown and
+   *  attachCustomKeyEventHandler firing — observed under cmd.exe and
+   *  PowerShell PTYs where the selection visibly highlights but plain
+   *  Ctrl+C feels like it "did nothing." Reading + writing in capture
+   *  phase pins the selection read and clipboard write to the earliest
+   *  possible moment. */
+  test("Ctrl+C copies selection in capture phase on Windows/Linux", () => {
+    // The handler must live inside the capture-phase container listener
+    // (third arg `true` to addEventListener), not in attachCustomKeyEventHandler
+    // — that's the whole point of the redundancy.
+    const captureIdx = SOURCE.indexOf('containerEl.addEventListener("keydown"');
+    expect(captureIdx).toBeGreaterThan(-1);
+    const captureClose = SOURCE.indexOf("}, true);", captureIdx);
+    expect(captureClose).toBeGreaterThan(captureIdx);
+    const captureBlock = SOURCE.slice(captureIdx, captureClose);
+    // The non-Mac branch must gate on ctrlKey (not metaKey), require
+    // an existing selection, and route through copyToClipboard (which
+    // owns the async-API + execCommand fallback). If any of these are
+    // missing the handler is either Mac-only or silently overwrites
+    // the clipboard with an empty string.
+    expect(captureBlock).toMatch(/!isMac[\s\S]*ev\.ctrlKey/);
+    expect(captureBlock).toMatch(/code\s*===\s*["']KeyC["'][\s\S]*hasSelection\(\)/);
+    expect(captureBlock).toMatch(/getCleanedSelection\(xterm\)/);
+    expect(captureBlock).toContain("copyToClipboard(sel)");
+  });
+
+  test("Insert handler runs before the modOnly Ctrl/Cmd gate", () => {
+    // Shift+Insert has no Ctrl on Windows, and modOnly is
+    // `ctrlKey && !metaKey`, so if the Insert block were placed after
+    // the `if (!modOnly) return true;` guard it would never fire and
+    // Shift+Insert would fall through to xterm's default (which emits
+    // the bare Insert escape sequence — not what the user wants).
+    const insertIdx = SOURCE.indexOf('ev.code === "Insert"');
+    const modOnlyIdx = SOURCE.indexOf("const modOnly");
+    expect(insertIdx).toBeGreaterThan(-1);
+    expect(modOnlyIdx).toBeGreaterThan(-1);
+    expect(insertIdx).toBeLessThan(modOnlyIdx);
   });
 });
