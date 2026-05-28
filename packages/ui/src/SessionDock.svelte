@@ -662,8 +662,8 @@
           on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
-            {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
-            {#if rs?.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+            {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
+            {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
@@ -753,8 +753,8 @@
           on:click={() => dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
-            {#if rs?.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
-            {#if rs?.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+            {#if rs?.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
+            {#if rs?.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs?.repoName}</span>
@@ -827,8 +827,8 @@
         on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
       >
         <span class="dock-dot-inner dock-arrow-inner">
-          {#if rs.ahead}<span class="dock-arrow-glyph dock-arrow-up">↑</span>{/if}
-          {#if rs.behind}<span class="dock-arrow-glyph dock-arrow-down">↓</span>{/if}
+          {#if rs.ahead}<svg class="dock-arrow-glyph dock-arrow-up" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5"/></svg>{/if}
+          {#if rs.behind}<svg class="dock-arrow-glyph dock-arrow-down" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5"/></svg>{/if}
         </span>
         <span class="dock-label">
           <span class="dock-label-repo">{rs.repoName}</span>
@@ -1067,11 +1067,18 @@
   .dock-repo-arrow-orphan {
     margin-top: 0.3rem;
   }
+  /* SVG chevrons (same paths as StatusBadge ↑/↓) so the arrows render
+     consistently across platforms — the prior text glyphs ↑↓ leaned on
+     a system fallback font and came out visibly smaller on Windows. */
   .dock-arrow-glyph {
-    font-size: 0.7rem;
-    font-weight: 700;
-    line-height: 1;
-    color: var(--arrow-color, var(--text-muted, #9a9aa0));
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: var(--arrow-color, var(--text-muted, #9a9aa0));
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   /* Two quick bounces in the first ~20% of the cycle, then idle for
      the remaining ~80% (~3s pause at 4s total). The 2× speed comes
