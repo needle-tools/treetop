@@ -5,6 +5,10 @@
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
+  import {
+    changeKindRequiresEventsReload,
+    changeKindRequiresReposReload,
+  } from "./sse-change-kinds";
   import DiffViewer from "./DiffViewer.svelte";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
@@ -4081,28 +4085,41 @@
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
     es.addEventListener("change", (rawEvt: MessageEvent) => {
-      // Fire the cheap events-only refetch first so the per-row
-      // notes-list popover ("Recently deleted" + Undo) and the Undo
-      // tray pick up the new event within ~one network round-trip.
-      // `load()` bundles `/api/repos` (slow on big workspaces) into
-      // the same Promise.all that reassigns `events`, which is what
-      // made the popover lag 1-2s behind a delete/undo.
-      void refreshEvents();
-      // Always refresh /api/repos so worktree-row counters (unstaged /
-      // staged / untracked) reflect the change.
-      void load();
+      // Parse first so we can gate the two expensive refetches on the
+      // payload kind. Before this gate `load()` ran for every "change"
+      // event including chatty notifications (sound_play, note_*,
+      // undo/redo, peerDiscovery, command_*, message_*,
+      // session_invite_*), each one triggering a fresh `/api/repos`
+      // streaming response — easily 500–1000 ms server-side. See
+      // `sse-change-kinds.ts` for the kind taxonomy.
+      const data = rawEvt?.data;
+      let payload: { kind?: string; path?: string } = {};
+      if (typeof data === "string") {
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          // Non-JSON payload — treat as "kind unknown" so the gates
+          // both skip; pre-fix we always called load(), but a payload
+          // we can't parse can't be a real mutation either.
+        }
+      }
+      // Cheap events-only refetch so the notes-list popover ("Recently
+      // deleted" + Undo) and the Undo tray pick up the new event
+      // within one round-trip. Gated to skip notifications that don't
+      // write to events.jsonl.
+      if (changeKindRequiresEventsReload(payload.kind)) {
+        void refreshEvents();
+      }
+      // Refresh /api/repos so worktree-row counters reflect the change.
+      // Gated to skip kinds that don't affect repo enrichment.
+      if (changeKindRequiresReposReload(payload.kind)) {
+        void load();
+      }
 
       // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
       // SourceControlPane owns the diff cache per row; we just bump the
       // worktree's fsChangeKey counter so it reacts and refetches.
-      const data = rawEvt?.data;
       if (typeof data !== "string") return;
-      let payload: { kind?: string; path?: string };
-      try {
-        payload = JSON.parse(data);
-      } catch {
-        return;
-      }
       if (payload.kind === "sound_play") {
         const tag = (payload as { tag?: string }).tag;
         const tid = (payload as { termId?: string }).termId;

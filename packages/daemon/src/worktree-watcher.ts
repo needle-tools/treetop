@@ -12,12 +12,20 @@ export interface WatchOpts {
  * function that stops the watcher and clears any pending debounce.
  *
  * Ignored paths (matched by literal path segment, so nested occurrences
- * also filter): `node_modules/`, `.supergit/`, `dist/`, `.vite/`.
+ * also filter): `node_modules/`, `.supergit/`, `dist/`, `.vite/`,
+ * `Library/`, `Temp/`, `Logs/`, `.next/`, `.nuxt/`, `.turbo/`, `target/`.
  * `.supergit/` matters when the supergit workspace happens to live
  * inside a watched worktree (dogfooding) — the daemon itself writes
  * events.jsonl/attachments/terminal state there, which would otherwise
  * feed back into broadcast("change") and starve the daemon's shell-out
  * pool. `dist/` and `.vite/` cover the common dev-server rebuild cases.
+ * `Library/`, `Temp/`, `Logs/` are Unity-generated build caches that
+ * churn on every asset import and were the dominant fs_change source on
+ * workspaces with Unity projects — each burst kicked the dashboard into
+ * a full `/api/repos` refresh + per-worktree git fan-out, which is the
+ * single biggest contributor to "supergit daemon idles at 20% CPU".
+ * `.next/`, `.nuxt/`, `.turbo/`, `target/` cover the equivalent on
+ * Next.js, Nuxt, Turborepo, and Rust/Cargo builds.
  *
  * `.git/` gets fine-grained filtering rather than a blanket ignore:
  * `objects/`, `logs/`, `hooks/`, `info/`, `*.lock`, and `COMMIT_EDITMSG`
@@ -74,6 +82,15 @@ const IGNORED_SEGMENTS = new Set([
   ".supergit",
   "dist",
   ".vite",
+  // Unity build caches — extremely chatty on asset imports.
+  "Library",
+  "Temp",
+  "Logs",
+  // Other framework build caches.
+  ".next",
+  ".nuxt",
+  ".turbo",
+  "target",
 ]);
 
 // Files directly under `.git/` whose modification means worktree state

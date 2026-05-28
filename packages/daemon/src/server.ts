@@ -49,6 +49,10 @@ import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
+import {
+  changeKindInvalidatesAgents,
+  changeKindInvalidatesRepos,
+} from "./sse-change-kinds";
 import { terminalBackend, detectAgentLabel } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { SoundMarkerScanner } from "./sound-marker";
@@ -668,17 +672,20 @@ if (SSE_HEARTBEAT_MS > 0) {
 }
 
 function broadcast(event: string, data: unknown): void {
-  // Mutations expire the /api/repos cache so the UI's follow-up GET
-  // sees the change immediately. fs_change events are the bursty
-  // file-watcher signal the cache is specifically designed to coalesce,
-  // so we leave those.
+  // Mutations expire the /api/repos and agents caches so the UI's
+  // follow-up GET sees the change. The set of "real" mutations is
+  // narrow — see `sse-change-kinds.ts` for the rationale. Notification
+  // kinds (sound_play, note_*, undo/redo, peerDiscovery, command_*,
+  // message_*, session_invite_*) burst many times per second with live
+  // sessions; invalidating on those forced every concurrent /api/repos
+  // to re-run the full git fan-out + detectAgents() scan. fs_change
+  // already invalidates per-path worktree details from its own handler
+  // and the route mutations also invalidate explicitly, so we don't
+  // need a blanket clear here.
   if (event === "change") {
     const kind = (data as { kind?: unknown } | null)?.kind;
-    if (kind !== "fs_change") {
-      invalidateReposCache();
-      invalidateAgentsCache();
-      worktreeDetailsCache.clear();
-    }
+    if (changeKindInvalidatesRepos(kind)) invalidateReposCache();
+    if (changeKindInvalidatesAgents(kind)) invalidateAgentsCache();
   }
   const payload = sseEncoder.encode(
     `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,

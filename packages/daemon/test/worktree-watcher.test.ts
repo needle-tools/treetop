@@ -65,6 +65,51 @@ describe("watchWorktree", () => {
     }
   });
 
+  // Unity asset imports rewrite Library/, Temp/ and Logs/ continuously,
+  // sometimes thousands of files per minute. Letting those through means
+  // every burst triggers a fs_change SSE + a full /api/repos refresh +
+  // git fan-out across every worktree — the user-observed "daemon
+  // idles at 20% CPU" symptom. Pair with the .next/.nuxt/.turbo/target
+  // case below.
+  test("ignores changes inside Unity build caches (Library, Temp, Logs)", async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, "Library", "Needle"), { recursive: true });
+    await mkdir(join(dir, "Temp"), { recursive: true });
+    await mkdir(join(dir, "Logs"), { recursive: true });
+    let calls = 0;
+    const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
+    try {
+      await writeFile(join(dir, "Library", "Needle", "asset.meta"), "x");
+      await writeFile(join(dir, "Temp", "scratch"), "x");
+      await writeFile(join(dir, "Logs", "build.log"), "x");
+      await sleep(SETTLE_MS);
+      expect(calls).toBe(0);
+    } finally {
+      stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores changes inside framework build caches (.next, .nuxt, .turbo, target)", async () => {
+    const dir = await tempDir();
+    for (const seg of [".next", ".nuxt", ".turbo", "target"]) {
+      await mkdir(join(dir, seg), { recursive: true });
+    }
+    let calls = 0;
+    const stop = watchWorktree(dir, () => calls++, { debounceMs: DEBOUNCE_MS });
+    try {
+      await writeFile(join(dir, ".next", "build-manifest.json"), "{}");
+      await writeFile(join(dir, ".nuxt", "dist.js"), "x");
+      await writeFile(join(dir, ".turbo", "cache.bin"), "x");
+      await writeFile(join(dir, "target", "debug.bin"), "x");
+      await sleep(SETTLE_MS);
+      expect(calls).toBe(0);
+    } finally {
+      stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("ignores chatty writes inside .git/ (objects, logs, lock files)", async () => {
     const dir = await tempDir();
     await mkdir(join(dir, ".git", "objects", "ab"), { recursive: true });
