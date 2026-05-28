@@ -25,6 +25,7 @@
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
+  import { ICONS } from "./icons";
   import { contextChip } from "./context-tokens";
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" | "shell" | "files" | "history";
@@ -197,7 +198,16 @@
       class="agent-pill agent-{agent}"
       class:working={mode === "terminal" && working}
       class:idle={mode === "terminal" && !working}
-    >{agentLabel ?? agent}{#if mode === "terminal"}<span
+    >{#if sshConnected}<svg
+        class="ssh-conn-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-label="SSH connection active"
+      ><title>SSH connection active</title>{#each ICONS.monitor.paths ?? [] as d}<path {d}/>{/each}</svg>{/if}{agentLabel ?? agent}{#if mode === "terminal"}<span
         class="sleep-slot"
         title={!working ? "Idle — waiting for input" : ""}
       ><SleepIndicationAnimation visible={!working} /></span>{/if}</span>
@@ -532,7 +542,9 @@
        anchor to the pill bounds. Inline-block keeps inline flow while
        still letting the ring extend a few px outside the padding box. */
     position: relative;
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     padding: 0.1rem 0.5rem;
     border-radius: var(--radius-sm);
     font-size: 0.72rem;
@@ -541,6 +553,12 @@
     /* Always-on transparent border so toggling .idle (which paints a
        real border) doesn't reflow the pill by 1px in either axis. */
     border: 1px solid transparent;
+  }
+  .ssh-conn-icon {
+    width: 0.85em;
+    height: 0.85em;
+    flex-shrink: 0;
+    opacity: 0.85;
   }
   .agent-pill.agent-claude {
     background: var(--chip-orange-bg);

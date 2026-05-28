@@ -266,6 +266,14 @@ export const ICONS: Record<string, IconDef> = {
     ],
     circles: [{ cx: 7, cy: 7, r: 1 }],
   },
+  // Lucide "monitor" — used as the SSH active indicator in the shell pill.
+  monitor: {
+    paths: [
+      "M2 3h20v14H2z",
+      "M8 21h8",
+      "M12 17v4",
+    ],
+  },
 };
 
 export function iconFor(key: string | null | undefined): IconDef | null {
