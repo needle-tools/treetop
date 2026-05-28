@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { DismissedSessionsStore, ExpandedStore, StarredSessionsStore } from "./storage";
+  import { DismissedSessionsStore, ExpandedStore, StarredSessionsStore, CommandTermStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
@@ -2351,6 +2351,7 @@
     for (const [linkId, entry] of commandTermSources) {
       if (entry.source === s.source) {
         commandTermSources.delete(linkId);
+        persistCommandTermSources();
         if (runningCommandIds.has(linkId)) {
           const next = new Set(runningCommandIds);
           next.delete(linkId);
@@ -3656,7 +3657,17 @@
     }
   }
 
-  const commandTermSources = new Map<string, { wtPath: string; source: string }>();
+  const commandTermStore = new CommandTermStore(getDaemonKV(), "supergit:commandTermSources");
+  const commandTermSources: Map<string, { wtPath: string; source: string }> = (() => {
+    const m = new Map<string, { wtPath: string; source: string }>();
+    for (const [k, v] of Object.entries(commandTermStore.load())) m.set(k, v);
+    return m;
+  })();
+  function persistCommandTermSources() {
+    const map: Record<string, { wtPath: string; source: string }> = {};
+    for (const [k, v] of commandTermSources) map[k] = v;
+    commandTermStore.save(map);
+  }
 
   async function commandTermAlive(source: string): Promise<boolean> {
     const termId = source.replace("__attached__:shell:", "");
@@ -3673,6 +3684,7 @@
 
   function forgetCommandTerm(linkId: string, entry: { wtPath: string; source: string }): void {
     commandTermSources.delete(linkId);
+    persistCommandTermSources();
     const nextSet = new Set(runningCommandIds);
     nextSet.delete(linkId);
     runningCommandIds = nextSet;
@@ -3770,6 +3782,7 @@
       if (body.mode === "internal" && body.termId) {
         const source = `__attached__:shell:${body.termId}`;
         commandTermSources.set(link.id, { wtPath, source });
+        persistCommandTermSources();
         runningCommandIds = new Set([...runningCommandIds, link.id]);
         const title = link.name?.trim() || cmdLink.cmd;
         void fetch("/api/session/title", {
