@@ -59,6 +59,16 @@ a git repo (single-member at v0, invitable from v2). Two pillars:
     if the user just asked you to build, deploy, or "try it" — building
     the SPA is fine, restarting the process is not. Violations destroy
     live TUI sessions the user is hosting.
+13. **Don't run `bun run build` unless the user explicitly asks.**
+    Even when the user just asked you to make a code change that they
+    plan to test in prod, do NOT proactively run `bun run build` (or
+    `bun run build:bun` / `bun run build:native` / `electrobun build`).
+    The build takes ~30s, is loud, and the user has their own cadence
+    for rebuilding (often batched with other work). Edit the source,
+    run `bun test`, and stop — the user will rebuild and restart on
+    their own. The exception is when the user types something like
+    "build it" / "rebuild now" / "and then build" — that's an
+    explicit ask.
 
 ## Multi-session safety
 

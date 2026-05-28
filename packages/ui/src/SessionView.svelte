@@ -20,6 +20,7 @@
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
   } from "./last-user-message";
+  import { isUiIdle, onResume } from "./ui-idle";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -1384,19 +1385,34 @@
   // proving fragile through Vite's proxy; this path is boring and works.
 
   let pollTimer: number | null = null;
+  let resumeOff: (() => void) | null = null;
 
   onMount(() => {
     pollTimer = window.setInterval(() => {
+      // Skip the poll while the dashboard is idle (tab hidden or no
+      // input for the idle window). Each SessionView polls every 2 s
+      // and there can easily be 30+ columns mounted; without this
+      // gate the daemon sees ~50 req/s of /api/session + /api/active-sends
+      // even with nobody looking. onResume() fires a catch-up below.
+      if (isUiIdle()) return;
       void load();
       void refreshInflight();
     }, 2_000);
     // Kick off an immediate inflight refresh so the indicator's accurate
     // from the first render, not 2s later.
     void refreshInflight();
+    // When the user comes back (visibilitychange or first input after
+    // a quiet period) fire one catch-up immediately so the view doesn't
+    // wait up to 2 s for the next tick.
+    resumeOff = onResume(() => {
+      void load();
+      void refreshInflight();
+    });
   });
 
   onDestroy(() => {
     if (pollTimer !== null) window.clearInterval(pollTimer);
+    if (resumeOff) resumeOff();
     if (pendingTimer) clearTimeout(pendingTimer);
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);

@@ -715,6 +715,32 @@ function corsHeaders(req: Request): Record<string, string> {
 const sseSubscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
 
+// Per-route request counter. Incremented at the top of the fetch handler
+// and drained by the rolling logger below. Helps diagnose "supergit is
+// making hundreds of fetches per second" without DevTools — every
+// `REQUEST_RATE_INTERVAL_MS` we emit a line with the top routes and
+// total request count for the window.
+const requestCounts = new Map<string, number>();
+const REQUEST_RATE_INTERVAL_MS = 10_000;
+const REQUEST_RATE_MIN_TOTAL_TO_LOG = 50;
+setInterval(() => {
+  let total = 0;
+  for (const n of requestCounts.values()) total += n;
+  if (total >= REQUEST_RATE_MIN_TOTAL_TO_LOG) {
+    const top = [...requestCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([path, count]) => `${path}=${count}`)
+      .join(" ");
+    const perSec = (total / (REQUEST_RATE_INTERVAL_MS / 1000)).toFixed(1);
+    console.log(
+      `supergit daemon: request-rate window=${Math.round(REQUEST_RATE_INTERVAL_MS / 1000)}s ` +
+        `total=${total} (${perSec}/s) top: ${top}`,
+    );
+  }
+  requestCounts.clear();
+}, REQUEST_RATE_INTERVAL_MS).unref?.();
+
 // Periodic SSE comment-frame heartbeat. Without this, an EventSource
 // only learns its connection is dead via TCP error — which on Windows
 // after sleep/wake (or behind a proxy that drops idle conns) can take
@@ -1535,6 +1561,13 @@ const server = Bun.serve<TermWsData, never>({
   async fetch(req, srv) {
     const url = new URL(req.url);
     const CORS = corsHeaders(req);
+    // Per-route request counter for the rolling rate log below. Bucket
+    // by URL.pathname (verb-agnostic — same path different methods are
+    // rare enough that the noise isn't worth the extra cardinality).
+    requestCounts.set(
+      url.pathname,
+      (requestCounts.get(url.pathname) ?? 0) + 1,
+    );
 
     const json = (body: unknown, init: ResponseInit = {}): Response =>
       new Response(JSON.stringify(body), {
