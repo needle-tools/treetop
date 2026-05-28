@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  CommandTermStore,
   CommandUrlPickStore,
   DismissedSessionsStore,
   ExpandedStore,
@@ -1700,5 +1701,102 @@ describe("CommandUrlPickStore", () => {
   test("returns empty map when storage throws on read", () => {
     const s = new CommandUrlPickStore(new ThrowingStore(), PICK_KEY);
     expect(s.load()).toEqual({});
+  });
+});
+
+describe("CommandTermStore", () => {
+  const KEY = "supergit:commandTermSources";
+
+  test("returns empty map when nothing is stored", () => {
+    expect(new CommandTermStore(new MemStore(), KEY).load()).toEqual({});
+  });
+
+  test("set then load round-trips the entry", () => {
+    const m = new MemStore();
+    const s = new CommandTermStore(m, KEY);
+    s.set("link-1", { wtPath: "/repo/foo", source: "__attached__:shell:t-123" });
+    expect(s.load()).toEqual({
+      "link-1": { wtPath: "/repo/foo", source: "__attached__:shell:t-123" },
+    });
+  });
+
+  test("the mapping survives across instances pointing at the same storage", () => {
+    // The regression this guards: after a page reload, the in-memory
+    // commandTermSources Map is gone — clicking a still-running command
+    // chip spawns a NEW PTY instead of focusing the existing column.
+    // The store must outlive a single page load so the reuse path can
+    // still find prev.
+    const m = new MemStore();
+    new CommandTermStore(m, KEY).set("npm-start", {
+      wtPath: "/repo/foo",
+      source: "__attached__:shell:t-xyz",
+    });
+    const reopened = new CommandTermStore(m, KEY);
+    expect(reopened.load()["npm-start"]).toEqual({
+      wtPath: "/repo/foo",
+      source: "__attached__:shell:t-xyz",
+    });
+  });
+
+  test("delete removes a single entry", () => {
+    const m = new MemStore();
+    const s = new CommandTermStore(m, KEY);
+    s.set("a", { wtPath: "/r", source: "__attached__:shell:t-a" });
+    s.set("b", { wtPath: "/r", source: "__attached__:shell:t-b" });
+    s.delete("a");
+    expect(s.load()).toEqual({
+      b: { wtPath: "/r", source: "__attached__:shell:t-b" },
+    });
+  });
+
+  test("save persists the full map (replace, not merge)", () => {
+    const m = new MemStore();
+    const s = new CommandTermStore(m, KEY);
+    s.set("a", { wtPath: "/r", source: "__attached__:shell:t-a" });
+    s.save({ b: { wtPath: "/r2", source: "__attached__:shell:t-b" } });
+    expect(s.load()).toEqual({
+      b: { wtPath: "/r2", source: "__attached__:shell:t-b" },
+    });
+  });
+
+  test("drops entries with missing or invalid fields", () => {
+    const m = new MemStore();
+    m.setItem(
+      KEY,
+      JSON.stringify({
+        good: { wtPath: "/r", source: "__attached__:shell:t-a" },
+        noWt: { source: "__attached__:shell:t-b" },
+        noSource: { wtPath: "/r" },
+        bothEmpty: { wtPath: "", source: "" },
+        notObject: "string",
+        nullVal: null,
+      }),
+    );
+    expect(new CommandTermStore(m, KEY).load()).toEqual({
+      good: { wtPath: "/r", source: "__attached__:shell:t-a" },
+    });
+  });
+
+  test("returns empty map when stored value is not JSON", () => {
+    const m = new MemStore();
+    m.setItem(KEY, "{not json");
+    expect(new CommandTermStore(m, KEY).load()).toEqual({});
+  });
+
+  test("returns empty map when stored value is an array", () => {
+    const m = new MemStore();
+    m.setItem(KEY, JSON.stringify(["a", "b"]));
+    expect(new CommandTermStore(m, KEY).load()).toEqual({});
+  });
+
+  test("returns empty map when storage throws on read", () => {
+    expect(new CommandTermStore(new ThrowingStore(), KEY).load()).toEqual({});
+  });
+
+  test("swallows storage errors on set", () => {
+    new CommandTermStore(new ThrowingStore(), KEY).set("a", {
+      wtPath: "/r",
+      source: "__attached__:shell:t",
+    });
   });
 });

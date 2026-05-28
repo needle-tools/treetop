@@ -712,3 +712,82 @@ export class CommandUrlPickStore {
     }
   }
 }
+
+/**
+ * Persisted map of `linkId → { wtPath, source }` recording which
+ * `__attached__:shell:<termId>` column was spawned by which custom-
+ * link command. Lets the click handler reuse an existing internal-
+ * mode command terminal (focus + scroll) instead of spawning a fresh
+ * PTY each time — and survives page reloads so the reuse logic still
+ * works after the in-memory state is gone.
+ */
+export interface CommandTermEntry {
+  wtPath: string;
+  source: string;
+}
+
+export class CommandTermStore {
+  constructor(
+    private readonly storage: KVStore,
+    private readonly key: string,
+  ) {}
+
+  load(): Record<string, CommandTermEntry> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return {};
+    }
+    if (raw === null) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    const out: Record<string, CommandTermEntry> = {};
+    for (const [linkId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof linkId !== "string" || linkId.length === 0) continue;
+      if (typeof value !== "object" || value === null) continue;
+      const v = value as { wtPath?: unknown; source?: unknown };
+      if (
+        typeof v.wtPath === "string" && v.wtPath.length > 0 &&
+        typeof v.source === "string" && v.source.length > 0
+      ) {
+        out[linkId] = { wtPath: v.wtPath, source: v.source };
+      }
+    }
+    return out;
+  }
+
+  save(map: Record<string, CommandTermEntry>): void {
+    try {
+      const sanitized: Record<string, CommandTermEntry> = {};
+      for (const [k, v] of Object.entries(map)) {
+        if (typeof k === "string" && k.length > 0 && v && typeof v.wtPath === "string" && typeof v.source === "string") {
+          sanitized[k] = { wtPath: v.wtPath, source: v.source };
+        }
+      }
+      this.storage.setItem(this.key, JSON.stringify(sanitized));
+    } catch {
+      // best-effort
+    }
+  }
+
+  set(linkId: string, entry: CommandTermEntry): void {
+    const map = this.load();
+    map[linkId] = entry;
+    this.save(map);
+  }
+
+  delete(linkId: string): void {
+    const map = this.load();
+    if (!(linkId in map)) return;
+    delete map[linkId];
+    this.save(map);
+  }
+}

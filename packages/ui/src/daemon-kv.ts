@@ -29,6 +29,7 @@ const MIGRATED_KEYS = [
   "supergit:fileBrowser:state",
   "supergit:fileBrowser:stars",
   "supergit:onboardingWalkthroughSeen",
+  "supergit:commandTermSources",
 ] as const;
 
 class DaemonKVStore implements KVStore {
