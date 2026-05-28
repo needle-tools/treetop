@@ -5,7 +5,9 @@
  * macOS / Linux: shell out to `ps -o pid=,pcpu=,rss= -p PIDLIST`.
  *   pcpu is "percentage of CPU time" (0-100).
  *   rss  is resident set size, in KB.
- * Windows: not implemented yet; returns zeros so the UI degrades cleanly.
+ * Windows: PowerShell — Get-Process for WorkingSet64 + Win32_PerfFormatted
+ *   Data_PerfProc_Process for PercentProcessorTime (0-100, normalised by
+ *   Windows across all cores), joined by PID.
  */
 
 import { $ } from "bun";
@@ -212,7 +214,9 @@ export async function discoverRepoProcesses(
   excludePids: Set<number>,
 ): Promise<ExternalProc[]> {
   if (repoPaths.length === 0) return [];
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") {
+    return discoverRepoProcessesWindows(repoPaths, excludePids);
+  }
   const allCwds = await allProcessCwds();
   const matched: { pid: number; cwd: string }[] = [];
   for (const [pid, cwd] of allCwds) {
@@ -265,6 +269,89 @@ export async function discoverRepoProcesses(
         memBytes: i.mem,
       };
     });
+}
+
+/**
+ * Windows external-process discovery.
+ *
+ * Windows doesn't expose per-process CWD via standard tooling (the value
+ * lives in the PEB and reading it needs NtQueryInformationProcess +
+ * cross-process memory reads — admin-only in many configs). We approximate
+ * "in this repo" by matching against the process's CommandLine and
+ * ExecutablePath via WMI (Win32_Process). For dev work this catches
+ * most of what you'd actually want: `node C:\…\repo\script.js`, vite
+ * children of npm scripts, cargo/python with script paths, etc.
+ *
+ * It misses processes whose cmdline doesn't reference the repo path
+ * (e.g. a `node` REPL launched from inside the repo dir). That's a
+ * documented limitation, not a bug — fixing it requires PInvoke into
+ * NtQueryInformationProcess from PowerShell, which is heavy.
+ *
+ * Output format from PowerShell uses RS (\x1e) as delimiter so command
+ * lines containing `|` or `\t` parse cleanly.
+ */
+async function discoverRepoProcessesWindows(
+  repoPaths: string[],
+  excludePids: Set<number>,
+): Promise<ExternalProc[]> {
+  const RS = "";
+  const escapedPaths = repoPaths.map((p) =>
+    p.replace(/`/g, "``").replace(/'/g, "''"),
+  );
+  const pathsLiteral = `@(${escapedPaths.map((p) => `'${p}'`).join(",")})`;
+  const ps =
+    `$ErrorActionPreference='SilentlyContinue';` +
+    `$rp = ${pathsLiteral};` +
+    `Get-CimInstance Win32_Process | ForEach-Object {` +
+    ` $p = $_;` +
+    ` $cmd = if ($p.CommandLine) { $p.CommandLine } else { '' };` +
+    ` $exe = if ($p.ExecutablePath) { $p.ExecutablePath } else { '' };` +
+    ` $hit = $null;` +
+    ` foreach ($r in $rp) {` +
+    `   if ($cmd -and $cmd.IndexOf($r,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $r; break }` +
+    `   if ($exe -and $exe.StartsWith($r,[System.StringComparison]::OrdinalIgnoreCase)) { $hit = $r; break }` +
+    ` };` +
+    ` if (-not $hit) { return };` +
+    `"$($p.ProcessId)$hit$exe$cmd"` +
+    `}`;
+  const matches: { pid: number; cwd: string; exe: string; args: string }[] = [];
+  try {
+    const result = await $`powershell -NoProfile -Command ${ps}`
+      .quiet()
+      .nothrow();
+    for (const line of result.stdout.toString().split(/\r?\n/)) {
+      if (!line) continue;
+      const parts = line.split(RS);
+      if (parts.length < 4) continue;
+      const pid = Number(parts[0]);
+      if (!Number.isFinite(pid) || excludePids.has(pid)) continue;
+      matches.push({
+        pid,
+        cwd: parts[1]!,
+        exe: parts[2]!,
+        args: parts.slice(3).join(RS).trim(),
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
+  if (matches.length === 0) return [];
+  const samples = await sampleProcs(matches.map((m) => m.pid));
+  return matches.map((m) => {
+    const s = samples.get(m.pid);
+    const comm =
+      m.exe.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|ps1)$/i, "") ||
+      m.args.split(/\s/)[0] ||
+      "process";
+    return {
+      pid: m.pid,
+      comm,
+      args: m.args || m.exe,
+      cwd: m.cwd,
+      cpuPercent: s?.cpuPercent ?? 0,
+      memBytes: s?.memBytes ?? 0,
+    };
+  });
 }
 
 async function allProcessCwds(): Promise<Map<number, string>> {
