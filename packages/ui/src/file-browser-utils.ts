@@ -16,6 +16,35 @@ export function joinPath(base: string, name: string): string {
   return base + sep + name;
 }
 
+/** The address-bar renders each path segment as its own `<button>`
+ *  flex child, with `<span>/</span>` separators between them. When the
+ *  user drag-selects across segments and copies, browsers insert a
+ *  newline between block-level children — so "C: / git / needle-cloud"
+ *  ends up on the clipboard as five lines. Strip the synthetic newlines
+ *  (CR, LF, or CRLF) so the clipboard text matches what was visually
+ *  highlighted. We deliberately keep the separator characters that are
+ *  ALREADY part of the selection (e.g. the "/" text nodes) — they're
+ *  what makes the result usable as a path. */
+export function cleanCopiedPathSelection(raw: string): string {
+  return raw.replace(/[\r\n]+/g, "");
+}
+
+/** Should Ctrl/Cmd+C copy *paths* (the address-bar / multi-select copy
+ *  behaviour) or fall through to the browser's native copy of whatever
+ *  the user highlighted? Returns true when there's a usable text
+ *  selection on the page — in that case the caller should NOT
+ *  preventDefault and should NOT call the path-copy fallback.
+ *
+ *  Pure for testability: pass in a Selection-like object (or null when
+ *  no selection API is available, e.g. SSR). */
+export function shouldDeferToNativeCopy(
+  sel: { isCollapsed: boolean; toString(): string } | null,
+): boolean {
+  if (!sel) return false;
+  if (sel.isCollapsed) return false;
+  return sel.toString().length > 0;
+}
+
 /** Split an absolute path into `{ dir, name }`. Works on both Windows
  *  (backslash) and POSIX (slash) paths and tolerates mixed separators.
  *  Used to invert a full path back into a parent directory + basename

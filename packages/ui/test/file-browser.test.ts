@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, shouldDeferToNativeCopy, cleanCopiedPathSelection } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -413,6 +413,100 @@ describe("breadcrumbs", () => {
   });
 });
 
+describe("cleanCopiedPathSelection", () => {
+  // Each address-bar segment renders as its own flex child, so the
+  // browser's default selection-to-text inserts a newline between
+  // every crumb and separator. This helper undoes that so the
+  // clipboard string matches what the user visually highlighted.
+
+  test("collapses LF-separated crumbs into a single line", () => {
+    const raw = "C:\n/\ngit\n/\nneedle-cloud";
+    expect(cleanCopiedPathSelection(raw)).toBe("C:/git/needle-cloud");
+  });
+
+  test("collapses CRLF-separated crumbs (Windows browsers)", () => {
+    const raw = "C:\r\n/\r\ngit\r\n/\r\nneedle-cloud";
+    expect(cleanCopiedPathSelection(raw)).toBe("C:/git/needle-cloud");
+  });
+
+  test("collapses CR-only line endings (legacy Mac browsers)", () => {
+    const raw = "C:\r/\rgit\r/\rneedle-cloud";
+    expect(cleanCopiedPathSelection(raw)).toBe("C:/git/needle-cloud");
+  });
+
+  test("preserves separator characters that ARE in the selection", () => {
+    // The "/" spans live in the DOM as text nodes; the user dragged
+    // through them so they're part of toString() output. Keep them.
+    expect(cleanCopiedPathSelection("a\n/\nb")).toBe("a/b");
+  });
+
+  test("does not touch non-newline whitespace", () => {
+    // Spaces inside a crumb name (e.g. "Files and websites.md") must
+    // survive — only literal line-break characters get stripped.
+    expect(cleanCopiedPathSelection("Files and websites.md")).toBe(
+      "Files and websites.md",
+    );
+  });
+
+  test("returns the input unchanged when there are no newlines", () => {
+    const raw = "C:\\git\\repo";
+    expect(cleanCopiedPathSelection(raw)).toBe(raw);
+  });
+
+  test("collapses runs of consecutive newlines", () => {
+    expect(cleanCopiedPathSelection("a\n\n\nb")).toBe("ab");
+  });
+
+  test("empty input round-trips to empty", () => {
+    expect(cleanCopiedPathSelection("")).toBe("");
+  });
+});
+
+describe("shouldDeferToNativeCopy", () => {
+  // Models the contract the FileBrowser uses when deciding whether
+  // Ctrl/Cmd+C should be hijacked to copy paths OR fall through to
+  // native browser copy of the user's text selection. Regression:
+  // a `.file-browser`-level keydown used to `preventDefault()` on
+  // every Ctrl+C, so drag-selecting text in the address bar then
+  // hitting Ctrl+C copied nothing usable.
+
+  test("returns false when there is no selection (null)", () => {
+    expect(shouldDeferToNativeCopy(null)).toBe(false);
+  });
+
+  test("returns false when the selection is collapsed (caret only)", () => {
+    expect(
+      shouldDeferToNativeCopy({ isCollapsed: true, toString: () => "" }),
+    ).toBe(false);
+  });
+
+  test("returns false when toString() is empty even though !isCollapsed", () => {
+    // Some browsers report a non-collapsed selection across non-text
+    // nodes whose toString() yields "". Treat as no selection.
+    expect(
+      shouldDeferToNativeCopy({ isCollapsed: false, toString: () => "" }),
+    ).toBe(false);
+  });
+
+  test("returns true when the user has real selected text", () => {
+    expect(
+      shouldDeferToNativeCopy({
+        isCollapsed: false,
+        toString: () => "documentation",
+      }),
+    ).toBe(true);
+  });
+
+  test("returns true for a partial Windows-path drag-select", () => {
+    expect(
+      shouldDeferToNativeCopy({
+        isCollapsed: false,
+        toString: () => "C:\\git\\needle-cloud",
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("splitParent", () => {
   test("Windows path: separates backslash-delimited dir + file", () => {
     expect(splitParent("C:\\git\\repo\\foo.md")).toEqual({
@@ -455,6 +549,19 @@ describe("splitParent", () => {
 
   test("bare basename returns empty dir", () => {
     expect(splitParent("foo.md")).toEqual({ dir: "", name: "foo.md" });
+  });
+
+  test("regression: selectedNames-style mapping yields basenames for Windows paths", () => {
+    // The address-bar's "selected names" suffix used to be computed
+    // with `p.split("/").pop()` which on Windows returned the whole
+    // path → the breadcrumb area duplicated the path. Use splitParent
+    // and verify each result is the basename only.
+    const selected = [
+      "C:\\git\\needle-cloud\\documentation\\Backup-Restore.md",
+      "C:\\git\\needle-cloud\\documentation\\OpenObserve.md",
+    ];
+    const names = selected.map((p) => splitParent(p).name);
+    expect(names).toEqual(["Backup-Restore.md", "OpenObserve.md"]);
   });
 
   test("round trip with joinPath restores the original", () => {

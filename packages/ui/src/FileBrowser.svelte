@@ -3,7 +3,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, fetchPathStats, type FileEntry, type PathStat, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, fetchPathStats, shouldDeferToNativeCopy, cleanCopiedPathSelection, type FileEntry, type PathStat, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -323,7 +323,26 @@
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let copiedPaths: Set<string> = new Set();
 
+  /** True when there's an active non-collapsed text selection inside
+   *  the address bar. Used to suppress the click-to-copy + crumb-nav
+   *  behaviour when the user is actually trying to drag-select text. */
+  function hasAddressBarTextSelection(): boolean {
+    if (typeof window === "undefined") return false;
+    const sel = window.getSelection?.();
+    if (!sel || sel.isCollapsed) return false;
+    const node = sel.anchorNode;
+    if (!node) return false;
+    // Walk up to see if the selection is anchored inside .fb-path.
+    let el: Node | null = node.nodeType === 1 ? node : node.parentNode;
+    while (el && el.nodeType === 1) {
+      if ((el as Element).classList?.contains("fb-path")) return true;
+      el = (el as Element).parentNode;
+    }
+    return false;
+  }
+
   function copyPaths() {
+    if (hasAddressBarTextSelection()) return;
     const text = selected.size > 0
       ? [...selected].join("\n")
       : currentDir;
@@ -333,6 +352,47 @@
       clearTimeout(copiedTimer);
       copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
     });
+  }
+
+  /** Crumb click → navigate, but only when the user wasn't actually
+   *  drag-selecting text inside the address bar. Without this guard,
+   *  finishing a drag-select on a crumb fires its click handler and
+   *  navigates away. */
+  function handleCrumbClick(path: string) {
+    if (hasAddressBarTextSelection()) return;
+    navigateTo(path);
+  }
+
+  /** Copy a single path and flash the same "copied" indicator the
+   *  address bar uses, plus mark this exact path so per-row UI can
+   *  show its own pip. Used by the per-star copy button. */
+  function copyOnePath(path: string) {
+    void navigator.clipboard.writeText(path).then(() => {
+      copied = true;
+      copiedPaths = new Set([path]);
+      clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => { copied = false; copiedPaths = new Set(); }, 1200);
+    });
+  }
+
+  /** Address-bar keydown: Enter triggers copy (existing behaviour);
+   *  Ctrl/Cmd+C also triggers copy so users who tab-focus the bar
+   *  can use the keyboard shortcut they'd expect for an address bar. */
+  function handlePathKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      copyPaths();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+      // Only intercept when nothing is selected as text — let real
+      // browser selection copy normally if the user happened to drag-
+      // select something inside the bar.
+      const sel = window.getSelection?.();
+      if (!sel || sel.isCollapsed) {
+        e.preventDefault();
+        copyPaths();
+      }
+    }
   }
 
   function handleNavigateToFile(filePath: string) {
@@ -377,6 +437,10 @@
   function handleKeydown(e: KeyboardEvent) {
     const meta = e.metaKey || e.ctrlKey;
     if (meta && e.key === "c") {
+      // Don't hijack Ctrl/Cmd+C when the user has actually drag-
+      // selected text — the native browser copy needs to win there
+      // so they can grab just the highlighted portion of the path.
+      if (hasAnyTextSelection()) return;
       e.preventDefault();
       copyPaths();
     } else if (meta && e.key === "a") {
@@ -385,6 +449,27 @@
       selected = new Set(all);
       persistState();
     }
+  }
+
+  /** Thin wrapper around the pure shouldDeferToNativeCopy helper. */
+  function hasAnyTextSelection(): boolean {
+    if (typeof window === "undefined") return false;
+    return shouldDeferToNativeCopy(window.getSelection?.() ?? null);
+  }
+
+  /** Intercept native browser copy when the user drag-selected across
+   *  breadcrumb segments. The crumbs are flex children so the default
+   *  copy text has a newline between each segment; rewrite it into a
+   *  single line so "C: / git / needle-cloud" lands on the clipboard
+   *  the way the user sees it. */
+  function handlePathCopy(e: ClipboardEvent) {
+    const sel = window.getSelection?.();
+    if (!sel || sel.isCollapsed) return;
+    const raw = sel.toString();
+    const cleaned = cleanCopiedPathSelection(raw);
+    if (cleaned === raw) return; // nothing to fix; let native copy through
+    e.preventDefault();
+    e.clipboardData?.setData("text/plain", cleaned);
   }
 
   function filterDot(list: FileEntry[]): FileEntry[] {
@@ -414,7 +499,7 @@
   $: canBack = (navTick, nav.canGoBack());
   $: canForward = (navTick, nav.canGoForward());
   $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
-  $: selectedNames = visibleSelected.map((p) => p.split("/").pop() ?? p);
+  $: selectedNames = visibleSelected.map((p) => splitParent(p).name);
 
   loadPersistedState();
   if (remoteTermId) {
@@ -479,17 +564,19 @@
       role="button"
       tabindex="0"
       on:click={copyPaths}
-      on:keydown={(e) => { if (e.key === "Enter") copyPaths(); }}
+      on:keydown={handlePathKeydown}
+      on:copy={handlePathCopy}
       title={selected.size > 0
-        ? `Click to copy ${selected.size} selected path${selected.size > 1 ? "s" : ""}`
-        : "Click to copy path"}
+        ? `Click to copy ${selected.size} selected path${selected.size > 1 ? "s" : ""} (Ctrl+C when focused)`
+        : "Click to copy path (Ctrl+C when focused)"}
     >
       {#each breadcrumbs(currentDir) as crumb, i}
         {#if i > 0}<span class="fb-sep">/</span>{/if}
         <button
           class="fb-crumb"
           class:fb-crumb-active={i === breadcrumbs(currentDir).length - 1 && selected.size === 0}
-          on:click|stopPropagation={() => navigateTo(crumb.path)}
+          on:click|stopPropagation={() => handleCrumbClick(crumb.path)}
+          on:dragstart|preventDefault
           title={crumb.path}
         >{crumb.name}</button>
       {/each}
@@ -585,6 +672,18 @@
                 {#if missing}
                   <span class="fb-missing-hint">missing</span>
                 {/if}
+                <button
+                  class="fb-row-copy"
+                  on:click|stopPropagation={() => copyOnePath(item.fullPath)}
+                  title="Copy path"
+                  aria-label="Copy path"
+                >
+                  {#if copiedPaths.has(item.fullPath)}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  {/if}
+                </button>
                 <button
                   class="fb-star fb-star-on"
                   on:click|stopPropagation={() => toggleStar(item.fullPath)}
@@ -710,6 +809,10 @@
     border-radius: var(--radius-sm);
     font-size: 0.72rem;
     font-family: inherit;
+    /* Allow text selection within the address bar — by default buttons
+     * block this and the user can't drag-select a portion of the path. */
+    user-select: text;
+    -webkit-user-select: text;
   }
   .fb-crumb:hover {
     color: var(--text-1);
@@ -728,6 +831,8 @@
     cursor: pointer;
     border-radius: var(--radius-sm);
     padding: 0.05rem 0.15rem;
+    user-select: text;
+    -webkit-user-select: text;
   }
   .fb-path:hover {
     background: color-mix(in srgb, var(--text-muted) 8%, transparent);

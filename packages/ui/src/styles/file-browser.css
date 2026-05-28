@@ -164,6 +164,39 @@
   opacity: 1;
   color: #e5c248;
 }
+/* Per-row copy-path button. Lives next to the star in starred-only
+ * rows. Same hover-reveal pattern as .fb-star; turns green when the
+ * row's path is in copiedPaths so the user can see the copy landed. */
+.fb-row-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.1s ease-out, color 0.1s ease-out;
+}
+.fb-row-copy svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  display: block;
+}
+.fb-row:hover .fb-row-copy {
+  opacity: 0.55;
+}
+.fb-row:hover .fb-row-copy:hover {
+  opacity: 1;
+  color: var(--text-1);
+}
+.fb-row-copy.copied,
+.fb-row .fb-row-copy:has(polyline) {
+  opacity: 1;
+  color: #6abf6a;
+}
 .fb-git-tooltip {
   max-width: min(72ch, 90vw);
 }
