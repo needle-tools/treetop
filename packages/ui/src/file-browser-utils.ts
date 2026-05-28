@@ -16,6 +16,18 @@ export function joinPath(base: string, name: string): string {
   return base + sep + name;
 }
 
+/** Split an absolute path into `{ dir, name }`. Works on both Windows
+ *  (backslash) and POSIX (slash) paths and tolerates mixed separators.
+ *  Used to invert a full path back into a parent directory + basename
+ *  pair for handlers that need to call `openFile(name, dir)` etc. */
+export function splitParent(fullPath: string): { dir: string; name: string } {
+  // Trim trailing separators so /foo/bar/ returns { dir: "/foo", name: "bar" }.
+  const trimmed = fullPath.replace(/[\\/]+$/, "");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (idx < 0) return { dir: "", name: trimmed };
+  return { dir: trimmed.slice(0, idx), name: trimmed.slice(idx + 1) };
+}
+
 export function formatSize(bytes?: number): string {
   if (bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;

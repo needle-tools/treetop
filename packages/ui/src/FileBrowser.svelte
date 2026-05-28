@@ -3,7 +3,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -336,11 +336,10 @@
   }
 
   function handleNavigateToFile(filePath: string) {
-    const parts = filePath.split("/");
-    parts.pop();
-    const dir = parts.join("/") || "/";
-    if (dir !== currentDir) {
-      navigateTo(dir);
+    const { dir } = splitParent(filePath);
+    const target = dir || "/";
+    if (target !== currentDir) {
+      navigateTo(target);
     }
     selected = new Set([filePath]);
     persistState();
@@ -350,9 +349,7 @@
     if (type === "directory") {
       navigateTo(fullPath);
     } else {
-      const parts = fullPath.split("/");
-      const name = parts.pop()!;
-      const dir = parts.join("/");
+      const { dir, name } = splitParent(fullPath);
       openFile(name, dir);
     }
   }

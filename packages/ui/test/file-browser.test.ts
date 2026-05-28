@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs, normalizePath, computeStarredList, splitParent } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -410,6 +410,63 @@ describe("breadcrumbs", () => {
       { name: "d:", path: "d:\\" },
       { name: "Projects", path: "d:\\Projects" },
     ]);
+  });
+});
+
+describe("splitParent", () => {
+  test("Windows path: separates backslash-delimited dir + file", () => {
+    expect(splitParent("C:\\git\\repo\\foo.md")).toEqual({
+      dir: "C:\\git\\repo",
+      name: "foo.md",
+    });
+  });
+
+  test("Windows path with spaces in basename", () => {
+    // Regression: double-click → OS-open used to feed this through
+    // `split("/")` which never matched a Windows separator → dir=""
+    // and openFile prepended a stray "/" producing /C:\git\... paths
+    // that Windows can't resolve.
+    expect(splitParent("C:\\git\\needle-cloud\\documentation\\Files and websites.md")).toEqual({
+      dir: "C:\\git\\needle-cloud\\documentation",
+      name: "Files and websites.md",
+    });
+  });
+
+  test("POSIX path: separates slash-delimited dir + file", () => {
+    expect(splitParent("/Users/me/repo/foo.md")).toEqual({
+      dir: "/Users/me/repo",
+      name: "foo.md",
+    });
+  });
+
+  test("mixed separators: uses the last one found", () => {
+    expect(splitParent("C:/git/repo\\foo.md")).toEqual({
+      dir: "C:/git/repo",
+      name: "foo.md",
+    });
+  });
+
+  test("trailing separator is trimmed before splitting", () => {
+    expect(splitParent("C:\\git\\repo\\")).toEqual({
+      dir: "C:\\git",
+      name: "repo",
+    });
+  });
+
+  test("bare basename returns empty dir", () => {
+    expect(splitParent("foo.md")).toEqual({ dir: "", name: "foo.md" });
+  });
+
+  test("round trip with joinPath restores the original", () => {
+    const cases = [
+      "C:\\git\\repo\\foo.md",
+      "/Users/me/repo/foo.md",
+      "C:\\git\\needle-cloud\\documentation\\Files and websites.md",
+    ];
+    for (const c of cases) {
+      const { dir, name } = splitParent(c);
+      expect(joinPath(dir, name)).toBe(c);
+    }
   });
 });
 
