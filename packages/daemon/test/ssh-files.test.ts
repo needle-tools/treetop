@@ -8,21 +8,39 @@ import { tmpdir } from "node:os";
 describe("cachePathFor", () => {
   const normalize = (p: string) => p.replace(/\\/g, "/");
 
-  test("assembles cache path from parts", () => {
+  test("sanitizes hostKey colon (port) for local filesystem", () => {
     expect(normalize(cachePathFor("/workspace", "user@host:22", "/home/user/file.txt"))).toBe(
-      "/workspace/.remote-cache/user@host:22/home/user/file.txt",
+      "/workspace/.remote-cache/user@host_22/home/user/file.txt",
     );
   });
 
-  test("handles root path", () => {
+  test("handles Unix root path", () => {
     expect(normalize(cachePathFor("/workspace", "root@srv:22", "/etc/nginx.conf"))).toBe(
-      "/workspace/.remote-cache/root@srv:22/etc/nginx.conf",
+      "/workspace/.remote-cache/root@srv_22/etc/nginx.conf",
     );
   });
 
   test("handles nested directories", () => {
     expect(normalize(cachePathFor("/ws", "u@h:22", "/a/b/c/d.txt"))).toBe(
-      "/ws/.remote-cache/u@h:22/a/b/c/d.txt",
+      "/ws/.remote-cache/u@h_22/a/b/c/d.txt",
+    );
+  });
+
+  test("sanitizes Windows drive letter (C: → C_) so local path is valid", () => {
+    expect(normalize(cachePathFor("/ws", "u@h:22", "C:/Users/me/file.txt"))).toBe(
+      "/ws/.remote-cache/u@h_22/C_/Users/me/file.txt",
+    );
+  });
+
+  test("handles Windows path with backslash-converted forward slashes", () => {
+    expect(normalize(cachePathFor("/ws", "u@h:22", "D:/Programs/app.exe"))).toBe(
+      "/ws/.remote-cache/u@h_22/D_/Programs/app.exe",
+    );
+  });
+
+  test("user-only hostKey (no port) still sanitized correctly", () => {
+    expect(normalize(cachePathFor("/ws", "alice@host", "/home/alice/file"))).toBe(
+      "/ws/.remote-cache/alice@host/home/alice/file",
     );
   });
 });
