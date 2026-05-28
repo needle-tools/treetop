@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+artifacts/
+.vite/
+packages/ui/dist/
+packages/daemon/src/terminals/helper-go/pty-helper
+*.log
+bun.lock

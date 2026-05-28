@@ -13,6 +13,8 @@
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
+    "format": "prettier --write \"packages/**/*.{js,ts,svelte,css,json}\" \"*.ts\"",
+    "format:check": "prettier --check \"packages/**/*.{js,ts,svelte,css,json}\" \"*.ts\"",
     "build": "bun run scripts/patch-launcher.ts && bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
     "build:launch": "bun run scripts/build-launch.ts",
     "build:native": "bun run scripts/build-native.ts",
@@ -22,6 +24,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "electrobun": "^1.18.1",
+    "prettier": "^3.8.3",
+    "prettier-plugin-svelte": "^4.0.1",
     "sharp": "^0.34.5",
     "typescript": "^5"
   },
