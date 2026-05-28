@@ -112,6 +112,35 @@
   color: var(--brand);
   flex-shrink: 0;
 }
+.fb-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.1s ease-out, color 0.1s ease-out;
+}
+.fb-star svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  display: block;
+}
+.fb-row:hover .fb-star {
+  opacity: 0.55;
+}
+.fb-row:hover .fb-star:hover {
+  opacity: 1;
+  color: #e5c248;
+}
+.fb-star.fb-star-on {
+  opacity: 1;
+  color: #e5c248;
+}
 .fb-git-tooltip {
   max-width: min(72ch, 90vw);
 }

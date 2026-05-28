@@ -3,7 +3,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";
-  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
+  import { joinPath, formatSize, formatMtime, fetchDir, fetchRemoteDir, fetchGitStatus, NavHistory, StarStore, breadcrumbs, type FileEntry, openRemoteFile, fetchSshHome, fetchSshStatus, confirmRemoteUpload, dismissRemoteUpload } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -62,6 +62,16 @@
   let selected: Set<string> = new Set();
   let showDotfiles = true;
   let gitStatusByDir: Record<string, Map<string, string>> = {};
+  const starStore = new StarStore(getDaemonKV(), "supergit:fileBrowser:stars");
+  let starred: Set<string> = starStore.load();
+  let starredOnly = false;
+
+  function toggleStar(path: string) {
+    starred = starStore.toggle(starred, path);
+  }
+  function toggleStarredOnly() {
+    starredOnly = !starredOnly;
+  }
 
   /** Tracked remote files with sync state (modified/uploading/etc). */
   let syncFiles: { remotePath: string; localCachePath: string; state: string; error?: string }[] = [];
@@ -299,18 +309,6 @@
     } catch {}
   }
 
-  function breadcrumbs(path: string): { name: string; path: string }[] {
-    const parts = path.split("/").filter(Boolean);
-    const crumbs: { name: string; path: string }[] = [];
-    for (let i = 0; i < parts.length; i++) {
-      crumbs.push({
-        name: parts[i]!,
-        path: "/" + parts.slice(0, i + 1).join("/"),
-      });
-    }
-    return crumbs;
-  }
-
   function navigateTo(path: string) {
     if (isRemote) followTerminal = false;
     nav.push(path);
@@ -382,6 +380,21 @@
   }
 
   $: visibleEntries = showDotfiles ? entries : entries.filter((e) => !e.name.startsWith("."));
+
+  /** Starred paths within this worktree, sorted alphabetically.
+   *  Each item shows its path relative to wtPath when on disk;
+   *  paths outside wtPath are filtered out. */
+  $: starredInWt = (() => {
+    const list: { fullPath: string; rel: string; name: string }[] = [];
+    for (const p of starred) {
+      if (!p.startsWith(wtPath)) continue;
+      const rel = p.slice(wtPath.length).replace(/^[\\/]+/, "") || ".";
+      const name = p.split(/[\\/]/).pop() ?? p;
+      list.push({ fullPath: p, rel, name });
+    }
+    list.sort((a, b) => a.rel.localeCompare(b.rel));
+    return list;
+  })();
   $: canBack = (navTick, nav.canGoBack());
   $: canForward = (navTick, nav.canGoForward());
   $: visibleSelected = [...selected].filter((p) => visibleEntries.some((e) => joinPath(currentDir, e.name) === p || p.startsWith(joinPath(currentDir, e.name) + "/")));
@@ -477,6 +490,19 @@
         <span class="fb-copied">copied</span>
       {/if}
     </div>
+    <button
+      class="fb-nav-btn fb-star-toggle"
+      class:fb-star-toggle-on={starredOnly}
+      on:click={toggleStarredOnly}
+      title={starredOnly ? "Show all files" : "Show only starred"}
+      aria-label="Toggle starred-only view"
+    >
+      {#if starredOnly}
+        <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+      {:else}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+      {/if}
+    </button>
     {#if isRemote}
       {#if onFocusTerminal}
         <button
@@ -515,7 +541,34 @@
   {/each}
 
   <div class="fb-content">
-    {#if loading && entries.length === 0}
+    {#if starredOnly}
+      {#if starredInWt.length === 0}
+        <div class="fb-status muted small">No starred items in this worktree</div>
+      {:else}
+        <ul class="fb-list">
+          {#each starredInWt as item (item.fullPath)}
+            <li>
+              <div class="fb-row" role="button" tabindex="0"
+                on:click={() => handleNavigateToFile(item.fullPath)}
+                on:keydown={(e) => { if (e.key === "Enter") handleNavigateToFile(item.fullPath); }}
+              >
+                <span class="fb-arrow-spacer" aria-hidden="true"></span>
+                <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
+                <span class="fb-name fb-name-rel">{item.rel}</span>
+                <button
+                  class="fb-star fb-star-on"
+                  on:click|stopPropagation={() => toggleStar(item.fullPath)}
+                  title="Unstar"
+                  aria-label="Unstar"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+                </button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if loading && entries.length === 0}
       <div class="fb-status"><LoadingSpinner size="1.2rem" /></div>
     {:else if error}
       <div class="fb-status muted small">{error}</div>
@@ -533,10 +586,12 @@
             {gitStatusByDir}
             {showDotfiles}
             {wtPath}
+            {starred}
             onSelect={handleSelect}
             onDblClick={handleNodeDblClick}
             onToggleExpand={handleNodeToggleExpand}
             onNavigateToFile={handleNavigateToFile}
+            onToggleStar={toggleStar}
           />
         {/each}
       </ul>
@@ -596,6 +651,17 @@
     width: 0.55rem;
     height: 0.55rem;
     fill: currentColor;
+  }
+  .fb-star-toggle :global(svg) {
+    width: 0.75rem;
+    height: 0.75rem;
+    display: block;
+  }
+  .fb-star-toggle-on {
+    color: #e5c248;
+  }
+  .fb-star-toggle-on:hover:not(:disabled) {
+    color: #e5c248;
   }
   :global(.fb-nav-home) {
     width: 0.6rem;

@@ -5,7 +5,7 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
-import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource } from "../src/file-browser-utils";
+import { joinPath, formatSize, formatMtime, NavHistory, resolveTermIdFromSource, parseRemoteSource, StarStore, breadcrumbs } from "../src/file-browser-utils";
 
 class MemStore implements KVStore {
   data = new Map<string, string>();
@@ -34,6 +34,18 @@ describe("joinPath", () => {
     const first = joinPath("/repo", "packages");
     const second = joinPath(first, "ui");
     expect(second).toBe("/repo/packages/ui");
+  });
+
+  test("windows backslash path uses backslash separator", () => {
+    expect(joinPath("C:\\git\\needle-cloud", "src")).toBe("C:\\git\\needle-cloud\\src");
+  });
+
+  test("windows path with trailing backslash", () => {
+    expect(joinPath("C:\\git\\", "src")).toBe("C:\\git\\src");
+  });
+
+  test("windows drive root", () => {
+    expect(joinPath("C:\\", "Users")).toBe("C:\\Users");
   });
 });
 
@@ -348,5 +360,108 @@ describe("parseRemoteSource", () => {
 
   test("returns undefined for empty string", () => {
     expect(parseRemoteSource("")).toBeUndefined();
+  });
+});
+
+describe("breadcrumbs", () => {
+  test("unix root has no crumbs", () => {
+    expect(breadcrumbs("/")).toEqual([]);
+  });
+
+  test("unix path emits each segment", () => {
+    expect(breadcrumbs("/Users/me/repo")).toEqual([
+      { name: "Users", path: "/Users" },
+      { name: "me", path: "/Users/me" },
+      { name: "repo", path: "/Users/me/repo" },
+    ]);
+  });
+
+  test("trailing slash on unix is ignored", () => {
+    expect(breadcrumbs("/Users/me/")).toEqual([
+      { name: "Users", path: "/Users" },
+      { name: "me", path: "/Users/me" },
+    ]);
+  });
+
+  test("windows path with backslashes preserves drive root", () => {
+    expect(breadcrumbs("C:\\git\\needle-cloud")).toEqual([
+      { name: "C:", path: "C:\\" },
+      { name: "git", path: "C:\\git" },
+      { name: "needle-cloud", path: "C:\\git\\needle-cloud" },
+    ]);
+  });
+
+  test("windows path with forward slashes preserves drive root", () => {
+    expect(breadcrumbs("C:/git/needle-cloud")).toEqual([
+      { name: "C:", path: "C:/" },
+      { name: "git", path: "C:/git" },
+      { name: "needle-cloud", path: "C:/git/needle-cloud" },
+    ]);
+  });
+
+  test("windows drive root alone", () => {
+    expect(breadcrumbs("C:\\")).toEqual([
+      { name: "C:", path: "C:\\" },
+    ]);
+  });
+
+  test("lowercase drive letter still detected", () => {
+    expect(breadcrumbs("d:\\Projects")).toEqual([
+      { name: "d:", path: "d:\\" },
+      { name: "Projects", path: "d:\\Projects" },
+    ]);
+  });
+});
+
+describe("StarStore", () => {
+  const KEY = "supergit:fileBrowser:stars";
+
+  test("starts empty", () => {
+    const s = new StarStore(new MemStore(), KEY);
+    expect(s.load().size).toBe(0);
+  });
+
+  test("save and load round-trips paths", () => {
+    const m = new MemStore();
+    const s = new StarStore(m, KEY);
+    s.save(new Set(["/a", "/b/c", "/d e"]));
+    expect([...s.load()].sort()).toEqual(["/a", "/b/c", "/d e"]);
+  });
+
+  test("toggle adds when absent, removes when present", () => {
+    const m = new MemStore();
+    const s = new StarStore(m, KEY);
+    let set = s.toggle(new Set(), "/foo");
+    expect(set.has("/foo")).toBe(true);
+    set = s.toggle(set, "/foo");
+    expect(set.has("/foo")).toBe(false);
+  });
+
+  test("toggle leaves other entries alone", () => {
+    const m = new MemStore();
+    const s = new StarStore(m, KEY);
+    const set = s.toggle(new Set(["/x", "/y"]), "/z");
+    expect([...set].sort()).toEqual(["/x", "/y", "/z"]);
+  });
+
+  test("corrupt storage returns empty set", () => {
+    const m = new MemStore();
+    m.setItem(KEY, "{{{not json");
+    const s = new StarStore(m, KEY);
+    expect(s.load().size).toBe(0);
+  });
+
+  test("non-array stored data returns empty set", () => {
+    const m = new MemStore();
+    m.setItem(KEY, JSON.stringify({ foo: "bar" }));
+    const s = new StarStore(m, KEY);
+    expect(s.load().size).toBe(0);
+  });
+
+  test("filters out non-string entries", () => {
+    const m = new MemStore();
+    m.setItem(KEY, JSON.stringify(["/a", 42, null, "/b"]));
+    const s = new StarStore(m, KEY);
+    expect([...s.load()].sort()).toEqual(["/a", "/b"]);
   });
 });

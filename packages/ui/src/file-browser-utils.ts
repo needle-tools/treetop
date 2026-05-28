@@ -8,7 +8,12 @@ export interface FileEntry {
 }
 
 export function joinPath(base: string, name: string): string {
-  return base.endsWith("/") ? base + name : base + "/" + name;
+  // On Windows paths (e.g. `C:\git\repo`) use backslash to match the
+  // base's style. Otherwise (Unix-style or remote SSH) use forward slash.
+  const isWindows = /^[a-zA-Z]:[\\/]/.test(base) || base.includes("\\");
+  const sep = isWindows ? "\\" : "/";
+  if (base.endsWith("/") || base.endsWith("\\")) return base + name;
+  return base + sep + name;
 }
 
 export function formatSize(bytes?: number): string {
@@ -105,6 +110,87 @@ export class NavHistory {
       h.forward = d.forward.filter((x): x is string => typeof x === "string");
     }
     return h;
+  }
+}
+
+/** Split a filesystem path into breadcrumb segments. Handles both
+ *  Unix-style (`/Users/me/repo`) and Windows-style (`C:\git\repo` or
+ *  `C:/git/repo`) paths. For Windows paths the first crumb is the
+ *  drive (`C:` / `C:\`) and subsequent crumbs use whichever separator
+ *  the input used. */
+export function breadcrumbs(path: string): { name: string; path: string }[] {
+  const winMatch = path.match(/^([a-zA-Z]:)([\\/])?(.*)$/);
+  if (winMatch) {
+    const drive = winMatch[1]!;
+    const sep = winMatch[2] ?? "\\";
+    const rest = winMatch[3] ?? "";
+    const parts = rest.split(/[\\/]/).filter(Boolean);
+    const crumbs: { name: string; path: string }[] = [
+      { name: drive, path: drive + sep },
+    ];
+    for (let i = 0; i < parts.length; i++) {
+      crumbs.push({
+        name: parts[i]!,
+        path: drive + sep + parts.slice(0, i + 1).join(sep),
+      });
+    }
+    return crumbs;
+  }
+  const parts = path.split("/").filter(Boolean);
+  const crumbs: { name: string; path: string }[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    crumbs.push({
+      name: parts[i]!,
+      path: "/" + parts.slice(0, i + 1).join("/"),
+    });
+  }
+  return crumbs;
+}
+
+export interface SimpleKV {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export class StarStore {
+  constructor(
+    private readonly storage: SimpleKV,
+    private readonly key: string,
+  ) {}
+
+  load(): Set<string> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return new Set();
+    }
+    if (raw === null) return new Set();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return new Set();
+    }
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+  }
+
+  save(paths: Iterable<string>): void {
+    try {
+      this.storage.setItem(this.key, JSON.stringify([...paths]));
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** Returns a new Set with `path` toggled. Persists immediately. */
+  toggle(current: Set<string>, path: string): Set<string> {
+    const next = new Set(current);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    this.save(next);
+    return next;
   }
 }
 

@@ -17,6 +17,8 @@
   export let onDblClick: (path: string, type: string) => void;
   export let onToggleExpand: (name: string, parentDir: string) => void;
   export let onNavigateToFile: (path: string) => void;
+  export let starred: Set<string> = new Set();
+  export let onToggleStar: (path: string) => void = () => {};
 
   $: fullPath = joinPath(parentDir, entry.name);
   $: isExpanded = !!expanded[fullPath];
@@ -25,6 +27,7 @@
     : [];
   $: myGitStatus = gitStatusByDir[parentDir]?.get(entry.name);
   $: isDir = entry.type === "directory";
+  $: isStarred = starred.has(fullPath);
 
   // --- File diff tooltip ---
   let diffText: string | null = null;
@@ -192,6 +195,19 @@
       <span class="fb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{#each ICONS.document.paths ?? [] as d}<path {d}/>{/each}</svg></span>
     {/if}
     <span class="fb-name">{entry.name}</span>
+    <button
+      class="fb-star"
+      class:fb-star-on={isStarred}
+      on:click|stopPropagation={() => onToggleStar(fullPath)}
+      title={isStarred ? "Unstar" : "Star"}
+      aria-label={isStarred ? "Unstar" : "Star"}
+    >
+      {#if isStarred}
+        <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+      {:else}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"/></svg>
+      {/if}
+    </button>
     {#if copiedPaths.has(fullPath)}<span class="fb-copied-hint">copied</span>{/if}
     {#if myGitStatus && !isDir}
       <Tooltip variant="wide" placement="bottom" showDelayMs={300} onShow={loadFileDiff} escapeClip>
@@ -283,6 +299,8 @@
           {onDblClick}
           {onToggleExpand}
           {onNavigateToFile}
+          {starred}
+          {onToggleStar}
         />
       {/each}
     </ul>
