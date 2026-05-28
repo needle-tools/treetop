@@ -6780,9 +6780,11 @@
                     )}
                     {@const rowDeletes = removeNoteEventsByAnchor[anchorStr] ?? []}
                     {@const visibleNotes = rowNotes
+                      .filter((n) => n.kind !== "emoji")
                       .map((n) => ({ n, display: notesListDisplay(n) }))
                       .filter((row) => row.display.text.length > 0)}
                     {@const visibleDeletes = rowDeletes
+                      .filter((ev) => ev.inverse?.note?.kind !== "emoji")
                       .slice(0, 20)
                       .map((ev) => ({
                         ev,
@@ -6805,38 +6807,37 @@
                             {#each visibleNotes as row (row.n.id)}
                               {@const n = row.n}
                               <li class="notes-list-row" class:is-link={row.display.kind === "link"}>
-                                <span class="notes-list-body" title={row.display.title}>
-                                  <span class="notes-list-kind" aria-hidden="true">
-                                    {#if row.display.kind === "link"}
-                                      {#if row.display.agent || row.display.provider || row.display.glyph}
-                                        <AttachmentIcon
-                                          agent={row.display.agent}
-                                          provider={row.display.provider}
-                                          glyph={row.display.glyph}
-                                          size={14}
-                                        />
-                                      {:else}
-                                        <svg
-                                          viewBox="0 0 24 24"
-                                          width="12"
-                                          height="12"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          stroke-width="2.2"
-                                          stroke-linecap="round"
-                                          stroke-linejoin="round"
-                                          aria-hidden="true"
-                                        >
-                                          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                        </svg>
-                                      {/if}
+                                <span class="notes-list-kind" aria-hidden="true">
+                                  {#if row.display.kind === "link"}
+                                    {#if row.display.agent || row.display.provider || row.display.glyph}
+                                      <AttachmentIcon
+                                        agent={row.display.agent}
+                                        provider={row.display.provider}
+                                        glyph={row.display.glyph}
+                                        size={14}
+                                      />
                                     {:else}
-                                      <NoteIcon size={13} />
+                                      <svg
+                                        viewBox="0 0 24 24"
+                                        width="12"
+                                        height="12"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2.2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                      >
+                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                      </svg>
                                     {/if}
-                                  </span>
-                                  {row.display.text}
+                                  {:else}
+                                    <NoteIcon size={13} />
+                                  {/if}
                                 </span>
+                                <span class="notes-list-body" title={row.display.title}
+                                  >{row.display.text}</span>
                                 <span class="muted ev-time">{relTime(n.updatedAt)}</span>
                               </li>
                             {/each}
@@ -6853,38 +6854,37 @@
                           <ul class="notes-list">
                             {#each visibleDeletes as r (r.ev.id)}
                               <li class="notes-list-row deleted" class:is-link={r.display.kind === "link"}>
-                                <span class="notes-list-body" title={r.display.title}>
-                                  <span class="notes-list-kind" aria-hidden="true">
-                                    {#if r.display.kind === "link"}
-                                      {#if r.display.agent || r.display.provider || r.display.glyph}
-                                        <AttachmentIcon
-                                          agent={r.display.agent}
-                                          provider={r.display.provider}
-                                          glyph={r.display.glyph}
-                                          size={14}
-                                        />
-                                      {:else}
-                                        <svg
-                                          viewBox="0 0 24 24"
-                                          width="12"
-                                          height="12"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          stroke-width="2.2"
-                                          stroke-linecap="round"
-                                          stroke-linejoin="round"
-                                          aria-hidden="true"
-                                        >
-                                          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                        </svg>
-                                      {/if}
+                                <span class="notes-list-kind" aria-hidden="true">
+                                  {#if r.display.kind === "link"}
+                                    {#if r.display.agent || r.display.provider || r.display.glyph}
+                                      <AttachmentIcon
+                                        agent={r.display.agent}
+                                        provider={r.display.provider}
+                                        glyph={r.display.glyph}
+                                        size={14}
+                                      />
                                     {:else}
-                                      <NoteIcon size={13} />
+                                      <svg
+                                        viewBox="0 0 24 24"
+                                        width="12"
+                                        height="12"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2.2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                      >
+                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                      </svg>
                                     {/if}
-                                  </span>
-                                  {r.display.text}
+                                  {:else}
+                                    <NoteIcon size={13} />
+                                  {/if}
                                 </span>
+                                <span class="notes-list-body" title={r.display.title}
+                                  >{r.display.text}</span>
                                 <span class="muted ev-time">{relTime(r.ev.timestamp)}</span>
                                 <button
                                   class="undo"

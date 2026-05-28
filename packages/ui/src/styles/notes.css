@@ -2170,17 +2170,33 @@
   color: var(--text-muted);
   margin-bottom: 0.3rem;
 }
+/* Cap the popover so long previews ellipsis instead of expanding the
+   shell — agents-popover's default is `width: max-content` which would
+   grow to fit the longest line. */
+.notes-list-popover {
+  max-width: min(560px, 90vw);
+}
+/* Real grid so icon / preview / time / undo line up across rows.
+   Subgrid lets each <li> participate in the parent's column tracks
+   while keeping per-row borders. The pinned list has 3 columns; the
+   "Recently deleted" list has 4 (extra Undo button) — :has() switches
+   the template without needing a per-section modifier. */
 .notes-list-popover .notes-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 0.5rem;
+}
+.notes-list-popover .notes-list:has(.notes-list-row.deleted) {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 .notes-list-popover .notes-list-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   align-items: center;
-  gap: 0.5rem;
   padding: 0.25rem 0;
   min-width: 0;
 }
@@ -2188,7 +2204,6 @@
   border-top: 1px dashed var(--surface-2);
 }
 .notes-list-popover .notes-list-body {
-  flex: 1 1 auto;
   font-size: var(--fs-sm);
   color: var(--text-2);
   overflow: hidden;
@@ -2200,8 +2215,6 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-right: 0.4rem;
-  vertical-align: -2px;
   color: var(--text-muted);
   width: 14px;
   height: 14px;
@@ -2212,12 +2225,6 @@
 .notes-list-popover .notes-list-row.deleted .notes-list-body {
   color: var(--text-muted);
   text-decoration: line-through;
-}
-.notes-list-popover .notes-list-row .ev-time {
-  flex: 0 0 auto;
-}
-.notes-list-popover .notes-list-row .undo {
-  flex: 0 0 auto;
 }
 
 /* ── Emoji stickers ─────────────────────────────────────────────── */
