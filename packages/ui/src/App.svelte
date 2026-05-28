@@ -65,6 +65,7 @@
   import { relativeAge } from "./mention-providers";
   import { LINK_TARGET_DRAG_MIME, SESSION_LINK_DRAG_MIME } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
+  import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
   import {
     OpenSessionsStore,
     VisibleWorktreesStore,
@@ -1838,38 +1839,11 @@
         currentCwd?: string;
         alive: boolean;
       }>;
-      const liveTermIds = new Set(
-        list.filter((sh) => sh.alive).map((sh) => sh.termId),
-      );
-      const next = { ...openSessionsByWt };
-      // Step 1: drop `__attached__:shell:<termId>` entries whose termId
-      // is no longer live. After a daemon restart the PTY ids change,
-      // so the persisted attachment from before the restart points at a
-      // dead id — keeping it AND adding the new live one shows the user
-      // two duplicate columns ("i had one, reloaded now i have two"
-      // bug). Stale attachments without a live counterpart get dropped
-      // entirely; the worktree session picker can still reopen the
-      // past-shell transcript if the user wants it.
-      for (const wt of Object.keys(next)) {
-        const before = next[wt] ?? [];
-        const after = before.filter((s) => {
-          if (!s.source.startsWith("__attached__:shell:")) return true;
-          const termId = s.source.split(":").pop();
-          return !!termId && liveTermIds.has(termId);
-        });
-        if (after.length !== before.length) next[wt] = after;
-      }
-      // Step 2: add live shells that aren't already in the list.
-      for (const sh of list) {
-        if (!sh.alive) continue;
-        const source = `__attached__:shell:${sh.termId}`;
-        // Skip terminals the user explicitly closed before reload.
-        if (dismissedShells.has(source)) continue;
-        const existing = next[sh.wt] ?? [];
-        if (existing.some((s) => s.source === source)) continue;
-        next[sh.wt] = [{ agent: "shell", source }, ...existing];
-      }
-      openSessionsByWt = next;
+      openSessionsByWt = mergeLiveShells(
+        openSessionsByWt,
+        list,
+        dismissedShells,
+      ) as typeof openSessionsByWt;
     } catch {
       // best-effort — failing to restore just means the user has to
       // re-open their Terminal columns manually after a reload.
@@ -1887,16 +1861,26 @@
         termId: string; cmd: string[]; cwd: string; wtPath: string; title?: string; firstCmd?: string; lastCmd?: string;
       }>;
       if (list.length === 0) return;
-      const next = { ...openSessionsByWt };
+      // Stash metadata for each persisted termId so the __restore__
+      // render branch can show the right title / cmd. We do this even
+      // for entries that get deduped out below — harmless and the data
+      // becomes useful if the live attachment ever drops.
+      const nextMeta = { ...persistedTerminals };
       for (const entry of list) {
         const source = `__restore__:${entry.termId}`;
-        persistedTerminals = { ...persistedTerminals, [source]: { cmd: entry.cmd, cwd: entry.cwd, title: entry.title, firstCmd: entry.firstCmd, lastCmd: entry.lastCmd } };
-        const existing = next[entry.wtPath] ?? [];
-        if (!existing.some((s) => s.source === source)) {
-          next[entry.wtPath] = [{ agent: "shell", source }, ...existing];
-        }
+        nextMeta[source] = {
+          cmd: entry.cmd,
+          cwd: entry.cwd,
+          title: entry.title,
+          firstCmd: entry.firstCmd,
+          lastCmd: entry.lastCmd,
+        };
       }
-      openSessionsByWt = next;
+      persistedTerminals = nextMeta;
+      openSessionsByWt = mergePersistedTerminals(
+        openSessionsByWt,
+        list,
+      ) as typeof openSessionsByWt;
     } catch {}
   }
 
