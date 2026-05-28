@@ -264,12 +264,14 @@
     repoName: string | null;
     repoColor: string | null;
     wtBranch: string | null;
+    relCwd: string | null;
     title: string | null;
     lastActivity: string | null;
   } {
     let repoName: string | null = null;
     let repoColor: string | null = null;
     let wtBranch: string | null = null;
+    let relCwd: string | null = null;
     let title: string | null = null;
     outer: for (const repo of repos) {
       for (const wt of repo.worktrees ?? []) {
@@ -278,6 +280,7 @@
         repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
         repoColor = repo.color ?? null;
         wtBranch = wt.branch ?? null;
+        relCwd = p.cwd === wt.path ? null : p.cwd.slice(wt.path.length + 1);
         if (p.ownerId) {
           for (const a of wt.agents ?? []) {
             if (a.sessionId === p.ownerId) {
@@ -291,11 +294,12 @@
       if (!repoName && (p.cwd === repo.path || p.cwd.startsWith(repo.path + "/"))) {
         repoName = repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? null;
         repoColor = repo.color ?? null;
+        relCwd = p.cwd === repo.path ? null : p.cwd.slice(repo.path.length + 1);
       }
     }
     const acts = activityByCwd[p.cwd] ?? [];
     const lastActivity = acts.length > 0 ? (acts[0]?.summary ?? null) : null;
-    return { repoName, repoColor, wtBranch, title, lastActivity };
+    return { repoName, repoColor, wtBranch, relCwd, title, lastActivity };
   }
 
   function procSource(p: TuiProc): string | null {
@@ -435,15 +439,10 @@
                           </svg>
                         {/if}
                         <span class="agent-row-name">{isExternal ? (p.comm ?? p.cmd[0] ?? "process") : prettyName(p)}</span>
-                        {#if ctx.title}
-                          <span class="tui-inline-title" title={ctx.title}>
-                            {ctx.title}
-                          </span>
-                        {:else if p.cmd.length > 0}
-                          <span class="tui-inline-title tui-inline-args" title={`${p.cmd.join(" ")}\n${p.cwd}`}>
-                            {p.cmd.join(" ")}
-                          </span>
-                        {/if}
+                        <span class="tui-inline-title" title={`${ctx.title ?? p.cmd.join(" ")}\n${p.cwd}`}>
+                          {#if ctx.title}{ctx.title}{:else}{p.cmd.join(" ")}{/if}
+                          {#if ctx.relCwd}<span class="tui-inline-cwd">· {ctx.relCwd}</span>{/if}
+                        </span>
                         <span
                           class="tui-stat tui-cpu"
                           title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
