@@ -25,7 +25,11 @@
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
   import { claudeModelAlias } from "./storage";
-  import { claudeSessionMenuItems, effortIcon } from "./claude-session-menu";
+  import {
+    claudeSessionMenuItems,
+    claudeAgentSettings,
+    effortIcon,
+  } from "./claude-session-menu";
   import type { SshSessionInfo } from "./file-browser-utils";
 
   type AgentKind = "claude" | "codex" | "copilot" | "ollama" | "shell";
@@ -179,6 +183,18 @@
         })
       : [];
 
+  /** Pill settings popover — mirrors the menu's model/effort selection. */
+  $: agentSettings =
+    agent === "claude"
+      ? claudeAgentSettings({
+          currentModel: claudeModel,
+          detectedModel: model,
+          currentEffort: claudeEffort,
+          onPickModel: (m) => dispatch("setModel", { model: m }),
+          onPickEffort: (e) => dispatch("setEffort", { effort: e }),
+        })
+      : [];
+
   $: menuItems = [
     ...claudeMenuItems,
     {
@@ -233,6 +249,7 @@
     {agent}
     agentLabel={pillLabel}
     agentIcon={agentEffortIcon}
+    {agentSettings}
     {source}
     manualTitle={manualTitle ?? ""}
     mode="terminal"

@@ -10,7 +10,11 @@
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
   import { claudeModelAlias } from "./storage";
-  import { claudeSessionMenuItems, effortIcon } from "./claude-session-menu";
+  import {
+    claudeSessionMenuItems,
+    claudeAgentSettings,
+    effortIcon,
+  } from "./claude-session-menu";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
@@ -972,6 +976,18 @@
     return ic ? { ...ic, title: `effort: ${claudeEffort}` } : undefined;
   })();
 
+  /** Pill settings popover — mirrors the menu's model/effort selection. */
+  $: agentSettings =
+    agent === "claude"
+      ? claudeAgentSettings({
+          currentModel: claudeModel,
+          detectedModel: model,
+          currentEffort: claudeEffort,
+          onPickModel: (m) => onSetClaudeModel(m),
+          onPickEffort: (e) => onSetClaudeEffort(e),
+        })
+      : [];
+
   /** Pin this session as a sticky-link chip on the current
    *  worktree's row. Thin wrapper over the shared
    *  `saveSessionAsLink` util so chat-session and active-TUI
@@ -1443,6 +1459,7 @@
           ? claudeModelAlias(claudeModel ?? model)
           : undefined}
       agentIcon={agentEffortIcon}
+      {agentSettings}
       {source}
       {manualTitle}
       {mode}

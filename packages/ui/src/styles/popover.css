@@ -77,12 +77,17 @@
   padding: 0.4rem 0.5rem;
 }
 
+/* Shared head for every popover that passes a `head` slot. The divider +
+   breathing room below it visually separate the title from the body, so
+   any custom settings popover gets this for free (no per-popover work). */
 .popover-head {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--surface-2);
 }
 
 .popover-spinner {
@@ -618,6 +623,14 @@
    .repo-edit-* rules in worktree-row.css. */
 .repo-edit-popover {
   width: 240px;
+  max-width: 90vw;
+}
+
+/* Agent-pill settings popover (model / effort). Sized to its content with
+   a sane floor — overrides the wider default agents-popover min-width. */
+.agent-settings-popover {
+  width: max-content;
+  min-width: 200px;
   max-width: 90vw;
 }
 

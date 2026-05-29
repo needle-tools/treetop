@@ -1,5 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { claudeSessionMenuItems, effortIcon } from "../src/claude-session-menu";
+import {
+  claudeSessionMenuItems,
+  claudeAgentSettings,
+  effortIcon,
+} from "../src/claude-session-menu";
 import type { SessionMenuItem } from "../src/SessionMenu.svelte";
 
 function noop() {}
@@ -215,5 +219,97 @@ describe("claudeSessionMenuItems", () => {
     high.onSelect(rect);
     expect(pickedModel).toBe("opus");
     expect(pickedEffort).toBe("high");
+  });
+});
+
+describe("claudeAgentSettings (pill popover model)", () => {
+  function build(overrides: Partial<Parameters<typeof claudeAgentSettings>[0]> = {}) {
+    return claudeAgentSettings({
+      currentModel: undefined,
+      detectedModel: undefined,
+      currentEffort: undefined,
+      onPickModel: () => {},
+      onPickEffort: () => {},
+      ...overrides,
+    });
+  }
+
+  test("exposes a Model group and an Effort group", () => {
+    const groups = build();
+    expect(groups.map((g) => g.key)).toEqual(["model", "effort"]);
+    expect(groups.map((g) => g.label)).toEqual(["Model", "Effort"]);
+  });
+
+  test("Model options are opus/sonnet/haiku; Effort is low→max (popover order)", () => {
+    const [model, effort] = build();
+    expect(model!.options.map((o) => o.value)).toEqual(["opus", "sonnet", "haiku"]);
+    // The popover lists effort ascending (gauge grows left→right); the
+    // burger menu lists it high→low — they intentionally differ.
+    expect(effort!.options.map((o) => o.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
+
+  test("mirrors the menu's selected state (override wins, else detected tier)", () => {
+    const [model] = build({ currentModel: "sonnet", detectedModel: "claude-opus-4-8" });
+    expect(model!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "sonnet",
+    ]);
+    const [model2] = build({ detectedModel: "claude-haiku-4-5" });
+    expect(model2!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "haiku",
+    ]);
+  });
+
+  test("Effort selection reflects only an explicit override, with gauge icons", () => {
+    const [, effort] = build({ currentEffort: "high" });
+    expect(effort!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "high",
+    ]);
+    // Every effort option carries a gauge icon (track + coloured fill).
+    expect(
+      effort!.options.every(
+        (o) => o.icon && o.icon.paths.length === 1 && o.icon.trackPaths.length === 1,
+      ),
+    ).toBe(true);
+    // Model options have no icon.
+    const [model] = build();
+    expect(model!.options.every((o) => o.icon === undefined)).toBe(true);
+  });
+
+  test("onPick fires the matching group callback", () => {
+    let m: string | undefined;
+    let e: string | undefined;
+    const [model, effort] = build({
+      onPickModel: (v) => (m = v),
+      onPickEffort: (v) => (e = v),
+    });
+    model!.onPick("opus");
+    effort!.onPick("max");
+    expect(m).toBe("opus");
+    expect(e).toBe("max");
+  });
+
+  test("agrees with the menu builder on model selection (no drift)", () => {
+    const args = {
+      currentModel: undefined,
+      detectedModel: "claude-sonnet-4-6",
+      currentEffort: "xhigh" as string,
+      onPickModel: () => {},
+      onPickEffort: () => {},
+    };
+    const [menuModel] = claudeSessionMenuItems(args);
+    const [popModel] = claudeAgentSettings(args);
+    const menuSelected =
+      menuModel?.kind === "submenu"
+        ? menuModel.children.filter((c) => c.kind === "action" && c.selected).map((c) => c.label)
+        : [];
+    const popSelected = popModel!.options.filter((o) => o.selected).map((o) => o.value);
+    expect(popSelected).toEqual(menuSelected);
+    expect(popSelected).toEqual(["sonnet"]);
   });
 });

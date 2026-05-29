@@ -21,12 +21,15 @@
    * jitter as the agent's first JSONL line lands and the metadata
    * fills in.
    */
+  import { onMount, onDestroy } from "svelte";
   import ManualTitle from "./ManualTitle.svelte";
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
+  import Popover from "./Popover.svelte";
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { ICONS } from "./icons";
   import { contextChip } from "./context-tokens";
+  import type { AgentSettingGroup } from "./claude-session-menu";
 
   export let agent:
     | "claude"
@@ -50,6 +53,16 @@
   export let agentIcon:
     | { paths: string[]; trackPaths?: string[]; color: string; title?: string }
     | undefined = undefined;
+  /** Settings groups (Model, Effort, …) for this agent's pill popover.
+   *  Non-empty ⇒ the agent pill becomes a clickable trigger that opens a
+   *  settings popover mirroring the burger menu's selection (with current
+   *  state). Empty ⇒ the pill is non-interactive unless a placeholder is
+   *  given. */
+  export let agentSettings: AgentSettingGroup[] = [];
+  /** When set (and `agentSettings` is empty), the pill still opens a
+   *  popover showing this muted message instead of options — used by
+   *  agents we don't have settings for yet (e.g. codex). */
+  export let settingsPlaceholder: string | undefined = undefined;
   export let source: string;
   export let manualTitle: string = "";
   /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
@@ -204,6 +217,74 @@
     }
   }
 
+  /** Agent-pill settings popover. The pill is a trigger only when there
+   *  are settings to show (claude today; codex later). State lives here —
+   *  the popover is one-per-column, so local state is enough. */
+  /** Title-cased agent name for the placeholder sentence ("Files", "Codex"). */
+  $: agentTitleCase = agent.charAt(0).toUpperCase() + agent.slice(1);
+  /** What the popover shows when there are no real settings: the caller's
+   *  override if any, else a generic "nothing here yet" note — so EVERY
+   *  pill is a consistent, clickable affordance, not just the ones we've
+   *  built settings for. */
+  $: effectivePlaceholder =
+    agentSettings.length > 0
+      ? undefined
+      : (settingsPlaceholder ?? `No settings for ${agentTitleCase} yet.`);
+  $: pillInteractive = agentSettings.length > 0 || !!effectivePlaceholder;
+  let settingsOpen = false;
+  let pillAnchorEl: HTMLElement | null = null;
+  /** Staged selections (groupKey → value) while the popover is open. Picks
+   *  are non-destructive — nothing is applied until the user hits Apply,
+   *  so opening the popover and clicking around never restarts a session. */
+  let staged: Record<string, string> = {};
+
+  function currentValue(group: AgentSettingGroup): string | undefined {
+    return group.options.find((o) => o.selected)?.value;
+  }
+  function openSettings() {
+    const next: Record<string, string> = {};
+    for (const g of agentSettings) {
+      const v = currentValue(g);
+      if (v !== undefined) next[g.key] = v;
+    }
+    staged = next;
+    settingsOpen = true;
+  }
+  function toggleSettings() {
+    if (settingsOpen) settingsOpen = false;
+    else openSettings();
+  }
+  function selectOption(group: AgentSettingGroup, value: string) {
+    staged = { ...staged, [group.key]: value };
+  }
+  $: settingsDirty = agentSettings.some((g) => {
+    const v = staged[g.key];
+    return v !== undefined && v !== currentValue(g);
+  });
+  function applySettings() {
+    for (const g of agentSettings) {
+      const v = staged[g.key];
+      if (v !== undefined && v !== currentValue(g)) g.onPick(v);
+    }
+    settingsOpen = false;
+  }
+  function onDocClick(e: MouseEvent) {
+    if (!settingsOpen) return;
+    const t = e.target as Node | null;
+    if (pillAnchorEl && t && !pillAnchorEl.contains(t)) settingsOpen = false;
+  }
+  function onDocKey(e: KeyboardEvent) {
+    if (settingsOpen && e.key === "Escape") settingsOpen = false;
+  }
+  onMount(() => {
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onDocKey);
+  });
+  onDestroy(() => {
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onDocKey);
+  });
+
   $: effectiveMenuItems =
     mode === "terminal"
       ? ([
@@ -221,37 +302,115 @@
 
 <header bind:this={headerEl} draggable="true" on:dragstart={onDragStart}>
   <div class="hdr-col col-agent">
-    <span
-      class="agent-pill agent-{agent}"
-      class:working={mode === "terminal" && working}
-      class:idle={mode === "terminal" && !working}
-      >{#if sshConnected}<svg
-          class="ssh-conn-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-label="SSH connection active"
-          ><title>SSH connection active</title
-          >{#each ICONS.monitor.paths ?? [] as d}<path {d} />{/each}</svg
-        >{/if}{agentLabel ?? agent}{#if agentIcon}<svg
-          class="agent-pill-icon"
-          viewBox="0.5 6 23 12"
-          style="color:{agentIcon.color}"
-          aria-hidden="true"
-          >{#if agentIcon.title}<title>{agentIcon.title}</title
-            >{/if}{#each agentIcon.trackPaths ?? [] as d}<path
-              {d}
-              class="gauge-track"
-            />{/each}{#each agentIcon.paths as d}<path {d} />{/each}</svg
-        >{/if}{#if mode === "terminal"}<span
-          class="sleep-slot"
-          title={!working ? "Idle — waiting for input" : ""}
-          ><SleepIndicationAnimation visible={!working} /></span
-        >{/if}</span
-    >
+    <span class="agent-pill-anchor" bind:this={pillAnchorEl}>
+      {#snippet pillBody()}{#if sshConnected}<svg
+            class="ssh-conn-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-label="SSH connection active"
+            ><title>SSH connection active</title
+            >{#each ICONS.monitor.paths ?? [] as d}<path {d} />{/each}</svg
+          >{/if}{agentLabel ?? agent}{#if agentIcon}<svg
+            class="agent-pill-icon"
+            viewBox="0.5 6 23 12"
+            style="color:{agentIcon.color}"
+            aria-hidden="true"
+            >{#if agentIcon.title}<title>{agentIcon.title}</title
+              >{/if}{#each agentIcon.trackPaths ?? [] as d}<path
+                {d}
+                class="gauge-track"
+              />{/each}{#each agentIcon.paths as d}<path {d} />{/each}</svg
+          >{/if}{#if mode === "terminal"}<span
+            class="sleep-slot"
+            title={!working ? "Idle — waiting for input" : ""}
+            ><SleepIndicationAnimation visible={!working} /></span
+          >{/if}{/snippet}
+      {#if pillInteractive}
+        <button
+          class="agent-pill agent-{agent} interactive"
+          class:working={mode === "terminal" && working}
+          class:idle={mode === "terminal" && !working}
+          type="button"
+          title={`${agent} settings — model & effort`}
+          aria-haspopup="menu"
+          aria-expanded={settingsOpen}
+          draggable="false"
+          on:click|stopPropagation={toggleSettings}
+          on:dragstart|preventDefault|stopPropagation
+          >{@render pillBody()}</button
+        >
+      {:else}
+        <span
+          class="agent-pill agent-{agent}"
+          class:working={mode === "terminal" && working}
+          class:idle={mode === "terminal" && !working}
+          >{@render pillBody()}</span
+        >
+      {/if}
+      {#if settingsOpen}
+        <Popover
+          variant="agents"
+          extraClass="agent-settings-popover"
+          headClass="agent-settings-popover-head"
+        >
+          <svelte:fragment slot="head"><span>{agent} settings</span></svelte:fragment>
+          {#if agentSettings.length > 0}
+            <div class="agent-settings-body">
+              {#each agentSettings as group (group.key)}
+                <div class="agent-settings-group">
+                  <span class="agent-settings-glabel">{group.label}</span>
+                  <div class="agent-settings-opts">
+                    {#each group.options as opt (opt.value)}
+                      {@const active =
+                        (staged[group.key] ?? currentValue(group)) === opt.value}
+                      <button
+                        type="button"
+                        class="agent-settings-opt"
+                        class:selected={active}
+                        on:click={() => selectOption(group, opt.value)}
+                      >
+                        {#if opt.icon}<svg
+                            class="agent-settings-opt-icon"
+                            viewBox="0.5 6 23 12"
+                            style="color:{opt.icon.color}"
+                            aria-hidden="true"
+                            >{#each opt.icon.trackPaths as d}<path
+                                {d}
+                                class="gauge-track"
+                              />{/each}{#each opt.icon.paths as d}<path
+                                {d}
+                              />{/each}</svg
+                          >{/if}
+                        <span class="agent-settings-opt-label">{opt.label}</span>
+                        {#if active}<svg
+                            class="agent-settings-check"
+                            viewBox="0 0 24 24"
+                            aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg
+                          >{/if}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {/each}
+              <div class="agent-settings-foot">
+                <button
+                  type="button"
+                  class="agent-settings-apply"
+                  disabled={!settingsDirty}
+                  on:click={applySettings}
+                >Apply</button>
+              </div>
+            </div>
+          {:else if effectivePlaceholder}
+            <p class="agent-settings-empty muted small">{effectivePlaceholder}</p>
+          {/if}
+        </Popover>
+      {/if}
+    </span>
     {#if isAgentSession}
       <span class="star-slot">
         <button
@@ -659,6 +818,125 @@
     /* Always-on transparent border so toggling .idle (which paints a
        real border) doesn't reflow the pill by 1px in either axis. */
     border: 1px solid transparent;
+    /* The pill renders as a <button> when it has settings (and a <span>
+       otherwise); neutralise the UA button chrome so both look identical. */
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 0;
+    line-height: 1.1;
+  }
+  /* Interactive (has a settings popover): pointer + a subtle hover lift so
+     it reads as "click me" without an extra glyph. */
+  .agent-pill.interactive {
+    cursor: pointer;
+  }
+  .agent-pill.interactive:hover {
+    filter: brightness(1.12);
+  }
+  .agent-pill-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  /* Settings popover body (slot content lives in this component's scope). */
+  .agent-settings-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .agent-settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .agent-settings-glabel {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .agent-settings-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .agent-settings-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.55rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+    background: transparent;
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .agent-settings-opt:hover {
+    background: var(--surface-2);
+  }
+  .agent-settings-opt.selected {
+    border-color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+  }
+  .agent-settings-opt-label {
+    text-transform: lowercase;
+    font-family: ui-monospace, monospace;
+  }
+  /* Effort gauge in the option — same glyph as the pill badge / menu. */
+  .agent-settings-opt-icon {
+    width: 1.7em;
+    height: 0.95em;
+    flex-shrink: 0;
+    fill: currentColor;
+    stroke: none;
+  }
+  .agent-settings-opt-icon .gauge-track {
+    fill: var(--text-faint);
+    opacity: 0.5;
+  }
+  .agent-settings-check {
+    width: 0.85em;
+    height: 0.85em;
+    flex-shrink: 0;
+    margin-left: auto;
+    fill: none;
+    stroke: var(--status-clean);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  /* Apply footer — changes are staged on click and only committed here,
+     so opening the popover and browsing options never restarts a session. */
+  .agent-settings-foot {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.1rem;
+  }
+  .agent-settings-apply {
+    padding: 0.3rem 0.8rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--brand);
+    background: var(--brand);
+    color: var(--on-brand, #fff);
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .agent-settings-apply:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .agent-settings-apply:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .agent-settings-empty {
+    margin: 0;
+    color: var(--text-muted);
   }
   .ssh-conn-icon {
     width: 0.85em;

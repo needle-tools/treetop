@@ -142,3 +142,59 @@ export function claudeSessionMenuItems(opts: {
     },
   ];
 }
+
+/** One selectable option in an agent-settings group. `selected` marks the
+ *  value currently in effect; `icon` (optional) carries the same gauge
+ *  glyph the menu/pill use (track + coloured fill). */
+export interface AgentSettingOption {
+  value: string;
+  label: string;
+  selected: boolean;
+  icon?: { trackPaths: string[]; paths: string[]; color: string };
+}
+/** A labelled group of mutually-exclusive options (e.g. Model, Effort). */
+export interface AgentSettingGroup {
+  key: string;
+  label: string;
+  options: AgentSettingOption[];
+  onPick: (value: string) => void;
+}
+
+/** The agent-pill settings-popover model for a Claude session. Mirrors
+ *  `claudeSessionMenuItems` (same constants, same active-state rules, same
+ *  effort gauge + high→low order) so the popover and the burger menu can't
+ *  drift — it's just a flatter, more visual shape for the popover UI. */
+export function claudeAgentSettings(opts: {
+  currentModel: string | undefined;
+  detectedModel: string | undefined;
+  currentEffort: string | undefined;
+  onPickModel: (model: string) => void;
+  onPickEffort: (effort: string) => void;
+}): AgentSettingGroup[] {
+  const activeModel = opts.currentModel ?? claudeModelAlias(opts.detectedModel);
+  return [
+    {
+      key: "model",
+      label: "Model",
+      onPick: opts.onPickModel,
+      options: CLAUDE_MODEL_ALIASES.map((m) => ({
+        value: m,
+        label: m,
+        selected: activeModel === m,
+      })),
+    },
+    {
+      key: "effort",
+      label: "Effort",
+      onPick: opts.onPickEffort,
+      // Low → max (ascending), so the gauge fill grows left-to-right like a
+      // real speedometer. (The burger menu lists them high→low instead.)
+      options: CLAUDE_EFFORT_LEVELS.map((e) => ({
+        value: e,
+        label: e,
+        selected: opts.currentEffort === e,
+        icon: effortIcon(e),
+      })),
+    },
+  ];
+}
