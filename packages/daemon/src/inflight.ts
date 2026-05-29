@@ -29,6 +29,16 @@ interface Entry {
 
 const entries = new Map<string, Entry>();
 let seq = 0;
+/** Monotonic bump on every register/kill so callers can build cheap
+ *  ETags ("revision:N") and short-circuit polls to 304 when nothing
+ *  has changed since their last fetch. The UI polls this endpoint at
+ *  ~22 Hz while a session is interactive; a stable revision makes
+ *  those polls essentially free. */
+let revision = 0;
+
+export function getRevision(): number {
+  return revision;
+}
 
 export function register(opts: {
   agent: string;
@@ -48,10 +58,15 @@ export function register(opts: {
     startedAt: new Date().toISOString(),
   };
   entries.set(id, { record, proc: opts.proc });
+  revision++;
   // Auto-remove when the process exits on its own.
   void opts.proc.exited.then(
-    () => entries.delete(id),
-    () => entries.delete(id),
+    () => {
+      if (entries.delete(id)) revision++;
+    },
+    () => {
+      if (entries.delete(id)) revision++;
+    },
   );
   return record;
 }
@@ -80,6 +95,6 @@ export function kill(id: string): boolean {
       // ignore
     }
   }, 500);
-  entries.delete(id);
+  if (entries.delete(id)) revision++;
   return true;
 }

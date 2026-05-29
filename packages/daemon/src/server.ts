@@ -2539,6 +2539,27 @@ const server = Bun.serve<TermWsData, never>({
             { status: 403 },
           );
         }
+        // Cheap 304 short-circuit BEFORE calling getSessionResponseJson.
+        // The full ETag (and the response body inside getSessionResponseJson)
+        // is derived from stat()'s mtimeMs + size, so a single stat() call
+        // is enough to detect "nothing changed". This route is polled at
+        // ~22 Hz while a session is interactive — skipping the cache walk
+        // + manualTitle injection + JSON stringify on every quiet poll is
+        // the entire point of the optimisation. Falls through to the full
+        // path on cache miss / first hit / unparseable etag.
+        const clientEtag = req.headers.get("If-None-Match");
+        if (clientEtag) {
+          const st = await fsStat(source).catch(() => null);
+          if (st) {
+            const quickEtag = `"${st.mtimeMs}-${st.size}"`;
+            if (clientEtag === quickEtag) {
+              return new Response(null, {
+                status: 304,
+                headers: { ETag: quickEtag, ...CORS },
+              });
+            }
+          }
+        }
         const agentKind = resolved.agent;
         const titles = await workspace.listSessionTitles();
         const { body, etag } = await getSessionResponseJson(
@@ -2546,7 +2567,6 @@ const server = Bun.serve<TermWsData, never>({
           source,
           titles[source],
         );
-        const clientEtag = req.headers.get("If-None-Match");
         if (clientEtag && clientEtag === etag) {
           return new Response(null, {
             status: 304,
@@ -4950,7 +4970,24 @@ const server = Bun.serve<TermWsData, never>({
 
       if (url.pathname === "/api/active-sends" && req.method === "GET") {
         const sessionId = url.searchParams.get("sessionId") ?? undefined;
-        return json(inflight.list({ sessionId }));
+        // ETag derived from the in-memory revision counter + the
+        // optional session-id filter. inflight bumps the revision on
+        // every register / kill / process-exit, so a stable revision
+        // means "nothing changed since your last poll" — return 304
+        // and skip the O(n) Map iteration + JSON serialization. The
+        // UI polls this at ~22 Hz while a session is interactive.
+        const etag = `"rev-${inflight.getRevision()}-${sessionId ?? "all"}"`;
+        const clientEtag = req.headers.get("If-None-Match");
+        if (clientEtag === etag) {
+          return new Response(null, {
+            status: 304,
+            headers: { ETag: etag, ...CORS },
+          });
+        }
+        const body = JSON.stringify(inflight.list({ sessionId }));
+        return new Response(body, {
+          headers: { "Content-Type": "application/json", ETag: etag, ...CORS },
+        });
       }
 
       // Trailing-id pattern: /api/active-sends/:id for DELETE.
