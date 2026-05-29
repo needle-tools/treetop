@@ -1570,106 +1570,125 @@
       </div>
     {/if}
     {#if mode === "read" && session && session.messages.length > 0}
-      <!-- Always-visible Summarize / Refresh chip. The hover-reveal
-           snippet pill mirrors the TUI's last-user-message pin so
-           the read view picks up the same affordance. Refresh is
-           hidden when the cached summary is still close enough to
-           the current tail (< 2 new turns) — no need to badger the
-           user for a re-run that won't change much. -->
-      {#if !summarySnippet || shouldShowRefresh || summaryRefreshing}
-        <div class="summary-chip-wrap">
-          {#if summarizeNotice}
-            <button
-              type="button"
-              class="summary-notice"
-              class:clickable={noticeAction === "install"}
-              on:click={() => {
-                if (noticeAction === "install") {
-                  dismissSummarizeNotice();
-                  openSummarize(source);
-                } else {
-                  dismissSummarizeNotice();
-                }
-              }}
-              title={noticeAction === "install"
-                ? "Open the install dialog"
-                : "Dismiss"}>{summarizeNotice}</button
-            >
-          {/if}
-          <button
-            type="button"
-            class="summary-chip"
-            disabled={summaryRefreshing}
-            on:click={() => void summarizeFromChip()}
-            title={summaryRefreshing
-              ? "Refreshing summary…"
-              : summarySnippet
-                ? `Refresh summary (${messagesSinceSummary} new messages since last) with ${summaryModel || "Ollama"}`
-                : "Summarize this session with a local Ollama model (uses last-picked model)"}
+      <!-- Unified overlay: one box that holds the Summarize CTA, the
+           snippet, or the refreshing spinner — whichever applies.
+           Stacks above the pinned-last-user-message just like TUI
+           mode so we don't overlap with it. -->
+      <div
+        class="pinned-last-msg-wrap tui-overlay-stack"
+        class:revealed={pinnedRevealed}
+        on:mouseenter={onOverlayEnter}
+        on:mouseleave={onOverlayLeave}
+      >
+        <div class="tui-summary-box">
+          <svg
+            class="tui-overlay-icon"
+            viewBox="0 0 24 24"
+            width="11"
+            height="11"
+            fill="currentColor"
+            aria-hidden="true"
           >
+            {#each ICONS.ai.paths ?? [] as d}<path {d} />{/each}
+          </svg>
+          <div class="tui-summary-body">
             {#if summaryRefreshing}
-              <LoadingSpinner
-                size="0.7rem"
-                thickness="2px"
-                label="Refreshing summary"
-              />
-              <span>Refreshing…</span>
+              <span class="tui-summary-refreshing">
+                <LoadingSpinner
+                  size="0.65rem"
+                  thickness="2px"
+                  label="Refreshing summary"
+                />
+                <span class="dim"
+                  >refreshing{summaryModel
+                    ? ` with ${summaryModel}`
+                    : ""}…</span
+                >
+              </span>
             {:else if summarySnippet}
-              ↻ Refresh summary
+              <button
+                type="button"
+                class="tui-summary-snippet-btn"
+                aria-label="Open summary"
+                on:click={() => openSummarize(source)}
+              >{summarySnippet}</button>
+              {#if summaryModel}
+                <span class="tui-summary-model">{summaryModel}</span>
+              {/if}
             {:else}
-              ✦ Summarize
+              <button
+                type="button"
+                class="tui-summary-cta"
+                on:click={() => void summarizeFromChip()}
+                title="Summarize this session with a local Ollama model"
+              >✦ Summarize</button>
+              {#if summarizeNotice}
+                <button
+                  type="button"
+                  class="tui-summary-notice"
+                  class:clickable={noticeAction === "install"}
+                  on:click={() => {
+                    if (noticeAction === "install") {
+                      dismissSummarizeNotice();
+                      openSummarize(source);
+                    } else {
+                      dismissSummarizeNotice();
+                    }
+                  }}
+                  title={noticeAction === "install"
+                    ? "Open the install dialog"
+                    : "Dismiss"}>{summarizeNotice}</button
+                >
+              {/if}
             {/if}
-          </button>
-        </div>
-      {/if}
-      {#if summarySnippet || (lastUserMessage && lastUserMessage.trim().length > 0)}
-        <div
-          class="pinned-last-msg-wrap tui-overlay-stack"
-          class:summary-stack={shouldShowRefresh || summaryRefreshing}
-          class:revealed={pinnedRevealed}
-          on:mouseenter={onOverlayEnter}
-          on:mouseleave={onOverlayLeave}
-        >
-          {#if summarySnippet}
+          </div>
+          {#if summarySnippet && !summaryRefreshing}
             <button
               type="button"
-              class="tui-summary-box pinned-summary"
-              aria-label="Open summary"
-              style="--summary-max-lines: {summaryMaxLines}"
-              on:click={() => openSummarize(source)}
+              class="tui-summary-refresh"
+              title={summaryModel
+                ? `Refresh summary (${messagesSinceSummary} new messages since last) with ${summaryModel}`
+                : "Refresh summary"}
+              on:click={() => void summarizeFromChip()}
+              aria-label="Refresh summary"
             >
               <svg
-                class="tui-overlay-icon"
                 viewBox="0 0 24 24"
-                width="11"
-                height="11"
-                fill="currentColor"
+                width="10"
+                height="10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
                 aria-hidden="true"
               >
-                {#each ICONS.ai.paths ?? [] as d}<path {d} />{/each}
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+                <path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14" />
               </svg>
-              <span class="tui-summary-body">{summarySnippet}</span>
             </button>
           {/if}
-          {#if lastUserMessage && lastUserMessage.trim().length > 0}
-            <div class="pinned-last-msg">
-              <svg
-                class="tui-overlay-icon"
-                viewBox="0 0 24 24"
-                width="11"
-                height="11"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                {#each ICONS.speech.paths ?? [] as d}<path {d} />{/each}
-              </svg>
-              <span class="pinned-last-msg-text"
-                >{lastUserMessageWithContext}</span
-              >
-            </div>
-          {/if}
         </div>
-      {/if}
+        {#if lastUserMessage && lastUserMessage.trim().length > 0}
+          <div class="pinned-last-msg">
+            <svg
+              class="tui-overlay-icon"
+              viewBox="0 0 24 24"
+              width="11"
+              height="11"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              {#each ICONS.speech.paths ?? [] as d}<path {d} />{/each}
+            </svg>
+            <span class="pinned-last-msg-text"
+              >{lastUserMessageWithContext}</span
+            >
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 
@@ -2009,98 +2028,65 @@
      the same below-header zone as the pinned-last-msg pill, so the
      read view picks up the TUI's pin affordance. Reset button
      styles so it reads as a small ghost chip, not a form button. */
-  .summary-chip-wrap {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.5rem 0 0;
-    z-index: 3;
-    pointer-events: none;
-  }
-  /* Ephemeral notice next to the Summarize chip — e.g. "No Ollama
-     model installed". Clickable when the notice carries an
-     action (install path); otherwise reads as a flat toast that
-     dismisses on click. */
-  .summary-notice {
-    pointer-events: auto;
+  /* Inline "Summarize" CTA shown inside the read-mode summary
+     overlay when no snippet exists yet. Compact button styled to
+     match the surrounding overlay; clicking fires summarizeFromChip
+     and the box flips to the spinner / snippet states. */
+  .tui-summary-cta {
     font: inherit;
-    font-size: 0.7rem;
-    line-height: 1.2;
-    padding: 0.15rem 0.55rem;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, #d9822b 35%, transparent);
-    background: color-mix(in srgb, #d9822b 18%, rgba(26, 26, 27, 0.85));
-    color: var(--text-1);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-    max-width: 22rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: default;
-  }
-  .summary-notice.clickable {
-    cursor: pointer;
-  }
-  .summary-notice.clickable:hover {
-    background: color-mix(in srgb, #d9822b 28%, rgba(26, 26, 27, 0.95));
-  }
-  .summary-chip {
-    pointer-events: auto;
-    font: inherit;
-    font-size: 0.7rem;
+    font-size: 0.72rem;
     line-height: 1.2;
     padding: 0.15rem 0.5rem;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
-    background: rgba(26, 26, 27, 0.65);
+    background: rgba(40, 40, 42, 0.6);
     color: var(--text-2);
     cursor: pointer;
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
   }
-  .summary-chip:hover:not(:disabled) {
-    background: rgba(26, 26, 27, 0.95);
+  .tui-summary-cta:hover {
+    background: rgba(56, 56, 58, 0.8);
     color: var(--text-1);
     border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
   }
-  .summary-chip:disabled {
-    cursor: progress;
-    opacity: 0.9;
-  }
-  /* When both the chip and the snippet pill are visible (read mode +
-     summary present), the snippet pill needs to clear the chip's
-     row. We shift its wrap downwards by ~1.7rem (chip height + gap)
-     so the two stack cleanly instead of overlapping. */
-  .pinned-last-msg-wrap.summary-stack {
-    padding-top: 1.9rem;
-  }
-  /* The snippet pill is rendered as a <button> for accessibility (click
-     opens the dialog). Reset the inherited button chrome so it reads
-     identical to the existing pinned-last-msg div. The line cap is
-     controlled by --summary-max-lines (set inline via the
-     `summaryMaxLines` prop) so callers can tune it per mount.
-     Unlike the TUI's last-message pin (which uses small monospace
-     to mirror terminal output), the summary is prose — read it in
-     the normal app font + normal text colour. */
-  .pinned-summary {
+  /* Snippet rendered as a button (clicking opens the full dialog).
+     Reset button chrome so it reads as a plain text block inside
+     the summary body. */
+  .tui-summary-snippet-btn {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
     font: inherit;
-    font-family: inherit;
-    font-size: 0.78rem;
-    color: var(--text-1);
+    color: inherit;
     text-align: left;
     cursor: pointer;
-    border: 0;
+    width: 100%;
   }
-  .pinned-summary:hover {
-    background: rgb(32, 32, 33);
+  /* Ephemeral notice inside the read-mode summary overlay — e.g.
+     "No Ollama model installed". Sits below the Summarize CTA when
+     present. */
+  .tui-summary-notice {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.65rem;
+    line-height: 1.3;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, #d9822b 35%, transparent);
+    background: color-mix(in srgb, #d9822b 18%, transparent);
+    color: var(--text-1);
+    cursor: default;
+    text-align: left;
+  }
+  .tui-summary-notice.clickable {
+    cursor: pointer;
+  }
+  .tui-summary-notice.clickable:hover {
+    background: color-mix(in srgb, #d9822b 28%, transparent);
   }
   .pinned-last-msg {
     /* Intrinsic text width, capped so a long message stays compact
