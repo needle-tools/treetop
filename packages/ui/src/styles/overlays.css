@@ -202,6 +202,9 @@
   color: var(--text-2);
   font-size: 0.78rem;
 }
+.toast-message-italic {
+  font-style: italic;
+}
 .toast-close {
   background: transparent;
   color: var(--text-muted);

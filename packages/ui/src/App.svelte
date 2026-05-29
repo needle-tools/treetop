@@ -279,6 +279,9 @@
     kind: "error" | "info" | "success" | "invite";
     message: string;
     title?: string;
+    /** Render the message line in italics — used for message previews
+     *  (the quoted body of an incoming peer message). */
+    messageItalic?: boolean;
     /** When set, clicking the toast body fires this callback (and also
      *  dismisses the toast). Used by the session-share invite toast to
      *  open the accept/decline dialog. */
@@ -301,6 +304,7 @@
     kind: Toast["kind"];
     message: string;
     title?: string;
+    messageItalic?: boolean;
     ttlMs?: number;
     onClick?: () => void;
     persist?: boolean;
@@ -314,6 +318,7 @@
         kind: opts.kind,
         message: opts.message,
         title: opts.title,
+        messageItalic: opts.messageItalic,
         onClick: opts.onClick,
         persist: opts.persist,
       },
@@ -4459,13 +4464,19 @@
         const from = (payload as { from?: { label?: unknown } }).from;
         const label =
           from && typeof from.label === "string" ? from.label : "a peer";
+        const rawPreview = (payload as { preview?: unknown }).preview;
+        const preview =
+          typeof rawPreview === "string" && rawPreview.trim()
+            ? rawPreview.trim()
+            : "";
         void refreshMessages();
         if (!muted) {
           play("message-receive");
           addToast({
             kind: "info",
             title: `Message from ${label}`,
-            message: "click the Inbox pill to read",
+            message: preview ? `“${preview}”` : "click the Inbox pill to read",
+            messageItalic: true,
           });
         }
         return;
@@ -9187,7 +9198,7 @@
             : undefined}
         >
           {#if t.title}<strong class="toast-title">{t.title}</strong>{/if}
-          <span class="toast-message">{t.message}</span>
+          <span class="toast-message" class:toast-message-italic={t.messageItalic}>{t.message}</span>
         </div>
         <button
           class="toast-close"

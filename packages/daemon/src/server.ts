@@ -4176,9 +4176,14 @@ const server = Bun.serve<TermWsData, never>({
           sentAt,
         });
         const muted = await isPeerMuted(workspace.path, fromId);
+        // A short single-line preview so the toast can show the gist
+        // instead of just "click to read". Collapse whitespace and cap
+        // length — the full body lives in the inbox.
+        const preview = text.replace(/\s+/g, " ").trim().slice(0, 140);
         broadcast("change", {
           kind: "message_received",
           from: { id: fromId, label: fromLabel },
+          preview,
           muted,
         });
         return json({ ok: true }, { status: 202 });
