@@ -16,9 +16,29 @@ import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
 import { resolve, dirname, join } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { spawnSync, spawn } from "node:child_process";
-import { spawn as bunSpawn, spawnSync as bunSpawnSync } from "bun";
+import { spawn as bunSpawn } from "bun";
 import { dlopen, FFIType, ptr } from "bun:ffi";
+
+// Why no bunSpawnSync: this whole file runs inside a Bun Worker that
+// electrobun spawns from its native launcher. The native side keeps a
+// message loop that dispatches threadsafe FFI callbacks back to this
+// Worker thread; if we sit in a sync spawn (waiting on PowerShell, git,
+// lsof, …) the callbacks queue up and the native side blocks waiting
+// for one — most visibly, `core_.symbols.createWindow` never returns,
+// and no window ever appears. Reproduced on Windows 11 26200 with
+// electrobun 1.18.4-beta.3 and PowerShell Get-NetTCPConnection taking
+// 10–60s. So every external command goes through `bunSpawn` + stream
+// await, never sync.
+async function runCapture(cmd: string[]): Promise<{ code: number; stdout: string }> {
+  try {
+    const child = bunSpawn({ cmd, stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    const stdout = await new Response(child.stdout).text();
+    const code = (await child.exited) ?? 1;
+    return { code, stdout };
+  } catch {
+    return { code: 1, stdout: "" };
+  }
+}
 
 const PREFERRED_PORT = 27787;
 // Mutated by chooseDaemonPort() at startup. The UI uses relative URLs
@@ -36,42 +56,24 @@ const exe = isWin ? ".exe" : "";
 // claude, codex, node, etc.) resolve. On Windows the launcher inherits
 // the user's environment normally, so this is a no-op.
 
-function resolveLoginPath(): string | null {
+async function resolveLoginPath(): Promise<string | null> {
   if (isWin) return null;
   const shell = process.env.SHELL || "/bin/zsh";
-  try {
-    const result = spawnSync(shell, ["-l", "-c", "echo $PATH"], {
-      timeout: 5000,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const p = result.stdout?.trim();
-    return p || null;
-  } catch {
-    return null;
-  }
+  const r = await runCapture([shell, "-l", "-c", "echo $PATH"]);
+  const p = r.stdout.trim();
+  return p || null;
 }
 
-const loginPath = resolveLoginPath();
+const loginPath = await resolveLoginPath();
 if (loginPath) {
   process.env.PATH = loginPath;
 }
 
 // ── Check for git ────────────────────────────────────────────────────
 
-function gitAvailable(): boolean {
-  try {
-    const r = bunSpawnSync({
-      cmd: ["git", "--version"],
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-      env: process.env as Record<string, string>,
-    });
-    return r.exitCode === 0;
-  } catch {
-    return false;
-  }
+async function gitAvailable(): Promise<boolean> {
+  const r = await runCapture(["git", "--version"]);
+  return r.code === 0;
 }
 
 // ── Daemon lifecycle ─────────────────────────────────────────────────
@@ -130,23 +132,15 @@ async function shutdownDaemon(): Promise<void> {
  *  ensureDaemon() can force-kill the holder before spawning. */
 async function isPortBound(port: number): Promise<boolean> {
   if (isWin) {
-    try {
-      const r = bunSpawnSync({
-        cmd: ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-          `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count`],
-        stdout: "pipe", stderr: "ignore", stdin: "ignore",
-      });
-      const count = parseInt((r.stdout?.toString() ?? "0").trim(), 10);
-      return count > 0;
-    } catch { return false; }
+    const r = await runCapture([
+      "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+      `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count`,
+    ]);
+    const count = parseInt(r.stdout.trim() || "0", 10);
+    return count > 0;
   }
-  try {
-    const r = bunSpawnSync({
-      cmd: ["lsof", "-i", `TCP:${port}`, "-sTCP:LISTEN", "-t"],
-      stdout: "pipe", stderr: "ignore", stdin: "ignore",
-    });
-    return ((r.stdout?.toString() ?? "").trim().length > 0);
-  } catch { return false; }
+  const r = await runCapture(["lsof", "-i", `TCP:${port}`, "-sTCP:LISTEN", "-t"]);
+  return r.stdout.trim().length > 0;
 }
 
 /** Force-kill whatever process is holding PORT in LISTEN state. Only
@@ -155,25 +149,17 @@ async function isPortBound(port: number): Promise<boolean> {
  *  isn't responding to HTTP. Returns true if we killed something. */
 async function killPortHolder(port: number): Promise<boolean> {
   if (isWin) {
-    try {
-      const r = bunSpawnSync({
-        cmd: ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-          `$pids = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique; ` +
-          `foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; ` +
-          `Write-Output ($pids.Count)`],
-        stdout: "pipe", stderr: "ignore", stdin: "ignore",
-      });
-      const killed = parseInt((r.stdout?.toString() ?? "0").trim(), 10);
-      return killed > 0;
-    } catch { return false; }
+    const r = await runCapture([
+      "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+      `$pids = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique; ` +
+      `foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; ` +
+      `Write-Output ($pids.Count)`,
+    ]);
+    const killed = parseInt(r.stdout.trim() || "0", 10);
+    return killed > 0;
   }
-  try {
-    const r = bunSpawnSync({
-      cmd: ["bash", "-c", `lsof -i TCP:${port} -sTCP:LISTEN -t | xargs -r kill -9`],
-      stdout: "ignore", stderr: "ignore", stdin: "ignore",
-    });
-    return r.exitCode === 0;
-  } catch { return false; }
+  const r = await runCapture(["bash", "-c", `lsof -i TCP:${port} -sTCP:LISTEN -t | xargs -r kill -9`]);
+  return r.code === 0;
 }
 
 /** Try to bind a quick test server to PORT. If it works, port is free.
@@ -250,17 +236,15 @@ async function ensureDaemon(): Promise<void> {
     }
   }
 
-  // Zombie check: isDaemonRunning() failed (no HTTP response) but the
-  // port might still be bound by a wedged previous daemon. If we don't
-  // force-kill it, our spawn below will fail with EADDRINUSE and the
-  // child daemon will exit silently — waitForDaemon then times out and
-  // throws an unhandled rejection that kills the launcher.
-  if (await isPortBound(PORT)) {
-    console.log(`supergit: port ${PORT} bound but unresponsive — killing zombie holder`);
-    await killPortHolder(PORT);
-    // Give the OS a moment to release the socket.
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  // Zombie check skipped at boot: we used to call isPortBound() here
+  // (PowerShell Get-NetTCPConnection on Windows), but that command can
+  // take 30–60s on a busy box even when run async, and during that
+  // window the launcher hasn't reached `new BrowserWindow` yet — so
+  // the user stares at no UI for half a minute. If a zombie is holding
+  // the port, the daemon spawn below will fail with EADDRINUSE; the
+  // top-level retry path (killPortHolder + 500ms + ensureDaemon again)
+  // handles that case. Worst case is a slightly slower startup on a
+  // truly wedged port, but the common case (no zombie) is now instant.
 
   // Find the bundled daemon binary. Layout differs per platform:
   //   macOS:   process.execPath = …/Contents/MacOS/bun
@@ -362,7 +346,7 @@ function saveBounds(bounds: WindowBounds): void {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-if (!gitAvailable()) {
+if (!(await gitAvailable())) {
   if (isWin) {
     console.error("git is not installed. Install from https://git-scm.com/download/win");
   } else {

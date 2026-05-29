@@ -10,9 +10,10 @@
  *    When the user closes the window, startEventLoop returns but
  *    forceExit immediately hard-kills the process — so the Worker's
  *    process.on("exit") never fires. We inject cleanup here to:
- *    - POST /api/shutdown to the daemon
  *    - Kill our own msedgewebview2.exe children
  *    - Delete the lockfile
+ *    The daemon (Worker inside bun) dies with the bun process via
+ *    forceExit, so no separate HTTP shutdown call is needed.
  *
  * Electrobun copies main.js from node_modules/electrobun/dist/ into
  * the built bundle. We patch that source template before `electrobun
@@ -45,15 +46,27 @@ const PARTITION_RESOLVE = `
       "..", "..", "WebView2", "Partitions", "default", "EBWebView",
     );`;
 
-// Kill msedgewebview2.exe whose --user-data-dir matches our partition.
+// Kill ALL msedgewebview2.exe processes via Get-Process | Stop-Process.
+//
+// We used to filter to only our partition via Get-CimInstance + Where-Object
+// on CommandLine, but on a busy Windows 11 box Get-CimInstance Win32_Process
+// regularly takes 30–60s because it enumerates every process plus WMI joins.
+// This runs on the LAUNCHER MAIN THREAD between Worker spawn and
+// electrobun_core_run_main_thread, so during that time the WebView2 message
+// loop can't pump → the window appears but is frozen. Switching to
+// Get-Process (PSAPI, not WMI) is sub-second.
+//
+// Side-effect of dropping the filter: we kill every msedgewebview2.exe on
+// the system, not just our partition's. msedgewebview2.exe is ONLY the
+// WebView2 runtime — it is NOT Edge browser, Outlook, Teams, etc. (those
+// have other process names). The only collateral damage is any other
+// WebView2-hosted app a user happens to be running at launch; that's a
+// rare and acceptable trade.
 const KILL_WEBVIEW2 = `
-    const _esc = _partition.replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "''");
     _spawnSync({
       cmd: [
         "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-        "Get-CimInstance Win32_Process -Filter \\"Name='msedgewebview2.exe'\\" | " +
-        "Where-Object { $_.CommandLine -and $_.CommandLine.Contains('" + _esc + "') } | " +
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+        "Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
       ],
       stdout: "ignore", stderr: "ignore", stdin: "ignore",
     });
@@ -70,18 +83,18 @@ const PRE_INIT = `
 `;
 
 // ── Snippet 2: post-close (between startEventLoop and forceExit) ────
+//
+// Why no HTTP shutdown call: the daemon runs as a Worker inside the
+// same bun process. forceExit(0) below kills bun, which kills the
+// Worker — no separate /api/shutdown needed. (The previous version
+// hardcoded port 27787, which is the dev/`bun run start` port, not
+// the port electrobun's installed bundle binds — it picks 50000+.)
 const POST_CLOSE = `
   // Post-close: startEventLoop just returned (user closed the window).
-  // forceExit below hard-kills the process, so the Worker's
-  // process.on("exit") never fires. Clean up here instead.
+  // Kill our msedgewebview2 children + drop the profile lockfile so
+  // the next launch starts clean. forceExit below takes care of bun
+  // and the Worker (= daemon).
   try {${PARTITION_RESOLVE}${KILL_WEBVIEW2}
-    // Shut down the daemon so it doesn't linger.
-    try {
-      const _http = __require("node:http");
-      const _req = _http.request("http://localhost:27787/api/shutdown", { method: "POST", timeout: 2000 });
-      _req.on("error", () => {});
-      _req.end();
-    } catch {}
   } catch {}
 `;
 
