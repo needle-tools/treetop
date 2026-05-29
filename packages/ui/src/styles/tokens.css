@@ -15,9 +15,17 @@
  */
 
 :root {
+  /* ── Base palette (the small set you edit to re-skin; everything else
+     will derive from these in later PRs). Values equal today's literals. ── */
+  --background: #1a1a1b;   /* canonical page canvas (current --surface-1 literal) */
+  --surface: #23261d;      /* warm green-tinted dark (current --surface-0 literal) */
+  --error: #ff6b5e;        /* base error/hot color (current --ctx-hot literal) */
+  --note-paper: #ffec80;   /* sticky-note yellow — intentionally NOT derived from surface */
+  --note-ink: #2a2516;     /* sticky ink — base for the rgba(42,37,22,*) variants */
+
   /* surfaces */
-  --surface-0: #23261d;
-  --surface-1: #1a1a1b;
+  --surface-0: var(--surface);      /* was #23261d — identical */
+  --surface-1: var(--background);   /* was #1a1a1b — identical */
   --surface-2: #2b2b2a;
   --surface-3: #333;
   --surface-input-hover: #232325;
@@ -50,7 +58,7 @@
   /* context-size chip in the session header. Two escalation steps:
      orange around mid-fill, red as it approaches the model's cap. */
   --ctx-warn: #ff8a3d;
-  --ctx-hot: #ff6b5e;
+  --ctx-hot: var(--error);          /* was #ff6b5e — identical */
 
   /* chips */
   --chip-default-bg: #4a4d49;
@@ -120,6 +128,19 @@
   /* scrollbar */
   --scrollbar-thumb: rgba(255, 255, 255, 0.12);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+
+  /* note-paper variants (derived from the two note bases) */
+  --note-paper-top: oklch(from var(--note-paper) calc(l + 0.04) c h);
+  --note-paper-dark: color-mix(in srgb, var(--note-paper) 60%, var(--note-ink));
+  /* shadow tokens — de-dupe the scattered rgba(0,0,0,*) literals (referenced in a later PR) */
+  --shadow-overlay: rgba(0, 0, 0, 0.5);
+  --shadow-popover: rgba(0, 0, 0, 0.4);
+  --shadow-md: rgba(0, 0, 0, 0.28);
+  /* diagnostics chip pairs (referenced in a later PR) */
+  --chip-warn-bg: #5a4500;
+  --chip-warn-text: #ffd58a;
+  --chip-info-bg: #1d3a5a;
+  --chip-info-text: #a8d0ff;
 }
 
 /*

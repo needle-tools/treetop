@@ -10,7 +10,7 @@
  *
  * TWO TIERS
  * ---------
- * 1. Name snapshot  — all 63 tokens currently defined in :root must stay
+ * 1. Name snapshot  — all 77 tokens currently defined in :root must stay
  *    defined after any consolidation.  This test MUST STAY GREEN.
  *
  * 2. Dangling-ref check — every var(--x) reference in styles/*.css should
@@ -76,12 +76,18 @@ function extractVarReferences(css: string): Set<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot — the exact 63 token names that exist today.
+// Snapshot — the exact 77 token names that exist today.
 // Update this list deliberately when adding/renaming tokens; a silent drop
 // will cause a test failure that surfaces the regression.
 // ---------------------------------------------------------------------------
 
 const EXPECTED_TOKEN_NAMES: ReadonlyArray<string> = [
+  // base palette
+  "--background",
+  "--surface",
+  "--error",
+  "--note-paper",
+  "--note-ink",
   // surfaces
   "--surface-0",
   "--surface-1",
@@ -155,6 +161,18 @@ const EXPECTED_TOKEN_NAMES: ReadonlyArray<string> = [
   // scrollbar
   "--scrollbar-thumb",
   "--scrollbar-thumb-hover",
+  // note-paper variants
+  "--note-paper-top",
+  "--note-paper-dark",
+  // shadow tokens
+  "--shadow-overlay",
+  "--shadow-popover",
+  "--shadow-md",
+  // diagnostics chip pairs
+  "--chip-warn-bg",
+  "--chip-warn-text",
+  "--chip-info-bg",
+  "--chip-info-text",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -217,7 +235,7 @@ const KNOWN_DANGLING_WITHOUT_DEFINITION: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 describe("design tokens — name snapshot (MUST STAY GREEN)", () => {
-  test("tokens.css defines exactly the expected set of 63 token names", () => {
+  test("tokens.css defines exactly the expected set of 77 token names", () => {
     const css = readTokensCss();
     const defined = extractDefinedTokens(css);
 
