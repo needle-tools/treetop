@@ -1480,14 +1480,14 @@
         ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
-    {#if mode === "terminal" && (summarySnippet || summaryRefreshing || (lastUserMessage && lastUserMessage.trim().length > 0))}
+    {#if mode === "terminal" && (session && session.messages.length > 0 || (lastUserMessage && lastUserMessage.trim().length > 0))}
       <div
         class="pinned-last-msg-wrap tui-overlay-stack"
         class:revealed={pinnedRevealed}
         on:mouseenter={onOverlayEnter}
         on:mouseleave={onOverlayLeave}
       >
-        {#if summarySnippet || summaryRefreshing}
+        {#if summarySnippet || summaryRefreshing || (session && session.messages.length > 0)}
           <div class="tui-summary-box">
             <svg
               class="tui-overlay-icon"
@@ -1513,11 +1513,18 @@
                       : ""}…</span
                   >
                 </span>
-              {:else}
+              {:else if summarySnippet}
                 {summarySnippet}
                 {#if summaryModel}
                   <span class="tui-summary-model">{summaryModel}</span>
                 {/if}
+              {:else}
+                <button
+                  type="button"
+                  class="tui-summary-cta"
+                  on:click={() => void summarizeFromChip()}
+                  title="Summarize this session with a local Ollama model"
+                >Summarize</button>
               {/if}
             </div>
             {#if !summaryRefreshing}
@@ -1606,12 +1613,7 @@
                 >
               </span>
             {:else if summarySnippet}
-              <button
-                type="button"
-                class="tui-summary-snippet-btn"
-                aria-label="Open summary"
-                on:click={() => openSummarize(source)}
-              >{summarySnippet}</button>
+              {summarySnippet}
               {#if summaryModel}
                 <span class="tui-summary-model">{summaryModel}</span>
               {/if}
@@ -1621,7 +1623,7 @@
                 class="tui-summary-cta"
                 on:click={() => void summarizeFromChip()}
                 title="Summarize this session with a local Ollama model"
-              >✦ Summarize</button>
+              >Summarize</button>
               {#if summarizeNotice}
                 <button
                   type="button"
@@ -2036,35 +2038,17 @@
     font: inherit;
     font-size: 0.72rem;
     line-height: 1.2;
-    padding: 0.15rem 0.5rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
-    background: rgba(40, 40, 42, 0.6);
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--text-2);
     cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
+    text-align: left;
   }
   .tui-summary-cta:hover {
-    background: rgba(56, 56, 58, 0.8);
     color: var(--text-1);
-    border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
-  }
-  /* Snippet rendered as a button (clicking opens the full dialog).
-     Reset button chrome so it reads as a plain text block inside
-     the summary body. */
-  .tui-summary-snippet-btn {
-    appearance: none;
-    background: transparent;
-    border: 0;
-    padding: 0;
-    margin: 0;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    width: 100%;
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   /* Ephemeral notice inside the read-mode summary overlay — e.g.
      "No Ollama model installed". Sits below the Summarize CTA when
