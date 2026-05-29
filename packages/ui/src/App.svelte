@@ -10,6 +10,7 @@
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
   import { singleFlight } from "./single-flight";
+  import { time, timeAsync } from "./timings";
   import {
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
@@ -3279,7 +3280,7 @@
    *  here. Without the wrapper an `fs_change` storm or two mutations
    *  landing in the same tick would issue concurrent /api/repos NDJSON
    *  streams that race each other writing into `repos`. */
-  const load = singleFlight(async () => {
+  const load = singleFlight(() => timeAsync("load", async () => {
     loading = true;
     loadingSlow = false;
     loadingTotal = 0;
@@ -3391,7 +3392,7 @@
         );
       }
     }
-  });
+  }));
 
   /** Scroll to the bottom of the page so the just-added repo (which
    *  appends to the end of the list) AND the footer CTAs below it are
@@ -4363,6 +4364,7 @@
   function subscribeToStream(): () => void {
     const es = new EventSource("/api/stream");
     es.addEventListener("change", (rawEvt: MessageEvent) => {
+      time("sse-change", () => {
       // Parse first so we can gate the two expensive refetches on the
       // payload kind. Before this gate `load()` ran for every "change"
       // event including chatty notifications (sound_play, note_*,
@@ -4516,6 +4518,7 @@
       if (wtSummaryByPath[wtPath] && wtSummaryByPath[wtPath] !== "loading") {
         void loadWtSummary(wtPath, { force: true });
       }
+      }); // end time("sse-change", ...)
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
       try {
@@ -5097,7 +5100,7 @@
    *      reattaches to a still-alive PTY).
    *  Resumed SessionView columns in read-only chat mode are excluded
    *  — those have no PTY. */
-  $: dockEntries = ((): Array<{
+  $: dockEntries = time("dockEntries", (): Array<{
     source: string;
     wtPath: string;
     rowKey: string;
@@ -5219,7 +5222,7 @@
     // the user's manual session ordering. Reordering within a repo
     // group causes the dock dots to jump around and is disorienting.
     return out as any;
-  })();
+  });
 
   /** Per-repo push/pull/dirty status for the dock's arrow indicators.
    *  Aggregates across all worktrees in each repo. Only repos with
