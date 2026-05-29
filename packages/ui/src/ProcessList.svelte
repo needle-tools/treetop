@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
-  import { processStore, recordSamples } from "./process-store";
+  import {
+    processStore,
+    recordSamples,
+    procHistory,
+    averagedCpuFromHistory,
+    CPU_AVG_WINDOW_MS,
+  } from "./process-store";
 
   interface Repo {
     id: string;
@@ -88,6 +94,22 @@
     ? systemMemBytes * TUI_WARM_MEM_FRACTION
     : TUI_WARM_MEM_FALLBACK;
 
+  // Displayed CPU% is a trailing average over CPU_AVG_WINDOW_MS, not the
+  // raw per-poll sample. A single Windows perf-counter read is 0 for most
+  // bursty processes, so the raw value flickers 0↔spike and usually shows
+  // 0; averaging the samples we already collect (procHistory) yields a
+  // stable, representative figure. Recomputed whenever procHistory changes
+  // (each refresh). cpuOf() falls back to the raw value until a process
+  // has accumulated at least one in-window sample.
+  $: avgCpuById = averagedCpuFromHistory(
+    $procHistory,
+    CPU_AVG_WINDOW_MS,
+    Date.now(),
+  );
+  function cpuOf(p: TuiProc, avg: Map<string, number>): number {
+    return avg.get(p.id) ?? p.cpuPercent;
+  }
+
   const hotDebug =
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).get("tuihot") === "1";
@@ -98,21 +120,28 @@
   $: isHot =
     hotDebug ||
     procs.some(
-      (p) => p.memBytes > hotMemBytes || p.cpuPercent > TUI_HOT_CPU_PERCENT,
+      (p) =>
+        p.memBytes > hotMemBytes ||
+        cpuOf(p, avgCpuById) > TUI_HOT_CPU_PERCENT,
     );
   $: isWarm =
     !isHot &&
     (warmDebug ||
       procs.some(
-        (p) => p.memBytes > warmMemBytes || p.cpuPercent > TUI_WARM_CPU_PERCENT,
+        (p) =>
+          p.memBytes > warmMemBytes ||
+          cpuOf(p, avgCpuById) > TUI_WARM_CPU_PERCENT,
       ));
 
   $: visibleProcs = showExternal
     ? procs
     : procs.filter((p) => p.kind !== "external");
-  $: grouped = groupByRepo(visibleProcs);
+  $: grouped = groupByRepo(visibleProcs, avgCpuById);
 
-  function groupByRepo(list: TuiProc[]): RepoGroup[] {
+  function groupByRepo(
+    list: TuiProc[],
+    avg: Map<string, number>,
+  ): RepoGroup[] {
     const map = new Map<string, RepoGroup>();
     for (const p of list) {
       const ctx = procContext(p);
@@ -128,7 +157,7 @@
         };
         map.set(key, group);
       }
-      group.totalCpu += p.cpuPercent;
+      group.totalCpu += cpuOf(p, avg);
       group.totalMem += p.memBytes;
       group.procs.push({ ...p, ctx });
     }
@@ -145,7 +174,27 @@
         });
       }
     }
-    return [...map.values()];
+    // Emit groups in the same vertical order the repos appear on the
+    // board. The dashboard renders rows as `repos.flatMap(...)` (see
+    // App.svelte), so `repos` order *is* the on-screen order; follow it
+    // here instead of process-first-seen order. Any group not tied to a
+    // known repo (the "Other" bucket for processes whose cwd matches no
+    // repo) sorts last, in first-seen order.
+    const ordered: RepoGroup[] = [];
+    const placed = new Set<string>();
+    for (const repo of repos) {
+      const name =
+        repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+      const group = map.get(name);
+      if (group && !placed.has(name)) {
+        ordered.push(group);
+        placed.add(name);
+      }
+    }
+    for (const [name, group] of map) {
+      if (!placed.has(name)) ordered.push(group);
+    }
+    return ordered;
   }
 
   function toggleGroup(name: string) {
@@ -423,14 +472,30 @@
               </button>
               {#if !collapsed[group.repoName]}
                 {#if group.procs.length === 0}
-                  <p class="muted small proc-empty">No processes running</p>
+                  <p class="muted small proc-empty">
+                    <svg
+                      class="proc-empty-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="9" /><path
+                        d="M5.6 5.6l12.8 12.8"
+                      />
+                    </svg>
+                    No processes running
+                  </p>
                 {:else}
                   <ul class="agents-list">
                     <li class="proc-col-header">
                       <span></span>
                       <span>Name</span>
                       <span>Info</span>
-                      <span>CPU</span>
+                      <span title="Average CPU over the last 30s">CPU</span>
                       <span>Mem</span>
                       <span>Up</span>
                       <span></span>
@@ -438,15 +503,16 @@
                     </li>
                     {#each group.procs as p (p.id)}
                       {@const ctx = p.ctx}
+                      {@const cpu = cpuOf(p, avgCpuById)}
                       {@const source =
                         p.kind !== "external" ? procSource(p) : null}
                       {@const isExternal = p.kind === "external"}
                       {@const procWarm =
                         p.memBytes > warmMemBytes ||
-                        p.cpuPercent > TUI_WARM_CPU_PERCENT}
+                        cpu > TUI_WARM_CPU_PERCENT}
                       {@const procHot =
                         p.memBytes > hotMemBytes ||
-                        p.cpuPercent > TUI_HOT_CPU_PERCENT}
+                        cpu > TUI_HOT_CPU_PERCENT}
                       <li>
                         <div
                           class="agent-row tui-row-static"
@@ -523,9 +589,13 @@
                           </span>
                           <span
                             class="tui-stat tui-cpu"
-                            class:tui-stat-muted={p.cpuPercent < 2}
-                            title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
-                            >{p.cpuPercent.toFixed(1)}%</span
+                            class:tui-stat-muted={cpu < 2}
+                            title={`pid ${p.pid} — avg CPU over last ${Math.round(
+                              CPU_AVG_WINDOW_MS / 1000,
+                            )}s (now ${p.cpuPercent.toFixed(1)}%)\n${p.cmd.join(
+                              " ",
+                            )}`}
+                            >{cpu.toFixed(1)}%</span
                           >
                           <span
                             class="tui-stat tui-mem"

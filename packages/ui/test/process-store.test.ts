@@ -23,11 +23,13 @@ import { get } from "svelte/store";
 import {
   recordSamples,
   getHistory,
+  averagedCpuFromHistory,
   processStore,
   procHistory,
   procByOwnerId,
   procByPid,
   type ProcEntry,
+  type ProcSample,
 } from "../src/process-store";
 
 function proc(
@@ -117,6 +119,81 @@ describe("recordSamples / getHistory", () => {
     // New Map reference so Svelte's store equality fires subscribers.
     expect(after).not.toBe(before);
     expect(after.get("p1")?.length).toBe(1);
+  });
+});
+
+describe("averagedCpuFromHistory", () => {
+  const now = 100_000;
+  const hist = (samples: ProcSample[]): Map<string, ProcSample[]> =>
+    new Map([["p1", samples]]);
+
+  test("averages cpu across all samples inside the window", () => {
+    // Windows reports an instantaneous-ish PercentProcessorTime that
+    // reads 0 at most sampling instants for bursty processes; averaging
+    // the window surfaces the real load (60 + 0 + 0 + 60 → 30).
+    const out = averagedCpuFromHistory(
+      hist([
+        { ts: now - 6000, cpuPercent: 60, memBytes: 0 },
+        { ts: now - 4000, cpuPercent: 0, memBytes: 0 },
+        { ts: now - 2000, cpuPercent: 0, memBytes: 0 },
+        { ts: now, cpuPercent: 60, memBytes: 0 },
+      ]),
+      30_000,
+      now,
+    );
+    expect(out.get("p1")).toBe(30);
+  });
+
+  test("excludes samples older than the window", () => {
+    // The 99% sample is 40s old — outside a 30s window — so only the
+    // two recent samples (10, 20) count → average 15.
+    const out = averagedCpuFromHistory(
+      hist([
+        { ts: now - 40_000, cpuPercent: 99, memBytes: 0 },
+        { ts: now - 4000, cpuPercent: 10, memBytes: 0 },
+        { ts: now - 2000, cpuPercent: 20, memBytes: 0 },
+      ]),
+      30_000,
+      now,
+    );
+    expect(out.get("p1")).toBe(15);
+  });
+
+  test("a single sample averages to itself", () => {
+    const out = averagedCpuFromHistory(
+      hist([{ ts: now, cpuPercent: 42, memBytes: 0 }]),
+      30_000,
+      now,
+    );
+    expect(out.get("p1")).toBe(42);
+  });
+
+  test("omits a process whose only samples are all outside the window", () => {
+    const out = averagedCpuFromHistory(
+      hist([{ ts: now - 60_000, cpuPercent: 50, memBytes: 0 }]),
+      30_000,
+      now,
+    );
+    expect(out.has("p1")).toBe(false);
+  });
+
+  test("averages each process independently", () => {
+    const out = averagedCpuFromHistory(
+      new Map([
+        [
+          "p1",
+          [
+            { ts: now - 2000, cpuPercent: 10, memBytes: 0 },
+            { ts: now, cpuPercent: 30, memBytes: 0 },
+          ],
+        ],
+        ["p2", [{ ts: now, cpuPercent: 5, memBytes: 0 }]],
+      ]),
+      30_000,
+      now,
+    );
+    expect(out.get("p1")).toBe(20);
+    expect(out.get("p2")).toBe(5);
   });
 });
 

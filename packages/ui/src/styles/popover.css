@@ -172,18 +172,18 @@
   overflow-y: auto;
 }
 /* Make every row share the same column tracks so stats columns align
-   vertically across rows ("memory under memory"). The trick: the
-   <ul> declares the column template; each <li> passes through via
-   display: contents; each .tui-row-static uses `grid-template-columns:
-   subgrid` to inherit the ul's tracks. Without this, each row was its
-   own independent grid and the same `1fr` resolved differently per
-   row based on local content widths.
-
-   The repo + idle cells use `minmax(0, auto)` rather than plain
-   `auto` so a long repo path can shrink + ellipsize instead of
-   forcing the whole grid to overflow the popover width (which is
-   what was driving the horizontal scrollbar). */
-.tuis-popover .agents-list {
+   vertically across rows ("memory under memory") — and crucially
+   across the *whole* list, not just within one repo group. The grid
+   lives on `.proc-groups` (the single container wrapping all groups);
+   each `.proc-group`, its `<ul class="agents-list">`, and each `<li>`
+   dissolve via `display: contents` so the group headers and every
+   `.tui-row-static` become direct items of that one grid. Each row
+   then uses `grid-template-columns: subgrid` to inherit the shared
+   tracks. Without this, each group was its own independent grid and
+   the same `minmax`/`1fr` columns resolved to different widths per
+   group based on local content — the columns didn't line up between
+   sections. */
+.tuis-popover .proc-groups {
   display: grid;
   /* Uptime is sized for `formatUptime`'s worst case `999h 59m` (8ch);
      anything narrower wraps "7m 29s" onto a second line.
@@ -206,8 +206,23 @@
   row-gap: 0.25rem;
   column-gap: 0.6rem;
 }
+/* Dissolve the group/list wrappers so their children participate in
+   the single `.proc-groups` grid above (subgrid needs the row to be a
+   grid item of the track-defining grid; `display: contents` chains
+   that through the intermediate elements). */
+.tuis-popover .proc-group,
+.tuis-popover .agents-list,
 .tuis-popover .agents-list > li {
   display: contents;
+}
+/* Trailing separation after an unfolded process list: add bottom space
+   to the last row so this repo's list is visually set apart from the
+   next repo's header. The `<li>` wrappers are display: contents (no
+   box), so the margin lives on the row div itself. Only non-empty
+   groups have rows, so empty groups stay tight — exactly where we want
+   the space (after a list) vs. not (under a bare header). */
+.tuis-popover .agents-list > li:last-child > .tui-row-static {
+  margin-bottom: 0.7rem;
 }
 .tuis-popover .proc-col-header {
   display: grid;
@@ -454,19 +469,32 @@
   cursor: pointer;
 }
 .proc-empty {
-  padding: 0.3rem 0.5rem;
+  /* Empty-group message is a direct child of the dissolved
+     `.proc-group`, so it lands in the shared grid — span all tracks.
+     The negative top margin cancels the grid's 0.25rem row-gap so the
+     line tucks right under the repo header instead of floating below
+     it. Icon + text share one baseline-centred flex row. */
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: -0.2rem;
+  padding: 0 0.3rem 0.1rem;
   font-size: 0.7rem;
+}
+.proc-empty-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  opacity: 0.6;
 }
 .proc-groups {
   overflow: visible;
 }
-.proc-group {
-  position: relative;
-}
-.proc-group + .proc-group {
-  margin-top: 0.35rem;
-}
 .proc-group-header {
+  /* Spans the full width of the shared `.proc-groups` grid (it's a
+     direct grid item now that `.proc-group` is display: contents). */
+  grid-column: 1 / -1;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -477,7 +505,15 @@
   padding: 0.35rem 0.3rem;
   border: none;
   border-bottom: 1px solid var(--surface-2);
-  margin-bottom: 0.3rem;
+  /* No margin-bottom: the header sits tight against its own content
+     (the grid's 0.25rem row-gap is the only space below it). This keeps
+     an empty group's "No processes running" line snug under the repo
+     name. Separation BETWEEN groups instead comes from trailing space
+     on the last process row (see `.agents-list > li:last-child` below),
+     so the gap lands after a list, not inside one. A margin-top here is
+     still avoided — grid-item margins don't collapse and would put a
+     stray gap above the very first group. */
+  margin-bottom: 0;
   background: var(--surface-1);
   color: var(--text-muted);
   font-size: 0.7rem;

@@ -806,12 +806,15 @@ describe("sampleProcs", () => {
 
   test("returns plausible memory for the current process", async () => {
     // The test runner's own pid is a known-live process; rss must be > 0.
+    // Asserted on every platform including Windows: the Windows path used
+    // `$pid` as a foreach loop variable, but `$PID` is a read-only
+    // automatic variable in PowerShell, so the assignment threw and the
+    // whole script emitted nothing — every pid fell back to zeros (no
+    // CPU or memory in the UI). This assertion would have caught it.
     const map = await sampleProcs([process.pid]);
     const entry = map.get(process.pid);
     expect(entry).toBeDefined();
-    if (process.platform !== "win32") {
-      expect(entry?.memBytes ?? 0).toBeGreaterThan(0);
-    }
+    expect(entry?.memBytes ?? 0).toBeGreaterThan(0);
   });
 
   test("returns an empty map for an empty pid list (no shell-out)", async () => {

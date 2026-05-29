@@ -49,6 +49,44 @@ export function getHistory(id: string): ProcSample[] {
   return history.get(id) ?? [];
 }
 
+/** Default smoothing window for the displayed CPU%. A single Windows
+ *  perf-counter sample reads 0 for most idle/bursty processes, so the
+ *  raw per-poll value flickers between 0 and a spike. Averaging the
+ *  collected samples over this window gives a stable, representative
+ *  number. */
+export const CPU_AVG_WINDOW_MS = 30_000;
+
+/**
+ * Average each process's `cpuPercent` over the trailing `windowMs`.
+ *
+ * Pure (takes the history map + `now` explicitly so it's testable and
+ * reactive in Svelte): pass the `procHistory` store value and a fresh
+ * `Date.now()`. Samples in each buffer are time-ordered ascending, so
+ * we walk from the newest backward and stop at the first one older than
+ * the cutoff. A process with no in-window samples is omitted from the
+ * result (callers fall back to the raw `cpuPercent`).
+ */
+export function averagedCpuFromHistory(
+  hist: Map<string, ProcSample[]>,
+  windowMs: number,
+  now: number,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  const cutoff = now - windowMs;
+  for (const [id, buf] of hist) {
+    let sum = 0;
+    let n = 0;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const s = buf[i]!;
+      if (s.ts < cutoff) break;
+      sum += s.cpuPercent;
+      n++;
+    }
+    if (n > 0) out.set(id, sum / n);
+  }
+  return out;
+}
+
 export const processStore = writable<ProcEntry[]>([]);
 export const procHistory = writable<Map<string, ProcSample[]>>(new Map());
 

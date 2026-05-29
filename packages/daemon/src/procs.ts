@@ -392,7 +392,13 @@ export async function sampleProcs(
       const ps =
         `$m = @{}; Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { $m[$_.Id] = $_.WorkingSet64 }; ` +
         `$c = @{}; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue | Where-Object { $m.ContainsKey([int]$_.IDProcess) } | ForEach-Object { $c[[int]$_.IDProcess] = $_.PercentProcessorTime }; ` +
-        `foreach ($pid in $m.Keys) { $cpu = if ($c.ContainsKey($pid)) { $c[$pid] } else { 0 }; "$pid $($m[$pid]) $cpu" }`;
+        // NB: the loop variable is `$procId`, NOT `$pid`. `$PID` is a
+        // read-only automatic variable in PowerShell (case-insensitive),
+        // so `foreach ($pid in …)` throws "Cannot overwrite variable PID
+        // because it is read-only or constant", aborting the whole script
+        // block → no output → every pid fell back to zeros (no CPU/mem on
+        // Windows).
+        `foreach ($procId in $m.Keys) { $cpu = if ($c.ContainsKey($procId)) { $c[$procId] } else { 0 }; "$procId $($m[$procId]) $cpu" }`;
       const result = await $`powershell -NoProfile -Command ${ps}`
         .quiet()
         .nothrow();
