@@ -463,9 +463,9 @@
             {/if}{body}</span
           >
           <div slot="content" class="tooltip-body">
-            {#each splitBody(body) as part, i}{#if i > 0}<span class="sep"
-                  >–</span
-                >{/if}{part}{/each}
+            <ul class="tooltip-items">
+              {#each splitBody(body) as part}<li>{part}</li>{/each}
+            </ul>
             {#if frontmatter}
               <div class="tooltip-meta">
                 {rangeLabel(frontmatter.sinceHours)} · {frontmatter.commitCount} commits
@@ -575,9 +575,9 @@
                 >{/if}{part}{/each}</span
           >
           <div slot="content" class="tooltip-body">
-            {#each splitBody(body) as part, i}{#if i > 0}<span class="sep"
-                  >–</span
-                >{/if}{part}{/each}
+            <ul class="tooltip-items">
+              {#each splitBody(body) as part}<li>{part}</li>{/each}
+            </ul>
           </div>
         </Tooltip>
       {/if}
@@ -699,6 +699,30 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--text-1);
+  }
+  /* Render the themes as a vertical list — one item per line — instead
+     of a dash-separated run-on paragraph. The model gives us a bundle
+     of distinct things-we-did; stacking them (each wrapping on its own)
+     reads far easier in the popover than a single wrapped sentence. */
+  .tooltip-items {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .tooltip-items li {
+    position: relative;
+    padding-left: 1rem;
+    overflow-wrap: anywhere;
+  }
+  .tooltip-items li::before {
+    content: "–";
+    position: absolute;
+    left: 0;
+    color: var(--text-3);
+    font-weight: 700;
   }
   .meta {
     color: var(--text-muted);
