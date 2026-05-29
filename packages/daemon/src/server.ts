@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
+import { initDaemonLog } from "./daemon-log";
 import { repairAllClaudeJson } from "./claude-json-repair";
 import {
   listWorktrees,
@@ -154,6 +155,11 @@ import {
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
   join(homedir(), "supergit", "workspaces", "default");
+
+// Tee console.* into <workspace>/daemon.log so instrumentation +
+// startup banners survive headless runs. Best-effort; failures here
+// are non-fatal — the daemon keeps logging to stderr regardless.
+const daemonLogPath = await initDaemonLog(WORKSPACE_PATH);
 
 // Port resolution order:
 //   1. SUPERGIT_PORT — explicit override, wins.
@@ -450,6 +456,9 @@ function sanitiseMachineId(raw: string): string {
 }
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
+if (daemonLogPath) {
+  console.log(`supergit daemon: log file = ${daemonLogPath}`);
+}
 {
   const ip = findLocalIp();
   console.log(`supergit daemon: listening on http://0.0.0.0:${PORT}`);
