@@ -230,7 +230,13 @@
    *  (out of the way of the TUI); a hover anywhere in the upper area
    *  fades it in so the user can glance back at their last prompt
    *  without scrolling the column. */
-  let pinnedRevealed = false;
+  /** Debug switch: `?debugPin` (any value) forces the summary /
+   *  last-message overlay to stay revealed so its layout, pointer-events,
+   *  and scroll behavior can be inspected without chasing the hover. */
+  const FORCE_PIN =
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).has("debugPin");
+  let pinnedRevealed = FORCE_PIN;
   /** Vertical fraction of the session column below which the pin
    *  retracts. Generous threshold so the pin shows whenever the user
    *  is reading the top of the chat, not just brushing the title. */
@@ -249,6 +255,10 @@
     }
   }
   function setPinRevealed(target: boolean): void {
+    if (FORCE_PIN) {
+      pinnedRevealed = true;
+      return;
+    }
     if (target) {
       cancelPinHide();
       if (!pinnedRevealed) pinnedRevealed = true;
@@ -1498,14 +1508,13 @@
         : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
     />
     {#if mode === "terminal" && (session && session.messages.length > 0 || (lastUserMessage && lastUserMessage.trim().length > 0))}
-      <div
-        class="pinned-last-msg-wrap tui-overlay-stack"
-        class:revealed={pinnedRevealed}
-        on:mouseenter={onOverlayEnter}
-        on:mouseleave={onOverlayLeave}
-      >
+      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>
         {#if summarySnippet || summaryRefreshing || (session && session.messages.length > 0)}
-          <div class="tui-summary-box">
+          <div
+            class="tui-summary-box"
+            on:mouseenter={onOverlayEnter}
+            on:mouseleave={onOverlayLeave}
+          >
             <svg
               class="tui-overlay-icon"
               viewBox="0 0 24 24"
@@ -1575,7 +1584,11 @@
           </div>
         {/if}
         {#if lastUserMessage && lastUserMessage.trim().length > 0}
-          <div class="pinned-last-msg">
+          <div
+            class="pinned-last-msg"
+            on:mouseenter={onOverlayEnter}
+            on:mouseleave={onOverlayLeave}
+          >
             <svg
               class="tui-overlay-icon"
               viewBox="0 0 24 24"
@@ -1598,13 +1611,12 @@
            snippet, or the refreshing spinner — whichever applies.
            Stacks above the pinned-last-user-message just like TUI
            mode so we don't overlap with it. -->
-      <div
-        class="pinned-last-msg-wrap tui-overlay-stack"
-        class:revealed={pinnedRevealed}
-        on:mouseenter={onOverlayEnter}
-        on:mouseleave={onOverlayLeave}
-      >
-        <div class="tui-summary-box">
+      <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>
+        <div
+          class="tui-summary-box"
+          on:mouseenter={onOverlayEnter}
+          on:mouseleave={onOverlayLeave}
+        >
           <svg
             class="tui-overlay-icon"
             viewBox="0 0 24 24"
@@ -1691,7 +1703,11 @@
           {/if}
         </div>
         {#if lastUserMessage && lastUserMessage.trim().length > 0}
-          <div class="pinned-last-msg">
+          <div
+            class="pinned-last-msg"
+            on:mouseenter={onOverlayEnter}
+            on:mouseleave={onOverlayLeave}
+          >
             <svg
               class="tui-overlay-icon"
               viewBox="0 0 24 24"
@@ -2031,17 +2047,20 @@
     display: flex;
     /* Right-aligned so the pill hugs the column's right edge —
        leaves the left/centre of the TUI uncovered when the pin is
-       revealed. Tight right padding pulls the pill closer to the
-       column's outer edge. */
+       revealed. Right padding keeps the pill clear of the column's
+       vertical scrollbar so the overlay never sits on top of it. */
     justify-content: flex-end;
-    padding: 0.3rem 0.2rem 0 0.5rem;
+    padding: 0.3rem 2rem 0 0.5rem;
     pointer-events: none;
     opacity: 0;
     transition: opacity 80ms ease;
   }
   .pinned-last-msg-wrap.revealed {
     opacity: 1;
-    pointer-events: auto;
+    /* The wrap stays pointer-events:none even when revealed — it spans
+       the full column width (left:0/right:0), so making it interactive
+       would swallow wheel/clicks meant for the TUI and its scrollbar
+       underneath. Only the visible pills (gated below) take events. */
   }
   /* Always-visible Summarize / Refresh chip in read mode — sits in
      the same below-header zone as the pinned-last-msg pill, so the
@@ -2556,7 +2575,9 @@
     align-items: flex-end;
     gap: 0.35rem;
   }
-  .tui-overlay-stack > * {
+  /* Pills are interactive only once revealed (and the wrap itself never
+     is), so the at-rest overlay can't swallow events over the TUI either. */
+  .pinned-last-msg-wrap.revealed.tui-overlay-stack > * {
     pointer-events: auto;
   }
   .tui-overlay-icon {
@@ -2578,7 +2599,6 @@
     font-size: 0.74rem;
     line-height: 1.5;
     color: var(--text-2);
-    pointer-events: auto;
     max-height: calc(4 * 1.5em + 0.6rem);
     overflow: hidden;
     transition:
