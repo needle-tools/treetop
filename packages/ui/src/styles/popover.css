@@ -352,6 +352,9 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+.tui-stat-muted {
+  opacity: 0.45;
+}
 .tui-idle {
   color: var(--text-muted);
   /* Override `.tui-stat`'s right-alignment: idle is text-then-number

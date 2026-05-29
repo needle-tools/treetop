@@ -523,10 +523,13 @@
                           </span>
                           <span
                             class="tui-stat tui-cpu"
+                            class:tui-stat-muted={p.cpuPercent < 2}
                             title={`pid ${p.pid} — ${p.cmd.join(" ")}`}
                             >{p.cpuPercent.toFixed(1)}%</span
                           >
-                          <span class="tui-stat tui-mem"
+                          <span
+                            class="tui-stat tui-mem"
+                            class:tui-stat-muted={systemMemBytes !== null && p.memBytes < systemMemBytes * 0.02}
                             >{formatBytes(p.memBytes)}</span
                           >
                           {#if p.createdAt}
