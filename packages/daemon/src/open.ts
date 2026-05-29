@@ -12,7 +12,7 @@
  * this from becoming arbitrary command execution.
  */
 
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -158,13 +158,16 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
  *
  * macOS  → `open <path>`
  * Linux  → `xdg-open <path>`
- * Win32  → `cmd /c start "" <path>` when the extension has a default
- *          handler, otherwise `notepad <path>`. Many Windows installs
- *          have NO association for `.json` (and extensionless files
- *          never do), so `start` would silently no-op — the file just
- *          wouldn't open. The notepad fallback guarantees the user can
- *          still read/fix the file (this is what unblocked the
- *          .claude.json config-error "Open" button).
+ * Win32  → `cmd /c start "" <path>` for the common case, EXCEPT a real
+ *          local file whose extension has no registered handler, which
+ *          goes to `notepad` instead. Many Windows installs have NO
+ *          association for `.json`, so `start` would silently no-op and
+ *          the file just wouldn't open (this is what broke the
+ *          .claude.json config-error "Open" button). The notepad path is
+ *          deliberately narrow: URLs (the terminal link handler posts
+ *          here too), directories (folder links), and extensionless
+ *          paths all still go through `start` so the browser / Explorer
+ *          / the OS picker handle them as before.
  *
  * Returns the same `{ via }` shape `openIn()` uses so the route
  * handler can include it in the response.
@@ -185,15 +188,58 @@ export async function openDefault(path: string): Promise<{ via: string }> {
     return { via: "xdg-open" };
   }
   if (process.platform === "win32") {
-    const ext = extname(path).toLowerCase();
-    const cmd = windowsOpenCommand(path, ext ? await hasFileAssociation(ext) : false);
+    const isUrl = isUrlLike(path);
+    const ext = isUrl ? "" : extname(path).toLowerCase();
+    const hasExtension = ext.length > 0;
+    const hasAssociation = hasExtension ? await hasFileAssociation(ext) : false;
+    // Only stat when we might fall back — confirm it's a regular file so
+    // directories and missing paths stay on the `start` path.
+    let isRegularFile = false;
+    if (!isUrl && hasExtension && !hasAssociation) {
+      const st = await stat(path).catch(() => null);
+      isRegularFile = !!st && st.isFile();
+    }
+    const useNotepad = windowsOpensWithNotepad({
+      isUrl,
+      hasExtension,
+      hasAssociation,
+      isRegularFile,
+    });
+    const cmd = windowsOpenCommand(path, useNotepad);
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
-    // cmd[0] === CMD_EXE → routed through `start` (the OS default app);
-    // otherwise we fell back to notepad.
-    return { via: cmd[0] === CMD_EXE ? "default app" : "notepad" };
+    return { via: useNotepad ? "notepad" : "default app" };
   }
   throw new Error(
     `default-app open not implemented for platform ${process.platform}`,
+  );
+}
+
+/** Does `path` carry a URL scheme (`http://`, `https://`, `file://`, …)?
+ *  Windows drive paths like `C:\Users` don't match — they have `:` but
+ *  not `://`. */
+export function isUrlLike(path: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(path);
+}
+
+/**
+ * Whether a Windows open should fall back to notepad rather than the
+ * default-app `start`. Pure policy so every combination is unit-testable.
+ *
+ * Notepad ONLY for a real local file with an extension that has no
+ * registered handler. Everything else — URLs, directories, extensionless
+ * paths, anything associated — goes through `start`.
+ */
+export function windowsOpensWithNotepad(opts: {
+  isUrl: boolean;
+  hasExtension: boolean;
+  hasAssociation: boolean;
+  isRegularFile: boolean;
+}): boolean {
+  return (
+    !opts.isUrl &&
+    opts.hasExtension &&
+    !opts.hasAssociation &&
+    opts.isRegularFile
   );
 }
 
@@ -212,19 +258,17 @@ async function hasFileAssociation(ext: string): Promise<boolean> {
 }
 
 /**
- * Build the argv for opening a file on Windows. When the extension has a
- * default app we route through `cmd /c start` (the empty "" is the window
- * title `start` swallows, so a path with spaces still opens). With no
- * association — `.json` on a stock install, or any extensionless file —
- * `start` does nothing, so fall back to `notepad` which always exists.
- * Pure (no I/O) so the routing is unit-testable.
+ * Build the argv for opening a path on Windows. The default route is
+ * `cmd /c start` (the empty "" is the window title `start` swallows, so a
+ * path with spaces still opens); `useNotepad` switches to `notepad` for
+ * the narrow unassociated-local-file case. Pure so it's unit-testable.
  */
 export function windowsOpenCommand(
   path: string,
-  hasAssociation: boolean,
+  useNotepad: boolean,
 ): string[] {
-  if (hasAssociation) return [CMD_EXE, "/c", "start", "", path];
-  return ["notepad", path];
+  if (useNotepad) return ["notepad", path];
+  return [CMD_EXE, "/c", "start", "", path];
 }
 
 /** Single-quote `s` for safe substitution into a `bash -c '…'` snippet.

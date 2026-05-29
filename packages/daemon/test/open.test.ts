@@ -6,8 +6,10 @@ import {
   buildRestoreWindowScript,
   detectEditors,
   findWorkspaceFile,
+  isUrlLike,
   resetDetectEditorsCache,
   windowsOpenCommand,
+  windowsOpensWithNotepad,
 } from "../src/open";
 
 async function tempDir(): Promise<string> {
@@ -60,23 +62,91 @@ describe("buildRestoreWindowScript", () => {
   });
 });
 
+describe("isUrlLike", () => {
+  test("matches scheme:// URLs", () => {
+    expect(isUrlLike("http://localhost:27787/x.png")).toBe(true);
+    expect(isUrlLike("https://github.com/a/b")).toBe(true);
+    expect(isUrlLike("file:///C:/Users/me/x.png")).toBe(true);
+    expect(isUrlLike("file:///home/me/x.png")).toBe(true);
+  });
+
+  test("does NOT match Windows drive paths, back- or forward-slash", () => {
+    // A clicked link / link target may arrive with either separator —
+    // both must read as a local file (colon but no `://`).
+    expect(isUrlLike("C:\\Users\\me\\.claude.json")).toBe(false);
+    expect(isUrlLike("C:\\Users\\me\\photo.png")).toBe(false);
+    expect(isUrlLike("C:/Users/me/.claude.json")).toBe(false);
+    expect(isUrlLike("C:/Users/me/photo.png")).toBe(false);
+  });
+
+  test("does NOT match Linux / macOS absolute paths", () => {
+    expect(isUrlLike("/home/me/.claude.json")).toBe(false);
+    expect(isUrlLike("/Users/me/Library/photo.png")).toBe(false);
+    expect(isUrlLike("/usr/local/bin/thing")).toBe(false);
+  });
+
+  test("does NOT match relative or UNC paths", () => {
+    expect(isUrlLike("./attachments/paste.png")).toBe(false);
+    expect(isUrlLike("../config.json")).toBe(false);
+    expect(isUrlLike("attachments/paste.png")).toBe(false);
+    expect(isUrlLike("\\\\server\\share\\file.json")).toBe(false);
+  });
+});
+
+describe("windowsOpensWithNotepad", () => {
+  const base = {
+    isUrl: false,
+    hasExtension: true,
+    hasAssociation: false,
+    isRegularFile: true,
+  };
+
+  test("true only for an unassociated local file with an extension", () => {
+    expect(windowsOpensWithNotepad(base)).toBe(true);
+  });
+
+  test("URLs never go to notepad (terminal link handler posts here too)", () => {
+    // Regression: a clicked http(s) link must reach the browser via
+    // `start`, not open notepad with the URL as a filename.
+    expect(windowsOpensWithNotepad({ ...base, isUrl: true })).toBe(false);
+  });
+
+  test("directories (folder links) stay on `start` → Explorer", () => {
+    expect(
+      windowsOpensWithNotepad({ ...base, hasExtension: false, isRegularFile: false }),
+    ).toBe(false);
+  });
+
+  test("associated files use the default app, not notepad", () => {
+    expect(windowsOpensWithNotepad({ ...base, hasAssociation: true })).toBe(
+      false,
+    );
+  });
+
+  test("a missing / non-regular path stays on `start`", () => {
+    expect(windowsOpensWithNotepad({ ...base, isRegularFile: false })).toBe(
+      false,
+    );
+  });
+});
+
 describe("windowsOpenCommand", () => {
   const COMSPEC = process.env.COMSPEC ?? "cmd.exe";
 
-  test("routes associated files through `start` (with the empty title arg)", () => {
-    const cmd = windowsOpenCommand("C:\\Users\\me\\photo.png", true);
+  test("default route is `start` (with the empty title arg)", () => {
+    const cmd = windowsOpenCommand("C:\\Users\\me\\photo.png", false);
     expect(cmd).toEqual([COMSPEC, "/c", "start", "", "C:\\Users\\me\\photo.png"]);
   });
 
-  test("falls back to notepad when the extension has no association", () => {
+  test("notepad route when useNotepad is set", () => {
     // .json is unassociated on stock Windows — `start` would no-op, so
     // the file must still open via notepad (the bug this fixes).
-    const cmd = windowsOpenCommand("C:\\Users\\me\\.claude.json", false);
+    const cmd = windowsOpenCommand("C:\\Users\\me\\.claude.json", true);
     expect(cmd).toEqual(["notepad", "C:\\Users\\me\\.claude.json"]);
   });
 
   test("the empty title arg is preserved so spaced paths still open", () => {
-    const cmd = windowsOpenCommand("C:\\Program Files\\app\\config.json", true);
+    const cmd = windowsOpenCommand("C:\\Program Files\\app\\config.json", false);
     // The "" sits between `start` and the path; without it `start` would
     // treat a quoted spaced path as a window title and open a blank shell.
     expect(cmd[3]).toBe("");
