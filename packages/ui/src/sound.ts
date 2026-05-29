@@ -17,6 +17,7 @@ export type SoundTag =
   | "error"
   | "peer-session"
   | "session-stop"
+  | "ai-needs-input"
   | "ai-attention"
   | "ai-funny"
   | "ai-disagree"
@@ -135,6 +136,15 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     maxDelay: 500,
     overlay: true,
     fadeOutMs: 1000,
+  },
+  // Nudge played when a session has been awaiting user input for
+  // ~60s (see awaiting-chime.ts). selfCooldown keeps it from
+  // stacking when several sessions cross the threshold at once.
+  "ai-needs-input": {
+    files: ["/sounds/ai-needs-input.ogg"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 10_000,
   },
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
   "ai-disagree": {

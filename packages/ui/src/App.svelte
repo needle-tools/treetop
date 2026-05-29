@@ -78,6 +78,11 @@
     SESSION_LINK_DRAG_MIME,
   } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
+  import {
+    createAwaitingChimeState,
+    syncAwaiting,
+    dueForChime,
+  } from "./awaiting-chime";
   import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
   import {
     OpenSessionsStore,
@@ -5315,6 +5320,21 @@
         agent: e.agent,
       })),
   );
+
+  /** Audible "an agent has been waiting for you" nudge. Reuses the
+   *  same `awaiting` signal the side-dock pulses on; the chime fires
+   *  once a session has stayed continuously awaiting for the grace
+   *  period (see awaiting-chime.ts). The reactive block keeps the
+   *  per-source episode clock in sync with the live dock entries;
+   *  the interval (started in onMount) does the threshold check so
+   *  the chime still fires when nothing else re-renders. */
+  const awaitingChime = createAwaitingChimeState();
+  $: syncAwaiting(
+    awaitingChime,
+    dockEntries.filter((e) => !e.exited && e.awaiting).map((e) => e.source),
+    Date.now(),
+  );
+
   function handleDocClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
     if (actionsOpen && !target?.closest(".actions-anchor")) {
@@ -5785,6 +5805,14 @@
     const nowTimer = setInterval(() => {
       nowMs = Date.now();
     }, 3000);
+    // Check whether any session has crossed the awaiting grace period
+    // and play the nudge once if so. 5s cadence is plenty for a 60s
+    // threshold; play()'s selfCooldown dedupes simultaneous crossings.
+    const chimeTimer = setInterval(() => {
+      if (dueForChime(awaitingChime, Date.now()).length > 0) {
+        play("ai-needs-input");
+      }
+    }, 5000);
     // Click-on-saved-session-link → bring the session into view.
     // The chip writes a {source, ts} request into the focus store;
     // we locate which worktree it belongs to (via the live
@@ -5807,6 +5835,7 @@
       unsubResume();
       uninstallIdle();
       clearInterval(nowTimer);
+      clearInterval(chimeTimer);
     };
   });
 
