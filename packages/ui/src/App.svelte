@@ -4617,6 +4617,22 @@
       const head = excerpt ? `${verb} “${excerpt}”` : verb;
       return where ? `${head} · ${where}` : head;
     }
+    if (ev.type === "session_imported") {
+      // Format: "Imported «<title>» from <machineLabel> → <repoName>"
+      // Falls back gracefully when older payloads lack the enriched
+      // fields (title / originMachineLabel / repoName were added later).
+      const p = ev.payload as {
+        title?: string;
+        originMachineLabel?: string;
+        originMachine?: string;
+        repoName?: string;
+        repoRemote?: string;
+      };
+      const title = p?.title ? `“${p.title.slice(0, 60)}”` : "session";
+      const from = p?.originMachineLabel ?? p?.originMachine ?? "another machine";
+      const repo = p?.repoName ?? p?.repoRemote ?? "repo";
+      return `Imported ${title} from ${from} → ${repo}`;
+    }
     return ev.type;
   }
 

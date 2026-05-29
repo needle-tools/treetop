@@ -115,6 +115,17 @@ import {
 } from "./repo-summary";
 import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 import {
+  stripThinkingArtifacts,
+  defaultLoginShell,
+  URL_RE,
+  urlPriority,
+  sanitiseMachineId,
+  parseKind,
+  parseTarget,
+  decodeHtmlEntities,
+  extractIconHrefs,
+} from "./server-helpers";
+import {
   normalizeRemote,
   prepareOutgoingJsonl,
   validateManifest,
@@ -275,34 +286,6 @@ interface RunningCommand {
 }
 const runningCommands = new Map<string, RunningCommand>();
 
-/** Strip model-specific thinking artifacts from Ollama output.
- *  Some models leak internal reasoning even with `think: false`:
- *  - gemma4 uses `<channel|>` as a separator (everything before is thinking)
- *  - deepseek/qwen use `<think>…</think>` XML blocks
- *  Keeps only the actual answer. */
-function stripThinkingArtifacts(raw: string): string {
-  let s = raw;
-  // gemma4's channel separator — take everything after the last occurrence
-  const chIdx = s.lastIndexOf("<channel|>");
-  if (chIdx !== -1) s = s.slice(chIdx + "<channel|>".length);
-  // XML-style <think> blocks (deepseek, qwen, etc.)
-  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
-  return s.trim();
-}
-
-/** The user's default interactive shell with appropriate flags.
- *  Used by /api/shell-default and cmdForOpenSession-equivalent logic. */
-function defaultLoginShell(): { shell: string; args: string[] } {
-  const shell =
-    process.env.SHELL ||
-    process.env.COMSPEC ||
-    (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
-  const base = shell.toLowerCase().replace(/\\/g, "/");
-  if (base.includes("powershell") || base.includes("pwsh"))
-    return { shell, args: ["-NoLogo"] };
-  if (base.includes("cmd")) return { shell, args: [] };
-  return { shell, args: ["-l"] };
-}
 
 /** Wrap a raw command string for execution via the platform's shell. */
 function shellExec(cmd: string): string[] {
@@ -313,17 +296,6 @@ function shellExec(cmd: string): string[] {
 
 const commandDetectedUrls = new Map<string, string[]>();
 
-const URL_RE =
-  /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/g;
-
-function urlPriority(url: string): number {
-  try {
-    const host = new URL(url).hostname;
-    if (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) return 2;
-    if (host === "localhost" || host === "127.0.0.1") return 1;
-  } catch {}
-  return 0;
-}
 
 function detectCommandUrl(
   handle: {
@@ -442,20 +414,6 @@ function findLocalIp(): string | null {
   return candidates.find(isPrivate) ?? candidates[0] ?? null;
 }
 
-/** Strip a hostname down to a path-safe identifier — used as a
- *  directory name on the receiver's filesystem when an imported
- *  session lands. Keeps letters, digits, dot, dash, underscore. Any
- *  other character becomes a single dash, and the result is lowercased
- *  + truncated so collisions across casing or pathological hostnames
- *  don't blow up the file system. */
-function sanitiseMachineId(raw: string): string {
-  const cleaned = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-  return cleaned || "unknown";
-}
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 if (daemonLogPath) {
@@ -620,91 +578,7 @@ const ALLOWED_ORIGINS = new Set([
     .filter(Boolean) ?? []),
 ]);
 
-/** Coerce an untyped /api/notes payload field into the AttachmentKind
- *  the store expects. Anything other than the two known values
- *  returns undefined — the store then treats it as "leave the existing
- *  kind alone" on PUT, and "default to note" on POST. */
-function parseKind(v: unknown): AttachmentKind | undefined {
-  return v === "note" || v === "link" || v === "emoji" ? v : undefined;
-}
-
 import { clampCols, clampRows } from "./term-clamp";
-
-/** Same posture for `target`. The whole object is dropped if any field
- *  is malformed; we don't half-accept (a note with a recognised type
- *  but an empty value would render as a broken chip in the UI). */
-function parseTarget(v: unknown): LinkTarget | undefined {
-  if (!v || typeof v !== "object") return undefined;
-  const obj = v as {
-    type?: unknown;
-    value?: unknown;
-    label?: unknown;
-    subtitle?: unknown;
-    meta?: unknown;
-  };
-  if (typeof obj.value !== "string" || obj.value.length === 0) return undefined;
-  if (
-    obj.type === "url" ||
-    obj.type === "commit" ||
-    obj.type === "session" ||
-    obj.type === "file" ||
-    obj.type === "command"
-  ) {
-    const target: LinkTarget = { type: obj.type, value: obj.value };
-    // Display-snapshot fields are pass-through with a string + length
-    // guard — empty strings would write empty frontmatter keys we'd
-    // then re-parse as empty values, which is fine but pointless.
-    if (typeof obj.label === "string" && obj.label.length > 0) {
-      target.label = obj.label;
-    }
-    if (typeof obj.subtitle === "string" && obj.subtitle.length > 0) {
-      target.subtitle = obj.subtitle;
-    }
-    if (typeof obj.meta === "string" && obj.meta.length > 0) {
-      target.meta = obj.meta;
-    }
-    if (
-      typeof (obj as { agent?: unknown }).agent === "string" &&
-      (obj as { agent: string }).agent.length > 0
-    ) {
-      target.agent = (obj as { agent: string }).agent;
-    }
-    if (
-      typeof (obj as { provider?: unknown }).provider === "string" &&
-      (obj as { provider: string }).provider.length > 0
-    ) {
-      target.provider = (obj as { provider: string }).provider;
-    }
-    if (
-      typeof (obj as { repoId?: unknown }).repoId === "string" &&
-      (obj as { repoId: string }).repoId.length > 0
-    ) {
-      target.repoId = (obj as { repoId: string }).repoId;
-    }
-    if (
-      typeof (obj as { cwd?: unknown }).cwd === "string" &&
-      (obj as { cwd: string }).cwd.length > 0
-    ) {
-      target.cwd = (obj as { cwd: string }).cwd;
-    }
-    if (
-      typeof (obj as { command?: unknown }).command === "string" &&
-      (obj as { command: string }).command.length > 0
-    ) {
-      target.command = (obj as { command: string }).command;
-    }
-    const runMode = (obj as { runMode?: unknown }).runMode;
-    if (
-      runMode === "internal" ||
-      runMode === "external" ||
-      runMode === "shell"
-    ) {
-      target.runMode = runMode;
-    }
-    return target;
-  }
-  return undefined;
-}
 
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin");
@@ -1397,36 +1271,6 @@ async function fetchPageTitle(target: string): Promise<string | null> {
   return title;
 }
 
-/** Minimal HTML-entity decoder for &amp; / &lt; / &gt; / &quot; /
- *  &#NN; / &#xNN; — enough to make `<title>` text human-readable
- *  without pulling in a full HTML parser. Unknown named entities are
- *  left untouched. */
-function decodeHtmlEntities(s: string): string {
-  return s
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) =>
-      String.fromCodePoint(parseInt(h, 16)),
-    )
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
-}
-
-function extractIconHrefs(html: string): string[] {
-  const out: string[] = [];
-  // <link rel="icon" ...>, <link rel="shortcut icon" ...>, apple-touch-icon
-  const linkRe = /<link\b([^>]*)>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = linkRe.exec(html)) !== null) {
-    const attrs = m[1] ?? "";
-    if (!/rel\s*=\s*["']?[^"'>]*icon/i.test(attrs)) continue;
-    const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
-    if (hrefMatch?.[1]) out.push(hrefMatch[1]);
-  }
-  return out;
-}
 
 // FS watcher registry. One watcher per worktree path; events from the
 // watcher debounce to a single broadcast("change", ...) so the UI
@@ -4598,14 +4442,35 @@ const server = Bun.serve<TermWsData, never>({
             // best-effort
           }
         }
+        // Look up the local repo name so the events list can render a
+        // human-readable "Imported into <repoName>" label instead of
+        // showing the raw git remote URL. Best-effort — falls back to
+        // origin/repo name from the manifest when no match in the
+        // workspace's repos.json.
+        let localRepoName = result.manifest.originRepoName ?? "";
+        try {
+          const normTarget = normalizeRemote(result.manifest.originRepoRemote);
+          for (const r of await workspace.listRepos()) {
+            const remotes = await listRemotes(r.path).catch(() => []);
+            if (remotes.find((rm) => normalizeRemote(rm.url) === normTarget)) {
+              localRepoName = r.name;
+              break;
+            }
+          }
+        } catch {
+          // best-effort
+        }
         await events.append({
           type: "session_imported",
           actor: "user",
           payload: {
             offerId,
             sid: result.manifest.sid,
+            title: result.manifest.title,
             originMachine: result.manifest.originMachine,
+            originMachineLabel: result.manifest.originMachineLabel,
             repoRemote: result.manifest.originRepoRemote,
+            repoName: localRepoName,
             importedPath: result.importedPath,
             mode,
           },
