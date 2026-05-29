@@ -7,6 +7,7 @@ import {
   detectEditors,
   findWorkspaceFile,
   resetDetectEditorsCache,
+  windowsOpenCommand,
 } from "../src/open";
 
 async function tempDir(): Promise<string> {
@@ -56,6 +57,30 @@ describe("buildRestoreWindowScript", () => {
     // PowerShell single-quoted strings escape ' as ''. Verify the raw
     // single quote never appears unescaped inside the Get-Process arg.
     expect(script).toContain("Get-Process -Name 'foo''; rm -rf /; '''");
+  });
+});
+
+describe("windowsOpenCommand", () => {
+  const COMSPEC = process.env.COMSPEC ?? "cmd.exe";
+
+  test("routes associated files through `start` (with the empty title arg)", () => {
+    const cmd = windowsOpenCommand("C:\\Users\\me\\photo.png", true);
+    expect(cmd).toEqual([COMSPEC, "/c", "start", "", "C:\\Users\\me\\photo.png"]);
+  });
+
+  test("falls back to notepad when the extension has no association", () => {
+    // .json is unassociated on stock Windows — `start` would no-op, so
+    // the file must still open via notepad (the bug this fixes).
+    const cmd = windowsOpenCommand("C:\\Users\\me\\.claude.json", false);
+    expect(cmd).toEqual(["notepad", "C:\\Users\\me\\.claude.json"]);
+  });
+
+  test("the empty title arg is preserved so spaced paths still open", () => {
+    const cmd = windowsOpenCommand("C:\\Program Files\\app\\config.json", true);
+    // The "" sits between `start` and the path; without it `start` would
+    // treat a quoted spaced path as a window title and open a blank shell.
+    expect(cmd[3]).toBe("");
+    expect(cmd[4]).toBe("C:\\Program Files\\app\\config.json");
   });
 });
 

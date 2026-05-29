@@ -14,6 +14,13 @@
     fetchTextAttachment,
     STAGE_PROMPT_EVENT,
   } from "./note-inline-attachments";
+  import {
+    startConfigAction,
+    settleConfigAction,
+    configButtonView,
+    type ConfigActionKind,
+    type ConfigActionState,
+  } from "./config-error-action";
 
   function getCleanedSelection(term: Terminal): string {
     const raw = term.getSelection();
@@ -239,6 +246,10 @@
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
   let configError: { file: string } | null = null;
+  /** In-flight / settled state for the config-error pill's action so the
+   *  pill stays visible with a spinner + confirmation instead of just
+   *  vanishing on click. Reset whenever the underlying error clears. */
+  let configAction: ConfigActionState | null = null;
   let exitInfo: { code: number; signal?: string } | null = null;
   let focused = false;
   /** Hard ceiling on how long we sit in `phase === "starting"`. POST
@@ -410,6 +421,8 @@
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
               configError = obj.configError ?? null;
+              // Error gone (or replaced) → drop any stale action feedback.
+              if (!configError) configAction = null;
             }
           } catch {
             // ignore
@@ -987,37 +1000,63 @@
     }
   }
 
-  async function configErrorOpen(): Promise<void> {
-    if (!configError) return;
-    await fetch("/api/open-default", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: configError.file }),
-    }).catch(() => {});
-  }
-
-  async function configErrorRestart(): Promise<void> {
+  /** Press "1" + Enter to choose Claude's "Exit and fix manually", so the
+   *  parent's onExit can respawn with the (now valid) config. */
+  function sendConfigExitChoice(): void {
     if (!terminalId) return;
-    // Press "1" + Enter to choose "Exit and fix manually", then the
-    // parent's onExit will handle respawn if applicable.
     const handle = ws;
     if (handle && handle.readyState === WebSocket.OPEN) {
-      const encoder = new TextEncoder();
-      handle.send(encoder.encode("1\r"));
+      handle.send(new TextEncoder().encode("1\r"));
     }
   }
 
-  async function configErrorAutofix(): Promise<void> {
-    if (!configError) return;
+  async function configErrorOpen(): Promise<void> {
+    if (!configError || configAction?.phase === "pending") return;
+    configAction = startConfigAction("open");
+    const res = await fetch("/api/open-default", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: configError.file }),
+    }).catch(() => null);
+    const ok = !!res && res.ok;
+    const via = ok ? ((await res!.json().catch(() => null))?.via ?? null) : null;
+    configAction = settleConfigAction(
+      configAction,
+      ok,
+      ok && via ? `Opened (${via})` : undefined,
+    );
+  }
+
+  async function configErrorRepair(): Promise<void> {
+    if (!configError || configAction?.phase === "pending") return;
+    configAction = startConfigAction("repair");
     const res = await fetch("/api/config-fix", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file: configError.file }),
     }).catch(() => null);
-    if (!res || !res.ok) return;
-    // Fixed — now send "1" + Enter to exit, then parent respawns.
-    configErrorRestart();
+    const ok = !!res && res.ok;
+    configAction = settleConfigAction(configAction, ok);
+    // Repaired on disk — exit so Claude restarts with the fixed config.
+    if (ok) sendConfigExitChoice();
   }
+
+  async function configErrorDismiss(): Promise<void> {
+    if (!configError || configAction?.phase === "pending") return;
+    configAction = startConfigAction("dismiss");
+    sendConfigExitChoice();
+    configAction = settleConfigAction(configAction, true);
+  }
+
+  const CONFIG_BUTTONS: {
+    kind: ConfigActionKind;
+    label: string;
+    handler: () => void;
+  }[] = [
+    { kind: "open", label: "Open", handler: configErrorOpen },
+    { kind: "repair", label: "Repair", handler: configErrorRepair },
+    { kind: "dismiss", label: "Dismiss", handler: configErrorDismiss },
+  ];
 
   function onDragOver(e: DragEvent): void {
     if (e.dataTransfer?.types.includes("Files")) {
@@ -1075,19 +1114,27 @@
   ></div>
 
   {#if configError}
-    <div class="config-error-pill">
+    <div class="config-error-pill" class:busy={configAction !== null}>
       <span class="config-error-label"
         >Config error: {configError.file.split(/[\\/]/).pop()}</span
       >
-      <button type="button" class="pill-btn" on:click={configErrorOpen}
-        >Open</button
-      >
-      <button type="button" class="pill-btn" on:click={configErrorAutofix}
-        >Autofix</button
-      >
-      <button type="button" class="pill-btn" on:click={configErrorRestart}
-        >Dismiss</button
-      >
+      {#each CONFIG_BUTTONS as b (b.kind)}
+        {@const v = configButtonView(b.kind, configAction)}
+        <button
+          type="button"
+          class="pill-btn"
+          class:active={v.active}
+          class:done={v.phase === "done"}
+          class:error={v.phase === "error"}
+          disabled={v.disabled}
+          on:click={b.handler}
+        >
+          {#if v.spinner}<span class="pill-spinner" aria-hidden="true"></span
+            >{:else if v.phase === "done"}<span class="pill-glyph">✓</span
+            >{:else if v.phase === "error"}<span class="pill-glyph">✕</span
+            >{/if}{v.active && configAction ? configAction.message : b.label}
+        </button>
+      {/each}
     </div>
   {/if}
 </div>
@@ -1209,12 +1256,49 @@
       background 100ms ease,
       border-color 100ms ease;
   }
-  .pill-btn:hover {
+  .pill-btn:hover:not(:disabled) {
     background: color-mix(in srgb, currentColor 20%, transparent);
     border-color: color-mix(in srgb, currentColor 55%, transparent);
   }
   .pill-btn:focus-visible {
     outline: 2px solid currentColor;
     outline-offset: 1px;
+  }
+  .pill-btn:disabled {
+    cursor: default;
+  }
+  /* Non-chosen buttons fade back while an action runs / has settled, so
+     the chosen one with its spinner/confirmation reads as the focus. */
+  .config-error-pill.busy .pill-btn:not(.active) {
+    opacity: 0.4;
+  }
+  .pill-btn.active {
+    color: var(--brand, #6ea8fe);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .pill-btn.active.done {
+    color: var(--success, #5bd28b);
+  }
+  .pill-btn.active.error {
+    color: var(--danger, #e5707a);
+  }
+  .pill-glyph {
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+  .pill-spinner {
+    width: 0.7rem;
+    height: 0.7rem;
+    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: pill-spin 0.6s linear infinite;
+  }
+  @keyframes pill-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

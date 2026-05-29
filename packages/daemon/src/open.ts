@@ -13,7 +13,7 @@
  */
 
 import { access, readdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
 /** Absolute path to cmd.exe. Bare `"cmd"` fails under Bun.spawn when the
@@ -158,9 +158,13 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
  *
  * macOS  → `open <path>`
  * Linux  → `xdg-open <path>`
- * Win32  → `cmd /c start "" <path>` (the empty "" is the window title
- *          argument, not a real argument — `start` swallows the first
- *          quoted string).
+ * Win32  → `cmd /c start "" <path>` when the extension has a default
+ *          handler, otherwise `notepad <path>`. Many Windows installs
+ *          have NO association for `.json` (and extensionless files
+ *          never do), so `start` would silently no-op — the file just
+ *          wouldn't open. The notepad fallback guarantees the user can
+ *          still read/fix the file (this is what unblocked the
+ *          .claude.json config-error "Open" button).
  *
  * Returns the same `{ via }` shape `openIn()` uses so the route
  * handler can include it in the response.
@@ -181,18 +185,46 @@ export async function openDefault(path: string): Promise<{ via: string }> {
     return { via: "xdg-open" };
   }
   if (process.platform === "win32") {
-    // `start` is a cmd builtin, not a binary on PATH. Wrap it in
-    // `cmd /c`. The leading empty `""` is a quoted window title that
-    // start eats so the rest of the line is treated as the target.
-    Bun.spawn([CMD_EXE, "/c", "start", "", path], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    return { via: "start" };
+    const ext = extname(path).toLowerCase();
+    const cmd = windowsOpenCommand(path, ext ? await hasFileAssociation(ext) : false);
+    Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    // cmd[0] === CMD_EXE → routed through `start` (the OS default app);
+    // otherwise we fell back to notepad.
+    return { via: cmd[0] === CMD_EXE ? "default app" : "notepad" };
   }
   throw new Error(
     `default-app open not implemented for platform ${process.platform}`,
   );
+}
+
+/**
+ * Whether a Windows file extension has a registered default handler.
+ * `assoc <ext>` is a cmd builtin that exits non-zero ("File association
+ * not found …") when nothing is registered. `ext` includes the dot,
+ * e.g. ".json".
+ */
+async function hasFileAssociation(ext: string): Promise<boolean> {
+  const proc = Bun.spawn([CMD_EXE, "/c", "assoc", ext], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return (await proc.exited) === 0;
+}
+
+/**
+ * Build the argv for opening a file on Windows. When the extension has a
+ * default app we route through `cmd /c start` (the empty "" is the window
+ * title `start` swallows, so a path with spaces still opens). With no
+ * association — `.json` on a stock install, or any extensionless file —
+ * `start` does nothing, so fall back to `notepad` which always exists.
+ * Pure (no I/O) so the routing is unit-testable.
+ */
+export function windowsOpenCommand(
+  path: string,
+  hasAssociation: boolean,
+): string[] {
+  if (hasAssociation) return [CMD_EXE, "/c", "start", "", path];
+  return ["notepad", path];
 }
 
 /** Single-quote `s` for safe substitution into a `bash -c '…'` snippet.
