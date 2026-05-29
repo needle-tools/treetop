@@ -152,6 +152,7 @@ import {
   isPeerMuted,
   MAX_BODY_BYTES,
 } from "./messages";
+import { record, snapshot as timingsSnapshot } from "./timings";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -1704,6 +1705,13 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
+      // Diagnostics: rolling latency percentiles for instrumented hot paths.
+      // Returns the current snapshot from timings.ts: each named span has
+      // { count, p50, p95, max, last } — all in milliseconds.
+      if (url.pathname === "/api/debug/timings") {
+        return json(timingsSnapshot());
+      }
+
       if (url.pathname === "/api/shutdown" && req.method === "POST") {
         console.log("supergit daemon: /api/shutdown requested");
         setTimeout(() => shutdown("/api/shutdown"), 50);
@@ -1835,6 +1843,12 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/debug/mem",
               description:
                 "process.memoryUsage() snapshot. ?gc=1 runs a full sync GC first and reports both before/after — lets you tell V8-reserved-idle pages apart from true working set.",
+            },
+            {
+              method: "GET",
+              path: "/api/debug/timings",
+              description:
+                "rolling latency percentiles for instrumented hot paths. Each named span: { count, p50, p95, max, last } in ms.",
             },
             {
               method: "POST",
@@ -2549,10 +2563,12 @@ const server = Bun.serve<TermWsData, never>({
         // path on cache miss / first hit / unparseable etag.
         const clientEtag = req.headers.get("If-None-Match");
         if (clientEtag) {
+          const _t304 = performance.now();
           const st = await fsStat(source).catch(() => null);
           if (st) {
             const quickEtag = `"${st.mtimeMs}-${st.size}"`;
             if (clientEtag === quickEtag) {
+              record("session-304-path", performance.now() - _t304);
               return new Response(null, {
                 status: 304,
                 headers: { ETag: quickEtag, ...CORS },
@@ -2560,6 +2576,7 @@ const server = Bun.serve<TermWsData, never>({
             }
           }
         }
+        const _tFull = performance.now();
         const agentKind = resolved.agent;
         const titles = await workspace.listSessionTitles();
         const { body, etag } = await getSessionResponseJson(
@@ -2568,11 +2585,13 @@ const server = Bun.serve<TermWsData, never>({
           titles[source],
         );
         if (clientEtag && clientEtag === etag) {
+          record("session-full-path", performance.now() - _tFull);
           return new Response(null, {
             status: 304,
             headers: { ETag: etag, ...CORS },
           });
         }
+        record("session-full-path", performance.now() - _tFull);
         return new Response(body, {
           headers: { "Content-Type": "application/json", ETag: etag, ...CORS },
         });
