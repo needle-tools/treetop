@@ -19,6 +19,7 @@ import { initDaemonLog } from "./daemon-log";
 import { repairAllClaudeJson } from "./claude-json-repair";
 import {
   listWorktrees,
+  mainWorktreePathFor,
   getWorktreeDetails,
   listCommits,
   getDiff,
@@ -937,6 +938,26 @@ function manifestLineFor(
 
 function repoLineFor(repo: EnrichedRepo): string {
   return JSON.stringify({ type: "repo", repo }) + "\n";
+}
+
+/** Resolve the accent colour (if any) of the repo that owns `cwd`.
+ *  Worktrees live as siblings of the main checkout, so we map the cwd
+ *  back to its main worktree path (via git) and match repos.json. Returns
+ *  undefined when nothing matches or no repo has a colour — the terminal
+ *  backend then falls back to the default user-box theme. Best-effort:
+ *  any failure just yields undefined (the box still renders, untinted). */
+async function repoColorForCwd(cwd: string): Promise<string | undefined> {
+  try {
+    const repos = await workspace.listRepos();
+    if (!repos.some((r) => r.color)) return undefined; // nothing to match
+    const main = await mainWorktreePathFor(cwd);
+    if (!main) return undefined;
+    const norm = (p: string) => resolve(p).replace(/[/\\]+$/, "");
+    const target = norm(main);
+    return repos.find((r) => norm(r.path) === target)?.color ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Response for the cache-hit / wait-for-inflight paths: flush the
@@ -2770,12 +2791,19 @@ const server = Bun.serve<TermWsData, never>({
                 .getCarryOverCmdLines(body.previousTermId)
                 .catch(() => [])
             : undefined;
+        // For Claude TUIs, look up the owning repo's accent colour so the
+        // backend can tint the user-message box to match the repo chip.
+        const userBoxColor =
+          agentHint === "claude"
+            ? await repoColorForCwd(body.cwd)
+            : undefined;
         try {
           const handle = await terminalBackend.spawn({
             cmd,
             cwd: body.cwd,
             ownerId: body.ownerId,
             agent: agentHint,
+            userBoxColor,
             // Clamp absurd dims to a sane floor. The frontend reads
             // xterm.cols/rows in onMount; if the container hasn't laid out
             // yet (clientWidth ≈ 0), the FitAddon proposes 2 cols and zsh

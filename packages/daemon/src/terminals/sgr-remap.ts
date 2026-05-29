@@ -117,6 +117,52 @@ export function themeFromColors(c: UserBoxColors): UserBoxTheme {
 export const CLAUDE_USER_BOX_THEME: UserBoxTheme =
   themeFromColors(CLAUDE_USER_BOX_COLORS);
 
+/** Pick a readable text colour (`#1a1a1a` or `#ffffff`) for a given
+ *  background, via OKLab lightness. Mirrors the UI's `repoChipFg()` so a
+ *  repo-coloured box reads the same as that repo's chip: dark text on
+ *  light repo colours, light text on dark ones. */
+export function pickReadableFg(hex: string): string {
+  let r8: number, g8: number, b8: number;
+  try {
+    [r8, g8, b8] = parseHex(hex).map((c) => c / 255) as [
+      number,
+      number,
+      number,
+    ];
+  } catch {
+    return "#ffffff";
+  }
+  const lin = (c: number) =>
+    c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const r = lin(r8);
+  const g = lin(g8);
+  const b = lin(b8);
+  const lL = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+  const mL = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+  const sL = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+  const L =
+    0.2104542553 * Math.cbrt(lL) +
+    0.793617785 * Math.cbrt(mL) -
+    0.0040720468 * Math.cbrt(sL);
+  return L >= 0.6 ? "#1a1a1a" : "#ffffff";
+}
+
+/** Build a user-box theme that paints the box in a repo's accent colour
+ *  (bold/direct) with auto-contrast text + chevron — so a TUI's user
+ *  turns visually match the repo they belong to. The match keys stay
+ *  Claude's real emitted colours; only the replacements are repo-driven. */
+export function themeFromRepoColor(repoColor: string): UserBoxTheme {
+  const fg = pickReadableFg(repoColor);
+  return themeFromColors({
+    matchBackground: CLAUDE_USER_BOX_COLORS.matchBackground,
+    matchChevron: CLAUDE_USER_BOX_COLORS.matchChevron,
+    matchText: CLAUDE_USER_BOX_COLORS.matchText,
+    background: repoColor,
+    chevron: fg,
+    text: fg,
+  });
+}
+
 const ESC = 0x1b;
 const LBRACKET = 0x5b; // '['
 const SGR_FINAL = 0x6d; // 'm'

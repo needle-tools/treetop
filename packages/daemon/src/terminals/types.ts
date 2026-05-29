@@ -47,6 +47,11 @@ export interface SpawnOptions {
    *  per-column ZDOTDIR). Used by Resume to surface the prior column's
    *  cmd transcript in arrow-up. */
   historyPreload?: readonly string[];
+  /** Accent colour (`#rrggbb`) of the repo this terminal belongs to, if
+   *  the user has assigned one. For Claude TUIs it tints the user-message
+   *  box so the user's turns match the repo's chip colour. Absent => the
+   *  default static box theme. */
+  userBoxColor?: string;
 }
 
 export interface TerminalSubscriber {

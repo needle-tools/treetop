@@ -20,7 +20,11 @@ import type {
 } from "./types";
 import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
 import { wrapWindowsCmd } from "../procs";
-import { UserBoxRemap, CLAUDE_USER_BOX_THEME } from "./sgr-remap";
+import {
+  UserBoxRemap,
+  CLAUDE_USER_BOX_THEME,
+  themeFromRepoColor,
+} from "./sgr-remap";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 
@@ -437,8 +441,16 @@ export class NodePtyBackend implements PtyBackend {
     };
     // Claude paints its user-message box with truecolour SGR the xterm
     // theme can't reach (see sgr-remap.ts) — attach a stream filter that
-    // recolours it so the user's own turns stand out.
-    if (t.agent === "claude") t.remap = new UserBoxRemap(CLAUDE_USER_BOX_THEME);
+    // recolours it so the user's own turns stand out. When the repo has
+    // an accent colour, tint the box with it (auto-contrast text) so the
+    // user's turns match the repo's chip; otherwise use the default theme.
+    if (t.agent === "claude") {
+      t.remap = new UserBoxRemap(
+        opts.userBoxColor
+          ? themeFromRepoColor(opts.userBoxColor)
+          : CLAUDE_USER_BOX_THEME,
+      );
+    }
     // For zsh shells, build a temp ZDOTDIR whose .zshrc sources the
     // user's real ~/.zshrc and then forces INC_APPEND_HISTORY /
     // SHARE_HISTORY. Without this, stock-macOS users get arrow-up

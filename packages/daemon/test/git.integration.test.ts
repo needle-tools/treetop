@@ -21,6 +21,7 @@ import {
   checkoutBranch,
   listRemotes,
   resolveSubmoduleWorktreePaths,
+  mainWorktreePathFor,
   pullFastForward,
   pushUpstream,
   type Worktree,
@@ -60,6 +61,27 @@ describe("listWorktrees against real git", () => {
     expect(wts).toHaveLength(2);
     const branches = wts.map((w) => w.branch).sort();
     expect(branches).toEqual(["feat/audio", "main"]);
+  });
+
+  test("mainWorktreePathFor maps both main and sibling worktree to the main path", async () => {
+    const repo = await tempRepo();
+    // From the main checkout → itself.
+    expect(await mainWorktreePathFor(repo)).toBe(repo);
+
+    // A sibling worktree (how supergit creates them) → still the main path.
+    const wtParent = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-")),
+    );
+    const wtPath = join(wtParent, "feat");
+    await $`git -C ${repo} worktree add ${wtPath} -b feat/x -q`.quiet();
+    expect(await mainWorktreePathFor(wtPath)).toBe(repo);
+  });
+
+  test("mainWorktreePathFor returns null outside a git repo", async () => {
+    const notARepo = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-notrepo-")),
+    );
+    expect(await mainWorktreePathFor(notARepo)).toBeNull();
   });
 
   test("returns a synthetic nonGit entry for a plain directory", async () => {

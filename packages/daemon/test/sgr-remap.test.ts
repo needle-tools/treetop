@@ -6,6 +6,8 @@ import {
   parseHex,
   hexToSgr,
   themeFromColors,
+  themeFromRepoColor,
+  pickReadableFg,
   type UserBoxTheme,
 } from "../src/terminals/sgr-remap";
 
@@ -125,6 +127,37 @@ describe("UserBoxRemap", () => {
       new UserBoxRemap(theme).transform(enc(`${ESC}[48;2;55;55;55mx${ESC}[49m`)),
     );
     expect(out).toContain(`${ESC}[48;2;255;0;0m`); // #ff0000
+  });
+
+  test("pickReadableFg returns dark text on light bg, light on dark", () => {
+    expect(pickReadableFg("#ffffff")).toBe("#1a1a1a");
+    expect(pickReadableFg("#e6ffbd")).toBe("#1a1a1a"); // light lime
+    expect(pickReadableFg("#000000")).toBe("#ffffff");
+    expect(pickReadableFg("#1e3a1c")).toBe("#ffffff"); // dark green
+    expect(pickReadableFg("not-a-hex")).toBe("#ffffff"); // safe fallback
+  });
+
+  test("themeFromRepoColor paints the box in the repo colour with contrast text", () => {
+    // Dark repo colour → white text/chevron.
+    const dark = themeFromRepoColor("#1e3a1c");
+    expect(dark.openTo).toBe("48;2;30;58;28"); // box bg = repo colour
+    expect(dark.inner["38;2;255;255;255"]).toBe("38;2;255;255;255"); // text → white
+    expect(dark.inner["38;2;80;80;80"]).toBe("38;2;255;255;255"); // chevron → white
+    // Light repo colour → dark text.
+    const light = themeFromRepoColor("#e6ffbd");
+    expect(light.inner["38;2;255;255;255"]).toBe("38;2;26;26;26"); // #1a1a1a
+    // Match keys stay Claude's emitted colours regardless.
+    expect(light.open).toBe("48;2;55;55;55");
+  });
+
+  test("a repo-coloured box recolours an actual user message end-to-end", () => {
+    const r = new UserBoxRemap(themeFromRepoColor("#ff8800"));
+    const line =
+      `${ESC}[48;2;55;55;55m${ESC}[38;2;80;80;80m❯ ` +
+      `${ESC}[38;2;255;255;255mhi${ESC}[39m ${ESC}[49m`;
+    const out = dec(r.transform(enc(line)));
+    expect(out).toContain(`${ESC}[48;2;255;136;0m`); // box bg = #ff8800
+    expect(out).not.toContain(`${ESC}[48;2;55;55;55m`); // gray gone
   });
 
   test("ships a real Claude theme matching the captured sequence", () => {

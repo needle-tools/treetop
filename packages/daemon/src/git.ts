@@ -221,6 +221,33 @@ export async function resolveSubmoduleWorktreePaths(
 }
 
 /**
+ * Resolve any working directory (a main checkout OR a linked worktree,
+ * which supergit creates as a sibling via `git worktree add ../foo`) to
+ * its repo's MAIN worktree path — i.e. the path the user registered in
+ * repos.json. Uses `rev-parse --git-common-dir`, whose parent is the
+ * main worktree:
+ *   - from the main worktree it returns `.git`        → resolves to <cwd>
+ *   - from a linked worktree it returns `<main>/.git` → resolves to <main>
+ * Returns null if `cwd` isn't inside a git repo. Used to map a TUI's cwd
+ * back to its repo (and thus its accent colour) for the user-box tint.
+ */
+export async function mainWorktreePathFor(cwd: string): Promise<string | null> {
+  try {
+    const r = await $`git -C ${cwd} rev-parse --git-common-dir`
+      .quiet()
+      .nothrow();
+    if (r.exitCode !== 0) return null;
+    const raw = r.stdout.toString().trim();
+    if (!raw) return null;
+    const gitDir = resolvePath(cwd, raw); // absolute path to `…/.git`
+    // Parent of the common `.git` dir is the main worktree.
+    return resolvePath(gitDir, "..");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run `git fetch --all --prune --quiet` for a repo. Network failures, missing
  * remotes, auth prompts that would block — all silently treated as no-ops.
  * Returns true if fetch ran cleanly, false otherwise.
