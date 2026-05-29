@@ -640,9 +640,11 @@
                             class="tui-inline-title"
                             title={`${ctx.title ?? p.cmd.join(" ")}\n${p.cwd}`}
                           >
-                            {#if ctx.title}{ctx.title}{:else}{p.cmd.join(
-                                " ",
-                              )}{/if}
+                            <span class="tui-inline-cmd"
+                              >{#if ctx.title}{ctx.title}{:else}{p.cmd.join(
+                                  " ",
+                                )}{/if}</span
+                            >
                             {#if ctx.relCwd}<span class="tui-inline-cwd"
                                 >{ctx.relCwd}</span
                               >{/if}
