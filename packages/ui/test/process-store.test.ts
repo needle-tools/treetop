@@ -24,6 +24,7 @@ import {
   recordSamples,
   getHistory,
   averagedCpuFromHistory,
+  sortProcsByUsage,
   processStore,
   procHistory,
   procByOwnerId,
@@ -194,6 +195,57 @@ describe("averagedCpuFromHistory", () => {
     );
     expect(out.get("p1")).toBe(20);
     expect(out.get("p2")).toBe(5);
+  });
+});
+
+describe("sortProcsByUsage", () => {
+  const p = (id: string, cpuPercent: number, memBytes: number) => ({
+    id,
+    cpuPercent,
+    memBytes,
+  });
+
+  test("sorts by CPU descending", () => {
+    const out = sortProcsByUsage(
+      [p("a", 5, 0), p("b", 50, 0), p("c", 20, 0)],
+      new Map(),
+    );
+    expect(out.map((x) => x.id)).toEqual(["b", "c", "a"]);
+  });
+
+  test("prefers the averaged CPU over the raw sample", () => {
+    // Raw says a > b, but the 30s average says b > a — the average wins.
+    const out = sortProcsByUsage(
+      [p("a", 80, 0), p("b", 10, 0)],
+      new Map([
+        ["a", 5],
+        ["b", 60],
+      ]),
+    );
+    expect(out.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+
+  test("falls back to raw cpuPercent when a process has no average yet", () => {
+    const out = sortProcsByUsage(
+      [p("a", 10, 0), p("b", 90, 0)],
+      new Map([["a", 1]]), // only a has an average
+    );
+    expect(out.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+
+  test("breaks CPU ties by memory descending", () => {
+    const out = sortProcsByUsage(
+      [p("a", 10, 100), p("b", 10, 900), p("c", 10, 500)],
+      new Map(),
+    );
+    expect(out.map((x) => x.id)).toEqual(["b", "c", "a"]);
+  });
+
+  test("does not mutate the input array", () => {
+    const input = [p("a", 1, 0), p("b", 9, 0)];
+    const before = input.map((x) => x.id);
+    sortProcsByUsage(input, new Map());
+    expect(input.map((x) => x.id)).toEqual(before);
   });
 });
 

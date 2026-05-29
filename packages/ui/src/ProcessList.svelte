@@ -6,6 +6,7 @@
     recordSamples,
     procHistory,
     averagedCpuFromHistory,
+    sortProcsByUsage,
     CPU_AVG_WINDOW_MS,
   } from "./process-store";
 
@@ -80,6 +81,15 @@
   let pendingKill: Record<string, boolean> = {};
   let showExternal = true;
 
+  // Processes within a repo are auto-sorted by usage (CPU avg, then mem).
+  // While the cursor is over a repo's list we freeze that group's order
+  // so rows don't reorder out from under the pointer mid-click. The
+  // snapshot is the id order captured the moment the cursor entered;
+  // values still update live, only positions hold. `null` = nothing
+  // hovered, so every group sorts live.
+  let hoveredRepo: string | null = null;
+  let frozenOrder: Record<string, string[]> = {};
+
   const TUI_HOT_MEM_FRACTION = 0.5;
   const TUI_WARM_MEM_FRACTION = 0.3;
   const TUI_HOT_CPU_PERCENT = 50;
@@ -137,6 +147,50 @@
     ? procs
     : procs.filter((p) => p.kind !== "external");
   $: grouped = groupByRepo(visibleProcs, avgCpuById);
+
+  // Apply the per-group sort: hovered group keeps its frozen order;
+  // every other group sorts live by usage. Depends on grouped,
+  // avgCpuById, hoveredRepo, and frozenOrder so it re-runs whenever any
+  // of them change.
+  $: displayGroups = grouped.map((g) => {
+    const frozen = frozenOrder[g.repoName];
+    if (g.repoName === hoveredRepo && frozen) {
+      const rank = new Map(frozen.map((id, i) => [id, i]));
+      const procs = [...g.procs].sort(
+        (a, b) =>
+          (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+      return { ...g, procs };
+    }
+    return { ...g, procs: sortProcsByUsage(g.procs, avgCpuById) };
+  });
+
+  // Fired on each process row's mouseenter. Snapshot the group's current
+  // (live-sorted) order the first time the cursor lands in it so freezing
+  // causes no jump. The guard is essential: moving between rows in the
+  // same group must NOT re-snapshot (a re-snapshot against changed CPU
+  // values is exactly the reorder-under-the-cursor we're preventing).
+  // Entering a different group switches the snapshot — the previously
+  // hovered group is no longer `hoveredRepo`, so it resumes live sorting.
+  function freezeGroup(repoName: string) {
+    if (hoveredRepo === repoName) return;
+    const g = grouped.find((x) => x.repoName === repoName);
+    if (g) {
+      frozenOrder = {
+        ...frozenOrder,
+        [repoName]: sortProcsByUsage(g.procs, avgCpuById).map((p) => p.id),
+      };
+    }
+    hoveredRepo = repoName;
+  }
+  // Fired when the cursor leaves the whole process list (not on row→row
+  // moves within it — those keep the freeze, since the gap between rows
+  // isn't an element). Resumes live sorting everywhere.
+  function clearFreeze() {
+    hoveredRepo = null;
+    frozenOrder = {};
+  }
 
   function groupByRepo(
     list: TuiProc[],
@@ -437,8 +491,13 @@
       {:else if procs.length === 0}
         <p class="muted small nopad">Nothing running.</p>
       {:else}
-        <div class="proc-groups">
-          {#each grouped as group (group.repoName)}
+        <!-- mouseleave here is a pointer-only affordance (resume live
+             sorting when the cursor leaves the list); it carries no
+             semantics for keyboard/AT users, so a static layout div is
+             correct and an ARIA role would be misleading. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="proc-groups" on:mouseleave={clearFreeze}>
+          {#each displayGroups as group (group.repoName)}
             <div class="proc-group">
               <button
                 class="proc-group-header"
@@ -521,6 +580,7 @@
                           class:tui-row-focusable={source !== null}
                           role={source !== null ? "button" : undefined}
                           tabindex={source !== null ? 0 : -1}
+                          on:mouseenter={() => freezeGroup(group.repoName)}
                           on:click={() => {
                             if (!isExternal) void focusProc(p);
                           }}

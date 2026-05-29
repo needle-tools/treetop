@@ -87,6 +87,24 @@ export function averagedCpuFromHistory(
   return out;
 }
 
+/**
+ * Sort processes by usage: CPU% descending (using the trailing average
+ * when available, falling back to the raw sample), with memory as the
+ * tiebreaker. Returns a new array — does not mutate the input. Pure so
+ * the component can use it both for the live ordering and for the
+ * frozen snapshot it captures while the cursor hovers a group.
+ */
+export function sortProcsByUsage<
+  T extends { id: string; cpuPercent: number; memBytes: number },
+>(procs: T[], avgCpu: Map<string, number>): T[] {
+  const cpu = (p: T): number => avgCpu.get(p.id) ?? p.cpuPercent;
+  return [...procs].sort((a, b) => {
+    const byCpu = cpu(b) - cpu(a);
+    if (byCpu !== 0) return byCpu;
+    return b.memBytes - a.memBytes;
+  });
+}
+
 export const processStore = writable<ProcEntry[]>([]);
 export const procHistory = writable<Map<string, ProcSample[]>>(new Map());
 
