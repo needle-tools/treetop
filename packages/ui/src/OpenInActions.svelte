@@ -1360,7 +1360,7 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        title={cmdRunning ? `Stop: ${target}` : linkTooltip(link)}
+        title={cmdRunning ? `Running: ${target}` : linkTooltip(link)}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);

@@ -3918,21 +3918,6 @@
     };
   }
 
-  async function stopInternalCommand(
-    linkId: string,
-    entry: { wtPath: string; source: string },
-  ): Promise<void> {
-    const termId = entry.source.replace("__attached__:shell:", "");
-    if (termId && termId !== entry.source) {
-      play("session-stop");
-      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, {
-        method: "DELETE",
-      }).catch(() => {});
-      dismissShellSource(entry.source);
-    }
-    forgetCommandTerm(linkId, entry);
-  }
-
   async function revealInternalCommand(entry: {
     wtPath: string;
     source: string;
@@ -3950,22 +3935,11 @@
     scrollNewColIntoView(entry.wtPath, entry.source);
   }
 
-  function isInternalCommandVisible(entry: {
-    wtPath: string;
-    source: string;
-  }): boolean {
-    if (dismissedShells.has(entry.source)) return false;
-    return (openSessionsByWt[entry.wtPath] ?? []).some(
-      (s) => s.source === entry.source,
-    );
-  }
-
   async function handleCommandClick(
     wtPath: string,
     link: CustomLink,
     opts: {
       revealInternalTerminal?: boolean;
-      runningInternalAction?: "reveal" | "stop";
     } = {},
   ) {
     if (link.kind !== "command") return;
@@ -3977,15 +3951,9 @@
     };
     const isRunning = runningCommandIds.has(link.id);
     const revealInternalTerminal = opts.revealInternalTerminal ?? true;
-    const runningInternalAction = opts.runningInternalAction ?? "reveal";
 
     if (isRunning && cmdLink.runMode === "shell") {
-      play("session-stop");
-      void fetch("/api/command/stop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ linkId: link.id }),
-      });
+      // Don't stop on re-click — the process keeps running in the background.
       return;
     }
 
@@ -3994,14 +3962,7 @@
       if (prev) {
         const alive = await commandTermAlive(prev.source);
         if (alive) {
-          if (
-            runningInternalAction === "stop" ||
-            isInternalCommandVisible(prev)
-          ) {
-            await stopInternalCommand(link.id, prev);
-          } else {
-            await revealInternalCommand(prev);
-          }
+          await revealInternalCommand(prev);
           return;
         }
         forgetCommandTerm(link.id, prev);
@@ -4081,7 +4042,6 @@
       repo.path;
     void handleCommandClick(wtPath, link, {
       revealInternalTerminal: payload.revealTerminal ?? false,
-      runningInternalAction: "stop",
     });
   }
 
