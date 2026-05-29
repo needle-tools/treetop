@@ -15,6 +15,51 @@
 
 import { readFile, stat } from "node:fs/promises";
 import type { AgentKind, AgentSession } from "./agents";
+
+/** Set `SUPERGIT_USAGE_INSTRUMENT=1` to log every scan timing
+ *  unconditionally. Otherwise we only log scans that take longer than
+ *  the SLOW_SCAN_MS threshold — so a quiet host stays quiet and slow
+ *  outliers still surface in stderr without grep gymnastics. */
+const VERBOSE_INSTRUMENT = process.env.SUPERGIT_USAGE_INSTRUMENT === "1";
+const SLOW_SCAN_MS = 50;
+
+interface ScanStats {
+  bytesRead: number;
+  linesScanned: number;
+  linesParsed: number;
+  cacheHit: boolean;
+}
+
+function logScan(label: string, path: string, ms: number, s: ScanStats): void {
+  if (s.cacheHit) {
+    if (VERBOSE_INSTRUMENT) {
+      console.log(`[usage] ${label} HIT  ${ms.toFixed(1)}ms  ${path}`);
+    }
+    return;
+  }
+  if (VERBOSE_INSTRUMENT || ms >= SLOW_SCAN_MS) {
+    const kb = (s.bytesRead / 1024).toFixed(0);
+    console.log(
+      `[usage] ${label} MISS ${ms.toFixed(1)}ms  ${kb}KB ${s.linesScanned}lines ${s.linesParsed}parsed  ${path}`,
+    );
+  }
+}
+
+interface AggregateStats {
+  sessionsConsidered: number;
+  sessionsScanned: number;
+  cacheHits: number;
+  totalScanMs: number;
+  walkMs: number;
+}
+
+function logAggregate(label: string, ms: number, s: AggregateStats): void {
+  if (VERBOSE_INSTRUMENT || ms >= SLOW_SCAN_MS) {
+    console.log(
+      `[usage] ${label} total=${ms.toFixed(1)}ms  walk=${s.walkMs.toFixed(1)}ms  considered=${s.sessionsConsidered} scanned=${s.sessionsScanned} hits=${s.cacheHits} scan-sum=${s.totalScanMs.toFixed(1)}ms`,
+    );
+  }
+}
 import {
   fetchClaudeOAuthUsage,
   type ClaudeOAuthUsage,
@@ -131,12 +176,16 @@ export async function scanClaudeDailyBuckets(
   path: string,
   mtimeMs?: number,
 ): Promise<Map<string, DailyBucket>> {
+  const startMs = performance.now();
+  const stats: ScanStats = { bytesRead: 0, linesScanned: 0, linesParsed: 0, cacheHit: false };
   if (mtimeMs !== undefined) {
     const cached = claudeDailyCache.get(path);
     if (cached && cached.mtimeMs === mtimeMs) {
       // LRU touch.
       claudeDailyCache.delete(path);
       claudeDailyCache.set(path, cached);
+      stats.cacheHit = true;
+      logScan("scanDaily", path, performance.now() - startMs, stats);
       return cached.result;
     }
   }
@@ -144,11 +193,14 @@ export async function scanClaudeDailyBuckets(
   try {
     content = await readFile(path, "utf-8");
   } catch {
+    logScan("scanDaily", path, performance.now() - startMs, stats);
     return new Map();
   }
+  stats.bytesRead = content.length;
   const buckets = new Map<string, DailyBucket>();
   for (const line of content.split("\n")) {
     if (!line) continue;
+    stats.linesScanned++;
     // Cheap prefilter — most lines are tool-call deltas and content
     // chunks that we don't bucket. The JSON.parse path is hot.
     if (
@@ -160,6 +212,7 @@ export async function scanClaudeDailyBuckets(
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(line) as Record<string, unknown>;
+      stats.linesParsed++;
     } catch {
       continue;
     }
@@ -201,6 +254,7 @@ export async function scanClaudeDailyBuckets(
       if (oldest !== undefined) claudeDailyCache.delete(oldest);
     }
   }
+  logScan("scanDaily", path, performance.now() - startMs, stats);
   return buckets;
 }
 
@@ -250,12 +304,16 @@ export async function scanClaudeSessionTokenTotals(
   mtimeMs: number | undefined,
   sinceMs: number,
 ): Promise<ClaudeSessionTokenTotals> {
+  const startMs = performance.now();
+  const stats: ScanStats = { bytesRead: 0, linesScanned: 0, linesParsed: 0, cacheHit: false };
   const cacheKey = `${path}|${sinceMs}`;
   if (mtimeMs !== undefined) {
     const cached = claudeTokenScanCache.get(cacheKey);
     if (cached && cached.mtimeMs === mtimeMs && cached.sinceMs === sinceMs) {
       claudeTokenScanCache.delete(cacheKey);
       claudeTokenScanCache.set(cacheKey, cached);
+      stats.cacheHit = true;
+      logScan("scanToken", path, performance.now() - startMs, stats);
       return cached.result;
     }
   }
@@ -270,19 +328,23 @@ export async function scanClaudeSessionTokenTotals(
   try {
     content = await readFile(path, "utf-8");
   } catch {
+    logScan("scanToken", path, performance.now() - startMs, stats);
     return zero;
   }
+  stats.bytesRead = content.length;
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
   for (const line of content.split("\n")) {
     if (!line) continue;
+    stats.linesScanned++;
     // Cheap prefilter — only assistant turns carry usage blocks.
     if (!line.includes('"type":"assistant"')) continue;
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(line) as Record<string, unknown>;
+      stats.linesParsed++;
     } catch {
       continue;
     }
@@ -328,6 +390,7 @@ export async function scanClaudeSessionTokenTotals(
       if (oldest !== undefined) claudeTokenScanCache.delete(oldest);
     }
   }
+  logScan("scanToken", path, performance.now() - startMs, stats);
   return result;
 }
 
@@ -341,8 +404,16 @@ export async function topClaudeSessionsByTokens(
   now: number,
   limit: number,
 ): Promise<ClaudeTopSession[]> {
+  const startMs = performance.now();
   const sinceMs = now - WEEK_MS;
   const cutoffMtime = now - WEEK_MS;
+  const agg: AggregateStats = {
+    sessionsConsidered: sessions.length,
+    sessionsScanned: 0,
+    cacheHits: 0,
+    totalScanMs: 0,
+    walkMs: 0,
+  };
   const results = await Promise.all(
     sessions.map(async (s): Promise<ClaudeTopSession | null> => {
       if (s.agent !== "claude") return null;
@@ -355,11 +426,22 @@ export async function topClaudeSessionsByTokens(
       } catch {
         return null;
       }
+      agg.sessionsScanned++;
+      const cacheKey = `${s.source}|${sinceMs}`;
+      const wasCacheHit =
+        mtimeMs !== undefined &&
+        (() => {
+          const c = claudeTokenScanCache.get(cacheKey);
+          return c?.mtimeMs === mtimeMs && c?.sinceMs === sinceMs;
+        })();
+      if (wasCacheHit) agg.cacheHits++;
+      const scanStart = performance.now();
       const totals = await scanClaudeSessionTokenTotals(
         s.source,
         mtimeMs,
         sinceMs,
       );
+      agg.totalScanMs += performance.now() - scanStart;
       if (totals.totalTokens === 0) return null;
       return {
         sessionId: s.sessionId,
@@ -374,8 +456,10 @@ export async function topClaudeSessionsByTokens(
       };
     }),
   );
+  agg.walkMs = performance.now() - startMs - agg.totalScanMs;
   const populated = results.filter((r): r is ClaudeTopSession => r !== null);
   populated.sort((a, b) => b.totalTokens - a.totalTokens);
+  logAggregate("topSessions", performance.now() - startMs, agg);
   return populated.slice(0, limit);
 }
 
@@ -389,9 +473,17 @@ async function buildClaudeDailyTotals(
   totals: Map<string, number>;
   sessionsByDate: Map<string, Set<string>>;
 }> {
+  const startMs = performance.now();
   const totals = new Map<string, number>();
   const sessionsByDate = new Map<string, Set<string>>();
   const cutoff = now - PEAK_WEEK_LOOKBACK_MS - WEEK_MS;
+  const agg: AggregateStats = {
+    sessionsConsidered: sessions.length,
+    sessionsScanned: 0,
+    cacheHits: 0,
+    totalScanMs: 0,
+    walkMs: 0,
+  };
   await Promise.all(
     sessions.map(async (s) => {
       if (s.agent !== "claude") return;
@@ -404,7 +496,15 @@ async function buildClaudeDailyTotals(
       } catch {
         return;
       }
+      agg.sessionsScanned++;
+      const wasCacheHit = (() => {
+        const c = claudeDailyCache.get(s.source);
+        return c?.mtimeMs === mtimeMs;
+      })();
+      if (wasCacheHit) agg.cacheHits++;
+      const scanStart = performance.now();
       const buckets = await scanClaudeDailyBuckets(s.source, mtimeMs);
+      agg.totalScanMs += performance.now() - scanStart;
       for (const [date, b] of buckets) {
         totals.set(date, (totals.get(date) ?? 0) + b.messages);
         const setForDate = sessionsByDate.get(date) ?? new Set();
@@ -413,6 +513,8 @@ async function buildClaudeDailyTotals(
       }
     }),
   );
+  agg.walkMs = performance.now() - startMs - agg.totalScanMs;
+  logAggregate("dailyTotals", performance.now() - startMs, agg);
   return { totals, sessionsByDate };
 }
 
