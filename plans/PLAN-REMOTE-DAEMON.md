@@ -1,8 +1,8 @@
 # PLAN-REMOTE-DAEMON.md — add a remote daemon as a folder row in the local UI
 
-Status: **Phase 0 + Phase 1 DONE (`SUPERGIT_BIND` + `deploy/` installer,
-systemd & Docker). Phase 1 not yet smoke-tested on a live box. Phases 2-5
-planned.**
+Status: **Phase 0 + Phase 1 DONE. Phase 4b daemon-side: registry +
+TunnelManager + HTTP proxy DONE (unit-tested only); WS/SSE proxy + UI +
+two-daemon e2e tests pending. Phase 1 not smoke-tested on a live box.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -240,15 +240,29 @@ top of doc) so the browser stays same-origin with the local daemon and we
 never touch CORS/TLS or re-expose the remote daemon.
 
 Daemon side (new local-daemon code):
-- [ ] A registry of attached remote daemons (id, label, tunnel target
-      `127.0.0.1:<localPort>`, color). Persist in workspace prefs.
-- [ ] Proxy routes `/api/daemons/<id>/*` → forward to that daemon's
-      loopback over the tunnel, streaming bodies through (NDJSON repo
-      stream, file reads, diffs).
+- [x] A registry of attached remote daemons (id, label, host/user/port,
+      sshPort, identityPath, color). Stored in `remote-daemons.json` (own
+      file, not repos.json/prefs). CRUD + add→remove→restore round trip.
+      `workspace.ts`; tests `remote-daemons.test.ts`. (commit b82c8bd)
+- [x] TunnelManager: owns `ssh -N -L <localPort>:localhost:<remotePort>`
+      per daemon — idempotent open per id, free-port alloc, close()/auto-
+      drop on ssh exit, closeAll() on shutdown. The `Bun.spawn(ssh)` is
+      injected so logic is unit-tested without a real SSH server.
+      `tunnel-manager.ts`; tests `tunnel-manager.test.ts`. (561f37d)
+- [x] HTTP proxy routes: `GET/POST /api/daemons` (list/register),
+      `DELETE /api/daemons/<id>` (unregister + tear down tunnel),
+      `/api/daemons/<id>/*` → forward over the tunnel to the remote's
+      `/api/*`, streaming the body back. Pure path/URL helpers in
+      `daemon-proxy.ts` (tests `daemon-proxy.test.ts`); wired in
+      `server.ts`. Loopback-only (not in LAN_ALLOWED_ROUTES — lan-gate
+      test confirms). (e503cb9 + wiring fix bb61021 + tsc fix 8db8859)
+      NOTE: only unit-tested so far — no end-to-end two-daemon test yet
+      (see "Two-daemon integration tests" below).
 - [ ] Proxy WS (`/api/daemons/<id>/terminals/<t>/io`) and SSE
-      (`/api/daemons/<id>/stream`) — Bun can pipe both.
+      (`/api/daemons/<id>/stream`) — Bun can pipe both. NEXT increment.
 - [ ] Optionally manage the tunnel itself (spawn/own `ssh -L` per remote)
-      so the user doesn't run it by hand — ties into Phase 2.
+      so the user doesn't run it by hand — ties into Phase 2. (The
+      TunnelManager exists; this is the "auto-open on attach" wiring.)
 
 UI side:
 - [ ] Central `apiUrl(path, daemonId?)` helper: local → `/api${path}`,
@@ -270,6 +284,41 @@ UI side:
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
 remaining UI cost is real but mechanical (the `apiUrl` threading).
+
+### Two-daemon integration tests (opt-in, never run by default)
+
+The daemon-side proxy is unit-tested (path parsing, tunnel lifecycle with
+an injected spawner, registry CRUD) but NOT yet exercised end-to-end: no
+test spins up a *real* second daemon and proxies a live request through.
+We want that coverage WITHOUT it running in the normal `bun test` loop —
+spinning up extra daemon processes on every run is slow, port-flaky, and
+exactly the kind of thing an agent could trigger accidentally.
+
+Design:
+- [ ] A dedicated runner, e.g. `bun run test:two-daemon` (NOT wired into
+      the default `test` script), that sets an env guard
+      (`SUPERGIT_TWO_DAEMON_TESTS=1`). Test files check the guard and
+      `test.skip` themselves when it's absent — so even a stray
+      `bun test` over the whole tree skips them rather than booting
+      daemons.
+- [ ] The harness spawns a second daemon as a child with a DEDICATED test
+      port (`SUPERGIT_PORT=<high test port>`) and a throwaway temp
+      workspace (`SUPERGIT_WORKSPACE=<mktemp>`), waits for `/api/health`,
+      runs assertions, then guarantees teardown (kill + await exit) in a
+      `finally` — never leave a daemon running. Bind it loopback-only
+      (`SUPERGIT_BIND=127.0.0.1`).
+- [ ] First test: skip the ssh hop (it's the OS boundary we already fake)
+      — register a remote daemon whose tunnel target points straight at
+      the second daemon's real port, then assert `/api/daemons/<id>/health`
+      and `/api/daemons/<id>/repos` proxy through and stream correctly.
+      Optionally a separate, even-more-guarded test that uses a real
+      `ssh -L` to localhost for those who have sshd running.
+- [ ] Loud guardrails so future agents don't run these blindly: a header
+      comment in each file + the runner printing why it exists, that it
+      spawns processes, and that **the user should be asked first**. Never
+      add it to CI's default job or the pre-commit/inner loop.
+- [ ] NEVER touch the prod daemon (`:27787`) — the test port must be a
+      distinct high port; assert the chosen port != prod before spawning.
 
 ### Phase 5 — Hardening & docs
 - [ ] Security note: this design keeps the daemon loopback-only; the
