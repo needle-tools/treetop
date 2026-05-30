@@ -29,7 +29,11 @@ export interface ErrorEntry extends ErrorEntryInput {
 }
 
 const ERRORS_FILE = "errors.jsonl";
-const DEFAULT_LIMIT = 200;
+const DEFAULT_LIMIT = 1000;
+/** Entries older than this are omitted from list() — the UI scopes the
+ *  Events popover to "what went wrong recently". Matches the 24h bound
+ *  the frontend store enforces in packages/ui/src/errors.ts. */
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export class ErrorLog {
   private constructor(public readonly path: string) {}
@@ -62,11 +66,15 @@ export class ErrorLog {
     } catch {
       return [];
     }
+    const cutoff = Date.now() - MAX_AGE_MS;
     const entries: ErrorEntry[] = [];
     for (const line of raw.split("\n")) {
       if (line.length === 0) continue;
       try {
-        entries.push(JSON.parse(line) as ErrorEntry);
+        const entry = JSON.parse(line) as ErrorEntry;
+        const t = Date.parse(entry.timestamp);
+        if (Number.isFinite(t) && t < cutoff) continue;
+        entries.push(entry);
       } catch {
         // skip malformed line — disk corruption or a truncated write
       }

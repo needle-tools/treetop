@@ -65,7 +65,12 @@ describe("frontend errors store", () => {
   });
 
   test("setErrors replaces the list and rebuilds dedup index", () => {
-    setErrors([makeEntry({ id: "1" }), makeEntry({ id: "2" })]);
+    // Distinct messages so they don't fold into one row — this test is
+    // about the id-based no-op on re-push, not content dedup.
+    setErrors([
+      makeEntry({ id: "1", message: "one" }),
+      makeEntry({ id: "2", message: "two" }),
+    ]);
     // pushing the same id again should be a no-op
     pushError(makeEntry({ id: "1", message: "duplicate" }));
     let last: FrontendErrorEntry[] | null = null;
@@ -76,9 +81,28 @@ describe("frontend errors store", () => {
     unsub();
   });
 
+  test("setErrors folds duplicate occurrences and prunes >24h entries", () => {
+    const now = Date.now();
+    setErrors([
+      // Two identical occurrences of the same error → one row, count 2.
+      makeEntry({ id: "d1", message: "same", route: "/api/x", method: "GET" }),
+      makeEntry({ id: "d2", message: "same", route: "/api/x", method: "GET" }),
+      // A stale occurrence (>24h) → dropped entirely.
+      makeEntry({
+        id: "old",
+        message: "ancient",
+        timestamp: new Date(now - 25 * 3600_000).toISOString(),
+      }),
+    ]);
+    const list = getErrors();
+    expect(list.length).toBe(1);
+    expect(list[0]?.message).toBe("same");
+    expect(list[0]?.count).toBe(2);
+  });
+
   test("clearErrorsLocal empties the list and notifies", () => {
-    pushError(makeEntry());
-    pushError(makeEntry());
+    pushError(makeEntry({ message: "one" }));
+    pushError(makeEntry({ message: "two" }));
     let last: FrontendErrorEntry[] | null = null;
     const unsub = subscribeErrors((es) => {
       last = es;
@@ -111,28 +135,28 @@ describe("frontend errors store", () => {
   });
 
   test("list caps at MAX_ENTRIES (no unbounded growth)", () => {
-    for (let i = 0; i < 250; i++) {
+    // Distinct messages so none fold — exercises the hard 1000-row cap.
+    for (let i = 0; i < 1100; i++) {
       pushError(makeEntry({ id: `i${i}`, message: `m${i}` }));
     }
     let last: FrontendErrorEntry[] | null = null;
     const unsub = subscribeErrors((es) => {
       last = es;
     });
-    expect(last!.length).toBe(200);
-    expect(last![0]?.message).toBe("m249");
+    expect(last!.length).toBe(1000);
+    expect(last![0]?.message).toBe("m1099");
     unsub();
   });
 });
 
-describe("pushError coalescing", () => {
+describe("pushError dedup", () => {
   beforeEach(() => {
     clearErrorsLocal();
   });
 
-  test("merges identical-shape entries into one row with a count bump", () => {
-    // Daemon-restart burst: 30 fetch failures on the same route inside
-    // the coalesce window. Should collapse to a single row.
-    const baseTs = Date.parse("2026-05-13T12:00:00Z");
+  test("folds identical entries into one row with a count bump", () => {
+    // The same fetch failure firing 30 times collapses to a single row.
+    const baseTs = Date.now();
     for (let i = 0; i < 30; i++) {
       pushError(
         makeEntry({
@@ -148,19 +172,33 @@ describe("pushError coalescing", () => {
     const list = getErrors();
     expect(list.length).toBe(1);
     expect(list[0]?.count).toBe(30);
-    // Head id stays stable so subscribers keyed by id don't churn.
+    // The original row's id stays stable so subscribers keyed by id don't churn.
     expect(list[0]?.id).toBe("burst-0");
     // Timestamp tracks the latest occurrence.
     expect(list[0]?.timestamp).toBe(new Date(baseTs + 29 * 100).toISOString());
   });
 
-  test("does NOT merge entries with different routes", () => {
+  test("does NOT fold entries with different routes", () => {
+    pushError(
+      makeEntry({ id: "a", kind: "fetch", method: "GET", route: "/api/repos" }),
+    );
+    pushError(
+      makeEntry({ id: "b", kind: "fetch", method: "GET", route: "/api/diff" }),
+    );
+    expect(getErrors().length).toBe(2);
+  });
+
+  test("folds identical entries regardless of how much time has elapsed", () => {
+    // No coalesce window any more: a recurrence a day apart still folds.
+    const now = Date.now();
     pushError(
       makeEntry({
         id: "a",
         kind: "fetch",
         method: "GET",
-        route: "/api/repos",
+        route: "/api/ssh/sessions",
+        message: "GET /api/ssh/sessions → Failed to fetch",
+        timestamp: new Date(now - 23 * 3600_000).toISOString(),
       }),
     );
     pushError(
@@ -168,40 +206,37 @@ describe("pushError coalescing", () => {
         id: "b",
         kind: "fetch",
         method: "GET",
-        route: "/api/diff",
+        route: "/api/ssh/sessions",
+        message: "GET /api/ssh/sessions → Failed to fetch",
+        timestamp: new Date(now).toISOString(),
       }),
     );
-    expect(getErrors().length).toBe(2);
+    const list = getErrors();
+    expect(list.length).toBe(1);
+    expect(list[0]?.count).toBe(2);
   });
 
-  test("does NOT merge across the coalesce window", () => {
-    const ts0 = Date.parse("2026-05-13T12:00:00Z");
-    pushError(
-      makeEntry({
-        id: "a",
-        kind: "fetch",
-        method: "GET",
-        route: "/api/repos",
-        timestamp: new Date(ts0).toISOString(),
-      }),
-    );
-    pushError(
-      makeEntry({
-        id: "b",
-        kind: "fetch",
-        method: "GET",
-        route: "/api/repos",
-        // Past the 60s window — should NOT coalesce.
-        timestamp: new Date(ts0 + 90_000).toISOString(),
-      }),
-    );
-    expect(getErrors().length).toBe(2);
+  test("folds uncaught errors with the same message, keeps different ones apart", () => {
+    pushError(makeEntry({ id: "u1", kind: "uncaught", message: "boom" }));
+    pushError(makeEntry({ id: "u2", kind: "uncaught", message: "boom" }));
+    pushError(makeEntry({ id: "u3", kind: "uncaught", message: "splat" }));
+    const list = getErrors();
+    expect(list.length).toBe(2);
+    expect(list.find((e) => e.message === "boom")?.count).toBe(2);
   });
 
-  test("does NOT merge uncaught errors that lack a route", () => {
-    pushError(makeEntry({ id: "u1", kind: "uncaught" }));
-    pushError(makeEntry({ id: "u2", kind: "uncaught" }));
-    expect(getErrors().length).toBe(2);
+  test("prunes entries older than 24h on the next push", () => {
+    const now = Date.now();
+    pushError(
+      makeEntry({
+        id: "old",
+        message: "stale",
+        timestamp: new Date(now - 25 * 3600_000).toISOString(),
+      }),
+    );
+    pushError(makeEntry({ id: "fresh", message: "fresh" }));
+    const list = getErrors();
+    expect(list.map((e) => e.message)).toEqual(["fresh"]);
   });
 });
 

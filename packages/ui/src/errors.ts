@@ -31,21 +31,20 @@ export interface FrontendErrorEntry {
   status?: number;
   extra?: Record<string, unknown>;
   /** How many identical entries have been folded into this row. Set by
-   *  the coalescing logic in `pushError` — a daemon restart that fires
-   *  the same `GET /api/repos → Failed to fetch` error 30 times in a
-   *  row collapses to one row with `count: 30` instead of flooding the
-   *  popover. Absent / 1 means a single occurrence. */
+   *  the deduping logic in `pushError` — the same `GET /api/repos →
+   *  Failed to fetch` error firing 30 times collapses to one row with
+   *  `count: 30` instead of flooding the popover. Absent / 1 means a
+   *  single occurrence. */
   count?: number;
 }
 
-const MAX_ENTRIES = 200;
-/** Window for the coalescing logic in `pushError`. Identical entries
- *  (same kind/route/method/status) arriving inside this window bump
- *  the existing row's `count` + `timestamp` instead of pushing a new
- *  row. 60s is generous enough to fold a full daemon-restart's
- *  worth of fallout (typically a ~10s flurry) without merging
- *  unrelated bursts that happen to share a route. */
-const COALESCE_WINDOW_MS = 60_000;
+/** Hard backstop on distinct rows so a runaway loop emitting unique
+ *  messages can't blow out the heap. The real bound is `MAX_AGE_MS`
+ *  (below) — identical events dedup, so in practice we hold far fewer. */
+const MAX_ENTRIES = 1000;
+/** Drop entries older than this (24h). Keeps the popover scoped to
+ *  "what went wrong recently" instead of growing without limit. */
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const subscribers = new Set<(entries: FrontendErrorEntry[]) => void>();
 const seenIds = new Set<string>();
@@ -78,58 +77,110 @@ export function getErrors(): FrontendErrorEntry[] {
 }
 
 /**
- * Push an entry. Dedups by id. Most-recent-first. Capped to MAX_ENTRIES
- * so a runaway loop can't blow out the popover or the heap.
+ * Push an entry. Dedups by id, then by content. Most-recent-first.
+ * Capped to MAX_ENTRIES so a runaway loop can't blow out the heap.
  *
- * Coalescing: if the incoming entry's "shape" (kind + route + method +
- * status) matches the most-recent entry AND we're still inside the
- * coalesce window, we bump the head row's count + timestamp instead of
- * pushing a new one. That folds daemon-restart bursts ("100× Failed
- * to fetch /api/repos in 8 seconds") into a single row, which is the
- * second half of the prod-error snapshot fix in plans/PLAN.md.
+ * Deduping: if the incoming entry's content (kind/source/route/method/
+ * status/message — see `dedupKey`) matches an existing row *anywhere*
+ * in the list, we fold into that row — bump its count, adopt the
+ * latest occurrence's details, and float it to the top — instead of
+ * pushing a new one. Unlike the old coalescer this has no time window:
+ * a `GET /api/ssh/sessions → Failed to fetch` that recurs once a day
+ * still collapses to one row whose count ticks up, rather than spamming
+ * an identical row each time.
  */
 export function pushError(entry: FrontendErrorEntry): void {
   if (seenIds.has(entry.id)) return;
-  if (tryCoalesceWithHead(entry)) return;
   seenIds.add(entry.id);
-  entries = [entry, ...entries].slice(0, MAX_ENTRIES);
+  pruneOld(Date.now());
+  const key = dedupKey(entry);
+  const idx = entries.findIndex((e) => dedupKey(e) === key);
+  if (idx === -1) {
+    entries = [entry, ...entries].slice(0, MAX_ENTRIES);
+  } else {
+    // Fold: keep the existing row's id (stable DOM / subscriber key) but
+    // adopt the incoming occurrence's details — timestamp, stack, extra —
+    // so "Copy" yields the most recent instance. Float it to the top so
+    // the freshest activity leads.
+    const existing = entries[idx];
+    const merged: FrontendErrorEntry = {
+      ...entry,
+      id: existing.id,
+      count: (existing.count ?? 1) + 1,
+    };
+    entries = [merged, ...entries.slice(0, idx), ...entries.slice(idx + 1)];
+  }
   notify();
 }
 
-/** Shape key for coalescing — two entries collapse iff they share this. */
-function coalesceKey(e: FrontendErrorEntry): string {
-  return [e.kind, e.method ?? "", e.route ?? "", e.status ?? ""].join("|");
+/** Content key for deduping — two entries collapse into one row iff they
+ *  share this. Includes `message` so genuinely different errors (e.g.
+ *  two distinct uncaught exceptions) keep their own rows even when their
+ *  kind/source match. */
+function dedupKey(e: FrontendErrorEntry): string {
+  return [
+    e.kind,
+    e.source,
+    e.method ?? "",
+    e.route ?? "",
+    e.status ?? "",
+    e.message,
+  ].join("|");
 }
 
-/** Try to merge `entry` into the most-recent entry. Returns `true` if
- *  it did (caller should NOT push).
- *
- *  Only fires when both entries have a `route` — generic uncaught/
- *  rejection errors with no `route` each get their own row so unrelated
- *  events aren't folded together just because their shape happens to
- *  match. */
-function tryCoalesceWithHead(entry: FrontendErrorEntry): boolean {
-  const head = entries[0];
-  if (!head) return false;
-  if (!entry.route || !head.route) return false;
-  if (coalesceKey(head) !== coalesceKey(entry)) return false;
-  const dtMs = Date.parse(entry.timestamp) - Date.parse(head.timestamp);
-  if (!Number.isFinite(dtMs) || dtMs > COALESCE_WINDOW_MS) return false;
-  // Merge: update timestamp + bump count. Keep the head's id so existing
-  // subscribers / DOM nodes (keyed by id) don't re-mount.
-  const merged: FrontendErrorEntry = {
-    ...head,
-    timestamp: entry.timestamp,
-    count: (head.count ?? 1) + 1,
-  };
-  entries = [merged, ...entries.slice(1)];
-  notify();
-  return true;
+/** Drop entries older than MAX_AGE_MS, pruning their ids from `seenIds`
+ *  too so it can't grow without bound. Mutates `entries`. */
+function pruneOld(now: number): void {
+  const cutoff = now - MAX_AGE_MS;
+  let changed = false;
+  const kept: FrontendErrorEntry[] = [];
+  for (const e of entries) {
+    const t = Date.parse(e.timestamp);
+    if (Number.isFinite(t) && t < cutoff) {
+      seenIds.delete(e.id);
+      changed = true;
+    } else {
+      kept.push(e);
+    }
+  }
+  if (changed) entries = kept;
 }
 
-/** Replace the list (used on initial hydrate from GET /api/errors). */
+/** Collapse a raw list into deduped rows (newest-first). Used on hydrate
+ *  so a page reload shows the same folded view as the live session — the
+ *  daemon stores each occurrence as its own line, so without this the
+ *  popover would fill with duplicates again after every refresh. */
+function dedupeList(list: FrontendErrorEntry[]): FrontendErrorEntry[] {
+  const byKey = new Map<string, FrontendErrorEntry>();
+  for (const e of list) {
+    const key = dedupKey(e);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...e, count: e.count ?? 1 });
+      continue;
+    }
+    const newer = Date.parse(e.timestamp) >= Date.parse(existing.timestamp);
+    byKey.set(key, {
+      ...(newer ? e : existing),
+      id: existing.id,
+      count: (existing.count ?? 1) + (e.count ?? 1),
+    });
+  }
+  return [...byKey.values()].sort(
+    (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+  );
+}
+
+/** Replace the list (used on initial hydrate from GET /api/errors).
+ *  Prunes entries older than 24h and folds duplicates, so the hydrated
+ *  view matches what the live push path would have produced. */
 export function setErrors(list: FrontendErrorEntry[]): void {
-  entries = list.slice(0, MAX_ENTRIES);
+  const cutoff = Date.now() - MAX_AGE_MS;
+  const recent = list.filter((e) => {
+    const t = Date.parse(e.timestamp);
+    return !Number.isFinite(t) || t >= cutoff;
+  });
+  entries = dedupeList(recent).slice(0, MAX_ENTRIES);
   seenIds.clear();
   for (const e of entries) seenIds.add(e.id);
   notify();

@@ -53,6 +53,23 @@ describe("ErrorLog", () => {
     expect(five[4]?.message).toBe("m5");
   });
 
+  test("list omits entries older than 24h", async () => {
+    const log = await ErrorLog.open(await tempDir());
+    await log.append({ kind: "server", source: "daemon", message: "fresh" });
+    // Inject a stale line directly (append() always stamps `now`).
+    const { appendFile } = await import("node:fs/promises");
+    const stale = {
+      id: "stale",
+      timestamp: new Date(Date.now() - 25 * 3600_000).toISOString(),
+      kind: "server",
+      source: "daemon",
+      message: "ancient",
+    };
+    await appendFile(log.path, JSON.stringify(stale) + "\n");
+    const all = await log.list();
+    expect(all.map((e) => e.message)).toEqual(["fresh"]);
+  });
+
   test("clear empties the log", async () => {
     const log = await ErrorLog.open(await tempDir());
     await log.append({ kind: "server", source: "daemon", message: "a" });

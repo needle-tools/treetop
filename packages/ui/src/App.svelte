@@ -479,6 +479,39 @@
   async function clearAllErrors() {
     await clearErrors();
   }
+  /** id of the event whose Copy button is flashing "Copied". */
+  let copiedErrorId: string | null = null;
+  let copiedErrorTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Render one event as plain text for the clipboard. Deduped rows hold
+   *  the latest occurrence's details, so this copies the most recent
+   *  instance (plus the ×N count for context). */
+  function eventToText(e: FrontendErrorEntry): string {
+    const lines: string[] = [
+      `${e.timestamp} ${errorKindLabel(e).toUpperCase()} ${e.source}`,
+    ];
+    const req = [e.method, e.route].filter(Boolean).join(" ");
+    if (req) lines.push(e.status !== undefined ? `${req} → ${e.status}` : req);
+    lines.push(e.message);
+    if (e.count && e.count > 1) lines.push(`(×${e.count} occurrences)`);
+    if (e.stack) lines.push("", e.stack);
+    if (e.extra && Object.keys(e.extra).length > 0) {
+      lines.push("", JSON.stringify(e.extra, null, 2));
+    }
+    return lines.join("\n");
+  }
+  async function copyError(e: FrontendErrorEntry) {
+    try {
+      await navigator.clipboard.writeText(eventToText(e));
+    } catch {
+      return; // clipboard denied — leave the label as "Copy"
+    }
+    copiedErrorId = e.id;
+    if (copiedErrorTimer) clearTimeout(copiedErrorTimer);
+    copiedErrorTimer = setTimeout(() => {
+      copiedErrorId = null;
+      copiedErrorTimer = null;
+    }, 1200);
+  }
 
   let systemMemBytes: number | null = null;
   let processListRef: ProcessList;
@@ -6373,10 +6406,18 @@
             <ul class="events err-list">
               {#each errorEntries.slice(0, 50) as e (e.id)}
                 <li>
-                  <button
+                  <div
                     class="err-row"
                     class:expanded={errorExpanded[e.id]}
+                    role="button"
+                    tabindex="0"
                     on:click={() => toggleErrorExpanded(e.id)}
+                    on:keydown={(ev) => {
+                      if (ev.key === "Enter" || ev.key === " ") {
+                        ev.preventDefault();
+                        toggleErrorExpanded(e.id);
+                      }
+                    }}
                   >
                     <span class="err-kind err-kind-{e.kind}"
                       >{errorKindLabel(e)}</span
@@ -6386,13 +6427,35 @@
                       {#if e.count && e.count > 1}
                         <span
                           class="err-count"
-                          title={`${e.count} occurrences in the coalesce window`}
-                          >× {e.count}</span
+                          title={`${e.count} occurrences`}>× {e.count}</span
                         >
                       {/if}
                     </span>
+                    <button
+                      class="err-copy"
+                      title="Copy this event to the clipboard"
+                      on:click|stopPropagation={() => copyError(e)}
+                    >
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path
+                          d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                        />
+                      </svg>
+                      {copiedErrorId === e.id ? "Copied" : "Copy"}
+                    </button>
                     <span class="muted ev-time">{relTime(e.timestamp)}</span>
-                  </button>
+                  </div>
                   {#if errorExpanded[e.id]}
                     <div class="err-detail">
                       <div class="err-meta">

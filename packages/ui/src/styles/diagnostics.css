@@ -101,7 +101,7 @@
 .err-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 5.5rem 1fr auto;
+  grid-template-columns: 5.5rem 1fr auto auto;
   gap: 0.5rem;
   align-items: center;
   padding: 0.4rem 0.2rem;
@@ -114,6 +114,33 @@
 }
 .err-row:hover {
   background: var(--surface-2);
+}
+
+/* Copy button — icon + "Copy" text, no chrome, revealed on row hover.
+   Sits in its own grid column left of the timestamp; the column is
+   always present (auto-sized) so revealing it doesn't shift the time. */
+.err-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.err-copy svg {
+  display: block;
+}
+.err-row:hover .err-copy,
+.err-copy:focus-visible {
+  opacity: 1;
+}
+.err-copy:hover {
+  color: var(--text-1);
 }
 .err-kind {
   text-transform: uppercase;
@@ -144,9 +171,9 @@
   text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
-/* Coalesced-burst badge. Set by errors.ts's pushError when the same
-   route/method/status fires inside the COALESCE_WINDOW_MS — one row
-   with × N instead of N rows. */
+/* Dedup count badge. Set by errors.ts's pushError when an identical
+   event (same kind/source/route/method/status/message) recurs — one
+   row with × N instead of N rows, no matter how far apart they fire. */
 .err-count {
   margin-left: 0.45rem;
   padding: 0.05rem 0.4rem;
