@@ -19,6 +19,34 @@
   import { requestSessionFocus } from "./session-focus-store";
   import { ICONS } from "./icons";
   import { openUrl } from "./open-url";
+  import { getAudioContext, play } from "./sound";
+
+  /** Per-agent 8h dedup for the "projected usage > 100%" chime. The
+   *  reactive trigger below fires every time the poll refreshes
+   *  `report`, so without this every refresh would replay the sound.
+   *  localStorage is intentional: this is per-device, per-tab quiet —
+   *  one tab playing the warning shouldn't silence another. */
+  const OVER_PACE_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+
+  function maybeAlertOverPace(
+    agent: string,
+    proj: { isOverPace: boolean; isEarly: boolean } | null,
+  ): void {
+    if (!proj || !proj.isOverPace || proj.isEarly) return;
+    // Wait for a user gesture before consuming the dedup slot — if we
+    // try to play without an AudioContext the sound silently no-ops
+    // and we'd waste the 8h window on nothing.
+    if (!getAudioContext()) return;
+    const key = `supergit.sound.over-pace-last.${agent}`;
+    try {
+      const last = Number(localStorage.getItem(key)) || 0;
+      if (Date.now() - last < OVER_PACE_COOLDOWN_MS) return;
+      localStorage.setItem(key, String(Date.now()));
+    } catch {
+      // localStorage unavailable → skip dedup, still play once.
+    }
+    play("usage-over-pace");
+  }
 
   /** Which agent's popover is currently visible — either from hover
    *  (temporary) or from a click (pinned). Only one at a time. */
@@ -245,6 +273,29 @@
   $: claudeLiveErr = report?.claudeLiveUsageError ?? null;
   $: codexLive = report?.codexLiveUsage ?? null;
   $: codexLiveErr = report?.codexLiveUsageError ?? null;
+
+  // Watch projected weekly usage and chime once per 8h per agent when
+  // it crosses 100%. The dedup map in `maybeAlertOverPace` is what
+  // gates the replay; this just re-evaluates the projection whenever
+  // the poll updates the live data.
+  $: maybeAlertOverPace(
+    "claude",
+    claudeLive?.sevenDay
+      ? projectWeekly(
+          claudeLive.sevenDay.utilization,
+          claudeLive.sevenDay.resetsAt,
+        )
+      : null,
+  );
+  $: {
+    const w = codexLive
+      ? (codexLive.secondaryWindow ?? codexLive.primaryWindow)
+      : null;
+    maybeAlertOverPace(
+      "codex",
+      w ? projectWeekly(w.utilization, w.resetsAt, w.windowSeconds) : null,
+    );
+  }
 
   /** Has-live-data check per agent. The trigger button's bottom bar
    *  and the tooltip body both branch on this. */

@@ -35,7 +35,8 @@ export type SoundTag =
   | "ai-crickets"
   | "ai-boxing-bell"
   | "ai-braam"
-  | "ai-crowd-gasp";
+  | "ai-crowd-gasp"
+  | "usage-over-pace";
 
 export type SoundTrigger = "click" | "hover" | "appear";
 
@@ -265,6 +266,17 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     overlay: true,
     selfCooldown: 30_000,
     fadeOutMs: 1000,
+  },
+  // Warning chime when an agent's projected weekly usage exceeds 100%.
+  // Per-agent 8h dedup lives in AgentUsageChip.svelte (localStorage);
+  // selfCooldown here is just a guard against two agents tripping in
+  // the same render tick.
+  "usage-over-pace": {
+    files: ["/sounds/usage-over-pace.mp3"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 1000,
+    fadeOutMs: 500,
   },
 };
 
