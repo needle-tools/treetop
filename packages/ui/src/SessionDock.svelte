@@ -627,6 +627,29 @@
     return `${Math.floor(s / 86400)} days ago`;
   }
 
+  /** Fuzzy bucketed time for the compact dock label.
+   *    < 2h    — solid disc (fresh)
+   *    2-20h   — half disc (cooling)
+   *    20h-7d  — calendar sheet (days)
+   *    7d+     — snowflake (frozen, stale)
+   *  All monochrome — currentColor only. */
+  function fuzzyTime(iso?: string):
+    | { icon: "disc-full" }
+    | { icon: "disc-half" }
+    | { icon: "calendar" }
+    | { icon: "snowflake" }
+    | null {
+    if (!iso) return null;
+    const ms = Date.now() - Date.parse(iso);
+    if (Number.isNaN(ms) || ms < 0) return null;
+    const hours = ms / (60 * 60 * 1000);
+    const days = ms / (24 * 60 * 60 * 1000);
+    if (hours < 2) return { icon: "disc-full" };
+    if (hours < 20) return { icon: "disc-half" };
+    if (days < 7) return { icon: "calendar" };
+    return { icon: "snowflake" };
+  }
+
   /** Minimum recent-message count before we show the activity badge.
    *  Below this the session isn't "hot" enough to badge. */
   const RECENT_MIN = 3;
@@ -765,9 +788,51 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if freshestTimestamp(e)}
-              <span class="dock-label-time"
-                >{relTime(freshestTimestamp(e))}</span
-              >
+              {@const ft = fuzzyTime(freshestTimestamp(e))}
+              {#if ft}
+                <span
+                  class="dock-label-time dock-time-{ft.icon}"
+                  title={relTime(freshestTimestamp(e))}
+                >
+                  {#if ft.icon === "disc-full"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6.5" fill="currentColor" />
+                    </svg>
+                  {:else if ft.icon === "disc-half"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M8 1.5 A6.5 6.5 0 0 0 8 14.5 Z" fill="currentColor" />
+                    </svg>
+                  {:else if ft.icon === "calendar"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+                      <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
+                      <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                      <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                  {:else}
+                    <!-- Snowflake: 6-arm star with side branches. -->
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                        <line x1="8" y1="1.5" x2="8" y2="14.5" />
+                        <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
+                        <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
+                        <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
+                        <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
+                        <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
+                        <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
+                        <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
+                        <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
+                        <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
+                        <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
+                        <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
+                        <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
+                        <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
+                        <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
+                      </g>
+                    </svg>
+                  {/if}
+                </span>
+              {/if}
             {/if}
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
@@ -880,9 +945,51 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if freshestTimestamp(e)}
-              <span class="dock-label-time"
-                >{relTime(freshestTimestamp(e))}</span
-              >
+              {@const ft = fuzzyTime(freshestTimestamp(e))}
+              {#if ft}
+                <span
+                  class="dock-label-time dock-time-{ft.icon}"
+                  title={relTime(freshestTimestamp(e))}
+                >
+                  {#if ft.icon === "disc-full"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6.5" fill="currentColor" />
+                    </svg>
+                  {:else if ft.icon === "disc-half"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M8 1.5 A6.5 6.5 0 0 0 8 14.5 Z" fill="currentColor" />
+                    </svg>
+                  {:else if ft.icon === "calendar"}
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+                      <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
+                      <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                      <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                  {:else}
+                    <!-- Snowflake: 6-arm star with side branches. -->
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                        <line x1="8" y1="1.5" x2="8" y2="14.5" />
+                        <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
+                        <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
+                        <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
+                        <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
+                        <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
+                        <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
+                        <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
+                        <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
+                        <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
+                        <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
+                        <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
+                        <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
+                        <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
+                        <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
+                      </g>
+                    </svg>
+                  {/if}
+                </span>
+              {/if}
             {/if}
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
@@ -1417,12 +1524,23 @@
     font-weight: 400;
   }
   .dock-label-time {
-    vertical-align: baseline;
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    gap: 0.2em;
     color: var(--text-muted, #9a9aa0);
-    /* Pushes the time chip to the right edge of the label so every
-       row's time aligns in the same vertical column. */
     margin-left: auto;
     padding-left: 1em;
+  }
+  .dock-label-time svg {
+    width: 1em;
+    height: 1em;
+    flex: 0 0 auto;
+    display: block;
+  }
+  /* Brighten the freshest bucket so "active right now" reads at a glance. */
+  .dock-label-time.dock-time-disc-full {
+    color: var(--text-1, #e8e8e8);
   }
   /* Fixed-width cell that always reserves space so the time column
      doesn't shift when the badge appears/disappears on hover
