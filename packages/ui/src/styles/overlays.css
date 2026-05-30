@@ -138,6 +138,10 @@
   border-left-color: var(--error-text);
   background: color-mix(in srgb, var(--error-bg) 50%, var(--surface-2));
 }
+.toast-warning {
+  border-left-color: #d6a55a;
+  background: color-mix(in srgb, #d6a55a 14%, var(--surface-2));
+}
 .toast-success {
   border-left-color: var(--status-clean);
 }
@@ -164,6 +168,10 @@
 .toast-info .toast-icon {
   background: color-mix(in srgb, var(--brand) 35%, transparent);
   color: var(--brand);
+}
+.toast-warning .toast-icon {
+  background: color-mix(in srgb, #d6a55a 30%, transparent);
+  color: #f1c992;
 }
 .toast-invite {
   border-left-color: var(--brand);

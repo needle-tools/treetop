@@ -20,32 +20,83 @@
   import { ICONS } from "./icons";
   import { openUrl } from "./open-url";
   import { getAudioContext, play } from "./sound";
+  import { pushToast } from "./toast-bus";
 
-  /** Per-agent 8h dedup for the "projected usage > 100%" chime. The
-   *  reactive trigger below fires every time the poll refreshes
-   *  `report`, so without this every refresh would replay the sound.
-   *  localStorage is intentional: this is per-device, per-tab quiet —
-   *  one tab playing the warning shouldn't silence another. */
-  const OVER_PACE_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+  /** Per-agent + per-condition 8h dedup for usage warnings. The
+   *  reactive triggers below fire every time the poll refreshes
+   *  `report`; without this every refresh would replay the sound /
+   *  re-toast. localStorage is intentional: this is per-device, per-
+   *  tab quiet — one tab firing the warning shouldn't silence another. */
+  const WARN_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+
+  type WarnCondition = "pace" | "weekly90" | "session95";
+
+  /** Returns true if the per-agent / per-condition slot is open and
+   *  was just claimed; false if still in cooldown. Catches localStorage
+   *  failures by returning true (sound/toast still fire once). */
+  function claimWarnSlot(agent: string, cond: WarnCondition): boolean {
+    const key = `supergit.usage-warn-last.${agent}.${cond}`;
+    try {
+      const last = Number(localStorage.getItem(key)) || 0;
+      if (Date.now() - last < WARN_COOLDOWN_MS) return false;
+      localStorage.setItem(key, String(Date.now()));
+    } catch {
+      // localStorage unavailable → skip dedup, still fire once.
+    }
+    return true;
+  }
 
   function maybeAlertOverPace(
     agent: string,
-    proj: { isOverPace: boolean; isEarly: boolean } | null,
+    proj: { projectedPct: number; isOverPace: boolean; isEarly: boolean } | null,
   ): void {
     if (!proj || !proj.isOverPace || proj.isEarly) return;
     // Wait for a user gesture before consuming the dedup slot — if we
     // try to play without an AudioContext the sound silently no-ops
     // and we'd waste the 8h window on nothing.
     if (!getAudioContext()) return;
-    const key = `supergit.sound.over-pace-last.${agent}`;
-    try {
-      const last = Number(localStorage.getItem(key)) || 0;
-      if (Date.now() - last < OVER_PACE_COOLDOWN_MS) return;
-      localStorage.setItem(key, String(Date.now()));
-    } catch {
-      // localStorage unavailable → skip dedup, still play once.
-    }
+    if (!claimWarnSlot(agent, "pace")) return;
     play("usage-over-pace");
+    pushToast({
+      kind: "warning",
+      agent,
+      title: `${agentLabel(agent)}: pace above 100%`,
+      message: `On pace to exceed weekly limit (~${Math.round(
+        proj.projectedPct * 100,
+      )}%).`,
+      // Piano arpeggio already plays for this specific event —
+      // suppress the toast's generic ukulele chime to avoid stacking.
+      silent: true,
+    });
+  }
+
+  function maybeAlertHighWeekly(
+    agent: string,
+    utilization: number | undefined,
+  ): void {
+    if (typeof utilization !== "number" || utilization < 0.9) return;
+    if (!claimWarnSlot(agent, "weekly90")) return;
+    pushToast({
+      kind: "warning",
+      agent,
+      title: `${agentLabel(agent)}: ${Math.round(utilization * 100)}% weekly`,
+      message: `You've used ${Math.round(utilization * 100)}% of this week's limit.`,
+    });
+  }
+
+  function maybeAlertHighSession(
+    agent: string,
+    utilization: number | undefined,
+    label: string,
+  ): void {
+    if (typeof utilization !== "number" || utilization < 0.95) return;
+    if (!claimWarnSlot(agent, "session95")) return;
+    pushToast({
+      kind: "warning",
+      agent,
+      title: `${agentLabel(agent)}: ${Math.round(utilization * 100)}% ${label}`,
+      message: `You've used ${Math.round(utilization * 100)}% of the ${label} limit.`,
+    });
   }
 
   /** Which agent's popover is currently visible — either from hover
@@ -274,27 +325,52 @@
   $: codexLive = report?.codexLiveUsage ?? null;
   $: codexLiveErr = report?.codexLiveUsageError ?? null;
 
-  // Watch projected weekly usage and chime once per 8h per agent when
-  // it crosses 100%. The dedup map in `maybeAlertOverPace` is what
-  // gates the replay; this just re-evaluates the projection whenever
-  // the poll updates the live data.
-  $: maybeAlertOverPace(
-    "claude",
-    claudeLive?.sevenDay
-      ? projectWeekly(
-          claudeLive.sevenDay.utilization,
-          claudeLive.sevenDay.resetsAt,
-        )
-      : null,
-  );
+  // Watch usage limits and chime / toast once per 8h per agent per
+  // condition. The dedup in `claimWarnSlot` is what gates the replay;
+  // these statements just re-evaluate whenever the poll updates.
   $: {
-    const w = codexLive
+    const sevenDay = claudeLive?.sevenDay;
+    if (sevenDay) {
+      maybeAlertOverPace(
+        "claude",
+        projectWeekly(sevenDay.utilization, sevenDay.resetsAt),
+      );
+      maybeAlertHighWeekly("claude", sevenDay.utilization);
+    }
+    const fiveHour = claudeLive?.fiveHour;
+    if (fiveHour) {
+      maybeAlertHighSession("claude", fiveHour.utilization, "session (5h)");
+    }
+  }
+  $: {
+    // Codex's secondary window is the weekly when present; otherwise
+    // the primary is the only window (Free tier). The session warning
+    // only fires when there's a distinct shorter window.
+    const weekWin = codexLive
       ? (codexLive.secondaryWindow ?? codexLive.primaryWindow)
       : null;
-    maybeAlertOverPace(
-      "codex",
-      w ? projectWeekly(w.utilization, w.resetsAt, w.windowSeconds) : null,
-    );
+    if (weekWin) {
+      maybeAlertOverPace(
+        "codex",
+        projectWeekly(weekWin.utilization, weekWin.resetsAt, weekWin.windowSeconds),
+      );
+      maybeAlertHighWeekly("codex", weekWin.utilization);
+    }
+    if (
+      codexLive?.primaryWindow &&
+      codexLive?.secondaryWindow &&
+      codexLive.primaryWindow !== codexLive.secondaryWindow
+    ) {
+      const label = codexWindowLabel(
+        codexLive.primaryWindow.windowSeconds,
+        "session",
+      ).toLowerCase();
+      maybeAlertHighSession(
+        "codex",
+        codexLive.primaryWindow.utilization,
+        label,
+      );
+    }
   }
 
   /** Has-live-data check per agent. The trigger button's bottom bar

@@ -36,7 +36,8 @@ export type SoundTag =
   | "ai-boxing-bell"
   | "ai-braam"
   | "ai-crowd-gasp"
-  | "usage-over-pace";
+  | "usage-over-pace"
+  | "toast-warning";
 
 export type SoundTrigger = "click" | "hover" | "appear";
 
@@ -277,6 +278,15 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     overlay: true,
     selfCooldown: 1000,
     fadeOutMs: 500,
+  },
+  // Discordant ukulele strum — played alongside every warning toast.
+  // selfCooldown keeps a burst of warnings from drowning each other
+  // out (the toasts themselves dedup via their own 8h slots).
+  "toast-warning": {
+    files: ["/sounds/toast-warning.ogg"],
+    volume: 0.35,
+    overlay: true,
+    selfCooldown: 3000,
   },
 };
 

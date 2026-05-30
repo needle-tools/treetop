@@ -107,6 +107,7 @@
     type FrontendErrorEntry,
   } from "./errors";
   import { play } from "./sound";
+  import { subscribeToasts } from "./toast-bus";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
@@ -283,9 +284,13 @@
    *  was wired earlier (which now uses this same machinery). */
   interface Toast {
     id: number;
-    kind: "error" | "info" | "success" | "invite";
+    kind: "error" | "info" | "success" | "invite" | "warning";
     message: string;
     title?: string;
+    /** When set, the toast renders an agent brand mark (AgentIcon)
+     *  instead of the default emoji glyph. Used by usage-warning
+     *  toasts so the user instantly sees which provider is throttling. */
+    agent?: string;
     /** Render the message line in italics — used for message previews
      *  (the quoted body of an incoming peer message). */
     messageItalic?: boolean;
@@ -311,10 +316,12 @@
     kind: Toast["kind"];
     message: string;
     title?: string;
+    agent?: string;
     messageItalic?: boolean;
     ttlMs?: number;
     onClick?: () => void;
     persist?: boolean;
+    silent?: boolean;
   }): number {
     if (!opts.message) return -1;
     const id = ++toastSeq;
@@ -325,15 +332,21 @@
         kind: opts.kind,
         message: opts.message,
         title: opts.title,
+        agent: opts.agent,
         messageItalic: opts.messageItalic,
         onClick: opts.onClick,
         persist: opts.persist,
       },
     ];
-    if (opts.kind === "error") play("error");
-    else if (opts.kind === "invite") play("peer-session");
+    if (!opts.silent) {
+      if (opts.kind === "error") play("error");
+      else if (opts.kind === "invite") play("peer-session");
+      else if (opts.kind === "warning") play("toast-warning");
+    }
     if (!opts.persist) {
-      const ttl = opts.ttlMs ?? (opts.kind === "error" ? 12_000 : 7_000);
+      const ttl =
+        opts.ttlMs ??
+        (opts.kind === "error" ? 12_000 : opts.kind === "warning" ? 10_000 : 7_000);
       toastTimers.set(
         id,
         setTimeout(() => dismissToast(id), ttl),
@@ -5802,6 +5815,9 @@
     const unsubErrors = subscribeErrors((list) => {
       errorEntries = list;
     });
+    // Surface toast requests pushed by child components (e.g.
+    // AgentUsageChip's usage warnings) through the local stack.
+    const unsubToasts = subscribeToasts((req) => addToast(req));
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
     // Esc exits zen mode. We don't preventDefault — the browser's own
@@ -5929,6 +5945,7 @@
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unsubStream();
       unsubErrors();
+      unsubToasts();
       unsubFocus();
       unsubResume();
       uninstallIdle();
@@ -9358,7 +9375,9 @@
         role={t.kind === "error" ? "alert" : "status"}
       >
         <span class="toast-icon" aria-hidden="true">
-          {#if t.kind === "error"}!{:else if t.kind === "success"}✓{:else if t.kind === "invite"}⇆{:else}ℹ{/if}
+          {#if t.agent}
+            <AgentIcon agent={t.agent} size={16} />
+          {:else if t.kind === "error"}!{:else if t.kind === "warning"}⚠{:else if t.kind === "success"}✓{:else if t.kind === "invite"}⇆{:else}ℹ{/if}
         </span>
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
         <div
