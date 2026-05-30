@@ -531,6 +531,28 @@ function isLoopback(addr: string): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
+// The ONLY "METHOD /path" routes a remote (non-loopback) peer may reach,
+// and only when peer mode is on. These are the discovery + session-share
+// *receiver* endpoints another daemon legitimately calls:
+//   - GET  /api/identity         peer liveness probe (peer-discovery.ts)
+//   - GET  /api/health           connectivity/liveness check
+//   - POST /api/sessions/offer   incoming session-share offer
+//   - POST /api/messages/receive incoming peer message
+// Everything not listed here — terminal spawn (RCE), command/run, open,
+// open-default, file read/write, diff, npm-scripts, image, identity
+// PATCH (rename), the SPA, etc. — stays loopback-only ALWAYS, so enabling
+// session sharing can never expose the local control plane to other
+// machines on the network. The match is method-aware on purpose: GET
+// /api/identity is safe to expose, PATCH /api/identity is not.
+// SECURITY: only add a route here if a remote peer must legitimately call
+// it AND it cannot read arbitrary local files or run local processes.
+const LAN_ALLOWED_ROUTES = new Set<string>([
+  "GET /api/health",
+  "GET /api/identity",
+  "POST /api/sessions/offer",
+  "POST /api/messages/receive",
+]);
+
 void (async () => {
   try {
     const username = process.env.USER || process.env.USERNAME || "user";
@@ -593,6 +615,51 @@ function corsHeaders(req: Request): Record<string, string> {
   // No Origin header (same-origin / programmatic): no CORS headers needed.
   // Disallowed origins get nothing back, so browsers refuse the response.
   return {};
+}
+
+// Hosts accepted in the `Host` request header — anti DNS-rebinding. A
+// browser always sends Host = the page's origin host, so a rebinding page
+// (its own domain re-pointed at 127.0.0.1) arrives here with that DOMAIN,
+// never "localhost" or an IP. We accept loopback names, *.localhost
+// (portless), any IP literal (so LAN-IP peer access keeps working —
+// rebinding can't forge an IP Host), our own hostname, and any host from
+// ALLOWED_ORIGINS / SUPERGIT_EXTRA_ORIGINS. Everything else is rejected,
+// which blocks rebinding even on loopback (where the source IP looks safe
+// but the Host header still carries the attacker's domain).
+const ALLOWED_HOSTS = new Set<string>(
+  [...ALLOWED_ORIGINS]
+    .map((o) => {
+      try {
+        return new URL(o).hostname.toLowerCase();
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean),
+);
+
+function isAllowedHost(hostHeader: string | null): boolean {
+  // No Host header => non-browser client (curl, agent, peer daemon). Not a
+  // rebinding vector — that requires a browser, which always sends Host.
+  if (!hostHeader) return true;
+  // Strip the port. IPv6 literals are bracketed: "[::1]:7777".
+  let host: string;
+  if (hostHeader.startsWith("[")) {
+    host = hostHeader.slice(1, hostHeader.indexOf("]"));
+  } else {
+    const colon = hostHeader.lastIndexOf(":");
+    host = colon === -1 ? hostHeader : hostHeader.slice(0, colon);
+  }
+  host = host.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "127.0.0.1" || host === "::1" || host === "::ffff:127.0.0.1") {
+    return true;
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true; // IPv4 literal
+  if (host.includes(":")) return true; // IPv6 literal
+  const self = (osHostname() || "").toLowerCase();
+  if (self && (host === self || host === `${self}.local`)) return true;
+  return ALLOWED_HOSTS.has(host);
 }
 
 // SSE subscriber registry. Mutating routes call broadcast() so connected
@@ -1459,12 +1526,34 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(null, { headers: CORS });
       }
 
-      // When peer mode is off, reject non-loopback requests. This gates
-      // all LAN access behind the explicit user toggle.
-      if (!peerModeEnabled) {
+      // Anti DNS-rebinding: reject any request whose Host header isn't one
+      // of ours, before any route runs. A rebinding page arrives with its
+      // own domain in Host even though its source IP looks like loopback.
+      if (!isAllowedHost(req.headers.get("Host"))) {
+        return json({ error: "host not allowed" }, { status: 403 });
+      }
+
+      // Network authorization gate. Loopback requests get the full API.
+      // Remote (LAN) requests are tightly restricted:
+      //   - peer mode off -> rejected outright (user hasn't opted in).
+      //   - peer mode on  -> only the session-share / peer receiver routes
+      //     in LAN_ALLOWED_ROUTES are reachable. The local control plane
+      //     (terminal spawn, command/run, open, file read/write, diff, the
+      //     SPA, ...) stays loopback-only ALWAYS, so enabling sharing can
+      //     never expose RCE or arbitrary file access to other machines.
+      {
         const addr = srv.requestIP(req)?.address;
-        if (addr && !isLoopback(addr)) {
-          return json({ error: "peer mode is off" }, { status: 403 });
+        const remote = addr ? !isLoopback(addr) : false;
+        if (remote) {
+          if (!peerModeEnabled) {
+            return json({ error: "peer mode is off" }, { status: 403 });
+          }
+          if (!LAN_ALLOWED_ROUTES.has(`${req.method} ${url.pathname}`)) {
+            return json(
+              { error: "route not available over the network" },
+              { status: 403 },
+            );
+          }
         }
       }
 
