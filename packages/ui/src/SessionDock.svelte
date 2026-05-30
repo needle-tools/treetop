@@ -819,34 +819,37 @@
                 >
                   {#if ft.kind === "text"}
                     {ft.text}
-                  {:else if ft.icon === "calendar"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-                      <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
-                      <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                      <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                    </svg>
                   {:else}
-                    <!-- Snowflake: 6-arm star with side branches. -->
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
-                        <line x1="8" y1="1.5" x2="8" y2="14.5" />
-                        <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
-                        <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
-                        <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
-                        <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
-                        <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
-                        <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
-                        <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
-                        <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
-                        <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
-                        <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
-                        <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
-                        <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
-                        <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
-                        <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
-                      </g>
-                    </svg>
+                    <span class="dock-time-hover">{relTime(freshestTimestamp(e))}</span>
+                    {#if ft.icon === "calendar"}
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+                        <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
+                        <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                      </svg>
+                    {:else}
+                      <!-- Snowflake: 6-arm star with side branches. -->
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                          <line x1="8" y1="1.5" x2="8" y2="14.5" />
+                          <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
+                          <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
+                          <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
+                          <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
+                          <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
+                          <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
+                          <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
+                          <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
+                          <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
+                          <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
+                          <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
+                          <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
+                          <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
+                          <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
+                        </g>
+                      </svg>
+                    {/if}
                   {/if}
                 </span>
               {/if}
@@ -972,34 +975,37 @@
                 >
                   {#if ft.kind === "text"}
                     {ft.text}
-                  {:else if ft.icon === "calendar"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-                      <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
-                      <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                      <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                    </svg>
                   {:else}
-                    <!-- Snowflake: 6-arm star with side branches. -->
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
-                        <line x1="8" y1="1.5" x2="8" y2="14.5" />
-                        <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
-                        <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
-                        <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
-                        <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
-                        <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
-                        <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
-                        <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
-                        <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
-                        <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
-                        <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
-                        <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
-                        <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
-                        <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
-                        <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
-                      </g>
-                    </svg>
+                    <span class="dock-time-hover">{relTime(freshestTimestamp(e))}</span>
+                    {#if ft.icon === "calendar"}
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+                        <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
+                        <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                      </svg>
+                    {:else}
+                      <!-- Snowflake: 6-arm star with side branches. -->
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                          <line x1="8" y1="1.5" x2="8" y2="14.5" />
+                          <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
+                          <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
+                          <line x1="8" y1="3.5" x2="6.5" y2="2.5" />
+                          <line x1="8" y1="3.5" x2="9.5" y2="2.5" />
+                          <line x1="8" y1="12.5" x2="6.5" y2="13.5" />
+                          <line x1="8" y1="12.5" x2="9.5" y2="13.5" />
+                          <line x1="4.1" y1="5.75" x2="3.1" y2="6.4" />
+                          <line x1="4.1" y1="5.75" x2="3.7" y2="4.4" />
+                          <line x1="11.9" y1="10.25" x2="12.9" y2="9.6" />
+                          <line x1="11.9" y1="10.25" x2="12.3" y2="11.6" />
+                          <line x1="11.9" y1="5.75" x2="12.3" y2="4.4" />
+                          <line x1="11.9" y1="5.75" x2="12.9" y2="6.4" />
+                          <line x1="4.1" y1="10.25" x2="3.7" y2="11.6" />
+                          <line x1="4.1" y1="10.25" x2="3.1" y2="9.6" />
+                        </g>
+                      </svg>
+                    {/if}
                   {/if}
                 </span>
               {/if}
@@ -1556,6 +1562,20 @@
   .dock-label-time.dock-time-text {
     font-variant-numeric: tabular-nums;
     font-size: 0.78em;
+  }
+  /* Reveals a full "X days ago" text to the left of the calendar /
+     snowflake icon when the row is hovered, so cold sessions still
+     give an exact age on demand without crowding the dock at rest. */
+  .dock-time-hover {
+    font-size: 0.78em;
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 100ms ease;
+    white-space: nowrap;
+  }
+  .dock-dot:hover .dock-time-hover,
+  .dock-dot:focus-visible .dock-time-hover {
+    opacity: 1;
   }
   /* Brighten very recent sessions (< 30min / < 2h) so they pop. */
   .dock-label-time.dock-time-fresh {
