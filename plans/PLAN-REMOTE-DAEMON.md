@@ -1,6 +1,8 @@
 # PLAN-REMOTE-DAEMON.md — add a remote daemon as a folder row in the local UI
 
-Status: **Phase 0 DONE (`SUPERGIT_BIND`). Phases 1-5 planned.**
+Status: **Phase 0 + Phase 1 DONE (`SUPERGIT_BIND` + `deploy/` installer,
+systemd & Docker). Phase 1 not yet smoke-tested on a live box. Phases 2-5
+planned.**
 
 ## The actual goal (clarified 2026-05-30)
 

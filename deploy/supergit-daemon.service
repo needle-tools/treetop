@@ -1,0 +1,27 @@
+# systemd unit template for the supergit remote daemon (non-Docker path).
+#
+# install.sh fills in the @PLACEHOLDERS@ and installs this to
+# /etc/systemd/system/supergit-daemon.service. Unlike the Docker path,
+# the daemon binds DIRECTLY to loopback (SUPERGIT_BIND=127.0.0.1) — there
+# is no Docker port proxy in front of it, so loopback is both reachable
+# (via the tunnel, which terminates on the box's loopback) and invisible
+# to every other interface even if the box firewall is misconfigured.
+[Unit]
+Description=supergit remote daemon
+After=network.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@APP_DIR@
+# Loopback-only: the only way in is the SSH/WireGuard tunnel.
+Environment=SUPERGIT_BIND=127.0.0.1
+Environment=SUPERGIT_PORT=@PORT@
+Environment=SUPERGIT_UI_DIR=@APP_DIR@/packages/ui/dist
+Environment=SUPERGIT_WORKSPACE=@WORKSPACE_DIR@
+ExecStart=@BUN_BIN@ run packages/daemon/src/server.ts
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

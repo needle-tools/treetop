@@ -1,0 +1,33 @@
+# supergit remote daemon — Docker deployment.
+#
+# Brings up the daemon reachable ONLY from the host's loopback. You then
+# reach it from your laptop over an SSH tunnel:
+#
+#   ssh -N -L 7777:localhost:7777 you@<host>
+#   # open http://localhost:7777
+#
+# The `127.0.0.1:` prefix on the published port is the load-bearing
+# security control: without it Docker would expose the daemon on every
+# host interface (Docker bypasses the host firewall via its own iptables
+# rules). With it, the daemon is unreachable except via the tunnel — the
+# same end state as the systemd deployment's SUPERGIT_BIND=127.0.0.1, but
+# enforced at the host-publish layer because a loopback bind *inside* the
+# container would be unreachable through Docker's port proxy.
+services:
+  supergit:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: supergit-daemon:local
+    restart: unless-stopped
+    # host-loopback only — see header. Change the left 7777 to remap the
+    # host port; keep the 127.0.0.1: prefix.
+    ports:
+      - "127.0.0.1:7777:7777"
+    volumes:
+      - supergit-workspace:/workspace
+    environment:
+      SUPERGIT_PORT: "7777"
+
+volumes:
+  supergit-workspace:
