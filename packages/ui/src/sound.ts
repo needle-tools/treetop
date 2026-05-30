@@ -138,7 +138,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     fadeOutMs: 1000,
   },
   // Nudge played when a session has been awaiting user input for
-  // ~60s (see awaiting-chime.ts). selfCooldown keeps it from
+  // ~60s (see attention-chime.ts). selfCooldown keeps it from
   // stacking when several sessions cross the threshold at once.
   "ai-needs-input": {
     files: ["/sounds/ai-needs-input.ogg"],

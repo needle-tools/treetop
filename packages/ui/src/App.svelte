@@ -79,10 +79,10 @@
   } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
   import {
-    createAwaitingChimeState,
-    syncAwaiting,
+    createAttentionChimeState,
+    syncAttention,
     dueForChime,
-  } from "./awaiting-chime";
+  } from "./attention-chime";
   import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
   import {
     OpenSessionsStore,
@@ -5396,19 +5396,23 @@
       })),
   );
 
-  /** Audible "an agent has been waiting for you" nudge. Reuses the
-   *  same `awaiting` signal the side-dock pulses on; the chime fires
-   *  once a session has stayed continuously awaiting for the grace
-   *  period (see awaiting-chime.ts). The reactive block keeps the
-   *  per-source episode clock in sync with the live dock entries;
-   *  the interval (started in onMount) does the threshold check so
-   *  the chime still fires when nothing else re-renders. */
-  const awaitingChime = createAwaitingChimeState();
-  $: syncAwaiting(
-    awaitingChime,
-    dockEntries.filter((e) => !e.exited && e.awaiting).map((e) => e.source),
-    Date.now(),
-  );
+  /** Audible "an agent has needed me for a while" nudge. Fires once a
+   *  session has continuously needed attention for the grace period —
+   *  either an explicit prompt left unanswered (`awaiting`, the dock's
+   *  `dot-awaiting` pulse) or a finished turn left unread (`finishedAt`,
+   *  the dock's `dot-unread-pulse`). See attention-chime.ts. The
+   *  reactive block keeps the per-source episode clock in sync with the
+   *  live dock entries; the interval (started in onMount) does the
+   *  threshold check so the chime still fires when nothing re-renders. */
+  const attentionChime = createAttentionChimeState();
+  $: chimeInputs = dockEntries
+    .filter((e) => !e.exited && (e.awaiting || e.finishedAt !== undefined))
+    .map((e) => ({
+      source: e.source,
+      awaiting: e.awaiting,
+      finishedAt: e.finishedAt,
+    }));
+  $: syncAttention(attentionChime, chimeInputs, Date.now());
 
   function handleDocClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null;
@@ -5880,14 +5884,31 @@
     const nowTimer = setInterval(() => {
       nowMs = Date.now();
     }, 3000);
-    // Check whether any session has crossed the awaiting grace period
-    // and play the nudge once if so. 5s cadence is plenty for a 60s
-    // threshold; play()'s selfCooldown dedupes simultaneous crossings.
-    const chimeTimer = setInterval(() => {
-      if (dueForChime(awaitingChime, Date.now()).length > 0) {
+    // Check whether any session has continuously needed attention past
+    // the grace period and play the nudge once if so. 5s cadence is
+    // plenty for a 60s threshold; play()'s selfCooldown dedupes
+    // simultaneous crossings.
+    //
+    // Gated on tab visibility: browsers suspend the AudioContext in a
+    // hidden tab, so a chime fired then would be silently lost — worse,
+    // dueForChime *latches* the source as fired, eating the nudge for
+    // good. We only evaluate (and thus latch) while visible, and the
+    // visibilitychange handler re-checks the instant the user returns,
+    // so a wait that crossed 60s while they were away still chimes on
+    // their return — which is the whole point of the feature.
+    const maybeChime = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (dueForChime(attentionChime, chimeInputs, Date.now()).length > 0) {
         play("ai-needs-input");
       }
-    }, 5000);
+    };
+    const chimeTimer = setInterval(maybeChime, 5000);
+    document.addEventListener("visibilitychange", maybeChime);
+    // Console aid (exposed in prod too, like __supergitFavicon):
+    // `__supergitNudge()` plays the chime now so the audio path can be
+    // verified without sitting through a real 60s awaiting prompt.
+    (window as unknown as Record<string, unknown>).__supergitNudge = () =>
+      play("ai-needs-input");
     // Click-on-saved-session-link → bring the session into view.
     // The chip writes a {source, ts} request into the focus store;
     // we locate which worktree it belongs to (via the live
@@ -5911,6 +5932,7 @@
       uninstallIdle();
       clearInterval(nowTimer);
       clearInterval(chimeTimer);
+      document.removeEventListener("visibilitychange", maybeChime);
     };
   });
 
