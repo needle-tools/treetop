@@ -1,8 +1,12 @@
 # PLAN-REMOTE-DAEMON.md — add a remote daemon as a folder row in the local UI
 
-Status: **Phase 0 + Phase 1 DONE. Phase 4b daemon-side: registry +
-TunnelManager + HTTP proxy DONE (unit-tested only); WS/SSE proxy + UI +
-two-daemon e2e tests pending. Phase 1 not smoke-tested on a live box.**
+Status: **Phase 0 + Phase 1 DONE. Phase 4b daemon-side COMPLETE
+(unit-tested only): registry + TunnelManager + HTTP proxy + WS bridge +
+SSE pass-through all done. UI Phase A (the `apiUrl()`/`apiWsUrl()` seam
+sweep) DONE + committed (ff1eb43). Remaining: UI Phase B (thread
+`daemonId` into repo-scoped calls), UI Phase C (Repo model + fan-out +
+prefs namespacing + add-remote-daemon UI), two-daemon e2e tests, live
+smoke test on a real box. Phase 1 not smoke-tested on a live box.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -258,18 +262,43 @@ Daemon side (new local-daemon code):
       test confirms). (e503cb9 + wiring fix bb61021 + tsc fix 8db8859)
       NOTE: only unit-tested so far — no end-to-end two-daemon test yet
       (see "Two-daemon integration tests" below).
-- [ ] Proxy WS (`/api/daemons/<id>/terminals/<t>/io`) and SSE
-      (`/api/daemons/<id>/stream`) — Bun can pipe both. NEXT increment.
+- [x] Proxy WS (`/api/daemons/<id>/terminals/<t>/io`) — `RemoteWsBridge`
+      bridges the browser WS to a WS against the remote daemon over the
+      tunnel, piping frames both ways. `daemon-ws-proxy.ts`; tests.
+- [x] Proxy SSE (`/api/daemons/<id>/stream`) — proxies for free via the
+      HTTP forwarder (the streamed body is passed through unbuffered); an
+      incremental-streaming test pins that chunks arrive as they're
+      produced rather than all at the end.
 - [ ] Optionally manage the tunnel itself (spawn/own `ssh -L` per remote)
       so the user doesn't run it by hand — ties into Phase 2. (The
       TunnelManager exists; this is the "auto-open on attach" wiring.)
 
 UI side:
-- [ ] Central `apiUrl(path, daemonId?)` helper: local → `/api${path}`,
-      remote → `/api/daemons/${id}${path}`. Route the ~177 call sites
-      through it (mechanical; the bulk of the UI churn).
-- [ ] WS (`TerminalView.svelte:373`) + SSE (`App.svelte:4448`) build
-      their URL via the same helper instead of bare `location.host`.
+
+**UI Phase A — `apiUrl()`/`apiWsUrl()` seam sweep ✅ DONE (commit ff1eb43)**
+- [x] Central `apiUrl(path, daemonId?)` + `apiWsUrl(path, host, wsProto,
+      daemonId?)` helpers in `packages/ui/src/api.ts`: local → `/api${path}`,
+      remote → `/api/daemons/${id}${path}`. **Key invariant:** with NO
+      daemonId the path is returned byte-identical (a pure no-op for local
+      usage), so existing local behavior is unchanged.
+- [x] Routed all ~153 daemon URLs across ~30 UI files through the helpers —
+      every `fetch("/api/…")`, both EventSource/SSE calls (incl.
+      `App.svelte` `/api/stream`), and the terminal WebSocket URL
+      (`TerminalView.svelte`). Zero unwrapped daemon URLs remain.
+- [x] Tests: `packages/ui/test/api-url.test.ts` (8 tests). Full UI suite
+      953 pass / 0 fail.
+- Note: `.svelte` files require `bunx svelte-check` (not just `tsc -p`) to
+  catch import errors — this caught two real bugs during the sweep
+  (duplicate import in `ProcessList`, missing import in
+  `ChangedFilesTooltipBody`), both fixed.
+
+**UI Phase B — thread `daemonId` through repo-scoped calls (TODO)**
+- [ ] Pass `daemonId` into the repo-scoped UI calls (repo list, terminal,
+      diff, status) and the WS/SSE URLs. Currently nothing passes a
+      daemonId, so the Phase A sweep is still a pure no-op — this is the
+      step that actually routes a row's requests to its remote daemon.
+
+**UI Phase C — Repo model, fan-out, prefs, affordance (TODO)**
 - [ ] Add `daemonId` to the `Repo` shape; the repo list fans out to local
       `/api/repos` + each remote `/api/daemons/<id>/repos`, merged keyed
       by `[daemonId, repoId]`. Rendering is unchanged — `ProcessList`
