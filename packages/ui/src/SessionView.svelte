@@ -845,6 +845,27 @@
     }
   }
 
+  /** Open this session's working directory in the OS file manager
+   *  (Explorer / Finder / xdg). Prefers the live cwd, falling back to
+   *  the worktree path when the session's cwd isn't known yet. */
+  async function openSessionDirectory(): Promise<void> {
+    const dir = session?.cwd || wtPath;
+    if (!dir) return;
+    try {
+      const res = await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: dir, app: "files" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   /** Burger-menu items for the per-session header. SessionMenu owns the
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
@@ -888,6 +909,21 @@
           ? "Copy session id and file path to clipboard"
           : "No session id yet",
         getText: () => `${sid}\n${source}`,
+      },
+      {
+        kind: "action",
+        label: "Open session directory",
+        iconSvg: [
+          // Lucide "folder-open" — an open folder, reads as "reveal in
+          // the file manager".
+          "M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+        ],
+        disabled: !(session?.cwd || wtPath),
+        title:
+          session?.cwd || wtPath
+            ? "Open this session's working directory in your file manager"
+            : "No directory for this session yet",
+        onSelect: () => void openSessionDirectory(),
       },
       {
         kind: "action",
