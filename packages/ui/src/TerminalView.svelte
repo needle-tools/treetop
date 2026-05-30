@@ -345,7 +345,7 @@
         // real size before the user can type anything.
         const cols = Math.max(xterm?.cols ?? 80, 80);
         const rows = Math.max(xterm?.rows ?? 24, 24);
-        const res = await fetch("/api/terminals", {
+        const res = await fetch(apiUrl("/api/terminals"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -518,7 +518,7 @@
     // app (WKWebView doesn't route window.open to the OS browser).
     xterm.loadAddon(
       new WebLinksAddon((_event, uri) => {
-        fetch("/api/open-default", {
+        fetch(apiUrl("/api/open-default"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: uri }),
@@ -869,7 +869,7 @@
         "file",
         filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
-      const res = await fetch("/api/attach", { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
       if (!res.ok) return;
       const { path } = (await res.json()) as { path: string };
       ws.send(new TextEncoder().encode(path + " "));
@@ -1018,7 +1018,7 @@
   async function configErrorOpen(): Promise<void> {
     if (!configError || configAction?.phase === "pending") return;
     configAction = startConfigAction("open");
-    const res = await fetch("/api/open-default", {
+    const res = await fetch(apiUrl("/api/open-default"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: configError.file }),
@@ -1035,7 +1035,7 @@
   async function configErrorRepair(): Promise<void> {
     if (!configError || configAction?.phase === "pending") return;
     configAction = startConfigAction("repair");
-    const res = await fetch("/api/config-fix", {
+    const res = await fetch(apiUrl("/api/config-fix"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file: configError.file }),

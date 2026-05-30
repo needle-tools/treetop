@@ -271,7 +271,7 @@
   function openFileDefault(relPath: string) {
     if (!worktreePath) return;
     const abs = worktreePath.replace(/\/$/, "") + "/" + relPath;
-    fetch("/api/open-default", {
+    fetch(apiUrl("/api/open-default"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: abs }),

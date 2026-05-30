@@ -371,7 +371,7 @@
       if (isRemote && remoteTermId) {
         await openRemoteFile(remoteTermId, fullPath);
       } else {
-        await fetch("/api/open-default", {
+        await fetch(apiUrl("/api/open-default"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: fullPath }),
@@ -795,7 +795,7 @@
         class="fb-sync-confirm-btn"
         on:click={() => {
           const fullPath = mod.localCachePath;
-          void fetch("/api/open-default", {
+          void fetch(apiUrl("/api/open-default"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path: fullPath }),
@@ -873,7 +873,7 @@
                   <button
                     class="fb-open"
                     on:click|stopPropagation={() => {
-                      void fetch("/api/open-default", {
+                      void fetch(apiUrl("/api/open-default"), {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ path: item.fullPath }),
