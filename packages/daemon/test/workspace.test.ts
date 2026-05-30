@@ -658,16 +658,27 @@ describe("Workspace", () => {
     ).rejects.toThrow(/non-empty/i);
   });
 
-  test("addCustomLink command rejects relative cwd", async () => {
+  test("addCustomLink command accepts relative cwd (relative to worktree)", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const repo = await ws.addRepo("/tmp/foo");
+    const link = await ws.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "ls",
+      cwd: "packages/ui",
+    });
+    expect((link as { cwd?: string }).cwd).toBe("packages/ui");
+  });
+
+  test("addCustomLink command rejects cwd with '..' segments", async () => {
     const ws = await Workspace.open(await tempDir());
     const repo = await ws.addRepo("/tmp/foo");
     await expect(
       ws.addCustomLink(repo.id, {
         kind: "command",
         cmd: "ls",
-        cwd: "relative/dir",
+        cwd: "../escape",
       }),
-    ).rejects.toThrow(/absolute/i);
+    ).rejects.toThrow(/\.\./);
   });
 
   test("updateCustomLink can edit a command link's fields", async () => {

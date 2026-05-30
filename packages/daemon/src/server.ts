@@ -16,7 +16,7 @@ import {
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
 import { initDaemonLog } from "./daemon-log";
-import { repairAllClaudeJson } from "./claude-json-repair";
+import { repairAllClaudeJson, repairClaudeJsonFile } from "./claude-json-repair";
 import {
   listWorktrees,
   mainWorktreePathFor,
@@ -5469,14 +5469,25 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
-      // GET /api/npm-scripts?dir=<abs-path> — read package.json scripts
+      // GET /api/npm-scripts?dir=<path>&repoPath=<base> — read package.json scripts.
+      // dir may be absolute OR relative-to-repoPath. Empty dir = repoPath itself.
       if (url.pathname === "/api/npm-scripts" && req.method === "GET") {
-        const dir = url.searchParams.get("dir");
-        if (!dir || typeof dir !== "string") {
+        const dir = url.searchParams.get("dir") ?? "";
+        const repoPath = url.searchParams.get("repoPath") ?? "";
+        const isAbsolute =
+          dir.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(dir);
+        let resolved: string;
+        if (isAbsolute) {
+          resolved = dir;
+        } else if (repoPath) {
+          resolved = dir ? join(repoPath, dir) : repoPath;
+        } else if (dir) {
+          resolved = dir;
+        } else {
           return json({ scripts: [] });
         }
         try {
-          const pkgPath = join(dir, "package.json");
+          const pkgPath = join(resolved, "package.json");
           const raw = await Bun.file(pkgPath).text();
           const pkg = JSON.parse(raw);
           const scripts =
@@ -5527,8 +5538,19 @@ const server = Bun.serve<TermWsData, never>({
           cwd?: string;
           runMode: CommandRunMode;
         };
-        const cwd =
-          cmdLink.cwd || (typeof repoPath === "string" ? repoPath : repo.path);
+        const baseDir = typeof repoPath === "string" ? repoPath : repo.path;
+        const linkCwd = cmdLink.cwd;
+        let cwd: string;
+        if (!linkCwd) {
+          cwd = baseDir;
+        } else if (
+          linkCwd.startsWith("/") ||
+          /^[a-zA-Z]:[\\/]/.test(linkCwd)
+        ) {
+          cwd = linkCwd;
+        } else {
+          cwd = join(baseDir, linkCwd);
+        }
         const runMode = cmdLink.runMode;
 
         if (runMode === "external") {
@@ -6643,42 +6665,28 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "body.file is required" }, { status: 400 });
         }
         try {
-          const {
-            readFileSync,
-            writeFileSync,
-            copyFileSync,
-            existsSync: fsExists,
-          } = await import("node:fs");
-          if (!fsExists(filePath)) {
-            return json({ error: "file not found" }, { status: 404 });
+          // Non-destructive repair: recover the first complete top-level
+          // JSON object and drop trailing garbage, backing up the broken
+          // original first. NEVER blank the file — losing the user's whole
+          // Claude config (projects, history, auth) is worse than the
+          // parse error. Same logic the startup scan uses.
+          const outcome = await repairClaudeJsonFile(filePath);
+          switch (outcome.status) {
+            case "missing":
+              return json({ error: "file not found" }, { status: 404 });
+            case "valid":
+              return json({ ok: true, alreadyValid: true });
+            case "unrecoverable":
+              return json(
+                {
+                  error:
+                    "Couldn't auto-repair: no complete JSON object found. Open the file and fix it by hand.",
+                },
+                { status: 422 },
+              );
+            case "repaired":
+              return json({ ok: true, backup: outcome.result.backupPath });
           }
-          const raw = readFileSync(filePath, "utf-8");
-          const backupPath = filePath + ".bak";
-          copyFileSync(filePath, backupPath);
-
-          // Attempt repair: strip trailing commas, truncation recovery
-          let fixed = raw
-            .replace(/,\s*([\]}])/g, "$1") // trailing commas
-            .replace(/\}\s*\{/g, "},{"); // missing comma between objects
-          // If still invalid, try truncating to last valid '}'
-          try {
-            JSON.parse(fixed);
-          } catch {
-            const lastBrace = fixed.lastIndexOf("}");
-            if (lastBrace > 0) {
-              fixed = fixed.slice(0, lastBrace + 1);
-              try {
-                JSON.parse(fixed);
-              } catch {
-                // Last resort: empty object
-                fixed = "{}";
-              }
-            } else {
-              fixed = "{}";
-            }
-          }
-          writeFileSync(filePath, fixed, "utf-8");
-          return json({ ok: true, backup: backupPath });
         } catch (e) {
           return json(
             { error: String(e instanceof Error ? e.message : e) },

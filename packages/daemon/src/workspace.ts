@@ -93,12 +93,17 @@ function buildCustomLink(id: string, input: CustomLinkInput): CustomLink {
     const rawCmd = typeof input.cmd === "string" ? input.cmd.trim() : "";
     if (rawCmd.length === 0) throw new Error("cmd must be a non-empty string");
     const rawCwd = typeof input.cwd === "string" ? input.cwd.trim() : "";
-    if (
-      rawCwd.length > 0 &&
-      !rawCwd.startsWith("/") &&
-      !/^[a-zA-Z]:[\\/]/.test(rawCwd)
-    ) {
-      throw new Error("cwd must be absolute when provided");
+    // cwd may be absolute OR relative-to-repo. Reject `..` segments to
+    // keep relative paths inside the worktree.
+    if (rawCwd.length > 0) {
+      const isAbsolute =
+        rawCwd.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(rawCwd);
+      if (!isAbsolute) {
+        const segments = rawCwd.split(/[\\/]+/);
+        if (segments.some((s) => s === "..")) {
+          throw new Error("relative cwd may not contain '..' segments");
+        }
+      }
     }
     const mode: CommandRunMode =
       typeof input.runMode === "string" && VALID_RUN_MODES.has(input.runMode)

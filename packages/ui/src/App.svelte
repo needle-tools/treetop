@@ -499,18 +499,57 @@
     }
     return lines.join("\n");
   }
-  async function copyError(e: FrontendErrorEntry) {
-    try {
-      await navigator.clipboard.writeText(eventToText(e));
-    } catch {
-      return; // clipboard denied — leave the label as "Copy"
-    }
-    copiedErrorId = e.id;
+  function flashCopied(id: string) {
+    copiedErrorId = id;
     if (copiedErrorTimer) clearTimeout(copiedErrorTimer);
     copiedErrorTimer = setTimeout(() => {
       copiedErrorId = null;
       copiedErrorTimer = null;
     }, 1200);
+  }
+  /** Robust clipboard write — the async Clipboard API is silently
+   *  rejected in WebView2 / strict-Permissions contexts even under a
+   *  trusted gesture, so we fall back to a transient offscreen textarea
+   *  + execCommand("copy"). Same pattern as TerminalView.svelte. Only
+   *  flash "Copied" once a write actually lands. */
+  function copyError(e: FrontendErrorEntry) {
+    const text = eventToText(e);
+    const tryLegacy = (): boolean => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText =
+          "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+        document.body.appendChild(ta);
+        const prev = document.activeElement as HTMLElement | null;
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        try {
+          prev?.focus();
+        } catch {
+          /* best-effort restore */
+        }
+        return ok;
+      } catch {
+        return false;
+      }
+    };
+    const writeText = navigator.clipboard?.writeText;
+    if (writeText) {
+      writeText.call(navigator.clipboard, text).then(
+        () => flashCopied(e.id),
+        () => {
+          if (tryLegacy()) flashCopied(e.id);
+          else console.warn("supergit: clipboard write failed (event copy)");
+        },
+      );
+      return;
+    }
+    if (tryLegacy()) flashCopied(e.id);
+    else console.warn("supergit: clipboard write failed (event copy)");
   }
 
   let systemMemBytes: number | null = null;

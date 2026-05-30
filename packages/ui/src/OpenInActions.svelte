@@ -75,6 +75,7 @@
     filterNpmSuggestions,
     npmScriptsPlaceholder,
   } from "./npm-suggestions";
+  import { relativizeToWorktree as relativizeToWorktreeFn } from "./worktree-path";
   import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
   import { CommandUrlPickStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
@@ -240,13 +241,13 @@
   let selectedSuggestionIdx = -1;
   let suggestionsEl: HTMLUListElement | undefined;
 
-  async function fetchNpmScripts(dir: string) {
-    if (!dir || dir === npmScriptsDir) return;
-    npmScriptsDir = dir;
+  async function fetchNpmScripts(cwd: string) {
+    const key = `${path}::${cwd}`;
+    if (key === npmScriptsDir) return;
+    npmScriptsDir = key;
     try {
-      const res = await fetch(
-        `/api/npm-scripts?dir=${encodeURIComponent(dir)}`,
-      );
+      const qs = new URLSearchParams({ dir: cwd, repoPath: path });
+      const res = await fetch(`/api/npm-scripts?${qs}`);
       if (!res.ok) {
         npmScripts = [];
         return;
@@ -258,15 +259,13 @@
     }
   }
 
-  function effectiveCwd(cwd: string): string {
-    return cwd.trim() || path;
-  }
+  const relativizeToWorktree = (picked: string) => relativizeToWorktreeFn(picked, path);
 
   $: if (addOpen && newKind === "command") {
-    void fetchNpmScripts(effectiveCwd(newCwd));
+    void fetchNpmScripts(newCwd.trim());
   }
   $: if (editingLinkId && editKind === "command") {
-    void fetchNpmScripts(effectiveCwd(editCwd));
+    void fetchNpmScripts(editCwd.trim());
   }
 
   function filteredSuggestions(cmd: string, scripts: string[]): string[] {
@@ -798,7 +797,7 @@
   async function pickAddCwd() {
     try {
       const picked = await runPathPicker("folder");
-      if (picked) newCwd = picked;
+      if (picked) newCwd = relativizeToWorktree(picked);
     } catch (e) {
       addError = e instanceof Error ? e.message : String(e);
     }
@@ -807,7 +806,7 @@
   async function pickEditCwd() {
     try {
       const picked = await runPathPicker("folder");
-      if (picked) editCwd = picked;
+      if (picked) editCwd = relativizeToWorktree(picked);
     } catch (e) {
       editError = e instanceof Error ? e.message : String(e);
     }
