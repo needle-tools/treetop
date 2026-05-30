@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   extractFirstJsonObject,
   repairClaudeJson,
+  repairClaudeJsonFile,
 } from "../src/claude-json-repair";
 
 describe("extractFirstJsonObject", () => {
@@ -142,5 +143,59 @@ describe("repairClaudeJson", () => {
 
     const result = await repairClaudeJson(dir);
     expect(result!.backupPath).toMatch(/\.claude\.json\.corrupt\.\d{4}-/);
+  });
+});
+
+describe("repairClaudeJsonFile (the pill's Repair action)", () => {
+  async function makeTempDir(): Promise<string> {
+    return mkdtemp(join(tmpdir(), "claude-json-repair-file-"));
+  }
+
+  test("reports 'missing' for a path that doesn't exist", async () => {
+    const dir = await makeTempDir();
+    const outcome = await repairClaudeJsonFile(join(dir, ".claude.json"));
+    expect(outcome.status).toBe("missing");
+  });
+
+  test("reports 'valid' and leaves a good file untouched", async () => {
+    const dir = await makeTempDir();
+    const file = join(dir, ".claude.json");
+    const good = JSON.stringify({ projects: { a: 1 } });
+    await writeFile(file, good, "utf-8");
+
+    const outcome = await repairClaudeJsonFile(file);
+    expect(outcome.status).toBe("valid");
+    expect(await readFile(file, "utf-8")).toBe(good);
+  });
+
+  test("recovers the real config from appended-chunk corruption", async () => {
+    const dir = await makeTempDir();
+    const file = join(dir, ".claude.json");
+    const config = '{"projects":{"x":1},"oauthAccount":{"id":"abc"}}';
+    await writeFile(file, config + config, "utf-8");
+
+    const outcome = await repairClaudeJsonFile(file);
+    expect(outcome.status).toBe("repaired");
+    const repaired = await readFile(file, "utf-8");
+    expect(JSON.parse(repaired)).toEqual({
+      projects: { x: 1 },
+      oauthAccount: { id: "abc" },
+    });
+    // Crucially, it did NOT blank the config.
+    expect(repaired.trim()).not.toBe("{}");
+  });
+
+  test("NEVER blanks the file when nothing is recoverable", async () => {
+    // This is the whole point: the old config-fix endpoint would wipe the
+    // user's entire Claude config to "{}". Now an unrecoverable file is
+    // left exactly as-is so the user can fix it by hand without data loss.
+    const dir = await makeTempDir();
+    const file = join(dir, ".claude.json");
+    const junk = "totally not json {{{";
+    await writeFile(file, junk, "utf-8");
+
+    const outcome = await repairClaudeJsonFile(file);
+    expect(outcome.status).toBe("unrecoverable");
+    expect(await readFile(file, "utf-8")).toBe(junk);
   });
 });

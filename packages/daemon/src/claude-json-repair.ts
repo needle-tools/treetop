@@ -8,7 +8,7 @@
  */
 
 import { readFile, writeFile, copyFile, access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 export interface RepairResult {
   repoPath: string;
@@ -16,6 +16,16 @@ export interface RepairResult {
   original: string;
   repaired: string;
 }
+
+/** Outcome of repairing a single .claude.json file. Distinguishes the
+ *  "already fine" and "can't recover" cases so callers (e.g. the
+ *  config-error pill's Repair button) can react differently — crucially,
+ *  "unrecoverable" leaves the file untouched rather than blanking it. */
+export type RepairOutcome =
+  | { status: "missing" }
+  | { status: "valid" }
+  | { status: "unrecoverable" }
+  | { status: "repaired"; result: RepairResult };
 
 /**
  * Try to extract the first complete top-level JSON object from a string
@@ -79,45 +89,60 @@ export function extractFirstJsonObject(raw: string): {
  * Returns null if the file is fine (or doesn't exist).
  * If corrupted and repairable, backs up the original and writes the fix.
  */
-export async function repairClaudeJson(
-  repoPath: string,
-): Promise<RepairResult | null> {
-  const filePath = join(repoPath, ".claude.json");
-
+/**
+ * Repair a specific .claude.json *file* by absolute path. Non-destructive:
+ * recovers the first complete top-level JSON object and discards trailing
+ * garbage (the dominant corruption mode — a second JSON chunk appended
+ * when a Claude PTY is hard-killed), backing up the broken original to
+ * `<file>.corrupt.<ts>` first. It NEVER blanks the file: if nothing can be
+ * recovered the file is left exactly as-is and the caller is told via the
+ * "unrecoverable" status. Shared core behind the startup scan and the
+ * config-error pill's Repair action.
+ */
+export async function repairClaudeJsonFile(
+  filePath: string,
+): Promise<RepairOutcome> {
   try {
     await access(filePath);
   } catch {
-    return null; // file doesn't exist, nothing to do
+    return { status: "missing" };
   }
 
   const raw = await readFile(filePath, "utf-8");
 
-  // Fast path: file parses fine
+  // Fast path: file parses fine, nothing to do.
   try {
     JSON.parse(raw);
-    return null;
+    return { status: "valid" };
   } catch {
     // fall through to repair
   }
 
   const extracted = extractFirstJsonObject(raw);
-  if (!extracted) return null; // can't recover anything useful
+  // Can't recover anything useful — leave the file untouched. Blanking it
+  // to "{}" would lose the user's entire Claude config.
+  if (!extracted) return { status: "unrecoverable" };
 
-  // Back up the broken original before touching it
+  // Back up the broken original before touching it.
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = join(repoPath, `.claude.json.corrupt.${ts}`);
+  const backupPath = `${filePath}.corrupt.${ts}`;
   await copyFile(filePath, backupPath);
 
-  // Write the repaired version (pretty-printed to match Claude Code's format)
+  // Write the repaired version (pretty-printed to match Claude Code's format).
   const repaired = JSON.stringify(extracted.json, null, 2) + "\n";
   await writeFile(filePath, repaired, "utf-8");
 
   return {
-    repoPath,
-    backupPath,
-    original: raw,
-    repaired,
+    status: "repaired",
+    result: { repoPath: dirname(filePath), backupPath, original: raw, repaired },
   };
+}
+
+export async function repairClaudeJson(
+  repoPath: string,
+): Promise<RepairResult | null> {
+  const outcome = await repairClaudeJsonFile(join(repoPath, ".claude.json"));
+  return outcome.status === "repaired" ? outcome.result : null;
 }
 
 /**

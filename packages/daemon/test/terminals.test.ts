@@ -15,6 +15,7 @@ import {
   NodePtyBackend,
   detectAgentLabel,
   detectConfigError,
+  nextStickyConfigError,
 } from "../src/terminals/node-pty-backend";
 import {
   sampleProcs,
@@ -951,5 +952,28 @@ describe("detectConfigError", () => {
 
   test("returns null for empty buffer", () => {
     expect(detectConfigError([], 0)).toBeNull();
+  });
+});
+
+describe("nextStickyConfigError", () => {
+  const err = { file: "C:\\Users\\marce\\.claude.json" };
+
+  test("a fresh detection wins when nothing was showing", () => {
+    expect(nextStickyConfigError(err, null)).toBe(err);
+  });
+
+  test("holds the previous error when this frame didn't re-match", () => {
+    // The modal repaint scrolled the text out of the scanned tail — but
+    // the dialog is still on screen, so the pill must stay (no flicker).
+    expect(nextStickyConfigError(null, err)).toBe(err);
+  });
+
+  test("a newly detected error for a different file replaces the old one", () => {
+    const other = { file: "/home/user/.claude.json" };
+    expect(nextStickyConfigError(other, err)).toBe(other);
+  });
+
+  test("stays null when there is nothing to show and nothing detected", () => {
+    expect(nextStickyConfigError(null, null)).toBeNull();
   });
 });

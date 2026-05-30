@@ -133,6 +133,24 @@ export function detectConfigError(
   return m ? { file: m[1]!.trim() } : null;
 }
 
+/**
+ * Merge a freshly-detected config error with the one we were already
+ * showing. The error is STICKY: the `.claude.json` "Configuration Error"
+ * dialog is modal and repaints constantly, which scrolls the matched
+ * text out of the byte-tail window `detectConfigError` scans. Recomputing
+ * from scratch each frame would flip the pill on, then off on the next
+ * repaint. So once an error is seen, hold it until something clears it
+ * (any keystroke clears it in the PTY `write` path, and a dead PTY is
+ * forgotten). A newly detected error — including one naming a different
+ * file — always wins.
+ */
+export function nextStickyConfigError(
+  detected: { file: string } | null,
+  previous: { file: string } | null,
+): { file: string } | null {
+  return detected ?? previous;
+}
+
 /** Map a PTY's argv[0] to an agent label used by the daemon for
  *  per-agent behavior (shell-transcript persistence, command-history
  *  capture, dashboard pill text). The Windows shell binaries
@@ -354,7 +372,12 @@ export class NodePtyBackend implements PtyBackend {
         // Recompute awaiting-input state after each output chunk. If
         // the flag flips, notify subscribers so the UI can outline.
         const nextAwaiting = isAwaitingInput(t.buffer, t.bufferBytes);
-        const nextConfigErr = detectConfigError(t.buffer, t.bufferBytes);
+        // Sticky so the pill doesn't flicker off when the modal repaints
+        // and scrolls the matched text out of the scanned tail.
+        const nextConfigErr = nextStickyConfigError(
+          detectConfigError(t.buffer, t.bufferBytes),
+          t.configError,
+        );
         const configFlipped =
           (nextConfigErr === null) !== (t.configError === null) ||
           nextConfigErr?.file !== t.configError?.file;
