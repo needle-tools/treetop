@@ -1,0 +1,19 @@
+# Build-context excludes for deploy/Dockerfile.
+#
+# IMPORTANT: Docker reads .dockerignore from the build CONTEXT ROOT (this
+# repo root, since deploy/Dockerfile + docker-compose.yml use the repo as
+# context), NOT from deploy/. A copy in deploy/ is silently ignored.
+#
+# node_modules MUST be excluded: the image runs `bun install` on Linux, so
+# host node_modules (Windows/macOS node-pty prebuilds) would otherwise be
+# copied over the freshly-built Linux ones by `COPY . .` and break the
+# daemon at runtime.
+node_modules
+**/node_modules
+packages/ui/dist
+artifacts
+build
+.git
+.github
+*.log
+.DS_Store

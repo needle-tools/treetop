@@ -6,13 +6,25 @@
 #   ssh -N -L 7777:localhost:7777 you@<host>
 #   # open http://localhost:7777
 #
-# The `127.0.0.1:` prefix on the published port is the load-bearing
-# security control: without it Docker would expose the daemon on every
-# host interface (Docker bypasses the host firewall via its own iptables
-# rules). With it, the daemon is unreachable except via the tunnel — the
-# same end state as the systemd deployment's SUPERGIT_BIND=127.0.0.1, but
-# enforced at the host-publish layer because a loopback bind *inside* the
-# container would be unreachable through Docker's port proxy.
+# WHY host networking (not bridge + published port):
+# The daemon authorizes by request origin — loopback gets the full API,
+# anything else is limited to the 4 LAN_ALLOWED_ROUTES (and 403s with
+# peer mode off). Docker's bridge port-proxy rewrites the source to the
+# bridge gateway (172.17.0.1), so even a request arriving via the SSH
+# tunnel would look "remote" to the daemon and get 403'd. (Verified
+# empirically 2026-05-30: bridge + -p 127.0.0.1:7790 → 403 "peer mode is
+# off"; --network host + SUPERGIT_BIND=127.0.0.1 → 200.)
+#
+# host networking puts the daemon on the host's own loopback, so:
+#   - SUPERGIT_BIND=127.0.0.1 makes it reachable ONLY via host loopback
+#     (i.e. the tunnel) and invisible to every other interface, even if
+#     the box firewall is misconfigured — same guarantee as the systemd
+#     deployment.
+#   - a tunnelled request arrives as genuine 127.0.0.1 → full API.
+#
+# NOTE: `network_mode: host` is a Linux feature (works on the Hetzner
+# target). On Docker Desktop for macOS/Windows it behaves differently;
+# this compose file is meant for the Linux box, not local desktop dev.
 services:
   supergit:
     build:
@@ -20,14 +32,13 @@ services:
       dockerfile: deploy/Dockerfile
     image: supergit-daemon:local
     restart: unless-stopped
-    # host-loopback only — see header. Change the left 7777 to remap the
-    # host port; keep the 127.0.0.1: prefix.
-    ports:
-      - "127.0.0.1:7777:7777"
-    volumes:
-      - supergit-workspace:/workspace
+    network_mode: host
     environment:
       SUPERGIT_PORT: "7777"
+      # Loopback-only bind — the only way in is the tunnel.
+      SUPERGIT_BIND: "127.0.0.1"
+    volumes:
+      - supergit-workspace:/workspace
 
 volumes:
   supergit-workspace:

@@ -6,14 +6,14 @@
 # bonjour-service) whose prebuilds are per-platform — so a server build
 # must be assembled on Linux. Building inside this image guarantees that.
 #
-# Security posture: the daemon listens on 0.0.0.0 *inside the container*
-# (the default — do NOT set SUPERGIT_BIND=127.0.0.1 here, see below) and
-# is restricted to host-loopback by publishing it as
-# `-p 127.0.0.1:<port>:<port>`. A loopback bind inside the container would
-# make it unreachable, because Docker's port proxy reaches the container
-# over its veth, not loopback. The systemd deployment uses the inverse:
-# SUPERGIT_BIND=127.0.0.1 directly (no Docker proxy in the way). Both end
-# up "only reachable via the tunnel."  See plans/PLAN-REMOTE-DAEMON.md.
+# Security posture: run this image with host networking
+# (`network_mode: host` / `--network host`) and SUPERGIT_BIND=127.0.0.1,
+# so the daemon listens only on the host's loopback — reachable via the
+# SSH tunnel, invisible to every other interface. Do NOT use bridge +
+# `-p 127.0.0.1:<port>`: Docker's port-proxy rewrites the request source
+# to the bridge gateway, which the daemon's origin-based auth treats as
+# "remote" and 403s (verified 2026-05-30). See deploy/docker-compose.yml
+# and plans/PLAN-REMOTE-DAEMON.md for the full rationale.
 
 # Pin to the same Bun the repo expects (package.json engines/packageManager).
 FROM oven/bun:1.3.14 AS build
@@ -48,7 +48,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=build /app /app
 
-# Default port; override with -e SUPERGIT_PORT=… and a matching -p.
+# Default port; override with -e SUPERGIT_PORT=…
 ENV SUPERGIT_PORT=7777
 # Serve the built SPA (prod posture: same-origin /api + static UI).
 ENV SUPERGIT_UI_DIR=/app/packages/ui/dist
@@ -57,6 +57,8 @@ ENV SUPERGIT_WORKSPACE=/workspace
 VOLUME ["/workspace"]
 
 EXPOSE 7777
-# NB: no SUPERGIT_BIND here — keep the in-container bind at 0.0.0.0 and
-# restrict on the host with `-p 127.0.0.1:7777:7777` (see header).
+# NB: no SUPERGIT_BIND baked in — set SUPERGIT_BIND=127.0.0.1 at run time
+# together with host networking (see header + docker-compose.yml). The
+# default 0.0.0.0 is kept so the image is still usable for non-tunnel
+# experiments, but production runs loopback-only via host networking.
 CMD ["bun", "run", "packages/daemon/src/server.ts"]

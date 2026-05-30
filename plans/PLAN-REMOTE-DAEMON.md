@@ -151,16 +151,38 @@ Deliverables under `deploy/`. Two deployment shapes, same end state
         and `--uninstall`.
 - [x] `deploy/Dockerfile` + `deploy/docker-compose.yml` — Docker path.
       Multi-stage build IS the prebuilt Linux artifact (builds node-pty
-      etc. on Linux inside the image). Key nuance: do NOT set
-      `SUPERGIT_BIND=127.0.0.1` *inside* the container (Docker's port
-      proxy reaches it over the veth, not loopback → would be
-      unreachable). Instead keep the in-container default `0.0.0.0` and
-      restrict on the host with `-p 127.0.0.1:7777:7777`. Workspace on a
-      named volume so it survives image upgrades.
+      etc. on Linux inside the image). Runs with **host networking** +
+      `SUPERGIT_BIND=127.0.0.1` (NOT bridge + `-p`). Workspace on a named
+      volume so it survives image upgrades.
+- **Build-tested 2026-05-30** (`docker build` here, Docker 29.2.1): image
+  builds clean (660 MB), boots, serves. This surfaced a real bug in the
+  first Docker design and its fix:
+  - bridge + `-p 127.0.0.1:7790:7777` → **403 `peer mode is off`** on
+    *every* route. Docker's bridge port-proxy rewrites the request source
+    to the gateway (172.17.0.1), which the daemon's origin-based auth
+    (`isLoopback`, `server.ts:546`) treats as remote → LAN gate. A real
+    SSH tunnel lands on host loopback → same proxy → would also 403.
+  - `--network host` + `SUPERGIT_BIND=127.0.0.1` → **200**. The daemon is
+    on the host's own loopback, so a tunnelled request is genuine
+    `127.0.0.1` → full API, and it's invisible to every other interface.
+  - `.dockerignore` must live at the **context root** (repo root), not
+    `deploy/` — else `COPY . .` drags host `node_modules` (wrong-platform
+    node-pty) over the Linux build. Moved + fixed.
 - Validated: `bash -n deploy/install.sh` passes; unit template renders
   with all placeholders filled.
-- NOT YET tested on a real box — needs a live smoke test:
-  install → tunnel → load the dashboard.
+- Still NOT done: smoke test through a *real* SSH tunnel end-to-end, and
+  `install.sh`'s `git clone` assumes a reachable repo (currently private +
+  unpushed — see Distribution below).
+
+### Distribution — private repo blocks `git clone` (decide later)
+`install.sh` clones `github.com/marwie/supergit`, which is **private and
+not yet pushed**, so the systemd path can't run as-is on a fresh box.
+Coolify-style fix (deferred, user wants to decide): publish a **prebuilt
+image to a public registry** (GHCR package visibility is independent of
+repo visibility → private repo, public image) and ship a `curl | bash`
+installer that `docker pull`s instead of cloning. Keeps the loopback +
+tunnel posture (host networking), just swaps build-on-box for pull. The
+image build is already proven; only the CI push + pull-installer remain.
 
 ### Phase 2 — Make connecting friction-free
 - [ ] Helper that wraps `ssh -N -L …` (autossh-style reconnect on
