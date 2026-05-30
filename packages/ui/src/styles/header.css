@@ -180,12 +180,22 @@ main > header > h1 {
   background: var(--error-bg, #3f1f1f);
   color: var(--error-text, #ffaaaa);
   /* Anchor + clip + stacking context for the rotating-border pseudo
-     elements below. `overflow: hidden` keeps the oversized rotating
-     conic from spilling past the button; `isolation: isolate` makes
-     the pseudos' `z-index: -1` local so they don't punch through to
-     anything underneath. */
+     elements below. `isolation: isolate` makes the pseudos'
+     `z-index: -1` local so they don't punch through to anything
+     underneath.
+
+     The clip is `clip-path: inset(... round)` — NOT `overflow: hidden`.
+     The rotating `::before` animates `transform`, so Chromium gives it
+     its own compositing layer, and `overflow: hidden` + `border-radius`
+     does NOT clip a composited child to the rounded corners: the
+     spinning conic showed square nubs poking out of each rounded
+     corner, flickering on every hover/open repaint. `clip-path` is
+     applied to composited descendants too, so the conic is masked to
+     the button's rounded rect cleanly. Keep `overflow: hidden` as a
+     belt-and-suspenders fallback for the non-composited case. */
   position: relative;
   overflow: hidden;
+  clip-path: inset(0 round var(--radius-md));
   isolation: isolate;
 }
 .actions-btn.hot:hover,
@@ -226,12 +236,16 @@ main > header > h1 {
 }
 .actions-btn.hot::after {
   /* The 2px "hole" — covers the interior with the button bg so only
-     a 2px ring of the rotating conic shows around the edge. */
+     a 2px ring of the rotating conic shows around the edge. Radius is
+     the button's minus the 2px inset so the ring stays an even width
+     around the corners (plain `inherit` curved tighter than the inset,
+     pinching the ring thinner at each corner). */
   content: "";
   position: absolute;
   inset: 2px;
-  border-radius: inherit;
+  border-radius: calc(var(--radius-md) - 2px);
   background: var(--error-bg, #3f1f1f);
+  transition: background 0.15s ease;
   pointer-events: none;
   z-index: -1;
 }

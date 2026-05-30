@@ -164,6 +164,23 @@ export const ICONS: Record<string, IconDef> = {
   terminal: {
     paths: ["M4 17l5-5-5-5", "M11 19h8"],
   },
+  // Alt terminal glyph for shell/terminal SESSIONS (the process list),
+  // distinct from the plain stroked `terminal` chevron above used on the
+  // open-in buttons: a dark "screen" box with a green prompt so a real
+  // terminal reads as a little monitor rather than a bare prompt mark.
+  // Monochrome `paths` fallback is the same chevron for any context that
+  // renders without the multi-colour `svg` body.
+  "terminal-screen": {
+    paths: ["M4 17l5-5-5-5", "M11 19h8"],
+    svg: `
+      <rect x="2" y="4" width="20" height="16" rx="2.5"
+            fill="#0b0e14" stroke="#3b4250" stroke-width="1"/>
+      <path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="#7ee787"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11.5 15h4.5" fill="none" stroke="#7ee787"
+            stroke-width="1.6" stroke-linecap="round"/>
+    `,
+  },
   // Generic file-manager glyph. macOS / Windows get their own dedicated
   // brand marks below; this is the Linux / fallback default.
   files: {

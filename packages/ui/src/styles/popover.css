@@ -239,6 +239,11 @@
   color: var(--text-muted);
   padding-top: 0.5rem;
   padding-bottom: 0.2rem;
+  /* Match the rows' horizontal padding (`.agent-row` 0.45rem) so the
+     "CPU"/"Mem" labels line up with the values — and with the repo
+     header totals — across all three subgrids. */
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
   margin-bottom: 0.15rem;
 }
 .tuis-popover .proc-col-header > span {
@@ -520,16 +525,22 @@
 }
 .proc-group-header {
   /* Spans the full width of the shared `.proc-groups` grid (it's a
-     direct grid item now that `.proc-group` is display: contents). */
+     direct grid item now that `.proc-group` is display: contents) and
+     subgrids its tracks so the repo's CPU/Mem totals sit in the SAME
+     columns as the per-process CPU/Mem values in the list below —
+     rather than floating right-aligned at the row's edge. Horizontal
+     padding matches the rows' (`.agent-row` uses 0.45rem) so the
+     subgrid columns line up with the rows' columns; the parent's
+     column-gap is inherited automatically. */
   grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
   position: sticky;
   top: 0;
   z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
   width: 100%;
-  padding: 0.35rem 0.3rem;
+  padding: 0.35rem 0.45rem;
   border: none;
   border-bottom: 1px solid var(--surface-2);
   /* No margin-bottom: the header sits tight against its own content
@@ -554,33 +565,76 @@
   background: var(--surface-2);
 }
 .proc-group-chevron {
+  /* Icon column (1), centred like the rows' agent icon. */
+  grid-column: 1;
+  justify-self: center;
   width: 14px;
   height: 14px;
-  flex-shrink: 0;
   transition: transform 0.15s ease-out;
   opacity: 0.7;
 }
 .proc-group-chevron.collapsed {
   transform: rotate(-90deg);
 }
-.proc-group-name {
+/* Repo name + count occupy the name + info columns (2–3), leaving the
+   CPU (4) and Mem (5) columns free for the totals to align under the
+   list. Flex so the name ellipsises and the count tucks beside it. */
+.proc-group-label {
+  grid-column: 2 / 4;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+/* Repo name rendered as a badge, mirroring the worktree board's repo
+   chips: a neutral default chip, or the repo's accent colour with a
+   readable foreground picked by repoChipFg() (shared in repo-color.ts).
+   text-transform/letter-spacing are reset because the header is
+   uppercased and a badge shouldn't inherit that. */
+.proc-group-badge {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: var(--chip-default-bg);
+  color: var(--chip-default-text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
 }
+.proc-group-badge-colored {
+  background: var(--repo-bg);
+  color: var(--repo-fg);
+}
+/* Process-count badge. Same recipe as the session dock's activity
+   badge (`.dock-activity-badge` — the "messages in the last 4h" chip),
+   but keyed off `--text-muted` instead of `--text-1` so it reads as a
+   quiet grey count rather than a bright one. */
 .proc-group-count {
-  font-size: 0.6rem;
-  opacity: 0.6;
   flex-shrink: 0;
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in oklch, var(--text-muted) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.35em;
+  line-height: 1;
+  opacity: 0.75;
 }
-.proc-group-spacer {
-  flex: 1;
+.proc-group-cpu {
+  grid-column: 4;
+}
+.proc-group-mem {
+  grid-column: 5;
 }
 .proc-group-stat {
   font-size: 0.65rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  min-width: 6ch;
   text-align: right;
 }
 

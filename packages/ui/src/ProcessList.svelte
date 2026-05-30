@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
+  import { repoChipFg } from "./repo-color";
+  import { ICONS } from "./icons";
   import {
     processStore,
     recordSamples,
@@ -345,10 +347,26 @@
     void refresh();
   }
 
+  // Locale-aware number rendering so large values get the user's
+  // thousands separator (e.g. "12.345,6 MB" in de-DE, "12,345.6 MB" in
+  // en-US) instead of a bare "12345.6". Matches the rest of the app,
+  // which formats counts via `toLocaleString()`.
   function formatBytes(n: number): string {
     if (!n) return "—";
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    if (n < 1024 * 1024)
+      return `${(n / 1024).toLocaleString(undefined, {
+        maximumFractionDigits: 0,
+      })} KB`;
+    return `${(n / 1024 / 1024).toLocaleString(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    })} MB`;
+  }
+  function formatPercent(n: number): string {
+    return `${n.toLocaleString(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    })}%`;
   }
   function formatUptime(iso: string): string {
     const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
@@ -516,16 +534,22 @@
                 >
                   <path d="M6 9l6 6 6-6" />
                 </svg>
-                <span
-                  class="proc-group-name"
-                  style={group.repoColor ? `color: ${group.repoColor}` : ""}
-                  >{group.repoName}</span
+                <span class="proc-group-label">
+                  <span
+                    class="proc-group-badge"
+                    class:proc-group-badge-colored={!!group.repoColor}
+                    style={group.repoColor
+                      ? `--repo-bg: ${group.repoColor}; --repo-fg: ${repoChipFg(
+                          group.repoColor,
+                        )}`
+                      : ""}>{group.repoName}</span
+                  >
+                  <span class="proc-group-count">{group.procs.length}</span>
+                </span>
+                <span class="proc-group-stat proc-group-cpu"
+                  >{formatPercent(group.totalCpu)}</span
                 >
-                <span class="proc-group-count">{group.procs.length}</span>
-                <span class="proc-group-spacer"></span>
-                <span class="proc-group-stat">{group.totalCpu.toFixed(1)}%</span
-                >
-                <span class="proc-group-stat"
+                <span class="proc-group-stat proc-group-mem"
                   >{formatBytes(group.totalMem)}</span
                 >
               </button>
@@ -617,6 +641,18 @@
                               src="/agents/ollama.svg"
                               alt=""
                             />
+                          {:else if !isExternal}
+                            <!-- Terminal/shell session: dark "screen" box
+                                 glyph (the alt terminal icon in icons.ts),
+                                 not the plain prompt chevron. -->
+                            <svg
+                              class="agent-row-icon proc-terminal-icon"
+                              viewBox="0 0 24 24"
+                              width="14"
+                              height="14"
+                              aria-hidden="true"
+                              >{@html ICONS["terminal-screen"]?.svg ?? ""}</svg
+                            >
                           {:else}
                             <svg
                               class="agent-row-icon proc-icon"
@@ -654,10 +690,10 @@
                             class:tui-stat-muted={cpu < 2}
                             title={`pid ${p.pid} — avg CPU over last ${Math.round(
                               CPU_AVG_WINDOW_MS / 1000,
-                            )}s (now ${p.cpuPercent.toFixed(1)}%)\n${p.cmd.join(
-                              " ",
-                            )}`}
-                            >{cpu.toFixed(1)}%</span
+                            )}s (now ${formatPercent(
+                              p.cpuPercent,
+                            )})\n${p.cmd.join(" ")}`}
+                            >{formatPercent(cpu)}</span
                           >
                           <span
                             class="tui-stat tui-mem"
