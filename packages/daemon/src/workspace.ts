@@ -190,9 +190,53 @@ interface ReposFile {
   repos: Repo[];
 }
 
+/**
+ * A remote supergit daemon the local daemon tunnels to and reverse-proxies
+ * (Phase 4b — a remote box shown as a folder row). The local daemon owns an
+ * `ssh -L` tunnel to `user@host:sshPort` forwarding to the remote daemon's
+ * loopback `port`; requests to `/api/daemons/<id>/*` are forwarded there.
+ * See plans/PLAN-REMOTE-DAEMON.md.
+ */
+export interface RemoteDaemon {
+  id: string;
+  /** User-friendly name shown on the row. */
+  label: string;
+  /** SSH host (hostname or IP) of the remote box. */
+  host: string;
+  /** SSH user. Absent → ssh's own default (config / current user). */
+  user?: string;
+  /** Port the remote supergit daemon listens on (its loopback). */
+  port: number;
+  /** SSH port. Absent → 22. */
+  sshPort?: number;
+  /** Path to the private key for the tunnel. Absent → ssh agent. */
+  identityPath?: string;
+  /** Optional accent colour for the row, mirroring Repo.color (`#rrggbb`). */
+  color?: string;
+  addedAt: string;
+}
+
+interface RemoteDaemonsFile {
+  remoteDaemons: RemoteDaemon[];
+}
+
+/** Fields a caller supplies when registering a remote daemon; the
+ *  registry fills in `id` and `addedAt` and defaults `port`. */
+export interface RemoteDaemonInput {
+  label: string;
+  host: string;
+  user?: string;
+  port?: number;
+  sshPort?: number;
+  identityPath?: string;
+  color?: string;
+}
+
 const REPOS_FILE = "repos.json";
 const SESSION_TITLES_FILE = "session-titles.json";
 const PREFS_FILE = "prefs.json";
+const REMOTE_DAEMONS_FILE = "remote-daemons.json";
+const DEFAULT_REMOTE_DAEMON_PORT = 7777;
 
 async function resolveGitToplevel(dir: string): Promise<string> {
   try {
@@ -702,6 +746,75 @@ export class Workspace {
     const payload: ReposFile = { repos };
     await writeFile(
       join(this.path, REPOS_FILE),
+      JSON.stringify(payload, null, 2),
+    );
+  }
+
+  // ── Remote daemons (Phase 4b: a remote box as a folder row) ──────
+  // Mirrors the Repo CRUD above. Stored in its own remote-daemons.json
+  // (not repos.json) so local repos and remote daemons never clobber each
+  // other, and a tolerant read keeps a corrupt/absent file from breaking
+  // the dashboard. See plans/PLAN-REMOTE-DAEMON.md.
+
+  async listRemoteDaemons(): Promise<RemoteDaemon[]> {
+    try {
+      const raw = await readFile(
+        join(this.path, REMOTE_DAEMONS_FILE),
+        "utf-8",
+      );
+      const parsed = JSON.parse(raw) as RemoteDaemonsFile;
+      if (!parsed || !Array.isArray(parsed.remoteDaemons)) return [];
+      return parsed.remoteDaemons;
+    } catch {
+      return [];
+    }
+  }
+
+  async addRemoteDaemon(input: RemoteDaemonInput): Promise<RemoteDaemon> {
+    const host = input.host?.trim();
+    if (!host) throw new Error("remote daemon host must be non-empty");
+    const label = input.label?.trim() || host;
+    const daemon: RemoteDaemon = {
+      id: randomUUID(),
+      label,
+      host,
+      port: input.port ?? DEFAULT_REMOTE_DAEMON_PORT,
+      addedAt: new Date().toISOString(),
+    };
+    if (input.user?.trim()) daemon.user = input.user.trim();
+    if (input.sshPort != null) daemon.sshPort = input.sshPort;
+    if (input.identityPath?.trim())
+      daemon.identityPath = input.identityPath.trim();
+    if (input.color?.trim()) daemon.color = input.color.trim();
+    const daemons = await this.listRemoteDaemons();
+    daemons.push(daemon);
+    await this.writeRemoteDaemons(daemons);
+    return daemon;
+  }
+
+  async removeRemoteDaemon(id: string): Promise<boolean> {
+    const daemons = await this.listRemoteDaemons();
+    const next = daemons.filter((d) => d.id !== id);
+    if (next.length === daemons.length) return false;
+    await this.writeRemoteDaemons(next);
+    return true;
+  }
+
+  /** Re-insert a remote daemon with its original id + metadata (undo/redo
+   *  parity with restoreRepo). Refuses to duplicate an existing id. */
+  async restoreRemoteDaemon(daemon: RemoteDaemon): Promise<void> {
+    const daemons = await this.listRemoteDaemons();
+    if (daemons.some((d) => d.id === daemon.id)) {
+      throw new Error(`Remote daemon already exists with id ${daemon.id}`);
+    }
+    daemons.push(daemon);
+    await this.writeRemoteDaemons(daemons);
+  }
+
+  private async writeRemoteDaemons(daemons: RemoteDaemon[]): Promise<void> {
+    const payload: RemoteDaemonsFile = { remoteDaemons: daemons };
+    await writeFile(
+      join(this.path, REMOTE_DAEMONS_FILE),
       JSON.stringify(payload, null, 2),
     );
   }
