@@ -133,17 +133,34 @@ public exposure).
       `0.0.0.0` default and that `Bun.serve` consumes `BIND` (no hard-coded
       literal). `packages/daemon/test/server-bind.test.ts`.
 
-### Phase 1 — One-command remote install (SSH path)
-- [ ] `curl … | bash` installer that, on the remote box:
-  - [ ] installs Bun, clones supergit, builds the SPA.
-  - [ ] sets up the daemon as a systemd service bound to
-        `127.0.0.1` (`SUPERGIT_BIND=127.0.0.1`).
-  - [ ] creates a locked-down `supergit` user + a forward-only SSH key
-        (`restrict,permitopen="localhost:<port>"`).
-  - [ ] prints the generated private key + the exact `ssh -L …` command.
-- [ ] Idempotent re-run (upgrade in place without clobbering the
-      workspace repo / `events.jsonl` / `repos.json`).
-- [ ] Uninstall path (remove service + user + key).
+### Phase 1 — One-command remote install ✅ DONE (systemd + Docker)
+Deliverables under `deploy/`. Two deployment shapes, same end state
+(daemon reachable ONLY via the tunnel):
+- [x] `deploy/install.sh` — systemd path. On the box: installs Bun
+      system-wide (`/usr/local`, so the service user can exec it), clones
+      + builds the SPA (the macOS artifact pipeline can't produce a Linux
+      server bundle, and node-pty/ssh2 must compile on Linux — so we build
+      on the box), creates a `--system` `supergit` user, installs the unit.
+  - [x] `deploy/supergit-daemon.service` — unit template; binds directly
+        to loopback via `Environment=SUPERGIT_BIND=127.0.0.1`.
+  - [x] forward-only SSH key: `restrict,port-forwarding,permitopen=
+        "127.0.0.1:<port>",command="…"` in the service user's
+        authorized_keys — the key can ONLY tunnel to the daemon, no shell.
+  - [x] prints the private key + the exact `ssh -N -L …` line + browse URL.
+  - [x] idempotent (git fetch/checkout in place, reuse workspace + key)
+        and `--uninstall`.
+- [x] `deploy/Dockerfile` + `deploy/docker-compose.yml` — Docker path.
+      Multi-stage build IS the prebuilt Linux artifact (builds node-pty
+      etc. on Linux inside the image). Key nuance: do NOT set
+      `SUPERGIT_BIND=127.0.0.1` *inside* the container (Docker's port
+      proxy reaches it over the veth, not loopback → would be
+      unreachable). Instead keep the in-container default `0.0.0.0` and
+      restrict on the host with `-p 127.0.0.1:7777:7777`. Workspace on a
+      named volume so it survives image upgrades.
+- Validated: `bash -n deploy/install.sh` passes; unit template renders
+  with all placeholders filled.
+- NOT YET tested on a real box — needs a live smoke test:
+  install → tunnel → load the dashboard.
 
 ### Phase 2 — Make connecting friction-free
 - [ ] Helper that wraps `ssh -N -L …` (autossh-style reconnect on
