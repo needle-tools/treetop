@@ -264,6 +264,24 @@
     {/if}
     <span class="fb-name">{entry.name}</span>
     <button
+      class="fb-open"
+      on:click|stopPropagation={() => {
+        void fetch("/api/open-default", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: fullPath }),
+        });
+      }}
+      title={isDir ? "Open folder in file manager" : "Open with default app"}
+      aria-label="Open"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 4h6v6"/>
+        <path d="M20 4L10 14"/>
+        <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
+      </svg>
+    </button>
+    <button
       class="fb-star"
       class:fb-star-on={isStarred}
       on:click|stopPropagation={() => onToggleStar(fullPath)}
@@ -281,7 +299,7 @@
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.8"
+          stroke-width="2.4"
           stroke-linejoin="round"
           ><polygon
             points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9"

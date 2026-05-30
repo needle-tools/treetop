@@ -868,6 +868,26 @@
                 {#if missing}
                   <span class="fb-missing-hint">missing</span>
                 {/if}
+                {#if !missing}
+                  <button
+                    class="fb-open"
+                    on:click|stopPropagation={() => {
+                      void fetch("/api/open-default", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: item.fullPath }),
+                      });
+                    }}
+                    title={isDir ? "Open folder in file manager" : "Open with default app"}
+                    aria-label="Open"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14 4h6v6"/>
+                      <path d="M20 4L10 14"/>
+                      <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
+                    </svg>
+                  </button>
+                {/if}
                 <button
                   class="fb-row-copy"
                   on:click|stopPropagation={() => copyOnePath(item.fullPath)}

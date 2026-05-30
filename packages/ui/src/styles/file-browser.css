@@ -156,7 +156,12 @@
   display: block;
 }
 .fb-row:hover .fb-star {
-  opacity: 0.55;
+  /* On non-Apple displays the thin outline at low opacity nearly
+   * disappears against the row background. Use the brighter muted
+   * tone and a higher opacity so the star reads clearly even on
+   * lower-contrast monitors. */
+  opacity: 0.85;
+  color: var(--text-muted);
 }
 .fb-row:hover .fb-star:hover {
   opacity: 1;
@@ -165,6 +170,37 @@
 .fb-star.fb-star-on {
   opacity: 1;
   color: #e5c248;
+}
+
+/* Per-row "open with default app" button (folders + files). Same
+ * hover-reveal pattern as .fb-star. Tucked between the name and the
+ * star so the star stays as the rightmost affordance — matches Mac
+ * Finder's tag layout. */
+.fb-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.1s ease-out, color 0.1s ease-out;
+}
+.fb-open svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  display: block;
+}
+.fb-row:hover .fb-open {
+  opacity: 0.85;
+  color: var(--text-muted);
+}
+.fb-row:hover .fb-open:hover {
+  opacity: 1;
+  color: var(--text-1);
 }
 /* Per-row copy-path button. Lives next to the star in starred-only
  * rows. Same hover-reveal pattern as .fb-star; turns green when the
