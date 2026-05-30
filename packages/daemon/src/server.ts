@@ -93,6 +93,8 @@ import {
   cachePathFor,
 } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
+import { TunnelManager } from "./tunnel-manager";
+import { parseDaemonProxyPath, buildProxyTargetUrl } from "./daemon-proxy";
 import { saveAttachment, serveAttachment } from "./attachments";
 import {
   sampleProcs,
@@ -271,6 +273,22 @@ const sshSyncTracker = new SyncTracker(
     await uploadFile(sftp, localCachePath, remotePath);
   },
 );
+
+// Owns the ssh -L tunnels to attached remote daemons (Phase 4b). Requests
+// to /api/daemons/<id>/* are reverse-proxied over these tunnels to the
+// remote daemon's loopback. See plans/PLAN-REMOTE-DAEMON.md.
+const tunnelManager = new TunnelManager();
+
+/** Ensure a tunnel is open for a registered remote daemon and return its
+ *  local loopback port. Throws if the id isn't registered. */
+async function ensureRemoteTunnelPort(id: string): Promise<number> {
+  const daemons = await workspace.listRemoteDaemons();
+  const daemon = daemons.find((d) => d.id === id);
+  if (!daemon) throw new Error("remote daemon not found");
+  const tunnel = await tunnelManager.open(daemon);
+  return tunnel.localPort;
+}
+
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
 const termSshSessions = new Map<string, SshSession>();
 const terminalPersist = new TerminalPersist(WORKSPACE_PATH);
@@ -6932,6 +6950,123 @@ const server = Bun.serve<TermWsData, never>({
 
       if (url.pathname === "/api/prefs" && req.method === "GET") {
         return json(await workspace.getPrefs());
+      }
+
+      // ── Remote daemons (Phase 4b: a remote box as a folder row) ──────
+      // CRUD on the registry + a reverse proxy. The proxy forwards
+      // /api/daemons/<id>/<rest> over the ssh -L tunnel to the remote
+      // daemon's own /api/<rest>, which lands there as a loopback request →
+      // full API. See plans/PLAN-REMOTE-DAEMON.md. These are loopback-only
+      // (the LAN gate already blocks them remotely — not in
+      // LAN_ALLOWED_ROUTES).
+      if (url.pathname === "/api/daemons" && req.method === "GET") {
+        return json(await workspace.listRemoteDaemons());
+      }
+
+      if (url.pathname === "/api/daemons" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as Record<
+          string,
+          unknown
+        > | null;
+        if (!body || typeof body.host !== "string") {
+          return json(
+            { error: "body.host (string) required" },
+            { status: 400 },
+          );
+        }
+        try {
+          const daemon = await workspace.addRemoteDaemon({
+            label: typeof body.label === "string" ? body.label : "",
+            host: body.host,
+            user: typeof body.user === "string" ? body.user : undefined,
+            port: typeof body.port === "number" ? body.port : undefined,
+            sshPort:
+              typeof body.sshPort === "number" ? body.sshPort : undefined,
+            identityPath:
+              typeof body.identityPath === "string"
+                ? body.identityPath
+                : undefined,
+            color: typeof body.color === "string" ? body.color : undefined,
+          });
+          broadcast("change", { kind: "remote_daemon_add", id: daemon.id });
+          return json(daemon);
+        } catch (e) {
+          return json(
+            { error: String(e instanceof Error ? e.message : e) },
+            { status: 400 },
+          );
+        }
+      }
+
+      {
+        const proxied = parseDaemonProxyPath(url.pathname);
+        // Bare `/api/daemons/<id>` + DELETE = unregister (and tear down
+        // the tunnel). Everything else under an id is reverse-proxied.
+        if (proxied && proxied.rest === "/" && req.method === "DELETE") {
+          await tunnelManager.close(proxied.id);
+          const removed = await workspace.removeRemoteDaemon(proxied.id);
+          if (!removed) {
+            return json(
+              { error: "remote daemon not found" },
+              { status: 404 },
+            );
+          }
+          broadcast("change", {
+            kind: "remote_daemon_remove",
+            id: proxied.id,
+          });
+          return json({ ok: true });
+        }
+        if (proxied) {
+          let localPort: number;
+          try {
+            localPort = await ensureRemoteTunnelPort(proxied.id);
+          } catch {
+            return json(
+              { error: "remote daemon not found" },
+              { status: 404 },
+            );
+          }
+          const target = buildProxyTargetUrl(
+            localPort,
+            proxied.rest,
+            url.search,
+          );
+          // Forward method, headers (minus Host), and body; stream the
+          // response straight back so NDJSON repo streams / diffs / file
+          // reads pass through intact.
+          const fwdHeaders = new Headers(req.headers);
+          fwdHeaders.delete("host");
+          try {
+            const upstream = await fetch(target, {
+              method: req.method,
+              headers: fwdHeaders,
+              body:
+                req.method === "GET" || req.method === "HEAD"
+                  ? undefined
+                  : req.body,
+              // @ts-expect-error Bun supports duplex for streaming bodies
+              duplex: "half",
+            });
+            const respHeaders = new Headers(upstream.headers);
+            for (const [k, v] of Object.entries(CORS)) {
+              respHeaders.set(k, v);
+            }
+            return new Response(upstream.body, {
+              status: upstream.status,
+              headers: respHeaders,
+            });
+          } catch (e) {
+            return json(
+              {
+                error: `remote daemon unreachable: ${String(
+                  e instanceof Error ? e.message : e,
+                )}`,
+              },
+              { status: 502 },
+            );
+          }
+        }
       }
 
       if (url.pathname === "/api/prefs" && req.method === "PATCH") {
