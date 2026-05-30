@@ -18,6 +18,7 @@ export type SoundTag =
   | "peer-session"
   | "session-stop"
   | "ai-needs-input"
+  | "git-push"
   | "ai-attention"
   | "ai-funny"
   | "ai-disagree"
@@ -145,6 +146,13 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     volume: 0.4,
     overlay: true,
     selfCooldown: 10_000,
+  },
+  // Positive "achievement" chime on a successful git push.
+  "git-push": {
+    files: ["/sounds/git-push.ogg"],
+    volume: 0.4,
+    overlay: true,
+    selfCooldown: 2000,
   },
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
   "ai-disagree": {

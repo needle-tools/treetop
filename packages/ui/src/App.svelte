@@ -1413,6 +1413,7 @@
         kind?: string;
       };
       if (res.ok && body.ok) {
+        play("git-push");
         addToast({
           kind: "success",
           message: "Pushed to upstream.",
