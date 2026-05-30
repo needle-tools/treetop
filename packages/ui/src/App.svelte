@@ -5884,6 +5884,22 @@
       ({ targetWtPath, agentName } = findInRepos());
     }
     if (!targetWtPath || !agentName) return;
+    // Find the row key so we can unfold a collapsed worktree row — the
+    // session column otherwise renders inside `display: none` chrome
+    // and the scroll-into-view below lands on nothing.
+    const targetRepo = repos.find((r) =>
+      (r.worktrees ?? []).some((w) => w.path === targetWtPath),
+    );
+    if (targetRepo) {
+      const rowKey = `${targetRepo.id}|${targetWtPath}`;
+      if (rowFolded[rowKey]) {
+        rowFolded = { ...rowFolded, [rowKey]: false };
+        if (!rowHasBeenShown[rowKey]) {
+          rowHasBeenShown = { ...rowHasBeenShown, [rowKey]: true };
+          void stickAllSessionsInWtToBottom(targetWtPath);
+        }
+      }
+    }
     const existing = openSessionsByWt[targetWtPath] ?? [];
     if (!existing.some((s) => s.source === source)) {
       openSessionsByWt = {

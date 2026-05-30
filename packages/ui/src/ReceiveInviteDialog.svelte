@@ -57,6 +57,17 @@
    *  dialog then shows the conflict view with three buttons (replace
    *  / keep both / cancel) instead of the normal Accept button. */
   let conflict: Divergence | null = null;
+  /** Set after a successful accept — drives the post-accept "imported"
+   *  view that shows where the session landed (repo + filename) and a
+   *  "Go to session" button. We deliberately do NOT auto-close: the
+   *  user asked for an explicit destination read-out. */
+  let imported: {
+    importedAs: string;
+    title: string;
+    repoName: string;
+    agent: string;
+    mode: "fresh" | "replace" | "keep_both";
+  } | null = null;
 
   let lastOfferId: string | null = null;
   $: if ($activeInvite && $activeInvite.offerId !== lastOfferId) {
@@ -64,6 +75,7 @@
     invite = null;
     action = null;
     conflict = null;
+    imported = null;
     void loadInvite($activeInvite.offerId);
   }
   $: if (!$activeInvite) {
@@ -71,6 +83,7 @@
     invite = null;
     action = null;
     conflict = null;
+    imported = null;
   }
 
   async function loadInvite(offerId: string) {
@@ -134,26 +147,39 @@
       const body = (await res.json().catch(() => null)) as {
         sid?: string;
         importedAs?: string;
+        title?: string;
+        repoName?: string;
+        agent?: string;
       } | null;
-      action = {
-        kind: "ok",
-        message:
-          mode === "replace"
-            ? "Replaced. Session updated."
-            : mode === "keep_both"
-              ? "Saved alongside the existing copy."
-              : "Accepted. Session imported.",
-      };
-      // Auto-focus the freshly imported session in its worktree
-      // strip. App.svelte's focusSessionBySource awaits one repos
-      // refresh if the source isn't in cache yet — which it
-      // typically won't be, since the import only just landed.
+      // Show a post-accept summary instead of auto-closing — the user
+      // asked for an explicit "where did it land" read-out with a
+      // button to navigate to the freshly imported session.
       if (body?.importedAs) {
-        requestSessionFocus(body.importedAs);
+        imported = {
+          importedAs: body.importedAs,
+          title: body.title || invite.manifest.title,
+          repoName: body.repoName || invite.manifest.originRepoName,
+          agent: body.agent || invite.manifest.agent,
+          mode:
+            mode === "replace"
+              ? "replace"
+              : mode === "keep_both"
+                ? "keep_both"
+                : "fresh",
+        };
+        conflict = null;
+      } else {
+        action = {
+          kind: "ok",
+          message:
+            mode === "replace"
+              ? "Replaced. Session updated."
+              : mode === "keep_both"
+                ? "Saved alongside the existing copy."
+                : "Accepted. Session imported.",
+        };
+        setTimeout(() => closeInvite(), 1200);
       }
-      // Auto-close on success after a beat so the user sees the result
-      // and so a fresh invite doesn't open over a stale state.
-      setTimeout(() => closeInvite(), 1200);
     } catch (e) {
       action = {
         kind: "err",
@@ -187,6 +213,12 @@
     } finally {
       actionPending = false;
     }
+  }
+
+  function goToSession() {
+    if (!imported) return;
+    requestSessionFocus(imported.importedAs);
+    closeInvite();
   }
 
   function fmtBytes(n: number): string {
@@ -232,6 +264,53 @@
         <div class="invite-buttons">
           <button type="button" class="invite-btn" on:click={closeInvite}
             >Close</button
+          >
+        </div>
+      {:else if imported}
+        <h2 id="invite-title" class="invite-title">
+          {imported.mode === "replace"
+            ? "Session updated"
+            : imported.mode === "keep_both"
+              ? "Session saved alongside existing copy"
+              : "Session imported"}
+        </h2>
+        <dl class="invite-meta">
+          <div>
+            <dt>name</dt>
+            <dd class="invite-ellipsis" title={imported.title || "(untitled)"}>
+              {imported.title || "(untitled)"}
+            </dd>
+          </div>
+          <div>
+            <dt>repo</dt>
+            <dd class="invite-ellipsis" title={imported.repoName || "—"}>
+              {imported.repoName || "—"}
+            </dd>
+          </div>
+          <div>
+            <dt>agent</dt>
+            <dd>{imported.agent}</dd>
+          </div>
+          <div>
+            <dt>file</dt>
+            <dd
+              class="invite-path invite-ellipsis"
+              title={imported.importedAs}
+            >
+              {imported.importedAs}
+            </dd>
+          </div>
+        </dl>
+        <div class="invite-buttons">
+          <button
+            type="button"
+            class="invite-btn"
+            on:click={closeInvite}>Close</button
+          >
+          <button
+            type="button"
+            class="invite-btn invite-accept"
+            on:click={goToSession}>Go to session</button
           >
         </div>
       {:else}
@@ -416,6 +495,14 @@
     font-size: 1rem;
     font-weight: 600;
     line-height: 1.3;
+    /* Long titles (incoming-invite view shows the sender's free-text
+       title verbatim) would push the dialog past its max-width and
+       trigger horizontal overflow. Clamp to two lines + ellipsis. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .invite-body {
     margin: 0;
@@ -439,10 +526,30 @@
     margin: 0;
     color: inherit;
     word-break: break-all;
+    /* Without min-width: 0 a grid `1fr` track is sized by its content
+       min-width (longest unbreakable token) instead of the available
+       column space — paths without spaces would otherwise stretch the
+       cell and force the dialog wider than its max-width. */
+    min-width: 0;
+  }
+  /* Single-line ellipsis variant used for paths + session titles in the
+     post-accept summary. Pair with title="…" for hover tooltip so the
+     full string remains discoverable. */
+  .invite-ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
   }
   .invite-remote {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 0.75rem;
+  }
+  .invite-path {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    word-break: break-all;
   }
   .invite-pill {
     display: inline-block;

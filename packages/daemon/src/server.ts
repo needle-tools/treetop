@@ -4490,6 +4490,9 @@ const server = Bun.serve<TermWsData, never>({
         return json({
           sid: result.manifest.sid,
           importedAs: result.importedPath,
+          title: result.manifest.title,
+          repoName: localRepoName,
+          agent: result.manifest.agent,
         });
       }
 
