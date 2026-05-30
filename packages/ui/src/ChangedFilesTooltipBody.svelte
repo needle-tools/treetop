@@ -20,6 +20,7 @@
    *  pins it open so moving the cursor onto the diff popup doesn't
    *  close the parent. */
 
+  import { apiUrl } from "./api";
   import { getContext, onDestroy } from "svelte";
   import { TOOLTIP_HOVER_CTX, type TooltipHoverCtx } from "./Tooltip.svelte";
   import FileDiffTooltipBody from "./FileDiffTooltipBody.svelte";

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { apiUrl } from "./api";
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
-  import { apiUrl } from "./api";
   import Popover from "./Popover.svelte";
   import { repoChipFg } from "./repo-color";
   import { ICONS } from "./icons";
