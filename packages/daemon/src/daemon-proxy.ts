@@ -50,6 +50,19 @@ export function buildProxyTargetUrl(
 }
 
 /**
+ * Like buildProxyTargetUrl but for the WebSocket bridge: the remote
+ * daemon's terminal I/O socket at `ws://127.0.0.1:<localPort>/api/<rest>`
+ * (the local end of the ssh tunnel). Used for live remote terminals.
+ */
+export function buildProxyWsUrl(
+  localPort: number,
+  rest: string,
+  search: string,
+): string {
+  return `ws://127.0.0.1:${localPort}/api${rest}${search}`;
+}
+
+/**
  * Forward a request to a remote daemon at `127.0.0.1:<localPort>` (the
  * local end of its ssh -L tunnel) and return a Response that streams the
  * upstream body straight back. Extracted from the route handler so it can

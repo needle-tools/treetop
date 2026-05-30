@@ -74,6 +74,26 @@ beforeAll(() => {
           headers: { "Content-Type": "application/x-ndjson" },
         });
       }
+      if (u.pathname === "/api/stream") {
+        // SSE, like the real /api/stream — emit events with a delay
+        // between them so the test can prove the proxy delivers them
+        // incrementally (streaming) rather than buffering to completion.
+        const enc = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          async start(c) {
+            c.enqueue(enc.encode(`event: a\ndata: 1\n\n`));
+            await Bun.sleep(60);
+            c.enqueue(enc.encode(`event: b\ndata: 2\n\n`));
+            c.close();
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        });
+      }
       return new Response("nope", { status: 404 });
     },
   });
@@ -121,6 +141,33 @@ describe("forwardToRemote (Tier 2: real in-process remote)", () => {
     const res = await forwardToRemote(remotePort, proxied, req, "", NO_CORS);
     expect(res.headers.get("content-type")).toBe("application/x-ndjson");
     expect(await res.text()).toBe(`{"id":"a"}\n{"id":"b"}\n`);
+  });
+
+  test("proxies SSE and delivers events incrementally (not buffered)", async () => {
+    // SSE (/api/stream) is just a long-lived streamed GET, so it should
+    // flow through the same forwardToRemote() with no SSE-specific code.
+    // Proof: read the FIRST event before the remote emits the second
+    // (which is 60ms later) — if the proxy buffered to completion, the
+    // first read would block until the whole stream closed.
+    const proxied = parseDaemonProxyPath("/api/daemons/d1/stream")!;
+    const req = new Request("http://local/api/daemons/d1/stream");
+    const res = await forwardToRemote(remotePort, proxied, req, "", NO_CORS);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    const first = dec.decode((await reader.read()).value);
+    // First chunk arrives carrying event "a" while event "b" is still
+    // 60ms out — proves incremental delivery.
+    expect(first).toContain("event: a");
+    expect(first).not.toContain("event: b");
+    // Drain the rest so event "b" still comes through.
+    let rest = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      rest += dec.decode(value);
+    }
+    expect(rest).toContain("event: b");
   });
 
   test("passes the remote's 404 through (not rewritten to 502)", async () => {

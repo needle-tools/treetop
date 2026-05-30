@@ -94,7 +94,12 @@ import {
 } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
 import { TunnelManager } from "./tunnel-manager";
-import { parseDaemonProxyPath, forwardToRemote } from "./daemon-proxy";
+import {
+  parseDaemonProxyPath,
+  forwardToRemote,
+  buildProxyWsUrl,
+} from "./daemon-proxy";
+import { RemoteWsBridge } from "./daemon-ws-proxy";
 import { saveAttachment, serveAttachment } from "./attachments";
 import {
   sampleProcs,
@@ -1483,10 +1488,14 @@ function startGraceIfIdle(termId: string) {
   graceTimers.set(termId, timer);
 }
 
-interface TermWsData {
-  termId: string;
-  unsubscribe: (() => void) | null;
-}
+// A connected WebSocket is one of two kinds:
+//  - "terminal": a local PTY's live I/O (the original, only WS in the app)
+//  - "proxy":    a REMOTE daemon's terminal, bridged over the ssh tunnel
+//                (Phase 4b). The bridge is created in open() once we have
+//                the ServerWebSocket to use as the browser-facing peer.
+type TermWsData =
+  | { kind: "terminal"; termId: string; unsubscribe: (() => void) | null }
+  | { kind: "proxy"; remoteUrl: string; bridge: RemoteWsBridge | null };
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
@@ -1605,7 +1614,40 @@ const server = Bun.serve<TermWsData, never>({
           }
           if (
             srv.upgrade(req, {
-              data: { termId, unsubscribe: null },
+              data: { kind: "terminal", termId, unsubscribe: null },
+            })
+          ) {
+            return undefined as unknown as Response;
+          }
+          return json({ error: "upgrade failed" }, { status: 500 });
+        }
+      }
+
+      // WebSocket upgrade for a REMOTE daemon's terminal I/O —
+      // /api/daemons/<id>/terminals/<t>/io. Bridged over the ssh tunnel to
+      // the remote daemon's own terminal WS on its loopback, so the remote
+      // socket is never exposed (same trust path as the HTTP proxy). This
+      // sits after the LAN gate above, so it's loopback-only. See
+      // daemon-ws-proxy.ts and plans/PLAN-REMOTE-DAEMON.md.
+      {
+        const m = url.pathname.match(
+          /^\/api\/daemons\/([^/]+)\/(terminals\/[^/]+\/io)$/,
+        );
+        if (m) {
+          const daemonId = m[1]!;
+          let localPort: number;
+          try {
+            localPort = await ensureRemoteTunnelPort(daemonId);
+          } catch {
+            return json(
+              { error: "remote daemon not found" },
+              { status: 404 },
+            );
+          }
+          const remoteUrl = buildProxyWsUrl(localPort, `/${m[2]!}`, url.search);
+          if (
+            srv.upgrade(req, {
+              data: { kind: "proxy", remoteUrl, bridge: null },
             })
           ) {
             return undefined as unknown as Response;
@@ -7413,6 +7455,12 @@ const server = Bun.serve<TermWsData, never>({
      *  Stays attached for the WS lifetime; on close we detach and start
      *  a grace timer that disposes the PTY if nothing else attaches. */
     open(ws) {
+      if (ws.data.kind === "proxy") {
+        // Bridge this browser socket to the remote daemon's terminal WS
+        // over the tunnel. The ServerWebSocket is the browser-facing peer.
+        ws.data.bridge = new RemoteWsBridge(ws.data.remoteUrl, ws);
+        return;
+      }
       const { termId } = ws.data;
       const handle = terminalBackend.get(termId);
       if (!handle) {
@@ -7455,6 +7503,11 @@ const server = Bun.serve<TermWsData, never>({
     /** Client messages: binary = bytes to write to the PTY (keystrokes).
      *  Text = JSON control frames; currently just `{type:"resize",cols,rows}`. */
     message(ws, msg) {
+      if (ws.data.kind === "proxy") {
+        // Forward keystrokes / resize frames to the remote terminal.
+        ws.data.bridge?.sendToRemote(msg as string | Uint8Array);
+        return;
+      }
       const handle = terminalBackend.get(ws.data.termId);
       if (!handle) return;
       if (typeof msg === "string") {
@@ -7499,6 +7552,11 @@ const server = Bun.serve<TermWsData, never>({
     },
 
     close(ws) {
+      if (ws.data.kind === "proxy") {
+        // Browser closed → close the remote terminal socket too.
+        ws.data.bridge?.closeRemote();
+        return;
+      }
       const termId = ws.data.termId;
       try {
         ws.data.unsubscribe?.();
