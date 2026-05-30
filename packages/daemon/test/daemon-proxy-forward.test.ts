@@ -1,5 +1,4 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import type { Server } from "bun";
 import { forwardToRemote, parseDaemonProxyPath } from "../src/daemon-proxy";
 
 /**
@@ -30,7 +29,9 @@ const NO_CORS: Record<string, string> = {};
 // A minimal fake remote daemon: answers a few /api/* routes the way the
 // real one would, including a streamed NDJSON body and an echo of the
 // request method/headers/body so the test can assert passthrough.
-let remote: Server;
+// Inferred from Bun.serve — annotating as `Server` needs a type arg under
+// this tsconfig, and the inferred type is exactly right here.
+let remote: ReturnType<typeof Bun.serve>;
 let remotePort: number;
 
 beforeAll(() => {
