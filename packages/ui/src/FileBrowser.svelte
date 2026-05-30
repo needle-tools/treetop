@@ -199,6 +199,21 @@
     } catch {}
   }
 
+  /** Re-list the current directory AND every currently expanded
+   *  subfolder. Used by the menu's "Refresh" action so the user can
+   *  force a fresh read after a `git pull` or external file changes
+   *  the watcher might have missed. Preserves expanded state and the
+   *  on-screen scroll position. */
+  async function refreshAll() {
+    const expandedPaths = Object.keys(expanded);
+    // loadCurrentDir consumes savedExpandedPaths internally and calls
+    // restoreExpanded for us; piggyback on that so we don't double-
+    // fetch the current dir.
+    savedExpandedPaths = expandedPaths;
+    expanded = {};
+    await loadCurrentDir();
+  }
+
   async function loadCurrentDir() {
     loading = true;
     error = null;
@@ -600,6 +615,12 @@
     lastActivityFallback="{visibleEntries.length} items"
     closeTitle="Close this file browser panel."
     menuItems={[
+      {
+        kind: "action",
+        label: "Refresh",
+        icon: "↻",
+        onSelect: () => { void refreshAll(); },
+      },
       {
         kind: "action",
         label: showDotfiles ? "Hide dotfiles" : "Show dotfiles",
