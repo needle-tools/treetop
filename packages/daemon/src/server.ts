@@ -181,6 +181,22 @@ const daemonLogPath = await initDaemonLog(WORKSPACE_PATH);
 //   3. 7777          — default.
 const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 
+// Network interface the daemon listens on (the `hostname` passed to
+// Bun.serve). The bind address is a kernel-level filter on where a
+// connection may arrive *before* any route code runs:
+//   - "0.0.0.0"   — all interfaces. Reachable from the LAN; needed for
+//                   session sharing (see plans/PLAN-SESSION-SHARE.md).
+//   - "127.0.0.1" — loopback only. Invisible to the LAN and the internet;
+//                   the OS refuses any non-local connection. This is the
+//                   correct posture for a daemon fronted by a tunnel
+//                   (SSH/WireGuard) on a public box — the tunnel
+//                   terminates on loopback, so the daemon still sees a
+//                   trusted loopback request while nothing is exposed.
+//                   See plans/PLAN-REMOTE-DAEMON.md.
+// Default stays "0.0.0.0" so existing LAN session-sharing is unaffected;
+// remote/tunnel deployments override with SUPERGIT_BIND=127.0.0.1.
+const BIND = process.env.SUPERGIT_BIND || "0.0.0.0";
+
 /** Path to a built UI's `dist/` directory. When non-null the daemon
  *  serves static files from it for any GET that doesn't match an API
  *  route (with a SPA fallback to index.html for client-side routes).
@@ -1456,11 +1472,13 @@ interface TermWsData {
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
-  // Bind to all interfaces so other machines on the LAN can reach the
-  // daemon (needed for session sharing — see plans/PLAN-SESSION-SHARE.md).
-  // Bun's default is also 0.0.0.0 but we set it explicitly so a future
-  // Bun change can't silently flip us to localhost-only.
-  hostname: "0.0.0.0",
+  // Network interface to listen on. Defaults to all interfaces (0.0.0.0)
+  // so other machines on the LAN can reach the daemon for session sharing
+  // (see plans/PLAN-SESSION-SHARE.md); override with SUPERGIT_BIND=127.0.0.1
+  // for a loopback-only / tunnel-fronted deployment (see the BIND comment
+  // near the PORT definition and plans/PLAN-REMOTE-DAEMON.md). We set it
+  // explicitly so a future Bun default change can't silently flip us.
+  hostname: BIND,
   // Bun's default maxRequestBodySize is too low for session-share
   // offers — a stripped Claude JSONL wrapped in JSON easily exceeds
   // it for longer sessions (2-5 MB is common, 20+ MB for marathon
@@ -6372,20 +6390,28 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/stream" && req.method === "GET") {
+        // Capture *this* connection's controller so cancel() can remove
+        // exactly it. The ReadableStream cancel(reason) callback receives
+        // the cancellation reason — NOT the controller — so we close over
+        // the controller from start() instead. Removing only this entry
+        // keeps the multi-client broadcast set correct: other connected
+        // browsers stay subscribed. (broadcast() also prunes dead
+        // controllers lazily on enqueue failure, but that only fires on
+        // the next event — explicit removal here avoids an inflated
+        // sseSubscribers.size between disconnect and the next broadcast,
+        // which would keep the `size === 0` early-returns from firing.)
+        let myController: ReadableStreamDefaultController<Uint8Array> | null =
+          null;
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
+            myController = controller;
             sseSubscribers.add(controller);
             orphanCleaner.onFrontendConnected();
             controller.enqueue(sseEncoder.encode(`: connected\n\n`));
           },
-          cancel(controllerOrReason) {
+          cancel() {
             orphanCleaner.onFrontendDisconnected();
-            for (const ctrl of sseSubscribers) {
-              try {
-              } catch {
-                sseSubscribers.delete(ctrl);
-              }
-            }
+            if (myController) sseSubscribers.delete(myController);
           },
         });
         return new Response(stream, {
