@@ -119,7 +119,8 @@ main.zen-row .row:not(.row-zen) {
    SessionView's .session wrapper so its message list / inline TUI
    fills the column. */
 .row.row-zen .terminal-wrap,
-.row.row-zen .fb-content {
+.row.row-zen .fb-content,
+.row.row-zen .messages {
   max-height: none;
   min-height: 0;
   flex: 1 1 0;
