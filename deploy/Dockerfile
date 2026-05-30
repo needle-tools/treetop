@@ -6,14 +6,17 @@
 # bonjour-service) whose prebuilds are per-platform — so a server build
 # must be assembled on Linux. Building inside this image guarantees that.
 #
-# Security posture: run this image with host networking
+# Security posture: run this image on a LINUX host with host networking
 # (`network_mode: host` / `--network host`) and SUPERGIT_BIND=127.0.0.1,
 # so the daemon listens only on the host's loopback — reachable via the
 # SSH tunnel, invisible to every other interface. Do NOT use bridge +
 # `-p 127.0.0.1:<port>`: Docker's port-proxy rewrites the request source
 # to the bridge gateway, which the daemon's origin-based auth treats as
-# "remote" and 403s (verified 2026-05-30). See deploy/docker-compose.yml
-# and plans/PLAN-REMOTE-DAEMON.md for the full rationale.
+# "remote" and 403s (VERIFIED 2026-05-30). The host-networking fix is the
+# expected design but is NOT yet verified end-to-end — host networking
+# does not map to host loopback on Docker Desktop (Win/Mac), so it must be
+# smoke-tested on the real Linux box. See deploy/docker-compose.yml and
+# plans/PLAN-REMOTE-DAEMON.md.
 
 # Pin to the same Bun the repo expects (package.json engines/packageManager).
 FROM oven/bun:1.3.14 AS build
