@@ -245,16 +245,32 @@ export function windowsOpensWithNotepad(opts: {
 
 /**
  * Whether a Windows file extension has a registered default handler.
- * `assoc <ext>` is a cmd builtin that exits non-zero ("File association
- * not found …") when nothing is registered. `ext` includes the dot,
- * e.g. ".json".
+ * Checks two registries because modern Windows stores user-set "Open
+ * with → Always use this app" choices separately from the legacy
+ * HKCR/HKLM ProgID associations:
+ *
+ *   1. `assoc <ext>` — legacy HKEY_CLASSES_ROOT lookup. Covers extensions
+ *      with a system-default ProgID (e.g. .txt → txtfile out of the box).
+ *   2. HKCU\…\FileExts\<ext>\UserChoice — modern per-user override set by
+ *      the OS "Open with" picker. Many extensions (.md, .json, .yaml) have
+ *      no HKCR default; the user's pick lives ONLY here. Without this
+ *      check we'd fall back to notepad for any extension whose default
+ *      app the user chose through the GUI picker.
+ *
+ * `ext` includes the dot, e.g. ".json".
  */
 async function hasFileAssociation(ext: string): Promise<boolean> {
-  const proc = Bun.spawn([CMD_EXE, "/c", "assoc", ext], {
+  const assocProc = Bun.spawn([CMD_EXE, "/c", "assoc", ext], {
     stdout: "ignore",
     stderr: "ignore",
   });
-  return (await proc.exited) === 0;
+  if ((await assocProc.exited) === 0) return true;
+  const userChoiceKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\${ext}\\UserChoice`;
+  const regProc = Bun.spawn(["reg", "query", userChoiceKey, "/v", "ProgId"], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return (await regProc.exited) === 0;
 }
 
 /**
