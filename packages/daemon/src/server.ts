@@ -94,7 +94,7 @@ import {
 } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
 import { TunnelManager } from "./tunnel-manager";
-import { parseDaemonProxyPath, buildProxyTargetUrl } from "./daemon-proxy";
+import { parseDaemonProxyPath, forwardToRemote } from "./daemon-proxy";
 import { saveAttachment, serveAttachment } from "./attachments";
 import {
   sampleProcs,
@@ -7027,45 +7027,9 @@ const server = Bun.serve<TermWsData, never>({
               { status: 404 },
             );
           }
-          const target = buildProxyTargetUrl(
-            localPort,
-            proxied.rest,
-            url.search,
-          );
-          // Forward method, headers (minus Host), and body; stream the
-          // response straight back so NDJSON repo streams / diffs / file
-          // reads pass through intact.
-          const fwdHeaders = new Headers(req.headers);
-          fwdHeaders.delete("host");
-          try {
-            const upstream = await fetch(target, {
-              method: req.method,
-              headers: fwdHeaders,
-              body:
-                req.method === "GET" || req.method === "HEAD"
-                  ? undefined
-                  : req.body,
-              // @ts-expect-error Bun supports duplex for streaming bodies
-              duplex: "half",
-            });
-            const respHeaders = new Headers(upstream.headers);
-            for (const [k, v] of Object.entries(CORS)) {
-              respHeaders.set(k, v);
-            }
-            return new Response(upstream.body, {
-              status: upstream.status,
-              headers: respHeaders,
-            });
-          } catch (e) {
-            return json(
-              {
-                error: `remote daemon unreachable: ${String(
-                  e instanceof Error ? e.message : e,
-                )}`,
-              },
-              { status: 502 },
-            );
-          }
+          // Forwarding logic lives in daemon-proxy.ts so it can be tested
+          // against a real in-process remote (daemon-proxy-forward.test.ts).
+          return forwardToRemote(localPort, proxied, req, url.search, CORS);
         }
       }
 
