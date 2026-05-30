@@ -22,8 +22,8 @@ function fakeProc() {
   return {
     pid: 4242,
     signals: [] as string[],
-    kill(sig?: string) {
-      this.signals.push(sig ?? "SIGTERM");
+    kill(sig?: number | NodeJS.Signals) {
+      this.signals.push(String(sig ?? "SIGTERM"));
     },
     exited,
     die(code = 0) {
