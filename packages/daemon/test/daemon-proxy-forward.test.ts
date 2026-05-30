@@ -77,7 +77,7 @@ beforeAll(() => {
       return new Response("nope", { status: 404 });
     },
   });
-  remotePort = remote.port;
+  remotePort = remote.port!;
 });
 
 afterAll(() => {
