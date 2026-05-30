@@ -7440,6 +7440,7 @@ const shutdown = async (signal: string) => {
     orphanCleaner.dispose();
     sshSyncTracker.dispose();
     sshPool.disconnectAll();
+    await tunnelManager.closeAll().catch(() => {});
     // De-advertise from mDNS so other peers drop us immediately
     // instead of waiting for the TTL to expire (~60s).
     await peerDiscovery?.stop().catch(() => {});
