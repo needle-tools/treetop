@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   buildPreviewItems,
   extractLatestAction,
+  fetchCachedSummary,
+  fetchPreviewItems,
   summarizeToolInput,
   type PreviewActionMessage,
 } from "../src/preview-action";
@@ -243,7 +245,9 @@ describe("buildPreviewItems", () => {
     // Most common shape: a few alternating turns, all with plain
     // text. Order is strictly chronological (oldest at top, newest
     // at bottom), latest user is at the bottom because it's the
-    // newest message.
+    // newest message. q1 is the conversation opener so it's pinned
+    // at the top; it's under 20 chars, so q2 (the second user
+    // message) is shown too — here it doubles as the latest turn.
     const items = buildPreviewItems([
       userMsg("q1"),
       aiText("r1"),
@@ -251,6 +255,9 @@ describe("buildPreviewItems", () => {
       aiText("r2"),
     ]);
     expect(items).toEqual([
+      // q1: conversation opener at the top (no gap — nothing was
+      // skipped between it and the rest in this tiny conversation).
+      { kind: "msg", role: "user", text: "q1", timestamp: undefined, opener: true },
       // r1 precedes the latest user message (q2) → tagged `older`
       // so the preview renders it dimmed as background context.
       {
@@ -346,7 +353,7 @@ describe("buildPreviewItems", () => {
     expect((userBubbles[0] as { text: string }).text).toBe("q1\nq2\nq3");
   });
 
-  test("gap > 30s breaks the burst — only the post-gap user message survives", () => {
+  test("gap > 30s breaks the burst — latest user bubble is the post-gap message", () => {
     const base = new Date("2026-01-01T12:00:00Z").getTime();
     const at = (offsetMs: number) => new Date(base + offsetMs).toISOString();
     const items = buildPreviewItems([
@@ -359,8 +366,17 @@ describe("buildPreviewItems", () => {
     const userBubbles = items.filter(
       (it) => it.kind === "msg" && it.role === "user",
     );
-    expect(userBubbles).toHaveLength(1);
-    expect((userBubbles[0] as { text: string }).text).toBe("fresh");
+    // old1/old2 now surface as conversation-opener bubbles (old1 is
+    // under 20 chars so old2 comes along too), but the >30s gap still
+    // breaks the burst: the LATEST user bubble is "fresh" alone, NOT
+    // merged with the opener messages.
+    const last = userBubbles[userBubbles.length - 1] as { text: string };
+    expect(last.text).toBe("fresh");
+    expect((userBubbles[0] as { text: string }).text).toBe("old1");
+    // No bubble merges the opener into the latest turn.
+    expect(userBubbles.map((u) => (u as { text: string }).text)).not.toContain(
+      "old1\nold2\nfresh",
+    );
   });
 
   test("merged burst is clamped to ~300 chars with an ellipsis", () => {
@@ -375,7 +391,7 @@ describe("buildPreviewItems", () => {
     expect(text.endsWith("…")).toBe(true);
   });
 
-  test("assistant between user turns breaks the burst — only post-assistant user is kept", () => {
+  test("assistant between user turns breaks the burst — latest bubble is the post-assistant user", () => {
     const items = buildPreviewItems([
       userMsg("first ask"),
       aiText("answer"),
@@ -384,8 +400,12 @@ describe("buildPreviewItems", () => {
     const userBubbles = items.filter(
       (it) => it.kind === "msg" && it.role === "user",
     );
-    expect(userBubbles).toHaveLength(1);
-    expect((userBubbles[0] as { text: string }).text).toBe("followup");
+    // "first ask" is the (short) opener so it's shown at the top, but
+    // the assistant turn between still breaks the burst: the latest
+    // user bubble is "followup" on its own, not merged with the opener.
+    const last = userBubbles[userBubbles.length - 1] as { text: string };
+    expect(last.text).toBe("followup");
+    expect((userBubbles[0] as { text: string }).text).toBe("first ask");
   });
 
   test("assistant with mixed text + tool_use → bubbles and chips render inline in source order", () => {
@@ -633,6 +653,86 @@ describe("buildPreviewItems", () => {
     });
   });
 
+  test("conversation opener: first user message is pinned on top with a gap pill to the recent window", () => {
+    // Long conversation: the opener is far from the latest exchange.
+    // The first user message must appear at the very top, followed by
+    // a "+N messages" gap pill conveying how much was skipped.
+    const items = buildPreviewItems([
+      userMsg("Refactor the authentication module"), // opener (>= 20 chars)
+      aiText("r1"),
+      aiText("r2"),
+      aiText("r3"),
+      aiText("r4"),
+      aiText("r5"),
+      userMsg("final"),
+    ]);
+    expect(items[0]).toEqual({
+      kind: "msg",
+      role: "user",
+      text: "Refactor the authentication module",
+      timestamp: undefined,
+      opener: true,
+    });
+    // r1 + r2 skipped between the opener and the last-3 assistant
+    // window (r3, r4, r5).
+    expect(items[1]).toEqual({ kind: "gap", count: 2 });
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect((userBubbles[userBubbles.length - 1] as { text: string }).text).toBe(
+      "final",
+    );
+  });
+
+  test("short opener (< 20 chars) → the second user message is shown too", () => {
+    const items = buildPreviewItems([
+      userMsg("hi"), // opener, only 2 chars → pull in the next user message
+      aiText("r1"),
+      userMsg("the actual real request goes here"), // second user message
+      aiText("r2"), // skipped
+      aiText("r3"), // skipped
+      aiText("r4"), // window
+      aiText("r5"), // window
+      aiText("r6"), // window
+      userMsg("latest"),
+    ]);
+    // Both opener bubbles render first, with NO gap pill between them
+    // even though an assistant turn (r1) sits in between.
+    expect(items[0]).toEqual({
+      kind: "msg",
+      role: "user",
+      text: "hi",
+      timestamp: undefined,
+      opener: true,
+    });
+    expect(items[1]).toEqual({
+      kind: "msg",
+      role: "user",
+      text: "the actual real request goes here",
+      timestamp: undefined,
+      opener: true,
+    });
+    // The gap to the recent window counts the two skipped assistants
+    // (r2, r3) between the opener and the last-3 window.
+    expect(items[2]).toEqual({ kind: "gap", count: 2 });
+  });
+
+  test("opener is not duplicated when the first user message is already the latest", () => {
+    // Single user turn: the opener and the latest message are one and
+    // the same, so it appears exactly once with no stray gap pill.
+    const items = buildPreviewItems([
+      userMsg("only question"),
+      aiText("r1"),
+      aiText("r2"),
+    ]);
+    const userBubbles = items.filter(
+      (it) => it.kind === "msg" && it.role === "user",
+    );
+    expect(userBubbles).toHaveLength(1);
+    expect((userBubbles[0] as { text: string }).text).toBe("only question");
+    expect(items.filter((it) => it.kind === "gap")).toEqual([]);
+  });
+
   test("timestamps are preserved on each rendered bubble", () => {
     const items = buildPreviewItems([
       userMsg("q1", { timestamp: "2026-05-16T10:00:00Z" }),
@@ -640,5 +740,137 @@ describe("buildPreviewItems", () => {
     ]);
     expect(items[0]).toMatchObject({ timestamp: "2026-05-16T10:00:00Z" });
     expect(items[1]).toMatchObject({ timestamp: "2026-05-16T10:00:05Z" });
+  });
+});
+
+describe("fetchCachedSummary", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("returns the cached summary body + generatedAt when one exists", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          summary: {
+            frontmatter: { generatedAt: "2026-05-21T13:42:11.000Z" },
+            body: "  A concise recap.  ",
+          },
+          stale: false,
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+    // Body is returned trimmed, with the generated-at timestamp.
+    expect(await fetchCachedSummary("/x/session.jsonl")).toEqual({
+      text: "A concise recap.",
+      generatedAt: "2026-05-21T13:42:11.000Z",
+    });
+  });
+
+  test("omits generatedAt when the frontmatter has none", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ summary: { frontmatter: {}, body: "recap" } }),
+        { status: 200 },
+      )) as typeof fetch;
+    expect(await fetchCachedSummary("/x/session.jsonl")).toEqual({
+      text: "recap",
+      generatedAt: undefined,
+    });
+  });
+
+  test("returns undefined when no summary is cached", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ summary: null }), {
+        status: 200,
+      })) as typeof fetch;
+    expect(await fetchCachedSummary("/x/session.jsonl")).toBeUndefined();
+  });
+
+  test("returns undefined for an empty/whitespace body", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ summary: { body: "   " } }), {
+        status: 200,
+      })) as typeof fetch;
+    expect(await fetchCachedSummary("/x/session.jsonl")).toBeUndefined();
+  });
+
+  test("fails soft (undefined) on a non-OK response", async () => {
+    globalThis.fetch = (async () =>
+      new Response("nope", { status: 500 })) as typeof fetch;
+    expect(await fetchCachedSummary("/x/session.jsonl")).toBeUndefined();
+  });
+
+  test("fails soft (undefined) when fetch throws", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("offline");
+    }) as typeof fetch;
+    expect(await fetchCachedSummary("/x/session.jsonl")).toBeUndefined();
+  });
+});
+
+describe("fetchPreviewItems summary wiring", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("surfaces the cached summary alongside the transcript items", async () => {
+    // Route-aware stub: the transcript endpoint returns one user
+    // message, the summary endpoint returns a cached body.
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      if (u.includes("/api/session?")) {
+        return new Response(
+          JSON.stringify({
+            messages: [{ role: "user", blocks: [{ type: "text", text: "hi" }] }],
+          }),
+          { status: 200 },
+        );
+      }
+      if (u.includes("/api/sessions/summarize")) {
+        return new Response(
+          JSON.stringify({
+            summary: {
+              body: "recap text",
+              frontmatter: { generatedAt: "2026-05-21T13:42:11.000Z" },
+            },
+            stale: false,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await fetchPreviewItems("/x/session.jsonl");
+    expect(result).not.toBeNull();
+    expect(result!.summary).toEqual({
+      text: "recap text",
+      generatedAt: "2026-05-21T13:42:11.000Z",
+    });
+    expect(result!.items.length).toBeGreaterThan(0);
+  });
+
+  test("a missing summary does not block the transcript", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      if (u.includes("/api/session?")) {
+        return new Response(
+          JSON.stringify({
+            messages: [{ role: "user", blocks: [{ type: "text", text: "hi" }] }],
+          }),
+          { status: 200 },
+        );
+      }
+      // Summary endpoint 500s — must not sink the whole fetch.
+      return new Response("boom", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchPreviewItems("/x/session.jsonl");
+    expect(result).not.toBeNull();
+    expect(result!.summary).toBeUndefined();
+    expect(result!.items.length).toBeGreaterThan(0);
   });
 });

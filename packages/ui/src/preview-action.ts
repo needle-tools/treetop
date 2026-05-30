@@ -43,6 +43,11 @@ export interface PreviewMsg {
    *  contrast so the eye snaps to the current exchange first. Only
    *  meaningful for `role: "assistant"`. */
   older?: boolean;
+  /** The conversation opener (first user message, pinned at the top).
+   *  Rendered with a tighter line-clamp than a regular bubble since
+   *  it's only there to show how the session began. Only meaningful
+   *  for `role: "user"`. */
+  opener?: boolean;
 }
 
 export interface PreviewGap {
@@ -76,6 +81,13 @@ function clampUserBurst(text: string): string {
  *  text nor a tool_use block yet (mid-stream). Guarantees the user
  *  always sees a row for the latest AI turn. */
 const ASSISTANT_TYPING_PLACEHOLDER = "…";
+
+/** The very first user message is always surfaced at the top of the
+ *  preview so a glance shows how the session started, not just the
+ *  latest exchange. A short opener ("hi", "continue") carries little
+ *  signal on its own, so when the first message is shorter than this
+ *  we also include the second user message for context. */
+const OPENER_MIN_CHARS = 20;
 
 const DETAIL_FIELDS = [
   "file_path",
@@ -240,6 +252,10 @@ function latestActionHostIdx(all: PreviewActionMessage[]): number {
  *  to paint the side panel:
  *    - an optional top "Now:" action chip when the latest tool
  *      call belongs to a message outside the displayed window
+ *    - the conversation opener (the first user message, plus the
+ *      second when the first is shorter than OPENER_MIN_CHARS),
+ *      followed by a "+N messages" gap pill so the reader sees how
+ *      the session began and roughly how long it has run
  *    - the latest user turn + the last N assistant turns in strict
  *      chronological order (so a brand-new user message lands at
  *      the bottom, not pinned on top)
@@ -318,7 +334,21 @@ export function buildPreviewItems(all: PreviewActionMessage[]): PreviewItem[] {
   const burstMergedText = clampUserBurst(
     burstUsers.map((u) => u.text).join("\n"),
   );
+  // Conversation opener: the first user message (plus the second
+  // user message when the first is too short to convey intent). These
+  // are pinned at the top of the preview, separated from the recent
+  // window by a "+N messages" gap pill so the reader gets a sense of
+  // both how the session started and how long it has run.
+  const openerIdxs = new Set<number>();
+  for (const it of items) {
+    if (it.role !== "user") continue;
+    openerIdxs.add(it.idx);
+    if (openerIdxs.size === 1 && it.text.length >= OPENER_MIN_CHARS) break;
+    if (openerIdxs.size >= 2) break;
+  }
+
   const includedIdxs = new Set<number>([
+    ...openerIdxs,
     ...lastAssistants.map((x) => x.idx),
     ...burstIdxs,
   ]);
@@ -353,7 +383,13 @@ export function buildPreviewItems(all: PreviewActionMessage[]): PreviewItem[] {
         if (includedIdxs.has(it.idx)) continue;
         if (it.idx > prev.idx && it.idx < cur.idx) skipped++;
       }
-      if (skipped > 0) out.push({ kind: "gap", count: skipped });
+      // The two opener bubbles read as one "how it started" unit, so
+      // any assistant turn between them isn't surfaced as a gap pill —
+      // the gap that matters sits between the opener and the recent
+      // window.
+      const betweenOpeners =
+        openerIdxs.has(prev.idx) && openerIdxs.has(cur.idx);
+      if (skipped > 0 && !betweenOpeners) out.push({ kind: "gap", count: skipped });
     }
     const it = included[i]!;
     const fullMessage = all[it.idx]!;
@@ -377,6 +413,7 @@ export function buildPreviewItems(all: PreviewActionMessage[]): PreviewItem[] {
         role: "user",
         text: it.text,
         timestamp: it.timestamp,
+        ...(openerIdxs.has(it.idx) ? { opener: true } : {}),
       });
       continue;
     }
@@ -409,19 +446,73 @@ export function buildPreviewItems(all: PreviewActionMessage[]): PreviewItem[] {
   return out;
 }
 
+/** A cached Ollama summary as the preview cares about it: the body
+ *  text plus when it was generated (so the panel can show a "how
+ *  fresh is this" timestamp at a glance). */
+export interface PreviewSummary {
+  text: string;
+  /** ISO timestamp from the summary's frontmatter `generatedAt`,
+   *  when present. */
+  generatedAt?: string;
+}
+
+/** Read the cached Ollama summary for a session, if one already
+ *  exists on disk. Purely a *lookup* — it never triggers generation
+ *  (that's the POST route's job). Returns the summary body + its
+ *  generated-at timestamp when a cached file is present, else
+ *  undefined. Fails soft on any network / HTTP error so it can never
+ *  block the transcript fetch. */
+export async function fetchCachedSummary(
+  source: string,
+): Promise<PreviewSummary | undefined> {
+  try {
+    const res = await fetch(
+      `/api/sessions/summarize?source=${encodeURIComponent(source)}`,
+    );
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as {
+      summary?: {
+        body?: unknown;
+        frontmatter?: { generatedAt?: unknown };
+      } | null;
+    };
+    const body = data.summary?.body;
+    if (typeof body !== "string") return undefined;
+    const trimmed = body.trim();
+    if (trimmed.length === 0) return undefined;
+    const ga = data.summary?.frontmatter?.generatedAt;
+    return {
+      text: trimmed,
+      generatedAt: typeof ga === "string" && ga.length > 0 ? ga : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Fetch a session's transcript from the daemon and produce both the
  *  preview render list and the timestamp of the most recent user/
  *  assistant message. Two callers want this: the session dock (for
  *  its hover panel) and the future linked-session / worktree-sessions
  *  hover preview. Returns `null` on network or HTTP errors so callers
- *  can leave previous state in place. */
+ *  can leave previous state in place.
+ *
+ *  Also opportunistically returns the cached Ollama summary (when one
+ *  already exists) so the panel can show it above the messages — the
+ *  two fetches run in parallel and a missing summary never blocks the
+ *  transcript. */
 export async function fetchPreviewItems(
   source: string,
-): Promise<{ items: PreviewItem[]; latestTs?: string } | null> {
+): Promise<{
+  items: PreviewItem[];
+  latestTs?: string;
+  summary?: PreviewSummary;
+} | null> {
   try {
-    const res = await fetch(
-      `/api/session?source=${encodeURIComponent(source)}`,
-    );
+    const [res, summary] = await Promise.all([
+      fetch(`/api/session?source=${encodeURIComponent(source)}`),
+      fetchCachedSummary(source),
+    ]);
     if (!res.ok) return null;
     const data = (await res.json()) as {
       messages?: PreviewActionMessage[];
@@ -437,7 +528,7 @@ export async function fetchPreviewItems(
         break;
       }
     }
-    return { items, latestTs };
+    return { items, latestTs, summary };
   } catch {
     return null;
   }

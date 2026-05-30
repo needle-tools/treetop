@@ -23,6 +23,7 @@
     type PreviewAction,
     type PreviewGap,
     type PreviewMsg,
+    type PreviewSummary,
   } from "./preview-action";
 
   /** Minimal shape this component needs per session. The host computes
@@ -352,6 +353,9 @@
    *  touching the Svelte component. */
   type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
   let previews: Record<string, PreviewItem[]> = {};
+  /** Per-source cached Ollama summary (when one already exists on
+   *  disk). Shown above the messages; never generated here. */
+  let previewSummaries: Record<string, PreviewSummary> = {};
   let previewLoading: Record<string, boolean> = {};
   /** Per-source latest user/assistant message timestamp, harvested
    *  on every preview fetch. Drives the "x time ago" in the dock
@@ -388,6 +392,9 @@
     const result = await fetchPreviewItems(source);
     if (result) {
       previews = { ...previews, [source]: result.items };
+      if (result.summary) {
+        previewSummaries = { ...previewSummaries, [source]: result.summary };
+      }
       if (result.latestTs) {
         latestMessageTs = { ...latestMessageTs, [source]: result.latestTs };
       }
@@ -1062,6 +1069,7 @@
       >
         <ChatPreview
           items={previews[hoveredEntry.transcriptSource]}
+          summary={previewSummaries[hoveredEntry.transcriptSource]}
           agent={hoveredEntry.agent}
           loading={previewLoading[hoveredEntry.transcriptSource] ?? false}
         />

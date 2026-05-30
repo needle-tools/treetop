@@ -24,6 +24,7 @@
     type PreviewAction,
     type PreviewGap,
     type PreviewMsg,
+    type PreviewSummary,
   } from "./preview-action";
   import { filterSessions, type AgentSession } from "./sessionSearch";
 
@@ -131,6 +132,9 @@
   // JSONL transcript).
   type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
   let previewCache: Record<string, PreviewItem[]> = {};
+  /** Cached Ollama summary per source, shown above the messages when
+   *  one already exists on disk (never generated here). */
+  let previewSummaryCache: Record<string, PreviewSummary> = {};
   let shellPreviewCache: Record<string, ShellCmd[]> = {};
   let previewLoading: Record<string, boolean> = {};
   let hoveredSess: AgentSession | null = null;
@@ -212,7 +216,15 @@
     if (!opts.force && previewCache[sess.source]) return;
     previewLoading = { ...previewLoading, [sess.source]: true };
     const r = await fetchPreviewItems(sess.source);
-    if (r) previewCache = { ...previewCache, [sess.source]: r.items };
+    if (r) {
+      previewCache = { ...previewCache, [sess.source]: r.items };
+      if (r.summary) {
+        previewSummaryCache = {
+          ...previewSummaryCache,
+          [sess.source]: r.summary,
+        };
+      }
+    }
     previewLoading = { ...previewLoading, [sess.source]: false };
   }
 
@@ -542,6 +554,7 @@
     {:else}
       <ChatPreview
         items={previewCache[hoveredSess.source]}
+        summary={previewSummaryCache[hoveredSess.source]}
         agent={hoveredSess.agent}
         loading={previewLoading[hoveredSess.source] ?? false}
       />

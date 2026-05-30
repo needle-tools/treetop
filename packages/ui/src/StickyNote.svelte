@@ -70,6 +70,7 @@
     type PreviewAction,
     type PreviewGap,
     type PreviewMsg,
+    type PreviewSummary,
   } from "./preview-action";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
@@ -523,6 +524,9 @@
   // session-search popover, so the rendering stays consistent.
   type StickyPreviewItem = PreviewMsg | PreviewGap | PreviewAction;
   let previewItems: StickyPreviewItem[] | undefined = undefined;
+  /** Cached Ollama summary for the linked session, shown above the
+   *  messages when one already exists (never generated here). */
+  let previewSummary: PreviewSummary | undefined = undefined;
   let previewLoading = false;
   let previewSource: string | null = null;
   let previewOpen = false;
@@ -554,6 +558,7 @@
     const r = await fetchPreviewItems(source);
     if (r && previewSource === source) {
       previewItems = r.items;
+      previewSummary = r.summary;
     }
     previewLoading = false;
   }
@@ -3249,6 +3254,7 @@
     >
       <ChatPreview
         items={previewItems}
+        summary={previewSummary}
         agent={(note.target?.agent ?? undefined) as
           | "claude"
           | "codex"
