@@ -51,6 +51,12 @@
     /** User + assistant turns in the last ~4 hours. Drives the
      *  "hot session" activity badge in the dock label. */
     recentMessageCount?: number;
+    /** ISO timestamp of the actual last user/assistant message. Set
+     *  by the daemon's JSONL scan; falls back to `lastActive` (file
+     *  mtime) when missing. Preferred over `lastActive` for "when
+     *  was this last touched" since `--resume` can bump the mtime
+     *  without appending messages. */
+    lastMessageTs?: string;
     /** JSONL path the dock fetches on hover to render the last few
      *  user/assistant messages as a side preview. Undefined ⇒ no
      *  preview (shells, fresh `__new__:` columns). */
@@ -360,7 +366,11 @@
     const cached = entry.transcriptSource
       ? latestMessageTs[entry.transcriptSource]
       : undefined;
-    return cached ?? entry.lastActive;
+    // Prefer the daemon-side last-message timestamp over the file
+    // mtime — claude --resume and other side writes touch the file
+    // without appending new messages, so mtime would lie about
+    // "when did a human/AI last speak in this session".
+    return cached ?? entry.lastMessageTs ?? entry.lastActive;
   }
 
   async function loadPreview(
@@ -628,26 +638,30 @@
   }
 
   /** Fuzzy bucketed time for the compact dock label.
-   *    < 2h    — solid disc (fresh)
-   *    2-20h   — half disc (cooling)
-   *    20h-7d  — calendar sheet (days)
-   *    7d+     — snowflake (frozen, stale)
-   *  All monochrome — currentColor only. */
+   *    < 20h   — text: "just now" / "Xm ago" / "1h ago" / "Xh ago"
+   *    20h-7d  — calendar sheet icon
+   *    7d+     — snowflake icon
+   *  Older stuff goes graphical; recent stuff stays readable. */
   function fuzzyTime(iso?: string):
-    | { icon: "disc-full" }
-    | { icon: "disc-half" }
-    | { icon: "calendar" }
-    | { icon: "snowflake" }
+    | { kind: "text"; text: string; fresh: boolean }
+    | { kind: "icon"; icon: "calendar" | "snowflake" }
     | null {
     if (!iso) return null;
     const ms = Date.now() - Date.parse(iso);
     if (Number.isNaN(ms) || ms < 0) return null;
+    const minutes = ms / (60 * 1000);
     const hours = ms / (60 * 60 * 1000);
     const days = ms / (24 * 60 * 60 * 1000);
-    if (hours < 2) return { icon: "disc-full" };
-    if (hours < 20) return { icon: "disc-half" };
-    if (days < 7) return { icon: "calendar" };
-    return { icon: "snowflake" };
+    if (minutes < 1) return { kind: "text", text: "just now", fresh: true };
+    if (minutes < 60) {
+      return { kind: "text", text: `${Math.floor(minutes)}m`, fresh: minutes < 30 };
+    }
+    if (hours < 20) {
+      const h = Math.floor(hours);
+      return { kind: "text", text: `${h}h`, fresh: h < 2 };
+    }
+    if (days < 7) return { kind: "icon", icon: "calendar" };
+    return { kind: "icon", icon: "snowflake" };
   }
 
   /** Minimum recent-message count before we show the activity badge.
@@ -791,17 +805,13 @@
               {@const ft = fuzzyTime(freshestTimestamp(e))}
               {#if ft}
                 <span
-                  class="dock-label-time dock-time-{ft.icon}"
+                  class="dock-label-time"
+                  class:dock-time-fresh={ft.kind === "text" && ft.fresh}
+                  class:dock-time-text={ft.kind === "text"}
                   title={relTime(freshestTimestamp(e))}
                 >
-                  {#if ft.icon === "disc-full"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <circle cx="8" cy="8" r="6.5" fill="currentColor" />
-                    </svg>
-                  {:else if ft.icon === "disc-half"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M8 1.5 A6.5 6.5 0 0 0 8 14.5 Z" fill="currentColor" />
-                    </svg>
+                  {#if ft.kind === "text"}
+                    {ft.text}
                   {:else if ft.icon === "calendar"}
                     <svg viewBox="0 0 16 16" aria-hidden="true">
                       <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -948,17 +958,13 @@
               {@const ft = fuzzyTime(freshestTimestamp(e))}
               {#if ft}
                 <span
-                  class="dock-label-time dock-time-{ft.icon}"
+                  class="dock-label-time"
+                  class:dock-time-fresh={ft.kind === "text" && ft.fresh}
+                  class:dock-time-text={ft.kind === "text"}
                   title={relTime(freshestTimestamp(e))}
                 >
-                  {#if ft.icon === "disc-full"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <circle cx="8" cy="8" r="6.5" fill="currentColor" />
-                    </svg>
-                  {:else if ft.icon === "disc-half"}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M8 1.5 A6.5 6.5 0 0 0 8 14.5 Z" fill="currentColor" />
-                    </svg>
+                  {#if ft.kind === "text"}
+                    {ft.text}
                   {:else if ft.icon === "calendar"}
                     <svg viewBox="0 0 16 16" aria-hidden="true">
                       <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -1538,8 +1544,13 @@
     flex: 0 0 auto;
     display: block;
   }
-  /* Brighten the freshest bucket so "active right now" reads at a glance. */
-  .dock-label-time.dock-time-disc-full {
+  /* Tabular numbers so 1h / 12h / 47m line up across rows. */
+  .dock-label-time.dock-time-text {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.78em;
+  }
+  /* Brighten very recent sessions (< 30min / < 2h) so they pop. */
+  .dock-label-time.dock-time-fresh {
     color: var(--text-1, #e8e8e8);
   }
   /* Fixed-width cell that always reserves space so the time column

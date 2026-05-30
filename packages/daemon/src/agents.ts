@@ -57,6 +57,11 @@ export interface AgentSession {
   /** User + assistant turns with timestamps in the last 4 hours.
    *  Rough activity indicator for the dock's "hot session" badge. */
   recentMessageCount?: number;
+  /** ISO timestamp of the last actual user/assistant message in the
+   *  JSONL. Use this for "when was this session last touched by a
+   *  human/AI" rather than `lastActive` (file mtime), which is
+   *  inflated by `claude --resume` and other side writes. */
+  lastMessageTs?: string;
   /** Estimated tokens currently in the agent's context window before
    *  the next prompt. For Claude this is exact (last assistant turn's
    *  `usage.input + cache_read + cache_creation`). For Codex 0.130+
@@ -389,6 +394,12 @@ interface ClaudeUserScanResult {
    *  whenever the JSONL changes (active sessions) but goes stale for
    *  idle sessions whose file hasn't been touched since the last scan. */
   recentMessageCount: number;
+  /** ISO timestamp of the most recent user/assistant message in the
+   *  JSONL. Distinct from the file mtime because operations like
+   *  `claude --resume` touch the file without appending new
+   *  messages, which would inflate the file mtime past the actual
+   *  last conversation activity. */
+  lastMessageTs?: string;
 }
 
 /** (path, mtimeMs) → previous scan result. JSONL session files don't change
@@ -483,6 +494,14 @@ function ingestUserScanLines(
       if (isToolResultOnly) continue;
       if (countLines) result.totalMessageCount++;
       if (isRecent) result.recentMessageCount++;
+      if (typeof obj.timestamp === "string") {
+        if (
+          !result.lastMessageTs ||
+          obj.timestamp > result.lastMessageTs
+        ) {
+          result.lastMessageTs = obj.timestamp;
+        }
+      }
       const raw = firstTextFromMessageContent(content);
       if (!raw) continue;
       const cleaned = cleanForTitle(raw);
@@ -495,6 +514,14 @@ function ingestUserScanLines(
     } else if (obj.type === "assistant") {
       if (countLines) result.totalMessageCount++;
       if (isRecent) result.recentMessageCount++;
+      if (typeof obj.timestamp === "string") {
+        if (
+          !result.lastMessageTs ||
+          obj.timestamp > result.lastMessageTs
+        ) {
+          result.lastMessageTs = obj.timestamp;
+        }
+      }
       const msg = obj.message as
         | { model?: unknown; usage?: unknown }
         | undefined;
@@ -1075,6 +1102,7 @@ async function claudeSessionFromFile(
       userStats.recentMessageCount > 0
         ? userStats.recentMessageCount
         : undefined,
+    lastMessageTs: userStats.lastMessageTs,
     contextTokens: userStats.lastContextTokens,
     contextTokensExact:
       userStats.lastContextTokens !== undefined ? true : undefined,

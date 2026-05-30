@@ -146,6 +146,7 @@
     userMessageCount?: number;
     messageCount?: number;
     recentMessageCount?: number;
+    lastMessageTs?: string;
     contextTokens?: number;
     contextTokensExact?: boolean;
     contextWindow?: number;
@@ -5145,6 +5146,7 @@
     manualTitle?: string;
     lastUserMessage?: string;
     lastActive?: string;
+    lastMessageTs?: string;
     /** JSONL path the dock can fetch via `/api/session?source=…` to
      *  show the last few user/assistant messages on hover. Undefined
      *  for shells and for `__new__:` columns that haven't been
@@ -5226,6 +5228,7 @@
               newSessionTitles[s.source],
             lastUserMessage: meta?.lastUserMessage,
             lastActive: meta?.lastActive,
+            lastMessageTs: meta?.lastMessageTs,
             recentMessageCount: meta?.recentMessageCount,
             transcriptSource:
               meta?.source && !meta.source.startsWith("__")
