@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
+  import { apiUrl } from "./api";
   import SessionHeader from "./SessionHeader.svelte";
   import DiffViewer from "./DiffViewer.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
@@ -57,7 +58,7 @@
     });
     if (before) qs.set("before", before);
     if (allBranches) qs.set("all", "1");
-    const res = await fetch(`/api/commits?${qs.toString()}`);
+    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`));
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -117,7 +118,7 @@
         sha,
         context: String(contextLines()),
       });
-      const res = await fetch(`/api/commit?${qs.toString()}`);
+      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
       if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
       commitDiff = { ...commitDiff, [sha]: await res.text() };
     } catch (e) {
@@ -138,7 +139,7 @@
           sha: openCommitSha,
           context: String(contextLines()),
         });
-        const res = await fetch(`/api/commit?${qs.toString()}`);
+        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
         if (res.ok) commitDiff = { [openCommitSha]: await res.text() };
       } catch (e) {
         console.error("GitHistory: toggleFullFile", e);

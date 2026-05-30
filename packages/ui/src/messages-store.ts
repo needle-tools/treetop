@@ -7,6 +7,7 @@
  */
 
 import { writable } from "svelte/store";
+import { apiUrl } from "./api";
 
 export interface StoredMessage {
   id: string;
@@ -36,7 +37,7 @@ export const messages = writable<InboxSnapshot>(empty);
  *  broadcast arrives. */
 export async function refreshMessages(): Promise<void> {
   try {
-    const res = await fetch("/api/messages");
+    const res = await fetch(apiUrl("/api/messages"));
     if (!res.ok) return;
     const body = (await res.json()) as InboxSnapshot;
     messages.set({
@@ -117,7 +118,7 @@ export async function sendMessage(
   body: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const res = await fetch("/api/messages/send", {
+    const res = await fetch(apiUrl("/api/messages/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ peerHost, peerPort, body }),
@@ -137,7 +138,7 @@ export async function deleteMsg(
   messageId: string,
 ): Promise<boolean> {
   try {
-    const res = await fetch("/api/messages/delete", {
+    const res = await fetch(apiUrl("/api/messages/delete"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ peerId, messageId }),
@@ -153,7 +154,7 @@ export async function deleteMsg(
 }
 
 export async function mutePeer(peerId: string, minutes: number): Promise<void> {
-  await fetch("/api/messages/mute", {
+  await fetch(apiUrl("/api/messages/mute"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ peerId, durationMinutes: minutes }),
@@ -162,7 +163,7 @@ export async function mutePeer(peerId: string, minutes: number): Promise<void> {
 }
 
 export async function unmutePeer(peerId: string): Promise<void> {
-  await fetch("/api/messages/unmute", {
+  await fetch(apiUrl("/api/messages/unmute"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ peerId }),

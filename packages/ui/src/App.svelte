@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiUrl } from "./api";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -388,7 +389,7 @@
     if (peerToggleBusy) return;
     peerToggleBusy = true;
     try {
-      const res = await fetch("/api/peer-discovery", {
+      const res = await fetch(apiUrl("/api/peer-discovery"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: !peerDiscoveryEnabled }),
@@ -718,7 +719,7 @@
     ollamaModelsLoading = true;
     ollamaModelsError = null;
     try {
-      const res = await fetch("/api/ollama/models");
+      const res = await fetch(apiUrl("/api/ollama/models"));
       if (!res.ok) {
         ollamaModelsError = `daemon returned ${res.status}`;
         ollamaModels = [];
@@ -993,7 +994,7 @@
     }
     try {
       play("session-stop");
-      await fetch(`/api/terminals/${encodeURIComponent(termId)}`, {
+      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(termId)}`), {
         method: "DELETE",
       }).catch(() => {});
     } finally {
@@ -1134,7 +1135,7 @@
     stashed?: boolean;
   }> {
     try {
-      const res = await fetch(`/api/repos/${repoId}/checkout`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/checkout`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath, branch, ...options }),
@@ -1239,7 +1240,7 @@
     error?: string;
   }> {
     try {
-      const res = await fetch(`/api/repos/${repoId}/pull`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/pull`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath, ...options }),
@@ -1400,7 +1401,7 @@
     if (pushBusy[wtPath]) return;
     pushBusy = { ...pushBusy, [wtPath]: true };
     try {
-      const res = await fetch(`/api/repos/${repoId}/push`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/push`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath }),
@@ -1469,7 +1470,7 @@
 
   async function loadInstalledAgents() {
     try {
-      const res = await fetch("/api/agents/installed");
+      const res = await fetch(apiUrl("/api/agents/installed"));
       if (!res.ok) return;
       const body = (await res.json()) as {
         installed: { name: string; path: string }[];
@@ -1638,7 +1639,7 @@
     model: string,
   ): Promise<void> {
     try {
-      const res = await fetch("/api/ollama/sessions", {
+      const res = await fetch(apiUrl("/api/ollama/sessions"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, wt: wtPath, cwd: wtPath }),
@@ -1740,7 +1741,7 @@
       [wtPath]: { status: "loading", text: "" },
     };
     try {
-      const res = await fetch("/api/onboarding/describe", {
+      const res = await fetch(apiUrl("/api/onboarding/describe"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath }),
@@ -1870,7 +1871,7 @@
           "I'm continuing a conversation from another agent. " +
           "Pick up where it left off:\n\n" +
           (contextText ?? `(see ${contextPath})`);
-        void fetch("/api/ollama/chat", {
+        void fetch(apiUrl("/api/ollama/chat"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ termId, content: prompt }),
@@ -1948,7 +1949,7 @@
 
   async function loadDefaultShell() {
     try {
-      const res = await fetch("/api/shell-default");
+      const res = await fetch(apiUrl("/api/shell-default"));
       if (!res.ok) return;
       const body = (await res.json()) as { shell?: unknown; args?: unknown };
       if (typeof body.shell === "string" && body.shell.length > 0) {
@@ -2018,7 +2019,7 @@
 
   async function restoreLiveShells() {
     try {
-      const res = await fetch("/api/shells");
+      const res = await fetch(apiUrl("/api/shells"));
       if (!res.ok) return;
       const list = (await res.json()) as Array<{
         termId: string;
@@ -2052,7 +2053,7 @@
 
   async function restorePersistedTerminals() {
     try {
-      const res = await fetch("/api/terminals/persisted");
+      const res = await fetch(apiUrl("/api/terminals/persisted"));
       if (!res.ok) return;
       const list = (await res.json()) as Array<{
         termId: string;
@@ -2105,7 +2106,7 @@
       ),
     };
     delete persistedTerminals[restoreSource];
-    void fetch("/api/terminals/persisted/remove", {
+    void fetch(apiUrl("/api/terminals/persisted/remove"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ termId }),
@@ -2120,7 +2121,7 @@
       [wtPath]: existing.filter((s) => s.source !== restoreSource),
     };
     delete persistedTerminals[restoreSource];
-    void fetch("/api/terminals/persisted/remove", {
+    void fetch(apiUrl("/api/terminals/persisted/remove"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ termId }),
@@ -2282,7 +2283,7 @@
     if (oldSource === newSource) return;
     const existing = newSessionTitles[oldSource];
     try {
-      const res = await fetch("/api/session/title/migrate", {
+      const res = await fetch(apiUrl("/api/session/title/migrate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ oldSource, newSource }),
@@ -2401,7 +2402,7 @@
     error = "";
     newWtBusy = { ...newWtBusy, [repoId]: true };
     try {
-      const res = await fetch(`/api/repos/${repoId}/worktrees`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ branch }),
@@ -3280,7 +3281,7 @@
    *  full repos refresh. */
   async function refreshEvents(): Promise<void> {
     try {
-      const e = await fetch("/api/events");
+      const e = await fetch(apiUrl("/api/events"));
       if (!e.ok) return;
       events = await e.json();
     } catch {
@@ -3300,7 +3301,7 @@
     onManifest?: (skeletons: Repo[]) => void;
     onRepo?: (repo: Repo) => void;
   }): Promise<Repo[]> {
-    const r = await fetch("/api/repos", { cache: "no-cache" });
+    const r = await fetch(apiUrl("/api/repos"), { cache: "no-cache" });
     if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
     if (!r.body) throw new Error("/api/repos: response had no body");
     const reader = r.body.getReader();
@@ -3426,9 +3427,9 @@
         },
       });
       const [e, s, t] = await Promise.all([
-        fetch("/api/events"),
-        fetch("/api/shells"),
-        fetch("/api/session-titles"),
+        fetch(apiUrl("/api/events")),
+        fetch(apiUrl("/api/shells")),
+        fetch(apiUrl("/api/session-titles")),
       ]);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
       // Wait for the stream to finish before reading sibling responses,
@@ -3500,14 +3501,14 @@
     error = "";
     addFolderBusy = true;
     try {
-      const pick = await fetch("/api/pick-folder", { method: "POST" });
+      const pick = await fetch(apiUrl("/api/pick-folder"), { method: "POST" });
       if (pick.status === 204) return;
       if (!pick.ok) {
         const body = await pick.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${pick.status}`);
       }
       const { path } = (await pick.json()) as { path: string };
-      const add = await fetch("/api/repos", {
+      const add = await fetch(apiUrl("/api/repos"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),
@@ -3581,7 +3582,7 @@
     importLoading = true;
     importError = "";
     try {
-      const r = await fetch("/api/sessions/folder-suggestions");
+      const r = await fetch(apiUrl("/api/sessions/folder-suggestions"));
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${r.status}`);
@@ -3617,7 +3618,7 @@
     importAdding = new Set(importAdding).add(path);
     importError = "";
     try {
-      const r = await fetch("/api/repos", {
+      const r = await fetch(apiUrl("/api/repos"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),
@@ -3689,7 +3690,7 @@
     }
     error = "";
     try {
-      const res = await fetch(`/api/repos/${id}/rename`, {
+      const res = await fetch(apiUrl(`/api/repos/${id}/rename`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -3711,7 +3712,7 @@
   async function reorderRepos(orderedIds: string[]) {
     error = "";
     try {
-      const res = await fetch(`/api/repos/order`, {
+      const res = await fetch(apiUrl(`/api/repos/order`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ order: orderedIds }),
@@ -3795,7 +3796,7 @@
     }
     pendingRepoColor.set(id, color);
     try {
-      const res = await fetch(`/api/repos/${id}/color`, {
+      const res = await fetch(apiUrl(`/api/repos/${id}/color`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ color }),
@@ -3834,7 +3835,7 @@
         },
   ): Promise<boolean> {
     try {
-      const res = await fetch(`/api/repos/${repoId}/custom-links`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
@@ -3879,7 +3880,7 @@
       }
     }
     try {
-      const res = await fetch(`/api/repos/${repoId}/custom-links/order`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/order`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ order: orderedIds }),
@@ -3911,7 +3912,7 @@
     },
   ): Promise<boolean> {
     try {
-      const res = await fetch(`/api/repos/${repoId}/custom-links/${linkId}`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
@@ -3940,7 +3941,7 @@
     linkId: string,
   ): Promise<void> {
     try {
-      const res = await fetch(`/api/repos/${repoId}/custom-links/${linkId}`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`), {
         method: "DELETE",
       });
       if (!res.ok && res.status !== 204) {
@@ -3977,7 +3978,7 @@
     const termId = source.replace("__attached__:shell:", "");
     if (!termId || termId === source) return false;
     try {
-      const r = await fetch("/api/terminals");
+      const r = await fetch(apiUrl("/api/terminals"));
       if (!r.ok) return false;
       const list = (await r.json()) as { id: string; exitedAt?: string }[];
       return list.some((t) => t.id === termId && !t.exitedAt);
@@ -4059,7 +4060,7 @@
     )?.id;
 
     try {
-      const res = await fetch("/api/command/run", {
+      const res = await fetch(apiUrl("/api/command/run"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ linkId: link.id, repoId, repoPath: wtPath }),
@@ -4079,7 +4080,7 @@
         persistCommandTermSources();
         runningCommandIds = new Set([...runningCommandIds, link.id]);
         const title = link.name?.trim() || cmdLink.cmd;
-        void fetch("/api/session/title", {
+        void fetch(apiUrl("/api/session/title"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ source, title }),
@@ -4159,7 +4160,7 @@
     pendingRemoval.add(id);
     repos = repos.filter((r) => r.id !== id);
     try {
-      const res = await fetch(`/api/repos/${id}`, { method: "DELETE" });
+      const res = await fetch(apiUrl(`/api/repos/${id}`), { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
@@ -4187,7 +4188,7 @@
       return;
     }
     async function call(force: boolean) {
-      const res = await fetch(`/api/repos/${repoId}/worktrees`, {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wt.path, force }),
@@ -4234,7 +4235,7 @@
   ): Promise<void> {
     let liveEvents: Event[];
     try {
-      const res = await fetch("/api/events");
+      const res = await fetch(apiUrl("/api/events"));
       if (!res.ok) return;
       liveEvents = (await res.json()) as Event[];
     } catch {
@@ -4251,7 +4252,7 @@
   async function toggleEvent(id: string, toggle: "undo" | "redo") {
     error = "";
     try {
-      const res = await fetch(`/api/events/${id}/${toggle}`, {
+      const res = await fetch(apiUrl(`/api/events/${id}/${toggle}`), {
         method: "POST",
       });
       if (!res.ok) {
@@ -4346,7 +4347,7 @@
       }
     }
     try {
-      const res = await fetch("/api/open", {
+      const res = await fetch(apiUrl("/api/open"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path, app }),
@@ -4419,7 +4420,7 @@
 
   async function loadEditors() {
     try {
-      const res = await fetch("/api/editors");
+      const res = await fetch(apiUrl("/api/editors"));
       if (!res.ok) return;
       editors = await res.json();
     } catch {
@@ -4429,7 +4430,7 @@
 
   async function refreshRunningCommands(): Promise<void> {
     try {
-      const res = await fetch("/api/commands/running");
+      const res = await fetch(apiUrl("/api/commands/running"));
       if (!res.ok) return;
       const body = (await res.json()) as { running: { linkId: string }[] };
       runningCommandIds = new Set(body.running.map((r) => r.linkId));
@@ -4438,7 +4439,7 @@
 
   async function refreshCommandUrls(): Promise<void> {
     try {
-      const res = await fetch("/api/commands/urls");
+      const res = await fetch(apiUrl("/api/commands/urls"));
       if (!res.ok) return;
       const body = (await res.json()) as { urls: Record<string, string[]> };
       commandUrls = body.urls;
@@ -4446,7 +4447,7 @@
   }
 
   function subscribeToStream(): () => void {
-    const es = new EventSource("/api/stream");
+    const es = new EventSource(apiUrl("/api/stream"));
     es.addEventListener("change", (rawEvt: MessageEvent) => {
       time("sse-change", () => {
       // Parse first so we can gate the two expensive refetches on the
@@ -4861,7 +4862,7 @@
     );
     const nextAnchors = [anchor, ...others];
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ anchors: nextAnchors }),
@@ -4875,7 +4876,7 @@
 
   async function deleteOrphan(noteId: string): Promise<void> {
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`), {
         method: "DELETE",
       });
       if (!res.ok) return;
@@ -4975,7 +4976,7 @@
     }
     try {
       const qs = new URLSearchParams({ path });
-      const res = await fetch(`/api/wt-summary?${qs.toString()}`);
+      const res = await fetch(apiUrl(`/api/wt-summary?${qs.toString()}`));
       if (!res.ok) {
         // Drop the "loading" sentinel so the next hover retries. Don't
         // wipe real cached data on a transient failure — better to
@@ -5616,7 +5617,7 @@
     // On resume we fire load() once which catches up via cache.
     if (isUiIdle()) return;
     try {
-      await fetch("/api/fetch", {
+      await fetch(apiUrl("/api/fetch"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repos: [repoId] }),
@@ -5748,7 +5749,7 @@
    *  reads localIp + port so the tagline can show the LAN URL. */
   async function loadSystemInfo() {
     try {
-      const res = await fetch("/api/health");
+      const res = await fetch(apiUrl("/api/health"));
       if (!res.ok) return;
       const body = (await res.json()) as {
         totalMemBytes?: unknown;
@@ -5781,7 +5782,7 @@
     void refreshRunningCommands();
     void refreshCommandUrls();
     void restoreLiveShells().then(() => restorePersistedTerminals());
-    fetch("/api/peer-discovery")
+    fetch(apiUrl("/api/peer-discovery"))
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d) peerDiscoveryEnabled = d.enabled === true;

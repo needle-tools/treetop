@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiUrl } from "./api";
   import { activeRepair, closeRepair } from "./repair-session-dialog";
 
   type Phase =
@@ -49,7 +50,7 @@
     if (!$activeRepair) return;
     phase = { kind: "diagnosing" };
     try {
-      const res = await fetch("/api/sessions/repair", {
+      const res = await fetch(apiUrl("/api/sessions/repair"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: $activeRepair.source, dryRun: true }),
@@ -98,7 +99,7 @@
     if (!$activeRepair) return;
     phase = { kind: "repairing" };
     try {
-      const res = await fetch("/api/sessions/repair", {
+      const res = await fetch(apiUrl("/api/sessions/repair"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: $activeRepair.source }),

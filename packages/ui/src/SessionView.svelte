@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiUrl } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
@@ -72,7 +73,7 @@
     const processed = text.replace(
       /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi,
       (_match, filePath) => {
-        const url = `/api/image?path=${encodeURIComponent(filePath.trim())}`;
+        const url = apiUrl(`/api/image?path=${encodeURIComponent(filePath.trim())}`);
         return `![pasted image](${url})`;
       },
     );
@@ -385,7 +386,7 @@
     const targetSource = source;
     try {
       const qs = new URLSearchParams({ source: targetSource });
-      const res = await fetch(`/api/sessions/summarize?${qs.toString()}`);
+      const res = await fetch(apiUrl(`/api/sessions/summarize?${qs.toString()}`));
       if (!res.ok) {
         // Race: `source` could have changed while in flight.
         if (targetSource === source) {
@@ -467,7 +468,7 @@
     // First-run path: probe installed models.
     let list: { name: string; size?: number }[] = [];
     try {
-      const res = await fetch("/api/ollama/models");
+      const res = await fetch(apiUrl("/api/ollama/models"));
       if (!res.ok) {
         showSummarizeNotice(
           "Couldn't reach Ollama — try the menu's Summarize for details.",
@@ -536,7 +537,7 @@
     const targetSource = source;
     let collected = "";
     try {
-      const res = await fetch("/api/sessions/summarize", {
+      const res = await fetch(apiUrl("/api/sessions/summarize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: targetSource, model: targetModel }),
@@ -714,7 +715,7 @@
     let timedOut = false;
     try {
       if (terminalId) {
-        await fetch(`/api/terminals/${encodeURIComponent(terminalId)}`, {
+        await fetch(apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}`), {
           method: "DELETE",
           signal: controller.signal,
         }).catch((e) => {
@@ -827,7 +828,7 @@
     const cwd = session?.cwd;
     if (!sid || !cwd) return;
     try {
-      const res = await fetch("/api/open", {
+      const res = await fetch(apiUrl("/api/open"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -852,7 +853,7 @@
     const dir = session?.cwd || wtPath;
     if (!dir) return;
     try {
-      const res = await fetch("/api/open", {
+      const res = await fetch(apiUrl("/api/open"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: dir, app: "files" }),
@@ -1106,7 +1107,7 @@
       const qs = new URLSearchParams({ source });
       const headers: Record<string, string> = {};
       if (lastEtag) headers["If-None-Match"] = lastEtag;
-      const res = await fetch(`/api/session?${qs.toString()}`, { headers });
+      const res = await fetch(apiUrl(`/api/session?${qs.toString()}`), { headers });
       if (res.status === 304) return;
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1164,7 +1165,7 @@
 
   async function cancelInflight(id: string) {
     try {
-      await fetch(`/api/active-sends/${encodeURIComponent(id)}`, {
+      await fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`), {
         method: "DELETE",
       });
     } finally {
@@ -1176,7 +1177,7 @@
     const ids = inflight.map((r) => r.id);
     await Promise.allSettled(
       ids.map((id) =>
-        fetch(`/api/active-sends/${encodeURIComponent(id)}`, {
+        fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`), {
           method: "DELETE",
         }),
       ),
@@ -1225,7 +1226,7 @@
     const ac = new AbortController();
     ollamaAbort = ac;
     try {
-      const res = await fetch("/api/ollama/chat", {
+      const res = await fetch(apiUrl("/api/ollama/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ termId: session.sessionId, content: text }),
@@ -1333,7 +1334,7 @@
       }
     }, 90_000);
     try {
-      const res = await fetch("/api/session/send", {
+      const res = await fetch(apiUrl("/api/session/send"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

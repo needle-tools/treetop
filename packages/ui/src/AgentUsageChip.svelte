@@ -12,6 +12,7 @@
    * `claude-oauth-usage.ts` for the endpoint contract.
    */
   import { onMount, onDestroy } from "svelte";
+  import { apiUrl } from "./api";
   import Tooltip from "./Tooltip.svelte";
   import Popover from "./Popover.svelte";
   import AgentIcon from "./AgentIcon.svelte";
@@ -171,7 +172,7 @@
 
   async function load(): Promise<void> {
     try {
-      const res = await fetch("/api/agent-usage");
+      const res = await fetch(apiUrl("/api/agent-usage"));
       if (res.ok) report = (await res.json()) as Report;
     } catch {
       // keep the previously-loaded report; next poll retries.
@@ -185,7 +186,7 @@
     if (topSessionsState === "loading") return;
     topSessionsState = "loading";
     try {
-      const res = await fetch("/api/agent-usage/claude-top-sessions");
+      const res = await fetch(apiUrl("/api/agent-usage/claude-top-sessions"));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as {
         claudeTopSessions: ClaudeTopSession[];

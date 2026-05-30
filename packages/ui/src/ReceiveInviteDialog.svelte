@@ -7,6 +7,7 @@
    * the sender included tool outputs. Accept / Decline post to the
    * matching daemon route.
    */
+  import { apiUrl } from "./api";
   import { activeInvite, closeInvite } from "./receive-invite-dialog";
   import { requestSessionFocus } from "./session-focus-store";
 
@@ -89,7 +90,7 @@
   async function loadInvite(offerId: string) {
     loading = true;
     try {
-      const res = await fetch("/api/sessions/invites");
+      const res = await fetch(apiUrl("/api/sessions/invites"));
       const body = (await res.json().catch(() => null)) as {
         invites?: InviteCard[];
       } | null;
@@ -113,7 +114,7 @@
     action = null;
     try {
       const res = await fetch(
-        `/api/sessions/invites/${encodeURIComponent(invite.manifest.offerId)}/accept`,
+        apiUrl(`/api/sessions/invites/${encodeURIComponent(invite.manifest.offerId)}/accept`),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -196,7 +197,7 @@
     action = null;
     try {
       const res = await fetch(
-        `/api/sessions/invites/${encodeURIComponent(invite.manifest.offerId)}/decline`,
+        apiUrl(`/api/sessions/invites/${encodeURIComponent(invite.manifest.offerId)}/decline`),
         { method: "POST" },
       );
       if (!res.ok && res.status !== 204) {

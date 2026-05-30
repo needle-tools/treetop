@@ -23,6 +23,7 @@
    * "App.svelte refactor (componentization)".
    */
   import { createEventDispatcher } from "svelte";
+  import { apiUrl } from "./api";
   import DiffViewer from "./DiffViewer.svelte";
   import { pendingDiffLoad, type DiffTab } from "./source-control";
 
@@ -159,7 +160,7 @@
       kind,
       context: String(contextLines()),
     });
-    const res = await fetch(`/api/diff?${qs.toString()}`);
+    const res = await fetch(apiUrl(`/api/diff?${qs.toString()}`));
     if (!res.ok) throw new Error(`/api/diff: ${res.status}`);
     return res.text();
   }
@@ -208,7 +209,7 @@
           sha: openCommitSha,
           context: String(contextLines()),
         });
-        const res = await fetch(`/api/commit?${qs.toString()}`);
+        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
         if (res.ok)
           commitDiff = { ...commitDiff, [openCommitSha]: await res.text() };
       } catch (e) {
@@ -231,7 +232,7 @@
         sha,
         context: String(contextLines()),
       });
-      const res = await fetch(`/api/commit?${qs.toString()}`);
+      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
       if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
       commitDiff = { ...commitDiff, [sha]: await res.text() };
     } catch (e) {
@@ -247,7 +248,7 @@
       limit: String(COMMITS_BATCH),
     });
     if (before) qs.set("before", before);
-    const res = await fetch(`/api/commits?${qs.toString()}`);
+    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`));
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${res.status}`);

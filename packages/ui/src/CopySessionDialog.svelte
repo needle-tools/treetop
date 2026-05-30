@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiUrl } from "./api";
   import { activeCopy, closeCopy } from "./copy-session-dialog";
   import { requestSessionFocus } from "./session-focus-store";
 
@@ -32,7 +33,7 @@
   async function loadTargets() {
     loading = true;
     try {
-      const res = await fetch("/api/copy-targets");
+      const res = await fetch(apiUrl("/api/copy-targets"));
       if (!res.ok) return;
       const body = (await res.json()) as { targets?: RepoGroup[] };
       targets = body.targets ?? [];
@@ -48,7 +49,7 @@
     copying = true;
     result = { kind: "idle" };
     try {
-      const res = await fetch("/api/sessions/copy-to", {
+      const res = await fetch(apiUrl("/api/sessions/copy-to"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

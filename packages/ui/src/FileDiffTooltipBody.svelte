@@ -14,6 +14,8 @@
    *  a muted placeholder rather than a blank popup so the user knows
    *  the fetch finished. */
 
+  import { apiUrl } from "./api";
+
   export let worktreePath: string;
   export let file: string;
   export let kind: "workdir" | "staged" | "untracked";
@@ -48,7 +50,7 @@
         kind: k,
         context: "0",
       });
-      const r = await fetch(`/api/file-diff?${params.toString()}`);
+      const r = await fetch(apiUrl(`/api/file-diff?${params.toString()}`));
       if (!r.ok) {
         state = "error";
         return;

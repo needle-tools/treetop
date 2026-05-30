@@ -3,8 +3,10 @@
  * so it works in both the browser and the native WKWebView app (where
  * window.open doesn't reach the OS browser).
  */
+import { apiUrl } from "./api";
+
 export function openUrl(url: string): void {
-  fetch("/api/open-default", {
+  fetch(apiUrl("/api/open-default"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: url }),

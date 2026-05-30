@@ -7,6 +7,7 @@
    * given peer id). Refresh is driven by App.svelte's SSE handler.
    */
   import { onDestroy, onMount } from "svelte";
+  import { apiUrl } from "./api";
   import Popover from "./Popover.svelte";
   import {
     messages,
@@ -173,7 +174,7 @@
 
   async function refreshPeers() {
     try {
-      const res = await fetch("/api/peers");
+      const res = await fetch(apiUrl("/api/peers"));
       if (!res.ok) return;
       const body = (await res.json()) as { peers?: DiscoveredPeer[] };
       peers = body.peers ?? [];

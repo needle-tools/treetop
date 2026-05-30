@@ -11,6 +11,7 @@
    * /api/repos / /api/shells / /api/session on the next refresh).
    */
   import { createEventDispatcher, onDestroy } from "svelte";
+  import { apiUrl } from "./api";
 
   /** Storage key for /api/session/title. Whatever string the daemon uses
    *  to index this entity's title (a JSONL path, `__new__:agent:id`,
@@ -60,7 +61,7 @@
     }
     saving = true;
     try {
-      const res = await fetch("/api/session/title", {
+      const res = await fetch(apiUrl("/api/session/title"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source, title: next }),
@@ -94,7 +95,7 @@
 
   onDestroy(() => {
     if (editing && draft && draft !== current) {
-      fetch("/api/session/title", {
+      fetch(apiUrl("/api/session/title"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source, title: draft }),

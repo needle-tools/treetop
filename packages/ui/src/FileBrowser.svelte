@@ -1,5 +1,6 @@
 <script lang="ts">
   import SessionHeader from "./SessionHeader.svelte";
+  import { apiUrl } from "./api";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { getDaemonKV } from "./daemon-kv";
   import { onDestroy } from "svelte";

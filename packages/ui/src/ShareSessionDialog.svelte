@@ -12,6 +12,7 @@
    * receipt.
    */
   import { onDestroy } from "svelte";
+  import { apiUrl } from "./api";
   import {
     activeShare,
     closeShare,
@@ -76,7 +77,7 @@
 
   async function refreshPeers() {
     try {
-      const res = await fetch("/api/peers?diag=1");
+      const res = await fetch(apiUrl("/api/peers?diag=1"));
       if (!res.ok) return;
       const body = (await res.json()) as {
         peers?: DiscoveredPeer[];
@@ -176,7 +177,7 @@
     sending = true;
     result = { kind: "idle" };
     try {
-      const res = await fetch("/api/sessions/send", {
+      const res = await fetch(apiUrl("/api/sessions/send"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

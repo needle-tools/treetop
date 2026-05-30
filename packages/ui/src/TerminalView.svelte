@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiUrl, apiWsUrl } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import { Terminal } from "@xterm/xterm";
@@ -371,7 +372,11 @@
       // Build WS URL relative to current origin so it works behind the
       // Vite proxy or directly against the daemon.
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${proto}//${location.host}/api/terminals/${encodeURIComponent(id)}/io`;
+      const url = apiWsUrl(
+        `/api/terminals/${encodeURIComponent(id)}/io`,
+        location.host,
+        proto,
+      );
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {

@@ -51,6 +51,7 @@
    * plans/PLAN.md §"Notes with anchors + floating overlay".
    */
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
+  import { apiUrl } from "./api";
   import { marked } from "marked";
   import {
     isAppIconToken,
@@ -123,7 +124,7 @@
    *  through the layer. */
   async function openInApp(path: string, app: string): Promise<void> {
     try {
-      await fetch("/api/open", {
+      await fetch(apiUrl("/api/open"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path, app }),
@@ -1036,7 +1037,7 @@
           ? new File([shrunk], opts.filename, { type: shrunk.type })
           : shrunk,
       );
-      const res = await fetch("/api/attach", { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
       const { path } = (await res.json()) as { path: string };
       const ref = makeImageAttachmentRef({
@@ -1067,7 +1068,7 @@
       const file = new File([blob], filename, { type: mimeType });
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch("/api/attach", { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
       const { path } = (await res.json()) as { path: string };
       insertAttachmentRef(

@@ -14,6 +14,7 @@
    * `stale` flag the GET response surfaces.
    */
   import { onMount, onDestroy } from "svelte";
+  import { apiUrl } from "./api";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import Tooltip from "./Tooltip.svelte";
   import { enqueueSummary } from "./summary-queue";
@@ -75,7 +76,7 @@
   async function fetchCached(): Promise<GetResponse | null> {
     try {
       const res = await fetch(
-        `/api/repos/${encodeURIComponent(repoId)}/summary`,
+        apiUrl(`/api/repos/${encodeURIComponent(repoId)}/summary`),
       );
       if (!res.ok) return null;
       return (await res.json()) as GetResponse;
@@ -139,7 +140,7 @@
   async function pickInstalledModel(): Promise<string | null> {
     let list: { name: string; size?: number }[] = [];
     try {
-      const res = await fetch(`/api/ollama/models`);
+      const res = await fetch(apiUrl(`/api/ollama/models`));
       if (!res.ok) return null;
       const body = (await res.json()) as { models?: typeof list };
       list = body.models ?? [];

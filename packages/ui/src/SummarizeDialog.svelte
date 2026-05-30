@@ -20,6 +20,7 @@
    * juggle them.
    */
   import { onDestroy, onMount } from "svelte";
+  import { apiUrl } from "./api";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { activeSummarize } from "./summarize-dialog";
@@ -127,10 +128,10 @@
 
     const qs = new URLSearchParams({ source: src });
     const [cachedRes, modelsRes] = await Promise.allSettled([
-      fetch(`/api/sessions/summarize?${qs.toString()}`).then(
+      fetch(apiUrl(`/api/sessions/summarize?${qs.toString()}`)).then(
         (r) => r.json() as Promise<CachedResponse>,
       ),
-      fetch(`/api/ollama/models`).then(
+      fetch(apiUrl(`/api/ollama/models`)).then(
         (r) => r.json() as Promise<{ models?: ModelInfo[] }>,
       ),
     ]);
@@ -191,7 +192,7 @@
   async function deleteSummary(): Promise<void> {
     if (!source) return;
     const qs = new URLSearchParams({ source });
-    await fetch(`/api/sessions/summarize?${qs.toString()}`, {
+    await fetch(apiUrl(`/api/sessions/summarize?${qs.toString()}`), {
       method: "DELETE",
     });
     // After delete, drop back to ready (or install if no models).
@@ -211,7 +212,7 @@
     localStorage.setItem("supergit:summarize:lastModel", chosenModel);
     aborter = new AbortController();
     try {
-      const res = await fetch("/api/sessions/summarize", {
+      const res = await fetch(apiUrl("/api/sessions/summarize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source, model: chosenModel }),
@@ -226,7 +227,7 @@
       // On clean SSE close, reload the cached payload so the
       // "cached" view reflects the same data the server persisted.
       const qs = new URLSearchParams({ source });
-      const refresh = await fetch(`/api/sessions/summarize?${qs.toString()}`)
+      const refresh = await fetch(apiUrl(`/api/sessions/summarize?${qs.toString()}`))
         .then((r) => r.json() as Promise<CachedResponse>)
         .catch(() => null);
       if (refresh?.summary) {
@@ -294,7 +295,7 @@
     errorMsg = "";
     aborter = new AbortController();
     try {
-      const res = await fetch("/api/ollama/pull", {
+      const res = await fetch(apiUrl("/api/ollama/pull"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: DEFAULT_MODEL_TO_INSTALL }),
@@ -308,7 +309,7 @@
       await consumePullSse(res.body);
       if ((state as State) === "error") return;
       // Re-fetch the models list so the picker reflects the install.
-      const list = await fetch(`/api/ollama/models`)
+      const list = await fetch(apiUrl(`/api/ollama/models`))
         .then((r) => r.json() as Promise<{ models?: ModelInfo[] }>)
         .catch(() => ({ models: [] as ModelInfo[] }));
       models = list.models ?? [];

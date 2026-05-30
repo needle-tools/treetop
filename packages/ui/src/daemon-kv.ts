@@ -14,6 +14,7 @@
  */
 
 import type { KVStore } from "./storage";
+import { apiUrl } from "./api";
 
 const MIGRATED_KEYS = [
   "supergit:notes-offsets",
@@ -61,7 +62,7 @@ class DaemonKVStore implements KVStore {
       this.flushTimer = null;
       const patch = this.pendingPatch;
       this.pendingPatch = {};
-      fetch("/api/prefs", {
+      fetch(apiUrl("/api/prefs"), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -75,7 +76,7 @@ let instance: KVStore | null = null;
 export async function initDaemonKV(): Promise<void> {
   let prefs: Record<string, string> = {};
   try {
-    const res = await fetch("/api/prefs");
+    const res = await fetch(apiUrl("/api/prefs"));
     if (res.ok) prefs = await res.json();
   } catch {}
 
@@ -99,7 +100,7 @@ export async function initDaemonKV(): Promise<void> {
       }
     }
     if (Object.keys(patch).length > 0) {
-      fetch("/api/prefs", {
+      fetch(apiUrl("/api/prefs"), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),

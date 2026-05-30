@@ -1,5 +1,6 @@
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
+import { apiUrl } from "./api";
 import { configure, DEFAULT_MAPPINGS, installGestureListener } from "./sound";
 import "./styles/tokens.css";
 import "./styles/base.css";
@@ -46,7 +47,7 @@ document.addEventListener("click", (ev) => {
   if (!href || !href.startsWith("http")) return;
   if (new URL(href).origin === location.origin) return;
   ev.preventDefault();
-  fetch("/api/open-default", {
+  fetch(apiUrl("/api/open-default"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: href }),

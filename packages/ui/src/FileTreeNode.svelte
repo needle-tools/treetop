@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ICONS } from "./icons";
+  import { apiUrl } from "./api";
   import {
     joinPath,
     formatSize,
@@ -266,7 +267,7 @@
     <button
       class="fb-open"
       on:click|stopPropagation={() => {
-        void fetch("/api/open-default", {
+        void fetch(apiUrl("/api/open-default"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: fullPath }),

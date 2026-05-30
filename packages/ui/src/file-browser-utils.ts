@@ -1,3 +1,5 @@
+import { apiUrl } from "./api";
+
 export interface FileEntry {
   name: string;
   type: "file" | "directory" | "symlink";
@@ -79,7 +81,7 @@ export function formatMtime(iso?: string): string {
 }
 
 export async function fetchDir(path: string): Promise<FileEntry[]> {
-  const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+  const res = await fetch(apiUrl(`/api/files?path=${encodeURIComponent(path)}`));
   if (!res.ok) throw new Error(`Failed to list ${path}`);
   const data = await res.json();
   return data.entries ?? [];
@@ -101,7 +103,7 @@ export async function fetchPathStats(
 ): Promise<Record<string, PathStat>> {
   if (paths.length === 0) return {};
   try {
-    const res = await fetch("/api/exists", {
+    const res = await fetch(apiUrl("/api/exists"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths }),
@@ -339,7 +341,7 @@ export async function fetchGitStatus(
 ): Promise<Map<string, string>> {
   try {
     const res = await fetch(
-      `/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`,
+      apiUrl(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`),
     );
     if (!res.ok) return new Map();
     const data = await res.json();
@@ -388,7 +390,7 @@ export async function fetchSshSessions(): Promise<
   Record<string, SshSessionInfo>
 > {
   try {
-    const res = await fetch("/api/ssh/sessions");
+    const res = await fetch(apiUrl("/api/ssh/sessions"));
     if (!res.ok) return {};
     return await res.json();
   } catch {
@@ -401,7 +403,7 @@ export async function fetchRemoteDir(
   path: string,
 ): Promise<FileEntry[]> {
   const res = await fetch(
-    `/api/ssh/files?term=${encodeURIComponent(termId)}&path=${encodeURIComponent(path)}`,
+    apiUrl(`/api/ssh/files?term=${encodeURIComponent(termId)}&path=${encodeURIComponent(path)}`),
   );
   if (!res.ok) throw new Error(`Failed to list remote ${path}`);
   const data = await res.json();
@@ -410,7 +412,7 @@ export async function fetchRemoteDir(
 
 export async function fetchSshHome(termId: string): Promise<string> {
   try {
-    const res = await fetch(`/api/ssh/home?term=${encodeURIComponent(termId)}`);
+    const res = await fetch(apiUrl(`/api/ssh/home?term=${encodeURIComponent(termId)}`));
     if (!res.ok) return "/";
     const data = await res.json();
     return data.home ?? "/";
@@ -420,7 +422,7 @@ export async function fetchSshHome(termId: string): Promise<string> {
 }
 
 export async function confirmRemoteUpload(localPath: string): Promise<void> {
-  await fetch("/api/ssh/confirm-upload", {
+  await fetch(apiUrl("/api/ssh/confirm-upload"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ localPath }),
@@ -428,7 +430,7 @@ export async function confirmRemoteUpload(localPath: string): Promise<void> {
 }
 
 export async function dismissRemoteUpload(localPath: string): Promise<void> {
-  await fetch("/api/ssh/dismiss-upload", {
+  await fetch(apiUrl("/api/ssh/dismiss-upload"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ localPath }),
@@ -447,7 +449,7 @@ export async function fetchSshStatus(
 > {
   try {
     const res = await fetch(
-      `/api/ssh/status?term=${encodeURIComponent(termId)}`,
+      apiUrl(`/api/ssh/status?term=${encodeURIComponent(termId)}`),
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -461,7 +463,7 @@ export async function openRemoteFile(
   termId: string,
   remotePath: string,
 ): Promise<void> {
-  const res = await fetch("/api/ssh/open", {
+  const res = await fetch(apiUrl("/api/ssh/open"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ termId, remotePath }),

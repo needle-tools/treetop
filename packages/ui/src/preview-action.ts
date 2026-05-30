@@ -59,6 +59,8 @@ export type PreviewItem = PreviewMsg | PreviewGap | PreviewAction;
 
 /** How many assistant turns the dock preview keeps in view. Older
  *  ones collapse into the "+N messages" gap pill. */
+import { apiUrl } from "./api";
+
 export const PREVIEW_MAX_ASSISTANTS = 3;
 
 /** Consecutive user messages sent within this many ms of each other
@@ -467,7 +469,7 @@ export async function fetchCachedSummary(
 ): Promise<PreviewSummary | undefined> {
   try {
     const res = await fetch(
-      `/api/sessions/summarize?source=${encodeURIComponent(source)}`,
+      apiUrl(`/api/sessions/summarize?source=${encodeURIComponent(source)}`),
     );
     if (!res.ok) return undefined;
     const data = (await res.json()) as {
@@ -510,7 +512,7 @@ export async function fetchPreviewItems(
 } | null> {
   try {
     const [res, summary] = await Promise.all([
-      fetch(`/api/session?source=${encodeURIComponent(source)}`),
+      fetch(apiUrl(`/api/session?source=${encodeURIComponent(source)}`)),
       fetchCachedSummary(source),
     ]);
     if (!res.ok) return null;

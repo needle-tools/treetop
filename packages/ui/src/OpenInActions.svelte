@@ -65,6 +65,7 @@
    * compact 22px round affordance that opens a Popover (shared shell
    * from Popover.svelte) for entering the URL + optional label.
    */
+  import { apiUrl } from "./api";
   import OpenInButton from "./OpenInButton.svelte";
   import Popover from "./Popover.svelte";
   import { iconFor } from "./icons";
@@ -247,7 +248,7 @@
     npmScriptsDir = key;
     try {
       const qs = new URLSearchParams({ dir: cwd, repoPath: path });
-      const res = await fetch(`/api/npm-scripts?${qs}`);
+      const res = await fetch(apiUrl(`/api/npm-scripts?${qs}`));
       if (!res.ok) {
         npmScripts = [];
         return;
@@ -820,7 +821,7 @@
     }
     if (k === "file" || k === "folder") {
       const p = (link as { path: string }).path;
-      void fetch("/api/open-default", {
+      void fetch(apiUrl("/api/open-default"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: p }),

@@ -1,3 +1,5 @@
+import { apiUrl } from "./api";
+
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 export const INLINE_ATTACHMENT_DRAG_MIME =
   "application/x-supergit-inline-attachment+json";
@@ -546,7 +548,7 @@ export function sessionLinkTargetMatchesSource(
 }
 
 export async function fetchTextAttachment(path: string): Promise<string> {
-  const res = await fetch(`/api/attachment?path=${encodeURIComponent(path)}`);
+  const res = await fetch(apiUrl(`/api/attachment?path=${encodeURIComponent(path)}`));
   if (!res.ok) throw new Error(`attachment read failed: ${res.status}`);
   return res.text();
 }

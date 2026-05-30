@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { apiUrl } from "./api";
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
+  import { apiUrl } from "./api";
   import Popover from "./Popover.svelte";
   import { repoChipFg } from "./repo-color";
   import { ICONS } from "./icons";
@@ -260,7 +262,7 @@
   async function refresh() {
     loading = true;
     try {
-      const res = await fetch("/api/processes");
+      const res = await fetch(apiUrl("/api/processes"));
       if (!res.ok) return;
       procs = (await res.json()) as TuiProc[];
       processStore.set(procs);
@@ -300,11 +302,11 @@
   }
   async function sendTerm(p: TuiProc) {
     if (p.kind !== "external") {
-      await fetch(`/api/terminals/${encodeURIComponent(p.id)}`, {
+      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(p.id)}`), {
         method: "DELETE",
       }).catch(() => {});
     } else {
-      await fetch(`/api/processes/${p.pid}/kill`, {
+      await fetch(apiUrl(`/api/processes/${p.pid}/kill`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ signal: "SIGTERM" }),
@@ -312,7 +314,7 @@
     }
   }
   async function sendKill(p: TuiProc) {
-    await fetch(`/api/processes/${p.pid}/kill`, {
+    await fetch(apiUrl(`/api/processes/${p.pid}/kill`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ signal: "SIGKILL" }),

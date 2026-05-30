@@ -14,6 +14,7 @@
 
 import { relativeAge } from "./mention-providers";
 import { spawnLinkWithTarget } from "./StickyNotesLayer.svelte";
+import { apiUrl } from "./api";
 
 interface AgentRow {
   source: string;
@@ -55,7 +56,7 @@ export async function saveSessionAsLink(
   let msgCount = 0;
   let lastActive = new Date().toISOString();
   try {
-    const res = await fetch("/api/agents");
+    const res = await fetch(apiUrl("/api/agents"));
     if (res.ok) {
       const all = (await res.json()) as AgentRow[];
       const found = all.find((s) => s.source === opts.source);

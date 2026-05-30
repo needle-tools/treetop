@@ -128,6 +128,7 @@
 
 <script lang="ts">
   import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
+  import { apiUrl } from "./api";
   import StickyNote, { type NoteShape } from "./StickyNote.svelte";
   import { notesCountByAnchor, notesAll } from "./notes-counts";
   import { getDaemonKV } from "./daemon-kv";
@@ -928,7 +929,7 @@
 
   async function refresh(): Promise<void> {
     try {
-      const res = await fetch("/api/notes");
+      const res = await fetch(apiUrl("/api/notes"));
       if (!res.ok) return;
       const fetched = (await res.json()) as NoteShape[];
       // Drain any pending fly-restores whose note just arrived. Done
@@ -1033,7 +1034,7 @@
     const hasTarget = !!args.target;
     const autoCommit = hasTarget || kind === "emoji";
     try {
-      const res = await fetch("/api/notes", {
+      const res = await fetch(apiUrl("/api/notes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1079,7 +1080,7 @@
     clientY: number,
   ): Promise<void> {
     try {
-      const res = await fetch("/api/notes", {
+      const res = await fetch(apiUrl("/api/notes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1213,7 +1214,7 @@
         "file",
         filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
-      const res = await fetch("/api/attach", { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
       if (!res.ok) return null;
       const { path } = (await res.json()) as { path: string };
       return makeImageAttachmentRef({
@@ -1237,7 +1238,7 @@
   ): Promise<void> {
     if (note.kind === "link" || note.kind === "emoji") return;
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1259,7 +1260,7 @@
     clientY: number,
   ): Promise<void> {
     try {
-      const res = await fetch("/api/notes", {
+      const res = await fetch(apiUrl("/api/notes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1543,7 +1544,7 @@
         (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
       );
       try {
-        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1562,7 +1563,7 @@
 
     try {
       const sourceRes = await fetch(
-        `/api/notes/${encodeURIComponent(source.id)}`,
+        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1573,7 +1574,7 @@
       const updatedSource = (await sourceRes.json()) as NoteShape;
       notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
 
-      const createRes = await fetch("/api/notes", {
+      const createRes = await fetch(apiUrl("/api/notes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1583,7 +1584,7 @@
         }),
       });
       if (!createRes.ok) {
-        await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: source.body }),
@@ -1624,7 +1625,7 @@
         : moveInlineAttachmentRefToEnd(source.body, payload.raw);
       if (nextBody === source.body) return;
       try {
-        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: nextBody }),
@@ -1653,7 +1654,7 @@
 
     try {
       const targetRes = await fetch(
-        `/api/notes/${encodeURIComponent(targetNote.id)}`,
+        apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1665,11 +1666,11 @@
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
       if (sourceIsStandalone) {
-        const res = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
           method: "DELETE",
         });
         if (!res.ok) {
-          await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
+          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ body: targetNote.body }),
@@ -1680,7 +1681,7 @@
         notes = notes.filter((n) => n.id !== source.id);
       } else {
         const sourceRes = await fetch(
-          `/api/notes/${encodeURIComponent(source.id)}`,
+          apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -1688,7 +1689,7 @@
           },
         );
         if (!sourceRes.ok) {
-          await fetch(`/api/notes/${encodeURIComponent(targetNote.id)}`, {
+          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ body: targetNote.body }),
@@ -1847,7 +1848,7 @@
       const putBody: Record<string, unknown> = { body: e.detail.body };
       if (e.detail.kind !== undefined) putBody.kind = e.detail.kind;
       if (e.detail.target !== undefined) putBody.target = e.detail.target;
-      const res = await fetch(`/api/notes/${encodeURIComponent(e.detail.id)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(putBody),
@@ -1886,7 +1887,7 @@
     const isStaging = !!staging[id];
     if (isStaging) {
       try {
-        await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`), {
           method: "DELETE",
         });
       } catch {}
@@ -1904,7 +1905,7 @@
     removingIds = new Set([...removingIds, id]);
     await new Promise((r) => setTimeout(r, 320));
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`), {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -1945,7 +1946,7 @@
       // its offset is already sitting in localStorage from before the
       // delete, so SSE-triggered refresh will place it back exactly
       // where it was without any client-side hand-off.
-      await fetch(`/api/events/${encodeURIComponent(u.eventId)}/undo`, {
+      await fetch(apiUrl(`/api/events/${encodeURIComponent(u.eventId)}/undo`), {
         method: "POST",
       });
     } catch {}
@@ -2181,7 +2182,7 @@
     if (note.kind === "link" || note.kind === "emoji") return;
     const raw = makeLinkAttachmentRef({ target });
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2203,7 +2204,7 @@
     clientY: number,
   ): Promise<void> {
     try {
-      const res = await fetch("/api/notes", {
+      const res = await fetch(apiUrl("/api/notes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2324,7 +2325,7 @@
   ): Promise<void> {
     try {
       const targetRes = await fetch(
-        `/api/notes/${encodeURIComponent(target.id)}`,
+        apiUrl(`/api/notes/${encodeURIComponent(target.id)}`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -2338,13 +2339,13 @@
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
       const sourceRes = await fetch(
-        `/api/notes/${encodeURIComponent(source.id)}`,
+        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
         {
           method: "DELETE",
         },
       );
       if (!sourceRes.ok) {
-        await fetch(`/api/notes/${encodeURIComponent(target.id)}`, {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(target.id)}`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: target.body }),
@@ -2370,7 +2371,7 @@
       (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
     );
     try {
-      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2403,7 +2404,7 @@
       );
       const nextAnchors = [e.detail.anchor, ...others];
       try {
-        const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}`, {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ anchors: nextAnchors }),
@@ -2419,7 +2420,7 @@
       );
       const dupAnchors = [e.detail.anchor, ...others];
       try {
-        const res = await fetch("/api/notes", {
+        const res = await fetch(apiUrl("/api/notes"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
