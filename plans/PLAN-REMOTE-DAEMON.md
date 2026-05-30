@@ -154,20 +154,27 @@ Deliverables under `deploy/`. Two deployment shapes, same end state
       etc. on Linux inside the image). Runs with **host networking** +
       `SUPERGIT_BIND=127.0.0.1` (NOT bridge + `-p`). Workspace on a named
       volume so it survives image upgrades.
-- **Build-tested 2026-05-30** (`docker build` here, Docker 29.2.1): image
-  builds clean (660 MB), boots, serves. This surfaced a real bug in the
-  first Docker design and its fix:
-  - bridge + `-p 127.0.0.1:7790:7777` → **403 `peer mode is off`** on
-    *every* route. Docker's bridge port-proxy rewrites the request source
-    to the gateway (172.17.0.1), which the daemon's origin-based auth
-    (`isLoopback`, `server.ts:546`) treats as remote → LAN gate. A real
-    SSH tunnel lands on host loopback → same proxy → would also 403.
-  - `--network host` + `SUPERGIT_BIND=127.0.0.1` → **200**. The daemon is
-    on the host's own loopback, so a tunnelled request is genuine
-    `127.0.0.1` → full API, and it's invisible to every other interface.
-  - `.dockerignore` must live at the **context root** (repo root), not
-    `deploy/` — else `COPY . .` drags host `node_modules` (wrong-platform
-    node-pty) over the Linux build. Moved + fixed.
+- **Build-tested 2026-05-30** (`docker build`, Docker Desktop 29.2.1):
+  image builds clean (660 MB), boots, serves (logs show `listening on
+  …:7777`). What the test did and did NOT prove:
+  - ✅ VERIFIED: bridge + `-p 127.0.0.1:7790:7777` → **403 `peer mode is
+    off`** on *every* route. Docker's bridge port-proxy rewrites the
+    request source to the gateway (172.17.0.1), which the daemon's
+    origin-based auth (`isLoopback`, `server.ts:546`) treats as remote →
+    LAN gate. A real SSH tunnel lands on host loopback → same proxy →
+    would also 403. **Proves the original bridge+`-p` design was broken** —
+    the reason we switched to host networking.
+  - ⚠️ NOT VERIFIED: `--network host` + `SUPERGIT_BIND=127.0.0.1` → got
+    **`HTTP 000`** (connection refused) here, because Docker **Desktop**
+    (Win/Mac) runs containers in a Linux VM, so host networking does NOT
+    map to the Windows host loopback. On a real **Linux** box the
+    container shares the host net namespace → daemon on the host's actual
+    loopback → a tunnelled request arrives as genuine `127.0.0.1` → full
+    API. This is the *expected* design but is UNPROVEN until run on Linux;
+    it must be part of the live smoke test.
+  - ✅ VERIFIED: `.dockerignore` must live at the **context root** (repo
+    root), not `deploy/` — else `COPY . .` drags host `node_modules`
+    (wrong-platform node-pty) over the Linux build. Moved + fixed.
 - Validated: `bash -n deploy/install.sh` passes; unit template renders
   with all placeholders filled.
 - Still NOT done: smoke test through a *real* SSH tunnel end-to-end, and
