@@ -3,10 +3,14 @@
 Status: **Phase 0 + Phase 1 DONE. Phase 4b daemon-side COMPLETE
 (unit-tested only): registry + TunnelManager + HTTP proxy + WS bridge +
 SSE pass-through all done. UI Phase A (the `apiUrl()`/`apiWsUrl()` seam
-sweep) DONE + committed (ff1eb43). Remaining: UI Phase B (thread
-`daemonId` into repo-scoped calls), UI Phase C (Repo model + fan-out +
-prefs namespacing + add-remote-daemon UI), two-daemon e2e tests, live
-smoke test on a real box. Phase 1 not smoke-tested on a live box.**
+sweep) DONE + committed (ff1eb43). UI Phase B (thread `daemonId` into
+repo-scoped calls) DONE (8401c76 = repo-list fan-out, fb483d4 = daemonId
+threading + routing-guard test). UI Phase C STARTED — the
+add-remote-daemon dialog/affordance landed (7625294); remaining Phase C =
+remove/unregister button, per-row online/offline indicator, per-daemon
+prefs namespacing. Remaining overall: finish UI Phase C, two-daemon e2e
+tests, two-daemon live smoke test on a real box. Phase 1 not smoke-tested
+on a live box.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -292,23 +296,49 @@ UI side:
   (duplicate import in `ProcessList`, missing import in
   `ChangedFilesTooltipBody`), both fixed.
 
-**UI Phase B — thread `daemonId` through repo-scoped calls (TODO)**
-- [ ] Pass `daemonId` into the repo-scoped UI calls (repo list, terminal,
-      diff, status) and the WS/SSE URLs. Currently nothing passes a
-      daemonId, so the Phase A sweep is still a pure no-op — this is the
-      step that actually routes a row's requests to its remote daemon.
+**UI Phase B — thread `daemonId` through repo-scoped calls ✅ DONE:**
+- [x] Added `daemonId?` to the UI `Repo` shape; the repo-list fan-out
+      merges local + each remote daemon's repos into one array keyed by
+      `[daemonId, id]` with stable ordering (helpers in
+      `packages/ui/src/repo-fanout.ts`, +18 tests). (commit 8401c76)
+- [x] Threaded `daemonId` through all repo/worktree-scoped calls:
+      SessionView, SourceControlPane, GitHistory, FileDiffTooltipBody
+      (+ChangedFilesTooltipBody passthrough), FileBrowser +
+      file-browser-utils, preview-action, and App.svelte's
+      `/api/command/run`, `/api/wt-summary`, `/api/fetch`. Each defaults
+      `daemonId` to `undefined` so the local path stays byte-identical.
+      (commit fb483d4)
+- [x] Added a routing-guard test
+      (`packages/ui/test/daemon-routing-guard.test.ts` + the
+      `api-call-audit.ts` scanner, +24 tests) that fails if any
+      `apiUrl`/`apiWsUrl` call to a non-global endpoint omits a
+      `daemonId` — making a "half-and-half" UI (repo list daemon-aware
+      but terminal/diff silently local) impossible to ship green. A
+      maintained `GLOBAL_ALLOWLIST` declares the genuinely-local
+      endpoints.
+- Verified green: full UI suite 1026 pass / 0 fail; svelte-check baseline
+  is 41 errors (all pre-existing, none from this work).
 
-**UI Phase C — Repo model, fan-out, prefs, affordance (TODO)**
-- [ ] Add `daemonId` to the `Repo` shape; the repo list fans out to local
-      `/api/repos` + each remote `/api/daemons/<id>/repos`, merged keyed
-      by `[daemonId, repoId]`. Rendering is unchanged — `ProcessList`
-      already loops an arbitrary `repos` array.
+**UI Phase C — Repo model, fan-out, prefs, affordance — IN PROGRESS:**
+- [x] "Add remote daemon" affordance (button beside "Add folder" in both
+      the empty-state and footer spots) + a dialog
+      (`AddRemoteDaemonDialog.svelte`) collecting
+      host/label/ssh-user/ssh-port/daemon-port/identity-file/colour; pure
+      validation in `remote-daemon-form.ts` mirroring the daemon
+      `addRemoteDaemon()` contract (+20 tests); submits
+      `POST /api/daemons` then reloads so the remote's repos fan in.
+      (commit 7625294)
+- [ ] Remove / unregister a remote daemon from the UI (the
+      `DELETE /api/daemons/<id>` route already exists; no button yet).
+- [ ] Per-row online/offline indicator on remote folder rows — the
+      fan-out already knows per-daemon reachability (a remote whose tunnel
+      is down is skipped); surface that as a dot in the `ProcessList`
+      repo-group header.
 - [ ] Per-daemon `daemon-kv` / prefs namespacing — `daemon-kv.ts:64`
       currently assumes same-origin `/api/prefs`; remote rows need their
       prefs keyed by daemon so they don't collide with local.
-- [ ] "Add remote daemon" affordance (alongside "add folder") + per-row
-      online/offline state. Note: peer discovery in `App.svelte:386` is
-      session-share messaging, not repo browsing — not reusable here.
+- Note: peer discovery in `App.svelte:386` is session-share messaging,
+  not repo browsing — not reusable here.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
