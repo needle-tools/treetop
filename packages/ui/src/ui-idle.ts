@@ -34,6 +34,9 @@ interface IdleState {
   hidden: boolean;
   clock: Clock;
   resumeListeners: Set<() => void>;
+  /** Last idle value broadcast to idleListeners — for edge detection. */
+  idle: boolean;
+  idleListeners: Set<(idle: boolean) => void>;
 }
 
 function createState(clock: Clock = Date.now): IdleState {
@@ -42,6 +45,8 @@ function createState(clock: Clock = Date.now): IdleState {
     hidden: false,
     clock,
     resumeListeners: new Set(),
+    idle: false,
+    idleListeners: new Set(),
   };
 }
 
@@ -54,6 +59,47 @@ export function isUiIdleWith(state: IdleState): boolean {
 
 export function isUiIdle(): boolean {
   return isUiIdleWith(moduleState);
+}
+
+/**
+ * Recompute idle and notify `onIdleChange` listeners *only* when it
+ * flips. This is the edge that drives the `body.ui-idle` class. The
+ * idle→active edge happens synchronously inside `bumpActivity` /
+ * `setHidden`; the active→idle edge is timer-driven (the user just
+ * stopped moving), so `installIdleTracker` re-checks via this after
+ * `ACTIVITY_IDLE_MS` of quiet.
+ */
+export function syncIdleWith(state: IdleState): boolean {
+  const idle = isUiIdleWith(state);
+  if (idle !== state.idle) {
+    state.idle = idle;
+    for (const cb of state.idleListeners) {
+      try {
+        cb(idle);
+      } catch {
+        // listener exceptions don't propagate
+      }
+    }
+  }
+  return idle;
+}
+
+export function syncIdle(): boolean {
+  return syncIdleWith(moduleState);
+}
+
+export function onIdleChangeWith(
+  state: IdleState,
+  cb: (idle: boolean) => void,
+): () => void {
+  state.idleListeners.add(cb);
+  return () => {
+    state.idleListeners.delete(cb);
+  };
+}
+
+export function onIdleChange(cb: (idle: boolean) => void): () => void {
+  return onIdleChangeWith(moduleState, cb);
 }
 
 /** Record user activity. Wakes resume listeners if we were idle. */
@@ -69,6 +115,7 @@ export function bumpActivityWith(state: IdleState): void {
       }
     }
   }
+  syncIdleWith(state);
 }
 
 export function bumpActivity(): void {
@@ -93,6 +140,7 @@ export function setHiddenWith(state: IdleState, hidden: boolean): void {
       }
     }
   }
+  syncIdleWith(state);
 }
 
 export function setHidden(hidden: boolean): void {
@@ -114,6 +162,19 @@ export function onResume(cb: () => void): () => void {
  *  (no-op when `document` isn't defined). */
 export function installIdleTracker(): () => void {
   if (typeof document === "undefined") return () => {};
+
+  // The active→idle edge is silent (the user just stopped touching the
+  // mouse) — nothing fires it on its own. Arm a one-shot timer after
+  // every input that re-checks once the quiet window elapses; that's
+  // what flips `body.ui-idle` on. Re-armed on each event, so it only
+  // actually fires after ACTIVITY_IDLE_MS of real quiet. The +50ms
+  // slack ensures the clock has crossed the threshold when we check.
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const armIdleTimer = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(syncIdle, ACTIVITY_IDLE_MS + 50);
+  };
+
   const events = [
     "mousemove",
     "keydown",
@@ -121,18 +182,44 @@ export function installIdleTracker(): () => void {
     "scroll",
     "touchstart",
   ] as const;
-  const onEvent = (): void => bumpActivity();
+  const onEvent = (): void => {
+    bumpActivity();
+    armIdleTimer();
+  };
   for (const ev of events) {
     document.addEventListener(ev, onEvent, { passive: true });
   }
-  const onVisibility = (): void => setHidden(document.hidden);
+  const onVisibility = (): void => {
+    setHidden(document.hidden);
+    if (document.hidden) {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    } else {
+      armIdleTimer();
+    }
+  };
   document.addEventListener("visibilitychange", onVisibility);
+
+  // Pause decorative always-on CSS animations while idle. Driven via
+  // the `body.ui-idle` class — see the rule in styles/base.css. Only
+  // ambient effects are tagged there; functional spinners keep moving.
+  const offIdle = onIdleChange((idle) => {
+    document.body.classList.toggle("ui-idle", idle);
+  });
+
   // Seed initial visibility — the tab may have been opened in the
-  // background.
+  // background — and start watching for the first idle window.
   setHidden(document.hidden);
+  armIdleTimer();
+
   return () => {
     for (const ev of events) document.removeEventListener(ev, onEvent);
     document.removeEventListener("visibilitychange", onVisibility);
+    if (idleTimer) clearTimeout(idleTimer);
+    offIdle();
+    document.body.classList.remove("ui-idle");
   };
 }
 

@@ -238,3 +238,26 @@ body.tab-hidden *::before,
 body.tab-hidden *::after {
   animation-play-state: paused !important;
 }
+
+/* When the window is still visible but the user has gone quiet for
+   ACTIVITY_IDLE_MS (no mouse / key / scroll), pause the *decorative*
+   always-on animations. ui-idle.ts toggles `body.ui-idle`. Unlike
+   `tab-hidden` above we can NOT use `*`: the dashboard is on-screen, so
+   functional spinners (push / sync / kill progress) must keep moving or
+   they look hung. So we name the ambient effects explicitly. The big
+   one is the status-badge edge-flow streaks + ahead "pulsate" blink:
+   one per ahead/behind worktree, so a 20-worktree workspace runs 20+
+   gradient animations forever — the dominant idle compositor cost. The
+   spinner lives in a child element (.status-badge-spinner), never a
+   pseudo-element, so targeting ::before/::after leaves it untouched.
+   Onboarding walkthrough pulse/heartbeat and the new-session awaiting
+   border pulse round out the set. Anything not listed here keeps
+   animating — opt-in, so a missed effect fails safe (no frozen UI). */
+body.ui-idle .status-badge::before,
+body.ui-idle .status-badge::after,
+body.ui-idle .status-badge.pulsate,
+body.ui-idle .walkthrough-highlight,
+body.ui-idle .walkthrough-emoji-heartbeat,
+body.ui-idle .new-session-col.awaiting-input {
+  animation-play-state: paused !important;
+}

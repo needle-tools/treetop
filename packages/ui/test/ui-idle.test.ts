@@ -13,8 +13,10 @@ import {
   bumpActivityWith,
   createIdleStateForTest,
   isUiIdleWith,
+  onIdleChangeWith,
   onResumeWith,
   setHiddenWith,
+  syncIdleWith,
 } from "../src/ui-idle";
 
 describe("ui-idle gate", () => {
@@ -144,6 +146,81 @@ describe("ui-idle gate", () => {
     bumpActivityWith(s);
     now += ACTIVITY_IDLE_MS + 100;
     bumpActivityWith(s);
+    expect(b).toBe(1);
+  });
+});
+
+/**
+ * onIdleChange is the push edge that drives the `body.ui-idle` class,
+ * which in turn pauses the *decorative* always-on CSS animations
+ * (status-badge edge-flow, walkthrough pulse, ...) once the user has
+ * been inactive for ACTIVITY_IDLE_MS. Functional spinners are not
+ * tagged, so they keep moving — this gate only governs the ambient
+ * stuff. It must fire exactly on transitions: a missed edge leaves the
+ * class stuck (animations frozen while the user is active, or burning
+ * CPU after they've left).
+ */
+describe("ui-idle change notifications (body.ui-idle driver)", () => {
+  test("fires idle=true only when activity goes stale, once per edge", () => {
+    let now = 0;
+    const s = createIdleStateForTest(() => now);
+    const seen: boolean[] = [];
+    onIdleChangeWith(s, (idle) => seen.push(idle));
+
+    bumpActivityWith(s); // still active — no transition, no fire
+    expect(seen).toEqual([]);
+
+    now += ACTIVITY_IDLE_MS + 1;
+    syncIdleWith(s); // crossed into idle (the timer-driven edge)
+    expect(seen).toEqual([true]);
+
+    syncIdleWith(s); // still idle — must not re-fire
+    expect(seen).toEqual([true]);
+  });
+
+  test("fires idle=false when the user resumes activity", () => {
+    let now = 0;
+    const s = createIdleStateForTest(() => now);
+    const seen: boolean[] = [];
+    onIdleChangeWith(s, (idle) => seen.push(idle));
+
+    now += ACTIVITY_IDLE_MS + 1;
+    syncIdleWith(s);
+    bumpActivityWith(s); // activity recomputes and clears idle
+    expect(seen).toEqual([true, false]);
+  });
+
+  test("hidden / visible transitions drive the idle class too", () => {
+    let now = 0;
+    const s = createIdleStateForTest(() => now);
+    const seen: boolean[] = [];
+    onIdleChangeWith(s, (idle) => seen.push(idle));
+
+    setHiddenWith(s, true);
+    setHiddenWith(s, false);
+    expect(seen).toEqual([true, false]);
+  });
+
+  test("teardown stops further notifications", () => {
+    let now = 0;
+    const s = createIdleStateForTest(() => now);
+    const seen: boolean[] = [];
+    const off = onIdleChangeWith(s, (idle) => seen.push(idle));
+    off();
+    setHiddenWith(s, true);
+    expect(seen).toEqual([]);
+  });
+
+  test("a throwing idle listener doesn't stop the others", () => {
+    const s = createIdleStateForTest(() => 0);
+    let b = 0;
+    onIdleChangeWith(s, () => {
+      throw new Error("boom");
+    });
+    onIdleChangeWith(s, () => {
+      b++;
+    });
+    setHiddenWith(s, true);
     expect(b).toBe(1);
   });
 });
