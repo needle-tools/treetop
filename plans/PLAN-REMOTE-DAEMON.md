@@ -5,12 +5,14 @@ Status: **Phase 0 + Phase 1 DONE. Phase 4b daemon-side COMPLETE
 SSE pass-through all done. UI Phase A (the `apiUrl()`/`apiWsUrl()` seam
 sweep) DONE + committed (ff1eb43). UI Phase B (thread `daemonId` into
 repo-scoped calls) DONE (8401c76 = repo-list fan-out, fb483d4 = daemonId
-threading + routing-guard test). UI Phase C STARTED — the
-add-remote-daemon dialog/affordance landed (7625294); remaining Phase C =
-remove/unregister button, per-row online/offline indicator, per-daemon
-prefs namespacing. Remaining overall: finish UI Phase C, two-daemon e2e
-tests, two-daemon live smoke test on a real box. Phase 1 not smoke-tested
-on a live box.**
+threading + routing-guard test). UI Phase C DONE — add-remote-daemon
+dialog/affordance (7625294), remove-daemon button + online/offline dot
+(b534310), per-daemon prefs namespacing (5fe5c6c). The whole feature is
+now reachable end-to-end in the UI. Remaining overall: the two-daemon
+live smoke test on a real Linux box over an SSH tunnel (blocked on
+provisioning — everything is unit-verified but has not yet talked to a
+real second daemon); the opt-in two-daemon e2e test harness also still
+deferred.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -319,7 +321,7 @@ UI side:
 - Verified green: full UI suite 1026 pass / 0 fail; svelte-check baseline
   is 41 errors (all pre-existing, none from this work).
 
-**UI Phase C — Repo model, fan-out, prefs, affordance — IN PROGRESS:**
+**UI Phase C — affordance, remove, status, prefs ✅ DONE:**
 - [x] "Add remote daemon" affordance (button beside "Add folder" in both
       the empty-state and footer spots) + a dialog
       (`AddRemoteDaemonDialog.svelte`) collecting
@@ -328,17 +330,27 @@ UI side:
       `addRemoteDaemon()` contract (+20 tests); submits
       `POST /api/daemons` then reloads so the remote's repos fan in.
       (commit 7625294)
-- [ ] Remove / unregister a remote daemon from the UI (the
-      `DELETE /api/daemons/<id>` route already exists; no button yet).
-- [ ] Per-row online/offline indicator on remote folder rows — the
-      fan-out already knows per-daemon reachability (a remote whose tunnel
-      is down is skipped); surface that as a dot in the `ProcessList`
-      repo-group header.
-- [ ] Per-daemon `daemon-kv` / prefs namespacing — `daemon-kv.ts:64`
-      currently assumes same-origin `/api/prefs`; remote rows need their
-      prefs keyed by daemon so they don't collide with local.
-- Note: peer discovery in `App.svelte:386` is session-share messaging,
-  not repo browsing — not reusable here.
+- [x] Remove daemon: a "Remove daemon" button in the Edit-repo popover
+      (shown only when `repo.daemonId` is set) → `DELETE /api/daemons/<id>`
+      (registry is always local, not daemon-routed), optimistic row drop +
+      reload. (commit b534310)
+- [x] Per-row online/offline dot: `load()`'s fan-out records per-daemon
+      reachability into a `daemonsOnline` map (a remote whose repo fetch
+      rejects = offline), passed to `ProcessList`; `repoDaemonStatus()`
+      (+4 tests) drives a green/red dot in the repo-group header.
+      Limitation: an offline daemon's rows are stale-from-last-load — on a
+      cold load it shows no rows at all (nothing fans in). (commit b534310)
+- [x] Per-daemon prefs namespacing: `repoPrefsKey(repo)` (+4 tests) keys
+      the row key (foldedRows/notesHidden) and `visibleWorktrees` by
+      `daemonId:id` for remote repos, **byte-identical for local** (no
+      migration). `storage.ts` unchanged — the key is opaque to the store.
+      (commit 5fe5c6c)
+- Note: peer discovery in `App.svelte` is session-share messaging, not
+  repo browsing — not reusable here.
+
+The whole feature is now reachable end-to-end in the UI. The only
+remaining work is the two-daemon **live smoke test** on a real Linux box
+over an SSH tunnel (blocked on provisioning).
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
