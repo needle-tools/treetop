@@ -1,6 +1,6 @@
 <script lang="ts">
   import { apiUrl } from "./api";
-  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId } from "./repo-fanout";
+  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -3065,7 +3065,7 @@
     if (repo) {
       const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
       const visible = effectiveVisibleWorktrees(
-        repo.id,
+        repoPrefsKey(repo),
         diskPaths,
         visibleWorktreesByRepo,
       );
@@ -3074,7 +3074,7 @@
         // element won't exist in the DOM until we restore it.
         visibleWorktreesByRepo = {
           ...visibleWorktreesByRepo,
-          [repo.id]: [...visible, entry.wtPath],
+          [repoPrefsKey(repo)]: [...visible, entry.wtPath],
         };
       }
     }
@@ -3266,27 +3266,29 @@
    *  worktree still exists, just not displayed. Re-show via the
    *  worktrees picker. */
   function hideWorktreeRow(
-    repoId: string,
+    repo: { id: string; daemonId?: string },
     wtPath: string,
     diskPaths: string[],
   ) {
+    const key = repoPrefsKey(repo);
     const current = effectiveVisibleWorktrees(
-      repoId,
+      key,
       diskPaths,
       visibleWorktreesByRepo,
     );
     const next = current.filter((p) => p !== wtPath);
-    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
+    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [key]: next };
   }
 
   /** Toggle a worktree's visibility in the dashboard from the picker. */
   function toggleWorktreeVisibility(
-    repoId: string,
+    repo: { id: string; daemonId?: string },
     wtPath: string,
     diskPaths: string[],
   ) {
+    const key = repoPrefsKey(repo);
     const current = effectiveVisibleWorktrees(
-      repoId,
+      key,
       diskPaths,
       visibleWorktreesByRepo,
     );
@@ -3294,7 +3296,7 @@
     const next = isVisible
       ? current.filter((p) => p !== wtPath)
       : [...current, wtPath];
-    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [repoId]: next };
+    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [key]: next };
   }
 
   /** Refetch only `/api/events` and republish. Same effect on the
@@ -5148,7 +5150,7 @@
   $: rows = repos.flatMap((repo) => {
     const diskPaths = repo.worktrees.map((w) => w.path);
     const visiblePaths = effectiveVisibleWorktrees(
-      repo.id,
+      repoPrefsKey(repo),
       diskPaths,
       visibleWorktreesByRepo,
     );
@@ -5160,13 +5162,13 @@
       // synthetic so the row stays interactive.
       const synthetic = repo.worktrees.find((w) => w.nonGit);
       if (synthetic) {
-        return [{ repo, wt: synthetic, key: `${repo.id}|${synthetic.path}` }];
+        return [{ repo, wt: synthetic, key: `${repoPrefsKey(repo)}|${synthetic.path}` }];
       }
-      return [{ repo, wt: null as Worktree | null, key: `${repo.id}|none` }];
+      return [{ repo, wt: null as Worktree | null, key: `${repoPrefsKey(repo)}|none` }];
     }
     return visiblePaths.map((path) => {
       const wt = repo.worktrees.find((w) => w.path === path)!;
-      return { repo, wt, key: `${repo.id}|${wt.path}` };
+      return { repo, wt, key: `${repoPrefsKey(repo)}|${wt.path}` };
     });
   });
 
@@ -5440,7 +5442,7 @@
   $: dockRepoStatuses = repos.map((repo) => {
     const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
     const visible = new Set(
-      effectiveVisibleWorktrees(repo.id, diskPaths, visibleWorktreesByRepo),
+      effectiveVisibleWorktrees(repoPrefsKey(repo), diskPaths, visibleWorktreesByRepo),
     );
     let ahead = 0;
     let behind = 0;
@@ -8206,7 +8208,7 @@
                     {@const diskPaths = repo.worktrees.map((w) => w.path)}
                     {@const visibleSet = new Set(
                       effectiveVisibleWorktrees(
-                        repo.id,
+                        repoPrefsKey(repo),
                         diskPaths,
                         visibleWorktreesByRepo,
                       ),
@@ -8228,7 +8230,7 @@
                               tabindex="0"
                               on:click={() => {
                                 toggleWorktreeVisibility(
-                                  repo.id,
+                                  repo,
                                   wOption.path,
                                   diskPaths,
                                 );
@@ -8237,7 +8239,7 @@
                                 if (e.key === "Enter" || e.key === " ") {
                                   e.preventDefault();
                                   toggleWorktreeVisibility(
-                                    repo.id,
+                                    repo,
                                     wOption.path,
                                     diskPaths,
                                   );
@@ -8367,7 +8369,7 @@
                 on:click={() => {
                   if (wt && !wt.nonGit && repo.worktrees.length > 1) {
                     hideWorktreeRow(
-                      repo.id,
+                      repo,
                       wt.path,
                       repo.worktrees.map((w) => w.path),
                     );
