@@ -5654,6 +5654,15 @@
    *  stop the loop when *every* row for that repo goes off-screen. */
   const VISIBLE_FETCH_DEBOUNCE_MS = 3_000;
   const VISIBLE_FETCH_INTERVAL_MS = 30_000;
+  // Cold-start spawn-storm guard. On restart every column respawns its
+  // PTY at once; a visible repo firing /api/fetch (→ git fetch +
+  // /api/repos rebuild) at the same moment piles onto the single daemon
+  // event loop, which is exactly when a visible repo's own terminal can
+  // miss its 10s spawn guard. Hold the FIRST visible-fetch until this
+  // grace elapses — the initial load() already populated repo state, so
+  // this only delays the first remote refresh by a few seconds.
+  const STARTUP_FETCH_GRACE_MS = 12_000;
+  const APP_START_MS = Date.now();
   type RepoVisibleFetchState = {
     visibleRows: Set<string>;
     debounceTimer: ReturnType<typeof setTimeout> | null;
@@ -5698,6 +5707,11 @@
   function startVisibleFetchLoop(repoId: string): void {
     const s = ensureRepoFetchState(repoId);
     if (s.debounceTimer !== null || s.intervalTimer !== null) return;
+    // Push the first fetch out to the end of the startup grace window if
+    // we're still inside it (otherwise just the normal debounce). The
+    // 30s interval that follows is unaffected.
+    const graceLeft = APP_START_MS + STARTUP_FETCH_GRACE_MS - Date.now();
+    const firstDelay = Math.max(VISIBLE_FETCH_DEBOUNCE_MS, graceLeft);
     s.debounceTimer = setTimeout(() => {
       s.debounceTimer = null;
       void fetchVisibleRepo(repoId);
@@ -5705,7 +5719,7 @@
         () => void fetchVisibleRepo(repoId),
         VISIBLE_FETCH_INTERVAL_MS,
       );
-    }, VISIBLE_FETCH_DEBOUNCE_MS);
+    }, firstDelay);
   }
 
   function stopVisibleFetchLoop(repoId: string): void {
