@@ -41,6 +41,7 @@ import {
   type DiffKind,
   type FileDiffKind,
 } from "./git";
+import { createLimiter } from "./concurrency";
 import { $ } from "bun";
 import {
   detectAgents,
@@ -872,6 +873,15 @@ const worktreeDetailsCache = new Map<
 >();
 const WORKTREE_DETAILS_CACHE_MS = 5_000;
 
+// Cap concurrent cold getWorktreeDetails (git subprocess + parse) across
+// the whole daemon. /api/repos enrich fans out over every worktree of
+// every repo at once; on a cold cache (e.g. just after a restart) that
+// herd spiked RSS into the GBs and stalled the event loop, starving PTY
+// spawns. Cache hits bypass this entirely — only the actual git work is
+// gated. 8 keeps throughput high while bounding the peak.
+const WORKTREE_DETAILS_CONCURRENCY = 8;
+const worktreeDetailLimit = createLimiter(WORKTREE_DETAILS_CONCURRENCY);
+
 function getCachedWorktreeDetails(wtPath: string): WorktreeDetails | null {
   const cached = worktreeDetailsCache.get(wtPath);
   if (!cached) return null;
@@ -1058,7 +1068,9 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
                   const tWt = performance.now();
                   let details = getCachedWorktreeDetails(wt.path);
                   if (!details) {
-                    details = await getWorktreeDetails(wt.path);
+                    details = await worktreeDetailLimit(() =>
+                      getWorktreeDetails(wt.path),
+                    );
                     worktreeDetailsCache.set(wt.path, {
                       at: Date.now(),
                       value: details,
