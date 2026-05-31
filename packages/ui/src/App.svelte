@@ -5740,6 +5740,19 @@
       ? new IntersectionObserver(
           (entries) => {
             for (const entry of entries) {
+              // Pause the row's decorative badge animations while it's
+              // scrolled out of the viewport — no point ticking the
+              // edge-flow streaks / pulsate blink on rows nobody can
+              // see. Driven via the `.row-offscreen` class (see the rule
+              // in worktree-row.css). We toggle a class rather than use
+              // content-visibility:auto on purpose: containment would
+              // collapse the row's layout box and feed StickyNotesLayer's
+              // getBoundingClientRect math a wrong height. This keeps the
+              // box intact and only stops the animation work.
+              (entry.target as HTMLElement).classList.toggle(
+                "row-offscreen",
+                !entry.isIntersecting,
+              );
               const meta = rowNodeMeta.get(entry.target);
               if (!meta) continue;
               if (entry.isIntersecting) {
