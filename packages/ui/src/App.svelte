@@ -896,7 +896,7 @@
   /** Grace period before marking a session as "read". The user
    *  must keep the session focused for this long — a quick click
    *  that immediately navigates away doesn't count. */
-  const READ_GRACE_MS = 20_000;
+  const READ_GRACE_MS = 3_000;
   const readGraceTimers: Record<
     string,
     ReturnType<typeof setTimeout> | undefined
