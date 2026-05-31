@@ -9,6 +9,7 @@
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
   import { cleanSelection } from "./clean-selection";
+  import { TerminalWriteBuffer } from "./terminal-write-buffer";
   import {
     expandNoteBodyForTerminalPasteChunks,
     extractNoteClipboardPayloadFromHtml,
@@ -243,6 +244,16 @@
   let ws: WebSocket | null = null;
   let resizeObs: ResizeObserver | null = null;
   let onWindowResize: (() => void) | null = null;
+  // Off-screen render skip: while this terminal's column isn't visible we
+  // buffer raw PTY bytes instead of calling xterm.write() (which parses
+  // ANSI + mutates the DOM every chunk), then flush once on reveal. The
+  // WS stays open and noteActivity() still fires, so the dock activity
+  // pulse and working-ring keep reflecting the agent — we only skip the
+  // paint nobody can see. Starts true so output is never withheld before
+  // the observer's first callback.
+  let isTerminalVisible = true;
+  let visibilityObs: IntersectionObserver | null = null;
+  const writeBuffer = new TerminalWriteBuffer();
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
@@ -436,7 +447,15 @@
         }
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
-        xterm?.write(bytes);
+        if (isTerminalVisible) {
+          xterm?.write(bytes);
+        } else if (writeBuffer.push(bytes)) {
+          // Hidden but chatty enough to hit the buffer cap — flush the
+          // batch through so memory stays bounded (one coarse write is
+          // still far cheaper than a parse+paint per chunk).
+          const batch = writeBuffer.flush();
+          if (batch) xterm?.write(batch);
+        }
         noteActivity();
         if (sshSession)
           extractCwdFromOutput(textDecoder.decode(bytes, { stream: true }));
@@ -714,6 +733,34 @@
     });
     resizeObs.observe(containerEl);
 
+    // Skip rendering while this column is off-screen (scrolled out of the
+    // horizontal session strip, or inside a display:none panel). The
+    // viewport is the implicit root; when the container stops
+    // intersecting it, ws.onmessage buffers writes instead of painting.
+    // On reveal we flush the backlog in one write and re-fit, since the
+    // size may have changed while we weren't laying out.
+    visibilityObs = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.some((e) => e.isIntersecting);
+        if (visible === isTerminalVisible) return;
+        isTerminalVisible = visible;
+        if (visible && xterm) {
+          const batch = writeBuffer.flush();
+          if (batch) xterm.write(batch);
+          if (fit && containerEl && containerEl.clientWidth > 0) {
+            try {
+              fit.fit();
+              sendResize();
+            } catch {
+              /* layout race; ResizeObserver will retry */
+            }
+          }
+        }
+      },
+      { threshold: 0 },
+    );
+    visibilityObs.observe(containerEl);
+
     // WKWebView doesn't always fire ResizeObserver during fullscreen
     // transitions. A window resize listener catches those. Same
     // dimension gate as the ResizeObserver to avoid spurious resize
@@ -806,6 +853,7 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
+    visibilityObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (ws && ws.readyState <= WebSocket.OPEN) {
