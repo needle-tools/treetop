@@ -19,6 +19,8 @@
   } from "./sse-change-kinds";
   import { installIdleTracker, isUiIdle, onResume } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
+  import AddRemoteDaemonDialog from "./AddRemoteDaemonDialog.svelte";
+  import type { DaemonFormPayload } from "./remote-daemon-form";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
@@ -396,6 +398,7 @@
   // Whether the drag-to-reorder-repos dialog is open (reached from the
   // repo-edit popover). Global — reorders the whole repo list.
   let reorderDialogOpen = false;
+  let addDaemonOpen = false;
   // The repo whose popover opened the reorder dialog — highlighted in
   // the list so the user can find where they started.
   let reorderHighlightRepoId: string | null = null;
@@ -3581,6 +3584,22 @@
     } finally {
       addFolderBusy = false;
     }
+  }
+
+  /** Register a remote daemon, then reload so its repos fan in as a
+   *  folder row. Throws on failure so the dialog surfaces the error and
+   *  stays open. The registry is always local (never daemon-routed). */
+  async function addRemoteDaemon(payload: DaemonFormPayload): Promise<void> {
+    const res = await fetch(apiUrl("/api/daemons"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    await load();
   }
 
   /** Suggestion returned by /api/sessions/folder-suggestions — a folder
@@ -6844,6 +6863,10 @@
             </Popover>
           {/if}
         </div>
+        <button class="add-folder-cta" on:click={() => (addDaemonOpen = true)}>
+          <svg class="add-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span>Add remote daemon</span>
+        </button>
       </div>
       <p class="add-folder-sub muted small">
         Pick any folder on disk — git repo or not — to start tracking it.
@@ -9291,6 +9314,10 @@
             </Popover>
           {/if}
         </div>
+        <button class="add-folder-cta add-folder-cta-compact" on:click={() => (addDaemonOpen = true)}>
+          <svg class="add-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span>Add remote daemon</span>
+        </button>
       </div>
       <p class="add-folder-sub muted small">
         Track another folder — git repo or plain directory.
@@ -9335,6 +9362,7 @@
   defaultColor={defaultChipHex}
   highlightId={reorderHighlightRepoId}
 />
+<AddRemoteDaemonDialog bind:open={addDaemonOpen} onAdd={addRemoteDaemon} />
 
 {#if dirtyCheckout}
   <div
