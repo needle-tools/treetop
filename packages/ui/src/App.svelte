@@ -1,6 +1,6 @@
 <script lang="ts">
   import { apiUrl } from "./api";
-  import { daemonRepoKey, upsertRepo, replaceDaemonRepos } from "./repo-fanout";
+  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -4115,7 +4115,7 @@
     )?.id;
 
     try {
-      const res = await fetch(apiUrl("/api/command/run"), {
+      const res = await fetch(apiUrl("/api/command/run", daemonIdForWorktreePath(repos, wtPath)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ linkId: link.id, repoId, repoPath: wtPath }),
@@ -5031,7 +5031,7 @@
     }
     try {
       const qs = new URLSearchParams({ path });
-      const res = await fetch(apiUrl(`/api/wt-summary?${qs.toString()}`));
+      const res = await fetch(apiUrl(`/api/wt-summary?${qs.toString()}`, daemonIdForWorktreePath(repos, path)));
       if (!res.ok) {
         // Drop the "loading" sentinel so the next hover retries. Don't
         // wipe real cached data on a transient failure — better to
@@ -5672,7 +5672,7 @@
     // On resume we fire load() once which catches up via cache.
     if (isUiIdle()) return;
     try {
-      await fetch(apiUrl("/api/fetch"), {
+      await fetch(apiUrl("/api/fetch", daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repos: [repoId] }),
@@ -7225,6 +7225,7 @@
                         <ChangedFilesTooltipBody
                           summary={wtSummaryByPath[wt.path]}
                           worktreePath={wt.path}
+                          daemonId={daemonIdForWorktreePath(repos, wt.path)}
                         />
                       </span>
                     </Tooltip>
@@ -8591,6 +8592,7 @@
                               <FileBrowser
                                 wtPath={wt.path}
                                 source={s.source}
+                                daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                 onClose={() => closeSessionInWt(wt.path, s)}
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
@@ -8603,6 +8605,7 @@
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
                                 fsChangeKey={fsChangeKey[wt.path] ?? 0}
+                                daemonId={daemonIdForWorktreePath(repos, wt.path)}
                               />
                             {:else if s.source.startsWith("__transcript__:ollama:")}
                               <!-- Read-mode column for a stopped (or live)
@@ -8931,6 +8934,7 @@
                                     | "copilot"}
                                   source={s.source}
                                   wtPath={wt.path}
+                                  daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                   totalMessageCount={agentMeta?.messageCount}
                                   contextTokens={agentMeta?.contextTokens}
                                   contextTokensExact={agentMeta?.contextTokensExact}

@@ -84,6 +84,9 @@
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
   export let source: string;
+  /** Owning daemon for this session's worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Set for remote daemon folder rows. */
+  export let daemonId: string | undefined = undefined;
   /** Worktree this session column lives in. Used by the "Save as
    *  link" menu item to anchor the resulting sticky-link chip.
    *  Empty when the column is rendered outside a worktree context
@@ -1107,7 +1110,7 @@
       const qs = new URLSearchParams({ source });
       const headers: Record<string, string> = {};
       if (lastEtag) headers["If-None-Match"] = lastEtag;
-      const res = await fetch(apiUrl(`/api/session?${qs.toString()}`), { headers });
+      const res = await fetch(apiUrl(`/api/session?${qs.toString()}`, daemonId), { headers });
       if (res.status === 304) return;
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1165,7 +1168,7 @@
 
   async function cancelInflight(id: string) {
     try {
-      await fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`), {
+      await fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`, daemonId), {
         method: "DELETE",
       });
     } finally {
@@ -1177,7 +1180,7 @@
     const ids = inflight.map((r) => r.id);
     await Promise.allSettled(
       ids.map((id) =>
-        fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`), {
+        fetch(apiUrl(`/api/active-sends/${encodeURIComponent(id)}`, daemonId), {
           method: "DELETE",
         }),
       ),
@@ -1334,7 +1337,7 @@
       }
     }, 90_000);
     try {
-      const res = await fetch(apiUrl("/api/session/send"), {
+      const res = await fetch(apiUrl("/api/session/send", daemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

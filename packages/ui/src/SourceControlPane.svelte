@@ -47,6 +47,9 @@
 
   export let wt: WorktreeInput;
   export let expanded: boolean;
+  /** Owning daemon for this worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Set for remote daemon folder rows. */
+  export let daemonId: string | undefined = undefined;
   /** When true, the foldout shows the sticky "Hide ✕" close button at
    *  the top of the History pane (only matters when the row is in zen
    *  mode — the chevron is harder to find against a big diff). */
@@ -160,7 +163,7 @@
       kind,
       context: String(contextLines()),
     });
-    const res = await fetch(apiUrl(`/api/diff?${qs.toString()}`));
+    const res = await fetch(apiUrl(`/api/diff?${qs.toString()}`, daemonId));
     if (!res.ok) throw new Error(`/api/diff: ${res.status}`);
     return res.text();
   }
@@ -209,7 +212,7 @@
           sha: openCommitSha,
           context: String(contextLines()),
         });
-        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
+        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`, daemonId));
         if (res.ok)
           commitDiff = { ...commitDiff, [openCommitSha]: await res.text() };
       } catch (e) {
@@ -232,7 +235,7 @@
         sha,
         context: String(contextLines()),
       });
-      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
+      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`, daemonId));
       if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
       commitDiff = { ...commitDiff, [sha]: await res.text() };
     } catch (e) {
@@ -248,7 +251,7 @@
       limit: String(COMMITS_BATCH),
     });
     if (before) qs.set("before", before);
-    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`));
+    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`, daemonId));
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${res.status}`);

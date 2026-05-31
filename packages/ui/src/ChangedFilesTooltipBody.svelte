@@ -46,6 +46,9 @@
    *  become hover triggers for a per-file diff popup. When omitted
    *  (older callers), rows render as static text — backwards-safe. */
   export let worktreePath: string | undefined = undefined;
+  /** Owning daemon for this worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Passed through to FileDiffTooltipBody. */
+  export let daemonId: string | undefined = undefined;
 
   /** Per-section row cap. Past this the rest collapse into the
    *  footer message below the three columns. With horizontal
@@ -362,6 +365,7 @@
       {worktreePath}
       file={hovered.path}
       kind={DIFF_KIND[hovered.kind]}
+      {daemonId}
     />
   </div>
 {/if}

@@ -36,6 +36,9 @@
   export let source: string;
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
+  /** Owning daemon for this worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Set for remote daemon folder rows. */
+  export let daemonId: string | undefined = undefined;
   /** When set, this file browser shows a remote filesystem via SSH. */
   export let remoteTermId: string | null = null;
   /** Remote cwd from the terminal — file browser follows when followTerminal is true. */
@@ -223,14 +226,14 @@
       entries =
         isRemote && remoteTermId
           ? await fetchRemoteDir(remoteTermId, currentDir)
-          : await fetchDir(currentDir);
+          : await fetchDir(currentDir, daemonId);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       entries = [];
     }
     loading = false;
     if (!isRemote) {
-      fetchGitStatus(currentDir, wtPath).then((m) => {
+      fetchGitStatus(currentDir, wtPath, daemonId).then((m) => {
         gitStatusByDir = { ...gitStatusByDir, [currentDir]: m };
       });
     }
@@ -245,7 +248,7 @@
     const fetcher =
       isRemote && remoteTermId
         ? (p: string) => fetchRemoteDir(remoteTermId!, p)
-        : fetchDir;
+        : (p: string) => fetchDir(p, daemonId);
     const results = await Promise.all(
       paths.map(async (p) => {
         try {
@@ -307,11 +310,11 @@
         const fetcher =
           isRemote && remoteTermId
             ? (p: string) => fetchRemoteDir(remoteTermId!, p)
-            : fetchDir;
+            : (p: string) => fetchDir(p, daemonId);
         const children = await fetcher(fullPath);
         expanded = { ...expanded, [fullPath]: children };
         if (!isRemote)
-          fetchGitStatus(fullPath, wtPath).then((m) => {
+          fetchGitStatus(fullPath, wtPath, daemonId).then((m) => {
             gitStatusByDir = { ...gitStatusByDir, [fullPath]: m };
           });
       } catch {}
@@ -569,7 +572,7 @@
   let starredStats: Record<string, PathStat> = {};
   $: if (starredOnly && !isRemote) {
     const paths = starredList.map((s) => s.fullPath);
-    void fetchPathStats(paths).then((stats) => {
+    void fetchPathStats(paths, daemonId).then((stats) => {
       starredStats = stats;
     });
   }

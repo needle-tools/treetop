@@ -12,6 +12,9 @@
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
   export let fsChangeKey = 0;
+  /** Owning daemon for this worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Set for remote daemon folder rows. */
+  export let daemonId: string | undefined = undefined;
 
   interface Commit {
     sha: string;
@@ -58,7 +61,7 @@
     });
     if (before) qs.set("before", before);
     if (allBranches) qs.set("all", "1");
-    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`));
+    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`, daemonId));
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -118,7 +121,7 @@
         sha,
         context: String(contextLines()),
       });
-      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
+      const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`, daemonId));
       if (!res.ok) throw new Error(`/api/commit: ${res.status}`);
       commitDiff = { ...commitDiff, [sha]: await res.text() };
     } catch (e) {
@@ -139,7 +142,7 @@
           sha: openCommitSha,
           context: String(contextLines()),
         });
-        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`));
+        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`, daemonId));
         if (res.ok) commitDiff = { [openCommitSha]: await res.text() };
       } catch (e) {
         console.error("GitHistory: toggleFullFile", e);

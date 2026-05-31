@@ -19,6 +19,9 @@
   export let worktreePath: string;
   export let file: string;
   export let kind: "workdir" | "staged" | "untracked";
+  /** Owning daemon for this worktree. Undefined ⇒ local daemon
+   *  (byte-identical behaviour). Set for remote daemon folder rows. */
+  export let daemonId: string | undefined = undefined;
 
   type Row =
     | {
@@ -50,7 +53,7 @@
         kind: k,
         context: "0",
       });
-      const r = await fetch(apiUrl(`/api/file-diff?${params.toString()}`));
+      const r = await fetch(apiUrl(`/api/file-diff?${params.toString()}`, daemonId));
       if (!r.ok) {
         state = "error";
         return;

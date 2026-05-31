@@ -505,6 +505,7 @@ export async function fetchCachedSummary(
  *  transcript. */
 export async function fetchPreviewItems(
   source: string,
+  daemonId?: string,
 ): Promise<{
   items: PreviewItem[];
   latestTs?: string;
@@ -512,7 +513,7 @@ export async function fetchPreviewItems(
 } | null> {
   try {
     const [res, summary] = await Promise.all([
-      fetch(apiUrl(`/api/session?source=${encodeURIComponent(source)}`)),
+      fetch(apiUrl(`/api/session?source=${encodeURIComponent(source)}`, daemonId)),
       fetchCachedSummary(source),
     ]);
     if (!res.ok) return null;

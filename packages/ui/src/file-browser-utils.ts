@@ -80,8 +80,8 @@ export function formatMtime(iso?: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export async function fetchDir(path: string): Promise<FileEntry[]> {
-  const res = await fetch(apiUrl(`/api/files?path=${encodeURIComponent(path)}`));
+export async function fetchDir(path: string, daemonId?: string): Promise<FileEntry[]> {
+  const res = await fetch(apiUrl(`/api/files?path=${encodeURIComponent(path)}`, daemonId));
   if (!res.ok) throw new Error(`Failed to list ${path}`);
   const data = await res.json();
   return data.entries ?? [];
@@ -100,10 +100,11 @@ export interface PathStat {
  *  than breaking entirely. */
 export async function fetchPathStats(
   paths: string[],
+  daemonId?: string,
 ): Promise<Record<string, PathStat>> {
   if (paths.length === 0) return {};
   try {
-    const res = await fetch(apiUrl("/api/exists"), {
+    const res = await fetch(apiUrl("/api/exists", daemonId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths }),
@@ -338,10 +339,11 @@ export class StarStore {
 export async function fetchGitStatus(
   path: string,
   gitWt: string,
+  daemonId?: string,
 ): Promise<Map<string, string>> {
   try {
     const res = await fetch(
-      apiUrl(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`),
+      apiUrl(`/api/files?path=${encodeURIComponent(path)}&git=${encodeURIComponent(gitWt)}`, daemonId),
     );
     if (!res.ok) return new Map();
     const data = await res.json();
