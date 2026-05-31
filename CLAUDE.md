@@ -7,6 +7,20 @@ If something here is unclear, see [plans/PLAN.md](./plans/PLAN.md),
 
 `AGENTS.md` is a symlink to this file — same rules apply.
 
+## Plans live in `plans/`
+
+The [`plans/`](./plans) directory is the home for design docs, feature
+plans (`PLAN-*.md`), and living perf/debug notes — there are many beyond
+the three named above. Before starting non-trivial work, skim it for an
+existing plan on the same surface, and record findings/decisions there
+rather than in scattered new files. Notably:
+
+- [plans/performance.md](./plans/performance.md) — renderer + daemon
+  perf findings and open work, including the **cold-start enrich storm**
+  (restart "terminal won't connect" / RSS spike) and its fixes + tuning
+  knobs (`WORKTREE_DETAILS_CONCURRENCY`, `STARTUP_FETCH_GRACE_MS`,
+  `MAX_SPAWN_ATTEMPTS`).
+
 ## What supergit is
 A multi-repo, multi-agent, worktree-first git dashboard. The workspace is itself
 a git repo (single-member at v0, invitable from v2). Two pillars:
@@ -118,7 +132,7 @@ supergit/
 │   │   │   └── git.ts
 │   │   └── test/
 │   └── ui/            # Svelte + Vite SPA
-├── plans/             # PLAN.md, PLAN-3D.md, DEVELOPMENT.md
+├── plans/             # design docs, PLAN-*.md, performance.md (see "Plans" above)
 ├── CLAUDE.md
 ├── AGENTS.md          # symlink → CLAUDE.md
 ├── dev.ts             # spawns daemon + UI with hot reload

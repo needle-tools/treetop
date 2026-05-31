@@ -157,6 +157,116 @@ In commit order. Each links to the rationale in the diff.
       no transitions are active), but watch for accidental always-on
       loops.
 
+## Daemon-side: the cold-start enrich storm
+
+Everything above is the renderer (Chrome/WebKit) process. This section is
+the **daemon** + **startup** path — a different process, different
+bottleneck, found 2026-05-31 while debugging "a visible repo's TUI won't
+connect after a restart."
+
+### Symptom
+
+After a daemon restart, the topmost/visible repo's terminal fails with
+"Terminal didn't start within 10s" while off-screen repos start fine.
+Daemon RSS briefly spikes to ~3.6 GB (transient — falls back to ~130 MB
+once startup settles), and `/api/repos` enrich logs show 1–5.6 s per
+call.
+
+### Root cause — a cold-start thundering herd (NOT the renderer)
+
+On restart, three things hit at once:
+
+1. Every column respawns its PTY → simultaneous `POST /api/terminals`.
+2. `/api/repos` enrich (`server.ts`) fans out `getWorktreeDetails` — a
+   git subprocess + output parse — over **every worktree of every repo**
+   via nested `Promise.all`, on a cold cache. Dozens-to-hundreds of
+   concurrent git spawns + large output buffers → the RSS spike + a
+   stalled single Bun event loop.
+3. The visible/topmost repo also kicks off its `visible-fetch` loop
+   (`/api/fetch` → git fetch + another `/api/repos` rebuild) the instant
+   it's on screen — competing with its own terminal spawn.
+
+A stalled event loop can't answer `POST /api/terminals` within the
+client's 10 s guard → the column aborts. The visible repo loses most
+often (it adds load #3 to its own spawn moment).
+
+**Do NOT re-blame** the off-screen-terminal-buffer / idle-animation /
+off-screen-row-animation work — those are no-ops for a *visible*
+terminal (the spawn guard clears on `ws.onopen`, independent of render).
+
+### Fixes applied (2026-05-31, four separate revertable commits)
+
+| Commit | Layer | Change | Knob |
+|---|---|---|---|
+| `74f5945` | UI | Terminal spawn retries instead of hard-failing at 10 s; stays in "starting" | `MAX_SPAWN_ATTEMPTS=3` (`TerminalView.svelte`) |
+| `28cbe01` | UI | Defer a repo's first `visible-fetch` past a startup grace window | `STARTUP_FETCH_GRACE_MS=12_000` (`App.svelte`) |
+| `1c80116` | daemon | Cap concurrent cold `getWorktreeDetails` git ops (cache hits bypass) | `WORKTREE_DETAILS_CONCURRENCY=8` (`server.ts`, `concurrency.ts`) |
+| `3716f20` | launcher | Daily-rotate `~/.config/supergit/daemon-YYYY-MM-DD.log`, keep newest 5 | `log-rotation.ts`, `src/electrobun/index.ts` |
+
+`#1c80116` is the root-cause fix (flattens the spike); `#28cbe01` stops
+the visible repo competing with itself; `#74f5945` makes the client
+forgiving of a briefly-busy daemon. `#3716f20` is the unbounded-log
+housekeeping that surfaced alongside.
+
+**Note:** `#1c80116` (daemon) and `#3716f20` (launcher) only take effect
+after a **native** rebuild (`electrobun build`), not an SPA-only
+`vite build`.
+
+### Held daemon RSS — the token-scan dead cache (the real ~2.9 GB)
+
+Separate from the cold-start spike above: after the restart fixes landed,
+the daemon still sat at a **flat ~2.9 GB RSS** (V8 heap only ~115 MB → the
+rest is native, held). Tracked it to the **token usage scan**, not the
+`/api/repos` enrich (that one is correctly cached: detectAgents 10 s +
+mtime, daily-totals keyed on `mtimeMs`).
+
+Real evidence from the daemon log:
+
+```
+[usage] scanToken MISS 435ms  300401KB 110876lines 27429parsed  …/needle-cloud/…jsonl
+[usage] topSessions  considered=368 scanned=84 hits=0  scan-sum=10428ms
+```
+
+`/api/agent-usage/claude-top-sessions` → `topClaudeSessionsByTokens` →
+`scanClaudeSessionTokenTotals` (`agent-usage.ts`) **fully `readFile`s**
+each in-window Claude JSONL to sum tokens — including a **300 MB** session
+(→ ~600 MB–1.2 GB as a UTF‑16 string). The per-session cache key was
+`${path}|${sinceMs}` with `sinceMs = now - WEEK_MS` from raw `Date.now()`,
+so the key changed every call → **`hits=0`**, every session re-read on
+every poll, allocator holds the freed buffers → the 2.9 GB. Almost
+certainly a regression introduced with the usage chip/chime feature.
+
+**Fix #1 (done) — `1c63c30`:** quantize `now` to the hour
+(`floorToHourMs`) before deriving the window, so the cache key is stable
+within the hour and unchanged sessions hit cache. 7-day edge still
+advances hourly. Unit-tested. Daemon-side → needs a native rebuild.
+
+### Open TODOs — daemon token scan (ranked)
+
+- [ ] **Verify #1's impact.** After a native rebuild, confirm `scanToken`
+      flips `MISS → HIT`, `topSessions … hits= > 0`, and RSS drops well
+      below 2.9 GB. If it does, #2/#3 may be unnecessary.
+- [ ] **#2 Incremental accumulation for active sessions.** Even with #1,
+      a *growing* session's mtime changes every message → full re-read of
+      the whole (possibly 300 MB) file. Cache running token totals + a
+      byte offset per file (the user-scan path in `agents.ts` already does
+      this) and add only the new bytes' tokens on change.
+- [ ] **#3 Stream instead of `readFile`-into-string (the Go angle).** For
+      files over some size threshold, stream line-by-line
+      (`Bun.file().stream()`, already used at `agents.ts:894`) or hand off
+      to the Go helper so peak memory is bounded regardless of file size.
+      Matches `go-sessions-import.md` / the Go-scanner plan.
+- [ ] **#4 Throttle scope.** `considered=368, scanned=84` — cap to
+      visible/active sessions or top-N by recency rather than every
+      in-window session.
+
+### Open TODOs — daemon cold-start (earlier)
+
+- [ ] **Tune `WORKTREE_DETAILS_CONCURRENCY`.** 8 is a guess; raise if cold
+      `/api/repos` feels slow, lower if the worktree-fan-out spike returns.
+- [ ] **Stagger startup PTY respawns** rather than firing all columns at
+      once, as a complementary smoothing of the herd.
+
 ## How to record + analyse a trace
 
 1. Reproduce a realistic load (real worktrees, ~1+ active session).
