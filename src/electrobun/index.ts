@@ -14,9 +14,18 @@
 
 import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
 import { resolve, dirname, join } from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+  openSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
+import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
 // Why no bunSpawnSync: this whole file runs inside a Bun Worker that
@@ -287,15 +296,28 @@ async function ensureDaemon(): Promise<void> {
 
   const logDir = join(homedir(), ".config", "supergit");
   try { mkdirSync(logDir, { recursive: true }); } catch {}
-  const logPath = join(logDir, "daemon.log");
-  const logFile = Bun.file(logPath);
+  // Daily-rotated daemon log, capped to the newest few days so it can't
+  // grow without bound (the old single daemon.log never rotated). Append
+  // within a day so same-day restarts don't lose earlier output; an
+  // open-append fd is inheritable by the spawned daemon.
+  const today = new Date().toISOString().slice(0, 10);
+  let logName = `daemon-${today}.log`;
+  try {
+    const plan = planLogRotation(readdirSync(logDir), today, 5);
+    logName = plan.activeName;
+    for (const name of plan.deleteNames) {
+      try { unlinkSync(join(logDir, name)); } catch {}
+    }
+  } catch {}
+  const logPath = join(logDir, logName);
+  const logFd = openSync(logPath, "a");
 
   try {
     daemonProc = bunSpawn({
       cmd: [binary],
       env,
-      stdout: logFile,
-      stderr: logFile,
+      stdout: logFd,
+      stderr: logFd,
       stdin: "ignore",
     });
   } catch (err) {
