@@ -4,6 +4,7 @@
   import Popover from "./Popover.svelte";
   import { repoChipFg } from "./repo-color";
   import { ICONS } from "./icons";
+  import { repoDaemonStatus, type DaemonStatus } from "./repo-fanout";
   import {
     processStore,
     recordSamples,
@@ -62,9 +63,12 @@
     totalCpu: number;
     totalMem: number;
     procs: (TuiProc & { ctx: ReturnType<typeof procContext> })[];
+    daemonId?: string;
+    daemonStatus: DaemonStatus;
   }
 
   export let repos: Repo[] = [];
+  export let daemonsOnline: Map<string, boolean> = new Map();
   export let activityByCwd: Record<string, ActivityEvent[]> = {};
   export let systemMemBytes: number | null = null;
 
@@ -153,7 +157,7 @@
   $: visibleProcs = showExternal
     ? procs
     : procs.filter((p) => p.kind !== "external");
-  $: grouped = groupByRepo(visibleProcs, avgCpuById);
+  $: grouped = groupByRepo(visibleProcs, avgCpuById, daemonsOnline);
 
   // Apply the per-group sort: hovered group keeps its frozen order;
   // every other group sorts live by usage. Depends on grouped,
@@ -202,6 +206,7 @@
   function groupByRepo(
     list: TuiProc[],
     avg: Map<string, number>,
+    online: Map<string, boolean>,
   ): RepoGroup[] {
     const map = new Map<string, RepoGroup>();
     for (const p of list) {
@@ -215,6 +220,7 @@
           totalCpu: 0,
           totalMem: 0,
           procs: [],
+          daemonStatus: "local",
         };
         map.set(key, group);
       }
@@ -232,7 +238,19 @@
           totalCpu: 0,
           totalMem: 0,
           procs: [],
+          daemonStatus: "local",
         });
+      }
+    }
+    // Tag groups with their owning daemon's reachability (the process
+    // loop may have created the group first with a local default).
+    for (const repo of repos) {
+      const name =
+        repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+      const group = map.get(name);
+      if (group && repo.daemonId) {
+        group.daemonId = repo.daemonId;
+        group.daemonStatus = repoDaemonStatus(repo.daemonId, online);
       }
     }
     // Emit groups in the same vertical order the repos appear on the
@@ -551,6 +569,14 @@
                   >
                   <span class="proc-group-count">{group.procs.length}</span>
                 </span>
+                {#if group.daemonStatus !== "local"}
+                  <span
+                    class="proc-group-status proc-group-status-{group.daemonStatus}"
+                    title={group.daemonStatus === "online"
+                      ? "Remote daemon online"
+                      : "Remote daemon offline"}
+                  ></span>
+                {/if}
                 <span class="proc-group-stat proc-group-cpu"
                   >{formatPercent(group.totalCpu)}</span
                 >

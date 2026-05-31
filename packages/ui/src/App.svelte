@@ -261,6 +261,11 @@
   }
 
   let repos: Repo[] = [];
+  // daemonId -> reachable? Rebuilt each load() from the fan-out: a remote
+  // whose /api/daemons/<id>/repos fetch rejects (tunnel down) is offline.
+  // Drives the online/offline dot in ProcessList. Reassigned (new Map) each
+  // load so Svelte reactivity fires.
+  let daemonsOnline = new Map<string, boolean>();
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
@@ -3482,6 +3487,7 @@
       // daemon whose tunnel is down is skipped this cycle (Phase C adds
       // per-row online/offline state). When none are registered this is a
       // pure no-op, so the local-only path is unchanged.
+      const online = new Map<string, boolean>();
       if (dResp && dResp.ok) {
         let daemons: { id: string }[] = [];
         try {
@@ -3492,11 +3498,14 @@
         if (Array.isArray(daemons) && daemons.length > 0) {
           await Promise.all(
             daemons.map((d) =>
-              fetchReposNDJSON(makeRepoHandlers(d.id), d.id).catch(() => {}),
+              fetchReposNDJSON(makeRepoHandlers(d.id), d.id)
+                .then(() => online.set(d.id, true))
+                .catch(() => online.set(d.id, false)),
             ),
           );
         }
       }
+      daemonsOnline = online;
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.
@@ -4241,6 +4250,23 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       pendingRemoval.delete(id);
+    }
+  }
+
+  /** Unregister a remote daemon (DELETE /api/daemons/<id>). The registry
+   *  is always local, so NOT daemon-routed (no daemonId arg). Optimistically
+   *  drop the daemon's repos from the row list, then reload. */
+  async function removeDaemon(daemonId: string) {
+    error = "";
+    repos = repos.filter((r) => r.daemonId !== daemonId);
+    try {
+      const res = await fetch(apiUrl(`/api/daemons/${daemonId}`), {
+        method: "DELETE",
+      });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -6175,6 +6201,7 @@
       {repos}
       {activityByCwd}
       {systemMemBytes}
+      {daemonsOnline}
       on:focusSession={(e) => void focusSessionBySource(e.detail.source)}
     />
 
@@ -7014,6 +7041,17 @@
                         >
                         Reorder repos…
                       </button>
+                      {#if repo.daemonId}
+                        <button
+                          class="repo-edit-remove-daemon"
+                          on:click|stopPropagation={() => {
+                            const d = repo.daemonId;
+                            if (d) { cancelRenameRepo(); void removeDaemon(d); }
+                          }}
+                        >
+                          Remove daemon
+                        </button>
+                      {/if}
                     </div>
                   </Popover>
                 {/if}

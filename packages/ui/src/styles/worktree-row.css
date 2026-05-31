@@ -213,6 +213,21 @@
   stroke-linejoin: round;
   opacity: 0.8;
 }
+.repo-edit-remove-daemon {
+  margin-top: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, #f85149 35%, transparent);
+  background: color-mix(in srgb, #f85149 12%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.repo-edit-remove-daemon:hover {
+  background: color-mix(in srgb, #f85149 22%, transparent);
+}
 .repo-edit-clear {
   padding: 0.2rem 0.5rem;
   font: inherit;
