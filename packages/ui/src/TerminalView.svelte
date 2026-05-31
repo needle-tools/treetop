@@ -272,6 +272,16 @@
   const STARTUP_TIMEOUT_MS = 10_000;
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
   let startupAbort: AbortController | null = null;
+  /** On a cold daemon restart, every column respawns its PTY at once
+   *  while /api/repos enrich is scanning the workspace — the single
+   *  daemon event loop can stall a POST /api/terminals past the guard
+   *  above. That's transient, so rather than dropping the column to an
+   *  error on the first miss, auto-retry the spawn a couple of times
+   *  with a short backoff; only give up after MAX_SPAWN_ATTEMPTS. */
+  const MAX_SPAWN_ATTEMPTS = 3;
+  const SPAWN_RETRY_BACKOFF_MS = 750;
+  let spawnAttempts = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Working-state plumbing. `lastActivityTs` is a plain mutable held
   // outside Svelte's reactive graph (never referenced from the
@@ -298,10 +308,24 @@
     }
   }
 
+  /** Drop a socket's event handlers before closing it mid-startup (during
+   *  a retry). Otherwise its onclose fires while we're still
+   *  `phase === "starting"` and wrongly flips the column to "exited",
+   *  killing the retry. (Param is `s`, not `ws`, on purpose: a
+   *  source-scanning regression test keys off the first literal
+   *  `ws.onopen` being the real open handler below.) */
+  function detachSocket(s: WebSocket): void {
+    s.onopen = s.onmessage = s.onerror = s.onclose = null;
+  }
+
   function clearStartupGuard() {
     if (startupTimer !== null) {
       clearTimeout(startupTimer);
       startupTimer = null;
+    }
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
     }
     startupAbort = null;
   }
@@ -325,20 +349,40 @@
     terminalId = "";
     xterm?.clear();
     phase = "starting";
+    spawnAttempts = 0;
     void spawnPtyAndConnect();
   }
 
   async function spawnPtyAndConnect() {
+    spawnAttempts++;
     startupAbort = new AbortController();
     startupTimer = setTimeout(() => {
       if (phase !== "starting") return;
-      // Force the in-flight POST (if any) to bail out so the loading
-      // overlay can clear and onError handlers see something concrete.
+      // Force the in-flight POST (if any) to bail out so we can either
+      // retry cleanly or surface a concrete error. Detach the socket's
+      // handlers before closing: otherwise its onclose fires while we're
+      // still `phase === "starting"` and wrongly flips the column to
+      // "exited", killing the retry.
       startupAbort?.abort();
-      try {
-        ws?.close(4000, "startup-timeout");
-      } catch {}
-      error = `Terminal didn't start within ${STARTUP_TIMEOUT_MS / 1000}s. Close the column and try again — the daemon may be busy or the PTY backend stalled.`;
+      if (ws) {
+        detachSocket(ws);
+        try {
+          ws.close(4000, "startup-timeout");
+        } catch {}
+        ws = null;
+      }
+      if (spawnAttempts < MAX_SPAWN_ATTEMPTS) {
+        // Daemon was likely slammed (cold-start enrich storm). Back off
+        // briefly, then try again — the spawn usually lands once the
+        // event loop frees up. Stays in `phase === "starting"` so the
+        // loading overlay keeps showing instead of flashing an error.
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (phase === "starting") void spawnPtyAndConnect();
+        }, SPAWN_RETRY_BACKOFF_MS);
+        return;
+      }
+      error = `Terminal didn't start within ${STARTUP_TIMEOUT_MS / 1000}s (after ${MAX_SPAWN_ATTEMPTS} tries). Close the column and try again — the daemon may be busy or the PTY backend stalled.`;
       phase = "error";
     }, STARTUP_TIMEOUT_MS);
     try {
@@ -478,9 +522,11 @@
         }
       };
     } catch (e) {
-      // If the startup timer already flipped us to error, keep its
-      // specific "didn't start within Xs" message rather than overwriting
-      // it with a generic AbortError.
+      // AbortError = the startup timer bailed this POST so it could
+      // retry (or give up after MAX_SPAWN_ATTEMPTS). The timer owns that
+      // decision — bailing here would clobber a pending retry, so leave
+      // it be.
+      if (e instanceof DOMException && e.name === "AbortError") return;
       if (phase !== "error") {
         error = e instanceof Error ? e.message : String(e);
         phase = "error";
