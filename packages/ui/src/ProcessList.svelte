@@ -19,6 +19,10 @@
     name?: string;
     color?: string;
     worktrees?: Worktree[];
+    /** Owning remote daemon (undefined ⇒ local). Carried so row-scoped
+     *  actions can target the right daemon; grouping by [daemon, name]
+     *  is a later Phase-B increment. */
+    daemonId?: string;
   }
   interface Worktree {
     path: string;

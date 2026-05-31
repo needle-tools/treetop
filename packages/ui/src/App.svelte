@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiUrl } from "./api";
+  import { daemonRepoKey, upsertRepo, replaceDaemonRepos } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -224,6 +225,11 @@
     path: string;
     name: string;
     addedAt: string;
+    /** Owning remote daemon (undefined ⇒ local). Set during repo-list
+     *  fan-out when the repo came from a remote daemon's
+     *  `/api/daemons/<id>/repos`; threaded into row-scoped calls via
+     *  `apiUrl(path, daemonId)` so they hit the right daemon. */
+    daemonId?: string;
     /** Optional accent colour (#rrggbb) — applied wherever the repo
      *  name renders so the user can tell repos apart at a glance. */
     color?: string;
@@ -3310,11 +3316,14 @@
    *  arrives — that way the dashboard stops blocking on the slowest
    *  worktree before showing anything. The returned promise resolves
    *  with the full final array, in the original workspace order. */
-  async function fetchReposNDJSON(opts?: {
-    onManifest?: (skeletons: Repo[]) => void;
-    onRepo?: (repo: Repo) => void;
-  }): Promise<Repo[]> {
-    const r = await fetch(apiUrl("/api/repos"), { cache: "no-cache" });
+  async function fetchReposNDJSON(
+    opts?: {
+      onManifest?: (skeletons: Repo[]) => void;
+      onRepo?: (repo: Repo) => void;
+    },
+    daemonId?: string,
+  ): Promise<Repo[]> {
+    const r = await fetch(apiUrl("/api/repos", daemonId), { cache: "no-cache" });
     if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
     if (!r.body) throw new Error("/api/repos: response had no body");
     const reader = r.body.getReader();
@@ -3356,11 +3365,13 @@
                 color: m.color,
                 worktrees: [],
                 remotes: [],
+                ...(daemonId ? { daemonId } : {}),
               }));
               opts?.onManifest?.(skeletons);
             } else if (msg.type === "repo" && msg.repo) {
-              out.push(msg.repo);
-              opts?.onRepo?.(msg.repo);
+              const repo = daemonId ? { ...msg.repo, daemonId } : msg.repo;
+              out.push(repo);
+              opts?.onRepo?.(repo);
             }
           } catch {
             // skip malformed line
@@ -3401,48 +3412,58 @@
       // paints skeleton rows before the other fetches resolve. The
       // sibling fetches still run in parallel — we just don't await
       // them inside the stream pump.
-      const reposStream = fetchReposNDJSON({
-        onManifest: (skel) => {
-          tManifest = performance.now() - tStart;
-          loadingTotal = skel.length;
+      // Build NDJSON handlers scoped to one daemon (undefined ⇒ local).
+      // The same handlers drive the local stream and every remote-daemon
+      // stream; each writes only its own repos into the merged `repos`
+      // array, keyed by [daemonId, id] so a remote repo never clobbers a
+      // local one that shares a git id.
+      const makeRepoHandlers = (daemonId?: string) => ({
+        onManifest: (skel: Repo[]) => {
+          if (!daemonId && tManifest === 0)
+            tManifest = performance.now() - tStart;
+          loadingTotal += skel.length;
           const filtered =
             pendingRemoval.size > 0
               ? skel.filter((s) => !pendingRemoval.has(s.id))
               : skel;
-          if (repos.length === 0) {
-            repos = filtered;
-          } else {
-            const existingById = new Map(repos.map((r) => [r.id, r]));
-            repos = filtered.map((s) => existingById.get(s.id) ?? s);
-          }
+          // Preserve already-enriched repos for repos we've seen before
+          // (manifest skeletons carry no worktrees yet); replaceDaemonRepos
+          // swaps in this daemon's block in place, leaving other daemons'
+          // rows untouched.
+          const existing = new Map(repos.map((r) => [daemonRepoKey(r), r]));
+          const merged = filtered.map(
+            (s) => existing.get(daemonRepoKey(s)) ?? s,
+          );
+          repos = replaceDaemonRepos(repos, daemonId, merged);
           loading = false;
         },
-        onRepo: (full) => {
+        onRepo: (full: Repo) => {
           repoCount += 1;
           loadingDone = repoCount;
           if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
           // If a color save is still in flight for this repo, the
           // daemon's snapshot of `color` is stale (the POST hasn't
           // persisted yet). Preserve the optimistic local value so the
-          // UI doesn't flicker back to the old color.
+          // UI doesn't flicker back to the old color. (pendingRemoval /
+          // pendingRepoColor are local-only; remote repos never appear in
+          // them, so these guards are no-ops for remote rows.)
           if (pendingRemoval.has(full.id)) return;
           if (pendingRepoColor.has(full.id)) {
             const pending = pendingRepoColor.get(full.id);
             if (pending === null) delete (full as { color?: string }).color;
             else full.color = pending;
           }
-          const idx = repos.findIndex((x) => x.id === full.id);
-          if (idx >= 0) {
-            const next = repos.slice();
-            next[idx] = full;
-            repos = next;
-          }
+          repos = upsertRepo(repos, full);
         },
       });
-      const [e, s, t] = await Promise.all([
+      const reposStream = fetchReposNDJSON(makeRepoHandlers());
+      const [e, s, t, dResp] = await Promise.all([
         fetch(apiUrl("/api/events")),
         fetch(apiUrl("/api/shells")),
         fetch(apiUrl("/api/session-titles")),
+        // Cheap local read of the remote-daemon registry; null if it
+        // ever fails so fan-out is simply skipped (local path unaffected).
+        fetch(apiUrl("/api/daemons")).catch(() => null),
       ]);
       if (!e.ok) throw new Error(`/api/events: ${e.status}`);
       // Wait for the stream to finish before reading sibling responses,
@@ -3452,6 +3473,27 @@
       // in-place updates by id). Reassigning would reorder the dashboard
       // on every refresh.
       await reposStream;
+      // Fan out to any registered remote daemons. Each contributes its
+      // repos (tagged with its daemonId) into the merged `repos` array,
+      // appearing as folder rows beside the local ones. Best-effort: a
+      // daemon whose tunnel is down is skipped this cycle (Phase C adds
+      // per-row online/offline state). When none are registered this is a
+      // pure no-op, so the local-only path is unchanged.
+      if (dResp && dResp.ok) {
+        let daemons: { id: string }[] = [];
+        try {
+          daemons = (await dResp.json()) as { id: string }[];
+        } catch {
+          daemons = [];
+        }
+        if (Array.isArray(daemons) && daemons.length > 0) {
+          await Promise.all(
+            daemons.map((d) =>
+              fetchReposNDJSON(makeRepoHandlers(d.id), d.id).catch(() => {}),
+            ),
+          );
+        }
+      }
       events = await e.json();
       // /api/shells failing is non-fatal — empty list just means no
       // shell entries surface in the worktree picker this cycle.
