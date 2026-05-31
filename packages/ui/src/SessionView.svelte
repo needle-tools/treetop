@@ -241,7 +241,7 @@
   /** Vertical fraction of the session column below which the pin
    *  retracts. Generous threshold so the pin shows whenever the user
    *  is reading the top of the chat, not just brushing the title. */
-  const PIN_REVEAL_RATIO = 0.7;
+  const PIN_REVEAL_RATIO = 0.5;
   /** Hide-only debounce. The pin shows instantly when the cursor
    *  enters the top zone, but lingers for 300ms after leaving so
    *  small excursions (or micro-movements past the threshold while
