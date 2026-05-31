@@ -148,7 +148,22 @@ export interface ClaudeTopSession {
   cacheCreationTokens: number;
 }
 
+const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Floor a timestamp to the top of its hour.
+ *
+ *  The per-session token scan caches on `${path}|${sinceMs}`, where
+ *  `sinceMs = now - WEEK_MS`. Deriving `now` from raw `Date.now()` made
+ *  that key change on every call, so the cache never hit (`hits=0` in the
+ *  logs) and every in-window JSONL — up to hundreds of MB each — was
+ *  fully re-read on every /api/agent-usage poll, holding GBs of RSS.
+ *  Quantizing `now` to the hour keeps the key stable within the hour
+ *  (unchanged sessions hit cache), while the 7-day window edge still
+ *  advances hourly — plenty fresh for a weekly usage figure. */
+export function floorToHourMs(ms: number): number {
+  return Math.floor(ms / HOUR_MS) * HOUR_MS;
+}
 const WEEK_MS = 7 * DAY_MS;
 const PEAK_DAY_LOOKBACK_MS = 30 * DAY_MS;
 const PEAK_WEEK_LOOKBACK_MS = 90 * DAY_MS;
@@ -405,8 +420,12 @@ export async function topClaudeSessionsByTokens(
   limit: number,
 ): Promise<ClaudeTopSession[]> {
   const startMs = performance.now();
-  const sinceMs = now - WEEK_MS;
-  const cutoffMtime = now - WEEK_MS;
+  // Quantize to the hour so the per-session scan cache key
+  // (`${path}|${sinceMs}`) is stable across polls within the hour —
+  // otherwise it changes every call and every JSONL is re-read. See
+  // floorToHourMs.
+  const sinceMs = floorToHourMs(now) - WEEK_MS;
+  const cutoffMtime = sinceMs;
   const agg: AggregateStats = {
     sessionsConsidered: sessions.length,
     sessionsScanned: 0,

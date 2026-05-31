@@ -5,6 +5,7 @@ import {
   clearClaudeDailyCache,
   scanClaudeSessionTokenTotals,
   clearClaudeTokenScanCache,
+  floorToHourMs,
 } from "../src/agent-usage";
 import type { AgentSession } from "../src/agents";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -410,5 +411,34 @@ describe("computeAgentUsage — Claude live usage from OAuth endpoint", () => {
     );
     expect(called).toBe(1);
     expect(r.claudeLiveUsage).toBeNull();
+  });
+});
+
+describe("floorToHourMs (token-scan cache-key stability)", () => {
+  // The per-session token scan caches on `${path}|${sinceMs}`, and
+  // sinceMs = now - WEEK_MS. Derived from raw Date.now() the key changed
+  // every call, so the cache never hit and every (up to 300MB) JSONL was
+  // re-read on every poll. Flooring `now` to the hour keeps the key
+  // stable within the hour while the week window still advances hourly.
+  const base = floorToHourMs(1_700_000_000_000); // some hour boundary
+
+  test("floors to an exact hour boundary", () => {
+    expect(floorToHourMs(base + 37 * 60 * 1000 + 4123) % HOUR).toBe(0);
+  });
+
+  test("is stable for any instant within the same hour", () => {
+    expect(floorToHourMs(base)).toBe(base);
+    expect(floorToHourMs(base + 1)).toBe(base);
+    expect(floorToHourMs(base + 59 * 60 * 1000 + 59_999)).toBe(base);
+  });
+
+  test("advances by exactly one hour at the next boundary", () => {
+    expect(floorToHourMs(base + HOUR)).toBe(base + HOUR);
+    expect(floorToHourMs(base + HOUR + 1)).toBe(base + HOUR);
+  });
+
+  test("is idempotent", () => {
+    const t = 1_700_003_999_123;
+    expect(floorToHourMs(floorToHourMs(t))).toBe(floorToHourMs(t));
   });
 });
