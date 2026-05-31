@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>supergit · SVG showcase</title>
+<style>
+  /* ── Tokens lifted from packages/ui/src/styles/tokens.css so this page
+       looks like supergit without depending on the build. ── */
+  :root {
+    --background: #1a1a1b;
+    --surface: #23261d;
+    --surface-0: var(--surface);
+    --surface-1: var(--background);
+    --surface-2: #2b2b2a;
+    --surface-3: #333;
+    --text-1: #e8e8e8;
+    --text-2: #d0d0d0;
+    --text-4: #b0b0b0;
+    --text-muted: #999;
+    --text-faint: #777;
+    --brand: #60b74c;
+    --brand-hover: #a4d843;
+    --status-clean: #16a34a;
+    --status-dirty: #d97706;
+    --ctx-warn: #ff8a3d;
+    --ctx-hot: #ff6b5e;
+    --error: #ff6b5e;
+    --chip-cyan-text: #8ad8ef;
+    --chip-purple-text: #efaaef;
+    --note-paper: #ffec80;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --border-muted: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    color: var(--text-2);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand-hover); }
+  code {
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--chip-cyan-text);
+  }
+
+  header.page {
+    padding: 3rem 2rem 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+    border-bottom: 1px solid var(--surface-2);
+  }
+  header.page h1 { margin: 0 0 .4rem; font-size: 1.9rem; color: var(--text-1); font-weight: 650; }
+  header.page p { margin: 0; max-width: 70ch; color: var(--text-4); }
+  header.page .brandmark { color: var(--brand); }
+
+  nav.toc {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--surface-2);
+    padding: .6rem 2rem;
+  }
+  nav.toc .inner { max-width: 1100px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: .35rem .9rem; }
+  nav.toc a { color: var(--text-muted); text-decoration: none; font-size: 12px; }
+  nav.toc a:hover { color: var(--brand-hover); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 1rem 2rem 6rem; }
+
+  section.demo {
+    padding: 2.5rem 0;
+    border-bottom: 1px solid var(--surface-2);
+  }
+  section.demo > h2 {
+    margin: 0 0 .25rem;
+    font-size: 1.25rem;
+    color: var(--text-1);
+    font-weight: 600;
+    display: flex; align-items: baseline; gap: .6rem;
+  }
+  section.demo > h2 .num {
+    font: 12px/1 ui-monospace, monospace;
+    color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+    padding: 4px 7px; border-radius: 5px;
+  }
+  section.demo > .desc { margin: .35rem 0 1.5rem; max-width: 75ch; color: var(--text-4); }
+  section.demo .where {
+    margin: 1.4rem 0 0;
+    padding: .75rem 1rem;
+    background: color-mix(in srgb, var(--brand) 8%, var(--surface-0));
+    border-left: 3px solid var(--brand);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  section.demo .where b { color: var(--brand-hover); font-weight: 600; }
+
+  .stage {
+    display: flex; flex-wrap: wrap; gap: 1.25rem;
+    align-items: flex-start;
+  }
+  .card {
+    background: var(--surface-0);
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.2rem 1rem;
+    min-width: 150px;
+  }
+  .card .cap { margin-top: .7rem; font-size: 12px; color: var(--text-muted); text-align: center; }
+  .card .cap b { color: var(--text-2); font-weight: 600; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: .9rem; align-items: center; margin-bottom: 1.2rem; }
+  .controls label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: .5rem; }
+  .controls input[type=range] { accent-color: var(--brand); }
+  button.act {
+    background: var(--surface-2); color: var(--text-1);
+    border: 1px solid var(--border-muted); border-radius: var(--radius-md);
+    padding: .4rem .8rem; font-size: 12px; cursor: pointer;
+  }
+  button.act:hover { background: var(--surface-3); border-color: var(--brand); }
+
+  /* faux supergit row, reused by several demos */
+  .row {
+    display: flex; align-items: center; gap: .7rem;
+    background: var(--surface-0); border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md); padding: .55rem .8rem; min-width: 320px;
+  }
+  .row .repo { font-weight: 600; color: var(--text-1); font-size: 13px; }
+  .row .branch { color: var(--text-muted); font-size: 12px; font-family: ui-monospace, monospace; }
+  .row .spacer { flex: 1; }
+
+  .note { font-size: 12px; color: var(--text-faint); margin-top: 1rem; }
+  .note b { color: var(--text-4); }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1><span class="brandmark">supergit</span> · SVG showcase</h1>
+  <p>Ten SVG techniques that are underused as live UI primitives, each wired to something
+  supergit actually shows — usage warnings, agent activity, worktree topology, diffs. Every
+  demo is hand-rolled SVG/CSS, no libraries. Drag the sliders, hit the buttons.</p>
+</header>
+
+<nav class="toc"><div class="inner">
+  <a href="#rings">1 · Usage rings</a>
+  <a href="#spark">2 · Sparklines</a>
+  <a href="#graph">3 · Branch graph</a>
+  <a href="#textpath">4 · textPath labels</a>
+  <a href="#motion">5 · Pulse along path</a>
+  <a href="#draw">6 · Self-drawing check</a>
+  <a href="#filters">7 · Filters (goo / haze / glow)</a>
+  <a href="#mask">8 · Clip & mask reveals</a>
+  <a href="#pattern">9 · Patterns (stale/conflict)</a>
+  <a href="#gradient">10 · Animated gradients</a>
+  <a href="#theme">11 · currentColor theming</a>
+</div></nav>
+
+<main>
+
+<!-- ════════════════════════════ 1 · USAGE RINGS ════════════════════════════ -->
+<section class="demo" id="rings">
+  <h2><span class="num">01</span> Usage rings — <code>stroke-dasharray</code> + <code>pathLength</code></h2>
+  <p class="desc">
+    Two concentric circles: a faint track and a colored arc. Setting <code>pathLength="100"</code>
+    means the dash math is just percentages — no <code>2πr</code> arithmetic. A second, dimmer arc
+    underneath shows <i>projected</i> usage behind <i>actual</i>. The stroke color flips through
+    your existing warning-kind enum (ok → pace → warn → hot).
+  </p>
+
+  <div class="controls">
+    <label>usage <input id="ring-pct" type="range" min="0" max="120" value="64"> <span id="ring-pct-v">64%</span></label>
+    <label>projected <input id="ring-proj" type="range" min="0" max="120" value="92"> <span id="ring-proj-v">92%</span></label>
+  </div>
+
+  <div class="stage" id="ring-stage"></div>
+
+  <p class="note"><b>The trick:</b> <code>pathLength="100"</code> normalizes the path so
+    <code>stroke-dasharray: 64 100</code> is literally "64%". Animate <code>stroke-dashoffset</code>
+    (or the dasharray) for the fill-up tween. Rounded ends via <code>stroke-linecap:round</code>.</p>
+
+  <div class="where">
+    <b>In supergit:</b> the weekly / session usage warnings you ship as toasts
+    (<code>pace</code>, <code>90% weekly</code>, <code>95% session</code>) become a glanceable ring
+    on each agent chip in <code>AgentUsageChip.svelte</code>. The ghost arc = projected weekly,
+    the solid arc = actual — so "on track to blow the cap" is visible before the toast fires.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 2 · SPARKLINES ════════════════════════════ -->
+<section class="demo" id="spark">
+  <h2><span class="num">02</span> Sparklines — one <code>&lt;polyline&gt;</code>, no chart lib</h2>
+  <p class="desc">
+    A row of N numbers → a single <code>points</code> string. Layer a translucent area
+    <code>&lt;path&gt;</code> underneath for body, and a "now" <code>&lt;circle&gt;</code> at the
+    last point. Cheap enough to render one per session row.
+  </p>
+
+  <div class="stage">
+    <div class="card">
+      <svg width="200" height="56" viewBox="0 0 200 56" id="spark-a"></svg>
+      <div class="cap"><b>tokens / hour</b> · area + now-dot</div>
+    </div>
+    <div class="card">
+      <svg width="200" height="56" viewBox="0 0 200 56" id="spark-b"></svg>
+      <div class="cap"><b>line only</b> · gradient stroke</div>
+    </div>
+    <div class="card">
+      <svg width="200" height="56" viewBox="0 0 200 56" id="spark-c"></svg>
+      <div class="cap"><b>bars</b> · per-commit churn</div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> a usage-over-time sparkline next to each agent in
+    <code>ProcessList.svelte</code> / the session dock, or per-repo commit churn in
+    <code>RepoRecentSummary.svelte</code>. No dependency, scales to any DPI, themeable via
+    <code>currentColor</code>.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 3 · BRANCH GRAPH ════════════════════════════ -->
+<section class="demo" id="graph">
+  <h2><span class="num">03</span> Branch graph — Bézier <code>&lt;path&gt;</code> + <code>&lt;marker&gt;</code> arrowheads</h2>
+  <p class="desc">
+    Git topology is a node-edge graph. Curved <code>&lt;path&gt;</code> edges with a reusable
+    <code>&lt;marker&gt;</code> arrowhead draw the Fork-style commit lanes without a canvas.
+    (Visualizing topology — not a rebase UI. Stays clear of "open in Fork" territory.)
+  </p>
+
+  <div class="stage">
+    <div class="card">
+      <svg width="420" height="180" viewBox="0 0 420 180" id="graph-svg"></svg>
+      <div class="cap"><b>main</b> · <span style="color:var(--chip-cyan-text)">feature</span> · <span style="color:var(--chip-purple-text)">worktree-x</span></div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> a mini-graph in <code>GitHistory.svelte</code> showing how each worktree
+    has diverged from <code>main</code> — ahead/behind as lane length, merge points as joins.
+    Worktree-first dashboards live and die on "how far has this drifted," and a glyph beats a
+    "+3 −1" text badge.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 4 · TEXTPATH ════════════════════════════ -->
+<section class="demo" id="textpath">
+  <h2><span class="num">04</span> <code>&lt;textPath&gt;</code> — labels that ride the curve</h2>
+  <p class="desc">
+    Text flows along an arbitrary path instead of sitting in a flat box. Branch names follow
+    their lane; a status label can arc around a ring.
+  </p>
+
+  <div class="stage">
+    <div class="card">
+      <svg width="260" height="120" viewBox="0 0 260 120" id="tp-curve"></svg>
+      <div class="cap"><b>branch name</b> follows its lane</div>
+    </div>
+    <div class="card">
+      <svg width="140" height="140" viewBox="0 0 140 140" id="tp-arc"></svg>
+      <div class="cap"><b>arced label</b> around a status ring</div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> long branch names (<code>feature/usage-warning-toasts</code>) curving along
+    the branch-graph lanes from demo 3, or a "SYNCING…" label arcing around the usage ring while a
+    remote pull is in flight.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 5 · ANIMATEMOTION ════════════════════════════ -->
+<section class="demo" id="motion">
+  <h2><span class="num">05</span> <code>&lt;animateMotion&gt;</code> — a pulse traveling down a branch</h2>
+  <p class="desc">
+    Move a dot <i>along a path</i> declaratively. A glowing pulse runs down the branch lane when an
+    agent commits or a push lands — directional liveness you can't fake with a CSS fade.
+  </p>
+
+  <div class="controls">
+    <button class="act" id="motion-fire">⚡ fire a commit pulse</button>
+  </div>
+  <div class="stage">
+    <div class="card">
+      <svg width="420" height="90" viewBox="0 0 420 90" id="motion-svg"></svg>
+      <div class="cap">data flows <b>main → worktree</b></div>
+    </div>
+  </div>
+
+  <p class="note"><b>Caveat:</b> SMIL (<code>&lt;animateMotion&gt;</code>) is fine in WebKit/Electron
+    but has a rocky standards history. For load-bearing animation in the native app, CSS
+    <code>offset-path</code> is the safer equivalent. This demo uses SMIL for brevity.</p>
+
+  <div class="where">
+    <b>In supergit:</b> SSE change events (<code>sse-change-kinds.ts</code>) trigger a pulse along
+    the relevant worktree lane — a commit, a push, an incoming remote sync each get a directional
+    blip instead of a silent row re-render.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 6 · SELF-DRAWING ════════════════════════════ -->
+<section class="demo" id="draw">
+  <h2><span class="num">06</span> Self-drawing strokes — animate <code>stroke-dashoffset</code></h2>
+  <p class="desc">
+    Set the dash to the full path length and animate the offset from full → 0: the path appears to
+    draw itself. The canonical "operation succeeded" checkmark, or a spinner that traces a ring.
+  </p>
+
+  <div class="controls">
+    <button class="act" id="draw-fire">↻ replay</button>
+  </div>
+  <div class="stage">
+    <div class="card">
+      <svg width="90" height="90" viewBox="0 0 90 90" id="draw-check"></svg>
+      <div class="cap"><b>success</b> check</div>
+    </div>
+    <div class="card">
+      <svg width="90" height="90" viewBox="0 0 90 90" id="draw-x"></svg>
+      <div class="cap"><b>failed</b> op</div>
+    </div>
+    <div class="card">
+      <svg width="90" height="90" viewBox="0 0 90 90" id="draw-spin"></svg>
+      <div class="cap"><b>working…</b> trace</div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> the result state for any daemon op that resolves — share-session,
+    remote-sync upload, repair-session. <code>LoadingSpinner.svelte</code> /
+    <code>SleepIndicationAnimation.svelte</code> already animate; a drawn check on completion closes
+    the loop visually.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 7 · FILTERS ════════════════════════════ -->
+<section class="demo" id="filters">
+  <h2><span class="num">07</span> Filters — <code>feGaussianBlur</code> goo, <code>feTurbulence</code> haze, <code>feMorphology</code> glow</h2>
+  <p class="desc">
+    The deep end. <b>Goo:</b> blur + a high-contrast alpha matrix makes nearby blobs fuse.
+    <b>Haze:</b> animated <code>feTurbulence</code> + <code>feDisplacementMap</code> is a "thinking"
+    shimmer. <b>Glow:</b> <code>feMorphology</code> dilates an outline for focus rings.
+  </p>
+
+  <div class="stage">
+    <div class="card">
+      <svg width="220" height="100" viewBox="0 0 220 100" id="f-goo"></svg>
+      <div class="cap"><b>gooey merge</b> · agents converging</div>
+    </div>
+    <div class="card">
+      <svg width="120" height="120" viewBox="0 0 120 120" id="f-haze"></svg>
+      <div class="cap"><b>heat haze</b> · agent is thinking</div>
+    </div>
+    <div class="card">
+      <svg width="120" height="120" viewBox="0 0 120 120" id="f-glow"></svg>
+      <div class="cap"><b>focus glow</b> · selected worktree</div>
+    </div>
+  </div>
+
+  <p class="note"><b>Perf caveat:</b> animated <code>feTurbulence</code> across 50 rows will cook a
+    laptop fan. Reserve filters for hover/active/selected state, or pre-bake. <code>feDropShadow</code>
+    is the cheap one and themes better than CSS <code>box-shadow</code> on irregular shapes.</p>
+
+  <div class="where">
+    <b>In supergit:</b> the haze marks an actively-streaming agent (a calmer
+    <code>SleepIndicationAnimation</code> sibling); the goo fuses two agent dots when sessions share
+    a worktree; the morphology glow is the selection ring for the focused worktree row
+    (<code>session-focus-store.ts</code>).
+  </div>
+</section>
+
+<!-- ════════════════════════════ 8 · CLIP & MASK ════════════════════════════ -->
+<section class="demo" id="mask">
+  <h2><span class="num">08</span> <code>&lt;clipPath&gt;</code> &amp; <code>&lt;mask&gt;</code> — wipes and faded edges</h2>
+  <p class="desc">
+    A clip shows only what's inside a shape (hard edge). A mask uses luminance/alpha, so a gradient
+    mask fades content to transparent. Great for a diff "wipe" reveal and for fading the ends of an
+    overflowing strip to hint "there's more, scroll."
+  </p>
+
+  <div class="controls">
+    <label>diff wipe <input id="mask-wipe" type="range" min="0" max="100" value="55"> <span id="mask-wipe-v">55%</span></label>
+  </div>
+  <div class="stage">
+    <div class="card">
+      <svg width="240" height="100" viewBox="0 0 240 100" id="mask-diff"></svg>
+      <div class="cap"><b>before / after</b> diff wipe</div>
+    </div>
+    <div class="card">
+      <svg width="240" height="60" viewBox="0 0 240 60" id="mask-fade"></svg>
+      <div class="cap"><b>edge fade</b> · "scroll for more"</div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> the wipe is a swipe-to-compare for <code>DiffViewer.svelte</code> (before/after
+    on top of each other, drag the seam). The gradient fade is the soft edge on the terminal-output
+    preview strips in <code>ShellPreview.svelte</code> / <code>ChatPreview.svelte</code> so truncation
+    reads as "fades out," not "abruptly cut."
+  </div>
+</section>
+
+<!-- ════════════════════════════ 9 · PATTERNS ════════════════════════════ -->
+<section class="demo" id="pattern">
+  <h2><span class="num">09</span> <code>&lt;pattern&gt;</code> — texture for stale / conflicted state</h2>
+  <p class="desc">
+    Tile a shape into a fill. Diagonal hatch for "stale" worktrees, a hazard-stripe for "conflicted,"
+    a dot grid for "no activity." Scales cleanly and inherits <code>currentColor</code>, so one
+    pattern themes across light/dark.
+  </p>
+
+  <div class="stage" id="pattern-stage" style="flex-direction:column; gap:.6rem;"></div>
+
+  <div class="where">
+    <b>In supergit:</b> the hatch overlays a worktree row (<code>worktree-row.css</code>) that's behind
+    its remote or hasn't been touched in days; the hazard stripe flags a row with merge conflicts —
+    a texture cue that survives even when the status color is colorblind-ambiguous.
+  </div>
+</section>
+
+<!-- ════════════════════════════ 10 · GRADIENTS ════════════════════════════ -->
+<section class="demo" id="gradient">
+  <h2><span class="num">10</span> Animated gradients — moving stops &amp; skeleton shimmer</h2>
+  <p class="desc">
+    Gradient <code>&lt;stop&gt;</code>s can animate. A skeleton-loader sweep is one moving
+    highlight stop; a usage bar's green→amber→red is three stops you reposition as fill grows, so the
+    color escalation is the gradient itself, not a JS color switch.
+  </p>
+
+  <div class="controls">
+    <label>fill <input id="grad-pct" type="range" min="0" max="100" value="78"> <span id="grad-pct-v">78%</span></label>
+  </div>
+  <div class="stage">
+    <div class="card" style="min-width:280px;">
+      <svg width="260" height="22" viewBox="0 0 260 22" id="grad-bar"></svg>
+      <div class="cap"><b>usage bar</b> · escalating gradient</div>
+    </div>
+    <div class="card" style="min-width:280px;">
+      <svg width="260" height="56" viewBox="0 0 260 56" id="grad-skel"></svg>
+      <div class="cap"><b>skeleton</b> · loading session row</div>
+    </div>
+  </div>
+
+  <div class="where">
+    <b>In supergit:</b> the escalating bar is the linear cousin of the demo-1 ring for the context-size
+    chip (<code>context-tokens.ts</code>, <code>--ctx-warn</code> / <code>--ctx-hot</code>); the shimmer
+    is the loading state for session/repo rows before the daemon responds
+    (<code>LoadingOverlay.svelte</code>).
+  </div>
+</section>
+
+<!-- ════════════════════════════ 11 · CURRENTCOLOR ════════════════════════════ -->
+<section class="demo" id="theme">
+  <h2><span class="num">11</span> <code>currentColor</code> + CSS vars — one icon, every theme</h2>
+  <p class="desc">
+    Inline SVG inherits <code>color</code> and can read <code>var(--…)</code> directly. One icon set
+    auto-themes with accent / status / hover — no duplicate light/dark assets, no recoloring in JS.
+    Hover the swatches; the same three glyphs recolor live.
+  </p>
+
+  <div class="stage" id="theme-stage"></div>
+
+  <p class="note"><b>Rule of thumb:</b> inline SVG &gt; <code>&lt;img src="x.svg"&gt;</code> for anything
+    you want to style, animate, or theme — an <code>&lt;img&gt;</code> is an opaque box.</p>
+
+  <div class="where">
+    <b>In supergit:</b> directly supports the design-token consolidation work — <code>icons.ts</code> /
+    <code>app-icons.ts</code> / <code>AgentIcon.svelte</code> glyphs reference <code>currentColor</code>
+    and <code>var(--brand)</code> / <code>var(--status-*)</code>, so a single token edit re-skins every
+    icon at once.
+  </div>
+</section>
+
+</main>
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   All demos are vanilla JS building SVG strings. Kept deliberately explicit
+   (no framework) so each section reads as a standalone recipe.
+   ───────────────────────────────────────────────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/* warning-kind enum → color, mirroring supergit's usage escalation */
+function usageColor(pct) {
+  if (pct >= 100) return getCss("--ctx-hot");
+  if (pct >= 90)  return getCss("--ctx-warn");
+  if (pct >= 75)  return "#e6c84a";          // "pace" amber-green
+  return getCss("--brand");
+}
+function getCss(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* ── 1 · USAGE RINGS ─────────────────────────────────────────────────────── */
+function ringSVG(pct, proj, label) {
+  const c = usageColor(pct);
+  const over = Math.min(pct, 100), projOver = Math.min(proj, 100);
+  return `
+  <div class="card">
+    <svg width="120" height="120" viewBox="0 0 120 120">
+      <circle cx="60" cy="60" r="50" fill="none" stroke="var(--surface-2)" stroke-width="10"/>
+      <!-- projected (ghost) arc -->
+      <circle cx="60" cy="60" r="50" fill="none" stroke="${c}" stroke-opacity="0.28"
+              stroke-width="10" stroke-linecap="round" pathLength="100"
+              stroke-dasharray="${projOver} 100" transform="rotate(-90 60 60)"/>
+      <!-- actual arc -->
+      <circle cx="60" cy="60" r="50" fill="none" stroke="${c}"
+              stroke-width="10" stroke-linecap="round" pathLength="100"
+              stroke-dasharray="${over} 100" transform="rotate(-90 60 60)"
+              style="transition:stroke-dasharray .35s ease, stroke .35s ease"/>
+      <text x="60" y="58" text-anchor="middle" fill="var(--text-1)" font-size="22" font-weight="600">${pct}%</text>
+      <text x="60" y="75" text-anchor="middle" fill="var(--text-muted)" font-size="10">used</text>
+    </svg>
+    <div class="cap"><b>${label}</b>${proj > 100 ? ' · ⚠ projected over' : ''}</div>
+  </div>`;
+}
+function renderRings() {
+  const pct = +$("ring-pct").value, proj = +$("ring-proj").value;
+  $("ring-pct-v").textContent = pct + "%";
+  $("ring-proj-v").textContent = proj + "%";
+  $("ring-stage").innerHTML =
+    ringSVG(pct, proj, "this session") +
+    ringSVG(48, 60, "weekly · ok") +
+    ringSVG(91, 104, "weekly · warn") +
+    ringSVG(101, 118, "weekly · hot");
+}
+$("ring-pct").addEventListener("input", renderRings);
+$("ring-proj").addEventListener("input", renderRings);
+renderRings();
+
+/* ── 2 · SPARKLINES ──────────────────────────────────────────────────────── */
+const SERIES = [3, 5, 4, 8, 6, 9, 7, 12, 10, 14, 11, 16, 13, 18, 15, 22, 19, 17, 24, 21];
+function spark(series, w, h, pad) {
+  const max = Math.max(...series), min = Math.min(...series);
+  const span = max - min || 1;
+  const step = (w - pad * 2) / (series.length - 1);
+  return series.map((v, i) => {
+    const x = pad + i * step;
+    const y = h - pad - ((v - min) / span) * (h - pad * 2);
+    return [x, y];
+  });
+}
+(function renderSparks() {
+  const w = 200, h = 56, pad = 8;
+  const pts = spark(SERIES, w, h, pad);
+  const line = pts.map(p => p.join(",")).join(" ");
+  const last = pts[pts.length - 1];
+  const area = `M${pts[0][0]},${h - pad} L` + line.replace(/ /g, " L") + ` L${last[0]},${h - pad} Z`;
+
+  $("spark-a").innerHTML = `
+    <defs><linearGradient id="sa" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--brand)" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${area}" fill="url(#sa)"/>
+    <polyline points="${line}" fill="none" stroke="var(--brand)" stroke-width="2"
+              stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="3.5" fill="var(--brand-hover)"/>`;
+
+  $("spark-b").innerHTML = `
+    <defs><linearGradient id="sb" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="var(--brand)"/>
+      <stop offset="1" stop-color="var(--ctx-warn)"/>
+    </linearGradient></defs>
+    <polyline points="${line}" fill="none" stroke="url(#sb)" stroke-width="2.5"
+              stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  const bars = SERIES.map((v, i) => {
+    const x = pad + i * ((w - pad * 2) / SERIES.length);
+    const bh = ((v - Math.min(...SERIES)) / (Math.max(...SERIES) - Math.min(...SERIES) || 1)) * (h - pad * 2) + 3;
+    const bw = (w - pad * 2) / SERIES.length - 2;
+    return `<rect x="${x}" y="${h - pad - bh}" width="${bw}" height="${bh}" rx="1"
+            fill="var(--status-clean)" fill-opacity="${0.4 + 0.5 * (i / SERIES.length)}"/>`;
+  }).join("");
+  $("spark-c").innerHTML = bars;
+})();
+
+/* ── 3 · BRANCH GRAPH ────────────────────────────────────────────────────── */
+(function renderGraph() {
+  const dot = (x, y, c) => `<circle cx="${x}" cy="${y}" r="6" fill="${c}" stroke="var(--surface-0)" stroke-width="2"/>`;
+  $("graph-svg").innerHTML = `
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--text-muted)"/>
+      </marker>
+    </defs>
+    <!-- main lane -->
+    <line x1="30" y1="40" x2="390" y2="40" stroke="var(--brand)" stroke-width="3"/>
+    <!-- feature branch off main -->
+    <path d="M150,40 C175,40 175,100 200,100 L320,100" fill="none"
+          stroke="var(--chip-cyan-text)" stroke-width="3" marker-end="url(#arr)"/>
+    <!-- worktree branch off feature -->
+    <path d="M240,100 C265,100 265,150 290,150 L360,150" fill="none"
+          stroke="var(--chip-purple-text)" stroke-width="3" marker-end="url(#arr)"/>
+    <!-- merge feature back to main -->
+    <path d="M320,100 C355,100 355,40 390,40" fill="none"
+          stroke="var(--chip-cyan-text)" stroke-width="2" stroke-dasharray="4 3" opacity="0.7"/>
+    ${[30,90,150,250,320,390].map(x => dot(x,40,"var(--brand)")).join("")}
+    ${[200,260,320].map(x => dot(x,100,"var(--chip-cyan-text)")).join("")}
+    ${[290,360].map(x => dot(x,150,"var(--chip-purple-text)")).join("")}
+    <text x="30" y="28" fill="var(--brand)" font-size="11" font-weight="600">main</text>
+    <text x="200" y="92" fill="var(--chip-cyan-text)" font-size="11" font-weight="600">feature</text>
+    <text x="290" y="142" fill="var(--chip-purple-text)" font-size="11" font-weight="600">worktree-x</text>`;
+})();
+
+/* ── 4 · TEXTPATH ────────────────────────────────────────────────────────── */
+(function renderTextPath() {
+  $("tp-curve").innerHTML = `
+    <defs><path id="lane" d="M10,90 C70,90 70,30 130,30 L250,30"/></defs>
+    <use href="#lane" fill="none" stroke="var(--chip-cyan-text)" stroke-width="3"/>
+    <text font-size="12" font-family="ui-monospace, monospace" fill="var(--text-1)">
+      <textPath href="#lane" startOffset="6">feature/usage-warning-toasts</textPath>
+    </text>`;
+  $("tp-arc").innerHTML = `
+    <defs><path id="arc" d="M70,70 m-52,0 a52,52 0 1 1 104,0 a52,52 0 1 1 -104,0"/></defs>
+    <circle cx="70" cy="70" r="42" fill="none" stroke="var(--brand)" stroke-width="6"
+            pathLength="100" stroke-dasharray="68 100" stroke-linecap="round"
+            transform="rotate(-90 70 70)"/>
+    <text font-size="11" letter-spacing="3" fill="var(--brand-hover)" font-weight="600">
+      <textPath href="#arc" startOffset="2">• SYNCING REMOTE • SYNCING REMOTE </textPath>
+    </text>
+    <text x="70" y="75" text-anchor="middle" fill="var(--text-1)" font-size="18" font-weight="600">68%</text>`;
+})();
+
+/* ── 5 · ANIMATEMOTION ───────────────────────────────────────────────────────
+   Driven by rAF + path.getPointAtLength() rather than SMIL <animateMotion>.
+   SMIL's begin/timeline is relative to the SVG's document currentTime, so a
+   re-injected <animate> on "replay" is treated as already-finished and never
+   runs — rAF restarts cleanly every click and avoids WebKit's xlink:href quirk. */
+function renderMotion() {
+  $("motion-svg").innerHTML = `
+    <defs>
+      <radialGradient id="pulse"><stop offset="0" stop-color="var(--brand-hover)"/>
+        <stop offset="1" stop-color="var(--brand-hover)" stop-opacity="0"/></radialGradient>
+    </defs>
+    <path id="flow" d="M30,45 C130,45 130,45 200,45 C290,45 290,45 390,45"
+          fill="none" stroke="var(--surface-3)" stroke-width="3"/>
+    <circle cx="30" cy="45" r="6" fill="var(--brand)"/>
+    <circle cx="390" cy="45" r="6" fill="var(--chip-purple-text)"/>
+    <text x="30" y="30" fill="var(--text-muted)" font-size="11">main</text>
+    <text x="350" y="30" fill="var(--text-muted)" font-size="11">worktree</text>
+    <circle id="motion-dot" r="9" fill="url(#pulse)" opacity="0"/>`;
+  animateAlong($("motion-svg").querySelector("#flow"),
+              $("motion-svg").querySelector("#motion-dot"), 1100, 3);
+}
+function animateAlong(path, dot, dur, reps) {
+  const len = path.getTotalLength();
+  let start = null, rep = 0;
+  dot.setAttribute("opacity", "1");
+  function frame(t) {
+    if (!dot.isConnected) return;              // a newer click replaced us — stop
+    if (start === null) start = t;
+    let prog = (t - start) / dur;
+    if (prog >= 1) {
+      rep++;
+      if (rep >= reps) { dot.setAttribute("opacity", "0"); return; }
+      start = t; prog = 0;
+    }
+    const pt = path.getPointAtLength(prog * len);
+    dot.setAttribute("cx", pt.x);
+    dot.setAttribute("cy", pt.y);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+$("motion-fire").addEventListener("click", renderMotion);
+renderMotion();
+
+/* ── 6 · SELF-DRAWING ─────────────────────────────────────────────────────────
+   Web Animations API instead of SMIL <animate>: same reason as demo 5 — a
+   re-injected SMIL <animate fill="freeze"> is past its begin on the SVG
+   timeline by replay time, so it snaps to the end and looks dead. el.animate()
+   restarts from scratch on every call. */
+function draw(el, dur, delay) {
+  el.style.strokeDasharray = "100";
+  el.animate(
+    [{ strokeDashoffset: 100 }, { strokeDashoffset: 0 }],
+    { duration: dur, delay: delay, easing: "ease", fill: "forwards" }
+  );
+}
+function drawSet() {
+  $("draw-check").innerHTML = `
+    <circle cx="45" cy="45" r="38" fill="none" stroke="var(--status-clean)" stroke-width="4" opacity="0.25"/>
+    <path id="chk" d="M27,46 L40,59 L64,32" fill="none" stroke="var(--status-clean)" stroke-width="5"
+          stroke-linecap="round" stroke-linejoin="round" pathLength="100"/>`;
+  $("draw-x").innerHTML = `
+    <circle cx="45" cy="45" r="38" fill="none" stroke="var(--error)" stroke-width="4" opacity="0.25"/>
+    <path id="x1" d="M30,30 L60,60" stroke="var(--error)" stroke-width="5" stroke-linecap="round" pathLength="100"/>
+    <path id="x2" d="M60,30 L30,60" stroke="var(--error)" stroke-width="5" stroke-linecap="round" pathLength="100"/>`;
+  $("draw-spin").innerHTML = `
+    <circle cx="45" cy="45" r="34" fill="none" stroke="var(--surface-3)" stroke-width="5"/>
+    <circle id="spin" cx="45" cy="45" r="34" fill="none" stroke="var(--brand)" stroke-width="5"
+            stroke-linecap="round" pathLength="100" stroke-dasharray="25 75"
+            style="transform-box: fill-box; transform-origin: center;"/>`;
+
+  draw($("draw-check").querySelector("#chk"), 500, 100);
+  draw($("draw-x").querySelector("#x1"), 300, 100);
+  draw($("draw-x").querySelector("#x2"), 300, 400);
+  $("draw-spin").querySelector("#spin").animate(
+    [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+    { duration: 900, iterations: Infinity }
+  );
+}
+$("draw-fire").addEventListener("click", drawSet);
+drawSet();
+
+/* ── 7 · FILTERS ─────────────────────────────────────────────────────────── */
+(function renderFilters() {
+  $("f-goo").innerHTML = `
+    <defs><filter id="goo">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="b"/>
+      <feColorMatrix in="b" mode="matrix"
+        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9" result="g"/>
+      <feBlend in="SourceGraphic" in2="g"/>
+    </filter></defs>
+    <g filter="url(#goo)" fill="var(--brand)">
+      <circle cx="80" cy="50" r="20"/>
+      <circle cx="130" cy="50" r="20">
+        <animate attributeName="cx" values="130;95;130" dur="3s" repeatCount="indefinite"/>
+      </circle>
+    </g>`;
+
+  $("f-haze").innerHTML = `
+    <defs><filter id="haze">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02 0.06" numOctaves="2" result="n">
+        <animate attributeName="baseFrequency" dur="6s"
+                 values="0.02 0.06;0.04 0.09;0.02 0.06" repeatCount="indefinite"/>
+      </feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="9"/>
+    </filter></defs>
+    <circle cx="60" cy="60" r="36" fill="none" stroke="var(--ctx-warn)" stroke-width="6" filter="url(#haze)"/>
+    <text x="60" y="65" text-anchor="middle" font-size="22" filter="url(#haze)">🤖</text>`;
+
+  $("f-glow").innerHTML = `
+    <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feMorphology operator="dilate" radius="2" in="SourceAlpha" result="d"/>
+      <feGaussianBlur in="d" stdDeviation="4" result="b"/>
+      <feFlood flood-color="var(--brand-hover)" result="c"/>
+      <feComposite in="c" in2="b" operator="in" result="glow"/>
+      <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter></defs>
+    <rect x="28" y="35" width="64" height="50" rx="8" filter="url(#glow)"
+          fill="var(--surface-2)" stroke="var(--brand)" stroke-width="2"/>
+    <text x="60" y="65" text-anchor="middle" fill="var(--text-1)" font-size="11">focused</text>`;
+})();
+
+/* ── 8 · CLIP & MASK ─────────────────────────────────────────────────────── */
+function renderMask() {
+  const wipe = +$("mask-wipe").value;
+  $("mask-wipe-v").textContent = wipe + "%";
+  const seam = 12 + (wipe / 100) * (228 - 12);
+  $("mask-diff").innerHTML = `
+    <defs><clipPath id="clip"><rect x="0" y="0" width="${seam}" height="100"/></clipPath></defs>
+    <!-- "after" underneath -->
+    <rect x="0" y="0" width="240" height="100" rx="6" fill="var(--surface-2)"/>
+    <text x="120" y="55" text-anchor="middle" fill="var(--status-clean)" font-size="13" font-family="ui-monospace,monospace">+ added</text>
+    <!-- "before" clipped on top -->
+    <g clip-path="url(#clip)">
+      <rect x="0" y="0" width="240" height="100" rx="6" fill="#2a1f1f"/>
+      <text x="120" y="55" text-anchor="middle" fill="var(--ctx-warn)" font-size="13" font-family="ui-monospace,monospace">− removed</text>
+    </g>
+    <line x1="${seam}" y1="0" x2="${seam}" y2="100" stroke="var(--brand-hover)" stroke-width="2"/>
+    <circle cx="${seam}" cy="50" r="7" fill="var(--brand-hover)"/>`;
+
+  $("mask-fade").innerHTML = `
+    <defs><linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="black"/><stop offset="0.12" stop-color="white"/>
+      <stop offset="0.88" stop-color="white"/><stop offset="1" stop-color="black"/>
+    </linearGradient>
+    <mask id="m"><rect x="0" y="0" width="240" height="60" fill="url(#fade)"/></mask></defs>
+    <g mask="url(#m)" font-family="ui-monospace,monospace" font-size="11" fill="var(--text-2)">
+      <text x="0" y="24">$ git log --oneline · 97ef122 usage warning toasts</text>
+      <text x="0" y="44">d9017f9 chime on projected weekly · dcc7361 PLAN · ff1eb4…</text>
+    </g>`;
+}
+$("mask-wipe").addEventListener("input", renderMask);
+renderMask();
+
+/* ── 9 · PATTERNS ────────────────────────────────────────────────────────── */
+(function renderPatterns() {
+  const rows = [
+    { id: "p-stale", label: "worktree-x · 6 days stale", branch: "feature/old",
+      def: `<pattern id="p-stale" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="8" height="8" fill="var(--surface-0)"/>
+              <line x1="0" y1="0" x2="0" y2="8" stroke="var(--text-faint)" stroke-width="2"/></pattern>`,
+      tag: "STALE", tagColor: "var(--text-muted)" },
+    { id: "p-conf", label: "main · merge conflict", branch: "main",
+      def: `<pattern id="p-conf" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="14" height="14" fill="#2a1f1f"/>
+              <rect width="7" height="14" fill="var(--error)" opacity="0.35"/></pattern>`,
+      tag: "CONFLICT", tagColor: "var(--error)" },
+    { id: "p-idle", label: "docs · no activity", branch: "docs/readme",
+      def: `<pattern id="p-idle" width="10" height="10" patternUnits="userSpaceOnUse">
+              <rect width="10" height="10" fill="var(--surface-0)"/>
+              <circle cx="2" cy="2" r="1.2" fill="var(--text-faint)"/></pattern>`,
+      tag: "IDLE", tagColor: "var(--text-faint)" },
+  ];
+  $("pattern-stage").innerHTML = rows.map(r => `
+    <svg width="420" height="44" viewBox="0 0 420 44" style="border-radius:6px;">
+      <defs>${r.def}</defs>
+      <rect x="0" y="0" width="420" height="44" rx="6" fill="url(#${r.id})" stroke="var(--surface-2)"/>
+      <text x="14" y="27" fill="var(--text-1)" font-size="13" font-weight="600">${r.label}</text>
+      <text x="300" y="27" fill="${r.tagColor}" font-size="11" font-weight="700" letter-spacing="1">${r.tag}</text>
+    </svg>`).join("");
+})();
+
+/* ── 10 · GRADIENTS ──────────────────────────────────────────────────────── */
+function renderGrad() {
+  const pct = +$("grad-pct").value;
+  $("grad-pct-v").textContent = pct + "%";
+  const w = (pct / 100) * 256;
+  $("grad-bar").innerHTML = `
+    <defs><linearGradient id="usage" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="var(--brand)"/>
+      <stop offset="0.6" stop-color="#e6c84a"/>
+      <stop offset="0.82" stop-color="var(--ctx-warn)"/>
+      <stop offset="1" stop-color="var(--ctx-hot)"/>
+    </linearGradient></defs>
+    <rect x="2" y="6" width="256" height="10" rx="5" fill="var(--surface-2)"/>
+    <rect x="2" y="6" width="${w}" height="10" rx="5" fill="url(#usage)"
+          style="transition:width .25s ease"/>`;
+
+  $("grad-skel").innerHTML = `
+    <defs><linearGradient id="shim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="var(--surface-2)"/>
+      <stop offset="0.5" stop-color="var(--surface-3)"/>
+      <stop offset="1" stop-color="var(--surface-2)"/>
+      <animateTransform attributeName="gradientTransform" type="translate"
+                        from="-1 0" to="1 0" dur="1.4s" repeatCount="indefinite"/>
+    </linearGradient></defs>
+    <rect x="0" y="6" width="36" height="36" rx="8" fill="url(#shim)"/>
+    <rect x="46" y="10" width="150" height="11" rx="5" fill="url(#shim)"/>
+    <rect x="46" y="30" width="90" height="9" rx="4" fill="url(#shim)"/>`;
+}
+$("grad-pct").addEventListener("input", renderGrad);
+renderGrad();
+
+/* ── 11 · CURRENTCOLOR THEMING ───────────────────────────────────────────── */
+(function renderTheme() {
+  const icons = {
+    branch: `<path d="M9,4 a3,3 0 1 0 0.01,0 M9,7 v6 a4,4 0 0 0 4,4 h2 M19,11 a3,3 0 1 0 0.01,0 M15,17 a4,4 0 0 0 4,-4 v-2"
+              fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
+    agent: `<rect x="5" y="8" width="14" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="9.5" cy="13" r="1.4" fill="currentColor"/><circle cx="14.5" cy="13" r="1.4" fill="currentColor"/>
+            <line x1="12" y1="4" x2="12" y2="8" stroke="currentColor" stroke-width="2"/>`,
+    commit: `<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/>
+             <line x1="2" y1="12" x2="8" y2="12" stroke="currentColor" stroke-width="2"/>
+             <line x1="16" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/>`,
+  };
+  const themes = [
+    { name: "brand",   color: "var(--brand)" },
+    { name: "clean",   color: "var(--status-clean)" },
+    { name: "dirty",   color: "var(--status-dirty)" },
+    { name: "warn",    color: "var(--ctx-warn)" },
+    { name: "hot",     color: "var(--ctx-hot)" },
+    { name: "muted",   color: "var(--text-muted)" },
+  ];
+  $("theme-stage").innerHTML = themes.map(t => `
+    <div class="card" style="text-align:center; cursor:pointer; color:${t.color}; transition:color .2s;"
+         onmouseover="this.style.color='var(--brand-hover)'"
+         onmouseout="this.style.color='${t.color}'">
+      <svg width="96" height="32" viewBox="0 0 96 32">
+        <g transform="translate(2,4)">${icons.branch}</g>
+        <g transform="translate(34,4)">${icons.agent}</g>
+        <g transform="translate(66,4)">${icons.commit}</g>
+      </svg>
+      <div class="cap" style="color:inherit;"><b style="color:inherit;">${t.name}</b></div>
+    </div>`).join("");
+})();
+</script>
+</body>
+</html>
