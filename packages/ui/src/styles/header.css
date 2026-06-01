@@ -373,3 +373,15 @@ main > header > h1 {
   background: color-mix(in oklch, #e44 25%, var(--surface-2, #1f1f21));
   color: #f88;
 }
+
+/* Remote daemons popover list */
+.daemons-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.daemons-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.4rem; border-radius: 4px; }
+.daemons-row:hover { background: color-mix(in srgb, var(--text-muted) 12%, transparent); }
+.daemons-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: #f85149; }
+.daemons-dot.online { background: #3fb950; }
+.daemons-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.daemons-label { font-size: 0.82rem; }
+.daemons-host { font-size: 0.7rem; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.daemons-remove { flex: 0 0 auto; background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0.1rem 0.35rem; border-radius: 4px; }
+.daemons-remove:hover { background: color-mix(in srgb, #f85149 20%, transparent); color: #f85149; }

@@ -266,6 +266,16 @@
   // Drives the online/offline dot in ProcessList. Reassigned (new Map) each
   // load so Svelte reactivity fires.
   let daemonsOnline = new Map<string, boolean>();
+  /** Registered remote daemons (the GET /api/daemons registry), kept
+   *  reactive so the menubar's "Remote daemons" list reflects adds/removes
+   *  immediately. Populated each load(). */
+  let remoteDaemons: Array<{
+    id: string;
+    label: string;
+    host: string;
+    port: number;
+    color?: string;
+  }> = [];
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
@@ -410,6 +420,7 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  let daemonsMenuOpen = false;
   let peerDiscoveryEnabled = false;
   let peerToggleBusy = false;
   async function togglePeerDiscovery() {
@@ -3491,12 +3502,13 @@
       // pure no-op, so the local-only path is unchanged.
       const online = new Map<string, boolean>();
       if (dResp && dResp.ok) {
-        let daemons: { id: string }[] = [];
+        let daemons: { id: string; label: string; host: string; port: number; color?: string }[] = [];
         try {
-          daemons = (await dResp.json()) as { id: string }[];
+          daemons = (await dResp.json()) as typeof daemons;
         } catch {
           daemons = [];
         }
+        remoteDaemons = Array.isArray(daemons) ? daemons : [];
         if (Array.isArray(daemons) && daemons.length > 0) {
           await Promise.all(
             daemons.map((d) =>
@@ -3506,6 +3518,8 @@
             ),
           );
         }
+      } else {
+        remoteDaemons = [];
       }
       daemonsOnline = online;
       events = await e.json();
@@ -5581,6 +5595,9 @@
     if (eventsOpen && !target?.closest(".events-anchor")) {
       eventsOpen = false;
     }
+    if (daemonsMenuOpen && !target?.closest(".daemons-anchor")) {
+      daemonsMenuOpen = false;
+    }
     if (!target?.closest(".tuis-anchor")) {
       processListRef?.closeIfOpen();
     }
@@ -6737,6 +6754,46 @@
                       {/if}
                     </div>
                   {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
+
+    <div class="actions-anchor daemons-anchor">
+      <button
+        class="actions-btn daemons-btn"
+        class:open={daemonsMenuOpen}
+        on:click={() => (daemonsMenuOpen = !daemonsMenuOpen)}
+        title="Remote daemons"
+      >
+        Daemons<span class="count">{remoteDaemons.length}</span>
+      </button>
+      {#if daemonsMenuOpen}
+        <Popover variant="actions" extraClass="daemons-popover" unclamped>
+          <svelte:fragment slot="head"><span>Remote daemons</span></svelte:fragment>
+          {#if remoteDaemons.length === 0}
+            <p class="muted small nopad">No remote daemons. Use "Add remote daemon" to connect one.</p>
+          {:else}
+            <ul class="daemons-list">
+              {#each remoteDaemons as d (d.id)}
+                <li class="daemons-row">
+                  <span
+                    class="daemons-dot"
+                    class:online={daemonsOnline.get(d.id)}
+                    title={daemonsOnline.get(d.id) ? "online" : "offline / no tunnel"}
+                  ></span>
+                  <span class="daemons-meta">
+                    <span class="daemons-label">{d.label}</span>
+                    <span class="daemons-host">{d.host}:{d.port}</span>
+                  </span>
+                  <button
+                    class="daemons-remove"
+                    title="Remove daemon"
+                    on:click|stopPropagation={() => void removeDaemon(d.id)}
+                  >×</button>
                 </li>
               {/each}
             </ul>
