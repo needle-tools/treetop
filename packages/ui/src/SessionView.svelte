@@ -1803,6 +1803,7 @@
       sessionSource={source}
       {attachTermId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
+      {daemonId}
       onSpawn={(id) => (terminalId = id)}
       onAwaitingChange={(a) => {
         awaitingInput = a;

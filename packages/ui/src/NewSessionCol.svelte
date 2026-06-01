@@ -87,6 +87,8 @@
    *  tooltip can show it. App.svelte derives this from the daemon's
    *  AgentSession index (same source as `lastActivityIso`). */
   export let lastUserMessage: string | undefined = undefined;
+  /** When set, terminal spawn and io WS are routed to this remote daemon. */
+  export let daemonId: string | undefined = undefined;
   /** Forwarded to SessionHeader so dragging the live-TUI column's
    *  header registers a drag source with the parent strip — without
    *  this the drop handler in App.svelte never sees a source and the
@@ -299,6 +301,7 @@
     sessionSource={source}
     {initialPrompt}
     {prefillCmd}
+    {daemonId}
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}

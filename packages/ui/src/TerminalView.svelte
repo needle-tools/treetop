@@ -169,6 +169,9 @@
    *  Parent can use this to open a remote file browser panel. */
   export let onSshChange: ((ssh: SshSessionInfo | null) => void) | undefined =
     undefined;
+  /** When set, terminal spawn and io WS are routed to this remote daemon
+   *  instead of the local one. Undefined keeps local behavior unchanged. */
+  export let daemonId: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -426,7 +429,7 @@
         // real size before the user can type anything.
         const cols = Math.max(xterm?.cols ?? 80, 80);
         const rows = Math.max(xterm?.rows ?? 24, 24);
-        const res = await fetch(apiUrl("/api/terminals"), {
+        const res = await fetch(apiUrl("/api/terminals", daemonId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -457,6 +460,7 @@
         `/api/terminals/${encodeURIComponent(id)}/io`,
         location.host,
         proto,
+        daemonId,
       );
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";

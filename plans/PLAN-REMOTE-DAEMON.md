@@ -402,6 +402,59 @@ layer:
       (proven manually 2026-06-01; pin it so the bash + TS formats can't
       drift).
 
+### Live-USE issues found while driving a real remote row (2026-06-01)
+
+Once `slugify` from the Hetzner box rendered as a folder row, actually
+*using* it surfaced these. Tracked here so none are lost:
+
+- [x] **Tunnel worked but no row / "tunnel failed"** — chain of fixes:
+      127.0.0.1 target, host-key accept-new, open() waits for listener,
+      proxy surfaces real errors, **Windows key ACL lockdown** (the final
+      root cause: ssh rejects 0600-but-ACL-open key). Row now renders.
+- [ ] **#1 Terminal on a remote row fails (Windows err 267 / cwd invalid)**
+      — `daemonId` reaches `SessionView` (App.svelte) but is NOT passed on
+      to `TerminalView` (SessionView.svelte:1771) nor through
+      `NewSessionCol`; TerminalView's POST `/api/terminals` + the
+      `/api/terminals/<id>/io` WS omit daemonId, so the PTY spawns on the
+      LOCAL daemon with the REMOTE cwd → error 267. Thread daemonId:
+      App → SessionView → TerminalView, App → NewSessionCol → TerminalView.
+- [ ] **#4 Editing remote repo settings does nothing (color, rename, …)**
+      — every repo-scoped POST omits daemonId: `/api/repos/<id>/color`,
+      `/rename`, `/checkout`, `/pull`, `/push`, `/worktrees`,
+      `/custom-links*`, and the DELETE. All hit the LOCAL daemon, which
+      doesn't have the remote repo. Thread daemonId (resolve from the repo
+      in scope) into each.
+- [ ] **Routing-guard blind spot** — `/api/repos*` + `/api/terminals*` are
+      on the guard's global allowlist (legit for local repo-mgmt + the
+      terminal list), so it can't flag a *remote* repo's color/terminal
+      call that forgot daemonId. The above two bugs slipped through because
+      of this. Tighten: distinguish per-repo-id calls from registry calls,
+      or assert remote-repo code paths pass daemonId.
+- [ ] **#2 Stars collide across daemons** — `StarStore` key is hardcoded
+      `"supergit:fileBrowser:stars"`; FileBrowser HAS a `daemonId` prop but
+      doesn't use it for the key, so a remote daemon's stars share the
+      local store (and the starred-only view shows both). Namespace the key
+      by daemonId.
+- [ ] **#3 Add a folder / git repo on the REMOTE daemon from local UI**
+      (most-wanted feature) — "Add folder" uses the LOCAL native picker +
+      POST `/api/repos`; there's no remote path. Compose: a path input (or
+      browse via proxied `GET /api/files?path=`, which exists) →
+      `POST apiUrl("/api/repos", daemonId)`. NOTE: no clone/init/mkdir
+      endpoint exists — repo must already be on the box; a remote
+      `git clone`/`init` is a separate, bigger add.
+- [ ] **#5 Remote worktree path is shown bare** (`/home/supergit/slugify`)
+      — prefix remote rows with the daemon label, e.g. `needle-playground
+      /home/supergit/slugify` or `REMOTE:needle-playground/…`, so it's
+      clear the path is on another box.
+- [ ] **#6 Local apps appear under the remote daemon column** — the
+      process/TUI list (local-machine `/api/processes`) seems to be
+      grouping local procs under the remote row. NEEDS INVESTIGATION
+      (repro/screenshot) — likely a grouping key that ignores daemonId.
+- [ ] **add-remote-daemon button icon missing width/height** — the
+      `.add-folder-cta.add-folder-cta-compact` SVG icon for "Add remote
+      daemon" has no explicit width/height so it renders huge/unsized.
+      Add width/height (match the sibling add-folder icons).
+
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
 remaining UI cost is real but mechanical (the `apiUrl` threading).
