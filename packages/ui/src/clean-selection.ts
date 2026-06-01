@@ -44,6 +44,12 @@
  * destroyed by the source app before it reached the terminal. This collapser
  * only recovers terminal soft-wraps (a long command wrapped by a shell), not
  * application word-wraps.
+ *
+ * Ruled out (don't re-try): leading indent. The agent renders every line
+ * with the same gutter, and wrap continuations get NO hanging indent — a
+ * wrapped prose row measured `lead=2`, identical to the row it continued.
+ * So neither `isWrapped`, nor row-fill width, nor leading indent
+ * distinguishes a wrap from a real line break here.
  */
 export interface SelectionRow {
   /** The row's text, already trimmed to the selected column range. */
