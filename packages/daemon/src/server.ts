@@ -3030,7 +3030,16 @@ const server = Bun.serve<TermWsData, never>({
             // in-memory bookkeeping and append a closing `exit` entry so
             // the JSONL becomes a complete transcript. We ignore onData
             // here — keystroke capture happens in the WS message handler.
-            const cleanup = handle.subscribe({
+            //
+            // `cleanup` is declared with `let` BEFORE subscribe(): if the
+            // PTY is already dead (e.g. it SIGHUP'd on spawn), subscribe()
+            // fires onExit SYNCHRONOUSLY, which references `cleanup` — a
+            // `const` assigned by subscribe()'s return would still be in
+            // its temporal dead zone there ("Cannot access 'cleanup' before
+            // initialization"). Pre-declaring + null-guarding makes the
+            // synchronous-exit path safe.
+            let cleanup: (() => void) | null = null;
+            cleanup = handle.subscribe({
               onData() {},
               onExit(info) {
                 shellTermIds.delete(handle.id);
@@ -3045,7 +3054,7 @@ const server = Bun.serve<TermWsData, never>({
                     signal: info.signal,
                   })
                   .catch(() => {});
-                cleanup();
+                cleanup?.();
               },
             });
           }
