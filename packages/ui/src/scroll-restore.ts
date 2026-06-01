@@ -40,13 +40,22 @@ export function restoreScrollAfterDelay(
   env: ScrollRestoreEnv,
 ): () => void {
   let settled = false;
-  const unsub = env.onUserScroll(() => {
+  // `unsub` and `handle` are assigned below but referenced inside the two
+  // callbacks. Declare them up front (not `const` after the subscription):
+  // if env.onUserScroll fires its callback SYNCHRONOUSLY during subscribe
+  // — or the timer fires synchronously — a later `const` would be in its
+  // temporal dead zone ("Cannot access … before initialization", which is
+  // exactly the crash this caused once minified). Pre-declaring makes the
+  // order-of-execution safe regardless of how the injected env behaves.
+  let unsub: () => void = () => {};
+  let handle: ReturnType<CoalescerTimer["set"]> | undefined;
+  unsub = env.onUserScroll(() => {
     if (settled) return; // restore already fired — user scroll is normal now
     settled = true;
-    env.timer.clear(handle);
+    if (handle !== undefined) env.timer.clear(handle);
     unsub();
   });
-  const handle = env.timer.set(() => {
+  handle = env.timer.set(() => {
     if (settled) return;
     settled = true;
     unsub();
@@ -55,7 +64,7 @@ export function restoreScrollAfterDelay(
   return () => {
     if (settled) return;
     settled = true;
-    env.timer.clear(handle);
+    if (handle !== undefined) env.timer.clear(handle);
     unsub();
   };
 }

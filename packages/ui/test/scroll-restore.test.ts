@@ -120,4 +120,63 @@ describe("restoreScrollAfterDelay", () => {
     expect(() => cancel()).not.toThrow();
     expect(scrolledTo()).toEqual([1200]);
   });
+
+  // ── Regression: synchronous callbacks during setup must not hit a
+  // temporal-dead-zone. The first prod build crashed with "Cannot access
+  // 'handle'/'cleanup' before initialization" because the onUserScroll
+  // callback referenced `handle` (a `const` declared AFTER the
+  // subscription). These pin that an env which fires synchronously is safe.
+
+  test("onUserScroll firing SYNCHRONOUSLY during subscribe doesn't throw (TDZ guard)", () => {
+    const scrolls: number[] = [];
+    let timerFired = false;
+    const env: ScrollRestoreEnv = {
+      // The timer is set AFTER the (synchronous) user-scroll already
+      // settled the restore, so when it fires it must early-out.
+      timer: {
+        set: (cb) => {
+          // store + invoke later to prove the set callback no-ops
+          queueMicrotask(() => {
+            cb();
+          });
+          return 1;
+        },
+        clear: () => {},
+      },
+      scrollTo: (y) => {
+        timerFired = true;
+        scrolls.push(y);
+      },
+      // fire the user-scroll callback IMMEDIATELY, before subscribe returns
+      onUserScroll: (cb) => {
+        cb();
+        return () => {};
+      },
+    };
+    // The crux: this used to THROW "Cannot access 'handle' before
+    // initialization" because the sync callback touched `handle` in its TDZ.
+    expect(() => restoreScrollAfterDelay(1200, 200, env)).not.toThrow();
+    // user took over synchronously → restore is settled → nothing scrolled.
+    expect(scrolls).toEqual([]);
+    expect(timerFired).toBe(false);
+  });
+
+  test("timer firing SYNCHRONOUSLY during set doesn't throw (TDZ guard)", () => {
+    const scrolls: number[] = [];
+    const env: ScrollRestoreEnv = {
+      // timer fires its callback immediately, before set() returns
+      timer: {
+        set: (cb) => {
+          cb();
+          return 1;
+        },
+        clear: () => {},
+      },
+      scrollTo: (y) => scrolls.push(y),
+      onUserScroll: () => () => {},
+    };
+    expect(() => restoreScrollAfterDelay(1200, 200, env)).not.toThrow();
+    // synchronous timer = restore fires immediately.
+    expect(scrolls).toEqual([1200]);
+  });
 });
