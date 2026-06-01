@@ -3597,37 +3597,75 @@
     }
   }
 
-  /** Register a remote daemon, then reload so its repos fan in as a
-   *  folder row. Throws on failure so the dialog surfaces the error and
-   *  stays open. The registry is always local (never daemon-routed). */
-  async function addRemoteDaemon(payload: DaemonFormPayload): Promise<void> {
-    const res = await fetch(apiUrl("/api/daemons"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `HTTP ${res.status}`);
+  /** POST that registers a remote daemon and returns the created record.
+   *  Validates the response is the expected daemon JSON (`{id,...}`) rather
+   *  than trusting `res.ok` alone: an OLD/un-rebuilt local daemon that
+   *  doesn't know the route can answer 2xx with HTML (SPA fallback) or an
+   *  empty body, which would otherwise read as a false success and close
+   *  the dialog with nothing registered. Throws a clear, actionable error
+   *  in every failure case so the dialog can surface it. */
+  async function postRegisterDaemon(
+    apiPath: string,
+    body: unknown,
+  ): Promise<{ id: string; label?: string }> {
+    // `apiPath` is already resolved by the caller (via a literal
+    // `apiUrl("/api/daemons…")` so the routing guard can see + allowlist
+    // it). The daemon registry is always local, so no daemonId is involved.
+    let res: Response;
+    try {
+      res = await fetch(apiPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      throw new Error(
+        `couldn't reach the local daemon — is it running? (${e instanceof Error ? e.message : String(e)})`,
+      );
     }
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      // HTML/empty ⇒ the route doesn't exist on this daemon build.
+      throw new Error(
+        `unexpected response (HTTP ${res.status}, ${ct || "no content-type"}). ` +
+          `Your local daemon may be an older build without this endpoint — rebuild + restart it.`,
+      );
+    }
+    const json = (await res.json().catch(() => null)) as
+      | { id?: string; label?: string; error?: string }
+      | null;
+    if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+    if (!json || typeof json.id !== "string") {
+      throw new Error("daemon accepted the request but returned no record");
+    }
+    return json as { id: string; label?: string };
+  }
+
+  /** Register a remote daemon (manual form), reload so its repos fan in,
+   *  and confirm with a toast. Throws on failure so the dialog surfaces the
+   *  error and stays open. The registry is always local (not daemon-routed). */
+  async function addRemoteDaemon(payload: DaemonFormPayload): Promise<void> {
+    const d = await postRegisterDaemon(apiUrl("/api/daemons"), payload);
     await load();
+    addToast({
+      kind: "success",
+      message: `Remote daemon "${d.label ?? payload.host}" added.`,
+    });
   }
 
   /** One-paste onboarding: hand the connection string to the local daemon,
-   *  which decodes it, stores the key server-side, and registers the remote.
-   *  Throws on failure so the dialog shows the error. Registry is local
-   *  (not daemon-routed). */
+   *  which decodes it, stores the key server-side, registers the remote, and
+   *  opens the tunnel. Confirms with a toast; throws on failure so the
+   *  dialog shows the error and stays open. */
   async function connectRemoteDaemon(connectionString: string): Promise<void> {
-    const res = await fetch(apiUrl("/api/daemons/connect"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connectionString }),
+    const d = await postRegisterDaemon(apiUrl("/api/daemons/connect"), {
+      connectionString,
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `HTTP ${res.status}`);
-    }
     await load();
+    addToast({
+      kind: "success",
+      message: `Remote daemon "${d.label ?? "remote"}" connected.`,
+    });
   }
 
   /** Suggestion returned by /api/sessions/folder-suggestions — a folder
