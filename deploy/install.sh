@@ -117,7 +117,11 @@ sed \
   -e "s#@BUN_BIN@#${BUN_BIN}#g" \
   "${APP_DIR}/deploy/supergit-daemon.service" > "${UNIT_PATH}"
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
+systemctl enable "${SERVICE_NAME}"
+# `enable --now` only START s a stopped unit — on a re-run (upgrade) the
+# service is already running the OLD code, so we must explicitly restart to
+# pick up the freshly-built SPA + daemon. restart starts it if stopped too.
+systemctl restart "${SERVICE_NAME}"
 
 # ---- 5. forward-only SSH key -------------------------------------------
 # The key can ONLY local-forward to 127.0.0.1:<port>. `restrict` disables
