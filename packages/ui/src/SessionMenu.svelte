@@ -57,6 +57,9 @@
         title?: string;
         icon?: string;
         iconSvg?: string[];
+        iconTrackPaths?: string[];
+        iconFilled?: boolean;
+        iconColor?: string;
       }
     | {
         kind: "submenu";
@@ -89,8 +92,8 @@
    *  bounding rect when they fire. Save-as-link uses that rect as
    *  the origin for its fly animation. */
   let triggerEl: HTMLButtonElement | null = null;
-  /** Index of the item whose "Copied" flash is currently visible. */
-  let copiedIndex: number | null = null;
+  /** Stable key of the item whose "Copied" flash is currently visible. */
+  let copiedKey: string | null = null;
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   /** Index of the submenu item whose flyout is visible. */
   let submenuIndex: number | null = null;
@@ -121,8 +124,29 @@
     open = !open;
   }
 
-  function handleSubmenuChildClick(child: SessionMenuItem) {
-    if (child.disabled || child.kind !== "action") return;
+  function copyMenuItem(item: Extract<SessionMenuItem, { kind: "copy" }>, key: string) {
+    const text = item.getText();
+    void navigator.clipboard.writeText(text).catch(() => {});
+    copiedKey = key;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedKey = null;
+      open = false;
+      copiedTimer = null;
+    }, 1200);
+  }
+
+  function handleSubmenuChildClick(
+    child: SessionMenuItem,
+    parentIndex: number,
+    childIndex: number,
+  ) {
+    if (child.disabled) return;
+    if (child.kind === "copy") {
+      copyMenuItem(child, `${parentIndex}:${childIndex}`);
+      return;
+    }
+    if (child.kind !== "action") return;
     open = false;
     submenuIndex = null;
     const rect =
@@ -153,15 +177,7 @@
       return;
     }
     // kind === "copy"
-    const text = item.getText();
-    void navigator.clipboard.writeText(text).catch(() => {});
-    copiedIndex = index;
-    if (copiedTimer) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => {
-      copiedIndex = null;
-      open = false;
-      copiedTimer = null;
-    }, 1200);
+    copyMenuItem(item, String(index));
   }
 
   function handleDocClick(e: MouseEvent) {
@@ -193,7 +209,7 @@
     <Popover variant="actions" extraClass="session-menu-popover">
       <ul class="menu-list">
         {#each items as item, i}
-          {@const isCopied = copiedIndex === i}
+          {@const isCopied = copiedKey === String(i)}
           <li
             class:has-submenu={item.kind === "submenu"}
             on:mouseenter={() =>
@@ -257,16 +273,21 @@
                 on:mouseenter={cancelSubmenuHide}
                 on:mouseleave={hideSubmenuDelayed}
               >
-                {#each item.children as child}
+                {#each item.children as child, j}
+                  {@const childCopied = copiedKey === `${i}:${j}`}
                   <li>
                     <button
                       type="button"
                       class="menu-item"
-                      disabled={child.disabled}
+                      class:copied={childCopied}
+                      disabled={child.disabled || childCopied}
                       title={child.title ?? child.label}
-                      on:click={() => handleSubmenuChildClick(child)}
+                      on:click={() => handleSubmenuChildClick(child, i, j)}
                     >
-                      {#if child.iconSvg && child.iconSvg.length > 0}
+                      {#if childCopied}
+                        <span class="check" aria-hidden="true">✓</span>
+                        <span class="label">Copied to clipboard</span>
+                      {:else if child.iconSvg && child.iconSvg.length > 0}
                         <span
                           class="icon icon-svg"
                           class:icon-filled={child.iconFilled}
