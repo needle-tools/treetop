@@ -13,6 +13,7 @@
   import { openUrl } from "./open-url";
   import { createResizeCoalescer } from "./terminal-resize";
   import { restoreScrollAfterDelay } from "./scroll-restore";
+  import { animateValue, centerScrollTarget } from "./scroll-util";
   import { singleFlight } from "./single-flight";
   import { time, timeAsync } from "./timings";
   import {
@@ -3231,6 +3232,9 @@
     // openSessionsByWt untouched so the entry is still there once the
     // daemon comes back up.
   }
+  /** Duration (ms) of the dock-pick scroll animations — short and
+   *  snappy, versus the browser's sluggish native smooth-scroll. */
+  const DOCK_SCROLL_MS = 220;
   /** After unfold (and any state mutation), wait for Svelte to flush
    *  DOM + one rAF for `.row-body` to flip from `display:none` to
    *  laid-out, then scroll the strip so the target column is horizontally
@@ -3273,25 +3277,39 @@
         // Center horizontally in the visible strip.
         target = colOffsetInStrip - (stripRect.width - colRect.width) / 2;
       }
-      strip.scrollTo({
-        left: Math.max(
+      animateValue({
+        from: strip.scrollLeft,
+        to: Math.max(
           0,
           Math.min(target, strip.scrollWidth - strip.clientWidth),
         ),
-        behavior: "smooth",
+        duration: DOCK_SCROLL_MS,
+        apply: (v) => {
+          strip.scrollLeft = v;
+        },
       });
       // Also vertically center the column in the viewport so a click
       // on a side-dock dot brings the row into view, not just the
-      // (already laid out but possibly off-screen) column. `inline:
-      // "nearest"` keeps the browser from re-doing the horizontal
-      // scroll we already handled above. Use the column's row-body
-      // ancestor as the scroll anchor when present so a short column
-      // doesn't park the row's chrome (header, etc.) above the fold.
+      // (already laid out but possibly off-screen) column. Use the
+      // column's row-body ancestor as the scroll anchor when present so
+      // a short column doesn't park the row's chrome (header, etc.)
+      // above the fold. Custom-animated (not scrollIntoView) so the
+      // jump shares the dock's short, tunable duration.
       const anchor = (col.closest(".row-body") as HTMLElement | null) ?? col;
-      anchor.scrollIntoView({
-        block: "center",
-        inline: "nearest",
-        behavior: "smooth",
+      const aRect = anchor.getBoundingClientRect();
+      const maxY =
+        document.documentElement.scrollHeight - window.innerHeight;
+      animateValue({
+        from: window.scrollY,
+        to: centerScrollTarget(
+          aRect.top,
+          aRect.height,
+          window.innerHeight,
+          window.scrollY,
+          maxY,
+        ),
+        duration: DOCK_SCROLL_MS,
+        apply: (v) => window.scrollTo(0, v),
       });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
@@ -5264,7 +5282,7 @@
     );
     const nextAnchors = [anchor, ...others];
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`, note.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ anchors: nextAnchors }),
@@ -5277,8 +5295,9 @@
   }
 
   async function deleteOrphan(noteId: string): Promise<void> {
+    const orphanNote = $notesAll.find((n) => n.id === noteId);
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`, orphanNote?.daemonId), {
         method: "DELETE",
       });
       if (!res.ok) return;
@@ -9758,14 +9777,29 @@
   on:scrollToRepo={(e) => {
     const el = document.querySelector(
       `.row[data-repo-id="${CSS.escape(e.detail.repoId)}"]`,
-    );
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    ) as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const maxY = document.documentElement.scrollHeight - window.innerHeight;
+    animateValue({
+      from: window.scrollY,
+      to: centerScrollTarget(
+        r.top,
+        r.height,
+        window.innerHeight,
+        window.scrollY,
+        maxY,
+      ),
+      duration: DOCK_SCROLL_MS,
+      apply: (v) => window.scrollTo(0, v),
+    });
   }}
 />
 
 <StickyNotesLayer
   changeKey={notesChangeKey}
   {repos}
+  {remoteDaemons}
   onCommandLinkOpen={handleCommandLinkOpen}
   onCommandLinkEdit={handleCommandLinkEdit}
   {runningCommandIds}

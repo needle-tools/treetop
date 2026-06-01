@@ -129,7 +129,14 @@
 <script lang="ts">
   import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
   import { apiUrl } from "./api";
-  import StickyNote, { type NoteShape } from "./StickyNote.svelte";
+  import {
+    daemonIdForWorktreePath,
+    daemonIdForRepoId,
+  } from "./repo-fanout";
+  import StickyNote, { type NoteShape as NoteShapeBase } from "./StickyNote.svelte";
+  /** Layer-local extension: carries the in-memory `daemonId` tag (not
+   *  persisted) so every mutation can route to the owning daemon. */
+  type NoteShape = NoteShapeBase & { daemonId?: string };
   import { notesCountByAnchor, notesAll } from "./notes-counts";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
@@ -177,6 +184,8 @@
   }
   interface AnchorableRepo {
     id: string;
+    /** Owning remote daemon; undefined ⇒ local. */
+    daemonId?: string;
     name?: string;
     path: string;
     worktrees?: AnchorableWorktree[];
@@ -190,6 +199,8 @@
     }>;
   }
   export let repos: AnchorableRepo[] = [];
+  /** Remote daemons whose notes should be fetched and merged. */
+  export let remoteDaemons: Array<{ id: string }> = [];
   export let onCommandLinkOpen:
     | ((payload: {
         linkId: string;
@@ -927,11 +938,48 @@
     positionsByNoteId = next;
   }
 
+  /** Which daemon owns the thing this note is anchored to (undefined =
+   *  local). worktree:/path and repo:<id>/… anchors resolve via the repo
+   *  list; anything else (commit/session/free) ⇒ local. */
+  function daemonIdForAnchors(anchors: string[]): string | undefined {
+    for (const a of anchors ?? []) {
+      if (a.startsWith("worktree:")) {
+        const p = a.slice("worktree:".length);
+        const d = daemonIdForWorktreePath(repos, p);
+        if (d) return d;
+      } else if (a.startsWith("repo:")) {
+        const repoId = a.slice("repo:".length).split("/")[0];
+        if (repoId) {
+          const d = daemonIdForRepoId(repos, repoId);
+          if (d) return d;
+        }
+      }
+    }
+    return undefined;
+  }
+
   async function refresh(): Promise<void> {
     try {
-      const res = await fetch(apiUrl("/api/notes"));
-      if (!res.ok) return;
-      const fetched = (await res.json()) as NoteShape[];
+      // Fetch notes from the local daemon AND every remote daemon.
+      // Each batch is tagged with its daemonId so mutations can route
+      // back to the correct daemon. A down remote is skipped silently.
+      const daemonIds: Array<string | undefined> = [
+        undefined,
+        ...remoteDaemons.map((d) => d.id),
+      ];
+      const batchResults = await Promise.all(
+        daemonIds.map(async (daemonId) => {
+          try {
+            const r = await fetch(apiUrl("/api/notes", daemonId));
+            if (!r.ok) return [] as NoteShape[];
+            const list = (await r.json()) as NoteShape[];
+            return list.map((n) => ({ ...n, daemonId }));
+          } catch {
+            return [] as NoteShape[];
+          }
+        }),
+      );
+      const fetched: NoteShape[] = ([] as NoteShape[]).concat(...batchResults);
       // Drain any pending fly-restores whose note just arrived. Done
       // BEFORE we assign `notes` so the staging entries land in the
       // same synchronous block — Svelte batches `notes` and
@@ -1033,8 +1081,9 @@
     const kind = args.kind ?? "note";
     const hasTarget = !!args.target;
     const autoCommit = hasTarget || kind === "emoji";
+    const createDaemonId = daemonIdForAnchors([args.anchor]);
     try {
-      const res = await fetch(apiUrl("/api/notes"), {
+      const res = await fetch(apiUrl("/api/notes", createDaemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1046,6 +1095,7 @@
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
+      created.daemonId = createDaemonId;
       const docX =
         args.originRect.left +
         args.originRect.width / 2 -
@@ -1079,8 +1129,9 @@
     clientX: number,
     clientY: number,
   ): Promise<void> {
+    const createDaemonId = daemonIdForAnchors([target.anchor]);
     try {
-      const res = await fetch(apiUrl("/api/notes"), {
+      const res = await fetch(apiUrl("/api/notes", createDaemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1091,6 +1142,7 @@
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
+      created.daemonId = createDaemonId;
       setDroppedOffset(created.id, target.li, clientX, clientY);
       staging = {
         ...staging,
@@ -1238,7 +1290,7 @@
   ): Promise<void> {
     if (note.kind === "link" || note.kind === "emoji") return;
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1247,6 +1299,7 @@
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
+      updated.daemonId = note.daemonId;
       notes = notes.map((n) => (n.id === updated.id ? updated : n));
       bringToFront(updated.id);
       tick++;
@@ -1259,8 +1312,9 @@
     clientX: number,
     clientY: number,
   ): Promise<void> {
+    const createDaemonId = daemonIdForAnchors([rowTarget.anchor]);
     try {
-      const res = await fetch(apiUrl("/api/notes"), {
+      const res = await fetch(apiUrl("/api/notes", createDaemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1271,6 +1325,7 @@
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
+      created.daemonId = createDaemonId;
       setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
       notes = [created, ...notes];
       bringToFront(created.id);
@@ -1544,7 +1599,7 @@
         (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
       );
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1553,6 +1608,7 @@
         });
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
+        updated.daemonId = source.daemonId;
         setDroppedOffset(updated.id, target.li, clientX, clientY);
         notes = notes.map((n) => (n.id === updated.id ? updated : n));
         bringToFront(updated.id);
@@ -1561,9 +1617,10 @@
       return;
     }
 
+    const createTargetDaemonId = daemonIdForAnchors([target.anchor]);
     try {
       const sourceRes = await fetch(
-        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
+        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1572,9 +1629,10 @@
       );
       if (!sourceRes.ok) return;
       const updatedSource = (await sourceRes.json()) as NoteShape;
+      updatedSource.daemonId = source.daemonId;
       notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
 
-      const createRes = await fetch(apiUrl("/api/notes"), {
+      const createRes = await fetch(apiUrl("/api/notes", createTargetDaemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1584,7 +1642,7 @@
         }),
       });
       if (!createRes.ok) {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: source.body }),
@@ -1593,6 +1651,7 @@
         return;
       }
       const created = (await createRes.json()) as NoteShape;
+      created.daemonId = createTargetDaemonId;
       setDroppedOffset(created.id, target.li, clientX, clientY);
       notes = [created, ...notes];
       bringToFront(created.id);
@@ -1625,13 +1684,14 @@
         : moveInlineAttachmentRefToEnd(source.body, payload.raw);
       if (nextBody === source.body) return;
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: nextBody }),
         });
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
+        updated.daemonId = source.daemonId;
         notes = notes.map((n) => (n.id === updated.id ? updated : n));
         bringToFront(updated.id);
         tick++;
@@ -1654,7 +1714,7 @@
 
     try {
       const targetRes = await fetch(
-        apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`),
+        apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1663,14 +1723,15 @@
       );
       if (!targetRes.ok) return;
       const updatedTarget = (await targetRes.json()) as NoteShape;
+      updatedTarget.daemonId = targetNote.daemonId;
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
       if (sourceIsStandalone) {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`), {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
           method: "DELETE",
         });
         if (!res.ok) {
-          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`), {
+          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ body: targetNote.body }),
@@ -1681,7 +1742,7 @@
         notes = notes.filter((n) => n.id !== source.id);
       } else {
         const sourceRes = await fetch(
-          apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
+          apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId),
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -1689,7 +1750,7 @@
           },
         );
         if (!sourceRes.ok) {
-          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`), {
+          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ body: targetNote.body }),
@@ -1698,6 +1759,7 @@
           return;
         }
         const updatedSource = (await sourceRes.json()) as NoteShape;
+        updatedSource.daemonId = source.daemonId;
         notes = notes.map((n) =>
           n.id === updatedSource.id ? updatedSource : n,
         );
@@ -1850,13 +1912,15 @@
       if (e.detail.kind !== undefined) putBody.kind = e.detail.kind;
       if (e.detail.target !== undefined) putBody.target = e.detail.target;
       if (e.detail.secret !== undefined) putBody.secret = e.detail.secret;
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`), {
+      const savingNote = notes.find((n) => n.id === e.detail.id);
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`, savingNote?.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(putBody),
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
+      updated.daemonId = savingNote?.daemonId;
       notes = notes.map((n) => (n.id === updated.id ? updated : n));
       // Last interaction wins: writing to a note brings it to the
       // top of the stack alongside drag/focus.
@@ -1889,7 +1953,7 @@
     const isStaging = !!staging[id];
     if (isStaging) {
       try {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`), {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
           method: "DELETE",
         });
       } catch {}
@@ -1907,7 +1971,7 @@
     removingIds = new Set([...removingIds, id]);
     await new Promise((r) => setTimeout(r, 320));
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -2184,7 +2248,7 @@
     if (note.kind === "link" || note.kind === "emoji") return;
     const raw = makeLinkAttachmentRef({ target });
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2193,6 +2257,7 @@
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
+      updated.daemonId = note.daemonId;
       notes = notes.map((n) => (n.id === updated.id ? updated : n));
       bringToFront(updated.id);
       tick++;
@@ -2205,8 +2270,9 @@
     clientX: number,
     clientY: number,
   ): Promise<void> {
+    const createDaemonId = daemonIdForAnchors([rowTarget.anchor]);
     try {
-      const res = await fetch(apiUrl("/api/notes"), {
+      const res = await fetch(apiUrl("/api/notes", createDaemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2219,6 +2285,7 @@
       });
       if (!res.ok) return;
       const created = (await res.json()) as NoteShape;
+      created.daemonId = createDaemonId;
       setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
       notes = [created, ...notes];
       bringToFront(created.id);
@@ -2327,7 +2394,7 @@
   ): Promise<void> {
     try {
       const targetRes = await fetch(
-        apiUrl(`/api/notes/${encodeURIComponent(target.id)}`),
+        apiUrl(`/api/notes/${encodeURIComponent(target.id)}`, target.daemonId),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -2338,16 +2405,17 @@
       );
       if (!targetRes.ok) return;
       const updatedTarget = (await targetRes.json()) as NoteShape;
+      updatedTarget.daemonId = target.daemonId;
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
       const sourceRes = await fetch(
-        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`),
+        apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId),
         {
           method: "DELETE",
         },
       );
       if (!sourceRes.ok) {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(target.id)}`), {
+        await fetch(apiUrl(`/api/notes/${encodeURIComponent(target.id)}`, target.daemonId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ body: target.body }),
@@ -2373,7 +2441,7 @@
       (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
     );
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
+      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2382,6 +2450,7 @@
       });
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
+      updated.daemonId = note.daemonId;
       setDroppedOffset(updated.id, rowTarget.li, clientX, clientY, grab);
       notes = notes.map((n) => (n.id === updated.id ? updated : n));
       bringToFront(updated.id);
@@ -2401,18 +2470,22 @@
     if (e.detail.mode === "move") {
       // Replace the first worktree/repo anchor with the new one; keep
       // any auxiliary anchors (commit:..., session:...) intact.
+      // The PUT goes to the note's current daemon (the note stays on the
+      // same daemon even after a "Move" — cross-daemon note relocation
+      // would require a separate create+delete; not yet implemented).
       const others = note.anchors.filter(
         (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
       );
       const nextAnchors = [e.detail.anchor, ...others];
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`), {
+        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ anchors: nextAnchors }),
         });
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
+        updated.daemonId = note.daemonId;
         notes = notes.map((n) => (n.id === updated.id ? updated : n));
         tick++;
       } catch {}
@@ -2421,8 +2494,9 @@
         (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
       );
       const dupAnchors = [e.detail.anchor, ...others];
+      const dupDaemonId = daemonIdForAnchors([e.detail.anchor]);
       try {
-        const res = await fetch(apiUrl("/api/notes"), {
+        const res = await fetch(apiUrl("/api/notes", dupDaemonId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2433,6 +2507,7 @@
         });
         if (!res.ok) return;
         const created = (await res.json()) as NoteShape;
+        created.daemonId = dupDaemonId;
         notes = [created, ...notes];
         bringToFront(created.id);
         tick++;

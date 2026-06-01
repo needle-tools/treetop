@@ -28,6 +28,10 @@ export interface NoteShape {
    *  notes popover) render a useful chip-style line for link kinds
    *  whose `body` is empty. */
   target?: NoteLinkTargetShape;
+  /** In-memory only (NOT persisted): which daemon this note was fetched
+   *  from — undefined = local. Set when StickyNotesLayer merges notes from
+   *  all daemons, so updates/deletes route back to the owning daemon. */
+  daemonId?: string;
 }
 
 /** Count of notes pinned to each anchor string (e.g.
