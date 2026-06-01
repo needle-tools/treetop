@@ -10,6 +10,7 @@
   import { shrinkImageBlob } from "./image-shrink";
   import { joinSelectionRows, type SelectionRow } from "./clean-selection";
   import { TerminalWriteBuffer } from "./terminal-write-buffer";
+  import { createResizeCoalescer, type ResizeCoalescer } from "./terminal-resize";
   import {
     expandNoteBodyForTerminalPasteChunks,
     extractNoteClipboardPayloadFromHtml,
@@ -263,6 +264,12 @@
   let ws: WebSocket | null = null;
   let resizeObs: ResizeObserver | null = null;
   let onWindowResize: (() => void) | null = null;
+  let resizeCoalescer: ResizeCoalescer | null = null;
+  // Wait this long after the last resize trigger before refitting the PTY.
+  // Long enough to outlast a zen/fullscreen animation's per-frame resize
+  // burst (so we refit once, at the settled size) without feeling laggy on
+  // a deliberate pane-divider drag. See terminal-resize.ts.
+  const RESIZE_SETTLE_MS = 120;
   // Off-screen render skip: while this terminal's column isn't visible we
   // buffer raw PTY bytes instead of calling xterm.write() (which parses
   // ANSI + mutates the DOM every chunk), then flush once on reveal. The
@@ -561,6 +568,41 @@
     );
   }
 
+  /** Refit xterm to the container and tell the PTY the new size — but only
+   *  when the dimensions *actually* changed and the container is laid out.
+   *  Routed through `resizeCoalescer` so a zen/fullscreen animation's
+   *  per-frame resize burst collapses into one settled refit instead of a
+   *  SIGWINCH storm that makes the TUI repaint mid-transition (duplicated /
+   *  clipped output). The dimension gate also drops the sub-pixel reflows
+   *  that adjacent worktree rows trigger on every JSONL line, and the
+   *  clientWidth/Height guard skips the hidden-container path that crashed
+   *  xterm's renderer ("Cannot read properties of undefined (dimensions)")
+   *  while a column was unmounting. */
+  function applyResize() {
+    if (!fit || !xterm || phase === "exited") return;
+    if (
+      !containerEl ||
+      containerEl.clientWidth === 0 ||
+      containerEl.clientHeight === 0
+    )
+      return;
+    const before = { cols: xterm.cols, rows: xterm.rows };
+    let proposed: { cols: number; rows: number } | undefined;
+    try {
+      proposed = fit.proposeDimensions();
+    } catch {
+      // pre-mount sizing race; ignored
+    }
+    if (!proposed) return;
+    if (proposed.cols === before.cols && proposed.rows === before.rows) return;
+    try {
+      fit.fit();
+    } catch {
+      return;
+    }
+    sendResize();
+  }
+
   onMount(() => {
     if (!containerEl) return;
     xterm = new Terminal({
@@ -771,31 +813,8 @@
     // (clientWidth === 0) — that's the path that triggered xterm's
     // "Cannot read properties of undefined (reading 'dimensions')"
     // crash when the column was unmounting.
-    resizeObs = new ResizeObserver(() => {
-      if (!fit || !xterm || phase === "exited") return;
-      if (
-        !containerEl ||
-        containerEl.clientWidth === 0 ||
-        containerEl.clientHeight === 0
-      )
-        return;
-      const before = { cols: xterm.cols, rows: xterm.rows };
-      let proposed: { cols: number; rows: number } | undefined;
-      try {
-        proposed = fit.proposeDimensions();
-      } catch {
-        // pre-mount sizing race; ignored
-      }
-      if (!proposed) return;
-      if (proposed.cols === before.cols && proposed.rows === before.rows)
-        return;
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      sendResize();
-    });
+    resizeCoalescer = createResizeCoalescer(applyResize, RESIZE_SETTLE_MS);
+    resizeObs = new ResizeObserver(() => resizeCoalescer?.trigger());
     resizeObs.observe(containerEl);
 
     // Skip rendering while this column is off-screen (scrolled out of the
@@ -812,14 +831,10 @@
         if (visible && xterm) {
           const batch = writeBuffer.flush();
           if (batch) xterm.write(batch);
-          if (fit && containerEl && containerEl.clientWidth > 0) {
-            try {
-              fit.fit();
-              sendResize();
-            } catch {
-              /* layout race; ResizeObserver will retry */
-            }
-          }
+          // Size may have changed while we weren't laying out; coalesce the
+          // refit (same path as the observers) so a reveal that coincides
+          // with a resize doesn't double-fit.
+          resizeCoalescer?.trigger();
         }
       },
       { threshold: 0 },
@@ -827,29 +842,11 @@
     visibilityObs.observe(containerEl);
 
     // WKWebView doesn't always fire ResizeObserver during fullscreen
-    // transitions. A window resize listener catches those. Same
-    // dimension gate as the ResizeObserver to avoid spurious resize
-    // events that make TUI apps redraw and duplicate output.
-    onWindowResize = () => {
-      if (!fit || !xterm || phase === "exited") return;
-      if (!containerEl || containerEl.clientWidth === 0) return;
-      const before = { cols: xterm.cols, rows: xterm.rows };
-      let proposed: { cols: number; rows: number } | undefined;
-      try {
-        proposed = fit.proposeDimensions();
-      } catch {
-        return;
-      }
-      if (!proposed) return;
-      if (proposed.cols === before.cols && proposed.rows === before.rows)
-        return;
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      sendResize();
-    };
+    // transitions. A window resize listener catches those, routed through
+    // the same coalescer so the fullscreen animation's per-frame resize
+    // burst collapses into one settled refit (otherwise the TUI repaints
+    // mid-transition and duplicates / clips output).
+    onWindowResize = () => resizeCoalescer?.trigger();
     window.addEventListener("resize", onWindowResize);
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
 
@@ -918,6 +915,7 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     resizeObs?.disconnect();
+    resizeCoalescer?.cancel();
     visibilityObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
