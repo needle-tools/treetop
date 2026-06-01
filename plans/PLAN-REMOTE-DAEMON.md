@@ -580,9 +580,54 @@ the UI only QUERIED the local daemon. Split into two principles:
       `/api/events` + subscribes to local SSE. So remote changes don't
       appear in the undo tray / events popover, and remote rows don't
       live-refresh on remote-side changes (we paper over this with explicit
-      `load()` after remote mutations — see #9b). Proper fix: subscribe to
-      each remote daemon's SSE through the proxy, and merge per-daemon
-      events. Non-trivial.
+      `load()` after remote mutations — see #9b).
+
+  DESIGN (mapped 2026-06-01). Split into two parts — very different
+  value/risk; do #15a, defer #15b:
+
+  - [ ] **#15a — Live refresh via per-daemon SSE (HIGH value, low risk).**
+        `/api/daemons/<id>/stream` ALREADY proxies SSE incrementally
+        through forwardToRemote (proven: daemon-proxy-forward.test.ts
+        "proxies SSE … not buffered"). So:
+        1. Extract the local EventSource "change" handler (App.svelte
+           ~4871–5033) into a pure `handleStreamChange(payload)` that takes
+           an optional `payload.daemonId`. Local path unchanged (daemonId
+           undefined).
+        2. Add a `remoteStreams: Map<daemonId, EventSource>` manager that
+           opens ONE `new EventSource(apiUrl("/api/stream", d.id))` per
+           ONLINE remote daemon, tags each message with that daemonId, and
+           feeds it into handleStreamChange. Lifecycle tied to
+           `remoteDaemons` + `daemonsOnline`: open on online, close on
+           offline/removeDaemon/onDestroy; reconnect mirrors the local
+           onerror→streamConnected logic.
+        3. Effect: a remote-side change (or another client editing the
+           remote box) triggers the same `load()` / notesChangeKey /
+           command refresh as local — kills the "manual reload" problem and
+           closes the #17-notes live-update limitation. The explicit
+           post-mutation `load()`s (#9b, reorder) become redundant safety
+           nets, not the only path.
+        Scope: App.svelte only. The refactor-to-shared-handler is the bulk;
+        keep it behaviour-preserving for local.
+  - [ ] **#15b — Remote events in the undo tray (LOWER value, real
+        complexity — DEFER).** Unlike `/api/repos`, `/api/events` is
+        per-daemon and the local UI only fetches local. To show + undo
+        remote events:
+        - fetch `/api/events` from each daemon, merge + reverse-sort into
+          one tray (cross-daemon time ordering is fuzzy — clocks differ);
+        - add `daemonId` onto each Event record (in-memory) so
+          `toggleEvent(id, toggle, daemonId)` POSTs `/api/events/<id>/<toggle>`
+          to the OWNING daemon;
+        - decide UX for a merged undo stack across machines (is "undo" the
+          last action on ANY daemon, or per-daemon?). This is a product
+          question, not just plumbing — undo across two machines' histories
+          is genuinely ambiguous. Defer until there's a real need; #15a
+          already gives live refresh without it.
+        Daemon side: NO changes for either (each daemon already broadcasts
+        its own stream + serves its own events; the proxy forwards both).
+        TESTING: #15a wants a sync-callback test for the stream manager
+        (open/close on online/offline, message tagging) + the container
+        e2e (a real remote change propagating). Pure handleStreamChange is
+        unit-testable; the EventSource manager needs the DOM harness gap.
 - [ ] **#16 Session titles for remote shells stored locally** —
       `/api/session-titles` + `/api/session/title` are local-only; a remote
       shell's title lives in the local workspace, not the box. Route by
