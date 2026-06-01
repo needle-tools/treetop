@@ -132,6 +132,26 @@ func envSnapshot(env []string) map[string]any {
 	return snap
 }
 
+// resolveCwd validates a requested working directory. An empty cwd returns
+// empty (the child inherits the helper's cwd, no warning). A cwd that doesn't
+// exist or isn't a directory also returns empty, plus a warning — this is the
+// session-share case where a transcript shared from another machine kept a
+// stale foreign cwd (e.g. a Windows `C:\git\repo` that was never rewritten).
+// Setting cmd.Dir to a missing directory makes os/exec fail at the chdir step
+// and report it as "fork/exec <shell>: no such file or directory", which
+// wrongly implicates the shell binary; degrading to the helper's cwd with a
+// warning is far less confusing.
+func resolveCwd(cwd string) (dir string, warn string) {
+	if cwd == "" {
+		return "", ""
+	}
+	info, err := os.Stat(cwd)
+	if err != nil || !info.IsDir() {
+		return "", "cwd does not exist, falling back to helper cwd: " + cwd
+	}
+	return cwd, ""
+}
+
 func handleSpawn(msg map[string]any) {
 	id, _ := msg["id"].(string)
 	cmdArr, _ := msg["cmd"].([]any)
@@ -165,8 +185,12 @@ func handleSpawn(msg map[string]any) {
 	}
 
 	cmd := p.Command(args[0], args[1:]...)
-	if cwd != "" {
-		cmd.Dir = cwd
+	dir, cwdWarn := resolveCwd(cwd)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	if cwdWarn != "" {
+		emit(map[string]any{"ev": "warn", "id": id, "msg": cwdWarn})
 	}
 
 	base := scrubEnv()

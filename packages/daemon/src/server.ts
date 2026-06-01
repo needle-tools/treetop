@@ -153,6 +153,7 @@ import {
   migrateLegacyImportedSessions,
   migrateClaudeImportsToProjects,
   migrateOllamaImportsToWorkspace,
+  repairImportedSessionCwds,
 } from "./session-share-migrate";
 import {
   loadOrCreatePeerIdentity,
@@ -570,6 +571,29 @@ void migrateOllamaImportsToWorkspace(WORKSPACE_PATH)
   .catch((e) => {
     console.error(
       `supergit daemon: ollama imports → workspace migrate failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  });
+
+// Fourth-stage repair: re-apply the origin→local path rewrite to imported
+// claude sessions that under-rewrote at accept time (the forward-slash
+// `originRepoPath` vs backslash-cwd mismatch left a dead foreign cwd,
+// which made the terminal spawn fail with a misleading
+// `fork/exec /bin/bash: no such file or directory`). Idempotent: a
+// correctly-rewritten transcript no longer contains the origin path, so
+// the rewrite is a no-op. Pre-repair bytes are parked as `<jsonl>.repair-bak`.
+void repairImportedSessionCwds(WORKSPACE_PATH)
+  .then((r) => {
+    if (r.repaired > 0) {
+      console.log(
+        `supergit daemon: imported-session cwd repair — repaired=${r.repaired} scanned=${r.scanned}`,
+      );
+    }
+  })
+  .catch((e) => {
+    console.error(
+      `supergit daemon: imported-session cwd repair failed: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -2242,7 +2266,7 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/repos/:id/pull",
               body: { path: "string", preStash: "boolean?" },
               description:
-                "fast-forward the given worktree to its upstream via `git merge --ff-only @{u}` (NOT `git pull` — the daemon's background fetch cycle already keeps `@{u}` fresh, so we skip the extra network round-trip). Returns { ok, kind } where kind ∈ updated|up_to_date|diverged|dirty|no_upstream|error. With preStash=true, retries once after `git stash push --include-untracked` if kind=dirty.",
+                "fast-forward the given worktree to its upstream via `git merge --ff-only @{u}` (NOT `git pull` — the daemon's background fetch cycle already keeps `@{u}` fresh, so we skip the extra network round-trip). Returns { ok, kind } where kind ∈ updated|up_to_date|diverged|dirty|no_upstream|error. With preStash=true, retries once after `git stash push --include-untracked` if kind=dirty, then `git stash pop` to reapply — response carries { stashed, stashRestored, stashConflict } (stashConflict=true means the pop conflicted and the stash was kept).",
             },
             {
               method: "POST",
@@ -5366,6 +5390,8 @@ const server = Bun.serve<TermWsData, never>({
                 path: wtPath,
                 kind: result.kind,
                 stashed: result.stashed === true,
+                stashRestored: result.stashRestored === true,
+                stashConflict: result.stashConflict === true,
               },
             });
             invalidateWorktreeDetails(wtPath);
@@ -5375,6 +5401,8 @@ const server = Bun.serve<TermWsData, never>({
               ok: true,
               kind: result.kind,
               stashed: result.stashed === true,
+              stashRestored: result.stashRestored === true,
+              stashConflict: result.stashConflict === true,
             });
           }
           // Non-ok: surface the kind so the UI can pick the right dialog.

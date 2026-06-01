@@ -26,6 +26,7 @@ import {
   migrateLegacyImportedSessions,
   migrateClaudeImportsToProjects,
   migrateOllamaImportsToWorkspace,
+  repairImportedSessionCwds,
 } from "../src/session-share-migrate";
 
 async function ws(): Promise<string> {
@@ -417,5 +418,148 @@ describe("migrateOllamaImportsToWorkspace", () => {
     await writeFile(join(dir, "orphan.jsonl"), "x");
     const res = await migrateOllamaImportsToWorkspace(w);
     expect(res).toEqual({ moved: 0, skipped: 1 });
+  });
+});
+
+describe("repairImportedSessionCwds", () => {
+  test("noop when imported-sessions dir doesn't exist", async () => {
+    const w = await ws();
+    const root = await cpd();
+    expect(await repairImportedSessionCwds(w, root)).toEqual({
+      scanned: 0,
+      repaired: 0,
+    });
+  });
+
+  // The real-world bug: sender stored originRepoPath with forward slashes
+  // (git --show-toplevel form) while the transcript cwd uses backslashes,
+  // so accept-time rewrite matched nothing and the dead Windows cwd
+  // survived. Repair re-applies the now-fixed rewrite.
+  test("repairs a Windows import whose forward-slash origin never matched", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    const jsonlPath = join(dir, "abc.jsonl");
+    const content = [
+      JSON.stringify({ cwd: "C:\\git\\needle-haystack" }),
+      JSON.stringify({ cwd: "C:\\git\\needle-haystack\\src\\app.ts" }),
+    ].join("\n");
+    await writeFile(jsonlPath, content);
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        originPlatform: "win32",
+        originRepoPath: "C:/git/needle-haystack",
+        localRepoPath: "/Users/marcel/git/needle-logs-view",
+        importedJsonlPath: jsonlPath,
+      }),
+    );
+
+    const res = await repairImportedSessionCwds(w, root);
+    expect(res).toEqual({ scanned: 1, repaired: 1 });
+
+    const out = await readFile(jsonlPath, "utf-8");
+    expect(out.includes("needle-haystack")).toBe(false);
+    expect(out.includes('"cwd":"/Users/marcel/git/needle-logs-view"')).toBe(
+      true,
+    );
+    expect(
+      out.includes('"cwd":"/Users/marcel/git/needle-logs-view/src/app.ts"'),
+    ).toBe(true);
+
+    // Pre-repair bytes parked alongside.
+    expect(await readFile(jsonlPath + ".repair-bak", "utf-8")).toBe(content);
+  });
+
+  test("idempotent: a second run repairs nothing and leaves the file byte-identical", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    const jsonlPath = join(dir, "abc.jsonl");
+    await writeFile(
+      jsonlPath,
+      JSON.stringify({ cwd: "C:\\git\\needle-haystack" }),
+    );
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        originPlatform: "win32",
+        originRepoPath: "C:/git/needle-haystack",
+        localRepoPath: "/Users/marcel/git/needle-logs-view",
+        importedJsonlPath: jsonlPath,
+      }),
+    );
+
+    await repairImportedSessionCwds(w, root);
+    const afterFirst = await readFile(jsonlPath, "utf-8");
+    const second = await repairImportedSessionCwds(w, root);
+    expect(second).toEqual({ scanned: 1, repaired: 0 });
+    expect(await readFile(jsonlPath, "utf-8")).toBe(afterFirst);
+  });
+
+  test("already-correct import is scanned but not touched (no .repair-bak)", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    const jsonlPath = join(dir, "abc.jsonl");
+    const content = JSON.stringify({ cwd: "/Users/marcel/git/needle-logs-view" });
+    await writeFile(jsonlPath, content);
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        originPlatform: "win32",
+        originRepoPath: "C:/git/needle-haystack",
+        localRepoPath: "/Users/marcel/git/needle-logs-view",
+        importedJsonlPath: jsonlPath,
+      }),
+    );
+
+    const res = await repairImportedSessionCwds(w, root);
+    expect(res).toEqual({ scanned: 1, repaired: 0 });
+    expect(await readFile(jsonlPath, "utf-8")).toBe(content);
+    let bakThere = true;
+    try {
+      await access(jsonlPath + ".repair-bak");
+    } catch {
+      bakThere = false;
+    }
+    expect(bakThere).toBe(false);
+  });
+
+  test("derives the JSONL location from the encoder when importedJsonlPath is absent", async () => {
+    const w = await ws();
+    const root = await cpd();
+    const dir = join(w, "imported-sessions", "host", "claude");
+    await mkdir(dir, { recursive: true });
+    // No importedJsonlPath in the sidecar → fall back to the encoded slot.
+    const projectDir = join(root, "-local-foo");
+    await mkdir(projectDir, { recursive: true });
+    const jsonlPath = join(projectDir, "abc.jsonl");
+    await writeFile(jsonlPath, JSON.stringify({ cwd: "C:\\git\\repo" }));
+    await writeFile(
+      join(dir, "abc.manifest.json"),
+      JSON.stringify({
+        sid: "abc",
+        agent: "claude",
+        originPlatform: "win32",
+        originRepoPath: "C:/git/repo",
+        localRepoPath: "/local/foo",
+      }),
+    );
+
+    const res = await repairImportedSessionCwds(w, root);
+    expect(res).toEqual({ scanned: 1, repaired: 1 });
+    expect(await readFile(jsonlPath, "utf-8")).toBe(
+      JSON.stringify({ cwd: "/local/foo" }),
+    );
   });
 });

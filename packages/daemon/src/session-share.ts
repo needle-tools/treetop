@@ -345,7 +345,17 @@ export function rewritePaths(text: string, opts: RewritePathsOptions): string {
   // Match the prefix, then *require* a path-terminator: separator (either
   // platform's), JSON-string close, end-of-input, or whitespace. This is
   // what prevents `/foo/bar` from matching `/foo/barbershop`.
-  const escaped = fromEncoded.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  //
+  // For Windows sources the separators in `from` may not match the
+  // separators in the JSONL: `git rev-parse --show-toplevel` reports
+  // forward slashes (`C:/git/repo`, which is what the sender stores as
+  // `originRepoPath`), while Claude Code records the cwd with backslashes
+  // (`C:\git\repo` → `C:\\git\\repo` in JSON). Build a separator-agnostic
+  // pattern so the rewrite fires regardless of how `from` was captured.
+  const escaped =
+    fromPlatform === "win32"
+      ? win32SeparatorAgnosticPattern(fromTrim)
+      : fromEncoded.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const terminator = String.raw`(?=$|["\s]|\\\\|/)`;
   const re = new RegExp(escaped + terminator, "g");
 
@@ -368,6 +378,25 @@ export function rewritePaths(text: string, opts: RewritePathsOptions): string {
 function jsonEncodePath(p: string, platform: SharePlatform): string {
   if (platform === "win32") return p.replace(/\\/g, "\\\\");
   return p;
+}
+
+/** Build a regex source (as a string) that matches a Windows `from` path in
+ *  the JSONL regardless of whether its separators were recorded as forward
+ *  slashes (`C:/git/repo`, git's `--show-toplevel` form) or as JSON-escaped
+ *  backslashes (`C:\\git\\repo`, Claude Code's cwd form). Each separator in
+ *  `from` becomes a class matching either style.
+ *
+ *  Splitting on both separators drops the original separator characters, so
+ *  the path's own non-separator content is the only thing we regex-escape —
+ *  the doubled-backslash handling lives entirely in the joiner. */
+function win32SeparatorAgnosticPattern(fromPath: string): string {
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const segments = fromPath.split(/[\\/]+/).filter((s) => s.length > 0);
+  // In the JSONL bytes a separator is either "/" (one char) or "\\" (two
+  // chars, since JSON doubles the backslash). `\\\\` in this String.raw
+  // literal is four backslash chars → the regex matches two literal ones.
+  const sep = String.raw`(?:/|\\\\)`;
+  return segments.map(escapeRe).join(sep);
 }
 
 /** Strip a single trailing path separator. Platform-aware but permissive —

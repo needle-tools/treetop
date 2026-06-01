@@ -22,6 +22,11 @@ export interface AgentSession {
    *  label so the UI can render an "↓ from <machine>" chip without
    *  needing a second fetch. Absent for native sessions. */
   importedFrom?: string;
+  /** ISO timestamp of when the session was imported (from the sidecar
+   *  manifest's `importedAt`). Pairs with `importedFrom` to render an
+   *  "imported from <machine> at <date>" tooltip. Absent for native
+   *  sessions and for legacy sidecars that predate the field. */
+  importedAt?: string;
   /** ISO timestamp; we use the session file mtime. */
   lastActive: string;
   /** Per-agent session id where available (used for resume). */
@@ -1507,6 +1512,7 @@ export async function scanImported(
           sid?: string;
           title?: string;
           originMachineLabel?: string;
+          importedAt?: string;
           localRepoPath?: string;
           localWorktreePath?: string;
           importedJsonlPath?: string;
@@ -1540,6 +1546,7 @@ export async function scanImported(
           source: jsonlPath,
           title: sidecar.title,
           importedFrom: sidecar.originMachineLabel ?? machine,
+          importedAt: sidecar.importedAt,
         });
         jsonlBySid.delete(sid);
       }
@@ -1605,6 +1612,8 @@ export async function detectAgents(
     if (existing) {
       if (s.importedFrom && !existing.importedFrom) {
         existing.importedFrom = s.importedFrom;
+        // Keep the pair together so the UI tooltip has both halves.
+        if (s.importedAt) existing.importedAt = s.importedAt;
       }
       if (s.title && !existing.title) existing.title = s.title;
     } else {

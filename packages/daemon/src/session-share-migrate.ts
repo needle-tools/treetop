@@ -23,6 +23,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { CLAUDE_ROOT, claudeProjectDirForCwd } from "./agents";
+import { rewritePaths, type SharePlatform } from "./session-share";
 
 export interface MigrateResult {
   moved: number;
@@ -377,4 +378,137 @@ async function dropLegacyJsonl(
   try {
     await rename(legacyPath, legacyPath + ".migrated-bak");
   } catch {}
+}
+
+export interface RepairResult {
+  /** Claude sidecars examined. */
+  scanned: number;
+  /** Imported JSONLs whose stale foreign cwd was rewritten in place. */
+  repaired: number;
+}
+
+/** Fourth-stage migrator: repair imported claude sessions whose paths
+ *  were never rewritten at import time.
+ *
+ *  A session shared from another machine carries the origin's absolute
+ *  cwd in every transcript line. Accept-time `rewritePaths` is supposed
+ *  to swap that for the receiver's local path. A slash-encoding mismatch
+ *  bug (the sender stored `originRepoPath` with forward slashes — git's
+ *  `--show-toplevel` form — while Claude Code records the cwd with
+ *  backslashes) made that swap silently match nothing, leaving a dead
+ *  foreign cwd like `C:\git\repo` that doesn't exist on the receiver.
+ *  The terminal spawn then failed with a misleading
+ *  `fork/exec /bin/bash: no such file or directory`.
+ *
+ *  Detection is just re-running the (now-fixed) rewrite from the sidecar's
+ *  recorded origin→local paths: if it changes the file, the original
+ *  import under-rewrote and we persist the correction. Idempotent — an
+ *  already-correct transcript no longer contains the origin path, so the
+ *  rewrite is a no-op and nothing is written. The first time a file is
+ *  actually changed we park the pre-repair bytes as `<jsonl>.repair-bak`. */
+export async function repairImportedSessionCwds(
+  workspaceDir: string,
+  claudeProjectsDir: string = CLAUDE_ROOT(),
+): Promise<RepairResult> {
+  const root = join(workspaceDir, "imported-sessions");
+  let machines: string[];
+  try {
+    machines = await readdir(root);
+  } catch {
+    return { scanned: 0, repaired: 0 };
+  }
+
+  const toPlatform: SharePlatform =
+    process.platform === "win32"
+      ? "win32"
+      : process.platform === "darwin"
+        ? "darwin"
+        : "linux";
+
+  let scanned = 0;
+  let repaired = 0;
+  for (const machine of machines) {
+    const claudeDir = join(root, machine, "claude");
+    let entries: string[];
+    try {
+      entries = await readdir(claudeDir);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      if (!name.endsWith(".manifest.json")) continue;
+      const sid = name.replace(/\.manifest\.json$/, "");
+      const sidecarPath = join(claudeDir, name);
+      let sidecar: {
+        originRepoPath?: string;
+        originWorktreePath?: string;
+        originPlatform?: SharePlatform;
+        localRepoPath?: string;
+        localWorktreePath?: string;
+        importedJsonlPath?: string;
+      };
+      try {
+        sidecar = JSON.parse(await readFile(sidecarPath, "utf-8"));
+      } catch {
+        continue;
+      }
+      scanned += 1;
+
+      // Where the live JSONL lives: prefer the sidecar pointer, fall back
+      // to the encoder-derived projects slot (matches scanImported).
+      const cwdForDir =
+        sidecar.localWorktreePath || sidecar.localRepoPath || "";
+      let jsonlPath = sidecar.importedJsonlPath;
+      if (!jsonlPath && cwdForDir) {
+        jsonlPath = join(
+          await claudeProjectDirForCwd(cwdForDir, claudeProjectsDir),
+          `${sid}.jsonl`,
+        );
+      }
+      if (!jsonlPath) continue;
+
+      let content: string;
+      try {
+        content = await readFile(jsonlPath, "utf-8");
+      } catch {
+        continue;
+      }
+
+      // Re-apply exactly what accept-time does: repo root first, then the
+      // worktree if both ends carry it. `originPlatform` may be absent on
+      // very old sidecars — default to the local platform, which makes the
+      // rewrite a no-op for same-platform imports rather than guessing.
+      const fromPlatform = sidecar.originPlatform ?? toPlatform;
+      let rewritten = content;
+      if (sidecar.originRepoPath && sidecar.localRepoPath) {
+        rewritten = rewritePaths(rewritten, {
+          from: sidecar.originRepoPath,
+          to: sidecar.localRepoPath,
+          fromPlatform,
+          toPlatform,
+        });
+      }
+      if (sidecar.originWorktreePath && sidecar.localWorktreePath) {
+        rewritten = rewritePaths(rewritten, {
+          from: sidecar.originWorktreePath,
+          to: sidecar.localWorktreePath,
+          fromPlatform,
+          toPlatform,
+        });
+      }
+
+      if (rewritten === content) continue;
+
+      // One-time backup before the first destructive write.
+      const bak = jsonlPath + ".repair-bak";
+      try {
+        await access(bak);
+      } catch {
+        await writeFile(bak, content);
+      }
+      await writeFile(jsonlPath, rewritten);
+      repaired += 1;
+    }
+  }
+  return { scanned, repaired };
 }

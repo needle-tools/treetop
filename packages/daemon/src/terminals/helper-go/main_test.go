@@ -1,9 +1,45 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestResolveCwdFallsBackWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+
+	// An existing directory is used verbatim, no warning.
+	if dir, warn := resolveCwd(tmp); dir != tmp || warn != "" {
+		t.Fatalf("existing dir: got (%q, %q), want (%q, \"\")", dir, warn, tmp)
+	}
+
+	// Empty cwd → inherit helper cwd silently.
+	if dir, warn := resolveCwd(""); dir != "" || warn != "" {
+		t.Fatalf("empty cwd: got (%q, %q), want (\"\", \"\")", dir, warn)
+	}
+
+	// A missing directory (the stale-foreign-cwd / session-share case) must
+	// not become cmd.Dir, and must warn naming the offending path.
+	missing := filepath.Join(tmp, "does-not-exist")
+	dir, warn := resolveCwd(missing)
+	if dir != "" {
+		t.Fatalf("missing cwd should not be used as Dir, got %q", dir)
+	}
+	if warn == "" || !strings.Contains(warn, missing) {
+		t.Fatalf("missing cwd should warn naming %q, got %q", missing, warn)
+	}
+
+	// A path that exists but is a file, not a directory, is rejected too.
+	f := filepath.Join(tmp, "afile")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dir, warn := resolveCwd(f); dir != "" || warn == "" {
+		t.Fatalf("file path: got (%q, %q), want (\"\", <warning>)", dir, warn)
+	}
+}
 
 func TestWantHardKill(t *testing.T) {
 	// Only the literal "SIGKILL" means "force-terminate"; everything else

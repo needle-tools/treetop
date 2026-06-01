@@ -1764,6 +1764,7 @@ describe("scanImported", () => {
         sid: "sid-1",
         title: "Refactor PTY scrub",
         originMachineLabel: "Marcel's MBP",
+        importedAt: "2026-05-30T12:00:00.000Z",
         localRepoPath: "/local/foo",
         localWorktreePath: "/local/foo/.worktrees/feat-x",
       }),
@@ -1787,11 +1788,14 @@ describe("scanImported", () => {
     const x = sessions.find((s) => s.agent === "codex");
     expect(c?.title).toBe("Refactor PTY scrub");
     expect(c?.importedFrom).toBe("Marcel's MBP");
+    expect(c?.importedAt).toBe("2026-05-30T12:00:00.000Z");
     expect(c?.cwd).toBe(resolve("/local/foo/.worktrees/feat-x"));
     expect(c?.sessionId).toBe("sid-1");
     expect(x?.title).toBe("Codex session");
     expect(x?.cwd).toBe(resolve("/local/bar"));
     expect(x?.importedFrom).toBe("Alice desktop");
+    // Codex sidecar carries no importedAt → undefined, not crash.
+    expect(x?.importedAt).toBeUndefined();
   });
 
   test("skips unknown agent subdirs", async () => {
