@@ -86,7 +86,9 @@ describe("buildSshTunnelArgs", () => {
 });
 
 describe("TunnelManager", () => {
-  function mk() {
+  // `ready` controls the injected port-readiness check: true ⇒ the tunnel's
+  // listener "came up" immediately, false ⇒ it never did (auth/host fail).
+  function mk(ready = true) {
     const procs: ReturnType<typeof fakeProc>[] = [];
     const spawned: string[][] = [];
     let nextPort = 7801;
@@ -98,6 +100,8 @@ describe("TunnelManager", () => {
         return p;
       },
       allocatePort: async () => nextPort++,
+      waitForPort: async () => ready,
+      readyTimeoutMs: 50,
     });
     return { mgr, procs, spawned };
   }
@@ -111,6 +115,32 @@ describe("TunnelManager", () => {
     expect(spawned[0]!.join(" ")).toContain("7801:127.0.0.1:7777");
     expect(procs).toHaveLength(1);
     expect(mgr.get("d1")?.localPort).toBe(7801);
+  });
+
+  test("open() waits for the listener and only returns once it's ready", async () => {
+    // The readiness check must be consulted before open() resolves — that's
+    // what closes the startup race (ssh binds -L a few hundred ms post-auth).
+    let checkedPort: number | null = null;
+    const mgr = new TunnelManager({
+      spawn: () => fakeProc(),
+      allocatePort: async () => 7900,
+      waitForPort: async (port) => {
+        checkedPort = port;
+        return true;
+      },
+      readyTimeoutMs: 50,
+    });
+    const t = await mgr.open(daemon());
+    expect(checkedPort).toBe(7900);
+    expect(t.localPort).toBe(7900);
+  });
+
+  test("open() throws + tears down when the listener never comes up", async () => {
+    const { mgr, procs } = mk(false); // readiness check resolves false
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    // the dead tunnel must NOT be tracked, and its ssh proc is killed
+    expect(mgr.get("d1")).toBeUndefined();
+    expect(procs[0]!.signals.length).toBeGreaterThan(0);
   });
 
   test("open() is idempotent per id: re-open returns the existing tunnel", async () => {

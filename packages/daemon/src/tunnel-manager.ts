@@ -27,6 +27,13 @@ export interface TunnelProc {
 
 export type TunnelSpawner = (argv: string[]) => TunnelProc;
 export type PortAllocator = () => Promise<number>;
+/** Resolves true once `localhost:port` accepts a TCP connection (the ssh
+ *  `-L` listener is up), false if it didn't within the deadline. Injected
+ *  so the readiness wait is unit-testable without a real ssh process. */
+export type PortReadyCheck = (
+  port: number,
+  timeoutMs: number,
+) => Promise<boolean>;
 
 export interface Tunnel {
   /** The RemoteDaemon.id this tunnel serves. */
@@ -39,6 +46,37 @@ export interface Tunnel {
 export interface TunnelManagerOptions {
   spawn?: TunnelSpawner;
   allocatePort?: PortAllocator;
+  waitForPort?: PortReadyCheck;
+  /** How long open() waits for the tunnel's local listener to come up
+   *  before giving up. Default 8000ms. */
+  readyTimeoutMs?: number;
+}
+
+/** Default readiness check: poll-connect to 127.0.0.1:port until it
+ *  accepts (or the deadline passes). `ssh -L` binds the local listener
+ *  only AFTER it authenticates — ~hundreds of ms — so a probe fired the
+ *  instant open() returns gets "connection refused". This closes that
+ *  race: open() awaits the listener so the first proxied request lands on
+ *  a ready tunnel. */
+async function defaultWaitForPort(
+  port: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const sock = await Bun.connect({
+        hostname: "127.0.0.1",
+        port,
+        socket: { data() {}, open() {}, close() {}, error() {} },
+      });
+      sock.end();
+      return true;
+    } catch {
+      if (Date.now() >= deadline) return false;
+      await Bun.sleep(150);
+    }
+  }
 }
 
 /**
@@ -105,17 +143,24 @@ export class TunnelManager {
   private tunnels = new Map<string, Tunnel>();
   private readonly spawn: TunnelSpawner;
   private readonly allocatePort: PortAllocator;
+  private readonly waitForPort: PortReadyCheck;
+  private readonly readyTimeoutMs: number;
 
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
       opts.spawn ??
       ((argv) => bunSpawn(["ssh", ...argv], { stdout: "ignore", stderr: "ignore" }));
     this.allocatePort = opts.allocatePort ?? allocateEphemeralPort;
+    this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
+    this.readyTimeoutMs = opts.readyTimeoutMs ?? 8000;
   }
 
   /** Open (or return the existing) tunnel for a remote daemon. Idempotent
    *  per id so repeated attaches / reconnect attempts don't stack ssh
-   *  processes. */
+   *  processes. Resolves only once the local forward is actually accepting
+   *  connections — `ssh -L` binds the listener a few hundred ms after
+   *  spawn (post-auth), so returning eagerly made the first proxied
+   *  request race the listener and fail with "connection refused". */
   async open(daemon: RemoteDaemon): Promise<Tunnel> {
     const existing = this.tunnels.get(daemon.id);
     if (existing) return existing;
@@ -133,6 +178,23 @@ export class TunnelManager {
         this.tunnels.delete(daemon.id);
       }
     });
+
+    // Wait for the listener. If it never comes up (auth failed, host
+    // unreachable, forward rejected), tear down + throw so the caller
+    // surfaces a real error instead of handing back a dead tunnel that
+    // every request will fail against.
+    const ready = await this.waitForPort(localPort, this.readyTimeoutMs);
+    if (!ready) {
+      this.tunnels.delete(daemon.id);
+      try {
+        proc.kill();
+      } catch {
+        // already dead
+      }
+      throw new Error(
+        `tunnel to ${daemon.label || daemon.host} did not come up within ${this.readyTimeoutMs}ms (check ssh auth / host reachability)`,
+      );
+    }
 
     return tunnel;
   }
