@@ -164,21 +164,20 @@ export const ICONS: Record<string, IconDef> = {
   terminal: {
     paths: ["M4 17l5-5-5-5", "M11 19h8"],
   },
-  // Alt terminal glyph for shell/terminal SESSIONS (the process list),
-  // distinct from the plain stroked `terminal` chevron above used on the
-  // open-in buttons: a dark "screen" box with a green prompt so a real
-  // terminal reads as a little monitor rather than a bare prompt mark.
-  // Monochrome `paths` fallback is the same chevron for any context that
+  // Alt terminal glyph for process-list rows (terminal sessions AND
+  // discovered subprocesses), distinct from the plain stroked `terminal`
+  // chevron above used on the open-in buttons: a little terminal WINDOW
+  // — a light, rounded "screen" with a title-bar divider so it stays
+  // visible against the dark popover surface. No prompt mark inside.
+  // Monochrome `paths` fallback is a stroked window for any context that
   // renders without the multi-colour `svg` body.
   "terminal-screen": {
-    paths: ["M4 17l5-5-5-5", "M11 19h8"],
+    paths: ["M3 5h18v14H3z", "M3 9h18"],
     svg: `
-      <rect x="2" y="4" width="20" height="16" rx="2.5"
-            fill="#0b0e14" stroke="#3b4250" stroke-width="1"/>
-      <path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="#7ee787"
-            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M11.5 15h4.5" fill="none" stroke="#7ee787"
-            stroke-width="1.6" stroke-linecap="round"/>
+      <rect x="3" y="4.5" width="18" height="15" rx="2"
+            fill="none" stroke="currentColor" stroke-width="2"/>
+      <line x1="3" y1="8.5" x2="21" y2="8.5"
+            stroke="currentColor" stroke-width="2"/>
     `,
   },
   // Generic file-manager glyph. macOS / Windows get their own dedicated
@@ -297,3 +296,13 @@ export const GIT_AHEAD = "M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5";
 export const GIT_BEHIND = "M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5";
 /** A proper tilde — rise then dip — not a single hump. */
 export const GIT_DIRTY = "M2 6c1-2 3-2 4 0s3 2 4 0";
+/**
+ * Multi-period version of GIT_DIRTY for the SessionDock, where the dirty
+ * glyph scrolls horizontally to read as a flowing wave. Same wavelength
+ * (8 user units / one up+down) and amplitude as GIT_DIRTY, but it spans
+ * x -4..20 so that translating it left by one full period (8px) keeps the
+ * 0..12 viewBox window fully covered at every frame — a seamless loop.
+ * The overflowing ends are clipped by the SVG's default overflow:hidden.
+ */
+export const GIT_DIRTY_WAVE =
+  "M-4 6 q2 -2 4 0 t4 0 t4 0 t4 0 t4 0 t4 0 t4 0";

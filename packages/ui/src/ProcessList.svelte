@@ -672,10 +672,10 @@
                               src="/agents/ollama.svg"
                               alt=""
                             />
-                          {:else if !isExternal}
-                            <!-- Terminal/shell session: dark "screen" box
-                                 glyph (the alt terminal icon in icons.ts),
-                                 not the plain prompt chevron. -->
+                          {:else}
+                            <!-- Terminal sessions AND discovered
+                                 subprocesses share the terminal-window
+                                 glyph (the alt icon in icons.ts). -->
                             <svg
                               class="agent-row-icon proc-terminal-icon"
                               viewBox="0 0 24 24"
@@ -684,19 +684,6 @@
                               aria-hidden="true"
                               >{@html ICONS["terminal-screen"]?.svg ?? ""}</svg
                             >
-                          {:else}
-                            <svg
-                              class="agent-row-icon proc-icon"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path d="M4 17l5-5-5-5" /><path d="M11 19h8" />
-                            </svg>
                           {/if}
                           <span class="agent-row-name"
                             >{isExternal

@@ -473,6 +473,12 @@
 .tuis-popover .proc-icon {
   color: var(--text-muted);
 }
+/* Terminal-window glyph (shells + subprocesses). Drawn as a hollow
+   outline in currentColor; use a high-contrast text token (not muted)
+   so the thin frame stays legible at the 14px row size. */
+.tuis-popover .proc-terminal-icon {
+  color: var(--text-1);
+}
 .proc-head-row {
   display: flex;
   align-items: center;
