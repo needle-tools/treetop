@@ -1176,7 +1176,7 @@
     stashed?: boolean;
   }> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/checkout`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/checkout`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath, branch, ...options }),
@@ -1281,7 +1281,7 @@
     error?: string;
   }> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/pull`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/pull`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath, ...options }),
@@ -1442,7 +1442,7 @@
     if (pushBusy[wtPath]) return;
     pushBusy = { ...pushBusy, [wtPath]: true };
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/push`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/push`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wtPath }),
@@ -2443,7 +2443,7 @@
     error = "";
     newWtBusy = { ...newWtBusy, [repoId]: true };
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ branch }),
@@ -3847,7 +3847,7 @@
     }
     error = "";
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}/rename`), {
+      const res = await fetch(apiUrl(`/api/repos/${id}/rename`, daemonIdForRepoId(repos, id)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -3953,7 +3953,7 @@
     }
     pendingRepoColor.set(id, color);
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}/color`), {
+      const res = await fetch(apiUrl(`/api/repos/${id}/color`, daemonIdForRepoId(repos, id)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ color }),
@@ -3992,7 +3992,7 @@
         },
   ): Promise<boolean> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
@@ -4037,7 +4037,7 @@
       }
     }
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/order`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/order`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ order: orderedIds }),
@@ -4069,7 +4069,7 @@
     },
   ): Promise<boolean> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`, daemonIdForRepoId(repos, repoId)), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
@@ -4098,7 +4098,7 @@
     linkId: string,
   ): Promise<void> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`, daemonIdForRepoId(repos, repoId)), {
         method: "DELETE",
       });
       if (!res.ok && res.status !== 204) {
@@ -4317,7 +4317,7 @@
     pendingRemoval.add(id);
     repos = repos.filter((r) => r.id !== id);
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}`), { method: "DELETE" });
+      const res = await fetch(apiUrl(`/api/repos/${id}`, daemonIdForRepoId(repos, id)), { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
@@ -4377,7 +4377,7 @@
       return;
     }
     async function call(force: boolean) {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`), {
+      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`, daemonIdForRepoId(repos, repoId)), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: wt.path, force }),
@@ -7024,7 +7024,7 @@
           {/if}
         </div>
         <button class="add-folder-cta" on:click={() => (addDaemonOpen = true)}>
-          <svg class="add-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Add remote daemon</span>
         </button>
       </div>
@@ -8925,6 +8925,7 @@
                                   agent={s.agent}
                                   source={titleSource}
                                   wtPath={wt.path}
+                                  daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                   cmd={cmdForOpenSession(
                                     s,
                                     defaultShell,
@@ -9486,7 +9487,7 @@
           {/if}
         </div>
         <button class="add-folder-cta add-folder-cta-compact" on:click={() => (addDaemonOpen = true)}>
-          <svg class="add-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Add remote daemon</span>
         </button>
       </div>
