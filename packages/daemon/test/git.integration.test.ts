@@ -917,6 +917,86 @@ describe("pullFastForward against real git", () => {
     ).stdout.toString();
     expect(stashList).toContain("supergit-auto");
   });
+
+  test("preStash=true reapplies the stash after pulling when changes don't conflict", async () => {
+    const { a, b } = await tempRepoTrio();
+    // Seed a multi-line file so upstream and local edits can land in
+    // non-overlapping regions (clean three-way pop).
+    const ten = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join("\n");
+    await writeFile(join(b, "shared.txt"), ten + "\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v0 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    await $`git -C ${a} pull -q --ff-only`.quiet();
+
+    // b edits the FIRST line, pushes.
+    await writeFile(
+      join(b, "shared.txt"),
+      ten.replace("l1", "l1-from-upstream") + "\n",
+    );
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v1 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+
+    // a fetches, then dirties the LAST line locally (different region).
+    await $`git -C ${a} fetch -q`.quiet();
+    await writeFile(
+      join(a, "shared.txt"),
+      ten.replace("l10", "l10-local-uncommitted") + "\n",
+    );
+
+    const r = await pullFastForward(a, { preStash: true });
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe("updated");
+    expect(r.stashed).toBe(true);
+    expect(r.stashRestored).toBe(true);
+    expect(r.stashConflict).toBeFalsy();
+
+    // Working tree carries BOTH the upstream edit and the local edit.
+    const onDisk = (
+      await $`cat ${join(a, "shared.txt")}`.quiet()
+    ).stdout.toString();
+    expect(onDisk).toContain("l1-from-upstream");
+    expect(onDisk).toContain("l10-local-uncommitted");
+
+    // The auto-stash was popped — nothing left behind.
+    const stashList = (
+      await $`git -C ${a} stash list`.quiet()
+    ).stdout.toString();
+    expect(stashList).not.toContain("supergit-auto");
+  });
+
+  test("preStash=true keeps the stash when reapplying conflicts", async () => {
+    const { a, b } = await tempRepoTrio();
+    await writeFile(join(b, "shared.txt"), "v0\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v0 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    await $`git -C ${a} pull -q --ff-only`.quiet();
+
+    // b and a both touch the SAME line — popping the stash must conflict.
+    await writeFile(join(b, "shared.txt"), "v1-upstream\n");
+    await $`git -C ${b} add shared.txt`.quiet();
+    await $`git -C ${b} commit -m v1 -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+
+    await $`git -C ${a} fetch -q`.quiet();
+    await writeFile(join(a, "shared.txt"), "v1-local-uncommitted\n");
+
+    const r = await pullFastForward(a, { preStash: true });
+    // The pull itself still succeeded — only the reapply hit a conflict.
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe("updated");
+    expect(r.stashed).toBe(true);
+    expect(r.stashRestored).toBe(false);
+    expect(r.stashConflict).toBe(true);
+
+    // The stash is preserved so the user can recover their work.
+    const stashList = (
+      await $`git -C ${a} stash list`.quiet()
+    ).stdout.toString();
+    expect(stashList).toContain("supergit-auto");
+  });
 });
 
 describe("pushUpstream against real git", () => {

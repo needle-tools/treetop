@@ -489,9 +489,17 @@ export interface PullResult {
   kind: PullKind;
   message: string;
   /** True if we ran `git stash push --include-untracked` before retrying
-   *  the pull. The caller can surface this to the user so they know to
-   *  `git stash pop`. */
+   *  the pull. The caller can surface this to the user so they know their
+   *  local changes were set aside. */
   stashed?: boolean;
+  /** When {@link stashed} is true, whether the auto-stash was popped back
+   *  cleanly after the pull succeeded. False if the pop hit a conflict (see
+   *  {@link stashConflict}) and the stash was left in place. */
+  stashRestored?: boolean;
+  /** True if `git stash pop` reported a conflict while reapplying the
+   *  auto-stash. The stash entry is preserved so the user can recover; the
+   *  working tree has conflict markers to resolve. */
+  stashConflict?: boolean;
 }
 
 /** Fast-forward the current branch to its upstream in `worktreePath`.
@@ -504,9 +512,10 @@ export interface PullResult {
  *  Options:
  *    - `preStash`: if the first attempt fails because of dirty state
  *      (would-be-clobbered files), run `git stash push --include-untracked`
- *      and retry once. Returns `{ stashed: true }` so the caller can
- *      surface a "stashed your changes — `git stash pop` to restore"
- *      hint. */
+ *      and retry once. On a successful pull we then `git stash pop` to
+ *      reapply the local changes. Returns `{ stashed: true, stashRestored }`
+ *      — `stashRestored: false` with `stashConflict: true` means the pop hit
+ *      a conflict and the stash was kept so the user can recover. */
 export async function pullFastForward(
   worktreePath: string,
   options: { preStash?: boolean } = {},
@@ -600,6 +609,35 @@ export async function pullFastForward(
     }
     result = await run();
     result.stashed = true;
+    // Reapply the local changes we set aside. Only attempt the pop when the
+    // pull actually succeeded — if it didn't, the stash stays put and the
+    // caller already sees the failure. A pop that conflicts leaves the stash
+    // in place (git keeps it), so we report stashConflict and let the user
+    // resolve rather than silently dropping their work.
+    if (result.ok) {
+      let popRes;
+      try {
+        popRes = await raceTimeout(
+          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} stash pop`
+            .quiet()
+            .nothrow(),
+          PUSH_PULL_TIMEOUT_MS,
+          "git stash pop",
+        );
+      } catch {
+        // Timed out or threw — leave the stash for manual recovery.
+        result.stashRestored = false;
+        return result;
+      }
+      if (popRes.exitCode === 0) {
+        result.stashRestored = true;
+      } else {
+        result.stashRestored = false;
+        result.stashConflict = /conflict/i.test(
+          `${popRes.stdout.toString()}\n${popRes.stderr.toString()}`,
+        );
+      }
+    }
   }
   return result;
 }
