@@ -1042,6 +1042,50 @@
   max-height: 50vh;
   overflow-y: auto;
 }
+
+/* Secret notes — the body is blurred and un-selectable until the
+ * reader hovers the 🙈 toggle (300ms) or opens the note to edit.
+ * The veil sits on top; everything else inside the body gets the
+ * spoiler blur. Not real cryptography — it just defeats a glance
+ * over the shoulder, which is the whole ask. */
+.sticky-body.secret-hidden {
+  position: relative;
+  min-height: 2.6em;
+}
+.sticky-body.secret-hidden > :not(.secret-veil) {
+  filter: blur(7px);
+  opacity: 0.45;
+  user-select: none;
+  pointer-events: none;
+}
+.secret-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.4em;
+  padding: 0 0.1em;
+  user-select: none;
+  pointer-events: none;
+}
+/* Redaction bars — solid blacked-out strips standing in for the
+ * hidden text, like a censored document. */
+.secret-redaction-bar {
+  height: 0.85em;
+  border-radius: 2px;
+  background: #45462c5b;
+}
+
+/* Generic active state for header toolbar buttons (the secret toggle
+ * uses it to show the note is currently marked secret). The .tiny
+ * footer buttons have their own .active rule above. */
+.sticky .sticky-btn.active:not(.tiny) {
+  background: rgba(0, 0, 0, 0.08);
+  opacity: 1;
+}
 .sticky-body p {
   margin: 0 0 0.4em;
 }

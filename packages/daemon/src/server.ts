@@ -4562,14 +4562,17 @@ const server = Bun.serve<TermWsData, never>({
       );
       if (inviteAcceptMatch && req.method === "POST") {
         const offerId = inviteAcceptMatch[1]!;
-        // Body may carry { mode: "replace" | "keep_both" } when the
-        // user has already resolved a previous collision prompt. Default
-        // (no body / no mode) is "abort_if_exists" — the safe choice.
+        // Body may carry { mode: "replace" | "keep_both" | "merge" }
+        // when the user has already resolved a previous collision
+        // prompt. Default (no body / no mode) is "abort_if_exists" —
+        // the safe choice.
         const body = (await req.json().catch(() => null)) as {
           mode?: unknown;
         } | null;
         const mode =
-          body?.mode === "replace" || body?.mode === "keep_both"
+          body?.mode === "replace" ||
+          body?.mode === "keep_both" ||
+          body?.mode === "merge"
             ? body.mode
             : "abort_if_exists";
 
@@ -4592,6 +4595,21 @@ const server = Bun.serve<TermWsData, never>({
               {
                 error: "needs_clone",
                 remote: pending?.manifest.originRepoRemote,
+              },
+              { status: 409 },
+            );
+          }
+          if (result.error === "merge_failed") {
+            // Merge attempt threw or the write failed; existing file
+            // has been restored from backup. Re-send divergence so the
+            // UI can keep showing the conflict view (replace / keep
+            // both / cancel) alongside the failure reason.
+            return json(
+              {
+                error: "merge_failed",
+                reason: result.reason,
+                divergence: result.divergence,
+                existingPath: result.existingPath,
               },
               { status: 409 },
             );
@@ -7121,6 +7139,7 @@ const server = Bun.serve<TermWsData, never>({
           tags?: unknown;
           kind?: unknown;
           target?: unknown;
+          secret?: unknown;
         } | null;
         if (!body || typeof body.body !== "string") {
           return json(
@@ -7144,6 +7163,7 @@ const server = Bun.serve<TermWsData, never>({
               : undefined,
             kind: parseKind(body.kind),
             target: parseTarget(body.target),
+            ...(body.secret === true ? { secret: true } : {}),
           });
           const ev = await events.append({
             type: "create_note",
@@ -7175,6 +7195,7 @@ const server = Bun.serve<TermWsData, never>({
             tags?: unknown;
             kind?: unknown;
             target?: unknown;
+            secret?: unknown;
           } | null;
           if (!body) {
             return json({ error: "JSON body required" }, { status: 400 });
@@ -7201,6 +7222,9 @@ const server = Bun.serve<TermWsData, never>({
                 : undefined,
               kind: parseKind(body.kind),
               target: targetField,
+              ...(typeof body.secret === "boolean"
+                ? { secret: body.secret }
+                : {}),
             });
             broadcast("change", { kind: "note_update", id: note.id });
             return json(note);

@@ -365,6 +365,49 @@ describe("NotesStore", () => {
     expect(back.body).toBe("second thought");
   });
 
+  test("create + roundtrip preserves secret=true", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const created = await store.create({ body: "hush", secret: true });
+    expect(created.secret).toBe(true);
+    const round = await store.get(created.id);
+    expect(round?.secret).toBe(true);
+  });
+
+  test("update can toggle secret on and off", async () => {
+    const store = await NotesStore.open(await tempDir());
+    const note = await store.create({ body: "draft" });
+    expect(note.secret).toBeUndefined();
+    const hidden = await store.update(note.id, { secret: true });
+    expect(hidden.secret).toBe(true);
+    const shown = await store.update(note.id, { secret: false });
+    expect(shown.secret).toBeUndefined();
+    const round = await store.get(note.id);
+    expect(round?.secret).toBeUndefined();
+  });
+
+  test("serialiser omits secret unless true (no churn on plain notes)", () => {
+    const raw = serializeNoteFile({
+      id: "n",
+      anchors: [],
+      tags: [],
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      body: "hi",
+    });
+    expect(raw).not.toContain("secret:");
+    const secretRaw = serializeNoteFile({
+      id: "n",
+      anchors: [],
+      tags: [],
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      body: "hi",
+      secret: true,
+    });
+    expect(secretRaw).toContain("secret: true");
+    expect(parseNoteFile(secretRaw).secret).toBe(true);
+  });
+
   test("legacy note files without kind/target round-trip unchanged", async () => {
     // The serialiser should NOT emit kind/target keys on a plain note,
     // so workspaces that already have hundreds of notes don't see a

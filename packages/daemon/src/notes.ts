@@ -80,6 +80,11 @@ export interface Note {
    *  this as two flat keys (`targetType` + `targetValue`) so the
    *  hand-rolled YAML parser doesn't need nested-object support. */
   target?: LinkTarget;
+  /** When true, the UI hides the note body until the reader briefly
+   *  hovers the note's secret toggle (or opens it in edit mode). Only
+   *  meaningful for `kind === "note"`. Stored as a single `secret: true`
+   *  frontmatter scalar; absent (the common case) means not secret. */
+  secret?: boolean;
 }
 
 const NOTES_DIR = "notes";
@@ -128,6 +133,9 @@ export function parseNoteFile(raw: string): Note {
   const rawKind = fm.scalars.get("kind");
   if (rawKind === "note" || rawKind === "link" || rawKind === "emoji")
     note.kind = rawKind;
+  // Secret flag. Only `true` flips it on; anything else (absent, "false",
+  // a fat-fingered value) leaves the note visible.
+  if (fm.scalars.get("secret") === "true") note.secret = true;
   // Flat target fields. Both must be present and the type recognized;
   // otherwise we treat the file as if no target was set so the UI
   // falls back to plain-note rendering rather than a half-broken chip.
@@ -253,6 +261,11 @@ export function serializeNoteFile(note: Note): string {
   if (note.kind !== undefined && note.kind !== "note") {
     out.push(`kind: ${note.kind}`);
   }
+  // Only emit when set — plain notes keep their original frontmatter
+  // shape so this version touching one doesn't churn the file.
+  if (note.secret === true) {
+    out.push("secret: true");
+  }
   if (note.target !== undefined) {
     // Snapshot fields may contain arbitrary user text (session
     // titles, commit subjects). Collapse newlines so the flat-YAML
@@ -300,6 +313,7 @@ export interface CreateInput {
   tags?: string[];
   kind?: AttachmentKind;
   target?: LinkTarget;
+  secret?: boolean;
 }
 
 export interface UpdateInput {
@@ -313,6 +327,10 @@ export interface UpdateInput {
   /** Pass `null` to clear an existing target (e.g. demoting a link
    *  back to a note). `undefined` leaves the existing target intact. */
   target?: LinkTarget | null;
+  /** Toggle the hide-until-hover secret flag. `undefined` leaves it
+   *  alone; `false` clears it (we drop the property rather than store
+   *  `secret: false`). */
+  secret?: boolean;
 }
 
 export interface ListFilter {
@@ -425,6 +443,7 @@ export class NotesStore {
       body: input.body,
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.target !== undefined ? { target: input.target } : {}),
+      ...(input.secret === true ? { secret: true } : {}),
     };
     await writeFile(this.filePath(id), serializeNoteFile(note));
     return note;
@@ -438,7 +457,8 @@ export class NotesStore {
       input.anchors !== undefined ||
       input.tags !== undefined ||
       input.kind !== undefined ||
-      input.target !== undefined;
+      input.target !== undefined ||
+      input.secret !== undefined;
     if (!hasAny) return existing;
     const next: Note = {
       ...existing,
@@ -461,6 +481,12 @@ export class NotesStore {
       delete next.target;
     } else if (input.target !== undefined) {
       next.target = input.target;
+    }
+    // `false` clears it (drop the property); `true` sets it.
+    if (input.secret === false) {
+      delete next.secret;
+    } else if (input.secret === true) {
+      next.secret = true;
     }
     await writeFile(this.filePath(id), serializeNoteFile(next));
     return next;

@@ -1813,6 +1813,7 @@
         value: string;
       } | null;
       kind?: "note" | "link";
+      secret?: boolean;
     }>,
   ): Promise<void> {
     if (staging[e.detail.id]) {
@@ -1848,6 +1849,7 @@
       const putBody: Record<string, unknown> = { body: e.detail.body };
       if (e.detail.kind !== undefined) putBody.kind = e.detail.kind;
       if (e.detail.target !== undefined) putBody.target = e.detail.target;
+      if (e.detail.secret !== undefined) putBody.secret = e.detail.secret;
       const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

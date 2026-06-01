@@ -37,6 +37,10 @@
     /** Absent on every pre-existing note file; treat undefined as "note". */
     kind?: AttachmentKind;
     target?: LinkTarget;
+    /** When true, the body is hidden until the secret toggle is hovered
+     *  (300ms) or the note is opened for editing. Only meaningful for
+     *  kind="note". */
+    secret?: boolean;
   }
 </script>
 
@@ -313,6 +317,8 @@
       body: string;
       target?: LinkTarget | null;
       kind?: AttachmentKind;
+      /** Toggle the hide-until-hover flag. Omitted on ordinary saves. */
+      secret?: boolean;
     };
     remove: { id: string };
     focus: { id: string };
@@ -505,6 +511,47 @@
   let confirmingAttachmentDeleteRaw: string | null = null;
   let attachmentDeleteTimerId: ReturnType<typeof setTimeout> | null = null;
   let attachmentTextareaEl: HTMLTextAreaElement | null = null;
+
+  // ── Secret notes ────────────────────────────────────────────────
+  // A secret note hides its body until the reader hovers the secret
+  // toggle for 300ms (or opens it for editing). `revealed` is purely
+  // transient — never persisted — so the body re-hides as soon as the
+  // pointer leaves the toggle.
+  const SECRET_REVEAL_DELAY_MS = 300;
+  let revealed = false;
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+  $: isSecret = note.secret === true && note.kind !== "link" && !isEmoji;
+  /** True when the body should be obscured: a secret note, not being
+   *  edited, and not currently revealed by hover. */
+  $: bodyHidden = isSecret && !editing && !revealed;
+
+  function clearRevealTimer(): void {
+    if (revealTimer) {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+    }
+  }
+  function onSecretToggleEnter(): void {
+    if (!isSecret) return;
+    clearRevealTimer();
+    revealTimer = setTimeout(() => {
+      revealed = true;
+      revealTimer = null;
+    }, SECRET_REVEAL_DELAY_MS);
+  }
+  function onSecretToggleLeave(): void {
+    clearRevealTimer();
+    revealed = false;
+  }
+  /** Flip the persisted secret flag. Sends the current body so the PUT
+   *  is a no-op on the text and only touches the flag. Drop any active
+   *  reveal so toggling off → on doesn't leave it spuriously visible. */
+  function toggleSecret(): void {
+    clearRevealTimer();
+    revealed = false;
+    dispatch("save", { id: note.id, body: note.body, secret: !note.secret });
+  }
+
   /** Convenience flag — once derived it gets used a few places (CSS
    *  class, dispatch branching, removeIfEmpty math). Re-derived
    *  whenever the note prop changes so kind flips propagate. */
@@ -617,6 +664,7 @@
 
   onDestroy(() => {
     clearPreviewTimers();
+    clearRevealTimer();
     if (copiedTimer) clearTimeout(copiedTimer);
     if (attachmentDeleteTimerId) clearTimeout(attachmentDeleteTimerId);
   });
@@ -2741,6 +2789,26 @@
               : "Copy note"}>{copied ? "✓" : "⧉"}</button
           >
         {/if}
+        {#if !isLink && !isEmoji && !isDetachedAttachment}
+          <!-- Secret toggle. Click flips the persisted hide-until-hover
+               flag; hovering the toggle (300ms) is what reveals the body
+               while it's secret. The hover handlers live on this button
+               so the reader's intent ("let me peek") is unambiguous. -->
+          <button
+            class="sticky-btn"
+            class:active={isSecret}
+            on:click={toggleSecret}
+            on:mouseenter={onSecretToggleEnter}
+            on:mouseleave={onSecretToggleLeave}
+            on:focus={onSecretToggleEnter}
+            on:blur={onSecretToggleLeave}
+            title={isSecret
+              ? "Secret note — hover to peek, click to reveal permanently"
+              : "Hide body (secret note)"}
+            aria-label={isSecret ? "Reveal note" : "Make note secret"}
+            aria-pressed={isSecret}>{isSecret ? "🙈" : "👁"}</button
+          >
+        {/if}
         <button
           class="sticky-btn"
           on:click={() => {
@@ -2998,12 +3066,20 @@
     {:else}
       <div
         class="sticky-body"
+        class:secret-hidden={bodyHidden}
         role="textbox"
         tabindex="0"
         aria-readonly="true"
         title="Double-click to edit"
         on:click={onBodyClick}
       >
+        {#if bodyHidden}
+          <span class="secret-veil" aria-hidden="true">
+            <span class="secret-redaction-bar" style="width: 70%"></span>
+            <span class="secret-redaction-bar" style="width: 92%"></span>
+            <span class="secret-redaction-bar" style="width: 48%"></span>
+          </span>
+        {/if}
         {@render renderedNoteBody(
           bodyParts,
           visualAttachmentIndexesInBody,
