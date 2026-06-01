@@ -14,10 +14,12 @@
    *   - `glyph` fallback → ◆ / ↗ / ▤ / 🔗 — a monochrome character.
    */
   import AgentIcon from "./AgentIcon.svelte";
+  import { appIconUrl } from "./app-icons";
   import { iconFor, type IconDef } from "./icons";
 
   export let agent: string = "";
   export let provider: string = "";
+  export let appName: string = "";
   /** Monochrome character fallback when no agent/provider applies. */
   export let glyph: string = "";
   export let size: number = 14;
@@ -27,6 +29,16 @@
 
 {#if agent}
   <AgentIcon {agent} {size} />
+{:else if appName}
+  <img
+    class="attachment-app-icon"
+    src={appIconUrl(appName)}
+    alt=""
+    width={size}
+    height={size}
+    style={`width:${size}px;height:${size}px`}
+    draggable="false"
+  />
 {:else if providerDef}
   <!-- Render the provider's brand path / circles via the same
        inline-SVG approach OpenInButton uses. currentColor tint so
@@ -58,5 +70,9 @@
     display: inline-block;
     font-size: 13px;
     line-height: 1;
+  }
+  .attachment-app-icon {
+    display: block;
+    object-fit: contain;
   }
 </style>

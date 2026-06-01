@@ -1,5 +1,6 @@
 <script lang="ts">
   import AttachmentIcon from "./AttachmentIcon.svelte";
+  import { appIconNameFromToken } from "./app-icons";
   import {
     inlineAttachmentLabel,
     type InlineAttachment,
@@ -38,6 +39,8 @@
             : attachment.kind === "link" && attachment.target.type === "command"
               ? "⌁"
               : "↗";
+  $: appName =
+    attachment.kind === "emoji" ? appIconNameFromToken(attachment.body) : null;
 </script>
 
 <span
@@ -55,7 +58,7 @@
     on:click|stopPropagation={onOpen}
   >
     <span class="inline-attachment-icon attach-row-icon" aria-hidden="true">
-      <AttachmentIcon {glyph} size={14} />
+      <AttachmentIcon {glyph} appName={appName ?? ""} size={14} />
     </span>
     <span class="inline-attachment-label attach-row-label">{label}</span>
     {#if meta}
