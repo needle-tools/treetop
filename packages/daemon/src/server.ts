@@ -108,6 +108,7 @@ import {
   renameArgv,
   resolveAgentBinary,
   discoverRepoProcesses,
+  throttleAsync,
 } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
@@ -254,6 +255,49 @@ const events = await EventLog.open(WORKSPACE_PATH);
 const errors = await ErrorLog.open(WORKSPACE_PATH);
 const shells = await ShellsLog.open(WORKSPACE_PATH);
 const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
+
+/** External (non-TUI) repo-resident processes for the Processes panel.
+ *  This scan is the heaviest part of an /api/processes poll — a
+ *  full-machine process enumeration plus a `git worktree list` per repo —
+ *  and its result changes slowly, so we throttle it well below the panel's
+ *  poll cadence (which is 5s while open). The TUI rows the user actually
+ *  watches are still sampled fresh on every request; only this scan is
+ *  cached. A newly spawned external process therefore appears within
+ *  EXTERNAL_SCAN_TTL_MS rather than instantly — an acceptable trade for
+ *  not re-enumerating every process on the box twice a poll. */
+const EXTERNAL_SCAN_TTL_MS = 8_000;
+const externalProcessRows = throttleAsync(async () => {
+  const records = terminalBackend.list().filter((r) => !r.exitedAt);
+  const excludePids = new Set<number>([
+    process.pid,
+    ...records.map((r) => r.pid),
+  ]);
+  const repos = await workspace.listRepos();
+  const allPaths = new Set(repos.map((r) => r.path));
+  for (const repo of repos) {
+    try {
+      const wts = await listWorktrees(repo.path);
+      for (const wt of wts) allPaths.add(wt.path);
+    } catch {
+      /* repo might be gone */
+    }
+  }
+  const external = await discoverRepoProcesses([...allPaths], excludePids);
+  return external.map((ep) => ({
+    id: `ext-${ep.pid}`,
+    pid: ep.pid,
+    agent: undefined,
+    cmd: [ep.args],
+    cwd: ep.cwd,
+    ownerId: undefined,
+    createdAt: undefined,
+    lastOutputAt: undefined,
+    cpuPercent: ep.cpuPercent,
+    memBytes: ep.memBytes,
+    kind: "external" as const,
+    comm: ep.comm,
+  }));
+}, EXTERNAL_SCAN_TTL_MS);
 
 /** Active /api/ollama/chat streams keyed by termId. Lets a second
  *  request (DELETE /api/ollama/chat/:termId, or a fresh POST while
@@ -1652,10 +1696,12 @@ const server = Bun.serve<TermWsData, never>({
           let localPort: number;
           try {
             localPort = await ensureRemoteTunnelPort(daemonId);
-          } catch {
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const notFound = msg.includes("remote daemon not found");
             return json(
-              { error: "remote daemon not found" },
-              { status: 404 },
+              { error: notFound ? msg : `tunnel failed: ${msg}` },
+              { status: notFound ? 404 : 502 },
             );
           }
           const remoteUrl = buildProxyWsUrl(localPort, `/${m[2]!}`, url.search);
@@ -3127,38 +3173,10 @@ const server = Bun.serve<TermWsData, never>({
             kind: "tui" as const,
           };
         });
-        const repos = await workspace.listRepos();
-        const allPaths = new Set(repos.map((r) => r.path));
-        for (const repo of repos) {
-          try {
-            const wts = await listWorktrees(repo.path);
-            for (const wt of wts) allPaths.add(wt.path);
-          } catch {
-            /* repo might be gone */
-          }
-        }
-        const excludePids = new Set([
-          process.pid,
-          ...records.map((r) => r.pid),
-        ]);
-        const external = await discoverRepoProcesses(
-          [...allPaths],
-          excludePids,
-        );
-        const externalRows = external.map((ep) => ({
-          id: `ext-${ep.pid}`,
-          pid: ep.pid,
-          agent: undefined,
-          cmd: [ep.args],
-          cwd: ep.cwd,
-          ownerId: undefined,
-          createdAt: undefined,
-          lastOutputAt: undefined,
-          cpuPercent: ep.cpuPercent,
-          memBytes: ep.memBytes,
-          kind: "external" as const,
-          comm: ep.comm,
-        }));
+        // External rows come from a throttled full-machine scan (see
+        // externalProcessRows) so a fast poll doesn't re-enumerate every
+        // process twice. TUI rows above are always fresh.
+        const externalRows = await externalProcessRows();
         return json([...tuis, ...externalRows]);
       }
 
@@ -7205,10 +7223,16 @@ const server = Bun.serve<TermWsData, never>({
           let localPort: number;
           try {
             localPort = await ensureRemoteTunnelPort(proxied.id);
-          } catch {
+          } catch (e) {
+            // Distinguish "no such daemon" (404) from "the tunnel couldn't
+            // be brought up" (502) — they need different fixes and lumping
+            // both under "not found" hid real tunnel failures (auth, host
+            // unreachable, listener never bound). Surface the actual error.
+            const msg = e instanceof Error ? e.message : String(e);
+            const notFound = msg.includes("remote daemon not found");
             return json(
-              { error: "remote daemon not found" },
-              { status: 404 },
+              { error: notFound ? msg : `tunnel failed: ${msg}` },
+              { status: notFound ? 404 : 502 },
             );
           }
           // Forwarding logic lives in daemon-proxy.ts so it can be tested
