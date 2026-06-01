@@ -549,6 +549,65 @@ Design:
 - [ ] NEVER touch the prod daemon (`:27787`) — the test port must be a
       distinct high port; assert the chosen port != prod before spawning.
 
+### Containerized-remote e2e (design — agreed 2026-06-01)
+
+Motivation: the live Hetzner run flushed out ~9 bugs that NO unit test
+could see (Windows key ACL, CRLF, cmd.exe-vs-bash, tunnel readiness race,
+proxy error masking, …) because they only appear when the real code runs
+local→remote over a tunnel. A containerized remote gives that coverage
+repeatably, in CI, without a hand-provisioned box. This supersedes the
+"spawn a second daemon in-process" sketch above with a more realistic
+remote.
+
+**Tiers (build in order):**
+- [ ] **Tier 2.5 — Linux daemon container, faked ssh hop.** `docker build`
+      `deploy/Dockerfile` → `docker run` it bound to loopback inside the
+      container with a published port; register it as a remote daemon whose
+      TunnelManager target points at the published port (skip real ssh, the
+      OS boundary we already fake). Assert connect → `/api/repos` streams →
+      proxied terminal WS round-trips → diff/status work. ~1s container
+      start; runs on any Docker.
+- [ ] **Tier 3 — real ssh tunnel.** Same container ALSO runs `sshd` with
+      the installer's forward-only key; the harness opens a genuine
+      `ssh -L` into it and drives the flow through the real tunnel
+      (TunnelManager unmodified). True end-to-end incl. tunnel crypto +
+      the readiness wait. This is the canonical proof.
+- [ ] Both env-guarded (`SUPERGIT_TWO_DAEMON_TESTS=1`), out of default
+      `bun test`, loud header comments, guaranteed `docker rm -f` teardown
+      in `finally`, and a port/name distinct from prod.
+
+**Cross-platform matrix — the bugs are on the CLIENT, not the remote.**
+The remote is realistically ALWAYS Linux (Hetzner / VPS / container); the
+OS-specific bugs we hit (key ACL, CRLF, shell path) were on the LOCAL
+daemon's side. So the valuable matrix is **one Linux remote container ×
+client OS** via GitHub Actions runners:
+- [ ] CI job runs the Tier-2.5/3 harness on `ubuntu-latest`,
+      `windows-latest`, `macos-latest` — each boots the SAME Linux remote
+      container and tests the local→remote flow. This is what catches the
+      Windows-ACL / CRLF / cmd.exe class per-platform.
+
+**PRIORITY: the Linux remote container is THE target.** A remote daemon is
+realistically always a Linux box (Hetzner / VPS / container), so the
+Linux-remote harness above is the one that must exist and run in CI.
+Everything below is documented-and-deferred, not planned work.
+
+**Remote-daemon ON macOS/Windows — explicitly out of scope (low value).**
+Options the user raised, and why none fit the harness:
+- `dockurr/macos` / `dockurr/windows` — a full OS in QEMU/KVM inside a
+  container (VNC/SSH). Needs `/dev/kvm` + `--privileged` (nested virt) →
+  does NOT run on hosted GitHub runners or Docker Desktop on Mac/Win, only
+  on a beefy Linux host; multi-GB image + minutes-long boot → unusable for
+  CI cadence; the macOS one is legally gray (Apple EULA = Apple hardware).
+- `microsoft/windows` (and `mcr.microsoft.com/windows/*`) — real Windows
+  containers, but they ONLY run on a Windows host in Windows-container mode
+  (shared Windows kernel); never on Linux CI / Mac, not in Docker Desktop's
+  default Linux-container mode.
+A remote daemon running on Mac/Windows isn't a stated use case. IF it ever
+matters, the right tool is a real Apple/Windows CI runner (or a Windows
+self-hosted runner for Windows containers), not a QEMU-in-container —
+revisit then. The CLIENT-side OS matrix (above) already covers the
+cross-platform bugs that actually occur.
+
 ### Phase 5 — Hardening & docs
 - [ ] Security note: this design keeps the daemon loopback-only; the
       tunnel is the only entry. Re-confirm no route assumes LAN trust.
