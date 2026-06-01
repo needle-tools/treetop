@@ -284,3 +284,16 @@ export function iconFor(key: string | null | undefined): IconDef | null {
   if (!key) return null;
   return ICONS[key] ?? null;
 }
+
+/**
+ * Git status glyph `d` strings, drawn in a 12x12 viewBox and stroked with
+ * currentColor (`stroke-linecap: round`). Shared by StatusBadge (the
+ * worktree pills) and SessionDock (the repo-arrow inner glyph) so the
+ * ↑ ahead / ↓ behind / ~ dirty marks stay pixel-identical across every
+ * surface. These are raw paths rather than `IconDef` entries because they
+ * render inline at 12x12, not through the 24x24 OpenInButton machinery.
+ */
+export const GIT_AHEAD = "M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5";
+export const GIT_BEHIND = "M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5";
+/** A proper tilde — rise then dip — not a single hump. */
+export const GIT_DIRTY = "M2 6c1-2 3-2 4 0s3 2 4 0";

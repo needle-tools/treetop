@@ -14,6 +14,7 @@
    */
 
   import { pickBadgeKind } from "./status-badge";
+  import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
 
   export let ahead = 0;
   export let behind = 0;
@@ -67,7 +68,7 @@
         ></span>{:else}<svg
           class="status-badge-arrow"
           viewBox="0 0 12 12"
-          aria-hidden="true"><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+          aria-hidden="true"><path d={GIT_AHEAD} /></svg
         >{ahead}{/if}</button
     >
   {:else}
@@ -76,7 +77,7 @@
       class:pulsate
       class:status-badge-compact={compact}
       ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
-        ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+        ><path d={GIT_AHEAD} /></svg
       >{ahead}</span
     >
   {/if}
@@ -96,7 +97,7 @@
         ></span>{:else}<svg
           class="status-badge-arrow"
           viewBox="0 0 12 12"
-          aria-hidden="true"><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+          aria-hidden="true"><path d={GIT_BEHIND} /></svg
         >{behind}{/if}</button
     >
   {:else}
@@ -104,7 +105,7 @@
       class="status-badge status-badge-behind"
       class:status-badge-compact={compact}
       ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
-        ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+        ><path d={GIT_BEHIND} /></svg
       >{behind}</span
     >
   {/if}
@@ -115,7 +116,7 @@
     class:status-badge-dirty-warn={warn}
     class:status-badge-compact={compact}
     ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"
-      ><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+      ><path d={GIT_DIRTY} /></svg
     >{dirty}</span
   >
 {/if}

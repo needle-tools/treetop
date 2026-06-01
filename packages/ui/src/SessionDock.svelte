@@ -18,6 +18,7 @@
   import ChatPreview from "./ChatPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { splitDockEntries } from "./dock-split";
+  import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -743,18 +744,18 @@
                   class="dock-arrow-glyph dock-arrow-up"
                   viewBox="0 0 12 12"
                   aria-hidden="true"
-                  ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+                  ><path d={GIT_AHEAD} /></svg
                 >{/if}
               {#if rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
                   aria-hidden="true"
-                  ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+                  ><path d={GIT_BEHIND} /></svg
                 >{/if}
               {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-dirty"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+                  aria-hidden="true"><path d={GIT_DIRTY} /></svg
                 >{/if}
             </span>
             <span class="dock-label">
@@ -899,18 +900,18 @@
                   class="dock-arrow-glyph dock-arrow-up"
                   viewBox="0 0 12 12"
                   aria-hidden="true"
-                  ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+                  ><path d={GIT_AHEAD} /></svg
                 >{/if}
               {#if rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
                   aria-hidden="true"
-                  ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+                  ><path d={GIT_BEHIND} /></svg
                 >{/if}
               {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-dirty"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+                  aria-hidden="true"><path d={GIT_DIRTY} /></svg
                 >{/if}
             </span>
             <span class="dock-label">
@@ -1036,18 +1037,18 @@
                 class="dock-arrow-glyph dock-arrow-up"
                 viewBox="0 0 12 12"
                 aria-hidden="true"
-                ><path d="M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5" /></svg
+                ><path d={GIT_AHEAD} /></svg
               >{/if}
             {#if rs.behind}<svg
                 class="dock-arrow-glyph dock-arrow-down"
                 viewBox="0 0 12 12"
                 aria-hidden="true"
-                ><path d="M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5" /></svg
+                ><path d={GIT_BEHIND} /></svg
               >{/if}
             {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<svg
                 class="dock-arrow-glyph dock-arrow-dirty"
                 viewBox="0 0 12 12"
-                aria-hidden="true"><path d="M2 6c1.5-2.5 5-2.5 8 0" /></svg
+                aria-hidden="true"><path d={GIT_DIRTY} /></svg
               >{/if}
           </span>
           <span class="dock-label">
