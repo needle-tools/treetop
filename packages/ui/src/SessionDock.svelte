@@ -16,6 +16,9 @@
    */
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
+  import RepoStatusPreview, {
+    type DockWorktreeStatus,
+  } from "./RepoStatusPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { splitDockEntries } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
@@ -103,6 +106,24 @@
   /** Per-repo push/pull status. Repos with ahead or behind > 0 get
    *  an animated arrow; all counts show in the hover label. */
   export let dockRepoStatuses: DockRepoStatus[] = [];
+
+  /** Per-repo breakdown of visible worktrees with their individual
+   *  push/pull/dirty counts. Feeds the arrow-row hover preview so
+   *  it can render the same per-worktree sections (unpushed
+   *  commits, unfetched commits, changed files) you'd see hovering
+   *  the worktree row's StatusBadges. Optional — empty map ⇒ no
+   *  preview opens. */
+  export let dockRepoWorktrees: Record<string, DockWorktreeStatus[]> = {};
+  /** Cache of per-worktree summaries keyed by absolute path. Same
+   *  shape the host uses for the worktree-row tooltips
+   *  (App.svelte's `wtSummaryByPath`). Threaded through here so the
+   *  arrow-row preview can render commit lists + file lists without
+   *  re-fetching. */
+  export let wtSummaries: Record<string, unknown> = {};
+  /** Trigger function — called on arrow-row hover for each worktree
+   *  in the hovered repo so the host can lazy-load the summary that
+   *  feeds {wtSummaries}. No-op when omitted. */
+  export let loadWtSummary: ((path: string) => void) | null = null;
 
   /** Whether the dashboard is in zen mode. When true, inactive
    *  dots are hidden by default (the user can still override via
@@ -470,10 +491,11 @@
     const clampedTop = clampedCenterVp - dockRect.top;
     if (Math.abs(clampedTop - hoveredTop) > 0.5) hoveredTop = clampedTop;
   }
-  $: if (hoveredEntry && previewEl && dockEl) {
+  $: if ((hoveredEntry || hoveredRepoId) && previewEl && dockEl) {
     // After layout settles (next frame), measure + clamp. The
-    // dependency on hoveredEntry re-fires the clamp whenever the
-    // user moves to a different row.
+    // dependency on hoveredEntry / hoveredRepoId re-fires the
+    // clamp whenever the user moves to a different row OR switches
+    // between the session-preview and repo-status-preview asides.
     void Promise.resolve().then(() => requestAnimationFrame(clampPreviewTop));
   }
   /** Driven by JS instead of plain :hover/:focus-within so the
@@ -505,16 +527,39 @@
     }
   }
 
-  function onArrowEnter() {
+  /** Which repo's arrow row is currently hovered — opens the repo
+   *  status side preview (push commits / pull commits / changed
+   *  files per worktree). Mutually exclusive with `hoveredEntry`
+   *  so the two side asides don't fight for the same slot. */
+  let hoveredRepoId: string | null = null;
+
+  function onArrowEnter(ev: Event, repoId: string) {
     cancelDismiss();
     cancelShowPreview();
     hoveredEntry = null;
     stopPreviewPoll();
+    showLabels = true;
+    const trigger = ev.currentTarget as HTMLElement | null;
+    if (trigger) {
+      const tRect = trigger.getBoundingClientRect();
+      const dockRect = dockEl?.getBoundingClientRect();
+      const dockTop = dockRect ? dockRect.top : 0;
+      hoveredTop = tRect.top + tRect.height / 2 - dockTop;
+    }
+    hoveredRepoId = repoId;
+    // Prime the per-worktree summary cache so the panel fills in
+    // commit / file lists. No-op when the host didn't wire the
+    // callback (e.g. tests).
+    if (loadWtSummary) {
+      const wts = dockRepoWorktrees[repoId] ?? [];
+      for (const wt of wts) loadWtSummary(wt.path);
+    }
   }
 
   function onRowEnter(ev: Event, entry: DockEntry) {
     cancelDismiss();
     cancelShowPreview();
+    hoveredRepoId = null;
     const btn = ev.currentTarget as HTMLElement | null;
     if (btn) {
       // Compute hoveredTop in dock-local coords from viewport rects
@@ -557,6 +602,7 @@
     cancelShowPreview();
     dismissTimer = setTimeout(() => {
       hoveredEntry = null;
+      hoveredRepoId = null;
       showLabels = false;
       stopPreviewPoll();
       dismissTimer = null;
@@ -736,7 +782,8 @@
           <span
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
-            on:mouseenter={onArrowEnter}
+            on:mouseenter={(ev) =>
+              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
           >
@@ -892,7 +939,8 @@
           <span
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
-            on:mouseenter={onArrowEnter}
+            on:mouseenter={(ev) =>
+              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
           >
@@ -1030,7 +1078,7 @@
         <span
           class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
           style:--arrow-color={brightenIfDark(rs.repoColor)}
-          on:mouseenter={onArrowEnter}
+          on:mouseenter={(ev) => onArrowEnter(ev, rs.repoId)}
           on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
@@ -1080,6 +1128,20 @@
           summary={previewSummaries[hoveredEntry.transcriptSource]}
           agent={hoveredEntry.agent}
           loading={previewLoading[hoveredEntry.transcriptSource] ?? false}
+        />
+      </aside>
+    {:else if hoveredRepoId && (dockRepoWorktrees[hoveredRepoId]?.length ?? 0) > 0}
+      <aside
+        bind:this={previewEl}
+        class="dock-preview dock-preview-repo"
+        style:top="{hoveredTop}px"
+        aria-hidden="true"
+        on:mouseenter={onDockEnter}
+        on:mouseleave={onDockLeave}
+      >
+        <RepoStatusPreview
+          worktrees={dockRepoWorktrees[hoveredRepoId] ?? []}
+          {wtSummaries}
         />
       </aside>
     {/if}

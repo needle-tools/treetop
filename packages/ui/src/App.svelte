@@ -5795,6 +5795,63 @@
     };
   });
 
+  /** Per-repo breakdown of visible worktrees with their individual
+   *  push/pull/dirty signals. Feeds the dock's arrow-row hover
+   *  preview so it can list each worktree's unpushed/unfetched
+   *  commits and changed files (same content as the worktree-row
+   *  tooltips, grouped by worktree). Computed alongside
+   *  dockRepoStatuses so the visibility filter stays in sync. */
+  $: dockRepoWorktrees = (() => {
+    const out: Record<string, Array<{
+      path: string;
+      branch: string;
+      ahead: number;
+      behind: number;
+      dirty: number;
+      upstream: string | null;
+      daemonId: string | undefined;
+    }>> = {};
+    for (const repo of repos) {
+      const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
+      const visible = new Set(
+        effectiveVisibleWorktrees(repoPrefsKey(repo), diskPaths, visibleWorktreesByRepo),
+      );
+      const rows: Array<{
+        path: string;
+        branch: string;
+        ahead: number;
+        behind: number;
+        dirty: number;
+        upstream: string | null;
+        daemonId: string | undefined;
+      }> = [];
+      for (const wt of repo.worktrees ?? []) {
+        if (!visible.has(wt.path)) continue;
+        const ahead = wt.branchStatus?.ahead ?? 0;
+        const behind = wt.branchStatus?.behind ?? 0;
+        const fs = wt.fileStatus;
+        const dirty = fs
+          ? Math.max(
+              0,
+              fs.staged + fs.unstaged + fs.untracked - (fs.submoduleChanges ?? 0),
+            )
+          : 0;
+        if (ahead === 0 && behind === 0 && dirty === 0) continue;
+        rows.push({
+          path: wt.path,
+          branch: wt.branch ?? "",
+          ahead,
+          behind,
+          dirty,
+          upstream: wt.branchStatus?.upstream ?? null,
+          daemonId: daemonIdForWorktreePath(repos, wt.path),
+        });
+      }
+      if (rows.length > 0) out[repo.id] = rows;
+    }
+    return out;
+  })();
+
   /** Browser-tab indicator: animates the favicon (pulsing dot when
    *  waiting, rotating arc when working) and sets the title + meta
    *  description to a per-session breakdown (with names + agents)
@@ -9772,6 +9829,9 @@
   entries={dockEntries}
   {focusedSource}
   {dockRepoStatuses}
+  {dockRepoWorktrees}
+  wtSummaries={wtSummaryByPath}
+  loadWtSummary={(path) => void loadWtSummary(path)}
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
   on:scrollToRepo={(e) => {
