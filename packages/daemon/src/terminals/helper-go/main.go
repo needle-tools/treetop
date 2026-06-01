@@ -18,8 +18,18 @@ import (
 )
 
 type term struct {
-	cmd *pty.Cmd
-	pty pty.Pty
+	cmd       *pty.Cmd
+	pty       pty.Pty
+	closeOnce sync.Once
+}
+
+// close tears down the PTY exactly once. Both the soft-kill path (Windows)
+// and the exit goroutine call this; closing a pty twice would otherwise
+// race. On Windows, closing the pseudoconsole delivers a CTRL_CLOSE_EVENT
+// to the attached child — the graceful "you're about to die, flush now"
+// signal that lets Claude finish writing .claude.json.
+func (t *term) close() {
+	t.closeOnce.Do(func() { _ = t.pty.Close() })
 }
 
 var (
@@ -192,7 +202,7 @@ func handleSpawn(msg map[string]any) {
 	go func() {
 		state, _ := cmd.Process.Wait()
 		exitCh <- state
-		p.Close()
+		t.close()
 	}()
 
 	go func() {
@@ -286,11 +296,16 @@ func killTerm(t *term, sigArg any) {
 	if t == nil || t.cmd == nil || t.cmd.Process == nil {
 		return
 	}
-	wantKill := false
-	if s, ok := sigArg.(string); ok && s == "SIGKILL" {
-		wantKill = true
-	}
-	sendSignal(t, wantKill)
+	sendSignal(t, wantHardKill(sigArg))
+}
+
+// wantHardKill maps the raw JSONL "signal" field to whether we should
+// force-terminate. Only the literal "SIGKILL" is hard; the default
+// "SIGTERM", a missing field, or anything unexpected is a soft kill so the
+// child gets a chance to clean up first.
+func wantHardKill(sigArg any) bool {
+	s, ok := sigArg.(string)
+	return ok && s == "SIGKILL"
 }
 
 func intOr(v any, fallback int) int {

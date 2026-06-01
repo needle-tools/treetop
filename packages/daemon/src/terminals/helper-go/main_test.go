@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestWantHardKill(t *testing.T) {
+	// Only the literal "SIGKILL" means "force-terminate"; everything else
+	// (the default "SIGTERM", a missing field, garbage) is a soft kill so
+	// the child gets a chance to flush before we escalate.
+	cases := []struct {
+		arg  any
+		want bool
+	}{
+		{"SIGKILL", true},
+		{"SIGTERM", false},
+		{"", false},
+		{nil, false},
+		{"sigkill", false}, // case-sensitive on purpose
+		{9, false},         // wrong type
+	}
+	for _, c := range cases {
+		if got := wantHardKill(c.arg); got != c.want {
+			t.Fatalf("wantHardKill(%#v) = %v, want %v", c.arg, got, c.want)
+		}
+	}
+}
+
 func TestScrubEnvForcesSingleColorCapableTerm(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 

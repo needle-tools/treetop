@@ -640,6 +640,56 @@ export class NodePtyBackend implements PtyBackend {
     setTimeout(() => this.forget(id), delayMs);
   }
 
+  /**
+   * Drain live PTYs gracefully before the daemon exits. Sends each live
+   * terminal a *soft* kill (SIGTERM on unix; a ConPTY close on Windows,
+   * which delivers a CTRL_CLOSE_EVENT so the child can flush) and waits up
+   * to `graceMs` for them to exit on their own. Any straggler still alive
+   * when the window closes is force-killed (SIGKILL). Finally tears the
+   * helper down.
+   *
+   * This exists so a daemon restart stops hard-killing Claude mid-write to
+   * its `.claude.json` (the dominant cause of the corrupt-config dialog on
+   * Windows). The startup repair (repairAllClaudeJson) is still the
+   * correctness backstop; this just makes the corruption rare instead of
+   * routine.
+   */
+  async gracefulShutdown(graceMs = 2000): Promise<void> {
+    const live = [...this.terms.values()].filter((t) => !t.exitedAt);
+    if (this.helper && live.length > 0) {
+      // Resolve as soon as each live term reports its exit. Attach the
+      // listener BEFORE sending the signal so we can't miss a fast exit.
+      const exited = live.map(
+        (t) =>
+          new Promise<void>((resolve) => {
+            if (t.exitedAt) return resolve();
+            t.subs.add({ onData() {}, onExit: () => resolve() });
+          }),
+      );
+      for (const t of live) {
+        try {
+          this.send({ op: "kill", id: t.id, signal: "SIGTERM" });
+        } catch {}
+      }
+      await Promise.race([
+        Promise.all(exited),
+        new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
+      ]);
+      // Anything that ignored the soft signal gets force-terminated.
+      const stragglers = [...this.terms.values()].filter((t) => !t.exitedAt);
+      for (const t of stragglers) {
+        try {
+          this.send({ op: "kill", id: t.id, signal: "SIGKILL" });
+        } catch {}
+      }
+      // Give the force-kill a beat to land so exit codes propagate before
+      // we close the helper's stdin (which would hard-reap them anyway).
+      if (stragglers.length > 0)
+        await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    }
+    await this.shutdown();
+  }
+
   async shutdown() {
     if (this.helper) {
       try {

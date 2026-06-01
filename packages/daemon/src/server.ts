@@ -7758,14 +7758,22 @@ const shutdown = async (signal: string) => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`supergit daemon: ${signal} -> stopping`);
+  // Time we let live PTYs flush + exit on their own before force-killing
+  // them. Stops hard-killing Claude mid-write to .claude.json on every
+  // restart (the corrupt-config dialog). The hard-exit deadline below
+  // covers this drain plus the rest of teardown.
+  const PTY_DRAIN_MS = 2000;
   const hardExit = setTimeout(() => {
     console.log("supergit daemon: graceful shutdown stalled, forcing exit");
     process.exit(1);
-  }, 2000);
+  }, PTY_DRAIN_MS + 2000);
   hardExit.unref?.();
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopActivity();
+    // Soft-kill PTYs first (SIGTERM / ConPTY close), wait out the grace,
+    // then force-kill stragglers — before we tear anything else down.
+    await terminalBackend.gracefulShutdown(PTY_DRAIN_MS);
     orphanCleaner.dispose();
     sshSyncTracker.dispose();
     sshPool.disconnectAll();

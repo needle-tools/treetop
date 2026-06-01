@@ -568,6 +568,77 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
   }, 10_000);
 });
 
+// gracefulShutdown is what the daemon calls on SIGTERM/SIGINT before it
+// tears the helper down: soft-kill every live PTY (SIGTERM / ConPTY close
+// on Windows), give them a grace window to flush + exit on their own, then
+// force-kill (SIGKILL) any straggler. The point is to stop hard-killing
+// Claude mid-write to .claude.json on every restart. Unix-only here (the
+// integration suite is skipped on Windows); the Windows ConPTY-close path
+// is exercised by hand.
+describe.skipIf(isWin)("NodePtyBackend.gracefulShutdown", () => {
+  test("soft-kills a SIGTERM-respecting PTY and resolves once it exits", async () => {
+    const backend = new NodePtyBackend();
+    // Exits cleanly on SIGTERM — the cooperative case we want the common
+    // path to be. Long sleep so it would obviously still be alive if the
+    // soft signal never reached it.
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", 'trap "exit 0" TERM; sleep 60'],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const pid = handle.pid;
+    expect(pid).toBeGreaterThan(0);
+
+    const start = Date.now();
+    await backend.gracefulShutdown(2000);
+    const elapsed = Date.now() - start;
+
+    // It exited on SIGTERM, so we should return well before the grace cap.
+    expect(elapsed).toBeLessThan(1500);
+    let stillAlive = false;
+    try {
+      process.kill(pid, 0);
+      stillAlive = true;
+    } catch {}
+    expect(stillAlive).toBe(false);
+  }, 10_000);
+
+  test("force-kills a PTY that ignores SIGTERM once the grace window elapses", async () => {
+    const backend = new NodePtyBackend();
+    // Ignores SIGTERM entirely → only SIGKILL can stop it. gracefulShutdown
+    // must wait out the (short) grace, then escalate to SIGKILL.
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", 'trap "" TERM; sleep 60'],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const pid = handle.pid;
+    expect(pid).toBeGreaterThan(0);
+
+    const start = Date.now();
+    await backend.gracefulShutdown(300);
+    const elapsed = Date.now() - start;
+
+    // We must have waited out roughly the grace window before escalating —
+    // not returned instantly (which would mean we hard-killed immediately,
+    // defeating the soft-kill) and not hung forever.
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    let stillAlive = false;
+    try {
+      process.kill(pid, 0);
+      stillAlive = true;
+    } catch {}
+    expect(stillAlive).toBe(false);
+  }, 10_000);
+
+  test("is a no-op (resolves promptly) when there are no live terminals", async () => {
+    const backend = new NodePtyBackend();
+    const start = Date.now();
+    await backend.gracefulShutdown(2000);
+    expect(Date.now() - start).toBeLessThan(500);
+  }, 10_000);
+});
+
 describe("renameArgv", () => {
   test("wraps cmd into bash -c 'exec -a NAME …'", () => {
     const out = renameArgv("supergit-tui-abc-claude", [
