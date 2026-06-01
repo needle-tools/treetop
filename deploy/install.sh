@@ -104,6 +104,40 @@ fi
 ( cd "${APP_DIR}" && "${BUN_BIN}" install )
 ( cd "${APP_DIR}/packages/ui" && "${BUN_BIN}" run build )
 
+# ---- 3b. PTY helper (Go) — REQUIRED for working terminals -------------
+# The daemon spawns PTYs via a prebuilt Go `pty-helper` (no Node, no native
+# node-pty module). Without it the backend falls back to `node helper.mjs`,
+# which needs `node` on PATH AND node-pty's Linux native binary — neither of
+# which a fresh box / `bun install` reliably provides (node-pty ships no
+# linux prebuild here, and there's no `node`). The result is every terminal
+# SIGHUP'ing on spawn. So build the Go helper on the box. The daemon looks
+# for it at packages/daemon/src/terminals/helper-go/pty-helper
+# (node-pty-backend.ts helperCmd()).
+HELPER_DIR="${APP_DIR}/packages/daemon/src/terminals/helper-go"
+HELPER_BIN="${HELPER_DIR}/pty-helper"
+if [ ! -x "${HELPER_BIN}" ]; then
+  if ! command -v go >/dev/null 2>&1; then
+    err "installing Go (needed to build the PTY helper)…"
+    # Debian/Ubuntu: golang-go is recent enough for modern go.mod; if the
+    # distro's Go is too old, the build error below tells the operator to
+    # install a newer Go from go.dev.
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update -qq && apt-get install -y golang-go >/dev/null
+    fi
+  fi
+  if command -v go >/dev/null 2>&1; then
+    err "building pty-helper (Go)…"
+    ( cd "${HELPER_DIR}" && go build -o "${HELPER_BIN}" . ) || {
+      err "go build failed — terminals will not work. Install a newer Go"
+      err "from https://go.dev/dl/ and re-run: bash deploy/install.sh --no-pull"
+    }
+    chmod +x "${HELPER_BIN}" 2>/dev/null || true
+  else
+    err "WARNING: Go not available and pty-helper not built — terminals"
+    err "will fail. Install Go, then re-run the installer."
+  fi
+fi
+
 mkdir -p "${WORKSPACE_DIR}"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}" "${WORKSPACE_DIR}"
 

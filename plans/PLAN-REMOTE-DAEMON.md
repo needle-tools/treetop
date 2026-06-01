@@ -532,6 +532,22 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       against a fake remote, so it never exercised Bun's sync-upgrade
       constraint. This is exactly what the deferred Tier-3 two-daemon /
       container e2e (real upgrade through a real tunnel) must cover.
+- [x] **#13 Remote terminal SIGHUPs on spawn (every shell dies instantly)**
+      — probing the live box: the daemon's PTY backend prefers a prebuilt
+      Go `pty-helper`, else falls back to `node helper.mjs` (needs `node` +
+      node-pty's native linux binary). The box had NEITHER: no `pty-helper`
+      (install.sh never built it), `NO node` on PATH, and node_modules/
+      node-pty shipped only darwin/win32 prebuilds — NO linux-x64 — so
+      node-pty couldn't drive a tty → every PTY (bash -l / bash / sh)
+      exited with SIGHUP the instant it spawned. (And that synchronous
+      onExit is what triggered the #-cleanup TDZ, 0bdd080.) Fix: install.sh
+      now installs Go if missing and `go build`s the pty-helper on the box
+      (the node-free PTY path supergit prefers), so terminals work without
+      node / node-pty. Committed in install.sh.
+- [x] **#cleanup TDZ** (0bdd080) — the synchronous onExit from a
+      SIGHUP-on-spawn PTY hit a `const cleanup` in its temporal dead zone
+      ("Cannot access 'cleanup' before initialization", a 500 out of the
+      spawn POST that masked #13). Pre-declared `let cleanup` + null-guard.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
