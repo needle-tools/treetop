@@ -233,6 +233,72 @@ Bun + the Go pty-helper, both cross-platform). What each needs:
 - [ ] Optional: emit a one-liner / clickable that opens the tunnel and
       the browser tab together.
 
+### Phase 2b — "Connect daemon": automated onboarding from the Add-daemon dialog (DESIGN — proposed 2026-06-02)
+
+The vision (user): in the Add-daemon dialog, point supergit at a machine;
+it provisions the remote daemon and registers it with ZERO manual steps —
+the dialog stays open showing progress until the connection is live (or the
+user aborts, which must also stop the remote installer if still running).
+
+**THE FORK (undecided — decides the whole architecture):**
+- **Model A — fully automated.** The dialog takes ADMIN ssh creds (host +
+  password/key); the LOCAL daemon ssh'es in, detects the OS, runs/updates
+  the installer with live progress, captures the printed `supergit1:` token
+  from stdout, and registers. Most magical, but turns the daemon from a
+  "only ever opens forward-only outbound tunnels" tool into a PRIVILEGED
+  remote-exec tool: admin creds in daemon memory; password auth needs
+  PTY-driven ssh (ssh refuses passwords without a tty); much larger attack
+  surface. Not a new vulnerability (it's the user's own machine) but a big
+  new capability.
+- **Model B — guided one-paste (recommended default).** supergit generates
+  the exact OS-aware command (e.g. the tar-over-ssh + `install.sh --no-pull`
+  pair, or a `curl|bash`); the user pastes it once on the box; it prints the
+  token; supergit auto-detects + registers. Daemon never holds admin creds
+  or runs privileged remote commands. ~80% of the magic, ~20% of the
+  surface.
+- Leaning: ship B as default, keep A as an opt-in "advanced auto-provision"
+  later. STILL THE OPEN QUESTION — decide before building.
+
+**What's already in place (reusable):**
+- `install.sh --no-pull` is idempotent + re-run-safe (upgrade in place);
+  builds linux-native artifacts ON the box (bun install / bun run build /
+  go build the pty-helper) — this is why we ship SOURCE, not the native
+  build's compiled binaries.
+- The installer already prints a `supergit1:` connection string on stdout →
+  capture + `decodeConnectionString` + register (the `/api/daemons/connect`
+  path we built). "Known vs new machine" = check remote-daemons.json by
+  host; "needs update" = compare version/buildTime.
+
+**Correctness requirements (both models):**
+- [ ] The remote install must run in the FOREGROUND of the ssh session (no
+      nohup/detach) so closing the connection SIGHUPs it on abort. Combined
+      with idempotent re-run, a half-killed install is recoverable.
+- [ ] Dialog lifecycle: install is minutes-long (bun install + go build).
+      It runs on the LOCAL daemon (it owns the ssh connection), so ideally
+      survives a dialog close/reload and the dialog reconnects to progress;
+      MVP can be "close = abort". Abort must kill the remote process.
+- [ ] Live progress channel to the dialog (reuse SSE or the WS we have).
+
+**CODE-DELIVERY dependency (the answer to "package the installer with the
+electrobun build?"):** tar-over-ssh ships the SOURCE TREE; the box builds
+itself. This works TODAY from a git checkout (`bun dev`) because the source
+is right there. BUT the packaged app (`build-native.ts` →
+`Supergit.app` / the electrobun .exe) ships only COMPILED, current-platform
+artifacts (a `bun build --compile` binary + the Go helper for the LOCAL
+os/arch + UI dist) — it does NOT contain `deploy/install.sh` or
+`packages/**` source, and the compiled binaries are the WRONG platform for
+a linux box anyway. So auto-provision FROM THE PACKAGED APP needs one of:
+- [ ] **Bundle the install payload into the app** — add `deploy/install.sh`
+      + a source tarball (or `packages/**` source needed to build on the
+      box) into the electrobun Resources, so the running app can ship it
+      over ssh. This is the real "package the installer with the build"
+      task — distinct from the compiled daemon binary; ~a few cp lines in
+      build-native.ts + a known Resources path the daemon reads.
+- [ ] OR deliver via the public image / `curl|bash` (the deferred
+      Distribution path) — app tells the box to pull, nothing bundled.
+- Until then, auto-provision is DEV-ONLY (works from a git checkout, not
+  the shipped app). Fine for current testing; not shippable to users.
+
 ### Phase 3 — WireGuard path (optional, parallel to Phase 1)
 - [ ] Installer variant: `wg genkey`, register laptop as a peer, open
       the UDP port, emit a `.conf`.
