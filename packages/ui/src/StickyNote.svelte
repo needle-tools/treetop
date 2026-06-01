@@ -535,12 +535,7 @@
     const date = delivery === "draft" ? note.createdAt : note.updatedAt;
     const formatted = formatMessageDate(date);
     if (!formatted) return delivery;
-    const verb = delivery === "sent"
-      ? "Sent"
-      : delivery === "received"
-        ? "Received"
-        : "Drafted";
-    return `${verb} ${formatted}`;
+    return formatted;
   }
 
   function messageStampStyle(): string {
@@ -3057,11 +3052,9 @@
     <div class="message-envelope-flap" aria-hidden="true"></div>
     <div class="message-letter">
       <div class="message-letter-meta">
-        <span>{messageWhenLabel()}</span>
         <button
           type="button"
           class="message-fold-toggle"
-          title="Fold message"
           aria-label="Fold message"
           on:click|stopPropagation={() => {
             messageOpen = false;
