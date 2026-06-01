@@ -4021,6 +4021,13 @@
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
       }
+      // Re-fetch so the new order shows. The local daemon's `repos_reorder`
+      // SSE broadcast would refresh a LOCAL reorder, but a REMOTE daemon's
+      // broadcast fires on ITS stream, which this UI isn't subscribed to —
+      // so without an explicit reload a remote reorder persisted on the box
+      // but never re-rendered here. load() re-runs the fan-out and picks up
+      // each daemon's new order.
+      await load();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -4474,6 +4481,22 @@
    *  is always local, so NOT daemon-routed (no daemonId arg). Optimistically
    *  drop the daemon's repos from the row list, then reload. */
   async function removeDaemon(daemonId: string) {
+    // Confirm first — removing a daemon drops all its rows + tears down the
+    // tunnel + deletes the stored key. The custom dialog (confirm-dialog.ts
+    // / ConfirmDialog.svelte) names the daemon so the user sees exactly
+    // which one. danger:true styles the confirm button as destructive.
+    const label = daemonLabelForRepo(daemonId) || daemonId;
+    const ok = await confirmDialog({
+      title: `Remove remote daemon "${label}"?`,
+      message:
+        "Its folder rows disappear from this window and the SSH tunnel + " +
+        "stored key are removed. The remote box and its repos are left " +
+        "untouched — you can re-add it later with the connection string.",
+      confirmLabel: "Remove daemon",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
     error = "";
     // Optimistically drop the daemon from BOTH the repo rows AND the
     // menubar daemon list (the list iterates `remoteDaemons` — filtering

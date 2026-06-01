@@ -504,6 +504,14 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       id order, but `/api/repos/order` validates against ONE daemon's
       registry. `reorderRepos` now splits the order by owning daemon and
       POSTs each via `apiUrl("/api/repos/order", daemonId)`.
+- [x] **#9b Remote reorder POSTed but UI didn't re-render** — reorderRepos
+      relied on the local daemon's `repos_reorder` SSE broadcast to refresh,
+      but a REMOTE daemon broadcasts on ITS stream (this UI isn't subscribed
+      to it), so the new order persisted on the box but never showed. Now
+      `reorderRepos` `await load()`s after the POSTs to re-run the fan-out.
+- [x] **#11 Remove-daemon needs a confirm** — `removeDaemon` now shows the
+      custom `confirmDialog()` (danger style, names the daemon) before
+      tearing down the tunnel + deleting the key; cancel aborts.
 - [x] **#10 Remote terminal: "/bin/zsh: No such file or directory"** — the
       systemd daemon has no `$SHELL`, so `defaultLoginShell()` hit its
       hard-coded `/bin/zsh` fallback, but a fresh Debian box has no zsh.
