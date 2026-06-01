@@ -386,6 +386,46 @@ describe("rewritePaths", () => {
     expect(out.includes(`"cwd":"${to}"`)).toBe(true);
     expect(out.includes(`"cwd":"${to}/packages/ui"`)).toBe(true);
   });
+
+  // Regression: a real shared session from Windows kept its dead
+  // `C:\git\needle-haystack` cwd after import because the sender captured
+  // `originRepoPath` with forward slashes (git's `--show-toplevel` form,
+  // `C:/git/needle-haystack`) while Claude Code records the cwd with
+  // backslashes (`C:\git\needle-haystack`). The win32 `from` pattern only
+  // handled backslash-style separators, so it matched zero occurrences and
+  // the rewrite silently no-op'd — leaving a cwd that doesn't exist on the
+  // receiver, which later made the terminal spawn fail with a misleading
+  // `fork/exec /bin/bash: no such file or directory`.
+  test("Windows `from` with forward slashes rewrites backslash data", () => {
+    const from = "C:/git/needle-haystack"; // git --show-toplevel form
+    const to = "/Users/marcel/git/needle-logs-view";
+    const input = [
+      JSON.stringify({ cwd: "C:\\git\\needle-haystack" }),
+      JSON.stringify({ cwd: "C:\\git\\needle-haystack\\src\\app.ts" }),
+    ].join("\n");
+    const out = rewritePaths(input, {
+      from,
+      to,
+      fromPlatform: "win32",
+      toPlatform: "darwin",
+    });
+    expect(out.includes("needle-haystack")).toBe(false);
+    expect(out.includes(`"cwd":"${to}"`)).toBe(true);
+    expect(out.includes(`"cwd":"${to}/src/app.ts"`)).toBe(true);
+  });
+
+  test("Windows `from` with mixed separators rewrites backslash data", () => {
+    const from = "C:/git\\needle-haystack"; // mixed, as tooling sometimes emits
+    const to = "/Users/marcel/git/needle-logs-view";
+    const input = JSON.stringify({ cwd: "C:\\git\\needle-haystack" });
+    const out = rewritePaths(input, {
+      from,
+      to,
+      fromPlatform: "win32",
+      toPlatform: "darwin",
+    });
+    expect(out).toBe(JSON.stringify({ cwd: to }));
+  });
 });
 
 describe("prepareOutgoingJsonl — strip + redact composed", () => {
