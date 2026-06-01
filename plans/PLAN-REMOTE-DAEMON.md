@@ -450,10 +450,24 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       process/TUI list (local-machine `/api/processes`) seems to be
       grouping local procs under the remote row. NEEDS INVESTIGATION
       (repro/screenshot) — likely a grouping key that ignores daemonId.
-- [ ] **add-remote-daemon button icon missing width/height** — the
-      `.add-folder-cta.add-folder-cta-compact` SVG icon for "Add remote
-      daemon" has no explicit width/height so it renders huge/unsized.
-      Add width/height (match the sibling add-folder icons).
+- [x] **add-remote-daemon button icon missing width/height** — fixed,
+      added width=20 height=20 to match sibling add-folder icons. (2213d1c)
+- [ ] **#7 "Start a new session" shows LOCAL agents/shells on a remote
+      row** — the dropdown lists Claude/Codex/Ollama/Terminal with their
+      *local* Windows exe paths (C:\Users\…\claude.exe, cmd.exe), but a
+      session on a remote row runs on the remote (Linux) box. `load()`
+      fetches `/api/agents/installed`, `/api/shell-default`, `/api/editors`
+      ONCE from the local daemon into global arrays used by every row. Fix:
+      fetch per-daemon via `apiUrl(path, daemonId)`, key by
+      `daemonId ?? "local"`, and have each row's dropdown read its daemon's
+      set — so a remote row shows the box's Linux agents and spawns the
+      tunnel back to the local UI.
+- [ ] **#8 "Open in" badges on a remote row mostly don't apply** — the
+      row's action strip shows Open-in-<editor>/Fork/Terminal/Files, which
+      call local-only `/api/open` against a REMOTE path → nonsense. Suppress
+      those for `repo.daemonId` rows; KEEP url-type chips (GitHub/remote
+      URL, customLinks kind="url") since those are just `openUrl()` and
+      work regardless of where the repo lives.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the

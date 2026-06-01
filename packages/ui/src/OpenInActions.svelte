@@ -143,6 +143,7 @@
     | ((orderedIds: string[]) => Promise<void>)
     | null = null;
   export let iconOnly: boolean = false;
+  export let daemonId: string | undefined = undefined;
 
   const PROVIDER_LABELS: Record<string, string> = {
     github: "GitHub",
@@ -1876,36 +1877,38 @@
          (or only has the `+` chip) the normal flex gap is enough. -->
     <span class="action-gap" aria-hidden="true"></span>
   {/if}
-  {#each editors as ed}
+  {#if !daemonId}
+    {#each editors as ed}
+      <OpenInButton
+        icon={ed.cmd}
+        label={ed.name}
+        title={`Open in ${ed.name}`}
+        onClick={() => openIn(path, ed.cmd)}
+        {iconOnly}
+      />
+    {/each}
     <OpenInButton
-      icon={ed.cmd}
-      label={ed.name}
-      title={`Open in ${ed.name}`}
-      onClick={() => openIn(path, ed.cmd)}
+      icon="fork"
+      label="Fork"
+      title="Open in Fork"
+      onClick={() => openIn(path, "fork")}
       {iconOnly}
     />
-  {/each}
-  <OpenInButton
-    icon="fork"
-    label="Fork"
-    title="Open in Fork"
-    onClick={() => openIn(path, "fork")}
-    {iconOnly}
-  />
-  <OpenInButton
-    icon="terminal"
-    label="Terminal"
-    title="Open in terminal"
-    onClick={() => openIn(path, "terminal")}
-    {iconOnly}
-  />
-  <OpenInButton
-    icon={fileManagerIcon()}
-    label={fileManagerLabel()}
-    title="Reveal in file manager"
-    onClick={() => openIn(path, "files")}
-    {iconOnly}
-  />
+    <OpenInButton
+      icon="terminal"
+      label="Terminal"
+      title="Open in terminal"
+      onClick={() => openIn(path, "terminal")}
+      {iconOnly}
+    />
+    <OpenInButton
+      icon={fileManagerIcon()}
+      label={fileManagerLabel()}
+      title="Reveal in file manager"
+      onClick={() => openIn(path, "files")}
+      {iconOnly}
+    />
+  {/if}
   {#each remotes.filter((r) => r.webUrl) as remote}
     <OpenInButton
       icon={remote.provider ?? "git"}
