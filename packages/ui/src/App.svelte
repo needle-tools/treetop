@@ -1297,6 +1297,8 @@
     ok: boolean;
     kind?: string;
     stashed?: boolean;
+    stashRestored?: boolean;
+    stashConflict?: boolean;
     error?: string;
   }> {
     try {
@@ -1310,10 +1312,18 @@
         ok?: boolean;
         kind?: string;
         stashed?: boolean;
+        stashRestored?: boolean;
+        stashConflict?: boolean;
         error?: string;
       };
       if (res.ok && body.ok) {
-        return { ok: true, kind: body.kind, stashed: body.stashed };
+        return {
+          ok: true,
+          kind: body.kind,
+          stashed: body.stashed,
+          stashRestored: body.stashRestored,
+          stashConflict: body.stashConflict,
+        };
       }
       return {
         ok: false,
@@ -1426,7 +1436,20 @@
     try {
       const result = await doPull(ctx.repoId, ctx.wtPath, { preStash: true });
       if (result.ok) {
-        if (result.stashed) {
+        if (result.stashed && result.stashConflict) {
+          addToast({
+            kind: "error",
+            title: "Pulled — but your changes conflict.",
+            message:
+              "Stashed and pulled, but reapplying your changes hit a conflict. Resolve the conflict markers, or run `git stash pop` again after fixing.",
+            ttlMs: 20_000,
+          });
+        } else if (result.stashed && result.stashRestored) {
+          showStashToast(
+            ctx.wtPath,
+            "Stashed your local changes, pulled, and reapplied them on top.",
+          );
+        } else if (result.stashed) {
           showStashToast(
             ctx.wtPath,
             "Stashed your local changes before pulling. Run `git stash pop` to restore.",
@@ -4866,6 +4889,75 @@
     } catch {}
   }
 
+  /** A REMOTE daemon's `change` event. We deliberately handle ONLY the two
+   *  things that affect how a remote row renders: a repos refresh (so the
+   *  row's worktrees/counters update — load() fans out to all daemons) and
+   *  a notes-key bump (remote notes are merged in #17). Everything else in
+   *  the local handler (sound_play, toasts, fs_change tooltips, messages,
+   *  peerDiscovery, commands) is LOCAL-MACHINE UX that must NOT fire from a
+   *  remote stream — firing it would double-toast / play sounds for another
+   *  box's activity. Keeping this narrow is what makes #15a low-risk. */
+  function handleRemoteStreamChange(rawData: unknown): void {
+    if (typeof rawData !== "string") return;
+    let payload: { kind?: string } = {};
+    try {
+      payload = JSON.parse(rawData);
+    } catch {
+      return;
+    }
+    if (changeKindRequiresReposReload(payload.kind)) void load();
+    if (
+      payload.kind === "note_create" ||
+      payload.kind === "note_update" ||
+      payload.kind === "note_delete" ||
+      payload.kind === "undo" ||
+      payload.kind === "redo"
+    ) {
+      notesChangeKey++;
+    }
+  }
+
+  /** Open one EventSource per ONLINE remote daemon so remote-side changes
+   *  live-refresh the UI (no manual reload). /api/daemons/<id>/stream
+   *  already proxies SSE incrementally through the tunnel. Idempotent +
+   *  reactive: re-running opens streams for newly-online daemons and closes
+   *  them for ones that went offline / were removed. Returns a teardown. */
+  let remoteStreams = new Map<string, EventSource>();
+  function syncRemoteStreams(): void {
+    const online = new Set(
+      remoteDaemons.filter((d) => daemonsOnline.get(d.id) !== false).map((d) => d.id),
+    );
+    // Close streams for daemons no longer online/registered.
+    for (const [id, es] of remoteStreams) {
+      if (!online.has(id)) {
+        es.close();
+        remoteStreams.delete(id);
+      }
+    }
+    // Open streams for newly-online daemons.
+    for (const id of online) {
+      if (remoteStreams.has(id)) continue;
+      const es = new EventSource(apiUrl("/api/stream", id));
+      es.addEventListener("change", (e: MessageEvent) =>
+        handleRemoteStreamChange(e?.data),
+      );
+      // No activity/error/sound wiring — those are local-machine concerns.
+      remoteStreams.set(id, es);
+    }
+  }
+  function closeRemoteStreams(): void {
+    for (const es of remoteStreams.values()) es.close();
+    remoteStreams.clear();
+  }
+
+  // Keep the remote SSE streams in lockstep with the daemon set + their
+  // online state: adding a daemon opens its stream, removing one (or it
+  // going offline) closes it. Referencing both reactive sources here makes
+  // Svelte re-run syncRemoteStreams() on any change. Before the first
+  // load() populates remoteDaemons it's a no-op (empty set). EventSource is
+  // browser-only, which is fine — supergit's UI is a client-only SPA.
+  $: if (remoteDaemons || daemonsOnline) syncRemoteStreams();
+
   function subscribeToStream(): () => void {
     const es = new EventSource(apiUrl("/api/stream"));
     es.addEventListener("change", (rawEvt: MessageEvent) => {
@@ -6316,6 +6408,9 @@
       // so each remote box's open shells are fetched + merged in (the
       // onMount pass above only saw the local daemon).
       void restoreLiveShells().then(() => restorePersistedTerminals());
+      // Open an SSE stream to each online remote daemon so remote-side
+      // changes live-refresh the UI (load() / notes), like local ones.
+      syncRemoteStreams();
     });
     // Note: SourceControlPane handles its own initial commits-load via
     // a `$: onExpandedChange(expanded, wt.path)` reactive when its
@@ -6456,6 +6551,7 @@
       window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unsubStream();
+      closeRemoteStreams();
       unsubErrors();
       unsubToasts();
       unsubFocus();

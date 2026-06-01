@@ -201,6 +201,32 @@ installer that `docker pull`s instead of cloning. Keeps the loopback +
 tunnel posture (host networking), just swaps build-on-box for pull. The
 image build is already proven; only the CI push + pull-installer remain.
 
+### Install the remote daemon on macOS / Windows boxes too (TODO)
+
+`install.sh` is Linux/systemd-only (apt, systemd unit, /bin shells, Go
+build via apt). A remote daemon should be installable on a **macOS** or
+**Windows** box too (the tunnel + proxy are OS-agnostic; the daemon is
+Bun + the Go pty-helper, both cross-platform). What each needs:
+- [ ] **macOS remote install** — a launchd plist instead of the systemd
+      unit; Bun + Go install via the same curl installers (or brew);
+      `SUPERGIT_BIND=127.0.0.1`; the forward-only key in
+      `~/.ssh/authorized_keys` (macOS sshd honors the same `restrict,…`
+      options). Shell default is already handled (firstExistingPosixShell
+      → /bin/zsh|bash). Package the connection-string emission like the
+      Linux banner.
+- [ ] **Windows remote install** — the hard one: a Windows service (or
+      Scheduled Task) instead of systemd; OpenSSH-Server on Windows for the
+      tunnel + `permitopen` (Windows authorized_keys lives at
+      `%ProgramData%\ssh\administrators_authorized_keys` for admins, else
+      `~\.ssh`); the Go pty-helper builds for win32 (ConPTY path exists in
+      helper-go/signal_windows.go); shell default → powershell/cmd (already
+      handled). The Windows key-ACL lockdown we hit on the CLIENT (icacls)
+      applies on the box side too.
+- Note: this is the daemon RUNNING ON mac/windows — distinct from the
+  container-test note below (which rejected dockurr/microsoft-windows for
+  the TEST harness). Real mac/windows remotes are a legit deploy target;
+  the blocker is just writing the per-OS installer + service glue.
+
 ### Phase 2 — Make connecting friction-free
 - [ ] Helper that wraps `ssh -N -L …` (autossh-style reconnect on
       network change / laptop sleep).
@@ -585,29 +611,23 @@ the UI only QUERIED the local daemon. Split into two principles:
   DESIGN (mapped 2026-06-01). Split into two parts — very different
   value/risk; do #15a, defer #15b:
 
-  - [ ] **#15a — Live refresh via per-daemon SSE (HIGH value, low risk).**
-        `/api/daemons/<id>/stream` ALREADY proxies SSE incrementally
-        through forwardToRemote (proven: daemon-proxy-forward.test.ts
-        "proxies SSE … not buffered"). So:
-        1. Extract the local EventSource "change" handler (App.svelte
-           ~4871–5033) into a pure `handleStreamChange(payload)` that takes
-           an optional `payload.daemonId`. Local path unchanged (daemonId
-           undefined).
-        2. Add a `remoteStreams: Map<daemonId, EventSource>` manager that
-           opens ONE `new EventSource(apiUrl("/api/stream", d.id))` per
-           ONLINE remote daemon, tags each message with that daemonId, and
-           feeds it into handleStreamChange. Lifecycle tied to
-           `remoteDaemons` + `daemonsOnline`: open on online, close on
-           offline/removeDaemon/onDestroy; reconnect mirrors the local
-           onerror→streamConnected logic.
-        3. Effect: a remote-side change (or another client editing the
-           remote box) triggers the same `load()` / notesChangeKey /
-           command refresh as local — kills the "manual reload" problem and
-           closes the #17-notes live-update limitation. The explicit
-           post-mutation `load()`s (#9b, reorder) become redundant safety
-           nets, not the only path.
-        Scope: App.svelte only. The refactor-to-shared-handler is the bulk;
-        keep it behaviour-preserving for local.
+  - [x] **#15a — Live refresh via per-daemon SSE (HIGH value, low risk)
+        — DONE.** `/api/daemons/<id>/stream` already proxies SSE
+        incrementally (daemon-proxy-forward.test.ts). Implemented:
+        `handleRemoteStreamChange(rawData)` handles ONLY a remote daemon's
+        repos-refresh (`load()`, gated by changeKindRequiresReposReload) +
+        notes-key bump (note_*/undo/redo) — deliberately NOT the full local
+        handler, since sound_play / toasts / fs_change tooltips / messages /
+        peerDiscovery / commands are LOCAL-machine UX that must not fire for
+        another box's activity (firing them would double-toast / play
+        sounds). `syncRemoteStreams()` opens one EventSource per ONLINE
+        remote daemon (`apiUrl("/api/stream", id)`), idempotent via a
+        `remoteStreams` Map; a `$:` reactive on remoteDaemons/daemonsOnline
+        re-syncs on add/remove/offline; closeRemoteStreams() on onDestroy.
+        Effect: remote-side changes (incl. another client editing the box)
+        live-refresh the UI — the explicit post-mutation load()s (#9b,
+        reorder) + the #17 notes-live limitation are now covered.
+        Local behaviour byte-identical (local handler untouched).
   - [ ] **#15b — Remote events in the undo tray (LOWER value, real
         complexity — DEFER).** Unlike `/api/repos`, `/api/events` is
         per-daemon and the local UI only fetches local. To show + undo
