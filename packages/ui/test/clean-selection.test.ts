@@ -1,64 +1,106 @@
 import { test, expect, describe } from "bun:test";
-import { cleanSelection } from "../src/clean-selection";
+import { joinSelectionRows, type SelectionRow } from "../src/clean-selection";
 
-describe("cleanSelection", () => {
-  test("returns single-line text unchanged", () => {
-    expect(cleanSelection("hello world", () => false)).toBe("hello world");
+/** Terse row builder. `w` = isWrapped, `f` = fillsWidth. */
+function row(text: string, w = false, f = false): SelectionRow {
+  return { text, isWrapped: w, fillsWidth: f };
+}
+
+describe("joinSelectionRows", () => {
+  test("empty selection → empty string", () => {
+    expect(joinSelectionRows([])).toBe("");
   });
 
-  test("preserves real newlines", () => {
-    const raw = "line 1\nline 2\nline 3";
-    expect(cleanSelection(raw, () => false)).toBe("line 1\nline 2\nline 3");
+  test("single row is returned verbatim", () => {
+    expect(joinSelectionRows([row("hello world")])).toBe("hello world");
   });
 
-  test("strips soft-wrap newlines", () => {
-    // Simulates a long command that wrapped at column 40:
-    // "sed -i '/<haystack_readonly>/,/<\\/has" + wrap + "tack>/...'
-    const raw =
-      "sed -i 'some very long command that wr\naps at the column boundary'";
-    // Line 1 (index 1) is a continuation of line 0
-    expect(cleanSelection(raw, (i) => i === 1)).toBe(
+  test("real newlines (no wrap signals) are preserved", () => {
+    expect(
+      joinSelectionRows([row("line 1"), row("line 2"), row("line 3")]),
+    ).toBe("line 1\nline 2\nline 3");
+  });
+
+  test("isWrapped rows collapse without a newline (Unix PTY)", () => {
+    // "sed -i 'some very long command that wr" wrapped at the column edge.
+    const rows = [
+      row("sed -i 'some very long command that wr"),
+      row("aps at the column boundary'", /* isWrapped */ true),
+    ];
+    expect(joinSelectionRows(rows)).toBe(
       "sed -i 'some very long command that wraps at the column boundary'",
     );
   });
 
-  test("handles mix of real and soft-wrap newlines", () => {
-    const raw = [
-      "first line that is very long and wra", // real line start
-      "ps to the next row", // soft wrap (index 1)
-      "second real line", // real newline (index 2)
-      "third line also wraps at the col bo", // real newline (index 3)
-      "undary here", // soft wrap (index 4)
-    ].join("\n");
+  test("Windows ConPTY: no isWrapped, full-width prev row → collapse", () => {
+    // ConPTY never sets isWrapped, so we fall back to fillsWidth on the
+    // PREVIOUS row. First row reached the edge (fillsWidth=true) → join.
+    const rows = [
+      row(
+        "tar -czf - --exclude=node_modules -C C:\\git\\supergit .",
+        false,
+        true,
+      ),
+      row("| ssh root@host 'tar -xzf - -C /opt/supergit'"),
+    ];
+    expect(joinSelectionRows(rows)).toBe(
+      "tar -czf - --exclude=node_modules -C C:\\git\\supergit ." +
+        "| ssh root@host 'tar -xzf - -C /opt/supergit'",
+    );
+  });
 
-    const wrapped = new Set([1, 4]);
-    const result = cleanSelection(raw, (i) => wrapped.has(i));
+  test("Windows ConPTY: prev row not full width → keep the newline", () => {
+    const rows = [
+      row("echo done", false, /* fillsWidth */ false),
+      row("echo next"),
+    ];
+    expect(joinSelectionRows(rows)).toBe("echo done\necho next");
+  });
 
-    expect(result).toBe(
+  test("width fallback is disabled once ANY row is isWrapped", () => {
+    // Unix safety: a genuine full-width real line (fillsWidth=true) must NOT
+    // collapse into the next when the selection already proves isWrapped
+    // works on this PTY. Row 1 is a true soft-wrap; row 2 is a full-width
+    // *real* line; row 3 is the next real line and must stay separate.
+    const rows = [
+      row("first command that is long and wr"),
+      row("apped here", /* isWrapped */ true),
+      row(
+        "a-second-real-line-that-fills-the-full-terminal-width",
+        false,
+        true,
+      ),
+      row("third real line"),
+    ];
+    expect(joinSelectionRows(rows)).toBe(
+      "first command that is long and wrapped here\n" +
+        "a-second-real-line-that-fills-the-full-terminal-width\n" +
+        "third real line",
+    );
+  });
+
+  test("multiple consecutive soft wraps collapse into one line", () => {
+    const rows = [
+      row("aaaa", false, true),
+      row("bbbb", false, true),
+      row("cccc", false, true),
+      row("dddd"),
+    ];
+    expect(joinSelectionRows(rows)).toBe("aaaabbbbccccdddd");
+  });
+
+  test("mix of soft-wrap and real newlines (Windows fillsWidth path)", () => {
+    const rows = [
+      row("first line that is very long and wra", false, true), // wraps →
+      row("ps to the next row"), // continuation, prev not full → real break after
+      row("second real line"),
+      row("third line also wraps at the col bo", false, true), // wraps →
+      row("undary here"),
+    ];
+    expect(joinSelectionRows(rows)).toBe(
       "first line that is very long and wraps to the next row\n" +
         "second real line\n" +
         "third line also wraps at the col boundary here",
     );
-  });
-
-  test("handles multiple consecutive soft wraps", () => {
-    const raw = "aaaa\nbbbb\ncccc\ndddd";
-    // All lines after the first are soft wraps
-    const result = cleanSelection(raw, (i) => i > 0);
-    expect(result).toBe("aaaabbbbccccdddd");
-  });
-
-  test("handles empty string", () => {
-    expect(cleanSelection("", () => false)).toBe("");
-  });
-
-  test("preserves trailing newline when not wrapped", () => {
-    const raw = "command\n";
-    expect(cleanSelection(raw, () => false)).toBe("command\n");
-  });
-
-  test("strips trailing newline at soft-wrap boundary", () => {
-    const raw = "long command\n";
-    expect(cleanSelection(raw, (i) => i === 1)).toBe("long command");
   });
 });

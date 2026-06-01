@@ -8,7 +8,7 @@
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
-  import { cleanSelection } from "./clean-selection";
+  import { joinSelectionRows, type SelectionRow } from "./clean-selection";
   import { TerminalWriteBuffer } from "./terminal-write-buffer";
   import {
     expandNoteBodyForTerminalPasteChunks,
@@ -24,17 +24,36 @@
     type ConfigActionState,
   } from "./config-error-action";
 
+  /** Read the current selection and collapse soft-wrap newlines so a
+   *  command that wrapped across visual rows pastes as one runnable line.
+   *  We rebuild the text from the buffer (one row per buffer line, never
+   *  pre-collapsed) rather than post-processing `getSelection()`, whose
+   *  output xterm has already half-collapsed on Unix and not at all on a
+   *  Windows ConPTY (which never sets `isWrapped`). See clean-selection.ts. */
   function getCleanedSelection(term: Terminal): string {
     const raw = term.getSelection();
     if (!raw) return "";
     const sel = term.getSelectionPosition();
     if (!sel) return raw;
     const buf = term.buffer.active;
-    return cleanSelection(raw, (lineIndex) => {
-      const bufY = sel.start.y + lineIndex;
-      const line = buf.getLine(bufY);
-      return line?.isWrapped ?? false;
-    });
+    const cols = term.cols;
+    const rows: SelectionRow[] = [];
+    for (let y = sel.start.y; y <= sel.end.y; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      const startCol = y === sel.start.y ? sel.start.x : 0;
+      const endCol = y === sel.end.y ? sel.end.x : undefined;
+      // Last column non-whitespace = the row reached the edge → ConPTY
+      // wrap signature (only consulted as a fallback in joinSelectionRows).
+      const lastCell = line.getCell(cols - 1);
+      const lastChars = lastCell?.getChars() ?? "";
+      rows.push({
+        text: line.translateToString(true, startCol, endCol),
+        isWrapped: line.isWrapped,
+        fillsWidth: lastChars !== "" && lastChars !== " ",
+      });
+    }
+    return joinSelectionRows(rows) || raw;
   }
 
   /** Robust clipboard-write. The async Clipboard API is the modern
