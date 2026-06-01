@@ -1749,6 +1749,21 @@
     /* Smooth vertical follow as the user moves between rows. */
     transition: top 140ms ease;
   }
+  /* Repo-status variant: a tooltip-style opaque chip instead of the
+     chat preview's transparent gutter. Width shrinks to content (drop
+     the 26rem fixed cap) but stays inside the viewport, height fits
+     content (no inner scroll — the panel itself grows; the dock's
+     clamp logic keeps the whole thing on-screen). */
+  .dock-preview-repo {
+    width: auto;
+    max-width: min(60rem, calc(100vw - var(--dock-width, 12rem) - 2rem));
+    background: color-mix(in srgb, var(--surface-3, #2a2a2c) 92%, #ffffff 8%);
+    color: var(--text-1, #e8e8e8);
+    border: 1px solid
+      color-mix(in srgb, var(--surface-3, #2a2a2c) 70%, #ffffff 30%);
+    border-radius: var(--radius-sm, 0.35rem);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+  }
   /* Belt-and-braces: kill any user-agent / inherited hover background
      on the button itself. The dot is its own visual; the wrapper is
      just a hit zone, so it stays transparent in every state. */

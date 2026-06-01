@@ -15,6 +15,7 @@
    *  worktree row. */
 
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
+  import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
 
   interface WtCommit {
     sha: string;
@@ -94,7 +95,8 @@
       {#if wt.ahead > 0}
         <div class="dock-rsp-section">
           <div class="dock-rsp-section-head">
-            {wt.ahead} commit{wt.ahead === 1 ? "" : "s"} to push to {wt.upstream ?? "upstream"}
+            <svg class="dock-rsp-glyph dock-rsp-glyph-ahead" viewBox="0 0 12 12" aria-hidden="true"><path d={GIT_AHEAD}/></svg>
+            <span>{wt.ahead} commit{wt.ahead === 1 ? "" : "s"} to push to {wt.upstream ?? "upstream"}</span>
           </div>
           {#if s === undefined || s === "loading"}
             <span class="muted small">Loading commits…</span>
@@ -117,7 +119,8 @@
       {#if wt.behind > 0}
         <div class="dock-rsp-section">
           <div class="dock-rsp-section-head">
-            {wt.behind} commit{wt.behind === 1 ? "" : "s"} to pull from {wt.upstream ?? "upstream"}
+            <svg class="dock-rsp-glyph dock-rsp-glyph-behind" viewBox="0 0 12 12" aria-hidden="true"><path d={GIT_BEHIND}/></svg>
+            <span>{wt.behind} commit{wt.behind === 1 ? "" : "s"} to pull from {wt.upstream ?? "upstream"}</span>
           </div>
           {#if s === undefined || s === "loading"}
             <span class="muted small">Loading commits…</span>
@@ -139,7 +142,10 @@
 
       {#if wt.dirty > 0}
         <div class="dock-rsp-section dock-rsp-section-files">
-          <div class="dock-rsp-section-head">Uncommitted changes</div>
+          <div class="dock-rsp-section-head">
+            <svg class="dock-rsp-glyph dock-rsp-glyph-dirty" viewBox="0 0 12 12" aria-hidden="true"><path d={GIT_DIRTY}/></svg>
+            <span>Uncommitted changes</span>
+          </div>
           <ChangedFilesTooltipBody
             summary={s}
             worktreePath={wt.path}
@@ -161,12 +167,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    padding: 0.5rem 0.6rem;
     color: var(--text-1, #e8e8e8);
     font-size: 0.75rem;
     line-height: 1.35;
-    max-height: min(72vh, 32rem);
-    overflow: auto;
   }
   .dock-rsp-wt {
     display: flex;
@@ -193,10 +196,36 @@
     gap: 0.25rem;
   }
   .dock-rsp-section-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     font-size: 0.7rem;
     color: var(--text-muted, #9a9aa0);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+  /* Same chevrons as the dock dot glyphs (StatusBadge paths) so the
+     section heads mirror the icons the user clicked through to get
+     here. Stroke-coloured per-signal: green for push, cyan for
+     pull, muted neutral for dirty — matching the row badges. */
+  .dock-rsp-glyph {
+    width: 0.85em;
+    height: 0.85em;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .dock-rsp-glyph-ahead {
+    color: var(--chip-green-text, #7ee493);
+  }
+  .dock-rsp-glyph-behind {
+    color: var(--chip-cyan-text, #7ec7e4);
+  }
+  .dock-rsp-glyph-dirty {
+    color: var(--text-3, #b8b8b8);
   }
   .dock-rsp-commits {
     display: grid;
