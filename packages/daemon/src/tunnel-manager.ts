@@ -23,6 +23,11 @@ export interface TunnelProc {
   readonly pid: number;
   kill(signal?: number | NodeJS.Signals): void;
   readonly exited: Promise<number>;
+  /** ssh's stderr, when the spawner piped it. Read on a failed open() so
+   *  the timeout error carries ssh's actual complaint (auth, host key,
+   *  permission) instead of a generic "did not come up". Optional so test
+   *  fakes don't have to provide it. */
+  readonly stderr?: ReadableStream<Uint8Array>;
 }
 
 export type TunnelSpawner = (argv: string[]) => TunnelProc;
@@ -139,6 +144,27 @@ async function allocateEphemeralPort(): Promise<number> {
   return port;
 }
 
+/** Best-effort read of an ssh proc's stderr for diagnostics. Returns the
+ *  last few non-empty lines (the actionable ones — "Permission denied",
+ *  "Host key verification failed", "Connection refused"), trimmed. Never
+ *  throws and never blocks: the stream is already closed/closing by the
+ *  time we read it on a failed open(). Returns "" when unavailable. */
+async function readStderr(
+  stream: ReadableStream<Uint8Array> | undefined,
+): Promise<string> {
+  if (!stream) return "";
+  try {
+    const text = await new Response(stream).text();
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("Warning: Permanently"));
+    return lines.slice(-3).join("; ").slice(0, 300);
+  } catch {
+    return "";
+  }
+}
+
 export class TunnelManager {
   private tunnels = new Map<string, Tunnel>();
   private readonly spawn: TunnelSpawner;
@@ -149,7 +175,7 @@ export class TunnelManager {
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
       opts.spawn ??
-      ((argv) => bunSpawn(["ssh", ...argv], { stdout: "ignore", stderr: "ignore" }));
+      ((argv) => bunSpawn(["ssh", ...argv], { stdout: "ignore", stderr: "pipe" }));
     this.allocatePort = opts.allocatePort ?? allocateEphemeralPort;
     this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 8000;
@@ -186,13 +212,18 @@ export class TunnelManager {
     const ready = await this.waitForPort(localPort, this.readyTimeoutMs);
     if (!ready) {
       this.tunnels.delete(daemon.id);
+      // Grab ssh's own complaint (auth, host key, permission denied, …)
+      // before killing it — a generic "did not come up" sent us chasing
+      // ghosts; ssh's stderr is the actual diagnosis.
+      const sshErr = await readStderr(proc.stderr);
       try {
         proc.kill();
       } catch {
         // already dead
       }
+      const detail = sshErr ? ` — ssh said: ${sshErr}` : "";
       throw new Error(
-        `tunnel to ${daemon.label || daemon.host} did not come up within ${this.readyTimeoutMs}ms (check ssh auth / host reachability)`,
+        `tunnel to ${daemon.label || daemon.host} did not come up within ${this.readyTimeoutMs}ms${detail}`,
       );
     }
 
