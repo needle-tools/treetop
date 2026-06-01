@@ -153,7 +153,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // Positive "achievement" chime on a successful git push.
   "git-push": {
     files: ["/sounds/git-push.ogg"],
-    volume: 0.4,
+    volume: 0.6,
     overlay: true,
     selfCooldown: 2000,
   },
