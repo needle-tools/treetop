@@ -402,6 +402,38 @@ layer:
       (proven manually 2026-06-01; pin it so the bash + TS formats can't
       drift).
 
+**LESSON — our net misses runtime errors (2026-06-01).** A prod crash
+("Cannot access 'handle' before initialization", minified to 'cleanup')
+took out the remote-row terminal. It got past everything because:
+  1. It's a **runtime TDZ**, not a type error — `svelte-check`/`tsc` see
+     the reference as in-scope; it only explodes when the code executes in
+     a particular order. Static checks structurally cannot catch this.
+  2. The existing `scroll-restore.test.ts` only fired its timer/user-scroll
+     callbacks **asynchronously** (after setup returned). The crash needs a
+     **synchronous** callback during subscribe — the exact path no test
+     exercised. (Fixed + regression-tested in c56a5a7; the new test was
+     verified to FAIL on the pre-fix code.)
+  3. **No component-mount tests exist** — `bun test` covers pure functions;
+     nothing instantiates a Svelte component, so component lifecycle /
+     prop-undefined / TDZ bugs never run in CI.
+What actually closes this class (do these):
+- [ ] **Run-the-app smoke pass** (the `/verify` step, or a scripted
+      headless boot) exercised against BOTH a local row and a remote row:
+      open a terminal, a diff, change a setting. Most of the live-USE bugs
+      below (#1/#4/#7/#9/#10 + this TDZ) would have been caught the instant
+      the app actually ran. This is the highest-leverage missing test.
+- [ ] **Injected-dependency callbacks must be tested firing BOTH sync and
+      async.** Any helper that takes a timer / subscription / callback env
+      (restoreScrollAfterDelay, the resize coalescer, TunnelManager's
+      waitForPort, …) gets a "fires synchronously during setup" case — that's
+      where TDZ / re-entrancy bugs hide.
+- [ ] **Component smoke-mount tests** for the remote-row-critical components
+      (TerminalView, SessionView, FileBrowser, OpenInActions): mount with a
+      `daemonId` set and assert no throw + that calls carry the daemonId.
+      Needs a DOM test harness (happy-dom / @testing-library/svelte) — none
+      exists yet; standing this up is the prerequisite for catching the
+      whole runtime-error category, not just this one bug.
+
 ### Live-USE issues found while driving a real remote row (2026-06-01)
 
 Once `slugify` from the Hetzner box rendered as a folder row, actually
