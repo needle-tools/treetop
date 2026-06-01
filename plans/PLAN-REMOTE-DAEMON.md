@@ -549,6 +549,55 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       ("Cannot access 'cleanup' before initialization", a 500 out of the
       spawn POST that masked #13). Pre-declared `let cleanup` + null-guard.
 
+### Phase 4c — remote-daemon STATE PARITY (which state lives where)
+
+Once a remote row works, the question is whether its persisted state lives
+on the remote box (like local) or is missing. Audited 2026-06-01. The
+daemon SIDE writes most of this correctly to its own workspace; the gap is
+the UI only QUERIED the local daemon. Split into two principles:
+  - "How I VIEW the remote repo" (column layout, folds, stars) → belongs
+    LOCAL (it's about your window). Mostly handled; keyed per-daemon via
+    repoPrefsKey so daemons don't collide.
+  - "What's TRUE about the remote repo" (open shells, its events/undo,
+    session titles) → belongs on the REMOTE box; UI must fetch per-daemon.
+
+- [x] **#14 Open shells / persisted terminals not restored for remote rows**
+      — `restoreLiveShells` + `restorePersistedTerminals` fetched only the
+      LOCAL `/api/shells` + `/api/terminals/persisted`, so a remote row's
+      open terminals vanished on reload. Now both loop `[local, …remoteDaemons]`
+      and fetch per-daemon via `apiUrl(..., daemonId)`. CRUX: live shells
+      from ALL daemons are collected into ONE list before the single
+      `mergeLiveShells` call — that helper PRUNES attached rows not in the
+      list it's given, so a per-daemon call would prune other daemons'
+      shells. Restore runs once at onMount (local, snappy) and again after
+      load() resolves (so `remoteDaemons` is populated); both passes are
+      idempotent (dedupe by source). resume/dismiss of a remote restored
+      terminal routes `/api/terminals/persisted/remove` to the owning
+      daemon via `daemonIdForWorktreePath`.
+- [ ] **#15 Remote events / undo tray invisible** — remote mutations (add
+      worktree, rename, …) write the REMOTE daemon's events.jsonl and
+      broadcast on ITS `/api/stream`, but the UI only reads local
+      `/api/events` + subscribes to local SSE. So remote changes don't
+      appear in the undo tray / events popover, and remote rows don't
+      live-refresh on remote-side changes (we paper over this with explicit
+      `load()` after remote mutations — see #9b). Proper fix: subscribe to
+      each remote daemon's SSE through the proxy, and merge per-daemon
+      events. Non-trivial.
+- [ ] **#16 Session titles for remote shells stored locally** —
+      `/api/session-titles` + `/api/session/title` are local-only; a remote
+      shell's title lives in the local workspace, not the box. Route by
+      daemonId (or accept as a local-view concern — decide).
+- [ ] **#17 Sticky notes pinned to a remote repo live in the LOCAL
+      workspace** — `/api/notes` is local-only. Design call: notes may be
+      intentionally a local board (then just namespace), or should follow
+      the repo to the remote box (then route by the note's anchor daemonId).
+- [ ] **#18 Remaining global daemon-kv keys not per-daemon namespaced** —
+      openSessions, dismissedShells/Sessions, commitsExpanded,
+      commandTermSources still use bare global keys (collision risk across
+      daemons). repo-scoped keys are already namespaced (repoPrefsKey);
+      extend the same to these board-ish keys where they're repo/source
+      specific.
+
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
 remaining UI cost is real but mechanical (the `apiUrl` threading).

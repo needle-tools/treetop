@@ -2078,26 +2078,48 @@
     saveDismissedShells();
   }
 
+  type LiveShell = {
+    termId: string;
+    wt: string;
+    spawnCwd: string;
+    currentCwd?: string;
+    alive: boolean;
+  };
+
   async function restoreLiveShells() {
-    try {
-      const res = await fetch(apiUrl("/api/shells"));
-      if (!res.ok) return;
-      const list = (await res.json()) as Array<{
-        termId: string;
-        wt: string;
-        spawnCwd: string;
-        currentCwd?: string;
-        alive: boolean;
-      }>;
-      openSessionsByWt = mergeLiveShells(
-        openSessionsByWt,
-        list,
-        dismissedShells,
-      ) as typeof openSessionsByWt;
-    } catch {
-      // best-effort — failing to restore just means the user has to
-      // re-open their Terminal columns manually after a reload.
+    // Restore open shells from the LOCAL daemon AND every remote daemon.
+    // A remote daemon's shells live in ITS workspace (the box that spawned
+    // them), keyed by the remote worktree path — which matches the remote
+    // repo's wt paths in openSessionsByWt, so they merge the same way. The
+    // render branch resolves each row's daemonId via the worktree path, so
+    // the reconnecting WS routes back to the right daemon automatically.
+    // Without this, a remote row's terminals were lost on reload.
+    //
+    // CRUCIAL: collect every daemon's live shells into ONE list and call
+    // mergeLiveShells ONCE. mergeLiveShells PRUNES attached-shell rows
+    // whose termId isn't in the list it's given — so calling it per-daemon
+    // would have each call prune the other daemons' shells.
+    const sources: Array<string | undefined> = [
+      undefined,
+      ...remoteDaemons.map((d) => d.id),
+    ];
+    const all: LiveShell[] = [];
+    for (const daemonId of sources) {
+      try {
+        const res = await fetch(apiUrl("/api/shells", daemonId));
+        if (!res.ok) continue;
+        const list = (await res.json()) as LiveShell[];
+        all.push(...list);
+      } catch {
+        // best-effort per daemon — a down remote just means its Terminal
+        // columns aren't restored; local + other daemons still work.
+      }
     }
+    openSessionsByWt = mergeLiveShells(
+      openSessionsByWt,
+      all,
+      dismissedShells,
+    ) as typeof openSessionsByWt;
   }
 
   /** Persisted terminal info for __restore__: columns. */
@@ -2113,40 +2135,51 @@
   > = {};
 
   async function restorePersistedTerminals() {
-    try {
-      const res = await fetch(apiUrl("/api/terminals/persisted"));
-      if (!res.ok) return;
-      const list = (await res.json()) as Array<{
-        termId: string;
-        cmd: string[];
-        cwd: string;
-        wtPath: string;
-        title?: string;
-        firstCmd?: string;
-        lastCmd?: string;
-      }>;
-      if (list.length === 0) return;
-      // Stash metadata for each persisted termId so the __restore__
-      // render branch can show the right title / cmd. We do this even
-      // for entries that get deduped out below — harmless and the data
-      // becomes useful if the live attachment ever drops.
-      const nextMeta = { ...persistedTerminals };
-      for (const entry of list) {
-        const source = `__restore__:${entry.termId}`;
-        nextMeta[source] = {
-          cmd: entry.cmd,
-          cwd: entry.cwd,
-          title: entry.title,
-          firstCmd: entry.firstCmd,
-          lastCmd: entry.lastCmd,
-        };
+    // Like restoreLiveShells: pull persisted (dead-but-resumable) terminals
+    // from the LOCAL daemon AND each remote daemon, so a remote row's
+    // __restore__ cards survive a reload.
+    const sources: Array<string | undefined> = [
+      undefined,
+      ...remoteDaemons.map((d) => d.id),
+    ];
+    for (const daemonId of sources) {
+      try {
+        const res = await fetch(apiUrl("/api/terminals/persisted", daemonId));
+        if (!res.ok) continue;
+        const list = (await res.json()) as Array<{
+          termId: string;
+          cmd: string[];
+          cwd: string;
+          wtPath: string;
+          title?: string;
+          firstCmd?: string;
+          lastCmd?: string;
+        }>;
+        if (list.length === 0) continue;
+        // Stash metadata for each persisted termId so the __restore__
+        // render branch can show the right title / cmd. We do this even
+        // for entries that get deduped out below — harmless and the data
+        // becomes useful if the live attachment ever drops.
+        const nextMeta = { ...persistedTerminals };
+        for (const entry of list) {
+          const source = `__restore__:${entry.termId}`;
+          nextMeta[source] = {
+            cmd: entry.cmd,
+            cwd: entry.cwd,
+            title: entry.title,
+            firstCmd: entry.firstCmd,
+            lastCmd: entry.lastCmd,
+          };
+        }
+        persistedTerminals = nextMeta;
+        openSessionsByWt = mergePersistedTerminals(
+          openSessionsByWt,
+          list,
+        ) as typeof openSessionsByWt;
+      } catch {
+        // best-effort per daemon
       }
-      persistedTerminals = nextMeta;
-      openSessionsByWt = mergePersistedTerminals(
-        openSessionsByWt,
-        list,
-      ) as typeof openSessionsByWt;
-    } catch {}
+    }
   }
 
   function resumePersistedTerminal(wtPath: string, restoreSource: string) {
@@ -2167,11 +2200,19 @@
       ),
     };
     delete persistedTerminals[restoreSource];
-    void fetch(apiUrl("/api/terminals/persisted/remove"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ termId }),
-    }).catch(() => {});
+    // Route the remove to the daemon that OWNS this worktree — a remote
+    // restored terminal's record lives on the remote box.
+    void fetch(
+      apiUrl(
+        "/api/terminals/persisted/remove",
+        daemonIdForWorktreePath(repos, wtPath),
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ termId }),
+      },
+    ).catch(() => {});
   }
 
   function dismissPersistedTerminal(wtPath: string, restoreSource: string) {
@@ -2182,11 +2223,17 @@
       [wtPath]: existing.filter((s) => s.source !== restoreSource),
     };
     delete persistedTerminals[restoreSource];
-    void fetch(apiUrl("/api/terminals/persisted/remove"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ termId }),
-    }).catch(() => {});
+    void fetch(
+      apiUrl(
+        "/api/terminals/persisted/remove",
+        daemonIdForWorktreePath(repos, wtPath),
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ termId }),
+      },
+    ).catch(() => {});
   }
 
   /** Map of __new__:shell: sources to a command string to prefill. */
@@ -6166,6 +6213,11 @@
     void loadSystemInfo();
     void refreshRunningCommands();
     void refreshCommandUrls();
+    // Restore shells twice: once NOW (local daemon — snappy, no wait), and
+    // again after load() resolves so `remoteDaemons` is populated and each
+    // remote box's open shells fan in. Both passes are idempotent
+    // (mergeLiveShells/mergePersistedTerminals dedupe by source), so the
+    // local shells aren't duplicated. See restoreLiveShells().
     void restoreLiveShells().then(() => restorePersistedTerminals());
     fetch(apiUrl("/api/peer-discovery"))
       .then((r) => (r.ok ? r.json() : null))
@@ -6182,7 +6234,13 @@
     // Persist the page scroll offset as the user scrolls, and restore it
     // once the initial load's repos have streamed in (see SCROLL_KEY).
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
-    void load().then(() => restoreScrollPosition());
+    void load().then(() => {
+      restoreScrollPosition();
+      // Re-run shell restore now that load() has populated `remoteDaemons`,
+      // so each remote box's open shells are fetched + merged in (the
+      // onMount pass above only saw the local daemon).
+      void restoreLiveShells().then(() => restorePersistedTerminals());
+    });
     // Note: SourceControlPane handles its own initial commits-load via
     // a `$: onExpandedChange(expanded, wt.path)` reactive when its
     // `expanded` prop is true on mount, so the parent doesn't (and
