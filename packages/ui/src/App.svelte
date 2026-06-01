@@ -3613,6 +3613,23 @@
     await load();
   }
 
+  /** One-paste onboarding: hand the connection string to the local daemon,
+   *  which decodes it, stores the key server-side, and registers the remote.
+   *  Throws on failure so the dialog shows the error. Registry is local
+   *  (not daemon-routed). */
+  async function connectRemoteDaemon(connectionString: string): Promise<void> {
+    const res = await fetch(apiUrl("/api/daemons/connect"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionString }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    await load();
+  }
+
   /** Suggestion returned by /api/sessions/folder-suggestions — a folder
    *  the user might want to import as a repo, derived from cwds the
    *  agents (Claude, Codex, Copilot, Ollama) have been observed in.
@@ -9402,7 +9419,7 @@
   defaultColor={defaultChipHex}
   highlightId={reorderHighlightRepoId}
 />
-<AddRemoteDaemonDialog bind:open={addDaemonOpen} onAdd={addRemoteDaemon} />
+<AddRemoteDaemonDialog bind:open={addDaemonOpen} onAdd={addRemoteDaemon} onConnect={connectRemoteDaemon} />
 
 {#if dirtyCheckout}
   <div

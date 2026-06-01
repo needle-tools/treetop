@@ -24,12 +24,18 @@
    *  dialog shows a busy state and disables submit. Should throw on
    *  failure so the dialog can surface the error and stay open. */
   export let onAdd: (payload: DaemonFormPayload) => void | Promise<void>;
+  /** Called with the raw connection string when the user pastes one and
+   *  submits. Should POST /api/daemons/connect and throw on failure so the
+   *  dialog surfaces the error + stays open. */
+  export let onConnect: (connectionString: string) => void | Promise<void> = async () => {};
   export let onClose: () => void = () => {};
 
   let fields: DaemonFormFields = emptyDaemonForm();
   let errors: Partial<Record<keyof DaemonFormFields, string>> = {};
   let submitError = "";
   let busy = false;
+  let connectionString = "";
+  let showAdvanced = false;
 
   // Reset the form each time the dialog opens so a previous attempt's
   // values / errors don't linger.
@@ -42,6 +48,8 @@
     errors = {};
     submitError = "";
     busy = false;
+    connectionString = "";
+    showAdvanced = false;
     wasOpen = true;
   } else if (!open && wasOpen) {
     wasOpen = false;
@@ -56,17 +64,24 @@
   async function submit(): Promise<void> {
     if (busy) return;
     submitError = "";
-    const result = normalizeDaemonForm(fields);
-    if (!result.ok) {
-      errors = result.errors;
-      return;
-    }
-    errors = {};
     busy = true;
     try {
-      await onAdd(result.payload);
-      open = false;
-      onClose();
+      if (connectionString.trim()) {
+        await onConnect(connectionString.trim());
+        open = false;
+        onClose();
+      } else {
+        const result = normalizeDaemonForm(fields);
+        if (!result.ok) {
+          errors = result.errors;
+          busy = false;
+          return;
+        }
+        errors = {};
+        await onAdd(result.payload);
+        open = false;
+        onClose();
+      }
     } catch (e) {
       submitError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -103,86 +118,103 @@
       </p>
 
       <label class="add-daemon-field">
-        <span>Host <span class="req">*</span></span>
-        <input
-          type="text"
-          bind:value={fields.host}
-          placeholder="hetzner.example.com or 1.2.3.4"
+        <span>Connection string</span>
+        <textarea
+          bind:value={connectionString}
+          placeholder="paste the supergit1:… string from the installer"
           autocomplete="off"
           spellcheck="false"
-          class:invalid={!!errors.host}
-        />
-        {#if errors.host}<small class="err">{errors.host}</small>{/if}
+          rows="3"
+          class="add-daemon-connstr"
+        ></textarea>
+        <small class="add-daemon-hint">Paste the string the installer printed — it fills in everything below.</small>
       </label>
 
-      <label class="add-daemon-field">
-        <span>Label</span>
-        <input
-          type="text"
-          bind:value={fields.label}
-          placeholder="defaults to the host"
-          autocomplete="off"
-        />
-      </label>
+      <details class="add-daemon-advanced" bind:open={showAdvanced}>
+        <summary class="add-daemon-advanced-summary">Advanced — enter connection details manually</summary>
 
-      <div class="add-daemon-row">
         <label class="add-daemon-field">
-          <span>SSH user</span>
+          <span>Host <span class="req">*</span></span>
           <input
             type="text"
-            bind:value={fields.user}
-            placeholder="ssh default"
+            bind:value={fields.host}
+            placeholder="hetzner.example.com or 1.2.3.4"
+            autocomplete="off"
+            spellcheck="false"
+            class:invalid={!!errors.host}
+          />
+          {#if errors.host}<small class="err">{errors.host}</small>{/if}
+        </label>
+
+        <label class="add-daemon-field">
+          <span>Label</span>
+          <input
+            type="text"
+            bind:value={fields.label}
+            placeholder="defaults to the host"
+            autocomplete="off"
+          />
+        </label>
+
+        <div class="add-daemon-row">
+          <label class="add-daemon-field">
+            <span>SSH user</span>
+            <input
+              type="text"
+              bind:value={fields.user}
+              placeholder="ssh default"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <label class="add-daemon-field narrow">
+            <span>SSH port</span>
+            <input
+              type="text"
+              bind:value={fields.sshPort}
+              placeholder="22"
+              inputmode="numeric"
+              class:invalid={!!errors.sshPort}
+            />
+            {#if errors.sshPort}<small class="err">{errors.sshPort}</small>{/if}
+          </label>
+          <label class="add-daemon-field narrow">
+            <span>Daemon port</span>
+            <input
+              type="text"
+              bind:value={fields.port}
+              placeholder="7777"
+              inputmode="numeric"
+              class:invalid={!!errors.port}
+            />
+            {#if errors.port}<small class="err">{errors.port}</small>{/if}
+          </label>
+        </div>
+
+        <label class="add-daemon-field">
+          <span>Identity file (private key)</span>
+          <input
+            type="text"
+            bind:value={fields.identityPath}
+            placeholder="ssh agent / default key"
             autocomplete="off"
             spellcheck="false"
           />
         </label>
-        <label class="add-daemon-field narrow">
-          <span>SSH port</span>
+
+        <label class="add-daemon-field">
+          <span>Row colour</span>
           <input
             type="text"
-            bind:value={fields.sshPort}
-            placeholder="22"
-            inputmode="numeric"
-            class:invalid={!!errors.sshPort}
+            bind:value={fields.color}
+            placeholder="#rrggbb (optional)"
+            autocomplete="off"
+            spellcheck="false"
+            class:invalid={!!errors.color}
           />
-          {#if errors.sshPort}<small class="err">{errors.sshPort}</small>{/if}
+          {#if errors.color}<small class="err">{errors.color}</small>{/if}
         </label>
-        <label class="add-daemon-field narrow">
-          <span>Daemon port</span>
-          <input
-            type="text"
-            bind:value={fields.port}
-            placeholder="7777"
-            inputmode="numeric"
-            class:invalid={!!errors.port}
-          />
-          {#if errors.port}<small class="err">{errors.port}</small>{/if}
-        </label>
-      </div>
-
-      <label class="add-daemon-field">
-        <span>Identity file (private key)</span>
-        <input
-          type="text"
-          bind:value={fields.identityPath}
-          placeholder="ssh agent / default key"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-
-      <label class="add-daemon-field">
-        <span>Row colour</span>
-        <input
-          type="text"
-          bind:value={fields.color}
-          placeholder="#rrggbb (optional)"
-          autocomplete="off"
-          spellcheck="false"
-          class:invalid={!!errors.color}
-        />
-        {#if errors.color}<small class="err">{errors.color}</small>{/if}
-      </label>
+      </details>
 
       {#if submitError}
         <p class="add-daemon-submit-error">{submitError}</p>
@@ -246,7 +278,8 @@
     color: var(--danger, #e5604d);
     opacity: 1;
   }
-  .add-daemon-field input {
+  .add-daemon-field input,
+  .add-daemon-connstr {
     background: var(--bg-input, #111114);
     color: inherit;
     border: 1px solid var(--border, #34343a);
@@ -255,12 +288,38 @@
     font-size: 0.85rem;
     font-family: inherit;
   }
-  .add-daemon-field input:focus {
+  .add-daemon-connstr {
+    resize: vertical;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: monospace;
+  }
+  .add-daemon-field input:focus,
+  .add-daemon-connstr:focus {
     outline: none;
     border-color: var(--accent, #5b8def);
   }
   .add-daemon-field input.invalid {
     border-color: var(--danger, #e5604d);
+  }
+  .add-daemon-hint {
+    opacity: 0.6;
+    font-size: 0.72rem;
+  }
+  .add-daemon-advanced {
+    margin-bottom: 0.75rem;
+  }
+  .add-daemon-advanced-summary {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 0.6rem;
+    list-style: disclosure-closed;
+  }
+  .add-daemon-advanced[open] > .add-daemon-advanced-summary {
+    list-style: disclosure-open;
+    margin-bottom: 0.75rem;
   }
   .add-daemon-row {
     display: flex;
