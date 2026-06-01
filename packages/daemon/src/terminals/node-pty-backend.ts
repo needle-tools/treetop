@@ -17,6 +17,7 @@ import type {
   TerminalRecord,
   TerminalSize,
   TerminalSubscriber,
+  ExitInfo,
 } from "./types";
 import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
 import { wrapWindowsCmd } from "../procs";
@@ -236,6 +237,10 @@ export class NodePtyBackend implements PtyBackend {
   private helper: Subprocess<"pipe", "pipe", "inherit"> | null = null;
   private helperReady: Promise<void> | null = null;
   private terms = new Map<string, InternalTerm>();
+  /** Exit records for terminals that have been forgotten from `terms`.
+   *  Insertion-ordered + bounded so a late WS attach can still report the
+   *  exit code instead of a bare "terminal not found". */
+  private recentExits = new Map<string, ExitInfo>();
   private nextSeq = 1;
   private stdoutCarry = "";
 
@@ -601,6 +606,11 @@ export class NodePtyBackend implements PtyBackend {
     return t ? this.handleFor(t) : undefined;
   }
 
+  /** Exit record for a terminal already removed from the live map. */
+  getExitInfo(id: string): ExitInfo | undefined {
+    return this.recentExits.get(id);
+  }
+
   /** Returns the env snapshot the helper recorded for this PTY (the
    *  set of well-known env keys after the scrub + injection dance).
    *  Used by /api/debug/pty-env to verify what really got through to
@@ -629,8 +639,25 @@ export class NodePtyBackend implements PtyBackend {
     }));
   }
 
-  /** Removes a terminated terminal from the in-memory map. */
+  /** Removes a terminated terminal from the in-memory map, retaining a
+   *  compact exit record so a WS attach arriving after this point can
+   *  still report *why* the PTY is gone. */
   forget(id: string) {
+    const t = this.terms.get(id);
+    if (t?.exitedAt) {
+      this.recentExits.set(id, {
+        code: t.exitCode,
+        signal: t.exitSignal,
+        exitedAt: t.exitedAt,
+      });
+      // Bound the retention map; Map iterates in insertion order so the
+      // first key is the oldest.
+      while (this.recentExits.size > 200) {
+        const oldest = this.recentExits.keys().next().value;
+        if (oldest === undefined) break;
+        this.recentExits.delete(oldest);
+      }
+    }
     this.terms.delete(id);
   }
 
@@ -709,6 +736,21 @@ export class NodePtyBackend implements PtyBackend {
     this.helperReady = null;
     this.terms.clear();
   }
+}
+
+/** WebSocket close reason for a terminal that's no longer in the live
+ *  map. When we have a retained exit record, encode the code/signal so the
+ *  UI can explain *why* the PTY is gone ("terminal exited code 1");
+ *  otherwise fall back to the generic "terminal not found". Kept short — WS
+ *  close reasons are capped at ~123 bytes. */
+export function terminalGoneReason(exit: ExitInfo | undefined): string {
+  if (exit) {
+    if (typeof exit.code === "number") {
+      return `terminal exited code ${exit.code}`;
+    }
+    if (exit.signal) return `terminal exited signal ${exit.signal}`;
+  }
+  return "terminal not found";
 }
 
 /** Module-level singleton. server.ts imports this and re-exports as

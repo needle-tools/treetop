@@ -16,6 +16,7 @@ import {
   detectAgentLabel,
   detectConfigError,
   nextStickyConfigError,
+  terminalGoneReason,
 } from "../src/terminals/node-pty-backend";
 import {
   sampleProcs,
@@ -216,6 +217,51 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
       .filter((r) => r.id === handle.id && !r.exitedAt);
     expect(stillAlive).toEqual([]);
   }, 10_000);
+
+  test("getExitInfo retains the exit code after a terminal is forgotten", async () => {
+    const handle = await backend.spawn({
+      cmd: ["bash", "-c", "exit 3"],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const exitWait = new Promise<void>((resolve) => {
+      handle.subscribe({ onData() {}, onExit: () => resolve() });
+    });
+    await exitWait;
+    // Still in the live map (grace window) → get() resolves, no exit record.
+    expect(backend.get(handle.id)).toBeDefined();
+    expect(backend.getExitInfo(handle.id)).toBeUndefined();
+    // Simulate the grace timer firing.
+    backend.forget(handle.id);
+    expect(backend.get(handle.id)).toBeUndefined();
+    expect(backend.getExitInfo(handle.id)).toEqual({
+      code: 3,
+      signal: undefined,
+      exitedAt: expect.any(String),
+    });
+  }, 10_000);
+
+  test("getExitInfo is undefined for an id that never existed", () => {
+    expect(backend.getExitInfo("does-not-exist")).toBeUndefined();
+  });
+
+  test("terminalGoneReason encodes the exit code / signal for the WS close", () => {
+    expect(terminalGoneReason(undefined)).toBe("terminal not found");
+    expect(
+      terminalGoneReason({ code: 1, exitedAt: "2020-01-01T00:00:00Z" }),
+    ).toBe("terminal exited code 1");
+    expect(
+      terminalGoneReason({ signal: "SIGKILL", exitedAt: "2020-01-01T00:00:00Z" }),
+    ).toBe("terminal exited signal SIGKILL");
+    // code wins over signal when both are present
+    expect(
+      terminalGoneReason({
+        code: 0,
+        signal: "SIGTERM",
+        exitedAt: "2020-01-01T00:00:00Z",
+      }),
+    ).toBe("terminal exited code 0");
+  });
 
   // End-to-end check: when we spawn a zsh shell, the injected ZDOTDIR
   // pins HISTFILE to "$ZDOTDIR/.histfile" (per-column scope) and

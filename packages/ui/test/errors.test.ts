@@ -8,6 +8,7 @@ import {
   installFetchTracking,
   getErrors,
   __resetFetchTrackingForTests,
+  describeWsClose,
   type FrontendErrorEntry,
 } from "../src/errors";
 
@@ -25,6 +26,55 @@ function makeEntry(over: Partial<FrontendErrorEntry> = {}): FrontendErrorEntry {
     extra: over.extra,
   };
 }
+
+describe("describeWsClose", () => {
+  test("maps 'terminal not found' to an actionable resume hint", () => {
+    const msg = describeWsClose(1011, "terminal not found");
+    expect(msg).toContain("exited before the connection attached");
+    expect(msg).toContain("Retry");
+  });
+
+  test("folds a known exit code into the resume hint", () => {
+    const msg = describeWsClose(1011, "terminal exited code 1");
+    expect(msg).toContain("(code 1)");
+    expect(msg).toContain("exited before the connection attached");
+    expect(msg).toContain("Retry");
+  });
+
+  test("folds a known exit signal into the resume hint", () => {
+    const msg = describeWsClose(1011, "terminal exited signal SIGKILL");
+    expect(msg).toContain("(signal SIGKILL)");
+  });
+
+  test("surfaces a remote tunnel failure reason verbatim", () => {
+    const msg = describeWsClose(1011, "tunnel failed: connection refused");
+    expect(msg).toContain("Remote daemon unreachable");
+    expect(msg).toContain("connection refused");
+  });
+
+  test("explains a remote ws error", () => {
+    expect(describeWsClose(1011, "remote ws error")).toContain(
+      "remote daemon dropped",
+    );
+  });
+
+  test("passes through any other daemon-supplied reason with its code", () => {
+    const msg = describeWsClose(4001, "some custom reason");
+    expect(msg).toContain("some custom reason");
+    expect(msg).toContain("4001");
+  });
+
+  test("explains an abnormal 1006 close with no reason", () => {
+    const msg = describeWsClose(1006, "");
+    expect(msg).toContain("1006");
+    expect(msg).toContain("daemon may have restarted");
+  });
+
+  test("falls back to the bare code when nothing else is known", () => {
+    expect(describeWsClose(1005)).toBe("WebSocket closed (code 1005).");
+    expect(describeWsClose(0)).toContain("unknown");
+  });
+});
 
 describe("frontend errors store", () => {
   beforeEach(() => {

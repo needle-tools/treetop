@@ -84,9 +84,22 @@ export interface TerminalHandle {
   isAlive(): boolean;
 }
 
+/** Compact exit record retained after a dead terminal has been forgotten
+ *  from the live map. Lets a late WS attach explain *why* the PTY is gone
+ *  ("exited code 1") instead of a bare "terminal not found". */
+export interface ExitInfo {
+  code?: number;
+  signal?: string;
+  exitedAt: string;
+}
+
 export interface PtyBackend {
   spawn(opts: SpawnOptions): Promise<TerminalHandle>;
   get(id: string): TerminalHandle | undefined;
   list(): TerminalRecord[];
+  /** Exit record for a terminal that has already been forgotten from the
+   *  live map (returns undefined for ids that never existed or are still
+   *  alive — those are reachable via `get`). */
+  getExitInfo?(id: string): ExitInfo | undefined;
   shutdown(): Promise<void>;
 }

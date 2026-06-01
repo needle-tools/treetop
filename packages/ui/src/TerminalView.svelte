@@ -24,6 +24,7 @@
     type ConfigActionKind,
     type ConfigActionState,
   } from "./config-error-action";
+  import { describeWsClose } from "./errors";
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -286,6 +287,10 @@
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
+  /** Set when the WS fires `onerror` (which carries no detail). Lets the
+   *  `onclose` that always follows compose the real message from the close
+   *  code + reason instead of a bare "WebSocket error". */
+  let wsErrored = false;
   let configError: { file: string } | null = null;
   /** In-flight / settled state for the config-error pill's action so the
    *  pill stays visible with a spinner + confirmation instead of just
@@ -374,6 +379,7 @@
       ws = null;
     }
     error = "";
+    wsErrored = false;
     exitInfo = null;
     terminalId = "";
     xterm?.clear();
@@ -535,21 +541,30 @@
           extractCwdFromOutput(textDecoder.decode(bytes, { stream: true }));
       };
       ws.onerror = () => {
-        if (phase !== "exited") {
-          error = "WebSocket error";
-          phase = "error";
-          clearStartupGuard();
-        }
+        // The browser deliberately hides WS error detail. Just flag it —
+        // the `onclose` that always follows carries the daemon's close code
+        // + reason, which is what we actually surface to the user.
+        wsErrored = true;
+        clearStartupGuard();
       };
-      ws.onclose = () => {
-        if (phase !== "exited" && phase !== "error") {
-          // Daemon closed us (e.g. PTY died without an exit frame, or
-          // grace timer fired). Treat as exited so the UI can flip back.
+      ws.onclose = (ev) => {
+        if (phase === "exited" || phase === "error") return;
+        clearStartupGuard();
+        // A clean close with no preceding error = the daemon tore the PTY
+        // down (grace timer fired, or a normal exit we didn't get an
+        // explicit frame for). Flip back to "exited" so the UI recovers.
+        if (ev.code === 1000 && !wsErrored) {
           phase = "exited";
           if (!exitInfo) exitInfo = { code: 0 };
           onExit(exitInfo);
-          clearStartupGuard();
+          return;
         }
+        // Abnormal close (or onerror fired first): surface *why* from the
+        // daemon-supplied code + reason instead of a bare "WebSocket error"
+        // — e.g. "terminal not found" (PTY died before we attached, which
+        // is what a failed `--resume` looks like) or "tunnel failed: …".
+        error = describeWsClose(ev.code, ev.reason);
+        phase = "error";
       };
     } catch (e) {
       // AbortError = the startup timer bailed this POST so it could

@@ -75,6 +75,7 @@ import {
 import {
   terminalBackend,
   detectAgentLabel,
+  terminalGoneReason,
 } from "./terminals/node-pty-backend";
 import type { TerminalSubscriber } from "./terminals/types";
 import { SoundMarkerScanner } from "./sound-marker";
@@ -7674,7 +7675,11 @@ const server = Bun.serve<TermWsData, never>({
       const { termId } = ws.data;
       const handle = terminalBackend.get(termId);
       if (!handle) {
-        ws.close(1011, "terminal not found");
+        // The PTY is gone. If it was forgotten *after* exiting (the
+        // common "resume command died immediately" case), report the
+        // exit code so the UI can say "exited code 1" instead of a bare
+        // "WebSocket error".
+        ws.close(1011, terminalGoneReason(terminalBackend.getExitInfo(termId)));
         return;
       }
       cancelGrace(termId);

@@ -19,6 +19,45 @@
 export type FrontendErrorKind = "fetch" | "uncaught" | "rejection" | "server";
 export type FrontendErrorSource = "browser" | "daemon";
 
+/**
+ * Turn a WebSocket close `code` + `reason` into a human-readable, actionable
+ * message for the terminal error overlay.
+ *
+ * The browser's WS `onerror` event carries NO detail by design (security) —
+ * so a bare "WebSocket error" was the most the terminal column could ever
+ * say. The close frame that always follows `onerror`, though, carries the
+ * daemon's `code` + `reason` (e.g. 1011 "terminal not found" when the PTY
+ * died before we attached, or 1011 "tunnel failed: …" for a remote daemon).
+ * That reason is the only real signal about *why* a connection dropped, so
+ * we map it to something the user can act on.
+ */
+export function describeWsClose(code: number, reason?: string): string {
+  const r = (reason ?? "").trim();
+  // "terminal not found" / "terminal exited code 1" / "terminal exited
+  // signal SIGKILL" — the daemon sends these when the PTY is gone by the
+  // time the socket attaches (what a failed `--resume` looks like). When a
+  // code/signal is known, fold it into the message.
+  if (r === "terminal not found" || r.startsWith("terminal exited ")) {
+    const detail = r.startsWith("terminal exited ")
+      ? ` (${r.slice("terminal exited ".length)})`
+      : "";
+    return `The terminal process exited before the connection attached${detail} — the resumed command likely failed to start. Press Retry, or open the session to check for an error.`;
+  }
+  if (r.startsWith("tunnel failed:")) {
+    return `Remote daemon unreachable — ${r}`;
+  }
+  if (r === "remote ws error") {
+    return "The remote daemon dropped the connection.";
+  }
+  if (r) {
+    return `Connection closed (code ${code}): ${r}`;
+  }
+  if (code === 1006) {
+    return "WebSocket closed abnormally (1006) — the connection to the daemon dropped with no reason. The daemon may have restarted or be unreachable.";
+  }
+  return `WebSocket closed (code ${code || "unknown"}).`;
+}
+
 export interface FrontendErrorEntry {
   id: string;
   timestamp: string;
