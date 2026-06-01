@@ -421,6 +421,9 @@
   let actionsOpen = false;
   let eventsOpen = false;
   let daemonsMenuOpen = false;
+  /** Daemon ids with an in-flight DELETE — drives the per-row spinner +
+   *  disables the remove button so a double-click can't double-delete. */
+  let daemonRemoving = new Set<string>();
   let peerDiscoveryEnabled = false;
   let peerToggleBusy = false;
   async function togglePeerDiscovery() {
@@ -4329,7 +4332,15 @@
    *  drop the daemon's repos from the row list, then reload. */
   async function removeDaemon(daemonId: string) {
     error = "";
+    // Optimistically drop the daemon from BOTH the repo rows AND the
+    // menubar daemon list (the list iterates `remoteDaemons` — filtering
+    // only `repos` left the menu row visible until load() finished). Mark
+    // it pending so the row can show a spinner. Reassign each (new
+    // array/Set) so Svelte reactivity fires.
+    daemonRemoving = new Set(daemonRemoving).add(daemonId);
+    const prevDaemons = remoteDaemons;
     repos = repos.filter((r) => r.daemonId !== daemonId);
+    remoteDaemons = remoteDaemons.filter((d) => d.id !== daemonId);
     try {
       const res = await fetch(apiUrl(`/api/daemons/${daemonId}`), {
         method: "DELETE",
@@ -4337,7 +4348,14 @@
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
+      // Roll back the optimistic removal so the daemon doesn't vanish on a
+      // failed delete.
+      remoteDaemons = prevDaemons;
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      const next = new Set(daemonRemoving);
+      next.delete(daemonId);
+      daemonRemoving = next;
     }
   }
 
@@ -6792,8 +6810,9 @@
                   <button
                     class="daemons-remove"
                     title="Remove daemon"
+                    disabled={daemonRemoving.has(d.id)}
                     on:click|stopPropagation={() => void removeDaemon(d.id)}
-                  >×</button>
+                  >{daemonRemoving.has(d.id) ? "…" : "×"}</button>
                 </li>
               {/each}
             </ul>

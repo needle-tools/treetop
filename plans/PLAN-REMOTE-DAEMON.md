@@ -352,6 +352,56 @@ The whole feature is now reachable end-to-end in the UI. The only
 remaining work is the two-daemon **live smoke test** on a real Linux box
 over an SSH tunnel (blocked on provisioning).
 
+### Live-deployment fixes (2026-06-01, first real Hetzner run)
+
+Running the installer against a real box flushed out a chain of bugs the
+unit tests couldn't see (they faked the OS boundary). All fixed:
+
+- **Tunnel target `localhost` → `127.0.0.1`** + `StrictHostKeyChecking=
+  accept-new` — the forward-only key's `permitopen` is matched literally,
+  and BatchMode turns a first-connect host-key prompt into a hard fail.
+  (`tunnel-manager.ts`; tests updated.)
+- **`open()` now waits for the `-L` listener** before returning — ssh
+  binds the local port a few hundred ms post-auth, so the first proxied
+  request was racing it and failing "connection refused" with no retry.
+  Injectable `waitForPort`; +2 tests. (commit a505ab1) **This was the
+  "row never appears" bug.**
+- **One-paste onboarding**: installer emits a `supergit1:` connection
+  string (host+user+port+key); `POST /api/daemons/connect` decodes it,
+  writes the key 0600 under `<workspace>/keys/`, registers.
+  `connection-string.ts` +14 tests; dialog paste field + Advanced
+  disclosure.
+- **`/api/diagnose`** (`diagnostics.ts`, +10 tests): self-config + per-
+  remote tunnel/health/warnings, for human/agent triage. Installer banner
+  prints the curl one-liners.
+- **Dialog feedback**: success toast + don't trust `res.ok` (an
+  un-rebuilt daemon answers 2xx HTML via SPA fallback → false success).
+- **Menubar "Daemons" list**: see/remove every registered daemon
+  independent of repo rows (removal was previously only on a repo row's
+  Edit popover — useless for an orphan/offline daemon). Optimistic
+  removal of `remoteDaemons` + per-row spinner + rollback on failure.
+- **Installer**: `--no-pull` (rsync path), restart-on-upgrade (not just
+  `enable --now`), and CRLF/`unzip`/`BUN_INSTALL` scoping fixes.
+
+**TESTING TODO (agreed 2026-06-01):** several of the above are only
+unit-covered at the pure-function layer; we still want tests at the wired
+layer:
+- [ ] **Two-daemon e2e** (the deferred opt-in harness below) — the real
+      proof that connect → tunnel-wait → proxy → remote repos works
+      against an actual second daemon. This is the single biggest gap.
+- [ ] **`/api/daemons/connect`** route test: a bad/garbage token → 400
+      with a clear error; a valid token → key written 0600 + daemon
+      registered (temp workspace, no real ssh).
+- [ ] **`removeDaemon` UI behaviour**: optimistic removal from
+      `remoteDaemons`, per-row spinner, and rollback on a failed DELETE —
+      the reactivity bug found on 2026-06-01 had no test. Needs the
+      handler extracted to a testable pure reducer or a component test.
+- [ ] **`postRegisterDaemon` guard**: a 2xx-non-JSON (SPA-fallback)
+      response must throw "older build…", not false-succeed.
+- [ ] **Installer token ↔ TS decoder** round-trip as an automated check
+      (proven manually 2026-06-01; pin it so the bash + TS formats can't
+      drift).
+
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
 remaining UI cost is real but mechanical (the `apiUrl` threading).
