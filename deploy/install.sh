@@ -198,5 +198,14 @@ $(sed 's/^/      /' "${KEY_PATH}")
  Service:   systemctl status ${SERVICE_NAME}
  Logs:      journalctl -u ${SERVICE_NAME} -f
  Uninstall: bash ${APP_DIR}/deploy/install.sh --uninstall
+
+ Troubleshooting — run THESE ON THE BOX to check the daemon itself
+ (isolates "is the remote daemon healthy" from "is the tunnel OK"):
+      curl -s http://127.0.0.1:${PORT}/api/health   | head -c 400; echo
+      curl -s http://127.0.0.1:${PORT}/api/diagnose | head -c 800; echo
+ On your LAPTOP, once a remote is added, the LOCAL daemon's diagnose
+ reports tunnel + reachability for every remote (run against your local
+ supergit port, e.g. 27787):
+      curl -s http://127.0.0.1:27787/api/diagnose
 ==========================================================================
 EOF
