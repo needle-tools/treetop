@@ -305,7 +305,11 @@
   }
 
   const SLOW_MS = 10_000;
-  const FAST_MS = 2_000;
+  // Open-panel cadence. Each poll spawns a PowerShell + perf-counter pass on
+  // Windows, so 2s was self-inflicted load that inflated the very CPU number
+  // we display. The shown CPU% is a 30s trailing average (CPU_AVG_WINDOW_MS),
+  // so 5s sampling granularity is plenty — it just costs less to watch.
+  const FAST_MS = 5_000;
   function startPolling(intervalMs: number) {
     if (pollTimer) clearInterval(pollTimer);
     void refresh();

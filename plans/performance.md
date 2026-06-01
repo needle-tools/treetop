@@ -267,6 +267,56 @@ advances hourly. Unit-tested. Daemon-side → needs a native rebuild.
 - [ ] **Stagger startup PTY respawns** rather than firing all columns at
       once, as a complementary smoothing of the herd.
 
+## Processes panel: CPU read too high, and watching it cost CPU
+
+Found 2026-06-01 from a screenshot: two idle Claude TUIs in the Processes
+popover reading **36% / 27% CPU** (group total 63%) while showing
+"idle 9s", with a `powershell` row visible in the same list.
+
+### Two separate problems
+
+1. **The CPU number was per-core, not per-machine.** Both samplers report
+   "% of a single core": `ps -o pcpu` (macOS/Linux) and Windows'
+   `Win32_PerfFormattedData_PerfProc_Process.PercentProcessorTime` *sum*
+   across logical processors (ceiling `100 × coreCount`). Windows does
+   **not** normalise it — the old comment in `procs.ts` claiming it did was
+   wrong. So `36%` meant "~⅓ of one core," which Task Manager (which divides
+   by core count) shows as ~2–3% on a 16-thread box. The panel structurally
+   read several × higher than the number the user compares against.
+   - `"idle Ns"` is `now − lastOutputAt` (`ProcessList.svelte`) — time since
+     the TUI last *printed*, **not** "doing nothing." An Ink/React TUI
+     re-rendering a spinner burns real CPU while "idle" by that metric.
+2. **The monitor inflated its own reading.** Each `/api/processes` poll ran
+   *two* PowerShell passes — `sampleProcs` (perf counters) **and**
+   `discoverRepoProcesses` (full-machine `Win32_Process` enumeration **plus**
+   a `git worktree list` per repo) — at a **2s** open-panel cadence. The
+   `powershell` row in the screenshot is that discovery query matching its
+   own command line (its `$rp` literal contains the repo paths).
+
+### Fixes applied (2026-06-01)
+
+| Layer | Change | Where |
+|---|---|---|
+| daemon | `normalizeCpuPercent(perCore, cpuCount)` divides every CPU reading by `os.cpus().length` so the column is machine-relative (matches Task Manager / Activity Monitor). Applied to both `sampleProcs` branches + the Unix `discoverRepoProcesses` parse. Cross-platform. | `procs.ts` |
+| daemon | `throttleAsync` wraps the heavy external scan in an **8s** TTL cache (shared in-flight, retry-on-failure); TUI rows stay fresh every poll. Stops re-enumerating every process twice a poll. | `procs.ts`, `server.ts` (`externalProcessRows`, `EXTERNAL_SCAN_TTL_MS`) |
+| UI | Open-panel poll cadence `FAST_MS` **2s → 5s**. The shown CPU% is a 30s trailing average (`CPU_AVG_WINDOW_MS`), so 5s granularity is plenty and the spawn rate drops ~60%. | `ProcessList.svelte` |
+
+All three pure parts are unit-tested (`procs.test.ts`:
+`normalizeCpuPercent`, `throttleAsync`, `sampleProcs` sanity). Daemon-side
+changes need a native rebuild to reach prod.
+
+### Open TODOs — Processes panel
+
+- [ ] **Recalibrate the hot/warm CPU thresholds.** `TUI_HOT_CPU_PERCENT=50`
+      / `WARM=30` (`ProcessList.svelte`) were tuned against the old per-core
+      scale; now that the value is machine-relative they trip far less
+      often. Decide whether 50%/30% *of the whole machine* is the right
+      "hot" bar or lower it.
+- [ ] **Collapse the two PowerShell passes into one spawn.** Even throttled,
+      an external scan still spawns `powershell.exe` twice (perf counters +
+      `Win32_Process`). A single PS invocation returning both would halve the
+      remaining startup cost.
+
 ## How to record + analyse a trace
 
 1. Reproduce a realistic load (real worktrees, ~1+ active session).

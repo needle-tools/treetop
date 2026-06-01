@@ -32,6 +32,18 @@
  * sets `isWrapped` itself, but that needs the daemon platform plumbed to each
  * terminal and wouldn't enable the heuristic we need on modern Win11 builds.
  * This is the same trade-off xterm's own Windows mode makes.
+ *
+ * Not fixable here at all: text copied from an agent TUI (Claude Code /
+ * Codex) whose renderer *word-wraps its own output* to the terminal width.
+ * Those breaks land on word boundaries and the rows end short of `cols`
+ * with no `isWrapped` flag (confirmed: a 2-row selection at cols=86 reported
+ * usedLen 78 and 73, lastCol blank, isWrapped=false). In the buffer that is
+ * byte-for-byte identical to two genuinely separate lines (e.g. two list
+ * items), so neither `isWrapped` nor `fillsWidth` can tell "one command
+ * wrapped for display" from "two real lines" — the join information was
+ * destroyed by the source app before it reached the terminal. This collapser
+ * only recovers terminal soft-wraps (a long command wrapped by a shell), not
+ * application word-wraps.
  */
 export interface SelectionRow {
   /** The row's text, already trimmed to the selected column range. */

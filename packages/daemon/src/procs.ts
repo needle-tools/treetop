@@ -3,16 +3,21 @@
  * of terminals we manage; we don't pull in pidusage / systeminformation.
  *
  * macOS / Linux: shell out to `ps -o pid=,pcpu=,rss= -p PIDLIST`.
- *   pcpu is "percentage of CPU time" (0-100).
- *   rss  is resident set size, in KB.
+ *   pcpu is "percentage of a single CPU core" — it can exceed 100 (200 =
+ *   two pegged cores). rss is resident set size, in KB.
  * Windows: PowerShell — Get-Process for WorkingSet64 + Win32_PerfFormatted
- *   Data_PerfProc_Process for PercentProcessorTime (0-100, normalised by
- *   Windows across all cores), joined by PID.
+ *   Data_PerfProc_Process for PercentProcessorTime, joined by PID. That
+ *   counter is ALSO per-core (summed across logical processors, max
+ *   100 * coreCount) — Windows does NOT normalise it for us.
+ *
+ * Both sources are run through `normalizeCpuPercent` so the value we hand
+ * the UI is machine-relative (0-100), matching Task Manager / Activity
+ * Monitor's per-process column.
  */
 
 import { $ } from "bun";
 import { stat, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, cpus } from "node:os";
 import { join } from "node:path";
 
 /** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
@@ -209,6 +214,69 @@ export interface ExternalProc {
   memBytes: number;
 }
 
+/** Logical-processor count (counts SMT / hyperthreads), read once at module
+ *  load — it doesn't change at runtime. Floored at 1 so we never divide by
+ *  zero on an exotic host. */
+const LOGICAL_CPU_COUNT = Math.max(1, cpus().length);
+
+/**
+ * Convert a per-process CPU reading into a machine-relative percentage
+ * (0-100), matching what Task Manager / Activity Monitor show.
+ *
+ * Both data sources report "% of a SINGLE core": `ps -o pcpu` and Windows'
+ * `Win32_PerfFormattedData_PerfProc_Process.PercentProcessorTime` sum CPU
+ * time across all logical processors, so a process pegging two cores reads
+ * 200 and the ceiling is 100 * coreCount — NOT 0-100. Dividing by the
+ * logical-processor count gives the whole-machine fraction the dashboard's
+ * CPU column means to show.
+ */
+export function normalizeCpuPercent(perCore: number, cpuCount: number): number {
+  if (!Number.isFinite(perCore) || perCore <= 0) return 0;
+  if (!Number.isFinite(cpuCount) || cpuCount < 1) return perCore;
+  return perCore / cpuCount;
+}
+
+/**
+ * Wrap an expensive async producer so calls within `ttlMs` of the last
+ * successful run reuse its cached value instead of re-running, and
+ * concurrent callers share a single in-flight run. A rejected run is not
+ * cached — the next call retries. Injected `clock` keeps it testable.
+ *
+ * Used to stop the /api/processes external-process scan (a full-machine
+ * process enumeration plus a `git worktree list` per repo) from running on
+ * every fast UI poll: the repo-resident process set changes far more slowly
+ * than the panel's poll cadence.
+ */
+export function throttleAsync<T>(
+  producer: () => Promise<T>,
+  ttlMs: number,
+  clock: () => number = Date.now,
+): () => Promise<T> {
+  let last = 0;
+  let hasValue = false;
+  let cache: T;
+  let inflight: Promise<T> | null = null;
+  return () => {
+    const now = clock();
+    if (hasValue && now - last < ttlMs) return Promise.resolve(cache);
+    if (inflight) return inflight;
+    inflight = producer().then(
+      (v) => {
+        cache = v;
+        hasValue = true;
+        last = clock();
+        inflight = null;
+        return v;
+      },
+      (e) => {
+        inflight = null;
+        throw e;
+      },
+    );
+    return inflight;
+  };
+}
+
 export async function discoverRepoProcesses(
   repoPaths: string[],
   excludePids: Set<number>,
@@ -249,7 +317,7 @@ export async function discoverRepoProcesses(
       info.set(pid, {
         comm,
         args,
-        cpu: Number(m[2]) || 0,
+        cpu: normalizeCpuPercent(Number(m[2]) || 0, LOGICAL_CPU_COUNT),
         mem: (Number(m[3]) || 0) * 1024,
       });
     }
@@ -385,9 +453,11 @@ export async function sampleProcs(
     try {
       // Memory + CPU in one PowerShell pass. Memory comes from Get-Process
       // (WorkingSet64 = private bytes). CPU comes from Win32_PerfFormattedData
-      // _PerfProc_Process.PercentProcessorTime, which is normalized to 0–100
-      // across all cores by Windows itself. We join the two by PID and emit
-      // "pid mem cpu" per line. Falls back to mem-only if perf counters fail.
+      // _PerfProc_Process.PercentProcessorTime, which is per-core (summed
+      // across logical processors, so it can read up to 100 * coreCount —
+      // Windows does NOT normalise it). We join the two by PID, emit
+      // "pid mem cpu" per line, and divide cpu by the core count below via
+      // normalizeCpuPercent. Falls back to mem-only if perf counters fail.
       const pidArr = `@(${pids.join(",")})`;
       const ps =
         `$m = @{}; Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { $m[$_.Id] = $_.WorkingSet64 }; ` +
@@ -414,7 +484,7 @@ export async function sampleProcs(
         if (!Number.isFinite(pid)) continue;
         out.set(pid, {
           pid,
-          cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : 0,
+          cpuPercent: normalizeCpuPercent(cpuPercent, LOGICAL_CPU_COUNT),
           memBytes: Number.isFinite(memBytes) ? memBytes : 0,
         });
       }
@@ -441,7 +511,7 @@ export async function sampleProcs(
       if (!Number.isFinite(pid)) continue;
       out.set(pid, {
         pid,
-        cpuPercent: Number.isFinite(pcpu) ? pcpu : 0,
+        cpuPercent: normalizeCpuPercent(pcpu, LOGICAL_CPU_COUNT),
         memBytes: Number.isFinite(rssKb) ? rssKb * 1024 : 0,
       });
     }
