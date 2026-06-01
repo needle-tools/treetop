@@ -203,6 +203,10 @@
     color: var(--text-muted, #9a9aa0);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    /* "2 COMMITS TO PULL FROM ORIGIN/DEV" must read on one line —
+       the panel is content-sized so this also widens it enough that
+       the commit rows below get room for author + subject. */
+    white-space: nowrap;
   }
   /* Same chevrons as the dock dot glyphs (StatusBadge paths) so the
      section heads mirror the icons the user clicked through to get
@@ -229,7 +233,11 @@
   }
   .dock-rsp-commits {
     display: grid;
-    grid-template-columns: auto auto auto 1fr;
+    /* sha | author | date | subject. Author and subject get real
+       minimums so a long username / commit message isn't crushed to
+       a single ellipsised glyph — `min-width: 0` on the cells alone
+       lets them collapse to nothing when the panel is narrow. */
+    grid-template-columns: auto minmax(10ch, max-content) auto minmax(24ch, 1fr);
     column-gap: 0.6rem;
     row-gap: 0.15rem;
     align-items: baseline;
