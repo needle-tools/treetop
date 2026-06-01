@@ -294,15 +294,7 @@ export function iconFor(key: string | null | undefined): IconDef | null {
  */
 export const GIT_AHEAD = "M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5";
 export const GIT_BEHIND = "M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5";
-/** A proper tilde — rise then dip — not a single hump. */
+/** A proper tilde — rise then dip — not a single hump. In the SessionDock
+ *  the path's `d` is morphed between this and its vertical mirror (see the
+ *  `dock-wave` keyframes) so the humps rock up↔down like a gentle wave. */
 export const GIT_DIRTY = "M2 6c1-2 3-2 4 0s3 2 4 0";
-/**
- * Multi-period version of GIT_DIRTY for the SessionDock, where the dirty
- * glyph scrolls horizontally to read as a flowing wave. Same wavelength
- * (8 user units / one up+down) and amplitude as GIT_DIRTY, but it spans
- * x -4..20 so that translating it left by one full period (8px) keeps the
- * 0..12 viewBox window fully covered at every frame — a seamless loop.
- * The overflowing ends are clipped by the SVG's default overflow:hidden.
- */
-export const GIT_DIRTY_WAVE =
-  "M-4 6 q2 -2 4 0 t4 0 t4 0 t4 0 t4 0 t4 0 t4 0";

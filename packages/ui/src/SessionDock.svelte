@@ -1360,9 +1360,34 @@
       transform: translateY(0);
     }
   }
+  /* Dirty glyph waves: morph the tilde's `d` between itself and its
+     vertical mirror. The two control-point sets differ only in the sign
+     of their y offsets, so interpolation sweeps each hump up↔down and
+     passes through a flat line at the midpoint — the two ends rock like
+     a wave. We animate the path geometry itself (the CSS `d` property),
+     not a transform on the element. */
+  /* 3.4s loop: hold 1.5s → flip 200ms → hold 1.5s → flip back 200ms.
+     1.5s = 44.118%, +200ms = 50%, +1.5s = 94.118%, flip back to 100%. */
+  .dock-arrow-dirty path {
+    animation: dock-wave 3.4s ease-in-out infinite;
+  }
+  @keyframes dock-wave {
+    0%,
+    44.118% {
+      d: path("M2 6c1 -2 3 -2 4 0s3 2 4 0");
+    }
+    50%,
+    94.118% {
+      d: path("M2 6c1 2 3 2 4 0s3 -2 4 0");
+    }
+    100% {
+      d: path("M2 6c1 -2 3 -2 4 0s3 2 4 0");
+    }
+  }
   @media (prefers-reduced-motion: reduce) {
     .dock-arrow-up,
-    .dock-arrow-down {
+    .dock-arrow-down,
+    .dock-arrow-dirty path {
       animation: none;
     }
   }
