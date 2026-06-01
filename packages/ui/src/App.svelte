@@ -2627,6 +2627,7 @@
   }
 
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
+    play("session-close");
     dismissIfShell(s);
     for (const [linkId, entry] of commandTermSources) {
       if (entry.source === s.source) {

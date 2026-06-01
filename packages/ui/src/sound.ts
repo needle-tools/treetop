@@ -19,6 +19,7 @@ export type SoundTag =
   | "session-stop"
   | "ai-needs-input"
   | "git-push"
+  | "session-close"
   | "ai-attention"
   | "ai-funny"
   | "ai-disagree"
@@ -155,6 +156,14 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     volume: 0.4,
     overlay: true,
     selfCooldown: 2000,
+  },
+  // Whoosh when a session column is closed. 5s self-cooldown collapses
+  // bulk closes (closing a worktree's whole strip) into one swoosh.
+  "session-close": {
+    files: ["/sounds/session-close.ogg"],
+    volume: 0.2,
+    overlay: true,
+    selfCooldown: 5000,
   },
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
   "ai-disagree": {
