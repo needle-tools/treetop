@@ -220,7 +220,7 @@ function cleanForTitle(txt: string): string {
   // Strip Claude's injected wrapper blocks before considering the text
   // as a candidate title.
   const stripped = txt.replace(
-    /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr|turn_aborted)>[\s\S]*?<\/\1>/g,
+    /<(ide_[a-z_]+|system-reminder|command-[a-z_]+|local-command-stdout|local-command-stderr|turn_aborted|task-notification)>[\s\S]*?<\/\1>/g,
     "",
   );
   return stripped.replace(/\s+/g, " ").trim();

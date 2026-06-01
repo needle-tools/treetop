@@ -212,6 +212,33 @@ describe("readClaudeSessionMeta", () => {
     expect(meta.lastUserMessage).toBe("and one more thing");
   });
 
+  test("ignores a trailing task-notification for title/lastUserMessage", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          cwd: "/proj",
+          message: { role: "user", content: "find the publish flow" },
+        }),
+        JSON.stringify({
+          type: "user",
+          origin: { kind: "task-notification" },
+          message: {
+            role: "user",
+            content:
+              "<task-notification>\n<task-id>b2l2l1qys</task-id>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>",
+          },
+        }),
+      ].join("\n"),
+    );
+    const meta = await readClaudeSessionMeta(file);
+    expect(meta.title).toBe("find the publish flow");
+    expect(meta.lastUserMessage).toBe("find the publish flow");
+  });
+
   test("falls back to the first assistant text when no user text exists", async () => {
     const dir = await tempDir();
     const file = join(dir, "s.jsonl");
@@ -436,6 +463,33 @@ describe("scanClaudeUserMessages", () => {
     expect(stats.firstUserMessage).toBe("continue plz");
     expect(stats.userMessageCount).toBe(1);
     expect(stats.lastUserMessages).toEqual(["continue plz"]);
+  });
+
+  test("skips harness-injected task-notification messages", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "find the publish flow" },
+        }),
+        JSON.stringify({
+          type: "user",
+          origin: { kind: "task-notification" },
+          message: {
+            role: "user",
+            content:
+              "<task-notification>\n<task-id>b2l2l1qys</task-id>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>",
+          },
+        }),
+      ].join("\n"),
+    );
+    const stats = await scanClaudeUserMessages(file);
+    expect(stats.firstUserMessage).toBe("find the publish flow");
+    expect(stats.userMessageCount).toBe(1);
+    expect(stats.lastUserMessages).toEqual(["find the publish flow"]);
   });
 
   test("caps each captured message to a reasonable length", async () => {
