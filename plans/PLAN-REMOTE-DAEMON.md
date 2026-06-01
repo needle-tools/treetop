@@ -517,6 +517,21 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       hard-coded `/bin/zsh` fallback, but a fresh Debian box has no zsh.
       Now `firstExistingPosixShell()` probes /bin/bash → /usr/bin/bash →
       /bin/sh → /bin/zsh (injectable `exists`); +4 tests.
+- [x] **#12 Remote terminal WS "loads forever" (never connects)** — the
+      proxy WS upgrade did `await ensureRemoteTunnelPort()` BEFORE
+      `srv.upgrade()`. Bun requires the upgrade to run synchronously in the
+      fetch handler; awaiting first detaches the request context so the
+      upgrade silently fails and the browser WS hangs in "connecting"
+      (phase stays "starting" forever). Fixed: upgrade synchronously,
+      stash {daemonId, rest, search} in ws.data, then open the tunnel +
+      wire RemoteWsBridge inside the websocket open() handler (async OK
+      there; the bridge already buffers pre-open frames). The local
+      terminal path worked because it never awaits before upgrade — that
+      asymmetry was the tell.
+      TESTING GAP: daemon-ws-proxy.test.ts tests the bridge in isolation
+      against a fake remote, so it never exercised Bun's sync-upgrade
+      constraint. This is exactly what the deferred Tier-3 two-daemon /
+      container e2e (real upgrade through a real tunnel) must cover.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the

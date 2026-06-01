@@ -1554,7 +1554,19 @@ function startGraceIfIdle(termId: string) {
 //                the ServerWebSocket to use as the browser-facing peer.
 type TermWsData =
   | { kind: "terminal"; termId: string; unsubscribe: (() => void) | null }
-  | { kind: "proxy"; remoteUrl: string; bridge: RemoteWsBridge | null };
+  // Proxy WS to a remote daemon. We can't resolve the tunnel before
+  // upgrading — Bun requires srv.upgrade() to run SYNCHRONOUSLY in the
+  // fetch handler, before any await (an await detaches the request context
+  // and the upgrade silently fails → the browser WS hangs "connecting…"
+  // forever). So we stash the daemonId + path here and do the async
+  // tunnel-open + bridge wiring inside the websocket open() handler.
+  | {
+      kind: "proxy";
+      daemonId: string;
+      rest: string;
+      search: string;
+      bridge: RemoteWsBridge | null;
+    };
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
@@ -1694,21 +1706,19 @@ const server = Bun.serve<TermWsData, never>({
         );
         if (m) {
           const daemonId = m[1]!;
-          let localPort: number;
-          try {
-            localPort = await ensureRemoteTunnelPort(daemonId);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            const notFound = msg.includes("remote daemon not found");
-            return json(
-              { error: notFound ? msg : `tunnel failed: ${msg}` },
-              { status: notFound ? 404 : 502 },
-            );
-          }
-          const remoteUrl = buildProxyWsUrl(localPort, `/${m[2]!}`, url.search);
+          // MUST upgrade synchronously — do NOT await the tunnel here (see
+          // the TermWsData comment). The tunnel is opened + the bridge
+          // wired inside open() below; browser frames that arrive before
+          // the remote socket is ready are buffered by RemoteWsBridge.
           if (
             srv.upgrade(req, {
-              data: { kind: "proxy", remoteUrl, bridge: null },
+              data: {
+                kind: "proxy",
+                daemonId,
+                rest: `/${m[2]!}`,
+                search: url.search,
+                bridge: null,
+              },
             })
           ) {
             return undefined as unknown as Response;
@@ -7628,9 +7638,28 @@ const server = Bun.serve<TermWsData, never>({
      *  a grace timer that disposes the PTY if nothing else attaches. */
     open(ws) {
       if (ws.data.kind === "proxy") {
-        // Bridge this browser socket to the remote daemon's terminal WS
-        // over the tunnel. The ServerWebSocket is the browser-facing peer.
-        ws.data.bridge = new RemoteWsBridge(ws.data.remoteUrl, ws);
+        // Now that the browser WS is upgraded, open the tunnel (async is
+        // fine HERE — unlike the fetch handler) and bridge to the remote
+        // daemon's terminal WS. RemoteWsBridge buffers any browser frames
+        // that arrive before the remote socket opens, so deferring this is
+        // safe. On tunnel failure, close the browser socket with the reason.
+        const data = ws.data;
+        void ensureRemoteTunnelPort(data.daemonId)
+          .then((localPort) => {
+            // The socket may have closed while the tunnel was coming up.
+            if (data.bridge === null && (ws.readyState ?? 1) === 1) {
+              const remoteUrl = buildProxyWsUrl(localPort, data.rest, data.search);
+              data.bridge = new RemoteWsBridge(remoteUrl, ws);
+            }
+          })
+          .catch((e) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            try {
+              ws.close(1011, `tunnel failed: ${msg}`.slice(0, 120));
+            } catch {
+              // already closing
+            }
+          });
         return;
       }
       const { termId } = ws.data;
