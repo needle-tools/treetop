@@ -12,6 +12,13 @@
 #
 # or, from a checkout on the box:  bash deploy/install.sh
 #
+# --no-pull: use the code already in APP_DIR (e.g. rsync'd from your
+# laptop) and skip git fetch/clone entirely. The quick way to test on a
+# box without pushing the (private) repo:
+#   rsync -az --exclude node_modules --exclude 'packages/*/dist' \
+#     ./ root@<host>:/opt/supergit/
+#   ssh root@<host> 'bash /opt/supergit/deploy/install.sh --no-pull'
+#
 # Idempotent: re-running upgrades the unit in place and reuses the
 # existing workspace + SSH key. Uninstall:  bash deploy/install.sh --uninstall
 #
@@ -32,6 +39,15 @@ KEY_PATH="/root/supergit_tunnel_key"   # private key emitted to the operator
 
 err() { echo "supergit-install: $*" >&2; }
 need_root() { [ "$(id -u)" -eq 0 ] || { err "must run as root"; exit 1; }; }
+
+# ---- arg parse ----------------------------------------------------------
+# --no-pull: trust the code already in APP_DIR; don't fetch/clone.
+NO_PULL=0
+for arg in "$@"; do
+  case "${arg}" in
+    --no-pull) NO_PULL=1 ;;
+  esac
+done
 
 # ---- uninstall ----------------------------------------------------------
 if [ "${1:-}" = "--uninstall" ]; then
@@ -67,7 +83,17 @@ fi
 # ---- 3. code (prebuilt-on-Linux: clone + build the SPA here) ------------
 # The macOS artifact pipeline can't produce a server bundle, so we build
 # the SPA on the box. node-pty etc. compile against this Linux.
-if [ -d "${APP_DIR}/.git" ]; then
+if [ "${NO_PULL}" -eq 1 ]; then
+  # Use whatever's already in APP_DIR (rsync'd / scp'd from the laptop).
+  # No GitHub needed — the quick-test path for a private, unpushed repo.
+  [ -d "${APP_DIR}" ] && [ -f "${APP_DIR}/package.json" ] || {
+    err "--no-pull set but no code at ${APP_DIR} (expected package.json)."
+    err "copy the repo there first, e.g.:"
+    err "  rsync -az --exclude node_modules --exclude 'packages/*/dist' ./ root@<host>:${APP_DIR}/"
+    exit 1
+  }
+  err "--no-pull: using existing code in ${APP_DIR} (skipping fetch/clone)…"
+elif [ -d "${APP_DIR}/.git" ]; then
   err "updating existing checkout in ${APP_DIR}…"
   git -C "${APP_DIR}" fetch --depth 1 origin "${REPO_REF}"
   git -C "${APP_DIR}" checkout -f FETCH_HEAD
@@ -118,11 +144,47 @@ chmod 600 "${AUTH}"
 # ---- 6. tell the operator how to connect --------------------------------
 HOST_HINT="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "${HOST_HINT}" ] || HOST_HINT="<host>"
+
+# --- connection string (one-paste onboarding) ----------------------------
+# supergit1:<base64url(JSON)> — matches packages/daemon/src/connection-string.ts.
+CONN_HOST="${HOST_HINT}"
+# JSON-string-escape the private key (newlines → \n).  Try jq first (most
+# servers have it), then python3.  If neither is available, skip the key
+# and note that the user must supply it manually — do NOT emit a broken token.
+if command -v jq >/dev/null 2>&1; then
+  CONN_KEY_JSON="$(jq -Rs . < "${KEY_PATH}")"
+elif command -v python3 >/dev/null 2>&1; then
+  CONN_KEY_JSON="$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' < "${KEY_PATH}")"
+else
+  CONN_KEY_JSON=""
+fi
+
+if [ -n "${CONN_KEY_JSON}" ]; then
+  CONN_JSON=$(printf '{"host":"%s","port":%s,"user":"%s","label":"%s","privateKey":%s}' \
+    "${CONN_HOST}" "${PORT}" "${SERVICE_USER}" "$(hostname)" "${CONN_KEY_JSON}")
+else
+  CONN_JSON=$(printf '{"host":"%s","port":%s,"user":"%s","label":"%s"}' \
+    "${CONN_HOST}" "${PORT}" "${SERVICE_USER}" "$(hostname)")
+fi
+
+# base64url: standard base64, then +/ -> -_ and strip = padding, newlines removed.
+CONN_B64=$(printf '%s' "${CONN_JSON}" | base64 -w0 2>/dev/null || printf '%s' "${CONN_JSON}" | base64 | tr -d '\n')
+CONN_B64=$(printf '%s' "${CONN_B64}" | tr '+/' '-_' | tr -d '=')
+CONN_STRING="supergit1:${CONN_B64}"
+
 cat <<EOF
 
 ==========================================================================
  supergit remote daemon is up (loopback-only) on ${SERVICE_NAME}.
  It is NOT reachable from the network — only via the tunnel below.
+
+ EASIEST — paste this ONE connection string into supergit →
+ "Add remote daemon" → "Paste connection string":
+
+     ${CONN_STRING}
+
+ (It carries the host, user, port, and the forward-only key. Treat it as
+  a secret. Or use the manual steps below.)
 
  1) Save this private key on your LAPTOP as ~/.ssh/supergit_tunnel_key:
 $(sed 's/^/      /' "${KEY_PATH}")
@@ -130,7 +192,7 @@ $(sed 's/^/      /' "${KEY_PATH}")
  2) chmod 600 ~/.ssh/supergit_tunnel_key
 
  3) Open the tunnel, then browse:
-      ssh -N -L ${PORT}:localhost:${PORT} ${SERVICE_USER}@${HOST_HINT} -i ~/.ssh/supergit_tunnel_key
+      ssh -N -L ${PORT}:127.0.0.1:${PORT} ${SERVICE_USER}@${HOST_HINT} -i ~/.ssh/supergit_tunnel_key
       open http://localhost:${PORT}
 
  Service:   systemctl status ${SERVICE_NAME}

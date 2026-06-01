@@ -172,6 +172,8 @@ import {
   MAX_BODY_BYTES,
 } from "./messages";
 import { record, snapshot as timingsSnapshot } from "./timings";
+import { buildDiagnostics } from "./diagnostics";
+import { decodeConnectionString } from "./connection-string";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -1688,6 +1690,66 @@ const server = Bun.serve<TermWsData, never>({
           buildTime: DAEMON_BUILD_TIME,
           version: "0.1.0",
         });
+      }
+
+      if (url.pathname === "/api/diagnose" && req.method === "GET") {
+        const sshPath = Bun.which("ssh");
+        const remotes = await workspace.listRemoteDaemons();
+        const daemonInputs = remotes.map((d) => {
+          const t = tunnelManager.get(d.id);
+          return {
+            id: d.id,
+            label: d.label,
+            host: d.host,
+            port: d.port,
+            tunnelOpen: !!t,
+            localPort: t?.localPort ?? null,
+          };
+        });
+        // role: a daemon reached via the proxy is being diagnosed AS a remote;
+        // detect that the same way other proxied routes do. Simplest robust
+        // signal: if this request came in through /api/daemons/<id>/diagnose it
+        // was rewritten before reaching here, so a plain /api/diagnose with NO
+        // registered remotes on a loopback-bound box is "remote". Use:
+        //   role = remotes.length === 0 && isLoopback(BIND) ? "remote" : "local"
+        // (good enough; the report body is identical either way.)
+        const role =
+          remotes.length === 0 && isLoopback(BIND) ? "remote" : "local";
+        const report = await buildDiagnostics({
+          self: {
+            bind: BIND,
+            port: PORT,
+            workspace: WORKSPACE_PATH,
+            version: "0.1.0",
+            loopbackOnly: isLoopback(BIND),
+            peerModeEnabled,
+            sshPath: sshPath ?? null,
+          },
+          role,
+          daemons: daemonInputs,
+          probe: (localPort) =>
+            fetch(`http://127.0.0.1:${localPort}/api/health`, {
+              signal: AbortSignal.timeout(4000),
+            })
+              .then(async (r) => {
+                const j = (await r.json().catch(() => ({}))) as Record<
+                  string,
+                  unknown
+                >;
+                return {
+                  ok: r.ok,
+                  status:
+                    typeof j.status === "string" ? j.status : undefined,
+                  version:
+                    typeof j.version === "string" ? j.version : undefined,
+                };
+              })
+              .catch((e) => ({
+                ok: false,
+                error: e instanceof Error ? e.message : String(e),
+              })),
+        });
+        return json(report);
       }
 
       // The user's default login shell with platform-appropriate flags.
@@ -7033,6 +7095,56 @@ const server = Bun.serve<TermWsData, never>({
       // LAN_ALLOWED_ROUTES).
       if (url.pathname === "/api/daemons" && req.method === "GET") {
         return json(await workspace.listRemoteDaemons());
+      }
+
+      // SECURITY: the connection string carries a forward-only private key
+      // encoded as an opaque token. It is decoded server-side so the secret
+      // lives only in <workspace>/keys/ at 0600 and never round-trips
+      // through the browser as separate fields.
+      if (url.pathname === "/api/daemons/connect" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as {
+          connectionString?: unknown;
+        } | null;
+        const cs =
+          body && typeof body.connectionString === "string"
+            ? body.connectionString
+            : "";
+        const decoded = decodeConnectionString(cs);
+        if (!decoded.ok) {
+          return json({ error: decoded.error }, { status: 400 });
+        }
+        const p = decoded.payload;
+        try {
+          // Persist the private key (if present) to <workspace>/keys/<uuid>
+          // at 0600, so the secret lives server-side and TunnelManager can
+          // `-i` it. The browser only ever sent the opaque token.
+          let identityPath: string | undefined;
+          if (p.privateKey) {
+            const keysDir = join(WORKSPACE_PATH, "keys");
+            await fsMkdir(keysDir, { recursive: true });
+            identityPath = join(keysDir, crypto.randomUUID());
+            await fsWriteFile(
+              identityPath,
+              p.privateKey.endsWith("\n") ? p.privateKey : p.privateKey + "\n",
+              { mode: 0o600 },
+            );
+          }
+          const daemon = await workspace.addRemoteDaemon({
+            label: p.label ?? "",
+            host: p.host,
+            user: p.user,
+            port: p.port,
+            sshPort: p.sshPort,
+            identityPath,
+          });
+          broadcast("change", { kind: "remote_daemon_add", id: daemon.id });
+          return json(daemon);
+        } catch (e) {
+          return json(
+            { error: String(e instanceof Error ? e.message : e) },
+            { status: 400 },
+          );
+        }
       }
 
       if (url.pathname === "/api/daemons" && req.method === "POST") {

@@ -37,11 +37,24 @@ describe("buildSshTunnelArgs", () => {
     const args = buildSshTunnelArgs(daemon(), 7801);
     // -N: no remote command, just the forward.
     expect(args).toContain("-N");
-    // The local-forward spec: localPort:localhost:remotePort.
+    // The local-forward spec: localPort:127.0.0.1:remotePort. MUST use the
+    // literal 127.0.0.1, NOT "localhost" — the forward-only authorized_keys
+    // restriction is `permitopen="127.0.0.1:<port>"`, matched literally, so
+    // a `localhost` target is rejected ("administratively prohibited").
     expect(args).toContain("-L");
-    expect(args).toContain("7801:localhost:7777");
+    expect(args).toContain("7801:127.0.0.1:7777");
+    expect(args).not.toContain("7801:localhost:7777");
     // Destination is the bare host when no user is set.
     expect(args[args.length - 1]).toBe("203.0.113.4");
+  });
+
+  test("accepts a new host key non-interactively (no first-connect hang/fail)", () => {
+    // BatchMode disables prompts, so on a never-seen host the default
+    // StrictHostKeyChecking=ask would make ssh FAIL instead of connecting.
+    // accept-new trusts a first-seen host but still rejects a CHANGED key
+    // (MITM protection), which is the right default for an automated tunnel.
+    const args = buildSshTunnelArgs(daemon(), 7801).join(" ");
+    expect(args).toContain("StrictHostKeyChecking=accept-new");
   });
 
   test("prefixes user@host when a user is set", () => {
@@ -95,7 +108,7 @@ describe("TunnelManager", () => {
     expect(t.localPort).toBe(7801);
     expect(spawned).toHaveLength(1);
     // The spawned argv must carry the allocated port's forward spec.
-    expect(spawned[0]!.join(" ")).toContain("7801:localhost:7777");
+    expect(spawned[0]!.join(" ")).toContain("7801:127.0.0.1:7777");
     expect(procs).toHaveLength(1);
     expect(mgr.get("d1")?.localPort).toBe(7801);
   });

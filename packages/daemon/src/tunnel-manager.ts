@@ -47,6 +47,14 @@ export interface TunnelManagerOptions {
  * and fail-fast: BatchMode never prompts (fails instead of hanging in a
  * headless daemon), ExitOnForwardFailure exits if the local port can't
  * bind, and keepalives drop a dead connection promptly.
+ *
+ * The forward target is the literal `127.0.0.1`, NOT `localhost`: the
+ * installer's forward-only key restricts `permitopen="127.0.0.1:<port>"`,
+ * which sshd matches literally — a `localhost` target is refused
+ * ("administratively prohibited"). And StrictHostKeyChecking=accept-new
+ * lets the FIRST connection to a new box succeed under BatchMode (which
+ * otherwise turns the host-key prompt into a hard failure) while still
+ * rejecting a later CHANGED key.
  */
 export function buildSshTunnelArgs(
   daemon: RemoteDaemon,
@@ -55,11 +63,13 @@ export function buildSshTunnelArgs(
   const args: string[] = [
     "-N", // no remote command — just the forward
     "-L",
-    `${localPort}:localhost:${daemon.port}`,
+    `${localPort}:127.0.0.1:${daemon.port}`,
     "-o",
     "BatchMode=yes",
     "-o",
     "ExitOnForwardFailure=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
     "-o",
     "ServerAliveInterval=15",
     "-o",
