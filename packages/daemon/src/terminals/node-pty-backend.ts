@@ -653,6 +653,15 @@ export class NodePtyBackend implements PtyBackend {
    * Windows). The startup repair (repairAllClaudeJson) is still the
    * correctness backstop; this just makes the corruption rare instead of
    * routine.
+   *
+   * TODO(windows-graceful): the graceful soft-kill on Windows only applies
+   * under the Go pty-helper (signal_windows.go closes the ConPTY). The
+   * `helper.mjs` fallback can't soft-close — node-pty's kill() always
+   * TerminateProcess on Windows — and `bun run start` from source resolves
+   * to helper.mjs, so prod gets no Windows benefit yet. Follow-up: make
+   * prod prefer the Go helper (ship/locate pty-helper.exe so helperCmd()
+   * picks it up), and empirically confirm ClosePseudoConsole actually gives
+   * Claude time to flush before exit.
    */
   async gracefulShutdown(graceMs = 2000): Promise<void> {
     const live = [...this.terms.values()].filter((t) => !t.exitedAt);
