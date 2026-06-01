@@ -499,9 +499,8 @@
     return messageReceiverLabel() || "local inbox";
   }
 
-  function messageDelivery(): "draft" | "staged" | "sent" | "received" {
+  function messageDelivery(): "draft" | "sent" | "received" {
     if (note.receiver?.delivery === "sent") return "sent";
-    if (note.receiver?.delivery === "staged") return "staged";
     if (note.sender && !note.receiver?.sessionId && !note.receiver?.peerId) return "received";
     if (note.sender && note.receiver?.kind === "peer" && viewerPeerId && note.receiver.peerId === viewerPeerId) {
       return "received";
@@ -510,7 +509,13 @@
   }
 
   function messageDeliveryLabel(): string {
-    return messageStatus || messageDelivery();
+    if (messageStatus) return messageStatus;
+    const delivery = messageDelivery();
+    return delivery === "sent"
+      ? "Sent"
+      : delivery === "received"
+        ? "Received"
+        : "Draft";
   }
 
   function formatMessageDate(value: string): string {
@@ -532,11 +537,9 @@
     if (!formatted) return delivery;
     const verb = delivery === "sent"
       ? "Sent"
-      : delivery === "staged"
-        ? "Staged"
-        : delivery === "received"
-          ? "Received"
-          : "Drafted";
+      : delivery === "received"
+        ? "Received"
+        : "Drafted";
     return `${verb} ${formatted}`;
   }
 
@@ -2978,7 +2981,6 @@
     class="message-envelope"
     class:open={messageOpen}
     class:postmarked={delivery === "sent" || delivery === "received"}
-    class:staged={delivery === "staged"}
     role="button"
     tabindex="0"
     aria-expanded={messageOpen}
@@ -2993,51 +2995,51 @@
       }
     }}
   >
-	    <div class="message-envelope-face" aria-hidden={messageOpen}>
-	      <div class="message-window">
-	        <div class="message-address-lines">
-	          <button
-	            type="button"
-	            class="message-window-row"
-	            on:click|stopPropagation={() =>
-	              (addressPicker = addressPicker === "from" ? null : "from")}
-	            title="Change sender session"
-	          >
-	            <span>From:</span>
-	            <strong>{messageFromLabel()}</strong>
-	          </button>
-	          <button
-	            type="button"
-	            class="message-window-row"
-	            on:click|stopPropagation={() =>
-	              (addressPicker = addressPicker === "to" ? null : "to")}
-	            title="Change target session"
-	          >
-	            <span>To:</span>
-	            <strong>{messageToLabel()}</strong>
-	          </button>
-	        </div>
-	        <strong class="message-window-title">{messageTitle()}</strong>
-	      </div>
-	      {#if addressPicker}
-	        <div
-	          class="message-address-picker"
-	          role="presentation"
-	          on:click|stopPropagation
-	        >
-	          <MentionPicker
-	            providers={[sessionsProvider]}
-	            scope={pickerScope}
-	            placeholder={addressPicker === "from"
-	              ? "Pick sender session..."
-	              : "Pick target session..."}
-	            on:pick={onAddressPick}
-	            on:cancel={() => (addressPicker = null)}
-	          />
-	        </div>
-	      {/if}
-	      <div
-	        class="message-stamp"
+    <div class="message-envelope-face" aria-hidden={messageOpen}>
+      <div class="message-window">
+        <div class="message-address-lines">
+          <button
+            type="button"
+            class="message-window-row"
+            on:click|stopPropagation={() =>
+              (addressPicker = addressPicker === "from" ? null : "from")}
+            title="Change sender session"
+          >
+            <span>From:</span>
+            <strong>{messageFromLabel()}</strong>
+          </button>
+          <button
+            type="button"
+            class="message-window-row"
+            on:click|stopPropagation={() =>
+              (addressPicker = addressPicker === "to" ? null : "to")}
+            title="Change target session"
+          >
+            <span>To:</span>
+            <strong>{messageToLabel()}</strong>
+          </button>
+        </div>
+        <strong class="message-window-title">{messageTitle()}</strong>
+      </div>
+      {#if addressPicker}
+        <div
+          class="message-address-picker"
+          role="presentation"
+          on:click|stopPropagation
+        >
+          <MentionPicker
+            providers={[sessionsProvider]}
+            scope={pickerScope}
+            placeholder={addressPicker === "from"
+              ? "Pick sender session..."
+              : "Pick target session..."}
+            on:pick={onAddressPick}
+            on:cancel={() => (addressPicker = null)}
+          />
+        </div>
+      {/if}
+      <div
+        class="message-stamp"
         aria-label={messageWhenLabel()}
       >
         <span

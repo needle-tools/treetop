@@ -1132,24 +1132,28 @@
   min-height: 0;
   max-height: calc(100vh - 72px);
   overflow: auto;
-  padding: 0.45rem 0.7rem 0.7rem;
-  border-radius: 4px 4px 12px 4px;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: 1px solid rgba(82, 64, 37, 0.18);
+  border-radius: 6px;
   background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(0, 0, 0, 0) 0,
-      rgba(0, 0, 0, 0) 22px,
-      rgba(0, 0, 0, 0.03) 22px,
-      rgba(0, 0, 0, 0.03) 23px
-    ),
-    linear-gradient(180deg, #fff4a8 0%, #ffec80 100%);
+    linear-gradient(rgba(74, 55, 24, 0.032) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.72), transparent 36%),
+    linear-gradient(180deg, #fffaf0 0%, #f8ebc4 100%);
   box-shadow:
-    0 1px 1px rgba(0, 0, 0, 0.18),
-    0 8px 22px -6px rgba(0, 0, 0, 0.34);
+    0 1px 1px rgba(0, 0, 0, 0.13),
+    0 10px 24px -10px rgba(0, 0, 0, 0.4);
   color: #2a2516;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.45;
+}
+.sticky.sticky-message-editing .sticky-header::before {
+  top: -6px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.14),
+    inset 0 0 10px rgba(60, 44, 18, 0.07);
 }
 .sticky.sticky-message-editing .sticky-textarea {
   min-height: 220px;
@@ -1157,6 +1161,9 @@
   overflow-y: auto;
   word-break: normal;
   overflow-wrap: anywhere;
+  border-color: rgba(82, 64, 37, 0.16);
+  background: rgba(255, 252, 241, 0.42);
+  box-shadow: inset 0 1px 9px rgba(255, 255, 255, 0.44);
 }
 .message-envelope {
   position: relative;
@@ -1173,10 +1180,6 @@
 .message-envelope-face,
 .message-letter {
   border: 1px solid rgba(80, 62, 33, 0.2);
-  background:
-    linear-gradient(rgba(74, 55, 24, 0.035) 1px, transparent 1px) 0 0 / 100% 18px,
-    radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.62), transparent 34%),
-    linear-gradient(180deg, #fff6d7 0%, #f4dfaa 100%);
   color: #2b2418;
   box-shadow:
     0 1px 1px rgba(0, 0, 0, 0.16),
@@ -1188,6 +1191,10 @@
   height: 165px;
   overflow: hidden;
   border-radius: 6px;
+  background:
+    linear-gradient(rgba(74, 55, 24, 0.028) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 20% 16%, rgba(255, 255, 255, 0.74), transparent 36%),
+    linear-gradient(180deg, #fffaf0 0%, #f7e7bd 100%);
 }
 .message-envelope-face::before,
 .message-envelope-face::after {
@@ -1211,27 +1218,7 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent);
 }
 .message-envelope-flap {
-  position: absolute;
-  top: 96px;
-  left: 1px;
-  right: 1px;
-  z-index: 3;
-  height: 68px;
-  border-top: 1px solid rgba(80, 62, 33, 0.13);
-  border-bottom: 1px solid rgba(80, 62, 33, 0.08);
-  background:
-    linear-gradient(24deg, rgba(255, 248, 218, 0.94) 0 49%, transparent 50%),
-    linear-gradient(-24deg, rgba(245, 218, 160, 0.9) 0 49%, transparent 50%);
-  transform-origin: 50% 100%;
-  transform: rotateX(0deg);
-  transition:
-    transform 460ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 260ms ease;
-  pointer-events: none;
-}
-.message-envelope.open .message-envelope-flap {
-  opacity: 0.82;
-  transform: rotateX(-72deg) translateY(18px);
+  display: none;
 }
 .message-window {
   position: absolute;
@@ -1344,12 +1331,8 @@
   text-transform: uppercase;
   transform: rotate(-10deg) scale(0.9);
 }
-.message-envelope.postmarked .message-postmark,
-.message-envelope.staged .message-postmark {
+.message-envelope.postmarked .message-postmark {
   opacity: 0.9;
-}
-.message-envelope.staged .message-postmark {
-  border-style: dashed;
 }
 .message-delivery-line {
   position: absolute;
@@ -1394,6 +1377,10 @@
   overflow: hidden;
   border-top-color: rgba(80, 62, 33, 0.12);
   border-radius: 0 0 6px 6px;
+  background:
+    linear-gradient(rgba(74, 55, 24, 0.026) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 24% 2%, rgba(255, 255, 255, 0.68), transparent 34%),
+    linear-gradient(180deg, #fff9e6 0%, #f7e7bb 100%);
   opacity: 0;
   pointer-events: none;
   transform: rotateX(-86deg) translateY(-76px) scaleY(0.36);
