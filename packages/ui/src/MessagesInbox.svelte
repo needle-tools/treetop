@@ -12,6 +12,11 @@
   import DOMPurify from "dompurify";
   import Popover from "./Popover.svelte";
   import {
+    expandNoteBodyForTerminalPasteChunks,
+    fetchTextAttachment,
+    STAGE_PROMPT_EVENT,
+  } from "./note-inline-attachments";
+  import {
     messages,
     refreshMessages,
     sendMessage,
@@ -362,6 +367,38 @@
     return receiver.label ?? receiver.sessionId ?? receiver.peerId ?? "";
   }
 
+  function noteReadTarget(msg: import("./messages-store").StoredMessage): {
+    source?: string;
+    termId?: string;
+    label: string;
+  } | null {
+    const receiver = notePayload(msg)?.receiver;
+    if (!receiver?.source && !receiver?.terminalId) return null;
+    return {
+      source: receiver.source,
+      termId: receiver.terminalId,
+      label: receiver.label ?? receiver.sessionId ?? receiver.source ?? "session",
+    };
+  }
+
+  async function readNoteMessage(msg: import("./messages-store").StoredMessage): Promise<void> {
+    const note = notePayload(msg);
+    const target = noteReadTarget(msg);
+    if (!note || !target) return;
+    const chunks = await expandNoteBodyForTerminalPasteChunks(
+      note.body,
+      fetchTextAttachment,
+      { omitTargetSessionSource: target.source },
+    );
+    if (!chunks.some((chunk) => chunk.trim())) return;
+    window.dispatchEvent(
+      new CustomEvent(STAGE_PROMPT_EVENT, {
+        detail: { source: target.source, termId: target.termId, chunks },
+      }),
+    );
+    open = false;
+  }
+
   let deleting: Record<string, boolean> = {};
 
   async function onDelete(peerId: string, messageId: string) {
@@ -672,6 +709,7 @@
                 {#if row.messages.length > 0}
                   <ul class="inbox-msgs">
                     {#each row.messages as msg (msg.id)}
+                      {@const readTarget = noteReadTarget(msg)}
                       <li
                         class="inbox-msg"
                         class:inbox-msg-sent={msg.direction === "out"}
@@ -768,6 +806,20 @@
                                 : msg.receivedAt,
                             )}</span
                           >
+                          {#if msg.kind === "note" && msg.direction !== "out"}
+                            <button
+                              type="button"
+                              class="inbox-read-btn"
+                              disabled={!readTarget}
+                              on:click|stopPropagation={() =>
+                                void readNoteMessage(msg)}
+                              title={readTarget
+                                ? `Paste into ${readTarget.label}`
+                                : "No target session for this note"}
+                            >
+                              Read
+                            </button>
+                          {/if}
                           <button
                             type="button"
                             class="inbox-delete-icon"
@@ -1131,6 +1183,24 @@
     opacity: 0.3;
     cursor: progress;
   }
+  .inbox-read-btn {
+    padding: 0.12rem 0.42rem;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 32%, transparent);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+  .inbox-read-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+    color: var(--text-1, inherit);
+  }
+  .inbox-read-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
   .inbox-msg-time {
     font-size: 0.7rem;
   }
@@ -1224,4 +1294,3 @@
     width: min(42rem, calc(100vw - 2rem));
   }
 </style>
-

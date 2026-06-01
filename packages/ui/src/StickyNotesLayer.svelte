@@ -1577,6 +1577,13 @@
     }
     if (hasInboxNote) {
       const inboxNote = parseInboxNoteDrag(e);
+      const sessionCol = sessionColumnAtPoint(e.clientX, e.clientY);
+      const sessionSource = sessionCol?.dataset.sessionSource;
+      if (inboxNote && sessionSource) {
+        e.preventDefault();
+        await stageInboxNoteIntoSessionPrompt(inboxNote, sessionSource);
+        return;
+      }
       const rowTarget = dropTargetAt(e.clientX, e.clientY);
       if (inboxNote && rowTarget) {
         e.preventDefault();
@@ -1956,20 +1963,17 @@
     return Math.max(0, Math.min(max, bestCentre));
   }
 
-  async function handleSave(
-    e: CustomEvent<{
-      id: string;
-      body: string;
-      target?: {
-        type: "url" | "commit" | "session" | "file" | "command";
-        value: string;
-      } | null;
-	      kind?: "note" | "link";
+	  async function handleSave(
+	    e: CustomEvent<{
+	      id: string;
+	      body: string;
+	      target?: NoteShape["target"] | null;
+	      kind?: NoteShape["kind"];
 	      secret?: boolean;
 	      receiver?: NoteShape["receiver"] | null;
 	      sender?: NoteShape["sender"] | null;
 	    }>,
-  ): Promise<void> {
+	  ): Promise<void> {
     if (staging[e.detail.id]) {
       // First commit of a staged note. Optimistically apply the
       // picked target + kind locally so the chip wears the right
@@ -2414,6 +2418,25 @@
       const chunks = await expandNoteBodyForTerminalPasteChunks(
         note.body,
         (p) => fetchTextAttachment(p, note.daemonId),
+        { omitTargetSessionSource: sessionSource },
+      );
+      if (!chunks.some((chunk) => chunk.trim())) return;
+      window.dispatchEvent(
+        new CustomEvent(STAGE_PROMPT_EVENT, {
+          detail: { source: sessionSource, chunks },
+        }),
+      );
+    } catch {}
+  }
+
+  async function stageInboxNoteIntoSessionPrompt(
+    inboxNote: { body: string },
+    sessionSource: string,
+  ): Promise<void> {
+    try {
+      const chunks = await expandNoteBodyForTerminalPasteChunks(
+        inboxNote.body,
+        fetchTextAttachment,
         { omitTargetSessionSource: sessionSource },
       );
       if (!chunks.some((chunk) => chunk.trim())) return;

@@ -24,6 +24,15 @@ export interface SupergitMessageReceiver {
   delivery?: "draft" | "staged" | "sent";
 }
 
+export interface SupergitMessageSender {
+  kind: "session";
+  id: string;
+  label?: string;
+  agent?: string;
+  source?: string;
+  terminalId?: string;
+}
+
 export interface SupergitTerminalRecord extends TerminalRecord {
   awaitingInput?: boolean;
 }
@@ -268,6 +277,17 @@ export function receiverForSession(s: SupergitSession): SupergitMessageReceiver 
   };
 }
 
+export function senderForSession(s: SupergitSession): SupergitMessageSender {
+  return {
+    kind: "session",
+    id: s.id,
+    label: s.name,
+    ...(s.agent ? { agent: s.agent } : {}),
+    ...(s.source ? { source: s.source } : {}),
+    ...(s.terminalId ? { terminalId: s.terminalId } : {}),
+  };
+}
+
 export function buildSupergitCliScript(opts: { defaultDaemonUrl: string }): string {
   const defaultUrl = JSON.stringify(opts.defaultDaemonUrl);
   return `#!/usr/bin/env node
@@ -282,7 +302,7 @@ Commands:
       List open Supergit UI sessions with ids, names, and state.
       Use --all to include older detected sessions.
 
-  supergit message [sessionId|self|me] <content...>
+  supergit message [--from auto|me] [sessionId|self|me] <content...>
       Create a Supergit note, optionally addressed to a session.
       Use self for the session running this command.
       Use me to send the note to your own inbox.
@@ -306,7 +326,7 @@ function messageHelp() {
   console.log(\`supergit message
 
 Usage:
-  supergit message [sessionId|self|me] <content...>
+  supergit message [--from auto|me] [sessionId|self|me] <content...>
 
 Targets:
   self  Address the note to the Supergit session running this command.
@@ -315,6 +335,10 @@ Targets:
 Content:
   Positional words become markdown content.
   Legacy --content "content as md" is still accepted.
+
+Options:
+  --from auto  Use the Supergit session running this command (default).
+  --from me    Use this machine's peer identity as sender.
 \`);
 }
 
@@ -374,21 +398,37 @@ async function main() {
       messageHelp();
       return;
     }
-    const hasReceiver = typeof args[1] === "string" && args[1] !== "" && !args[1].startsWith("-");
-    const sessionId = hasReceiver ? args[1] : "";
-    const content = argValue(args, "--content");
-    const contentIndex = args.indexOf("--content");
-    const used = new Set([0]);
-    if (hasReceiver) used.add(1);
-    if (contentIndex >= 0) {
-      used.add(contentIndex);
-      used.add(contentIndex + 1);
+    const explicitFrom = args.includes("--from");
+    const fromMode = explicitFrom ? argValue(args, "--from") : "auto";
+    if (fromMode !== "auto" && fromMode !== "me") {
+      console.error("--from must be one of: auto, me");
+      process.exitCode = 2;
+      return;
     }
+    const fromIndex = args.indexOf("--from");
+    const contentIndex = args.indexOf("--content");
+    const optionIndexes = new Set([0]);
+    if (fromIndex >= 0) {
+      optionIndexes.add(fromIndex);
+      optionIndexes.add(fromIndex + 1);
+    }
+    if (contentIndex >= 0) {
+      optionIndexes.add(contentIndex);
+      optionIndexes.add(contentIndex + 1);
+    }
+    const receiverArg = args.find(
+      (x, i) => i > 0 && !optionIndexes.has(i) && !x.startsWith("-")
+    );
+    const hasReceiver = typeof receiverArg === "string" && receiverArg !== "";
+    const sessionId = hasReceiver ? receiverArg : "";
+    const content = argValue(args, "--content");
+    const used = new Set(optionIndexes);
+    if (hasReceiver) used.add(args.indexOf(sessionId));
     const extraArgs = args.filter((_x, i) => !used.has(i));
     const body = await request("/api/supergit/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, content, args: extraArgs, callerPid: process.ppid, callerCwd: process.cwd() }),
+      body: JSON.stringify({ sessionId, content, args: extraArgs, from: fromMode, callerPid: process.ppid, callerCwd: process.cwd() }),
     });
     console.log(JSON.stringify(body, null, 2));
     return;

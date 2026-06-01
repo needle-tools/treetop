@@ -145,6 +145,7 @@ import {
   receiverForSession,
   resolveSupergitSelfSession,
   resolveSupergitSession,
+  senderForSession,
   supergitSelfResolutionError,
 } from "./supergit-cli";
 import {
@@ -2743,6 +2744,7 @@ const server = Bun.serve<TermWsData, never>({
               sessionId?: unknown;
               content?: unknown;
               args?: unknown;
+              from?: unknown;
               callerPid?: unknown;
               callerCwd?: unknown;
             }
@@ -2753,6 +2755,12 @@ const server = Bun.serve<TermWsData, never>({
         const args = Array.isArray(body?.args)
           ? body.args.filter((x): x is string => typeof x === "string")
           : [];
+        const fromMode =
+          body?.from === undefined || body.from === "auto"
+            ? "auto"
+            : body.from === "me"
+              ? "me"
+              : "";
         const callerPid =
           typeof body?.callerPid === "number" && Number.isFinite(body.callerPid)
             ? body.callerPid
@@ -2766,10 +2774,44 @@ const server = Bun.serve<TermWsData, never>({
             { status: 400 },
           );
         }
+        if (!fromMode) {
+          return json(
+            { error: "--from must be one of: auto, me" },
+            { status: 400 },
+          );
+        }
+        const allSessions = await supergitSessions({ includeAll: true });
+        const callerSession =
+          fromMode === "auto"
+            ? resolveSupergitSelfSession(allSessions, terminalBackend.list(), {
+                callerPid,
+                callerCwd,
+              })
+            : undefined;
+        const peerSender =
+          fromMode === "me" && peerIdentity
+            ? {
+                kind: "peer" as const,
+                id: peerIdentity.id,
+                label: peerIdentity.label,
+              }
+            : undefined;
+        const sender =
+          fromMode === "auto" && callerSession
+            ? senderForSession(callerSession)
+            : peerSender;
+        if (!sender) {
+          return json(
+            {
+              error:
+                fromMode === "auto"
+                  ? supergitSelfResolutionError()
+                  : "identity not ready",
+            },
+            { status: fromMode === "auto" ? 404 : 503 },
+          );
+        }
         if (isSelfMessageTarget(sessionId)) {
-          if (!peerIdentity) {
-            return json({ error: "identity not ready" }, { status: 503 });
-          }
           if (messageBody.length > MAX_BODY_BYTES) {
             return json(
               { error: `body exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})` },
@@ -2777,12 +2819,10 @@ const server = Bun.serve<TermWsData, never>({
             );
           }
           const sentAt = new Date().toISOString();
-          const selfPeer = { id: peerIdentity.id, label: peerIdentity.label };
-          const sender: MessageSender = {
-            kind: "peer",
-            id: selfPeer.id,
-            label: selfPeer.label,
-          };
+          const selfPeer =
+            peerIdentity
+              ? { id: peerIdentity.id, label: peerIdentity.label }
+              : { id: sender.id, label: sender.label ?? sender.id };
           const receiver: MessageReceiver = {
             kind: "peer",
             peerId: selfPeer.id,
@@ -2811,15 +2851,8 @@ const server = Bun.serve<TermWsData, never>({
         }
         const target = sessionId
           ? isSelfSessionTarget(sessionId)
-            ? resolveSupergitSelfSession(
-                await supergitSessions({ includeAll: true }),
-                terminalBackend.list(),
-                { callerPid, callerCwd },
-              )
-            : resolveSupergitSession(
-                await supergitSessions({ includeAll: true }),
-                sessionId,
-              )
+            ? callerSession
+            : resolveSupergitSession(allSessions, sessionId)
           : undefined;
         if (sessionId && !target) {
           return json(
@@ -2831,14 +2864,16 @@ const server = Bun.serve<TermWsData, never>({
             { status: 404 },
           );
         }
+        const canvasSession = fromMode === "auto" ? callerSession : undefined;
         const anchors = [
-          ...(target?.cwd ? [`worktree:${target.cwd}`] : []),
-          ...(target?.source ? [`session:${target.source}`] : []),
+          ...(canvasSession?.cwd ? [`worktree:${canvasSession.cwd}`] : []),
+          ...(canvasSession?.source ? [`session:${canvasSession.source}`] : []),
         ];
         const note = await notes.create({
           body: messageBody,
           anchors,
           tags: ["message"],
+          sender,
           ...(target ? { receiver: receiverForSession(target) } : {}),
         });
         const ev = await events.append({

@@ -12,6 +12,7 @@ import {
   resolveSupergitCallerSession,
   resolveSupergitSelfSession,
   resolveSupergitSession,
+  senderForSession,
   supergitSelfResolutionError,
 } from "../src/supergit-cli";
 
@@ -352,6 +353,25 @@ describe("supergit terminal CLI helpers", () => {
     expect(resolveSupergitSession(sessions, "/sessions/ses-1.jsonl")?.id).toBe("ses-1");
   });
 
+  test("senderForSession preserves addressable session metadata", () => {
+    expect(senderForSession({
+      id: "ses-1",
+      name: "Current session",
+      state: "idle",
+      agent: "codex",
+      cwd: "/repo",
+      source: "/sessions/ses-1.jsonl",
+      terminalId: "t_1",
+    })).toEqual({
+      kind: "session",
+      id: "ses-1",
+      label: "Current session",
+      agent: "codex",
+      source: "/sessions/ses-1.jsonl",
+      terminalId: "t_1",
+    });
+  });
+
   test("resolveSupergitCallerSession maps the CLI parent pid to its owning session", () => {
     const terminals = [{
       id: "t_1",
@@ -460,7 +480,8 @@ describe("supergit terminal CLI helpers", () => {
     expect(script).toContain("supergit session list");
     expect(script).toContain("supergit list [--all] [--json]");
     expect(script).toContain("supergit session list [--all] [--json]");
-    expect(script).toContain("supergit message [sessionId|self|me] <content...>");
+    expect(script).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(script).toContain("--from auto  Use the Supergit session running this command (default).");
     expect(script).toContain("Use self for the session running this command");
     expect(script).toContain("callerPid: process.ppid");
     expect(script).not.toContain("SUPERGIT_DAEMON_URL");
@@ -472,17 +493,18 @@ describe("supergit terminal CLI helpers", () => {
   test("generated message help exits before creating a note", async () => {
     const long = await runGeneratedCli(["message", "--help"]);
     expect(long.exitCode).toBe(0);
-    expect(long.stdout).toContain("supergit message [sessionId|self|me] <content...>");
+    expect(long.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(long.stdout).toContain("--from me    Use this machine's peer identity as sender.");
     expect(long.stderr).toBe("");
 
     const short = await runGeneratedCli(["message", "-h"]);
     expect(short.exitCode).toBe(0);
-    expect(short.stdout).toContain("supergit message [sessionId|self|me] <content...>");
+    expect(short.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
     expect(short.stderr).toBe("");
 
     const word = await runGeneratedCli(["message", "help"]);
     expect(word.exitCode).toBe(0);
-    expect(word.stdout).toContain("supergit message [sessionId|self|me] <content...>");
+    expect(word.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
     expect(word.stderr).toBe("");
   });
 

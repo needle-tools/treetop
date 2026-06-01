@@ -119,9 +119,10 @@
     makeImageAttachmentRef,
     makeNoteAttachmentRef,
     makeTextAttachmentRef,
-    noteBodyToEditText,
-    parseInlineAttachments,
-    restoreEditTextAttachments,
+	    noteBodyToEditText,
+	    parseInlineAttachments,
+	    removeInlineAttachmentRef,
+	    restoreEditTextAttachments,
     resolveLiveCommandLink,
     resolveSessionAgent,
     shouldAttachPastedText,
@@ -134,7 +135,7 @@
     type InlineAttachmentEditRef,
     type InlineAttachmentPart,
   } from "./note-inline-attachments";
-  import { defaultProviders } from "./mention-providers";
+  import { defaultProviders, sessionsProvider } from "./mention-providers";
   import { pushRecent } from "./mention-recents";
   import { openUrl } from "./open-url";
   import type { PickItem } from "./mention-types";
@@ -343,9 +344,9 @@
      *  can route both fields through a single PUT. `null` clears an
      *  existing target (kind flip from link → note). Omitting both
      *  `target` and `kind` keeps the current PUT behaviour for notes. */
-    save: {
-      id: string;
-      body: string;
+	    save: {
+	      id: string;
+	      body: string;
 	      target?: LinkTarget | null;
 	      kind?: AttachmentKind;
 	      /** Toggle the hide-until-hover flag. Omitted on ordinary saves. */
@@ -465,7 +466,8 @@
     // file: TODO — `/api/open` with the resolved absolute path.
   }
 
-  let messageStatus = "";
+	  let messageStatus = "";
+	  let addressPicker: "from" | "to" | null = null;
 
   function receiverLookupIds(): string[] {
     const r = note.receiver;
@@ -490,11 +492,11 @@
   }
 
   function messageFromLabel(): string {
-    return showSender() ? messageSenderLabel() : "Me";
+    return messageSenderLabel() || "local session";
   }
 
   function messageToLabel(): string {
-    return showReceiver() ? messageReceiverLabel() : "Me";
+    return messageReceiverLabel() || "local inbox";
   }
 
   function messageDelivery(): "draft" | "staged" | "sent" | "received" {
@@ -536,6 +538,83 @@
           ? "Received"
           : "Drafted";
     return `${verb} ${formatted}`;
+  }
+
+  function messageStampStyle(): string {
+    const sessionAnchor = note.anchors.find((a) => a.startsWith("session:"));
+    const seed = [
+      note.sender?.id ?? note.sender?.source ?? sessionAnchor ?? note.id,
+      note.receiver?.sessionId ?? note.receiver?.peerId ?? "",
+      note.createdAt.slice(0, 10),
+    ].join(":");
+    let h = 2166136261;
+    for (let i = 0; i < seed.length; i++) {
+      h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+    }
+    const index = (h >>> 0) % 64;
+    const col = index % 8;
+    const row = Math.floor(index / 8);
+    const x = col === 0 ? 0 : (col / 7) * 100;
+    const y = row === 0 ? 0 : (row / 7) * 100;
+    return `background-position: ${x}% ${y}%;`;
+  }
+
+  function findSessionBySource(source: string): AgentSession | null {
+    for (const r of repos) {
+      for (const wt of r.worktrees ?? []) {
+        const found = (wt as { agents?: AgentSession[] }).agents?.find(
+          (a) => a.source === source || a.sessionId === source,
+        );
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function sessionAddressFromPick(item: PickItem) {
+    const session = findSessionBySource(item.value);
+    const id = session?.sessionId || item.value;
+    const label = session ? sessionDisplayTitle(session) : item.label;
+    return {
+      id,
+      label,
+      source: session?.source ?? item.value,
+      agent: session?.agent ?? item.agent,
+    };
+  }
+
+  function onAddressPick(e: CustomEvent<PickItem>): void {
+    const item = e.detail;
+    if (!addressPicker || item.targetType !== "session") return;
+    const picked = sessionAddressFromPick(item);
+    pushRecent(item);
+    if (addressPicker === "from") {
+      dispatch("save", {
+        id: note.id,
+        body: note.body,
+        sender: {
+          kind: "session",
+          id: picked.id,
+          label: picked.label,
+          ...(picked.agent ? { agent: picked.agent } : {}),
+          ...(picked.source ? { source: picked.source } : {}),
+        },
+      });
+    } else {
+      dispatch("save", {
+        id: note.id,
+        body: note.body,
+        receiver: {
+          kind: "session",
+          sessionId: picked.id,
+          label: picked.label,
+          ...(picked.agent ? { agent: picked.agent } : {}),
+          ...(picked.source ? { source: picked.source } : {}),
+          delivery: note.receiver?.delivery ?? "draft",
+        },
+      });
+    }
+    addressPicker = null;
   }
 
   function showReceiver(): boolean {
@@ -620,20 +699,52 @@
         messageStatus = "waiting on input";
         return;
       }
-      window.dispatchEvent(new CustomEvent(STAGE_PROMPT_EVENT, {
-        detail: {
-          source: live.source ?? r.source,
-          termId: live.terminalId ?? r.terminalId,
-          text: note.body,
-        },
-      }));
-      const nextReceiver = { ...r, delivery: "staged" as const };
+      const fromId = note.sender?.id ?? note.sender?.source ?? "local-session";
+      const fromLabel = messageFromLabel();
+      const sentAt = new Date().toISOString();
+      const receive = await fetch("/api/messages/receive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: { id: fromId, label: fromLabel },
+          body: note.body,
+          sentAt,
+          kind: "note",
+          note: {
+            body: note.body,
+            anchors: note.anchors,
+            tags: note.tags,
+            kind: note.kind,
+            target: note.target,
+            receiver: {
+              ...r,
+              source: live.source ?? r.source,
+              terminalId: live.terminalId ?? r.terminalId,
+            },
+            sender: note.sender ?? {
+              kind: "session",
+              id: fromId,
+              label: fromLabel,
+            },
+          },
+        }),
+      });
+      if (!receive.ok) {
+        messageStatus = "send failed";
+        return;
+      }
+      const nextReceiver = {
+        ...r,
+        source: live.source ?? r.source,
+        terminalId: live.terminalId ?? r.terminalId,
+        delivery: "sent" as const,
+      };
       dispatch("save", {
         id: note.id,
         body: note.body,
         receiver: nextReceiver,
       });
-      messageStatus = "staged";
+      messageStatus = "sent";
     } catch {
       messageStatus = "send failed";
     }
@@ -2862,6 +2973,7 @@
 
 {#snippet messageEnvelope()}
   {@const delivery = messageDelivery()}
+  {@const stampStyle = messageStampStyle()}
   <section
     class="message-envelope"
     class:open={messageOpen}
@@ -2881,24 +2993,58 @@
       }
     }}
   >
-    <div class="message-envelope-face" aria-hidden={messageOpen}>
-      <div class="message-window">
-        <span class="message-window-row">
-          <span>From:</span>
-          <strong>{messageFromLabel()}</strong>
-        </span>
-        <span class="message-window-row">
-          <span>To:</span>
-          <strong>{messageToLabel()}</strong>
-        </span>
-        <span class="message-window-row">
-          <span>Title:</span>
-          <strong>{messageTitle()}</strong>
-        </span>
-      </div>
-      <div class="message-stamp" aria-label={messageWhenLabel()}>
-        <span class="message-stamp-pc">PC</span>
-        <span class="message-stamp-fern" aria-hidden="true"></span>
+	    <div class="message-envelope-face" aria-hidden={messageOpen}>
+	      <div class="message-window">
+	        <div class="message-address-lines">
+	          <button
+	            type="button"
+	            class="message-window-row"
+	            on:click|stopPropagation={() =>
+	              (addressPicker = addressPicker === "from" ? null : "from")}
+	            title="Change sender session"
+	          >
+	            <span>From:</span>
+	            <strong>{messageFromLabel()}</strong>
+	          </button>
+	          <button
+	            type="button"
+	            class="message-window-row"
+	            on:click|stopPropagation={() =>
+	              (addressPicker = addressPicker === "to" ? null : "to")}
+	            title="Change target session"
+	          >
+	            <span>To:</span>
+	            <strong>{messageToLabel()}</strong>
+	          </button>
+	        </div>
+	        <strong class="message-window-title">{messageTitle()}</strong>
+	      </div>
+	      {#if addressPicker}
+	        <div
+	          class="message-address-picker"
+	          role="presentation"
+	          on:click|stopPropagation
+	        >
+	          <MentionPicker
+	            providers={[sessionsProvider]}
+	            scope={pickerScope}
+	            placeholder={addressPicker === "from"
+	              ? "Pick sender session..."
+	              : "Pick target session..."}
+	            on:pick={onAddressPick}
+	            on:cancel={() => (addressPicker = null)}
+	          />
+	        </div>
+	      {/if}
+	      <div
+	        class="message-stamp"
+        aria-label={messageWhenLabel()}
+      >
+        <span
+          class="message-stamp-art"
+          aria-hidden="true"
+          style={stampStyle}
+        ></span>
         <span class="message-postmark">{messageDeliveryLabel()}</span>
       </div>
       <div class="message-delivery-line">
@@ -2955,10 +3101,19 @@
       <span class="sticky-snippet-meta">{pastedTextMeta(attachment)}</span>
     </span>
   {:else if attachment.kind === "emoji"}
+    {@const attachedAppName = appIconNameFromToken(attachment.body)}
     <span
       class={mode === "stack"
         ? "sticky-trailing-emoji"
-        : "sticky-detached-emoji"}>{attachment.body}</span
+        : "sticky-detached-emoji"}
+      class:sticky-trailing-emoji-app={mode === "stack" && !!attachedAppName}
+      class:sticky-detached-emoji-app={mode !== "stack" && !!attachedAppName}
+      >{#if attachedAppName}<img
+          class="sticky-attachment-app-img"
+          src={appIconUrl(attachedAppName)}
+          alt={attachedAppName}
+          draggable="false"
+        />{:else}{attachment.body}{/if}</span
     >
   {:else if attachment.kind === "note"}
     <span
@@ -3615,8 +3770,9 @@
                     >
                   </footer>
                 </div>
-              {:else if openPart.attachment.kind === "note"}
-                {#if openAttachmentNoteEditing}
+	              {:else if openPart.attachment.kind === "note"}
+	                {@const openNoteAttachment = openPart.attachment}
+	                {#if openAttachmentNoteEditing}
                   <div class="attachment-note-editor">
                     {@render noteEditorSurface("attachment")}
                     <footer
@@ -3636,7 +3792,7 @@
                   </div>
                 {:else}
                   {@const noteParts = parseInlineAttachments(
-                    openPart.attachment.body,
+	                    openNoteAttachment.body,
                   )}
                   {@const noteVisualIndexes =
                     visualAttachmentIndexes(noteParts)}
@@ -3661,16 +3817,16 @@
                         type="button"
                         class="sticky-btn"
                         title={copied ? "Copied" : "Copy note"}
-                        on:click={() =>
-                          void copyNoteBody(openPart.attachment.body)}
+	                        on:click={() =>
+	                          void copyNoteBody(openNoteAttachment.body)}
                         >{copied ? "✓" : "⧉"}</button
                       >
                       <button
                         type="button"
                         class="sticky-btn"
                         title="Edit"
-                        on:click={() =>
-                          startOpenNoteAttachmentEdit(openPart.attachment)}
+	                        on:click={() =>
+	                          startOpenNoteAttachmentEdit(openNoteAttachment)}
                         >✎</button
                       >
                     </footer>
