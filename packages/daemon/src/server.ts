@@ -175,6 +175,7 @@ import {
 import { record, snapshot as timingsSnapshot } from "./timings";
 import { buildDiagnostics } from "./diagnostics";
 import { decodeConnectionString } from "./connection-string";
+import { writePrivateKey } from "./write-private-key";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -7134,18 +7135,17 @@ const server = Bun.serve<TermWsData, never>({
         const p = decoded.payload;
         try {
           // Persist the private key (if present) to <workspace>/keys/<uuid>
-          // at 0600, so the secret lives server-side and TunnelManager can
-          // `-i` it. The browser only ever sent the opaque token.
+          // so the secret lives server-side and TunnelManager can `-i` it.
+          // The browser only ever sent the opaque token. writePrivateKey
+          // sets mode 0600 AND (on Windows) locks the NTFS ACL — OpenSSH
+          // ignores the unix mode on Windows and rejects a key with
+          // too-open ACLs ("bad permissions"), which broke the tunnel.
           let identityPath: string | undefined;
           if (p.privateKey) {
             const keysDir = join(WORKSPACE_PATH, "keys");
             await fsMkdir(keysDir, { recursive: true });
             identityPath = join(keysDir, crypto.randomUUID());
-            await fsWriteFile(
-              identityPath,
-              p.privateKey.endsWith("\n") ? p.privateKey : p.privateKey + "\n",
-              { mode: 0o600 },
-            );
+            await writePrivateKey(identityPath, p.privateKey);
           }
           const daemon = await workspace.addRemoteDaemon({
             label: p.label ?? "",
