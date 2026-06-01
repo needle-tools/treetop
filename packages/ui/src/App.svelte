@@ -11,6 +11,8 @@
   } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
   import { openUrl } from "./open-url";
+  import { createResizeCoalescer } from "./terminal-resize";
+  import { restoreScrollAfterDelay } from "./scroll-restore";
   import { singleFlight } from "./single-flight";
   import { time, timeAsync } from "./timings";
   import {
@@ -741,6 +743,15 @@
   let emojiPickerOpen: Record<string, boolean> = {};
   // Agent CLIs we detected on PATH at the daemon. Loaded once on mount.
   let installedAgents: { name: string; path: string }[] = [];
+  // Per-daemon caches for the "Start a new session" dropdown, keyed by
+  // daemonId; "local" = the local daemon. A remote row must list the
+  // remote box's agents/shells (it runs sessions there), not ours.
+  let agentsByDaemon: Record<string, { name: string; path: string }[]> = {};
+  let shellByDaemon: Record<string, string> = {};
+  // Shell login args per daemon (e.g. ["-l"] / ["/k"]) — paired with
+  // shellByDaemon so a remote terminal spawns the REMOTE box's shell with
+  // ITS flags, not the local machine's.
+  let shellArgsByDaemon: Record<string, string[]> = {};
   // Per-worktree: is the "+ new agent" popover open?
   let newAgentPopoverOpen: Record<string, boolean> = {};
   // Per-worktree: is the Ollama models submenu inside the picker expanded?
@@ -1517,6 +1528,7 @@
         installed: { name: string; path: string }[];
       };
       installedAgents = body.installed ?? [];
+      agentsByDaemon = { ...agentsByDaemon, local: installedAgents };
     } catch {
       installedAgents = [];
     }
@@ -1995,6 +2007,7 @@
       const body = (await res.json()) as { shell?: unknown; args?: unknown };
       if (typeof body.shell === "string" && body.shell.length > 0) {
         defaultShell = body.shell;
+        shellByDaemon = { ...shellByDaemon, local: defaultShell };
       }
       if (Array.isArray(body.args)) {
         defaultShellArgs = body.args as string[];
@@ -3522,6 +3535,40 @@
             ),
           );
         }
+        // Populate per-daemon agent/shell caches so the "Start a new session"
+        // dropdown shows the remote box's CLIs, not the local machine's.
+        agentsByDaemon = { local: installedAgents };
+        shellByDaemon = { local: defaultShell };
+        shellArgsByDaemon = { local: defaultShellArgs };
+        for (const d of remoteDaemons) {
+          try {
+            const [aRes, sRes] = await Promise.all([
+              fetch(apiUrl("/api/agents/installed", d.id)),
+              fetch(apiUrl("/api/shell-default", d.id)),
+            ]);
+            if (aRes.ok) {
+              const body = (await aRes.json()) as { installed?: { name: string; path: string }[] };
+              agentsByDaemon[d.id] = Array.isArray(body?.installed) ? body.installed : [];
+            }
+            if (sRes.ok) {
+              const body = (await sRes.json()) as { shell?: unknown; args?: unknown };
+              if (typeof body.shell === "string" && body.shell.length > 0) {
+                shellByDaemon[d.id] = body.shell;
+              }
+              if (Array.isArray(body.args)) {
+                shellArgsByDaemon[d.id] = body.args.filter(
+                  (a): a is string => typeof a === "string",
+                );
+              }
+            }
+          } catch {
+            // offline daemon — row falls back to local set
+          }
+        }
+        // ensure reactivity
+        agentsByDaemon = agentsByDaemon;
+        shellByDaemon = shellByDaemon;
+        shellArgsByDaemon = shellArgsByDaemon;
       } else {
         remoteDaemons = [];
       }
@@ -3565,6 +3612,79 @@
       }
     }
   }));
+
+  /** Persisted page scroll offset. Remembered like the window size so a
+   *  reload lands where the user left off (rule 11: daemon prefs, not
+   *  raw localStorage). */
+  const SCROLL_KEY = "supergit:scrollY";
+
+  /** Trailing-edge save: persist scrollY once the user stops scrolling
+   *  for 250ms. Reuses the resize coalescer's debounce — a scroll burst
+   *  collapses to a single write. */
+  const scrollSaver = createResizeCoalescer(() => {
+    try {
+      getDaemonKV().setItem(SCROLL_KEY, String(Math.round(window.scrollY)));
+    } catch {}
+  }, 250);
+
+  /** Subscribe to user-initiated scroll intent (wheel / touch / arrow &
+   *  page keys). Used by the restore to bail the instant the user takes
+   *  over after a reload. Returns an unsubscribe fn. */
+  function onUserScrollIntent(cb: () => void): () => void {
+    const handler = () => cb();
+    const SCROLL_KEYS = new Set([
+      "ArrowUp",
+      "ArrowDown",
+      "PageUp",
+      "PageDown",
+      "Home",
+      "End",
+      " ",
+      "Spacebar",
+    ]);
+    const keyHandler = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      // Typing in a field isn't a page scroll — ignore so an early
+      // keystroke in search doesn't cancel the restore.
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        t?.isContentEditable
+      ) {
+        return;
+      }
+      if (SCROLL_KEYS.has(e.key)) cb();
+    };
+    window.addEventListener("wheel", handler, { passive: true });
+    window.addEventListener("touchmove", handler, { passive: true });
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      window.removeEventListener("wheel", handler);
+      window.removeEventListener("touchmove", handler);
+      window.removeEventListener("keydown", keyHandler);
+    };
+  }
+
+  /** After the initial load resolves (repos streamed in), wait a beat for
+   *  rows to lay out, then restore the saved scroll offset — unless the
+   *  user already started scrolling, in which case we leave them be. */
+  function restoreScrollPosition(): void {
+    const raw = getDaemonKV().getItem(SCROLL_KEY);
+    if (!raw) return;
+    const target = parseInt(raw, 10);
+    if (!Number.isFinite(target) || target <= 0) return;
+    cancelScrollRestore = restoreScrollAfterDelay(target, 400, {
+      timer: {
+        set: (cb, ms) => setTimeout(cb, ms),
+        clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+      },
+      scrollTo: (y) => window.scrollTo({ top: y }),
+      onUserScroll: onUserScrollIntent,
+    });
+  }
+  let cancelScrollRestore: (() => void) | null = null;
 
   /** Scroll to the bottom of the page so the just-added repo (which
    *  appends to the end of the list) AND the footer CTAs below it are
@@ -6014,7 +6134,10 @@
     // blinking while they're already looking at it.
     document.addEventListener("focusin", handleFocusInForUnread);
     document.addEventListener("focusout", handleFocusOutForUnread);
-    void load();
+    // Persist the page scroll offset as the user scrolls, and restore it
+    // once the initial load's repos have streamed in (see SCROLL_KEY).
+    window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
+    void load().then(() => restoreScrollPosition());
     // Note: SourceControlPane handles its own initial commits-load via
     // a `$: onExpandedChange(expanded, wt.path)` reactive when its
     // `expanded` prop is true on mount, so the parent doesn't (and
@@ -6147,6 +6270,9 @@
     return () => {
       document.removeEventListener("focusin", handleFocusInForUnread);
       document.removeEventListener("focusout", handleFocusOutForUnread);
+      window.removeEventListener("scroll", scrollSaver.trigger);
+      scrollSaver.cancel();
+      cancelScrollRestore?.();
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
       window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -7494,12 +7620,15 @@
                       }}>+</button
                     >
                     {#if newAgentPopoverOpen[wt.path]}
+                      {@const rowDaemonId = daemonIdForWorktreePath(repos, wt.path)}
+                      {@const rowAgents = agentsByDaemon[rowDaemonId ?? "local"] ?? installedAgents}
+                      {@const rowShell = shellByDaemon[rowDaemonId ?? "local"] ?? defaultShell}
                       <Popover variant="agents" extraClass="new-agent-popover">
                         <svelte:fragment slot="head"
                           >Start a new session</svelte:fragment
                         >
                         <ul class="agents-list">
-                          {#each installedAgents as ag (ag.name)}
+                          {#each rowAgents as ag (ag.name)}
                             <li>
                               {#if ag.name === "ollama"}
                                 <button
@@ -7647,7 +7776,7 @@
                                 unfoldRowIfFolded(row.key);
                                 openNewTerminalInWt(wt.path);
                               }}
-                              title={`Spawn ${defaultShell} as a plain terminal in ${wt.path}`}
+                              title={`Spawn ${rowShell} as a plain terminal in ${wt.path}`}
                             >
                               <svg
                                 class="agent-row-icon-svg"
@@ -7664,7 +7793,7 @@
                               >
                               <span class="agent-row-name">Terminal</span>
                               <span class="agent-title muted"
-                                >{defaultShell}</span
+                                >{rowShell}</span
                               >
                             </button>
                           </li>
@@ -8480,6 +8609,7 @@
                     reorderCustomLinks(repo.id, orderedIds)}
                   onEditCustomLink={(linkId, input) =>
                     updateCustomLink(repo.id, linkId, input)}
+                  daemonId={daemonIdForWorktreePath(repos, wt.path)}
                   iconOnly
                 />
               {/if}
@@ -8573,6 +8703,7 @@
                       reorderCustomLinks(repo.id, orderedIds)}
                     onEditCustomLink={(linkId, input) =>
                       updateCustomLink(repo.id, linkId, input)}
+                    daemonId={daemonIdForWorktreePath(repos, wt.path)}
                   />
                 </div>
               {/if}
@@ -8929,8 +9060,14 @@
                                   daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                   cmd={cmdForOpenSession(
                                     s,
-                                    defaultShell,
-                                    defaultShellArgs,
+                                    shellByDaemon[
+                                      daemonIdForWorktreePath(repos, wt.path) ??
+                                        "local"
+                                    ] ?? defaultShell,
+                                    shellArgsByDaemon[
+                                      daemonIdForWorktreePath(repos, wt.path) ??
+                                        "local"
+                                    ] ?? defaultShellArgs,
                                   )}
                                   cwd={shellResumeCwd[s.source] ?? wt.path}
                                   procName={`supergit-tui-new-${s.agent}`}
