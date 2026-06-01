@@ -156,23 +156,24 @@
 
   /** Quick lookup: repoId → status. Used in the template to render
    *  arrows at repo-group boundaries. A repo qualifies if it has any
-   *  of push, pull, or (when inactive sessions are also shown)
-   *  uncommitted non-submodule changes. The dirty signal is gated on
-   *  showInactive — active-TUIs-only mode is meant to be quiet, so
-   *  push/pull stays (still actionable) but dirty repos are hidden. */
+   *  of push, pull, or uncommitted non-submodule changes. The
+   *  template gates the dirty *glyph* visibility on context: a
+   *  dirty-only orphan row requires showInactive (no anchor TUI),
+   *  but a repo that already has visible TUI rows always shows the
+   *  wave next to its boundary. */
   $: repoStatusMap = new Map(
     dockRepoStatuses
       .filter(
-        (s) =>
-          s.ahead > 0 || s.behind > 0 || (showInactive && dockDirtyOf(s) > 0),
+        (s) => s.ahead > 0 || s.behind > 0 || dockDirtyOf(s) > 0,
       )
       .map((s) => [s.repoId, s]),
   );
 
   /** Repos that have a status badge but no session dots — they still
    *  need a row in the dock. Built from repoStatuses minus any repoId
-   *  that appears in the current split. Same showInactive gating as
-   *  the main filter. */
+   *  that appears in the current split. Dirty-only orphans are
+   *  suppressed in active-TUIs-only mode (no session anchors the
+   *  signal, so it's just noise); push/pull orphans always show. */
   $: orphanRepoArrows = (() => {
     const inDock = new Set([
       ...split.top.map((e) => e.repoId),
@@ -752,7 +753,7 @@
                   aria-hidden="true"
                   ><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
+              {#if dirtyCount && !rs?.ahead && !rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-dirty"
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_DIRTY} /></svg
@@ -763,7 +764,7 @@
               <span class="dock-label-badges">
                 {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-                {#if dirtyCount && showInactive}<StatusBadge
+                {#if dirtyCount}<StatusBadge
                     compact
                     dirty={dirtyCount}
                   />{/if}
@@ -908,7 +909,7 @@
                   aria-hidden="true"
                   ><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && showInactive && !rs?.ahead && !rs?.behind}<svg
+              {#if dirtyCount && !rs?.ahead && !rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-dirty"
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_DIRTY} /></svg
@@ -919,7 +920,7 @@
               <span class="dock-label-badges">
                 {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-                {#if dirtyCount && showInactive}<StatusBadge
+                {#if dirtyCount}<StatusBadge
                     compact
                     dirty={dirtyCount}
                   />{/if}
