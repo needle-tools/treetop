@@ -682,6 +682,33 @@
       (ev) => {
         const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 
+        // Ctrl+F toggles this column's native fullscreen. We claim it in
+        // capture phase and return before xterm sees it, so the keystroke
+        // never reaches the PTY — otherwise readline/TUIs would treat
+        // Ctrl+F as forward-char. Same target + toggle logic as the
+        // header burger's "Toggle fullscreen". Esc still exits via the
+        // browser's own fullscreen-exit handling. Ctrl+F (not Cmd+F) on
+        // every platform: Cmd+F is the browser's find and we leave it be.
+        if (
+          ev.ctrlKey &&
+          !ev.metaKey &&
+          !ev.altKey &&
+          !ev.shiftKey &&
+          ev.code === "KeyF"
+        ) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const sessionEl = containerEl?.closest(".session") as HTMLElement | null;
+          if (sessionEl) {
+            if (document.fullscreenElement === sessionEl) {
+              void document.exitFullscreen().catch(() => {});
+            } else {
+              void sessionEl.requestFullscreen().catch(() => {});
+            }
+          }
+          return;
+        }
+
         if (isMac && ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
           if (ev.code === "KeyC" && !xterm?.hasSelection()) {
             ev.preventDefault();
