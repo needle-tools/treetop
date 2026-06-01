@@ -3989,15 +3989,30 @@
    *  re-derives the row order — no optimistic mutation needed here. */
   async function reorderRepos(orderedIds: string[]) {
     error = "";
+    // The dialog hands back the MERGED order across all daemons, but each
+    // daemon's /api/repos/order validates the id list against ITS OWN
+    // registry ("orderedIds length must match existing repos"). So split
+    // the order by owning daemon and POST each daemon only its own repos,
+    // each via apiUrl(..., daemonId). A daemon only sees its slice — the
+    // relative order within it is preserved from the merged list.
+    const byDaemon = new Map<string | undefined, string[]>();
+    for (const repoId of orderedIds) {
+      const dId = daemonIdForRepoId(repos, repoId);
+      const arr = byDaemon.get(dId) ?? [];
+      arr.push(repoId);
+      byDaemon.set(dId, arr);
+    }
     try {
-      const res = await fetch(apiUrl(`/api/repos/order`), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order: orderedIds }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
+      for (const [dId, ids] of byDaemon) {
+        const res = await fetch(apiUrl(`/api/repos/order`, dId), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order: ids }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);

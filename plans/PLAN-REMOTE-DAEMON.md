@@ -461,13 +461,23 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       fetch per-daemon via `apiUrl(path, daemonId)`, key by
       `daemonId ?? "local"`, and have each row's dropdown read its daemon's
       set — so a remote row shows the box's Linux agents and spawns the
-      tunnel back to the local UI.
-- [ ] **#8 "Open in" badges on a remote row mostly don't apply** — the
-      row's action strip shows Open-in-<editor>/Fork/Terminal/Files, which
-      call local-only `/api/open` against a REMOTE path → nonsense. Suppress
-      those for `repo.daemonId` rows; KEEP url-type chips (GitHub/remote
-      URL, customLinks kind="url") since those are just `openUrl()` and
-      work regardless of where the repo lives.
+      tunnel back to the local UI. **DONE** (0c395ea): agentsByDaemon /
+      shellByDaemon / shellArgsByDaemon keyed by daemonId|"local";
+      cmdForOpenSession at the NewSessionCol render uses the row's set.
+- [x] **#8 "Open in" badges on a remote row mostly don't apply** — gated
+      Open-in-<editor>/Fork/Terminal/Files behind `{#if !daemonId}` in
+      OpenInActions (55ca06a) + wired daemonId from App (0c395ea); URL
+      chips stay.
+- [x] **#9 Remote repo reorder fails ("orderedIds length must match
+      existing repos")** — the reorder dialog emits the MERGED local+remote
+      id order, but `/api/repos/order` validates against ONE daemon's
+      registry. `reorderRepos` now splits the order by owning daemon and
+      POSTs each via `apiUrl("/api/repos/order", daemonId)`.
+- [x] **#10 Remote terminal: "/bin/zsh: No such file or directory"** — the
+      systemd daemon has no `$SHELL`, so `defaultLoginShell()` hit its
+      hard-coded `/bin/zsh` fallback, but a fresh Debian box has no zsh.
+      Now `firstExistingPosixShell()` probes /bin/bash → /usr/bin/bash →
+      /bin/sh → /bin/zsh (injectable `exists`); +4 tests.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the

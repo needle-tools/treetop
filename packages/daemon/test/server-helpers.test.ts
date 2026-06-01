@@ -137,6 +137,54 @@ describe("defaultLoginShell", () => {
       else process.env.SHELL = orig;
     }
   });
+
+  // These pin the POSIX fallback (the remote-daemon case) regardless of the
+  // host running the tests, so platform="linux" + cleared SHELL/COMSPEC are
+  // injected — otherwise a Windows test host's COMSPEC/win32 branch wins.
+  function withCleanShellEnv<T>(fn: () => T): T {
+    const sh = process.env.SHELL;
+    const cs = process.env.COMSPEC;
+    delete process.env.SHELL;
+    delete process.env.COMSPEC;
+    try {
+      return fn();
+    } finally {
+      if (sh === undefined) delete process.env.SHELL;
+      else process.env.SHELL = sh;
+      if (cs === undefined) delete process.env.COMSPEC;
+      else process.env.COMSPEC = cs;
+    }
+  }
+
+  test("no SHELL env → picks a shell that EXISTS, not hard-coded zsh", () => {
+    // Regression: a fresh Debian remote daemon has no $SHELL and no zsh; the
+    // old /bin/zsh fallback spawned a dead terminal. With zsh absent, bash wins.
+    withCleanShellEnv(() => {
+      const result = defaultLoginShell({
+        platform: "linux",
+        exists: (p) => p === "/bin/bash",
+      });
+      expect(result.shell).toBe("/bin/bash");
+      expect(result.args).toEqual(["-l"]);
+    });
+  });
+
+  test("no SHELL, only /bin/sh present → falls through to sh", () => {
+    withCleanShellEnv(() => {
+      const result = defaultLoginShell({
+        platform: "linux",
+        exists: (p) => p === "/bin/sh",
+      });
+      expect(result.shell).toBe("/bin/sh");
+    });
+  });
+
+  test("no SHELL, nothing detected → still returns /bin/sh (POSIX guarantee)", () => {
+    withCleanShellEnv(() => {
+      const result = defaultLoginShell({ platform: "linux", exists: () => false });
+      expect(result.shell).toBe("/bin/sh");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

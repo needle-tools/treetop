@@ -9,6 +9,7 @@
  * input→output assertions added as part of the extraction PR).
  */
 
+import { existsSync } from "node:fs";
 import type { AttachmentKind, LinkTarget } from "./notes";
 
 /** Strip model-specific thinking artifacts from Ollama output.
@@ -28,15 +29,39 @@ export function stripThinkingArtifacts(raw: string): string {
 
 /** The user's default interactive shell with appropriate flags.
  *  Used by /api/shell-default and cmdForOpenSession-equivalent logic. */
-export function defaultLoginShell(): { shell: string; args: string[] } {
+/** Pick a POSIX login shell that actually EXISTS on this box. The old
+ *  hard-coded `/bin/zsh` fallback failed on minimal servers (e.g. a fresh
+ *  Debian remote daemon) where zsh isn't installed — the spawned terminal
+ *  died with "/bin/zsh: No such file or directory". Prefer bash (near-
+ *  universal), then sh (POSIX-guaranteed), then zsh. `exists` is injected
+ *  so the choice is unit-testable without touching the filesystem. */
+export function firstExistingPosixShell(
+  exists: (p: string) => boolean,
+): string {
+  for (const cand of ["/bin/bash", "/usr/bin/bash", "/bin/sh", "/bin/zsh"]) {
+    if (exists(cand)) return cand;
+  }
+  return "/bin/sh"; // POSIX guarantees /bin/sh — last-resort even if stat lied
+}
+
+export function defaultLoginShell(deps?: {
+  exists?: (p: string) => boolean;
+  platform?: NodeJS.Platform;
+}): { shell: string; args: string[] } {
+  const exists = deps?.exists ?? ((p: string) => existsSync(p));
+  const platform = deps?.platform ?? process.platform;
   const shell =
     process.env.SHELL ||
     process.env.COMSPEC ||
-    (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
+    (platform === "win32"
+      ? "powershell.exe"
+      : firstExistingPosixShell(exists));
   const base = shell.toLowerCase().replace(/\\/g, "/");
   if (base.includes("powershell") || base.includes("pwsh"))
     return { shell, args: ["-NoLogo"] };
   if (base.includes("cmd")) return { shell, args: [] };
+  // /bin/sh is typically dash, which doesn't accept -l the same way; but
+  // -l is harmless on sh/bash/zsh as a login flag, so keep it uniform.
   return { shell, args: ["-l"] };
 }
 
