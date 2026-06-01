@@ -110,6 +110,87 @@ export function sessionDisplayTitle(s: AgentSession): string {
   return s.sessionId ? `session ${s.sessionId.slice(0, 8)}` : "(untitled)";
 }
 
+/** Rank sessions by most-recent activity, newest first → a
+ *  `source → position` map. Used to snapshot the no-query list order the
+ *  moment the picker opens, so later re-renders can reproduce that exact
+ *  order even as `lastActive` ticks forward underneath. */
+export function activityRank(sessions: AgentSession[]): Map<string, number> {
+  const ranked = [...sessions].sort(
+    (a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive),
+  );
+  return new Map(ranked.map((s, i) => [s.source, i]));
+}
+
+/** Stable activity order for the no-query session list.
+ *
+ *  The picker opens, then its `sessions` keep updating as `lastActive`
+ *  ticks (polling / SSE). Re-sorting live makes rows jump under the
+ *  cursor mid-hover. So we order against a rank snapshotted at open time
+ *  (`openRank` from `activityRank`) instead of the live timestamps.
+ *  Sessions that appear after open (absent from the rank) sort after the
+ *  known ones, most-recent-first among themselves. Pure — does not
+ *  mutate the input. */
+export function orderByOpenActivity(
+  sessions: AgentSession[],
+  openRank: Map<string, number>,
+): AgentSession[] {
+  return [...sessions].sort((a, b) => {
+    const ra = openRank.get(a.source);
+    const rb = openRank.get(b.source);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return Date.parse(b.lastActive) - Date.parse(a.lastActive);
+  });
+}
+
+/** A session active within this window of open time floats into the
+ *  "working on this right now" tier, above starred items. */
+export const RECENT_ACTIVITY_MS = 30 * 60 * 1000;
+
+/** Sources active within `windowMs` of `now` → the recency tier. Captured
+ *  at open time (with `now = Date.now()` then) so the tier is frozen and a
+ *  session crossing the window boundary mid-hover doesn't jump tiers. */
+export function recentlyActiveSources(
+  sessions: AgentSession[],
+  now: number,
+  windowMs: number = RECENT_ACTIVITY_MS,
+): Set<string> {
+  const out = new Set<string>();
+  for (const s of sessions) {
+    const t = Date.parse(s.lastActive);
+    if (!Number.isNaN(t) && now - t <= windowMs) out.add(s.source);
+  }
+  return out;
+}
+
+/** Final no-query ordering for the picker, in three tiers:
+ *    1. recently active (within the recency window at open)
+ *    2. starred (not recently active)
+ *    3. everything else
+ *  Each tier is in open-time activity order. `openRank` and
+ *  `recentSources` are both snapshotted at open, so tiers don't reshuffle
+ *  under the cursor as `lastActive` ticks. A session that is both recent
+ *  and starred lands in the recent tier — recency wins. Pure. */
+export function orderNoQuery(
+  sessions: AgentSession[],
+  openRank: Map<string, number>,
+  recentSources: Set<string>,
+  starredSources: Set<string>,
+): AgentSession[] {
+  const ordered = orderByOpenActivity(sessions, openRank);
+  if (recentSources.size === 0 && starredSources.size === 0) return ordered;
+  const recent: AgentSession[] = [];
+  const starred: AgentSession[] = [];
+  const rest: AgentSession[] = [];
+  for (const s of ordered) {
+    if (recentSources.has(s.source)) recent.push(s);
+    else if (starredSources.has(s.source)) starred.push(s);
+    else rest.push(s);
+  }
+  return [...recent, ...starred, ...rest];
+}
+
 /** Filter + rank a session list against a query string. Empty/whitespace
  *  query short-circuits to the original list (no copy, no sort). */
 export function filterSessions(

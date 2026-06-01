@@ -26,7 +26,13 @@
     type PreviewMsg,
     type PreviewSummary,
   } from "./preview-action";
-  import { filterSessions, type AgentSession } from "./sessionSearch";
+  import {
+    filterSessions,
+    activityRank,
+    recentlyActiveSources,
+    orderNoQuery,
+    type AgentSession,
+  } from "./sessionSearch";
 
   /** Number of trailing shell commands to show in the hover dock.
    *  Matches the chat preview's "last few turns" feel without
@@ -73,19 +79,31 @@
   }
   $: filtered = filterSessions(sessions, debouncedQuery);
 
-  /** Active rows above the divider, dismissed rows below. Computed
-   *  off the same `filtered` list so search applies to both groups.
-   *  When no search query is active, starred sessions float to top. */
+  // The no-query list orders by most-recent activity, but the order is
+  // snapshotted the moment the picker opens — not recomputed live.
+  // `sessions` keeps updating as `lastActive` ticks (polling / SSE), and
+  // re-sorting on every tick would make rows jump under the cursor
+  // mid-hover. So we capture two things once (the first time a non-empty
+  // list arrives, i.e. at open): the activity rank, and which sessions
+  // were "recently active" (within RECENT_ACTIVITY_MS). Both are frozen,
+  // so a session crossing the recency window or reshuffling its activity
+  // rank afterwards holds its tier/position. See `orderNoQuery`.
+  let openRank: Map<string, number> | null = null;
+  let recentSources: Set<string> = new Set();
+  $: if (openRank === null && sessions.length > 0) {
+    openRank = activityRank(sessions);
+    recentSources = recentlyActiveSources(sessions, Date.now());
+  }
+
+  /** Active rows above the divider, dismissed rows below. Computed off the
+   *  same `filtered` list so search applies to both groups. With no query
+   *  the active rows hold their open-time order in three tiers:
+   *  recently-active (within the recency window) on top, then starred,
+   *  then the rest. */
   $: activeFiltered = (() => {
     const active = filtered.filter((s) => !dismissedSources.has(s.source));
-    if (debouncedQuery.trim() || starredSources.size === 0) return active;
-    const starred: AgentSession[] = [];
-    const rest: AgentSession[] = [];
-    for (const s of active) {
-      if (starredSources.has(s.source)) starred.push(s);
-      else rest.push(s);
-    }
-    return [...starred, ...rest];
+    if (debouncedQuery.trim() || !openRank) return active;
+    return orderNoQuery(active, openRank, recentSources, starredSources);
   })();
   $: dismissedFiltered = filtered.filter((s) => dismissedSources.has(s.source));
   /** One flat array of `{kind, ...}` so a single each-block can
@@ -273,7 +291,7 @@
     const d = Date.now() - Date.parse(iso);
     if (Number.isNaN(d)) return "";
     const s = Math.max(0, Math.floor(d / 1000));
-    if (s < 60) return `${s}s ago`;
+    if (s < 60) return "now";
     const m = Math.floor(s / 60);
     if (m < 60) return `${m}m ago`;
     const h = Math.floor(m / 60);
