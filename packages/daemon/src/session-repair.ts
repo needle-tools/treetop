@@ -101,7 +101,24 @@ export function diagnoseClaudeSession(text: string): SessionDiagnosis {
   // Detect orphaned tails: sequences of messages after a dramatic
   // messageCount drop in turn_duration entries. These are messages
   // generated while the chain was broken and the model had amnesia.
+  //
+  // GATED on `brokenLinks.length > 0`: a messageCount drop on its own
+  // is almost always Claude Code's auto-compaction (the summary +
+  // recent-window replaces the running context while every JSONL line
+  // stays on disk with valid parentUuid links). Without a corroborating
+  // chain break the drop is a feature, not amnesia, and trimming the
+  // tail would delete legitimate post-compaction history. Real amnesia
+  // shows BOTH signals: at least one parentUuid is missing AND a later
+  // turn_duration reports the context cratering.
   let orphanedTail: OrphanedTail | null = null;
+  if (brokenLinks.length === 0) {
+    return {
+      totalEntries: lines.length,
+      chainEntries: chainEntries.length,
+      brokenLinks,
+      orphanedTail,
+    };
+  }
   const turnDurations: Array<{ lineIndex: number; messageCount: number }> = [];
   for (let i = 0; i < lines.length; i++) {
     let obj: Record<string, unknown>;
@@ -322,15 +339,22 @@ export async function repairClaudeSession(
   // Trim orphaned tail — messages generated while the chain was broken
   // and the model had amnesia. These "I don't have history" messages
   // actively poison the context on resume.
+  //
+  // We can't re-diagnose here because the synthetic-node insertions
+  // above just erased every brokenLink, and the orphan detector now
+  // refuses to flag a tail without a corroborating chain break (to
+  // avoid mis-classifying auto-compaction as amnesia). Instead, shift
+  // the original startLineIndex by the count of synthetic nodes
+  // inserted at or before it.
   let trimmedLines = 0;
   if (diag.orphanedTail) {
-    // Re-diagnose after chain repair to get updated line indices
-    const postRepairText = lines.join("\n");
-    const postDiag = diagnoseClaudeSession(postRepairText);
-    if (postDiag.orphanedTail) {
-      trimmedLines = lines.length - postDiag.orphanedTail.startLineIndex;
-      lines.length = postDiag.orphanedTail.startLineIndex;
-    }
+    const tail = diag.orphanedTail;
+    const insertedBefore = diag.brokenLinks.filter(
+      (b) => b.lineIndex <= tail.startLineIndex,
+    ).length;
+    const adjustedStart = tail.startLineIndex + insertedBefore;
+    trimmedLines = lines.length - adjustedStart;
+    lines.length = adjustedStart;
   }
 
   await writeFile(filePath, lines.join("\n") + "\n");

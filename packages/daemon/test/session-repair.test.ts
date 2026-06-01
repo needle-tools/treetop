@@ -123,7 +123,9 @@ describe("diagnoseClaudeSession", () => {
     expect(diag.brokenLinks).toHaveLength(0);
   });
 
-  test("detects orphaned tail after messageCount drop", () => {
+  test("detects orphaned tail when messageCount drop is corroborated by a broken parentUuid", () => {
+    // u2 references a missing parent ("missing-id") → real chain break.
+    // Combined with the messageCount drop, this is genuine amnesia.
     const text = [
       line({
         type: "system",
@@ -150,7 +152,7 @@ describe("diagnoseClaudeSession", () => {
       line({
         type: "user",
         uuid: "u2",
-        parentUuid: "td2",
+        parentUuid: "missing-id",
         message: { role: "user", content: "amnesiac" },
       }),
       line({
@@ -162,10 +164,59 @@ describe("diagnoseClaudeSession", () => {
       }),
     ].join("\n");
     const diag = diagnoseClaudeSession(text);
+    expect(diag.brokenLinks).toHaveLength(1);
     expect(diag.orphanedTail).not.toBeNull();
     expect(diag.orphanedTail!.messageCountBefore).toBe(510);
     expect(diag.orphanedTail!.messageCountAfter).toBe(5);
     expect(diag.orphanedTail!.lineCount).toBeGreaterThan(0);
+  });
+
+  test("messageCount drop alone is NOT flagged when the chain is intact (auto-compaction, not amnesia)", () => {
+    // All parentUuids resolve, so the chain is healthy. A 510→5 drop
+    // is overwhelmingly likely to be Claude Code's auto-compaction
+    // (summary + recent-window replaces the running context while
+    // every JSONL line stays on disk). Reporting this as an orphan
+    // tail would tell users to delete legitimate history.
+    const text = [
+      line({
+        type: "system",
+        subtype: "turn_duration",
+        uuid: "td1",
+        messageCount: 500,
+        timestamp: "2026-05-25T10:00:00Z",
+      }),
+      line({
+        type: "user",
+        uuid: "u1",
+        parentUuid: "td1",
+        message: { role: "user", content: "good msg" },
+      }),
+      line({
+        type: "system",
+        subtype: "turn_duration",
+        uuid: "td2",
+        parentUuid: "u1",
+        messageCount: 510,
+        timestamp: "2026-05-25T10:01:00Z",
+      }),
+      line({
+        type: "user",
+        uuid: "u2",
+        parentUuid: "td2",
+        message: { role: "user", content: "post-compaction" },
+      }),
+      line({
+        type: "system",
+        subtype: "turn_duration",
+        uuid: "td3",
+        parentUuid: "u2",
+        messageCount: 5,
+        timestamp: "2026-05-25T10:02:00Z",
+      }),
+    ].join("\n");
+    const diag = diagnoseClaudeSession(text);
+    expect(diag.brokenLinks).toHaveLength(0);
+    expect(diag.orphanedTail).toBeNull();
   });
 
   test("no orphaned tail when messageCount is stable", () => {
