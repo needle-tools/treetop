@@ -83,7 +83,12 @@
     }
   }
 
-  const KV_KEY = "supergit:fileBrowser:state";
+  // Namespace persisted state + stars by the owning daemon so a remote
+  // daemon's file-browser state/stars don't collide with local (or another
+  // daemon's). Byte-identical for local (daemonId undefined ⇒ bare key), so
+  // existing local prefs need no migration.
+  const KV_KEY =
+    "supergit:fileBrowser:state" + (daemonId ? `:${daemonId}` : "");
 
   let nav = new NavHistory(wtPath);
   let navTick = 0;
@@ -95,7 +100,10 @@
   let selected: Set<string> = new Set();
   let showDotfiles = true;
   let gitStatusByDir: Record<string, Map<string, string>> = {};
-  const starStore = new StarStore(getDaemonKV(), "supergit:fileBrowser:stars");
+  const starStore = new StarStore(
+    getDaemonKV(),
+    "supergit:fileBrowser:stars" + (daemonId ? `:${daemonId}` : ""),
+  );
   let starred: Set<string> = starStore.load();
   let starredOnly = false;
 

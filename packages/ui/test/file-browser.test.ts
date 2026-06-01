@@ -803,4 +803,27 @@ describe("StarStore", () => {
       "C:\\git\\repo\\foo.md",
     ]);
   });
+
+  // Per-daemon namespacing (#2): FileBrowser keys the store by
+  // base + (daemonId ? ":"+daemonId : ""). Two stores on different keys
+  // backed by the SAME KV must not see each other's stars — that's the
+  // guarantee a remote daemon's stars don't collide with local.
+  test("different daemon-namespaced keys don't share stars (shared KV)", () => {
+    const kv = new MemStore();
+    const local = new StarStore(kv, "supergit:fileBrowser:stars");
+    const remote = new StarStore(kv, "supergit:fileBrowser:stars:hz");
+    local.save(new Set(["/home/me/local-file"]));
+    remote.save(new Set(["/srv/app/remote-file"]));
+    expect([...local.load()]).toEqual(["/home/me/local-file"]);
+    expect([...remote.load()]).toEqual(["/srv/app/remote-file"]);
+  });
+
+  test("the local key is the bare base (byte-identical, no migration)", () => {
+    // The namespacing must leave the local key untouched so existing
+    // stars survive. Pin the exact base string the component uses.
+    const kv = new MemStore();
+    const local = new StarStore(kv, "supergit:fileBrowser:stars");
+    local.save(new Set(["/x"]));
+    expect(kv.getItem("supergit:fileBrowser:stars")).not.toBeNull();
+  });
 });

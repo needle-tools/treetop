@@ -278,6 +278,13 @@
     port: number;
     color?: string;
   }> = [];
+  /** Label for a repo's owning remote daemon, or "" for a local repo —
+   *  used to prefix a remote row's worktree path so it's clear the path
+   *  lives on another box (e.g. "needle-playground · /home/supergit/app"). */
+  function daemonLabelForRepo(daemonId: string | undefined): string {
+    if (!daemonId) return "";
+    return remoteDaemons.find((d) => d.id === daemonId)?.label ?? daemonId;
+  }
   let events: Event[] = [];
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
@@ -8082,8 +8089,18 @@
                     aria-label="agent activity"
                   ></span>
                 {/if}
+                {#if repo.daemonId}<span
+                    class="daemon-row-chip"
+                    title={`Runs on remote daemon "${daemonLabelForRepo(repo.daemonId)}"`}
+                    >{daemonLabelForRepo(repo.daemonId)}</span
+                  >{/if}
                 <code class="wt-path">{wt.path}</code>
               {:else}
+                {#if repo.daemonId}<span
+                    class="daemon-row-chip"
+                    title={`Runs on remote daemon "${daemonLabelForRepo(repo.daemonId)}"`}
+                    >{daemonLabelForRepo(repo.daemonId)}</span
+                  >{/if}
                 <code class="wt-path">{repo.path}</code>
                 <span class="branch warn">no worktrees</span>
               {/if}

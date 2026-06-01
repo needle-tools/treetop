@@ -462,11 +462,10 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       call that forgot daemonId. The above two bugs slipped through because
       of this. Tighten: distinguish per-repo-id calls from registry calls,
       or assert remote-repo code paths pass daemonId.
-- [ ] **#2 Stars collide across daemons** — `StarStore` key is hardcoded
-      `"supergit:fileBrowser:stars"`; FileBrowser HAS a `daemonId` prop but
-      doesn't use it for the key, so a remote daemon's stars share the
-      local store (and the starred-only view shows both). Namespace the key
-      by daemonId.
+- [x] **#2 Stars collide across daemons** — FileBrowser now namespaces
+      BOTH the StarStore key and the nav-state key (`KV_KEY`) by daemonId
+      (`base + ":" + daemonId`), byte-identical for local (no migration).
+      +2 StarStore tests (different keys don't share, local key unchanged).
 - [ ] **#3 Add a folder / git repo on the REMOTE daemon from local UI**
       (most-wanted feature) — "Add folder" uses the LOCAL native picker +
       POST `/api/repos`; there's no remote path. Compose: a path input (or
@@ -474,10 +473,10 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       `POST apiUrl("/api/repos", daemonId)`. NOTE: no clone/init/mkdir
       endpoint exists — repo must already be on the box; a remote
       `git clone`/`init` is a separate, bigger add.
-- [ ] **#5 Remote worktree path is shown bare** (`/home/supergit/slugify`)
-      — prefix remote rows with the daemon label, e.g. `needle-playground
-      /home/supergit/slugify` or `REMOTE:needle-playground/…`, so it's
-      clear the path is on another box.
+- [x] **#5 Remote worktree path is shown bare** — remote rows now show a
+      `.daemon-row-chip` (the daemon label) before the worktree path so
+      it's clear the path lives on another box. `daemonLabelForRepo()`
+      resolves the label from `remoteDaemons`; local rows render no chip.
 - [ ] **#6 Local apps appear under the remote daemon column** — the
       process/TUI list (local-machine `/api/processes`) seems to be
       grouping local procs under the remote row. NEEDS INVESTIGATION
