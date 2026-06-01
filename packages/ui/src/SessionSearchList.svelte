@@ -33,6 +33,7 @@
     orderNoQuery,
     type AgentSession,
   } from "./sessionSearch";
+  import { importedTooltip } from "./imported-badge";
 
   /** Number of trailing shell commands to show in the hover dock.
    *  Matches the chat preview's "last few turns" feel without
@@ -352,6 +353,7 @@
           <span class="dismissed-header-count">{item.count}</span>
         {:else}
           {@const sess = item.sess}
+          {@const importedTip = importedTooltip(sess)}
           <button
             class="agent-row brand-{sess.agent}"
             class:dimmed={!isOpen(sess) && !item.dismissed}
@@ -443,6 +445,24 @@
               </span>
             {:else if sess.title && sess.title.trim().length > 0}
               <span class="agent-title">{sess.title}</span>
+            {/if}
+            {#if importedTip}
+              <svg
+                class="row-imported"
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-label={importedTip}
+              >
+                <title>{importedTip}</title>
+                <path d="M12 3v11m0 0l-4-4m4 4l4-4" />
+                <path d="M5 20h14" />
+              </svg>
             {/if}
             {#if orphanSources.has(sess.source)}
               <span
@@ -770,6 +790,14 @@
     grid-column: 4;
     justify-self: end;
   }
+  /* Imported marker (small download glyph) shares the title cell like
+     the orphan tag, pinned to its right edge. An imported session is
+     matched to a live local repo, so it's effectively never also an
+     orphan — no practical collision with .orphan-tag. */
+  :global(.session-search-popover .agent-row > .row-imported) {
+    grid-column: 4;
+    justify-self: end;
+  }
   :global(.session-search-popover .agent-row > .agent-msgs) {
     grid-column: 5;
   }
@@ -858,6 +886,14 @@
     background: var(--surface-2);
     color: var(--text-muted);
     border: 1px dashed var(--border-1, rgba(255, 255, 255, 0.15));
+  }
+  /* Muted download glyph marking a session imported from another
+     machine. The provenance ("Imported from X at <date>") lives in the
+     SVG <title> tooltip. */
+  .row-imported {
+    color: var(--text-muted);
+    opacity: 0.75;
+    flex: none;
   }
   :global(.orphan-row) {
     opacity: 0.85;
