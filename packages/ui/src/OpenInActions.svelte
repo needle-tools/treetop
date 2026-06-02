@@ -80,6 +80,11 @@
   import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
   import { CommandUrlPickStore } from "./storage";
   import { getDaemonKV } from "./daemon-kv";
+  import {
+    fileManagerLabel,
+    fileManagerIcon,
+    remoteButtonLabel,
+  } from "./display-helpers";
 
   export let path: string;
   export let repoId: string = "";
@@ -144,40 +149,6 @@
     | null = null;
   export let iconOnly: boolean = false;
   export let daemonId: string | undefined = undefined;
-
-  const PROVIDER_LABELS: Record<string, string> = {
-    github: "GitHub",
-    gitlab: "GitLab",
-    bitbucket: "Bitbucket",
-    azure: "Azure",
-    codeberg: "Codeberg",
-    sourcehut: "sourcehut",
-    gitea: "Gitea",
-  };
-
-  function fileManagerLabel(): string {
-    if (typeof navigator === "undefined") return "Files";
-    const ua = navigator.userAgent;
-    if (/Mac|iPhone|iPad/.test(ua)) return "Finder";
-    if (/Win/.test(ua)) return "Explorer";
-    return "Files";
-  }
-
-  function fileManagerIcon(): string {
-    if (typeof navigator === "undefined") return "files";
-    const ua = navigator.userAgent;
-    if (/Mac|iPhone|iPad/.test(ua)) return "finder";
-    if (/Win/.test(ua)) return "explorer";
-    return "files";
-  }
-
-  function remoteButtonLabel(remote: RemoteRef): string {
-    const base =
-      (remote.provider ? PROVIDER_LABELS[remote.provider] : null) ??
-      remote.host ??
-      remote.name;
-    return remote.name === "origin" ? base : `${base} (${remote.name})`;
-  }
 
   function linkLabel(link: CustomLink): string {
     if (link.name && link.name.trim().length > 0) return link.name;
