@@ -43,6 +43,7 @@
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
+  import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
@@ -1477,7 +1478,7 @@
       preassignedSessionId?: string;
     } = { agent, source: synthetic };
     if (agent === "claude") {
-      entry.preassignedSessionId = crypto.randomUUID();
+      entry.preassignedSessionId = randomUUID();
     }
     const insertAt = visibleLeftInsertIndex(wtPath, existing);
     const next = [...existing];
@@ -1755,7 +1756,7 @@
     };
     if (targetAgent === "claude") {
       (entry as { preassignedSessionId?: string }).preassignedSessionId =
-        crypto.randomUUID();
+        randomUUID();
     }
     const existing = openSessionsByWt[wtPath] ?? [];
     const insertAt = visibleLeftInsertIndex(wtPath, existing);
@@ -2112,7 +2113,7 @@
     // new UUID for Claude so `--session-id` lands on a new file rather
     // than colliding with the dying PTY's id.
     if (current.agent === "claude") {
-      replacement.preassignedSessionId = crypto.randomUUID();
+      replacement.preassignedSessionId = randomUUID();
     }
     openSessionsByWt = {
       ...openSessionsByWt,
