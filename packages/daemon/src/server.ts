@@ -332,7 +332,13 @@ const sshSyncTracker = new SyncTracker(
 // Owns the ssh -L tunnels to attached remote daemons (Phase 4b). Requests
 // to /api/daemons/<id>/* are reverse-proxied over these tunnels to the
 // remote daemon's loopback. See plans/PLAN-REMOTE-DAEMON.md.
-const tunnelManager = new TunnelManager();
+//
+// SUPERGIT_TUNNEL_DIRECT=1 skips ssh and proxies straight at the remote's
+// 127.0.0.1:<port> — ONLY for the two-daemon e2e harness, which runs both
+// daemons on localhost (no real network hop to tunnel). Never set in prod.
+const tunnelManager = new TunnelManager({
+  direct: process.env.SUPERGIT_TUNNEL_DIRECT === "1",
+});
 
 /** Ensure a tunnel is open for a registered remote daemon and return its
  *  local loopback port. Throws if the id isn't registered. */

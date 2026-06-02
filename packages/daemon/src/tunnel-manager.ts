@@ -55,6 +55,20 @@ export interface TunnelManagerOptions {
   /** How long open() waits for the tunnel's local listener to come up
    *  before giving up. Default 8000ms. */
   readyTimeoutMs?: number;
+  /** Test/loopback mode: skip ssh entirely and proxy straight at the
+   *  remote daemon's `127.0.0.1:<daemon.port>`. Used by the two-daemon e2e
+   *  harness, which runs both daemons on localhost so there's no real
+   *  network hop to tunnel — the "remote" is reachable directly. Gated by
+   *  `SUPERGIT_TUNNEL_DIRECT=1` in server.ts; NEVER on in production (a real
+   *  remote isn't on the client's loopback). See plans/PLAN-REMOTE-DAEMON.md
+   *  "Two-daemon integration tests". */
+  direct?: boolean;
+}
+
+/** A stand-in TunnelProc for direct mode — there's no ssh child, so kill()
+ *  is a no-op and `exited` never resolves (nothing to reap). */
+function noopTunnelProc(): TunnelProc {
+  return { pid: -1, kill() {}, exited: new Promise<number>(() => {}) };
 }
 
 /** Default readiness check: poll-connect to 127.0.0.1:port until it
@@ -171,6 +185,7 @@ export class TunnelManager {
   private readonly allocatePort: PortAllocator;
   private readonly waitForPort: PortReadyCheck;
   private readonly readyTimeoutMs: number;
+  private readonly direct: boolean;
 
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
@@ -179,6 +194,7 @@ export class TunnelManager {
     this.allocatePort = opts.allocatePort ?? allocateEphemeralPort;
     this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 8000;
+    this.direct = opts.direct ?? false;
   }
 
   /** Open (or return the existing) tunnel for a remote daemon. Idempotent
@@ -190,6 +206,27 @@ export class TunnelManager {
   async open(daemon: RemoteDaemon): Promise<Tunnel> {
     const existing = this.tunnels.get(daemon.id);
     if (existing) return existing;
+
+    if (this.direct) {
+      // No ssh: the remote daemon is reachable directly on
+      // 127.0.0.1:<daemon.port> (both daemons on localhost). Still wait for
+      // it to accept connections so a not-yet-booted remote fails the same
+      // way a dead tunnel would, with a clear message.
+      const ready = await this.waitForPort(daemon.port, this.readyTimeoutMs);
+      if (!ready) {
+        throw new Error(
+          `direct tunnel target 127.0.0.1:${daemon.port} ` +
+            `(${daemon.label || daemon.host}) not reachable within ${this.readyTimeoutMs}ms`,
+        );
+      }
+      const tunnel: Tunnel = {
+        id: daemon.id,
+        localPort: daemon.port,
+        proc: noopTunnelProc(),
+      };
+      this.tunnels.set(daemon.id, tunnel);
+      return tunnel;
+    }
 
     const localPort = await this.allocatePort();
     const proc = this.spawn(buildSshTunnelArgs(daemon, localPort));

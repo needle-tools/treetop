@@ -181,3 +181,51 @@ describe("TunnelManager", () => {
     expect(mgr.list()).toHaveLength(0);
   });
 });
+
+describe("TunnelManager — direct mode (two-daemon e2e seam)", () => {
+  test("open() returns the remote's own port and spawns NO ssh", async () => {
+    let spawned = 0;
+    const mgr = new TunnelManager({
+      direct: true,
+      spawn: () => {
+        spawned++;
+        return fakeProc();
+      },
+      // allocatePort must NOT be consulted in direct mode — the local port
+      // IS the remote's port (both daemons on loopback, no forward needed).
+      allocatePort: async () => {
+        throw new Error("allocatePort must not be called in direct mode");
+      },
+      waitForPort: async () => true,
+      readyTimeoutMs: 50,
+    });
+    const t = await mgr.open(daemon({ port: 7790 }));
+    expect(t.localPort).toBe(7790);
+    expect(spawned).toBe(0);
+    expect(mgr.get("d1")?.localPort).toBe(7790);
+  });
+
+  test("open() still waits for the remote port and throws if unreachable", async () => {
+    let checkedPort: number | null = null;
+    const mgr = new TunnelManager({
+      direct: true,
+      waitForPort: async (port) => {
+        checkedPort = port;
+        return false; // remote not up
+      },
+      readyTimeoutMs: 50,
+    });
+    await expect(mgr.open(daemon({ port: 7791 }))).rejects.toThrow(
+      /not reachable/,
+    );
+    expect(checkedPort).toBe(7791);
+    expect(mgr.get("d1")).toBeUndefined();
+  });
+
+  test("close() forgets a direct tunnel (no ssh proc to kill)", async () => {
+    const mgr = new TunnelManager({ direct: true, waitForPort: async () => true });
+    await mgr.open(daemon({ port: 7792 }));
+    expect(await mgr.close("d1")).toBe(true);
+    expect(mgr.get("d1")).toBeUndefined();
+  });
+});

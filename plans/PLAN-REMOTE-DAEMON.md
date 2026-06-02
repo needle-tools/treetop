@@ -14,10 +14,13 @@ agents/shells, notes). Live-USE fixes #1–#13 + the state-parity items
 #2/#5/#7/#8/#9/#10/#11/#14/#15a/#17 are DONE; the routing-guard blind
 spot that let the half-and-half bugs through is FIXED + hardened (commit
 8c669fd), and #3 "add a folder on a remote daemon" shipped (MVP, existing
-path). Remaining: the opt-in two-daemon / container e2e harness (the
-single biggest coverage gap — everything runtime-level is still only
-proven by hand), plus the deferred items #15b/#16/#18, mac/windows
-remote installers, Phase 2b auto-onboarding, and distribution.**
+path). The opt-in two-daemon e2e harness now EXISTS (`bun run
+test:two-daemon`) — boots two real daemons and proves connect → proxy →
+health/repos-NDJSON/terminal-WS-round-trip with no stubs, closing the
+runtime-coverage gap for the in-process (faked-ssh) case. Remaining: the
+Tier-3 real-ssh / Linux-container variant for CI, plus the deferred items
+#15b/#16/#18, mac/windows remote installers, Phase 2b auto-onboarding, and
+distribution.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -748,40 +751,36 @@ Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the
 remaining UI cost is real but mechanical (the `apiUrl` threading).
 
-### Two-daemon integration tests (opt-in, never run by default)
+### Two-daemon integration tests (opt-in, never run by default) ✅ BUILT
 
-The daemon-side proxy is unit-tested (path parsing, tunnel lifecycle with
-an injected spawner, registry CRUD) but NOT yet exercised end-to-end: no
-test spins up a *real* second daemon and proxies a live request through.
-We want that coverage WITHOUT it running in the normal `bun test` loop —
-spinning up extra daemon processes on every run is slow, port-flaky, and
-exactly the kind of thing an agent could trigger accidentally.
+The daemon-side proxy was unit-tested (path parsing, tunnel lifecycle with
+an injected spawner, registry CRUD) but NOT exercised end-to-end. That gap
+is now closed by an opt-in harness that boots two REAL daemons and proxies
+between them — `packages/daemon/test/two-daemon-e2e.test.ts`, run via
+`bun run test:two-daemon`. 4 tests, ~3s.
 
-Design:
-- [ ] A dedicated runner, e.g. `bun run test:two-daemon` (NOT wired into
-      the default `test` script), that sets an env guard
-      (`SUPERGIT_TWO_DAEMON_TESTS=1`). Test files check the guard and
-      `test.skip` themselves when it's absent — so even a stray
-      `bun test` over the whole tree skips them rather than booting
-      daemons.
-- [ ] The harness spawns a second daemon as a child with a DEDICATED test
-      port (`SUPERGIT_PORT=<high test port>`) and a throwaway temp
-      workspace (`SUPERGIT_WORKSPACE=<mktemp>`), waits for `/api/health`,
-      runs assertions, then guarantees teardown (kill + await exit) in a
-      `finally` — never leave a daemon running. Bind it loopback-only
-      (`SUPERGIT_BIND=127.0.0.1`).
-- [ ] First test: skip the ssh hop (it's the OS boundary we already fake)
-      — register a remote daemon whose tunnel target points straight at
-      the second daemon's real port, then assert `/api/daemons/<id>/health`
-      and `/api/daemons/<id>/repos` proxy through and stream correctly.
-      Optionally a separate, even-more-guarded test that uses a real
-      `ssh -L` to localhost for those who have sshd running.
-- [ ] Loud guardrails so future agents don't run these blindly: a header
-      comment in each file + the runner printing why it exists, that it
-      spawns processes, and that **the user should be asked first**. Never
-      add it to CI's default job or the pre-commit/inner loop.
-- [ ] NEVER touch the prod daemon (`:27787`) — the test port must be a
-      distinct high port; assert the chosen port != prod before spawning.
+- [x] Dedicated runner `bun run test:two-daemon` sets the env guard
+      `SUPERGIT_TWO_DAEMON_TESTS=1`; the suite is `describe.skip` without it,
+      so a stray `bun test` over the whole tree skips it (verified: default
+      run shows the suite skipped, 0 fail) rather than booting daemons.
+- [x] Spawns the remote AND local daemon as children on OS-allocated free
+      ports with throwaway temp workspaces, `SUPERGIT_BIND=127.0.0.1`,
+      `SUPERGIT_NO_UI_DIR=1`; waits for each `/api/health`; kills both +
+      removes temp dirs in `afterAll` even if setup throws.
+- [x] Skips the ssh hop via `SUPERGIT_TUNNEL_DIRECT=1` (new TunnelManager
+      `direct` mode, +3 unit tests): the local daemon proxies straight at the
+      remote's `127.0.0.1:<port>` — no `ssh -L`. Asserts: proxied
+      `/api/daemons/<id>/health` reports the REMOTE's port (proof it crossed
+      the proxy, not served locally); `/api/daemons/<id>/repos` streams the
+      remote-registered repo (and that repo is absent from the local
+      daemon's own list); and a **terminal WS round-trips** I/O to a PTY on
+      the remote (types `echo`, reads the marker back — exercises the bridge
+      both ways AND Bun's sync-upgrade path, the #12 bug).
+- [x] Loud header comment explaining it spawns processes + must be run
+      deliberately; never wired into the default `test` script or CI.
+- [x] Asserts both chosen ports != prod (`27787`) before spawning anything.
+- [ ] Optional follow-up: a variant using a real `ssh -L` to localhost for
+      hosts running sshd (Tier 3 below is the canonical version of that).
 
 ### Containerized-remote e2e (design — agreed 2026-06-01)
 
