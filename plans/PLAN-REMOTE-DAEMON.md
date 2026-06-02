@@ -655,6 +655,36 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       ("Cannot access 'cleanup' before initialization", a 500 out of the
       spawn POST that masked #13). Pre-declared `let cleanup` + null-guard.
 
+### Remote file editing (TODO — full feature; toast shipped as the interim)
+
+Double-clicking a file on a remote-daemon row can't "Open in" the local OS
+app — the file lives on another machine, and `/api/open-default` would try
+(and fail) to open a non-existent local path. **Interim (shipped):**
+`FileBrowser.openFile` now detects the remote-daemon case (`daemonId` set,
+not the ssh `remoteTermId` case) and shows a toast — "Editing files on a
+remote daemon isn't supported yet — open a terminal on this row to edit
+there." — instead of silently no-op'ing. Wired via a new `onToast` prop →
+`addToast` in App.
+
+**Full feature (to build).** Mirror the ssh-filesystem edit flow
+(`/api/ssh/open` → edit locally → `/api/ssh/confirm-upload` /
+`dismiss-upload`) for the remote-daemon axis, over the proxy:
+- [ ] **Daemon endpoints** (loopback-only, so reachable through the proxy):
+  - `GET /api/file?path=<abs>` → `{ content, mtimeMs }` (read for editing);
+  - `POST /api/file` `{ path, content, expectedMtimeMs }` →
+    `{ ok: true, mtimeMs }`, or `409 { conflict: true, mtimeMs }` when the
+    on-disk mtime ≠ `expectedMtimeMs` (external change → UI offers
+    save/discard). These auto-route through `/api/daemons/<id>/*`.
+- [ ] **UI**: double-click a remote file → fetch content via the proxy into
+      an in-app editor (or a downloaded local cache like the ssh flow) →
+      Save posts back with `expectedMtimeMs`; on `409 conflict` show the
+      save/discard prompt (reuse the ssh-filesystem affordance).
+- [ ] Decide read-only-vs-editable defaults and large/binary-file guards.
+- **Test**: the failing spec already exists in
+  `two-daemon-e2e.test.ts` ("a remote file opens for editing and saves back
+  with external-change detection") — kept RED on purpose; implementing the
+  above turns it green.
+
 ### Phase 4c — remote-daemon STATE PARITY (which state lives where)
 
 Once a remote row works, the question is whether its persisted state lives
@@ -788,10 +818,12 @@ between them — `packages/daemon/test/two-daemon-e2e.test.ts`, run via
         change, receive the `note_create` event (the #15a live-refresh path);
       - **session discovery** — a Claude session planted in the remote's
         isolated `HOME` is found via `GET /api/daemons/<id>/agents`.
-      - `test.todo`: remote file **edit → save/discard on external change** —
-        not implemented for the remote-daemon axis (only `/api/ssh/*` has
-        write-back-with-conflict); building it is a feature, recorded so the
-        harness covers it once it lands.
+      - **intentionally-FAILING spec** (kept red on purpose): remote file
+        **edit → save/discard on external change** — not implemented for the
+        remote-daemon axis (only `/api/ssh/*` has write-back-with-conflict).
+        The test pins the intended `/api/file` GET+POST contract so building
+        the feature turns it green; the opt-in harness is skipped by default
+        so this never reddens CI. See "Remote file editing (TODO)" below.
 - [x] Loud header comment explaining it spawns processes + must be run
       deliberately; never wired into the default `test` script or CI.
 - [x] Asserts both chosen ports != prod (`27787`) before spawning anything.

@@ -455,18 +455,45 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
     expect(names).toContain("README.md");
   }, 20_000);
 
-  // The "open a remote file, edit locally, save with save/discard on external
-  // change" flow (the ssh-filesystem behaviour) is NOT yet implemented for the
-  // remote-daemon axis: the proxy exposes browse (/api/files) + diff
-  // (/api/file-diff) but no file-content write-back-with-conflict. That flow
-  // lives only in the local→ssh-host subsystem (/api/ssh/open + confirm/
-  // dismiss-upload). Building it for the remote daemon (read content + a
-  // conflict-aware write-back through the proxy) is a feature, not a test —
-  // tracked here so the harness covers it once it exists. See
-  // plans/PLAN-REMOTE-DAEMON.md.
-  test.todo(
-    "remote file edit → save / discard on external change (needs the feature)",
-  );
+  // INTENTIONALLY-FAILING SPEC — keep it red until the feature exists.
+  //
+  // "Open a remote file, edit locally, save, get save/discard feedback on an
+  // external change" (the ssh-filesystem behaviour) is NOT yet implemented for
+  // the remote-daemon axis: the proxy exposes browse (/api/files) + diff
+  // (/api/file-diff) but no file-content read + conflict-aware write-back. That
+  // flow lives only in the local→ssh-host subsystem (/api/ssh/open +
+  // confirm/dismiss-upload). This test pins the intended contract so building
+  // it turns the harness green; until then it FAILS (the opt-in harness is
+  // skipped by default, so this never reddens CI). See
+  // plans/PLAN-REMOTE-DAEMON.md "Remote file editing (TODO)".
+  test("a remote file opens for editing and saves back with external-change detection", async () => {
+    const file = join(remoteRepoPath, "README.md");
+    const base = `http://127.0.0.1:${localPort}/api/daemons/${daemonId}`;
+
+    // Open: read the remote file's content + a version token (mtime).
+    const open = await fetch(`${base}/file?path=${encodeURIComponent(file)}`);
+    expect(open.ok).toBe(true);
+    const opened = (await open.json()) as { content: string; mtimeMs: number };
+    expect(opened.content).toContain("e2e remote repo");
+
+    // Save edited content back, guarded by the version we read so a concurrent
+    // external change is detected (→ the UI offers save / discard).
+    const save = await fetch(`${base}/file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: file,
+        content: "# edited by e2e\n",
+        expectedMtimeMs: opened.mtimeMs,
+      }),
+    });
+    expect(save.ok).toBe(true);
+
+    // The write landed on the remote box.
+    const reread = await fetch(`${base}/file?path=${encodeURIComponent(file)}`);
+    const after = (await reread.json()) as { content: string };
+    expect(after.content).toContain("edited by e2e");
+  }, 20_000);
 
   /* --- notes on the remote daemon, through the proxy --- */
 

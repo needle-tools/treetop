@@ -8666,6 +8666,8 @@
                                 source={s.source}
                                 daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                 onClose={() => closeSessionInWt(wt.path, s)}
+                                onToast={(m) =>
+                                  addToast({ kind: "warning", message: m })}
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
                               />

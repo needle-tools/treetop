@@ -45,6 +45,10 @@
   export let remoteCwd: string | null = null;
   /** Callback to focus/scroll to the terminal that spawned this remote browser. */
   export let onFocusTerminal: (() => void) | undefined = undefined;
+  /** Surface a transient message to the user (wired to the app's toast
+   *  system by the parent). Used e.g. when double-clicking a file on a
+   *  remote-daemon row, where in-app editing isn't supported yet. */
+  export let onToast: (message: string) => void = () => {};
 
   $: isRemote = !!remoteTermId;
   let followTerminal = true;
@@ -381,6 +385,14 @@
     try {
       if (isRemote && remoteTermId) {
         await openRemoteFile(remoteTermId, fullPath);
+      } else if (daemonId) {
+        // Remote-daemon row: the file lives on another machine, so the local
+        // OS "open" can't reach it and editing-with-write-back isn't built
+        // yet (TODO in plans/PLAN-REMOTE-DAEMON.md). Tell the user instead of
+        // silently no-op'ing through /api/open-default.
+        onToast(
+          "Editing files on a remote daemon isn't supported yet — open a terminal on this row to edit there.",
+        );
       } else {
         await fetch(apiUrl("/api/open-default"), {
           method: "POST",
