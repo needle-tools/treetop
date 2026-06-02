@@ -6,6 +6,12 @@
     shellToSession,
     shellSourceToDismiss,
   } from "./session-source-routing";
+  import {
+    createUnreadPulseManager,
+    FINISH_DEBOUNCE_MS,
+    READ_GRACE_MS,
+    MIN_WORKING_FOR_PULSE_MS,
+  } from "./unread-pulse-manager";
   import { apiUrl } from "./api";
   import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
@@ -849,7 +855,6 @@
    *  — only working periods longer than MIN_WORKING_FOR_PULSE_MS arm
    *  the "unread" pulse in the dock. */
   let workingStartedAt: Record<string, number | undefined> = {};
-  const MIN_WORKING_FOR_PULSE_MS = 3_000;
   /** Sources whose PTY has exited (TerminalView.onExit fired). The
    *  column stays in the page in read mode; the side dock uses this
    *  to render the row's dot smaller so the user can see at a
@@ -863,54 +868,25 @@
    *  dock also auto-clears the pulse after 20 min so a long-
    *  ignored finish doesn't keep nagging. */
   let transientFinishedAt: Record<string, number | undefined> = {};
-  /** Per-source debounce timers for `transientFinishedAt`. PTY
-   *  `working` oscillates many times within a single agent turn
-   *  (each tool call flips it), so we wait for a sustained idle
-   *  period before stamping the row as unread — otherwise the
-   *  dock would pulse on every tool-call boundary and clicking
-   *  to dismiss would never feel sticky. */
-  const FINISH_DEBOUNCE_MS = 8_000;
-  const finishedTimers: Record<
-    string,
-    ReturnType<typeof setTimeout> | undefined
-  > = {};
-  function scheduleFinished(source: string): void {
-    cancelFinishedTimer(source);
-    finishedTimers[source] = setTimeout(() => {
-      finishedTimers[source] = undefined;
-      // If the user is currently focused inside the column when
-      // the AI finishes, they don't need the dock to remind them
-      // about an "unread" turn — they're already looking. Skip.
-      if (isSessionFocused(source)) return;
-      transientFinishedAt = {
-        ...transientFinishedAt,
-        [source]: Date.now(),
-      };
-    }, FINISH_DEBOUNCE_MS);
+  function isSessionFocused(source: string): boolean {
+    if (typeof document === "undefined") return false;
+    const col = document.querySelector(
+      `.session-col[data-session-source="${CSS.escape(source)}"]`,
+    );
+    if (!col) return false;
+    return col.contains(document.activeElement);
   }
-  /** Grace period before marking a session as "read". The user
-   *  must keep the session focused for this long — a quick click
-   *  that immediately navigates away doesn't count. */
-  const READ_GRACE_MS = 3_000;
-  const readGraceTimers: Record<
-    string,
-    ReturnType<typeof setTimeout> | undefined
-  > = {};
-  function startReadGrace(source: string): void {
-    cancelReadGrace(source);
-    if (transientFinishedAt[source] === undefined) return;
-    readGraceTimers[source] = setTimeout(() => {
-      readGraceTimers[source] = undefined;
-      clearFinishedFor(source);
-    }, READ_GRACE_MS);
-  }
-  function cancelReadGrace(source: string): void {
-    const t = readGraceTimers[source];
-    if (t) {
-      clearTimeout(t);
-      readGraceTimers[source] = undefined;
-    }
-  }
+  const {
+    scheduleFinished,
+    cancelFinishedTimer,
+    clearFinishedFor,
+    startReadGrace,
+    cancelReadGrace,
+  } = createUnreadPulseManager({
+    getFinishedAt: () => transientFinishedAt,
+    setFinishedAt: (v) => (transientFinishedAt = v),
+    isSessionFocused,
+  });
   function handleFocusInForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
@@ -936,30 +912,6 @@
     const next = ev.relatedTarget as Element | null;
     if (next && col.contains(next)) return;
     cancelReadGrace(src);
-  }
-  function isSessionFocused(source: string): boolean {
-    if (typeof document === "undefined") return false;
-    const col = document.querySelector(
-      `.session-col[data-session-source="${CSS.escape(source)}"]`,
-    );
-    if (!col) return false;
-    return col.contains(document.activeElement);
-  }
-  function cancelFinishedTimer(source: string): void {
-    const t = finishedTimers[source];
-    if (t) {
-      clearTimeout(t);
-      finishedTimers[source] = undefined;
-    }
-  }
-  function clearFinishedFor(source: string): void {
-    cancelFinishedTimer(source);
-    if (transientFinishedAt[source] !== undefined) {
-      transientFinishedAt = {
-        ...transientFinishedAt,
-        [source]: undefined,
-      };
-    }
   }
   /** `__new__:<agent>:<id>` source → daemon-assigned termId. Set by
    *  NewSessionCol's `on:spawn` for every agent (shell, claude, codex,

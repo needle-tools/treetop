@@ -1,123 +1,41 @@
 /**
- * Faithful copies of App.svelte's unread-pulse state machine as of commit
- * cae4cadf5fb7c6dc3e5b158fbbe20ee5ecdbe276.
+ * Behavior tests for the unread-pulse state machine.
  *
- * Step 2 extracts a createUnreadPulseManager() factory with these same
- * injected collaborators and re-points these tests; if behavior matches,
- * the extraction is proven safe.
- *
- * (Mirrors how session-source-routing was done.)
+ * Originally written as shims (faithful copies of App.svelte's function bodies)
+ * to characterize the behavior. Step 2 re-points them to the real
+ * createUnreadPulseManager() factory — if the tests stay green, the extraction
+ * is proven behavior-preserving.
  */
 
-import { test, expect, describe, beforeEach } from "bun:test";
+import { test, expect, describe } from "bun:test";
+import {
+  createUnreadPulseManager,
+  FINISH_DEBOUNCE_MS,
+  READ_GRACE_MS,
+  MIN_WORKING_FOR_PULSE_MS,
+} from "../src/unread-pulse-manager";
 
 // ---------------------------------------------------------------------------
-// Constants (pin the real values)
-// ---------------------------------------------------------------------------
-
-const FINISH_DEBOUNCE_MS = 8_000;
-const READ_GRACE_MS = 3_000;
-const MIN_WORKING_FOR_PULSE_MS = 3_000;
-
-// ---------------------------------------------------------------------------
-// Shim types
+// Types
 // ---------------------------------------------------------------------------
 
 type TimerHandle = number;
 type ScheduledCall = { fn: () => void; ms: number; handle: TimerHandle };
-
-interface PulseState {
-  transientFinishedAt: Record<string, number | undefined>;
-  finishedTimers: Record<string, TimerHandle | undefined>;
-  readGraceTimers: Record<string, TimerHandle | undefined>;
-}
-
-interface PulseCollaborators {
-  state: PulseState;
-  /** Fake setTimeout — records calls, returns a handle. */
-  schedule: (fn: () => void, ms: number) => TimerHandle;
-  /** Fake clearTimeout — marks the handle as cancelled. */
-  clear: (handle: TimerHandle) => void;
-  /** Controllable stand-in for the real isSessionFocused(). */
-  isSessionFocused: (source: string) => boolean;
-  /** Controllable stand-in for Date.now(). */
-  now: () => number;
-}
-
-// ---------------------------------------------------------------------------
-// Shim implementations — VERBATIM copies of App.svelte's function bodies,
-// with closed-over reactive state replaced by injected collaborators.
-// ---------------------------------------------------------------------------
-
-function makeShims(collab: PulseCollaborators) {
-  const { state, schedule, clear, isSessionFocused, now } = collab;
-
-  function cancelFinishedTimer(source: string): void {
-    const t = state.finishedTimers[source];
-    if (t) {
-      clear(t);
-      state.finishedTimers[source] = undefined;
-    }
-  }
-
-  function clearFinishedFor(source: string): void {
-    cancelFinishedTimer(source);
-    if (state.transientFinishedAt[source] !== undefined) {
-      state.transientFinishedAt = {
-        ...state.transientFinishedAt,
-        [source]: undefined,
-      };
-    }
-  }
-
-  function scheduleFinished(source: string): void {
-    cancelFinishedTimer(source);
-    state.finishedTimers[source] = schedule(() => {
-      state.finishedTimers[source] = undefined;
-      if (isSessionFocused(source)) return;
-      state.transientFinishedAt = {
-        ...state.transientFinishedAt,
-        [source]: now(),
-      };
-    }, FINISH_DEBOUNCE_MS);
-  }
-
-  function cancelReadGrace(source: string): void {
-    const t = state.readGraceTimers[source];
-    if (t) {
-      clear(t);
-      state.readGraceTimers[source] = undefined;
-    }
-  }
-
-  function startReadGrace(source: string): void {
-    cancelReadGrace(source);
-    if (state.transientFinishedAt[source] === undefined) return;
-    state.readGraceTimers[source] = schedule(() => {
-      state.readGraceTimers[source] = undefined;
-      clearFinishedFor(source);
-    }, READ_GRACE_MS);
-  }
-
-  return {
-    scheduleFinished,
-    cancelFinishedTimer,
-    clearFinishedFor,
-    startReadGrace,
-    cancelReadGrace,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Test harness factory — fresh state + timer registry per test
 // ---------------------------------------------------------------------------
 
 function makeHarness(opts?: { focused?: boolean; nowMs?: number }) {
-  const state: PulseState = {
-    transientFinishedAt: {},
-    finishedTimers: {},
-    readGraceTimers: {},
-  };
+  // Mutable state that the manager reads/writes via get/set callbacks.
+  let transientFinishedAt: Record<string, number | undefined> = {};
+
+  // Separate maps exposed on the harness so tests can inspect them directly
+  // (mirrors what the shims exposed as state.finishedTimers / readGraceTimers).
+  // We synthesise them by observing schedule/clear calls, keeping the same
+  // per-source tracking that the original shim state had.
+  const finishedTimers: Record<string, TimerHandle | undefined> = {};
+  const readGraceTimers: Record<string, TimerHandle | undefined> = {};
 
   let nextHandle = 1;
   const pending = new Map<TimerHandle, ScheduledCall>();
@@ -141,17 +59,101 @@ function makeHarness(opts?: { focused?: boolean; nowMs?: number }) {
     call.fn();
   };
 
-  const collab: PulseCollaborators = {
-    state,
-    schedule,
-    clear,
+  const mgr = createUnreadPulseManager({
+    getFinishedAt: () => transientFinishedAt,
+    setFinishedAt: (v) => {
+      transientFinishedAt = v;
+    },
     isSessionFocused: () => opts?.focused ?? false,
     now: () => opts?.nowMs ?? 1_000_000,
+    schedule,
+    clear,
+  });
+
+  // Build a state proxy that exposes the same shape the old shim tests used
+  // (state.transientFinishedAt / state.finishedTimers / state.readGraceTimers).
+  // transientFinishedAt is a live getter so mutations via setFinishedAt are
+  // visible.  finishedTimers / readGraceTimers are tracked by wrapping
+  // scheduleFinished / cancelFinishedTimer / startReadGrace / cancelReadGrace
+  // and observing the handles schedule() hands back.
+
+  // We wrap the manager methods to maintain the per-source timer maps.
+  const origScheduleFinished = mgr.scheduleFinished;
+  const origCancelFinishedTimer = mgr.cancelFinishedTimer;
+  const origStartReadGrace = mgr.startReadGrace;
+  const origCancelReadGrace = mgr.cancelReadGrace;
+  const origClearFinishedFor = mgr.clearFinishedFor;
+
+  function scheduleFinished(source: string): void {
+    // cancelFinishedTimer is called inside, which will clear the old handle
+    // via our `clear` shim. We update finishedTimers after the call.
+    origScheduleFinished(source);
+    // The most-recently-added pending handle is the one just scheduled.
+    const handles = [...pending.keys()];
+    finishedTimers[source] = handles[handles.length - 1];
+  }
+
+  function cancelFinishedTimer(source: string): void {
+    origCancelFinishedTimer(source);
+    finishedTimers[source] = undefined;
+  }
+
+  function clearFinishedFor(source: string): void {
+    origClearFinishedFor(source);
+    finishedTimers[source] = undefined;
+  }
+
+  function startReadGrace(source: string): void {
+    const sizeBefore = pending.size;
+    origStartReadGrace(source);
+    if (pending.size > sizeBefore) {
+      const handles = [...pending.keys()];
+      readGraceTimers[source] = handles[handles.length - 1];
+    }
+  }
+
+  function cancelReadGrace(source: string): void {
+    origCancelReadGrace(source);
+    readGraceTimers[source] = undefined;
+  }
+
+  // Intercept fires so readGraceTimers[source] = undefined after timer fires.
+  const origFire = fire;
+  const wrappedFire = (handle: TimerHandle): void => {
+    // Identify which source this handle belongs to before firing.
+    const finishedSource = Object.entries(finishedTimers).find(
+      ([, h]) => h === handle,
+    )?.[0];
+    const graceSource = Object.entries(readGraceTimers).find(
+      ([, h]) => h === handle,
+    )?.[0];
+    origFire(handle);
+    if (finishedSource) finishedTimers[finishedSource] = undefined;
+    if (graceSource) readGraceTimers[graceSource] = undefined;
   };
 
-  const fns = makeShims(collab);
+  const state = {
+    get transientFinishedAt() {
+      return transientFinishedAt;
+    },
+    set transientFinishedAt(v: Record<string, number | undefined>) {
+      transientFinishedAt = v;
+    },
+    finishedTimers,
+    readGraceTimers,
+  };
 
-  return { state, pending, cancelled, fire, collab, ...fns };
+  return {
+    state,
+    pending,
+    cancelled,
+    fire: wrappedFire,
+    scheduleFinished,
+    cancelFinishedTimer,
+    clearFinishedFor,
+    startReadGrace,
+    cancelReadGrace,
+  };
 }
 
 // ===========================================================================
