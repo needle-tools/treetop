@@ -178,6 +178,9 @@ import { record, snapshot as timingsSnapshot } from "./timings";
 import { buildDiagnostics } from "./diagnostics";
 import { decodeConnectionString } from "./connection-string";
 import { writePrivateKey } from "./write-private-key";
+import { resolveInstallPayload } from "./install-payload";
+import { ProvisionManager } from "./provision-manager";
+import { makeProvisionSpawner } from "./provision-spawn";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -349,6 +352,54 @@ async function ensureRemoteTunnelPort(id: string): Promise<number> {
   const tunnel = await tunnelManager.open(daemon);
   return tunnel.localPort;
 }
+
+// ── Remote-daemon auto-provisioning ("connect a daemon") ─────────────────
+// The install payload (source we tar+ship to a box) — resolved once: the
+// bundled copy next to a packaged binary, or the live repo in dev. Mode
+// "none" means this build can't auto-provision (manual paste still works).
+const installPayload = resolveInstallPayload({
+  execDir: dirname(process.execPath),
+  sourceRoot: resolve(import.meta.dir, "../../.."),
+  exists: existsSync,
+});
+
+/** Register a remote daemon from a `supergit1:` connection string: persist
+ *  the (forward-only) key server-side, add the daemon, broadcast. Shared by
+ *  the manual /api/daemons/connect route and auto-provisioning. */
+async function registerRemoteFromConnectionString(cs: string) {
+  const decoded = decodeConnectionString(cs);
+  if (!decoded.ok) throw new Error(decoded.error);
+  const p = decoded.payload;
+  let identityPath: string | undefined;
+  if (p.privateKey) {
+    const keysDir = join(WORKSPACE_PATH, "keys");
+    await fsMkdir(keysDir, { recursive: true });
+    identityPath = join(keysDir, crypto.randomUUID());
+    await writePrivateKey(identityPath, p.privateKey);
+  }
+  const daemon = await workspace.addRemoteDaemon({
+    label: p.label ?? "",
+    host: p.host,
+    user: p.user,
+    port: p.port,
+    sshPort: p.sshPort,
+    identityPath,
+  });
+  broadcast("change", { kind: "remote_daemon_add", id: daemon.id });
+  return daemon;
+}
+
+const provisionManager = new ProvisionManager({
+  spawn: makeProvisionSpawner(),
+  newId: () => crypto.randomUUID(),
+  register: async (token) => {
+    const daemon = await registerRemoteFromConnectionString(token);
+    // Best-effort: bring the tunnel up so the row goes live immediately. A
+    // tunnel hiccup mustn't fail the (already-registered) provision.
+    ensureRemoteTunnelPort(daemon.id).catch(() => {});
+    return { id: daemon.id };
+  },
+});
 
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
 const termSshSessions = new Map<string, SshSession>();
@@ -7208,6 +7259,8 @@ const server = Bun.serve<TermWsData, never>({
       // lives only in <workspace>/keys/ at 0600 and never round-trips
       // through the browser as separate fields.
       if (url.pathname === "/api/daemons/connect" && req.method === "POST") {
+        // Manual one-paste onboarding: the browser sent the opaque
+        // `supergit1:` token; persist its (forward-only) key + register.
         const body = (await req.json().catch(() => null)) as {
           connectionString?: unknown;
         } | null;
@@ -7215,40 +7268,162 @@ const server = Bun.serve<TermWsData, never>({
           body && typeof body.connectionString === "string"
             ? body.connectionString
             : "";
-        const decoded = decodeConnectionString(cs);
-        if (!decoded.ok) {
-          return json({ error: decoded.error }, { status: 400 });
-        }
-        const p = decoded.payload;
         try {
-          // Persist the private key (if present) to <workspace>/keys/<uuid>
-          // so the secret lives server-side and TunnelManager can `-i` it.
-          // The browser only ever sent the opaque token. writePrivateKey
-          // sets mode 0600 AND (on Windows) locks the NTFS ACL — OpenSSH
-          // ignores the unix mode on Windows and rejects a key with
-          // too-open ACLs ("bad permissions"), which broke the tunnel.
-          let identityPath: string | undefined;
-          if (p.privateKey) {
-            const keysDir = join(WORKSPACE_PATH, "keys");
-            await fsMkdir(keysDir, { recursive: true });
-            identityPath = join(keysDir, crypto.randomUUID());
-            await writePrivateKey(identityPath, p.privateKey);
-          }
-          const daemon = await workspace.addRemoteDaemon({
-            label: p.label ?? "",
-            host: p.host,
-            user: p.user,
-            port: p.port,
-            sshPort: p.sshPort,
-            identityPath,
-          });
-          broadcast("change", { kind: "remote_daemon_add", id: daemon.id });
+          const daemon = await registerRemoteFromConnectionString(cs);
           return json(daemon);
         } catch (e) {
           return json(
             { error: String(e instanceof Error ? e.message : e) },
             { status: 400 },
           );
+        }
+      }
+
+      // ── Auto-provision ("connect a daemon"): ship the bundled source to a
+      // box over the user's own ssh, run install.sh, capture the printed
+      // token, and register — with live progress streamed to the dialog. ──
+      if (
+        url.pathname === "/api/daemons/provision/capability" &&
+        req.method === "GET"
+      ) {
+        return json({
+          available: installPayload.mode !== "none",
+          mode: installPayload.mode,
+          sshAvailable: !!Bun.which("ssh"),
+        });
+      }
+
+      if (url.pathname === "/api/daemons/provision" && req.method === "POST") {
+        if (installPayload.mode === "none" || !installPayload.root) {
+          return json(
+            {
+              error:
+                "this build has no install payload bundled — auto-provision is unavailable; paste a connection string instead",
+            },
+            { status: 400 },
+          );
+        }
+        if (!Bun.which("ssh")) {
+          return json(
+            { error: "ssh is not on PATH — cannot provision a box" },
+            { status: 400 },
+          );
+        }
+        const body = (await req.json().catch(() => null)) as Record<
+          string,
+          unknown
+        > | null;
+        if (!body || typeof body.host !== "string" || !body.host.trim()) {
+          return json({ error: "body.host (string) required" }, { status: 400 });
+        }
+        const jobId = provisionManager.start({
+          payloadRoot: installPayload.root,
+          mode: installPayload.mode === "dev" ? "dev" : "packaged",
+          target: {
+            host: body.host.trim(),
+            user:
+              typeof body.user === "string" && body.user.trim()
+                ? body.user.trim()
+                : undefined,
+            sshPort: typeof body.sshPort === "number" ? body.sshPort : undefined,
+          },
+          label: typeof body.label === "string" ? body.label : undefined,
+        });
+        return json({ jobId });
+      }
+
+      {
+        const abortM = url.pathname.match(
+          /^\/api\/daemons\/provision\/([^/]+)\/abort$/,
+        );
+        if (abortM && req.method === "POST") {
+          provisionManager.abort(abortM[1]!);
+          return json({ ok: true });
+        }
+
+        const streamM = url.pathname.match(
+          /^\/api\/daemons\/provision\/([^/]+)\/stream$/,
+        );
+        if (streamM && req.method === "GET") {
+          const jobId = streamM[1]!;
+          const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+              const send = (event: string, data: unknown): void => {
+                try {
+                  controller.enqueue(
+                    sseEncoder.encode(
+                      `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                    ),
+                  );
+                } catch {
+                  // controller closed — client disconnected
+                }
+              };
+              const job = provisionManager.get(jobId);
+              if (!job) {
+                send("error", { message: "unknown provision job" });
+                try {
+                  controller.close();
+                } catch {}
+                return;
+              }
+              // Replay accumulated output so a reconnecting dialog catches up.
+              if (job.output) send("output", { chunk: job.output });
+              send("status", {
+                status: job.status,
+                daemonId: job.daemonId,
+                error: job.error,
+              });
+              if (
+                job.status === "done" ||
+                job.status === "error" ||
+                job.status === "aborted"
+              ) {
+                send("done", {});
+                try {
+                  controller.close();
+                } catch {}
+                return;
+              }
+              const unsub = provisionManager.subscribe(jobId, (chunk) =>
+                send("output", { chunk }),
+              );
+              await provisionManager.wait(jobId);
+              unsub();
+              const final = provisionManager.get(jobId);
+              send("status", {
+                status: final?.status,
+                daemonId: final?.daemonId,
+                error: final?.error,
+              });
+              send("done", {});
+              try {
+                controller.close();
+              } catch {}
+            },
+            cancel() {
+              // Client closed the stream (dialog closed / reload). The job
+              // keeps running on the daemon and survives — the dialog can
+              // reconnect and replay. Abort is an explicit, separate action.
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              ...CORS,
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              Connection: "keep-alive",
+            },
+          });
+        }
+
+        const getM = url.pathname.match(/^\/api\/daemons\/provision\/([^/]+)$/);
+        if (getM && req.method === "GET") {
+          const job = provisionManager.get(getM[1]!);
+          if (!job) {
+            return json({ error: "unknown provision job" }, { status: 404 });
+          }
+          return json(job);
         }
       }
 
