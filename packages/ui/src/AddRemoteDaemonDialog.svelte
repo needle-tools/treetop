@@ -247,6 +247,7 @@
     z-index: 2000;
   }
   .add-daemon-modal {
+    box-sizing: border-box;
     background: var(--surface-1);
     color: inherit;
     border: 1px solid var(--surface-2);
@@ -255,6 +256,7 @@
     width: min(30rem, calc(100vw - 2rem));
     max-height: calc(100vh - 4rem);
     overflow-y: auto;
+    overflow-x: hidden;
     box-shadow: 0 12px 32px var(--shadow-overlay);
   }
   .add-daemon-title {
@@ -283,6 +285,9 @@
   }
   .add-daemon-field input,
   .add-daemon-connstr {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
     background: var(--surface-1);
     color: inherit;
     border: 1px solid var(--surface-2);
@@ -312,17 +317,37 @@
   .add-daemon-advanced {
     margin-bottom: 0.75rem;
   }
+  /* Custom chevron (flex-aligned CSS triangle) instead of the default
+     ::marker, which sits at an inconsistent baseline across browsers. */
   .add-daemon-advanced-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     font-size: var(--fs-md);
     color: var(--text-muted);
     cursor: pointer;
     user-select: none;
     margin-bottom: 0.6rem;
-    list-style: disclosure-closed;
+    list-style: none;
+  }
+  .add-daemon-advanced-summary::-webkit-details-marker {
+    display: none;
+  }
+  .add-daemon-advanced-summary::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 0.3rem 0 0.3rem 0.42rem;
+    border-color: transparent transparent transparent currentColor;
+    transition: transform 0.12s ease;
   }
   .add-daemon-advanced[open] > .add-daemon-advanced-summary {
-    list-style: disclosure-open;
     margin-bottom: 0.75rem;
+  }
+  .add-daemon-advanced[open] > .add-daemon-advanced-summary::before {
+    transform: rotate(90deg);
   }
   .add-daemon-row {
     display: flex;
@@ -330,9 +355,10 @@
   }
   .add-daemon-row .add-daemon-field {
     flex: 1;
+    min-width: 0;
   }
   .add-daemon-row .add-daemon-field.narrow {
-    flex: 0 0 6.5rem;
+    flex: 0 1 6.5rem;
   }
   .err {
     color: var(--error-text);
