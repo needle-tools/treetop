@@ -6744,6 +6744,15 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      if (url.pathname === "/api/home" && req.method === "GET") {
+        // This machine's home directory — a sensible starting point for the
+        // file browser / the "add a folder on a remote daemon" dir picker.
+        // Loopback-only (not in LAN_ALLOWED_ROUTES), so only reachable
+        // locally or through the daemon proxy. Per-daemon by nature: the
+        // proxied form returns the REMOTE box's home.
+        return json({ home: homedir() });
+      }
+
       if (url.pathname === "/api/files" && req.method === "GET") {
         const dirPath = url.searchParams.get("path");
         if (!dirPath) {

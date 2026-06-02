@@ -208,6 +208,7 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
   let daemonId = "";
   let repoBasename = "";
   let remoteRepoPath = "";
+  let remoteHomePath = "";
   let plantedSessionId = "";
   const tmps: string[] = [];
 
@@ -227,6 +228,7 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
     const remoteHome = await mkdtemp(join(tmpdir(), "sg-e2e-remote-home-"));
     tmps.push(remoteWs, localWs, remoteRepo, remoteHome);
     remoteRepoPath = remoteRepo;
+    remoteHomePath = remoteHome;
     repoBasename = remoteRepo.split(/[\\/]/).pop()!;
     await gitRepo(remoteRepo);
 
@@ -441,6 +443,18 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
   }, 25_000);
 
   /* --- browsing the remote daemon's filesystem through the proxy --- */
+
+  test("GET /api/daemons/<id>/home returns the REMOTE daemon's home dir", async () => {
+    // The dir-picker in the Add-folder dialog starts here. It must report the
+    // REMOTE box's home (we pinned it via the remote daemon's HOME env), not
+    // the local machine's.
+    const res = await fetch(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/home`,
+    );
+    expect(res.ok).toBe(true);
+    const body = (await res.json()) as { home?: string };
+    expect(body.home).toBe(remoteHomePath);
+  }, 20_000);
 
   test("GET /api/daemons/<id>/files browses the REMOTE daemon's filesystem", async () => {
     const res = await fetch(

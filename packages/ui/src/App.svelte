@@ -9416,6 +9416,7 @@
   bind:open={addRemoteFolderOpen}
   daemons={remoteDaemons}
   preselectDaemonId={addRemoteFolderDaemonId}
+  {repos}
   onAdd={addRemoteFolder}
 />
 
