@@ -26,6 +26,7 @@
     lastUserMessageWithContext as buildLastUserMessageWithContext,
   } from "./last-user-message";
   import { isUiIdle, onResume } from "./ui-idle";
+  import { splitParent } from "./file-browser-utils";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -849,11 +850,13 @@
     }
   }
 
-  /** Open this session's working directory in the OS file manager
-   *  (Explorer / Finder / xdg). Prefers the live cwd, falling back to
-   *  the worktree path when the session's cwd isn't known yet. */
+  /** Open the on-disk directory that holds this session's transcript
+   *  (`~/.claude/projects/<encoded>/…` or codex's session store) in the
+   *  OS file manager (Explorer / Finder / xdg). `source` is the absolute
+   *  path to the session file itself, so open its parent directory. This
+   *  is the actual session-log folder — NOT the repo/cwd the TUI runs in. */
   async function openSessionDirectory(): Promise<void> {
-    const dir = session?.cwd || wtPath;
+    const dir = source ? splitParent(source).dir : "";
     if (!dir) return;
     try {
       const res = await fetch(apiUrl("/api/open"), {
@@ -922,11 +925,10 @@
           // the file manager".
           "M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
         ],
-        disabled: !(session?.cwd || wtPath),
-        title:
-          session?.cwd || wtPath
-            ? "Open this session's working directory in your file manager"
-            : "No directory for this session yet",
+        disabled: !source,
+        title: source
+          ? "Open the folder containing this session's on-disk log file"
+          : "No session file for this session yet",
         onSelect: () => void openSessionDirectory(),
       },
       {
