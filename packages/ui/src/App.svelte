@@ -36,6 +36,7 @@
   import { installIdleTracker, isUiIdle, onResume } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
   import AddRemoteDaemonDialog from "./AddRemoteDaemonDialog.svelte";
+  import AddRemoteFolderDialog from "./AddRemoteFolderDialog.svelte";
   import type { DaemonFormPayload } from "./remote-daemon-form";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
@@ -385,6 +386,10 @@
   // repo-edit popover). Global — reorders the whole repo list.
   let reorderDialogOpen = false;
   let addDaemonOpen = false;
+  // "Add a folder on a remote daemon" dialog (#3) + the daemon it opened
+  // against (preselected target).
+  let addRemoteFolderOpen = false;
+  let addRemoteFolderDaemonId = "";
   // The repo whose popover opened the reorder dialog — highlighted in
   // the list so the user can find where they started.
   let reorderHighlightRepoId: string | null = null;
@@ -3562,6 +3567,30 @@
     }
   }
 
+  /** Add a folder that already exists ON a remote daemon's box (#3). POSTs
+   *  the same /api/repos contract as the local add, but routed to the owning
+   *  daemon so the remote registers it against its own filesystem. Throws on
+   *  failure so the dialog surfaces the daemon's 409 (path missing / not a
+   *  git repo) and stays open. */
+  async function addRemoteFolder(payload: {
+    daemonId: string;
+    path: string;
+  }): Promise<void> {
+    const add = await fetch(apiUrl("/api/repos", payload.daemonId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: payload.path }),
+    });
+    if (!add.ok) {
+      const body = (await add.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${add.status}`);
+    }
+    play(repos.length === 0 ? "folder-add-first" : "folder-add");
+    newlyAddedRepoPaths.add(payload.path);
+    await load();
+    await scrollToNewRepo();
+  }
+
   /** POST that registers a remote daemon and returns the created record.
    *  Validates the response is the expected daemon JSON (`{id,...}`) rather
    *  than trusting `res.ok` alone: an OLD/un-rebuilt local daemon that
@@ -6594,6 +6623,15 @@
                     <span class="daemons-host">{d.host}:{d.port}</span>
                   </span>
                   <button
+                    class="daemons-addfolder"
+                    title="Add a folder on this daemon"
+                    on:click|stopPropagation={() => {
+                      addRemoteFolderDaemonId = d.id;
+                      addRemoteFolderOpen = true;
+                      daemonsMenuOpen = false;
+                    }}
+                  >+ Folder</button>
+                  <button
                     class="daemons-remove"
                     title="Remove daemon"
                     disabled={daemonRemoving.has(d.id)}
@@ -9361,6 +9399,12 @@
   highlightId={reorderHighlightRepoId}
 />
 <AddRemoteDaemonDialog bind:open={addDaemonOpen} onAdd={addRemoteDaemon} onConnect={connectRemoteDaemon} />
+<AddRemoteFolderDialog
+  bind:open={addRemoteFolderOpen}
+  daemons={remoteDaemons}
+  preselectDaemonId={addRemoteFolderDaemonId}
+  onAdd={addRemoteFolder}
+/>
 
 {#if dirtyCheckout}
   <div

@@ -8,11 +8,16 @@ repo-scoped calls) DONE (8401c76 = repo-list fan-out, fb483d4 = daemonId
 threading + routing-guard test). UI Phase C DONE — add-remote-daemon
 dialog/affordance (7625294), remove-daemon button + online/offline dot
 (b534310), per-daemon prefs namespacing (5fe5c6c). The whole feature is
-now reachable end-to-end in the UI. Remaining overall: the two-daemon
-live smoke test on a real Linux box over an SSH tunnel (blocked on
-provisioning — everything is unit-verified but has not yet talked to a
-real second daemon); the opt-in two-daemon e2e test harness also still
-deferred.**
+now reachable end-to-end in the UI. The whole flow has been proven LIVE
+against a real Hetzner box (terminals, repo edits, reorder, stars,
+agents/shells, notes). Live-USE fixes #1–#13 + the state-parity items
+#2/#5/#7/#8/#9/#10/#11/#14/#15a/#17 are DONE; the routing-guard blind
+spot that let the half-and-half bugs through is FIXED + hardened (commit
+8c669fd), and #3 "add a folder on a remote daemon" shipped (MVP, existing
+path). Remaining: the opt-in two-daemon / container e2e harness (the
+single biggest coverage gap — everything runtime-level is still only
+proven by hand), plus the deferred items #15b/#16/#18, mac/windows
+remote installers, Phase 2b auto-onboarding, and distribution.**
 
 ## The actual goal (clarified 2026-05-30)
 
@@ -535,36 +540,42 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       127.0.0.1 target, host-key accept-new, open() waits for listener,
       proxy surfaces real errors, **Windows key ACL lockdown** (the final
       root cause: ssh rejects 0600-but-ACL-open key). Row now renders.
-- [ ] **#1 Terminal on a remote row fails (Windows err 267 / cwd invalid)**
-      — `daemonId` reaches `SessionView` (App.svelte) but is NOT passed on
-      to `TerminalView` (SessionView.svelte:1771) nor through
-      `NewSessionCol`; TerminalView's POST `/api/terminals` + the
-      `/api/terminals/<id>/io` WS omit daemonId, so the PTY spawns on the
-      LOCAL daemon with the REMOTE cwd → error 267. Thread daemonId:
-      App → SessionView → TerminalView, App → NewSessionCol → TerminalView.
-- [ ] **#4 Editing remote repo settings does nothing (color, rename, …)**
-      — every repo-scoped POST omits daemonId: `/api/repos/<id>/color`,
-      `/rename`, `/checkout`, `/pull`, `/push`, `/worktrees`,
-      `/custom-links*`, and the DELETE. All hit the LOCAL daemon, which
-      doesn't have the remote repo. Thread daemonId (resolve from the repo
-      in scope) into each.
-- [ ] **Routing-guard blind spot** — `/api/repos*` + `/api/terminals*` are
-      on the guard's global allowlist (legit for local repo-mgmt + the
-      terminal list), so it can't flag a *remote* repo's color/terminal
-      call that forgot daemonId. The above two bugs slipped through because
-      of this. Tighten: distinguish per-repo-id calls from registry calls,
-      or assert remote-repo code paths pass daemonId.
+- [x] **#1 Terminal on a remote row fails (Windows err 267 / cwd invalid)**
+      — DONE. `daemonId` now threads App → SessionView → TerminalView and
+      App → NewSessionCol → TerminalView; TerminalView's POST `/api/terminals`
+      AND the `/api/terminals/<id>/io` WS both carry it, so a remote row's PTY
+      spawns on the box. Proven live against Hetzner (bash on the box, echo
+      READY_42).
+- [x] **#4 Editing remote repo settings does nothing (color, rename, …)**
+      — DONE. Every repo-scoped POST now routes `daemonIdForRepoId(repos,id)`:
+      `/color`, `/rename`, `/checkout`, `/pull`, `/push`, `/worktrees`,
+      `/custom-links*`, the DELETE, and `/summary` (RepoRecentSummary). Bare
+      for local (byte-identical), the owning daemon for remote rows.
+- [x] **Routing-guard blind spot — FIXED (commit 8c669fd)**. Two holes
+      closed: (a) `/api/repos`/`/api/terminals` were allowlisted as PREFIXES,
+      so a bare `/api/repos/<id>/color` passed — now they're global only at
+      the EXACT path, their `/<id>/...` sub-paths must thread daemonId;
+      (b) the lexical scanner desynced on a regex literal containing a quote
+      (`s.replace(/["\\]/g,…)`) and went blind, silently skipping 35+ calls
+      (ALL 28 StickyNotesLayer note routes, 7 in SessionView) — rewrote
+      `api-call-audit` as a regex-aware blanking pass. The fixed guard then
+      surfaced 6 genuinely un-routed scoped calls (terminal-kill ×3, repo
+      summary, pasted-image `/api/image`, text-attachment `/api/attachment`),
+      all now threaded.
 - [x] **#2 Stars collide across daemons** — FileBrowser now namespaces
       BOTH the StarStore key and the nav-state key (`KV_KEY`) by daemonId
       (`base + ":" + daemonId`), byte-identical for local (no migration).
       +2 StarStore tests (different keys don't share, local key unchanged).
-- [ ] **#3 Add a folder / git repo on the REMOTE daemon from local UI**
-      (most-wanted feature) — "Add folder" uses the LOCAL native picker +
-      POST `/api/repos`; there's no remote path. Compose: a path input (or
-      browse via proxied `GET /api/files?path=`, which exists) →
-      `POST apiUrl("/api/repos", daemonId)`. NOTE: no clone/init/mkdir
-      endpoint exists — repo must already be on the box; a remote
-      `git clone`/`init` is a separate, bigger add.
+- [x] **#3 Add a folder / git repo on the REMOTE daemon from local UI**
+      — DONE (MVP). A per-daemon "+ Folder" button in the menubar Daemons
+      list opens `AddRemoteFolderDialog` (preselected to that daemon): pick a
+      daemon + type a path that already exists ON THE BOX → `POST
+      apiUrl("/api/repos", daemonId)` → `load()`. The remote daemon's
+      `addRepo` validates the path against its own fs and returns a 409
+      (missing / not a git repo) that surfaces inline. Pure validation in
+      `remote-folder-form.ts` (+8 tests). STILL TODO: browse via proxied
+      `GET /api/files?path=` instead of typing; remote `git clone`/`init`
+      (no such endpoint yet — repo must already be on the box).
 - [x] **#5 Remote worktree path is shown bare** — remote rows now show a
       `.daemon-row-chip` (the daemon label) before the worktree path so
       it's clear the path lives on another box. `daemonLabelForRepo()`
@@ -718,10 +729,14 @@ the UI only QUERIED the local daemon. Split into two principles:
       `/api/session-titles` + `/api/session/title` are local-only; a remote
       shell's title lives in the local workspace, not the box. Route by
       daemonId (or accept as a local-view concern — decide).
-- [ ] **#17 Sticky notes pinned to a remote repo live in the LOCAL
-      workspace** — `/api/notes` is local-only. Design call: notes may be
-      intentionally a local board (then just namespace), or should follow
-      the repo to the remote box (then route by the note's anchor daemonId).
+- [x] **#17 Sticky notes follow the repo to the remote box** — DONE.
+      Decided notes live on the owning daemon's machine (not a local-only
+      board). `StickyNotesLayer` resolves each note's daemon via
+      `daemonIdForAnchors`, fetches notes from `[local, …remoteDaemons]`, tags
+      each in-memory with its `daemonId`, and routes all 26 `/api/notes` calls
+      by it; the note's text/image attachments (`/api/attachment`,
+      `/api/image`) are read from that daemon too (threaded via `note.daemonId`
+      through the attachment helpers — see the routing-guard fix above).
 - [ ] **#18 Remaining global daemon-kv keys not per-daemon namespaced** —
       openSessions, dismissedShells/Sessions, commitsExpanded,
       commandTermSources still use bare global keys (collision risk across
