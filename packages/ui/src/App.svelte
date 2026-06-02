@@ -153,6 +153,7 @@
     COMMIT_SUBJECT_MAX,
     clampSubject,
     sessionTooltip,
+    pushCount,
   } from "./display-helpers";
   import { parseNDJSONLines } from "./ndjson-client";
 
@@ -168,6 +169,10 @@
     ahead: number;
     behind: number;
     aheadOldestTime: string | null;
+    // Commits reachable from HEAD but from no remote-tracking ref.
+    // Filled by the daemon only for branches with no upstream (where
+    // `ahead` is always 0); null otherwise. See pushCount().
+    unpushed: number | null;
   }
   interface LastCommit {
     sha: string;
@@ -4914,9 +4919,13 @@
   // the component.
 
   function aheadTooltip(b: BranchStatus): string {
-    const count = b.ahead;
+    const count = pushCount(b);
     const noun = count === 1 ? "commit" : "commits";
-    const base = `${count} ${noun} to push → ${b.upstream}`;
+    // No upstream → these commits are on no remote-tracking ref at all,
+    // so there's no "→ origin/x" target to name; say so plainly.
+    const base = b.upstream
+      ? `${count} ${noun} to push → ${b.upstream}`
+      : `${count} ${noun} on no remote`;
     if (!b.aheadOldestTime) return base;
     return `${base} · oldest ${relTime(b.aheadOldestTime)}`;
   }
@@ -5277,7 +5286,7 @@
     for (const wt of repo.worktrees ?? []) {
       if (!visible.has(wt.path)) continue;
       if (wt.branchStatus) {
-        ahead += wt.branchStatus.ahead;
+        ahead += pushCount(wt.branchStatus);
         behind += wt.branchStatus.behind;
       }
       if (wt.fileStatus) {
@@ -5332,7 +5341,7 @@
       }> = [];
       for (const wt of repo.worktrees ?? []) {
         if (!visible.has(wt.path)) continue;
-        const ahead = wt.branchStatus?.ahead ?? 0;
+        const ahead = pushCount(wt.branchStatus);
         const behind = wt.branchStatus?.behind ?? 0;
         const fs = wt.fileStatus;
         const dirty = fs
@@ -7146,7 +7155,7 @@
                     <StatusBadge ahead={0} behind={1} dirty={0} />
                   </span>
                 {:else if wt && !wt.nonGit}
-                  {@const fAhead = wt.branchStatus?.ahead ?? 0}
+                  {@const fAhead = pushCount(wt.branchStatus)}
                   {@const fBehind = wt.branchStatus?.behind ?? 0}
                   {@const fDirty =
                     wt.fileStatus.staged +
@@ -7167,7 +7176,9 @@
                             : false}
                           onClick={() => tryPush(repo.id, wt.path)}
                           busy={!!pushBusy[wt.path]}
-                          title={`Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus?.upstream ?? "upstream"}`}
+                          title={wt.branchStatus?.upstream
+                            ? `Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus.upstream}`
+                            : `${fAhead} commit${fAhead === 1 ? "" : "s"} on no remote — set an upstream to push`}
                         />
                       </span>
                       <span slot="content" class="wt-tt-content">

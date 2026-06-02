@@ -96,7 +96,7 @@
         <div class="dock-rsp-section">
           <div class="dock-rsp-section-head">
             <svg class="dock-rsp-glyph dock-rsp-glyph-ahead" viewBox="0 0 12 12" aria-hidden="true"><path d={GIT_AHEAD}/></svg>
-            <span>{wt.ahead} commit{wt.ahead === 1 ? "" : "s"} to push to {wt.upstream ?? "upstream"}</span>
+            <span>{wt.ahead} commit{wt.ahead === 1 ? "" : "s"} {wt.upstream ? `to push to ${wt.upstream}` : "on no remote"}</span>
           </div>
           {#if s === undefined || s === "loading"}
             <span class="muted small">Loading commits…</span>

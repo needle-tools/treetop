@@ -6452,8 +6452,25 @@ const server = Bun.serve<TermWsData, never>({
               .text(),
           ]);
         const files = parseChangedFiles(statusOut);
-        const unpushedCommits = parseUnpushedCommits(aheadOut);
+        let unpushedCommits = parseUnpushedCommits(aheadOut);
         const unfetchedCommits = parseUnpushedCommits(behindOut);
+        // No upstream → `@{u}..HEAD` above errored (nothrow → empty), so
+        // the list is empty even though the badge may show a count from
+        // `rev-list HEAD --not --remotes`. Fall back to that same
+        // definition — commits on HEAD but on no remote-tracking ref —
+        // so the tooltip list matches the badge. A branch in sync with
+        // its upstream is also empty here, but then the fallback is
+        // empty too (HEAD is on a remote ref), so it's harmless; and an
+        // upstream branch that's genuinely ahead never reaches this
+        // branch because `aheadOut` was non-empty.
+        if (unpushedCommits.length === 0) {
+          const orphanOut =
+            await $`git -C ${path} log HEAD --not --remotes --pretty=format:${fmt} -n 20`
+              .quiet()
+              .nothrow()
+              .text();
+          unpushedCommits = parseUnpushedCommits(orphanOut);
+        }
         // Per-path line stats. Two maps: one for the working tree (covers
         // `unstaged` + we synthesise entries for `untracked` below), one
         // for the index (`staged`). Looking up by path on the UI side is

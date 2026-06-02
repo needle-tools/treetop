@@ -327,8 +327,10 @@ describe("parseBranchStatus", () => {
       // aheadOldestTime is filled in by getWorktreeDetails after a
       // separate `git log` call; the porcelain parser always returns
       // null. See git.integration.test.ts for the populated-value
-      // contract.
+      // contract. `unpushed` is likewise filled in only for no-upstream
+      // branches by getWorktreeDetails; the parser always returns null.
       aheadOldestTime: null,
+      unpushed: null,
     });
   });
 
@@ -342,6 +344,7 @@ describe("parseBranchStatus", () => {
       ahead: 0,
       behind: 0,
       aheadOldestTime: null,
+      unpushed: null,
     });
   });
 });

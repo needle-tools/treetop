@@ -274,6 +274,52 @@ describe("getWorktreeDetails against real git", () => {
       "2026-01-01T10:00:00+02:00",
     );
   });
+
+  // `unpushed` answers "how many commits exist nowhere on a remote" for
+  // branches with NO upstream — git emits no ahead/behind for those, so
+  // it's the only push-pressure signal. Counted via
+  // `git rev-list --count HEAD --not --remotes`. Populated only when
+  // there's no upstream; null otherwise (the UI uses `ahead` then).
+  test("unpushed counts every commit when the repo has no remote at all", async () => {
+    const repo = await tempRepo();
+    await $`git -C ${repo} commit --allow-empty -m second -q`.quiet();
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.upstream).toBeNull();
+    // initial + second — nothing is on any remote because none exists.
+    expect(details.branchStatus?.unpushed).toBe(2);
+  });
+
+  test("unpushed counts only commits not on any remote-tracking ref", async () => {
+    const bare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-bare-")),
+    );
+    await $`git -C ${bare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin ${bare}`.quiet();
+    await $`git -C ${repo} push origin main -q`.quiet();
+
+    // A fresh branch tracking nothing: its commits aren't on origin/main,
+    // but the commits it shares with main ARE (via the remote-tracking
+    // ref), so only the new one counts.
+    await $`git -C ${repo} checkout -q -b feature`.quiet();
+    await $`git -C ${repo} commit --allow-empty -m feat -q`.quiet();
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.upstream).toBeNull();
+    expect(details.branchStatus?.unpushed).toBe(1);
+  });
+
+  test("unpushed is null when the branch has an upstream", async () => {
+    const bare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-bare-")),
+    );
+    await $`git -C ${bare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin ${bare}`.quiet();
+    await $`git -C ${repo} push -u origin main -q`.quiet();
+    const details = await getWorktreeDetails(repo);
+    expect(details.branchStatus?.upstream).toBe("origin/main");
+    expect(details.branchStatus?.unpushed).toBeNull();
+  });
 });
 
 describe("listCommits against real git", () => {

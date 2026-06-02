@@ -161,6 +161,24 @@ export function remoteButtonLabel(remote: RemoteRef): string {
 }
 
 // ---------------------------------------------------------------------------
+// pushCount
+// ---------------------------------------------------------------------------
+
+/** Commits to push for a worktree's branch. Normally this is `ahead`
+ *  (commits beyond the configured upstream). A branch with no upstream
+ *  gets no ahead/behind from git, so the daemon fills `unpushed` instead
+ *  — commits reachable from HEAD but from no remote-tracking ref. The
+ *  two are mutually exclusive (the daemon only sets `unpushed` when
+ *  there's no upstream, in which case `ahead` is 0), so a simple OR
+ *  picks whichever applies. Returns 0 for a missing branch status. */
+export function pushCount(
+  bs: { ahead: number; unpushed?: number | null } | null | undefined,
+): number {
+  if (!bs) return 0;
+  return bs.ahead || (bs.unpushed ?? 0);
+}
+
+// ---------------------------------------------------------------------------
 // targetGlyph  (was App.svelte ~line 5245)
 // ---------------------------------------------------------------------------
 

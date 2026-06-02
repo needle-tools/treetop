@@ -12,6 +12,7 @@ import {
   fileManagerLabel,
   fileManagerIcon,
   remoteButtonLabel,
+  pushCount,
 } from "../src/display-helpers";
 import type { RemoteRef } from "../src/display-helpers";
 
@@ -249,5 +250,28 @@ describe("remoteButtonLabel", () => {
       host: "custom.example.com",
     };
     expect(remoteButtonLabel(remote)).toBe("custom.example.com (upstream)");
+  });
+});
+
+describe("pushCount", () => {
+  it("returns 0 for null/undefined branch status", () => {
+    expect(pushCount(null)).toBe(0);
+    expect(pushCount(undefined)).toBe(0);
+  });
+
+  it("uses ahead when the branch tracks an upstream", () => {
+    expect(pushCount({ ahead: 3, unpushed: null })).toBe(3);
+  });
+
+  it("falls back to unpushed when there's no upstream (ahead is 0)", () => {
+    // Daemon fills `unpushed` only when upstream is null, in which case
+    // git reports ahead as 0 — so the fallback picks up the real count.
+    expect(pushCount({ ahead: 0, unpushed: 5 })).toBe(5);
+  });
+
+  it("is 0 when both are 0 / null", () => {
+    expect(pushCount({ ahead: 0, unpushed: null })).toBe(0);
+    expect(pushCount({ ahead: 0, unpushed: 0 })).toBe(0);
+    expect(pushCount({ ahead: 0 })).toBe(0);
   });
 });

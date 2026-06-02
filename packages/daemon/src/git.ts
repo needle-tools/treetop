@@ -115,6 +115,15 @@ export interface BranchStatus {
    *  failed. The UI uses this to age the unpushed-commits pill so it
    *  reads more urgently after a threshold. */
   aheadOldestTime: string | null;
+  /** Commits reachable from HEAD but from no remote-tracking ref
+   *  (`git rev-list --count HEAD --not --remotes`). A branch with no
+   *  upstream gets no `branch.ab` line from git, so `ahead` is 0 and
+   *  there's no push-pressure signal — this fills that gap by answering
+   *  "how many commits exist nowhere on a remote." Populated only when
+   *  `upstream === null` (the UI uses `ahead` otherwise); null when an
+   *  upstream exists, the lookup failed, or the value came straight from
+   *  the porcelain parser. */
+  unpushed: number | null;
 }
 
 export interface LastCommit {
@@ -953,6 +962,20 @@ export async function getWorktreeDetails(
       const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
       if (oldest.length > 0) branchStatus.aheadOldestTime = oldest;
     }
+    // No upstream → git emits no `branch.ab`, so `ahead` is 0 and the UI
+    // has nothing to show. Fall back to counting commits reachable from
+    // HEAD but from no remote-tracking ref ("exists nowhere on a remote").
+    // Only pay this extra round-trip for the remote-less case; the common
+    // has-upstream path stays at one round-trip. `.catch("")` covers the
+    // no-commits-yet repo (rev-list with no HEAD errors).
+    if (branchStatus && branchStatus.upstream === null) {
+      const countOut = await $`git -C ${worktreePath} rev-list --count HEAD --not --remotes`
+        .quiet()
+        .text()
+        .catch(() => "");
+      const n = Number.parseInt(countOut.trim(), 10);
+      if (!Number.isNaN(n)) branchStatus.unpushed = n;
+    }
     const fileStatus = parseFileStatus(statusOut);
     fileStatus.dirtyLines = parseShortstatLines(shortstatOut);
     return {
@@ -1053,7 +1076,7 @@ export function parseBranchStatus(porcelain: string): BranchStatus | null {
     }
   }
   if (branch === null) return null;
-  return { branch, upstream, ahead, behind, aheadOldestTime: null };
+  return { branch, upstream, ahead, behind, aheadOldestTime: null, unpushed: null };
 }
 
 export function parseLastCommit(logOut: string): LastCommit | null {
