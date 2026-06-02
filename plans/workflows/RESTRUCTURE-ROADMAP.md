@@ -13,6 +13,60 @@ This merges the code-restructuring track (server.ts, App.svelte) and the CSS/des
 
 ---
 
+## Progress log
+
+State as of **2026-06-02**. Branch **`restructure/cleanup`** (pushed). Convention: tests-first or re-pointed characterization tests; one commit per step; UI suite green throughout; svelte-check steady at its pre-existing 47 errors (`PersistedAgent`/`DockEntry` baseline, not ours).
+
+### Landed on `main`
+- **Perf measurement layer** — `packages/daemon/src/timings.ts` (+ `/api/debug/timings`, hot paths instrumented) and `packages/ui/src/timings.ts` (+ `__sgTimings()` devtools hook; `load` / `sse-change` / `dockEntries` instrumented). Baseline-before-refactor in place.
+- **PR #1 design-token foundation** — `tokens.css` base palette + value-preserving aliases + new semantic tokens; guard at 77 names. Zero visual change.
+- **`server-helpers.ts`** — 9 pure helpers extracted from `server.ts` (`detectCommandUrl` correctly left behind — impure); 89 behavioral tests.
+
+### Landed on `restructure/cleanup`
+Eight extractions out of **App.svelte: 10,144 → 9,522 lines (−622)**, each tested:
+
+| Module | Notes | Tests |
+|---|---|---|
+| `display-helpers.ts` | pure display/format helpers (`anchorLabel` left — repos-coupled, later moved to event-format) | re-pointed |
+| `toast-manager.ts` | factory + injected play/onChange/schedule | 31 |
+| `session-source-routing.ts` | source transforms (tests-first) | 50 |
+| `ndjson-client.ts` | pure `/api/repos` parse loop | (App-char) |
+| `unread-pulse-manager.ts` | factory + timers (tests-first) | 29 |
+| `strip-search-manager.ts` | factory + pure `computeStripFilterByWt` (tests-first) | 58 |
+| `event-format.ts` | error/event formatters; `anchorLabel`/`eventLabel` now take `repos` param | 28 |
+| (OpenInActions dedup) | onto shared display-helpers | 32 |
+
+Plus: **fixed a pre-existing row-wrap regression** in `SessionSearchList.svelte` (column-4 cell-sharers needed `grid-row: 1`; was present on `main`, surfaced by the imported-badge — diagnosed via live-DOM measurement).
+
+### Recurring blocker observed
+Many App.svelte functions close over the reactive **`repos`** (and similar reactive Records). The working pattern: pure transforms take state as an explicit param; stateful subsystems become `create*Manager()` factories with injected get/set + side-effect callbacks, leaving the reactive `let` in App.svelte.
+
+---
+
+## Next phase — the App.svelte template (the real reduction)
+
+App.svelte is **~6,000 lines of script + ~3,500 lines of template**. Logic extraction has pulled most clean clusters; the **template is now the biggest mass** and the only path to *way* smaller. Carve self-contained markup into child components (their CSS already lives in `styles/*.css`).
+
+**Risk note:** unlike logic modules, **domless tests can't verify rendered markup** — verify each component via `svelte-check` + spot-checking the running dev app (:7779) read-only through chrome-devtools (measure/compare, no clicks that mutate state).
+
+**Candidate components, safest/most-self-contained first:**
+1. **Events popover** (undo/redo log) — already fed by the now-pure `eventLabel(ev, repos)`; mostly a list render. Good proof-of-concept.
+2. **Diagnostics / error-log popover** — fed by pure `eventToText`/`errorKindLabel`; self-contained.
+3. **New-agent popover**, **import-sessions dialog** — bounded dialogs.
+4. **The dock** (`dockEntries` render) — larger, more props.
+5. **The worktree row** — the biggest; do last, likely several sub-components.
+
+Each component PR: extract markup + props/events, keep behavior, `svelte-check` clean + dev-app visual spot-check, one commit.
+
+### Remaining script extractions (lower priority, steady wins)
+`subscribeToStream` (SSE wiring), `loadWtSummary` / `loadSystemInfo` (feature loaders — injected fetch + pure parse core), the `fetchReposNDJSON` fetch/pump shell, spawn/promotion state machine. Plus roadmap leftovers: `onboarding-streaming.ts`, `repo-fetch-loop.ts`.
+
+### Other tracks not yet started on this branch
+- **CSS step 2+** — resolve the 12 dangling token refs; then migrate hardcoded literals, derive surfaces/text, add the light theme (see CSS section below).
+- **Daemon** — `session-path-resolver.ts`, `repos-cache.ts`, `ndjson-repos-stream.ts` (see server.ts section below).
+
+---
+
 ## Code restructuring
 
 ### `packages/daemon/src/server.ts` (7,597 lines)
