@@ -113,6 +113,7 @@
     type FrontendErrorEntry,
   } from "./errors";
   import { play } from "./sound";
+  import { createToastManager, type Toast } from "./toast-manager";
   import { subscribeToasts } from "./toast-bus";
   import {
     sortBranches,
@@ -328,85 +329,17 @@
    *  the bottom-right; each auto-dismisses on its own timer and can be
    *  closed manually. Designed to coexist with the stash banner that
    *  was wired earlier (which now uses this same machinery). */
-  interface Toast {
-    id: number;
-    kind: "error" | "info" | "success" | "invite" | "warning";
-    message: string;
-    title?: string;
-    /** When set, the toast renders an agent brand mark (AgentIcon)
-     *  instead of the default emoji glyph. Used by usage-warning
-     *  toasts so the user instantly sees which provider is throttling. */
-    agent?: string;
-    /** Render the message line in italics — used for message previews
-     *  (the quoted body of an incoming peer message). */
-    messageItalic?: boolean;
-    /** When set, clicking the toast body fires this callback (and also
-     *  dismisses the toast). Used by the session-share invite toast to
-     *  open the accept/decline dialog. */
-    onClick?: () => void;
-    /** When true, the toast does NOT auto-dismiss on a timer. The user
-     *  has to click the body (which fires onClick) or the close button.
-     *  Used for invite toasts that should persist until acted on. */
-    persist?: boolean;
-  }
   let toasts: Toast[] = [];
-  let toastSeq = 0;
-  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  const { addToast, dismissToast } = createToastManager({
+    onChange: (t) => (toasts = t),
+    // play() from sound.ts accepts a narrow SoundTag literal union; the manager
+    // dep is typed as (sound: string) => void so the wrapper bridges the gap.
+    play: (s) => play(s as Parameters<typeof play>[0]),
+  });
   /** Svelte action: focus the element as soon as it mounts. Used so an
    *  expanding search input grabs the caret without a follow-up click. */
   function focusOnMount(node: HTMLInputElement) {
     queueMicrotask(() => node.focus());
-  }
-
-  function addToast(opts: {
-    kind: Toast["kind"];
-    message: string;
-    title?: string;
-    agent?: string;
-    messageItalic?: boolean;
-    ttlMs?: number;
-    onClick?: () => void;
-    persist?: boolean;
-    silent?: boolean;
-  }): number {
-    if (!opts.message) return -1;
-    const id = ++toastSeq;
-    toasts = [
-      ...toasts,
-      {
-        id,
-        kind: opts.kind,
-        message: opts.message,
-        title: opts.title,
-        agent: opts.agent,
-        messageItalic: opts.messageItalic,
-        onClick: opts.onClick,
-        persist: opts.persist,
-      },
-    ];
-    if (!opts.silent) {
-      if (opts.kind === "error") play("error");
-      else if (opts.kind === "invite") play("peer-session");
-      else if (opts.kind === "warning") play("toast-warning");
-    }
-    if (!opts.persist) {
-      const ttl =
-        opts.ttlMs ??
-        (opts.kind === "error" ? 12_000 : opts.kind === "warning" ? 10_000 : 7_000);
-      toastTimers.set(
-        id,
-        setTimeout(() => dismissToast(id), ttl),
-      );
-    }
-    return id;
-  }
-  function dismissToast(id: number) {
-    const t = toastTimers.get(id);
-    if (t) {
-      clearTimeout(t);
-      toastTimers.delete(id);
-    }
-    toasts = toasts.filter((x) => x.id !== id);
   }
   // Mirror any direct `error = "…"` assignment into the toast stack so
   // we don't have to chase every call site at once. Cleared as soon as
