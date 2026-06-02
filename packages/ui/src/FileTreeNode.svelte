@@ -25,6 +25,10 @@
   export let onNavigateToFile: (path: string) => void;
   export let starred: Set<string> = new Set();
   export let onToggleStar: (path: string) => void = () => {};
+  /** Picker mode: hide the per-row open-in-app + star buttons (used by the
+   *  "add a folder on a remote daemon" dir picker, which only navigates +
+   *  selects folders). Defaults false so the file browser is unchanged. */
+  export let hideActions = false;
 
   $: fullPath = joinPath(parentDir, entry.name);
   $: isExpanded = !!expanded[fullPath];
@@ -264,6 +268,7 @@
       >
     {/if}
     <span class="fb-name">{entry.name}</span>
+    {#if !hideActions}
     <button
       class="fb-open"
       on:click|stopPropagation={() => {
@@ -308,6 +313,7 @@
         >
       {/if}
     </button>
+    {/if}
     {#if copiedPaths.has(fullPath)}<span class="fb-copied-hint">copied</span
       >{/if}
     {#if myGitStatus && !isDir}
@@ -437,6 +443,7 @@
           {onNavigateToFile}
           {starred}
           {onToggleStar}
+          {hideActions}
         />
       {/each}
     </ul>

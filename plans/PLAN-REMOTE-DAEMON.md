@@ -577,11 +577,15 @@ Once `slugify` from the Hetzner box rendered as a folder row, actually
       `addRepo` validates the path against its own fs and returns a 409
       (missing / not a git repo) that surfaces inline. Pure validation in
       `remote-folder-form.ts` (+8 tests). The dialog also has a **remote
-      directory browser**: it starts at the box's home (new `GET /api/home`,
-      auto-proxied; e2e-tested) and lists subfolders via proxied
-      `GET /api/files`, so the user can navigate to the folder instead of
-      typing it (typing/paste + Enter still works). STILL TODO: remote
-      `git clone`/`init` (no endpoint yet — repo must already be on the box).
+      directory browser** that REUSES the file tree's own building blocks
+      (`FileTreeNode` with a new `hideActions` picker mode + a new
+      `FilePathBar` breadcrumb extracted from FileBrowser's address bar and
+      shared by both). It starts at the box's home (new `GET /api/home`,
+      auto-proxied; e2e-tested), falls back to the parent of an existing repo
+      on that daemon (so it works even on a remote predating `/api/home`),
+      and lists subfolders via proxied `fetchDir`/`GET /api/files`; typing/
+      paste + Enter still works. STILL TODO: remote `git clone`/`init` (no
+      endpoint yet — repo must already be on the box).
 - [x] **#5 Remote worktree path is shown bare** — remote rows now show a
       `.daemon-row-chip` (the daemon label) before the worktree path so
       it's clear the path lives on another box. `daemonLabelForRepo()`

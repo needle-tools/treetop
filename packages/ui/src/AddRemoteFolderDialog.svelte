@@ -21,8 +21,11 @@
   import {
     joinPath,
     splitParent,
+    fetchDir,
     type FileEntry,
   } from "./file-browser-utils";
+  import FileTreeNode from "./FileTreeNode.svelte";
+  import FilePathBar from "./FilePathBar.svelte";
 
   export let open = false;
   /** The connected remote daemons to choose a target from. */
@@ -45,56 +48,86 @@
   let submitError = "";
   let busy = false;
 
-  // --- Remote directory browser (so the user can navigate instead of
-  //     typing the path). All reads go through the proxy to the chosen
-  //     daemon: GET /api/home for the start dir, GET /api/files to list. ---
-  let browseDir = "";
-  let browseSubdirs: FileEntry[] = [];
+  // --- Remote directory browser. Reuses the file tree's own building blocks
+  //     (FileTreeNode + FilePathBar), driven against the chosen daemon via the
+  //     proxy: GET /api/home for the start dir, fetchDir() (GET /api/files) to
+  //     list. We only ever feed it DIRECTORIES — it's a folder picker. ---
+  let browseDir = ""; // the root the tree shows
+  /** Top-level subdirectories of `browseDir` (the tree's roots). */
+  let rootDirs: FileEntry[] = [];
+  /** Lazily-loaded children for expanded folders, keyed by absolute path. */
+  let expanded: Record<string, FileEntry[]> = {};
+  /** The folder that will be added (also the highlighted row). */
+  let selected: Set<string> = new Set();
   let browseLoading = false;
   let browseError = "";
+  // FileTreeNode needs these but the picker has no git/stars/copy state.
+  const noGit: Record<string, Map<string, string>> = {};
+  const noSet: Set<string> = new Set();
   /** Token to ignore the response of a superseded load (daemon switch /
    *  rapid navigation) so a slow earlier request can't clobber a newer view. */
   let browseSeq = 0;
 
+  function onlyDirs(entries: FileEntry[]): FileEntry[] {
+    return entries.filter((e) => e.type === "directory");
+  }
+
+  /** Load `dir` as the tree root: list its subfolders + select it. */
   async function loadDir(dir: string): Promise<void> {
     const seq = ++browseSeq;
     browseLoading = true;
     browseError = "";
     try {
-      const res = await fetch(
-        apiUrl(`/api/files?path=${encodeURIComponent(dir)}`, fields.daemonId),
-      );
+      const entries = await fetchDir(dir, fields.daemonId);
       if (seq !== browseSeq) return; // superseded
-      if (!res.ok) {
-        browseError = `Couldn't read ${dir}`;
-        browseSubdirs = [];
-        return;
-      }
-      const data = (await res.json()) as {
-        path?: string;
-        entries?: FileEntry[];
-      };
-      if (seq !== browseSeq) return;
-      browseDir = data.path ?? dir;
-      // Navigating into a directory selects it as the folder to add.
-      fields.path = browseDir;
-      browseSubdirs = (data.entries ?? []).filter((e) => e.type === "directory");
+      browseDir = dir;
+      fields.path = dir; // navigating into a directory selects it
+      selected = new Set([dir]);
+      expanded = {};
+      rootDirs = onlyDirs(entries);
     } catch {
       if (seq !== browseSeq) return;
       browseError = `Couldn't read ${dir}`;
-      browseSubdirs = [];
+      rootDirs = [];
     } finally {
       if (seq === browseSeq) browseLoading = false;
     }
   }
 
-  /** Start the browser at the remote's home dir, falling back to the parent
-   *  of an existing repo on this daemon (works even on a remote that predates
-   *  /api/home), and finally to "type a path" if there's nothing to anchor. */
+  /** Expand / collapse a folder in place (FileTreeNode's onToggleExpand). */
+  async function toggleExpand(name: string, parentDir?: string): Promise<void> {
+    const full = joinPath(parentDir ?? browseDir, name);
+    if (expanded[full]) {
+      const next = { ...expanded };
+      delete next[full];
+      expanded = next;
+      return;
+    }
+    try {
+      const children = onlyDirs(await fetchDir(full, fields.daemonId));
+      expanded = { ...expanded, [full]: children };
+    } catch {
+      // leave collapsed
+    }
+  }
+
+  /** Single-click a folder → choose it as the path to add. */
+  function selectPath(path: string): void {
+    fields.path = path;
+    selected = new Set([path]);
+  }
+
+  /** Double-click a folder → drill into it as the new tree root. */
+  function onDirDblClick(path: string, type: string): void {
+    if (type === "directory") void loadDir(path);
+  }
+
+  /** Start at the box's home, else the parent of an existing repo on this
+   *  daemon (works even on a remote that predates /api/home), else let the
+   *  user type a path. */
   async function startBrowse(): Promise<void> {
     if (!fields.daemonId) return;
     browseError = "";
-    // 1) the box's home (new endpoint; may be absent on older remotes)
     try {
       const res = await fetch(apiUrl("/api/home", fields.daemonId));
       if (res.ok) {
@@ -107,7 +140,6 @@
     } catch {
       // fall through
     }
-    // 2) parent of an existing repo on this daemon — no new endpoint needed
     const sibling = repos.find((r) => r.daemonId === fields.daemonId && r.path);
     if (sibling) {
       const parent = splitParent(sibling.path).dir;
@@ -116,14 +148,9 @@
         return;
       }
     }
-    // 3) nothing to anchor on — let the user type a path.
-    browseSubdirs = [];
+    rootDirs = [];
     browseDir = "";
     browseError = "Type a path above and press Enter to browse.";
-  }
-
-  function enterDir(name: string): void {
-    void loadDir(joinPath(browseDir, name));
   }
 
   function goUp(): void {
@@ -146,7 +173,9 @@
     submitError = "";
     busy = false;
     browseDir = "";
-    browseSubdirs = [];
+    rootDirs = [];
+    expanded = {};
+    selected = new Set();
     browseError = "";
     wasOpen = true;
     void startBrowse();
@@ -251,7 +280,8 @@
         </small>
       </label>
 
-      <!-- Remote directory browser: navigating selects that folder. -->
+      <!-- Remote directory browser. Reuses the file tree's own components:
+           FilePathBar (clickable breadcrumb) + FileTreeNode (folder rows). -->
       <div class="add-folder-browser">
         <div class="add-folder-browser-head">
           <button
@@ -261,27 +291,42 @@
             disabled={browseLoading || !browseDir}
             title="Up one level"
           >↑</button>
-          <span class="add-folder-cwd" title={browseDir}>{browseDir || "—"}</span>
+          {#if browseDir}
+            <span class="add-folder-cwd">
+              <FilePathBar path={browseDir} onCrumb={(p) => void loadDir(p)} />
+            </span>
+          {:else}
+            <span class="add-folder-cwd add-folder-cwd-empty">—</span>
+          {/if}
         </div>
         <div class="add-folder-browser-list">
           {#if browseLoading}
             <div class="add-folder-browser-msg">Loading…</div>
           {:else if browseError}
             <div class="add-folder-browser-msg">{browseError}</div>
-          {:else if browseSubdirs.length === 0}
+          {:else if rootDirs.length === 0}
             <div class="add-folder-browser-msg">No subfolders here.</div>
           {:else}
-            {#each browseSubdirs as e (e.name)}
-              <button
-                type="button"
-                class="add-folder-dir"
-                on:click={() => enterDir(e.name)}
-                disabled={browseLoading}
-              >
-                <span class="add-folder-dir-icon">📁</span>
-                <span class="add-folder-dir-name">{e.name}</span>
-              </button>
-            {/each}
+            <ul class="fb-list">
+              {#each rootDirs as e (e.name)}
+                <FileTreeNode
+                  entry={e}
+                  parentDir={browseDir}
+                  {expanded}
+                  {selected}
+                  copiedPaths={noSet}
+                  gitStatusByDir={noGit}
+                  showDotfiles={false}
+                  wtPath={browseDir}
+                  onSelect={(p) => selectPath(p)}
+                  onDblClick={onDirDblClick}
+                  onToggleExpand={(name, parent) => void toggleExpand(name, parent)}
+                  onNavigateToFile={() => {}}
+                  starred={noSet}
+                  hideActions
+                />
+              {/each}
+            </ul>
           {/if}
         </div>
       </div>
@@ -409,49 +454,29 @@
     opacity: 0.4;
     cursor: default;
   }
+  /* Holds the FilePathBar breadcrumb; scroll horizontally on long paths
+     instead of wrapping or clipping. */
   .add-folder-cwd {
-    font-size: var(--fs-sm);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--text-4);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
     white-space: nowrap;
-    direction: rtl; /* keep the tail (the folder you're in) visible */
-    text-align: left;
+  }
+  .add-folder-cwd-empty {
+    color: var(--text-faint);
+    font-size: var(--fs-sm);
   }
   .add-folder-browser-list {
     max-height: 11rem;
     overflow-y: auto;
+    padding: 0.15rem 0.25rem;
   }
   .add-folder-browser-msg {
     padding: 0.6rem 0.55rem;
     font-size: var(--fs-md);
     color: var(--text-faint);
-  }
-  .add-folder-dir {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    padding: 0.3rem 0.55rem;
-    font-size: var(--fs-md);
-  }
-  .add-folder-dir:hover {
-    background: color-mix(in srgb, var(--brand) 14%, transparent);
-  }
-  .add-folder-dir-icon {
-    flex: 0 0 auto;
-    font-size: var(--fs-lg);
-  }
-  .add-folder-dir-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .add-folder-submit-error {
     color: var(--error-text);

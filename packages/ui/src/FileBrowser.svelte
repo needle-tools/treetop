@@ -13,7 +13,6 @@
     fetchGitStatus,
     NavHistory,
     StarStore,
-    breadcrumbs,
     normalizePath,
     computeStarredList,
     splitParent,
@@ -30,6 +29,7 @@
   } from "./file-browser-utils";
   import { ICONS } from "./icons";
   import FileTreeNode from "./FileTreeNode.svelte";
+  import FilePathBar from "./FilePathBar.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
 
   export let wtPath: string;
@@ -697,17 +697,11 @@
         ? `Click to copy ${selected.size} selected path${selected.size > 1 ? "s" : ""} (Ctrl+C when focused)`
         : "Click to copy path (Ctrl+C when focused)"}
     >
-      {#each breadcrumbs(currentDir) as crumb, i}
-        {#if i > 0}<span class="fb-sep">/</span>{/if}
-        <button
-          class="fb-crumb"
-          class:fb-crumb-active={i === breadcrumbs(currentDir).length - 1 &&
-            selected.size === 0}
-          on:click|stopPropagation={() => handleCrumbClick(crumb.path)}
-          on:dragstart|preventDefault
-          title={crumb.path}>{crumb.name}</button
-        >
-      {/each}
+      <FilePathBar
+        path={currentDir}
+        onCrumb={handleCrumbClick}
+        active={selected.size === 0}
+      />
       {#if selectedNames.length > 0}
         <span class="fb-sep">/</span>
         <span class="fb-selected-names">
@@ -1059,31 +1053,8 @@
     height: 0.6rem;
     stroke: var(--text-1);
   }
-  .fb-sep {
-    color: var(--text-faint);
-  }
-  .fb-crumb {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    padding: 0.1rem 0.2rem;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-    font-size: 0.72rem;
-    font-family: inherit;
-    /* Allow text selection within the address bar — by default buttons
-     * block this and the user can't drag-select a portion of the path. */
-    user-select: text;
-    -webkit-user-select: text;
-  }
-  .fb-crumb:hover {
-    color: var(--text-1);
-    background: var(--surface-3);
-  }
-  .fb-crumb-active {
-    color: var(--text-1);
-    font-weight: 600;
-  }
+  /* .fb-sep / .fb-crumb / .fb-crumb-active moved to styles/file-browser.css
+     so FilePathBar.svelte (address bar + dir picker) shares them. */
   .fb-path {
     display: flex;
     align-items: center;

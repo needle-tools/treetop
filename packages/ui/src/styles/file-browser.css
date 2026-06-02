@@ -6,6 +6,34 @@
 .fb-indent {
   padding-left: 1.2rem;
 }
+/* Breadcrumb path segment. Shared by FilePathBar.svelte (used in the file
+   browser's address bar AND the "add a remote folder" dir picker) — moved
+   here from FileBrowser's scoped styles so both render identically. */
+.fb-sep {
+  color: var(--text-faint);
+}
+.fb-crumb {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.1rem 0.2rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-family: inherit;
+  /* Allow text selection within the address bar — by default buttons block
+     this and the user can't drag-select a portion of the path. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+.fb-crumb:hover {
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+.fb-crumb-active {
+  color: var(--text-1);
+  font-weight: 600;
+}
 .fb-row {
   display: flex;
   align-items: center;
