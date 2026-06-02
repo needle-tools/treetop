@@ -406,6 +406,45 @@ describe("acceptOffer", () => {
     );
   });
 
+  test("rewrites originWorktreePath to localRepoPath when receiver has no matching worktree", async () => {
+    // Real-world case that hid an imported session: the sender ran from
+    // a worktree path that's a different shape than originRepoPath
+    // (here: worktree is a *parent* of repo path, as happens with
+    // npm-package-inside-repo layouts). Receiver doesn't have that
+    // worktree subdir, so the optional second rewritePaths call was
+    // skipped — leaving Mac-shaped cwds in the JSONL, which scanClaude
+    // can't map to any local repo.
+    const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
+    const m = manifest({
+      originRepoPath: "/Users/marcel/git/engine/js/package~/",
+      originWorktreePath: "/Users/marcel/git/engine",
+    });
+    const j = [
+      // Mentions the worktree path (parent of repo) — the line that
+      // used to slip through unrewritten.
+      JSON.stringify({ cwd: "/Users/marcel/git/engine", uuid: "u1" }),
+      // Also mentions the repo path — rewritten by the first pass.
+      JSON.stringify({ cwd: "/Users/marcel/git/engine/js/package~", uuid: "u2" }),
+    ].join("\n");
+    await storePendingOffer(ws, m, j);
+
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: m.offerId,
+      // repoLookup intentionally returns no worktree match.
+      repoLookup: repoFound("C:/local/engine/js/package~"),
+      claudeProjectsDir: cpd,
+      toPlatform: "darwin",
+    });
+    if (!r.ok) throw new Error("expected ok");
+    const written = await readFile(r.importedPath, "utf-8");
+    // No Mac paths survive — both the worktree mention and the repo
+    // mention now point at the receiver's filesystem.
+    expect(written.includes("/Users/marcel/")).toBe(false);
+    expect(written.includes("C:/local/engine")).toBe(true);
+  });
+
   test("codex offer keeps legacy layout: JSONL + sidecar under imported-sessions/<machine>/codex/", async () => {
     const ws = await tempWorkspace();
     const cpd = await tempClaudeProjects();

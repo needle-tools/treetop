@@ -225,6 +225,15 @@ export async function acceptOffer(
   if (!looked) return { ok: false, error: "needs_clone" };
 
   // Rewrite repo root first, then the worktree if both ends have it.
+  // Critically, when the manifest carries an originWorktreePath but
+  // the receiver has no matching worktree, fall back to rewriting it
+  // to localRepoPath anyway — otherwise worktree-path mentions in the
+  // JSONL (e.g. `cwd` fields) stay as sender-side paths, which
+  // scanClaude can't map to any local repo and the imported session
+  // becomes invisible. Hit in practice when originWorktreePath is a
+  // parent/sibling of originRepoPath (npm package nested in repo,
+  // etc.) — the first pass below only touches originRepoPath, so
+  // anything mentioning the bare worktree was previously orphaned.
   const toPlatform: SharePlatform =
     args.toPlatform ??
     (process.platform === "win32"
@@ -238,10 +247,10 @@ export async function acceptOffer(
     fromPlatform: manifest.originPlatform,
     toPlatform,
   });
-  if (manifest.originWorktreePath && looked.localWorktreePath) {
+  if (manifest.originWorktreePath) {
     rewritten = rewritePaths(rewritten, {
       from: manifest.originWorktreePath,
-      to: looked.localWorktreePath,
+      to: looked.localWorktreePath ?? looked.localRepoPath,
       fromPlatform: manifest.originPlatform,
       toPlatform,
     });

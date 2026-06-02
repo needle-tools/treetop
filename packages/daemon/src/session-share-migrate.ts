@@ -488,13 +488,20 @@ export async function repairImportedSessionCwds(
           toPlatform,
         });
       }
-      if (sidecar.originWorktreePath && sidecar.localWorktreePath) {
-        rewritten = rewritePaths(rewritten, {
-          from: sidecar.originWorktreePath,
-          to: sidecar.localWorktreePath,
-          fromPlatform,
-          toPlatform,
-        });
+      if (sidecar.originWorktreePath) {
+        // Fall back to localRepoPath when the receiver had no matching
+        // worktree — same fix as acceptOffer. Otherwise worktree-shaped
+        // cwds (parent-of-repo or sibling layouts) stay as sender-side
+        // paths and scanClaude can't map the session to any local repo.
+        const target = sidecar.localWorktreePath ?? sidecar.localRepoPath;
+        if (target) {
+          rewritten = rewritePaths(rewritten, {
+            from: sidecar.originWorktreePath,
+            to: target,
+            fromPlatform,
+            toPlatform,
+          });
+        }
       }
 
       if (rewritten === content) continue;

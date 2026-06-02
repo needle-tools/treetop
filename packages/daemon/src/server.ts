@@ -4256,7 +4256,14 @@ const server = Bun.serve<TermWsData, never>({
             const wantedName = originWorktreePath.split(/[\\/]/).pop() ?? "";
             if (wantedName) {
               const wts = await listWorktrees(repo.path);
-              const m = wts.find((w) => w.path.endsWith(`/${wantedName}`));
+              // Normalize both sides to forward slashes — Windows
+              // worktrees use `\` which would never match the hard
+              // `/` separator we previously used, so cross-platform
+              // shares from a Mac sender silently failed to locate
+              // the receiver's worktree even when one existed.
+              const m = wts.find((w) =>
+                w.path.replace(/\\/g, "/").endsWith(`/${wantedName}`),
+              );
               if (m) localWorktreePath = m.path;
             }
           }
