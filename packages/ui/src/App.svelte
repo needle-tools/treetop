@@ -43,6 +43,7 @@
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
+  import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
@@ -625,24 +626,18 @@
     if (ollamaModelsLoaded && !force) return;
     ollamaModelsLoading = true;
     ollamaModelsError = null;
-    try {
-      const res = await fetch(apiUrl("/api/ollama/models"));
-      if (!res.ok) {
-        ollamaModelsError = `daemon returned ${res.status}`;
-        ollamaModels = [];
-      } else {
-        const body = (await res.json()) as {
-          models?: { name: string; size?: number; parameterSize?: string }[];
-        };
-        ollamaModels = body.models ?? [];
-      }
+    const r = await fetchOllamaModels(fetch, apiUrl("/api/ollama/models"));
+    if (r.ok) {
+      ollamaModels = r.models;
       ollamaModelsLoaded = true;
-    } catch (e) {
-      ollamaModelsError = e instanceof Error ? e.message : String(e);
+    } else {
+      ollamaModelsError = r.error;
       ollamaModels = [];
-    } finally {
-      ollamaModelsLoading = false;
+      // Daemon answered (non-OK) → don't retry; a thrown request leaves
+      // `loaded` false so the next open retries. Mirrors the original.
+      if (r.reached) ollamaModelsLoaded = true;
     }
+    ollamaModelsLoading = false;
   }
 
   // Per transient session source: is the agent paused on a prompt
