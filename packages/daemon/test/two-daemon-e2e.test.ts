@@ -102,43 +102,100 @@ async function waitForHealth(port: number, timeoutMs = 25_000): Promise<void> {
   }
 }
 
-/** A throwaway git repo (init + one commit) so it registers cleanly and the
- *  enrich fan-out has a HEAD to describe. */
+/** A throwaway git repo (init + a tracked file + one commit) so it registers
+ *  cleanly, the enrich fan-out has a HEAD to describe, and the file browser
+ *  has something real to list. */
 async function gitRepo(dir: string): Promise<void> {
   await $`git -C ${dir} init -q`.quiet();
   await $`git -C ${dir} config user.email e2e@example.com`.quiet();
   await $`git -C ${dir} config user.name e2e`.quiet();
-  await $`git -C ${dir} commit -q --allow-empty -m init`.quiet();
+  await Bun.write(join(dir, "README.md"), "# e2e remote repo\n");
+  await $`git -C ${dir} add README.md`.quiet();
+  await $`git -C ${dir} commit -q -m init`.quiet();
 }
 
 /** Pull the streamed NDJSON repo list from a FULL repos URL (local
  *  `…/api/repos` or proxied `…/api/daemons/<id>/repos`) and return the raw
- *  text + the repo paths parsed out of the manifest/repo lines. */
+ *  text + the repos parsed out of the manifest/repo lines (id + path). */
 async function fetchRepos(
   reposUrl: string,
-): Promise<{ text: string; paths: string[] }> {
+): Promise<{ text: string; paths: string[]; repos: Array<{ id: string; path: string }> }> {
   const res = await fetch(reposUrl);
   const text = await res.text();
-  const paths: string[] = [];
+  const repos: Array<{ id: string; path: string }> = [];
   for (const line of text.split("\n")) {
     const t = line.trim();
     if (!t) continue;
     try {
       const obj = JSON.parse(t) as {
         type?: string;
-        repos?: Array<{ path?: string }>;
-        repo?: { path?: string };
+        repos?: Array<{ id?: string; path?: string }>;
+        repo?: { id?: string; path?: string };
       };
       if (obj.type === "manifest" && Array.isArray(obj.repos)) {
-        for (const r of obj.repos) if (r.path) paths.push(r.path);
-      } else if (obj.repo?.path) {
-        paths.push(obj.repo.path);
+        for (const r of obj.repos)
+          if (r.id && r.path) repos.push({ id: r.id, path: r.path });
+      } else if (obj.repo?.id && obj.repo?.path) {
+        repos.push({ id: obj.repo.id, path: obj.repo.path });
       }
     } catch {
       // partial / non-JSON line — ignore
     }
   }
-  return { text, paths };
+  // De-dupe by id (the manifest lists every repo, then each streams again).
+  const byId = new Map(repos.map((r) => [r.id, r]));
+  const deduped = [...byId.values()];
+  return { text, paths: deduped.map((r) => r.path), repos: deduped };
+}
+
+/** Subscribe to a proxied SSE stream, run `trigger` once the subscription is
+ *  live, then resolve true if a chunk matching `matcher` arrives before the
+ *  deadline. Proves the remote's broadcasts reach the UI through the proxy
+ *  (the #15a live-refresh path). */
+async function waitForSseEvent(
+  streamUrl: string,
+  trigger: () => Promise<void>,
+  matcher: (buf: string) => boolean,
+  timeoutMs = 10_000,
+): Promise<boolean> {
+  const ac = new AbortController();
+  const res = await fetch(streamUrl, {
+    signal: ac.signal,
+    headers: { Accept: "text/event-stream" },
+  });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let found = false;
+  try {
+    // Let the proxied subscription register on the remote before triggering,
+    // so the broadcast can't fire before we're listening.
+    await Bun.sleep(400);
+    await trigger();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const timeout = new Promise<"timeout">((r) =>
+        setTimeout(() => r("timeout"), Math.max(0, deadline - Date.now())),
+      );
+      const r = await Promise.race([reader.read(), timeout]);
+      if (r === "timeout") break;
+      const { value, done } = r;
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      if (matcher(buf)) {
+        found = true;
+        break;
+      }
+    }
+  } finally {
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      // already torn down
+    }
+  }
+  return found;
 }
 
 /* ------------------------------ harness --------------------------------- */
@@ -151,6 +208,7 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
   let daemonId = "";
   let repoBasename = "";
   let remoteRepoPath = "";
+  let plantedSessionId = "";
   const tmps: string[] = [];
 
   beforeAll(async () => {
@@ -163,10 +221,21 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
     const remoteWs = await mkdtemp(join(tmpdir(), "sg-e2e-remote-ws-"));
     const localWs = await mkdtemp(join(tmpdir(), "sg-e2e-local-ws-"));
     const remoteRepo = await mkdtemp(join(tmpdir(), "sg-e2e-repo-"));
-    tmps.push(remoteWs, localWs, remoteRepo);
+    // Give the REMOTE daemon an isolated HOME so its agent-session scan is
+    // deterministic (not the dev machine's real ~/.claude). Plant one minimal
+    // Claude session there so session discovery has a known entry to find.
+    const remoteHome = await mkdtemp(join(tmpdir(), "sg-e2e-remote-home-"));
+    tmps.push(remoteWs, localWs, remoteRepo, remoteHome);
     remoteRepoPath = remoteRepo;
     repoBasename = remoteRepo.split(/[\\/]/).pop()!;
     await gitRepo(remoteRepo);
+
+    plantedSessionId = "e2e-session-0001";
+    await Bun.write(
+      join(remoteHome, ".claude", "projects", "-e2e-proj", `${plantedSessionId}.jsonl`),
+      `{"type":"summary","summary":"e2e"}\n` +
+        `{"type":"user","cwd":${JSON.stringify(remoteRepo)},"message":{"role":"user","content":"hello from e2e"}}\n`,
+    );
 
     const base = {
       SUPERGIT_BIND: "127.0.0.1",
@@ -176,6 +245,9 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
       ...base,
       SUPERGIT_PORT: String(remotePort),
       SUPERGIT_WORKSPACE: remoteWs,
+      // Isolate agent discovery to the planted session (homedir() reads these).
+      HOME: remoteHome,
+      USERPROFILE: remoteHome,
     });
     local = spawnDaemon({
       ...base,
@@ -310,4 +382,163 @@ suite("two-daemon e2e — local daemon reverse-proxies a real remote daemon", ()
 
     expect(sawMarker).toBe(true);
   }, 30_000);
+
+  /* --- adding / removing repos on the remote, through the proxy --- */
+
+  test("POST /api/daemons/<id>/repos adds a folder on the REMOTE daemon", async () => {
+    const repo2 = await mkdtemp(join(tmpdir(), "sg-e2e-repo2-"));
+    tmps.push(repo2);
+    await gitRepo(repo2);
+    const base2 = repo2.split(/[\\/]/).pop()!;
+
+    const res = await fetch(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/repos`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: repo2 }),
+      },
+    );
+    expect(res.ok).toBe(true);
+
+    // It now appears on the remote via the proxy…
+    const proxied = await fetchRepos(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/repos`,
+    );
+    expect(proxied.paths.some((p) => p.includes(base2))).toBe(true);
+    // …but NOT on the local daemon's own list — it lives on the remote box.
+    const localRepos = await fetchRepos(
+      `http://127.0.0.1:${localPort}/api/repos`,
+    );
+    expect(localRepos.text).not.toContain(base2);
+  }, 25_000);
+
+  test("DELETE /api/daemons/<id>/repos/<repoId> removes a folder on the REMOTE daemon", async () => {
+    const repo3 = await mkdtemp(join(tmpdir(), "sg-e2e-repo3-"));
+    tmps.push(repo3);
+    await gitRepo(repo3);
+    const base3 = repo3.split(/[\\/]/).pop()!;
+    const reposUrl = `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/repos`;
+
+    await fetch(reposUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: repo3 }),
+    });
+    const entry = (await fetchRepos(reposUrl)).repos.find((r) =>
+      r.path.includes(base3),
+    );
+    expect(entry).toBeTruthy();
+
+    const del = await fetch(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/repos/${encodeURIComponent(entry!.id)}`,
+      { method: "DELETE" },
+    );
+    expect(del.ok).toBe(true);
+
+    const after = await fetchRepos(reposUrl);
+    expect(after.repos.some((r) => r.path.includes(base3))).toBe(false);
+  }, 25_000);
+
+  /* --- browsing the remote daemon's filesystem through the proxy --- */
+
+  test("GET /api/daemons/<id>/files browses the REMOTE daemon's filesystem", async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/files?path=${encodeURIComponent(remoteRepoPath)}`,
+    );
+    expect(res.ok).toBe(true);
+    const body = (await res.json()) as {
+      entries?: Array<{ name: string; type: string }>;
+    };
+    const names = (body.entries ?? []).map((e) => e.name);
+    // README.md was committed into the repo on the remote box (gitRepo()).
+    expect(names).toContain("README.md");
+  }, 20_000);
+
+  // The "open a remote file, edit locally, save with save/discard on external
+  // change" flow (the ssh-filesystem behaviour) is NOT yet implemented for the
+  // remote-daemon axis: the proxy exposes browse (/api/files) + diff
+  // (/api/file-diff) but no file-content write-back-with-conflict. That flow
+  // lives only in the local→ssh-host subsystem (/api/ssh/open + confirm/
+  // dismiss-upload). Building it for the remote daemon (read content + a
+  // conflict-aware write-back through the proxy) is a feature, not a test —
+  // tracked here so the harness covers it once it exists. See
+  // plans/PLAN-REMOTE-DAEMON.md.
+  test.todo(
+    "remote file edit → save / discard on external change (needs the feature)",
+  );
+
+  /* --- notes on the remote daemon, through the proxy --- */
+
+  test("notes can be created and deleted on the REMOTE daemon via the proxy", async () => {
+    const notesUrl = `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/notes`;
+    const create = await fetch(notesUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "e2e remote note", anchors: ["e2e-anchor"] }),
+    });
+    expect(create.ok).toBe(true);
+    const note = (await create.json()) as { id: string };
+    expect(note.id).toBeTruthy();
+
+    // Present on the remote (via proxy)…
+    const list = (await (await fetch(notesUrl)).json()) as Array<{ id: string }>;
+    expect(list.some((n) => n.id === note.id)).toBe(true);
+    // …and absent from the local daemon's own notes board.
+    const localList = (await (
+      await fetch(`http://127.0.0.1:${localPort}/api/notes`)
+    ).json()) as Array<{ id: string }>;
+    expect(localList.some((n) => n.id === note.id)).toBe(false);
+
+    const del = await fetch(`${notesUrl}/${encodeURIComponent(note.id)}`, {
+      method: "DELETE",
+    });
+    expect(del.ok).toBe(true);
+
+    const after = (await (await fetch(notesUrl)).json()) as Array<{ id: string }>;
+    expect(after.some((n) => n.id === note.id)).toBe(false);
+  }, 20_000);
+
+  /* --- live update events from the remote, over the proxied SSE stream --- */
+
+  test("a remote-side change is delivered over the proxied SSE stream (#15a)", async () => {
+    const got = await waitForSseEvent(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/stream`,
+      async () => {
+        // Cause a change ON THE REMOTE (a note create broadcasts on its
+        // stream). The local UI subscribes to /api/daemons/<id>/stream and
+        // must receive it — that's how a remote row live-refreshes.
+        await fetch(
+          `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/notes`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: "sse trigger", anchors: ["e2e-sse"] }),
+          },
+        );
+      },
+      (buf) => buf.includes("note_create"),
+      12_000,
+    );
+    expect(got).toBe(true);
+  }, 30_000);
+
+  /* --- discovering agent sessions on the remote, through the proxy --- */
+
+  test("GET /api/daemons/<id>/agents discovers a session on the REMOTE daemon", async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${localPort}/api/daemons/${daemonId}/agents`,
+    );
+    expect(res.ok).toBe(true);
+    const body = (await res.json()) as Array<{
+      sessionId?: string;
+      agent?: string;
+    }>;
+    expect(Array.isArray(body)).toBe(true);
+    // The session planted in the remote's isolated HOME is discovered and
+    // streamed back through the proxy.
+    expect(
+      body.some((s) => s.sessionId === plantedSessionId && s.agent === "claude"),
+    ).toBe(true);
+  }, 20_000);
 });

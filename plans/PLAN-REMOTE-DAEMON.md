@@ -769,13 +769,29 @@ between them — `packages/daemon/test/two-daemon-e2e.test.ts`, run via
       removes temp dirs in `afterAll` even if setup throws.
 - [x] Skips the ssh hop via `SUPERGIT_TUNNEL_DIRECT=1` (new TunnelManager
       `direct` mode, +3 unit tests): the local daemon proxies straight at the
-      remote's `127.0.0.1:<port>` — no `ssh -L`. Asserts: proxied
-      `/api/daemons/<id>/health` reports the REMOTE's port (proof it crossed
-      the proxy, not served locally); `/api/daemons/<id>/repos` streams the
-      remote-registered repo (and that repo is absent from the local
-      daemon's own list); and a **terminal WS round-trips** I/O to a PTY on
-      the remote (types `echo`, reads the marker back — exercises the bridge
-      both ways AND Bun's sync-upgrade path, the #12 bug).
+      remote's `127.0.0.1:<port>` — no `ssh -L`. 10 tests + 1 todo, ~6s.
+      Asserts, all through the proxy against the real remote:
+      - **health** — `/api/daemons/<id>/health` reports the REMOTE's port
+        (proof it crossed the proxy, not served locally);
+      - **repos NDJSON** — `/api/daemons/<id>/repos` streams the
+        remote-registered repo (and it's absent from the local daemon's list);
+      - **terminal WS round-trip** — types `echo`, reads the marker back over
+        the proxied WS (the bridge both ways AND Bun's sync-upgrade path, #12);
+      - **add repo** — `POST /api/daemons/<id>/repos` registers a folder on
+        the remote box; it appears via the proxy, stays off the local list;
+      - **remove repo** — `DELETE /api/daemons/<id>/repos/<repoId>` drops it;
+      - **browse files** — `GET /api/daemons/<id>/files` lists the remote
+        repo's committed `README.md` (the read side of remote file access);
+      - **notes** — create + delete via `POST`/`DELETE /api/daemons/<id>/notes`
+        (present on the remote, absent from the local board);
+      - **live SSE** — subscribe to `/api/daemons/<id>/stream`, cause a remote
+        change, receive the `note_create` event (the #15a live-refresh path);
+      - **session discovery** — a Claude session planted in the remote's
+        isolated `HOME` is found via `GET /api/daemons/<id>/agents`.
+      - `test.todo`: remote file **edit → save/discard on external change** —
+        not implemented for the remote-daemon axis (only `/api/ssh/*` has
+        write-back-with-conflict); building it is a feature, recorded so the
+        harness covers it once it lands.
 - [x] Loud header comment explaining it spawns processes + must be run
       deliberately; never wired into the default `test` script or CI.
 - [x] Asserts both chosen ports != prod (`27787`) before spawning anything.
