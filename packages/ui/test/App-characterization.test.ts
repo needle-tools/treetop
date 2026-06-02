@@ -1,52 +1,34 @@
 /**
- * Characterization tests for pure functions currently inlined in
- * packages/ui/src/App.svelte. These tests pin the CURRENT behavior as
- * a safety net before any extraction refactor lands.
+ * Characterization tests for pure functions extracted from
+ * packages/ui/src/App.svelte into packages/ui/src/display-helpers.ts.
  *
- * Each section is annotated with the source line range so the future
- * extractor knows exactly what to replace an import with.
+ * Each section imports the REAL implementation so these tests now pin
+ * behavior on the live module (no shim drift).
  *
- * IMPORTANT: these implementations are COPIED from App.svelte (no edits
- * to source files). When a function is extracted to its own module,
- * remove the local copy here and import from the new module instead.
- * The test assertions stay identical.
+ * anchorLabel is NOT extracted (it closes over the reactive `repos` variable
+ * in App.svelte), so its test keeps a local parameterized version that
+ * mirrors the App.svelte logic.
  */
 
 import { test, expect, describe } from "bun:test";
+import {
+  repoChipFg,
+  noteExcerpt,
+  sessionTooltip,
+  wtHasRecentActivity,
+  ACTIVITY_WINDOW_MS,
+  targetGlyph,
+  notesListDisplay,
+  sortBranches,
+  formatRelativeTime,
+  relTime,
+  clampSubject,
+  COMMIT_SUBJECT_MAX,
+} from "../src/display-helpers";
 
 // ---------------------------------------------------------------------------
-// repoChipFg  (App.svelte lines 3664–3684)
+// repoChipFg  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
-
-/**
- * Pick a readable foreground for a `#rrggbb` chip background. Uses
- * OKLCH lightness instead of sRGB YIQ luma so saturated yellows/cyans
- * correctly read as "light" and get dark text, while mid-blues read as
- * "dark" and get white text. Threshold 0.6 (using >= 0.6 check).
- *
- * Copied verbatim from App.svelte:3664.
- */
-function repoChipFg(hex: string): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return "#ffffff";
-  const v = parseInt(m[1]!, 16);
-  const r8 = ((v >> 16) & 0xff) / 255;
-  const g8 = ((v >> 8) & 0xff) / 255;
-  const b8 = (v & 0xff) / 255;
-  const lin = (c: number) =>
-    c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  const r = lin(r8);
-  const g = lin(g8);
-  const b = lin(b8);
-  const lL = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
-  const mL = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
-  const sL = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
-  const L =
-    0.2104542553 * Math.cbrt(lL) +
-    0.793617785 * Math.cbrt(mL) -
-    0.0040720468 * Math.cbrt(sL);
-  return L >= 0.6 ? "#1a1a1a" : "#ffffff";
-}
 
 describe("repoChipFg — OKLCH lightness threshold", () => {
   test("white (#ffffff) is light → dark text", () => {
@@ -109,22 +91,8 @@ describe("repoChipFg — OKLCH lightness threshold", () => {
 });
 
 // ---------------------------------------------------------------------------
-// noteExcerpt  (App.svelte lines 4732–4738)
+// noteExcerpt  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
-
-/**
- * First non-empty line of a note's body, trimmed to ≤40 chars.
- * Returns empty string for undefined/empty.
- *
- * Copied verbatim from App.svelte:4732.
- */
-function noteExcerpt(body: string | undefined): string {
-  if (!body) return "";
-  const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
-  const trimmed = firstLine.trim();
-  if (trimmed.length <= 40) return trimmed;
-  return trimmed.slice(0, 39) + "…";
-}
 
 describe("noteExcerpt", () => {
   test("returns empty string for undefined", () => {
@@ -180,7 +148,7 @@ describe("noteExcerpt", () => {
 });
 
 // ---------------------------------------------------------------------------
-// anchorLabel  (App.svelte lines 4745–4765)
+// anchorLabel  (NOT extracted — closes over reactive `repos` in App.svelte)
 // ---------------------------------------------------------------------------
 
 /**
@@ -189,11 +157,9 @@ describe("noteExcerpt", () => {
  * repo:<path>     → repo.name or basename.
  * commit:<sha>    → "commit <8-char prefix>".
  *
- * Note: anchorLabel in App.svelte closes over the module-level `repos`
- * reactive variable. Here we accept repos as a parameter to make the
- * function pure and testable.
- *
- * Mirrors App.svelte:4745.
+ * anchorLabel in App.svelte closes over the module-level `repos` reactive
+ * variable, so it was not extracted to display-helpers.ts. This local
+ * parameterized version mirrors the App.svelte logic for test purposes.
  */
 function anchorLabel(
   anchor: string | undefined,
@@ -291,58 +257,10 @@ describe("anchorLabel", () => {
 });
 
 // ---------------------------------------------------------------------------
-// sessionTooltip  (App.svelte lines 4937–4970)
+// sessionTooltip  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
 
-interface AgentSession {
-  agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-  cwd: string;
-  lastActive: string;
-  source: string;
-  title?: string;
-  manualTitle?: string;
-  lastUserMessage?: string;
-  firstUserMessage?: string;
-  lastUserMessages?: string[];
-  userMessageCount?: number;
-}
-
-/**
- * Build the multi-line tooltip for a session row.
- * count ≤ 4 → render every captured message once (oldest-first).
- * count > 4 → insert "[… N more …]" separator between first and tail.
- * Falls back to legacy shape when richer fields are absent.
- *
- * Copied verbatim from App.svelte:4937.
- */
-function sessionTooltip(sess: AgentSession): string {
-  const headline = sess.manualTitle ?? sess.title ?? "(no title)";
-  const first = sess.firstUserMessage;
-  const last = sess.lastUserMessages ?? [];
-  const count = sess.userMessageCount ?? 0;
-  if (!first && last.length === 0) {
-    return sess.lastUserMessage
-      ? `${headline}\n\nMost recent user message:\n${sess.lastUserMessage}`
-      : headline;
-  }
-  const tailExcludingFirst = first ? last.filter((m) => m !== first) : last;
-  const lines: string[] = [headline];
-  if (count <= 4) {
-    const all = first ? [first, ...tailExcludingFirst] : last;
-    for (const m of all) lines.push("", m);
-  } else {
-    if (first) lines.push("", first);
-    const skipped = count - 1 - tailExcludingFirst.length;
-    if (skipped > 0) {
-      lines.push(
-        "",
-        `[… ${skipped} more message${skipped === 1 ? "" : "s"} …]`,
-      );
-    }
-    for (const m of tailExcludingFirst) lines.push("", m);
-  }
-  return lines.join("\n");
-}
+import type { AgentSession } from "../src/sessionSearch";
 
 function mkSess(
   overrides: Partial<AgentSession> & { source: string },
@@ -453,29 +371,8 @@ describe("sessionTooltip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// wtHasRecentActivity  (App.svelte lines 2775–2787)
+// wtHasRecentActivity  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
-
-const ACTIVITY_WINDOW_MS = 10_000; // App.svelte:2775
-
-/**
- * Returns true when any agent in the worktree's agents list has a
- * lastActive within ACTIVITY_WINDOW_MS of `now`.
- *
- * Copied verbatim from App.svelte:2776.
- */
-function wtHasRecentActivity(
-  w: { agents?: Array<{ lastActive?: string }> } | undefined | null,
-  now: number,
-): boolean {
-  if (!w?.agents?.length) return false;
-  for (const a of w.agents) {
-    if (!a.lastActive) continue;
-    const t = Date.parse(a.lastActive);
-    if (Number.isFinite(t) && now - t < ACTIVITY_WINDOW_MS) return true;
-  }
-  return false;
-}
 
 describe("wtHasRecentActivity", () => {
   const now = Date.now();
@@ -542,79 +439,8 @@ describe("wtHasRecentActivity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// notesListDisplay  (App.svelte lines 4684–4726)
+// notesListDisplay + targetGlyph  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
-
-/**
- * Shared helper reused by notesListDisplay.
- * Copied verbatim from App.svelte:4663.
- */
-function targetGlyph(type: string | undefined): string {
-  switch (type) {
-    case "url":
-      return "↗";
-    case "commit":
-      return "◆";
-    case "session":
-      return "▶";
-    case "file":
-      return "▤";
-    case "command":
-      return "⌁";
-    default:
-      return "";
-  }
-}
-
-/**
- * Display info for the per-row notes-list popover.
- * Returns `text` empty when the row has nothing meaningful to show.
- *
- * Copied verbatim from App.svelte:4684.
- */
-function notesListDisplay(n: {
-  body: string;
-  kind?: "note" | "link";
-  target?: {
-    type?: string;
-    value?: string;
-    label?: string;
-    agent?: string;
-    provider?: string;
-    command?: string;
-  };
-}): {
-  kind: "note" | "link";
-  text: string;
-  title: string;
-  agent: string;
-  provider: string;
-  glyph: string;
-} {
-  const kind = n.kind === "link" ? "link" : "note";
-  const excerpt = noteExcerpt(n.body);
-  if (kind === "link") {
-    const t = n.target ?? {};
-    const text = (excerpt || t.label || t.command || t.value || "").trim();
-    const title = [t.label, t.value, n.body].filter((s) => !!s).join("\n");
-    return {
-      kind,
-      text,
-      title,
-      agent: t.agent ?? "",
-      provider: t.provider ?? "",
-      glyph: targetGlyph(t.type),
-    };
-  }
-  return {
-    kind,
-    text: excerpt,
-    title: n.body,
-    agent: "",
-    provider: "",
-    glyph: "",
-  };
-}
 
 describe("notesListDisplay", () => {
   test("note kind returns text = excerpt and title = full body", () => {
@@ -744,19 +570,8 @@ describe("notesListDisplay", () => {
 });
 
 // ---------------------------------------------------------------------------
-// sortBranches  (App.svelte lines 995–998)
+// sortBranches  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
-
-/**
- * Sort a branch list. 'alpha' sorts lexicographically; 'recency' preserves
- * the daemon's input order (committerdate-desc).
- *
- * Copied verbatim from App.svelte:995.
- */
-function sortBranches(list: string[], mode: "recency" | "alpha"): string[] {
-  if (mode === "alpha") return [...list].sort((a, b) => a.localeCompare(b));
-  return list;
-}
 
 describe("sortBranches", () => {
   const branches = ["main", "feature/foo", "bugfix/bar", "alpha"];
@@ -802,39 +617,11 @@ describe("sortBranches", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatRelativeTime  (App.svelte lines 3566–3581)
+// formatRelativeTime  (extracted to display-helpers.ts)
 // ---------------------------------------------------------------------------
 
-/**
- * Human-friendly relative time for a session's `lastActive`. Uses
- * Math.round at each boundary (unlike relTime which uses Math.floor).
- *
- * Copied verbatim from App.svelte:3566.
- * Note: tested with controlled timestamps, not Date.now() — we inject
- * a `now` shim so the function is deterministic.
- */
-function formatRelativeTime(iso: string, now = Date.now()): string {
-  const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return "";
-  const delta = now - then;
-  const s = Math.round(delta / 1000);
-  if (s < 60) return s <= 5 ? "just now" : `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.round(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.round(mo / 12)}y ago`;
-}
-
-// NOTE: the App.svelte implementation uses `Date.now()` directly rather
-// than accepting a `now` parameter. To make the tests deterministic we
-// test the algorithm by computing the ISO string backwards from a known
-// delta relative to the real Date.now(). Tests use a real timestamp
-// computed at test-run time so they pass regardless of when they run.
+// The real implementation accepts an optional `now` parameter (default
+// Date.now()) so tests can inject a fixed value for determinism.
 describe("formatRelativeTime", () => {
   test("returns empty string for non-finite timestamp", () => {
     expect(formatRelativeTime("not-a-date")).toBe("");
