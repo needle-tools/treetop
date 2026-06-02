@@ -233,85 +233,88 @@
 {/if}
 
 <style>
+  /* Chrome + buttons mirror ConfirmDialog.svelte (and AddRemoteFolderDialog)
+     so the app's dialogs read as one family. Colors come from
+     styles/tokens.css — no literals / invented var names. */
   .add-daemon-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--shadow-overlay);
+    backdrop-filter: blur(2px);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 2000;
   }
   .add-daemon-modal {
-    background: var(--bg, #1b1b1f);
-    color: var(--fg, #e8e8ea);
-    border: 1px solid var(--border, #34343a);
-    border-radius: 10px;
-    padding: 1.25rem 1.5rem 1.5rem;
+    background: var(--surface-1);
+    color: inherit;
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    padding: 1rem 1.1rem 1.1rem;
     width: min(30rem, calc(100vw - 2rem));
     max-height: calc(100vh - 4rem);
     overflow-y: auto;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 12px 32px var(--shadow-overlay);
   }
   .add-daemon-title {
-    margin: 0 0 0.25rem;
-    font-size: 1.05rem;
+    margin: 0 0 0.3rem;
+    font-size: 0.95rem;
     font-weight: 600;
   }
   .add-daemon-blurb {
-    margin: 0 0 1rem;
-    font-size: 0.82rem;
+    margin: 0 0 0.9rem;
+    font-size: var(--fs-lg);
     line-height: 1.4;
-    opacity: 0.7;
+    color: var(--text-muted);
   }
   .add-daemon-field {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
     margin-bottom: 0.75rem;
-    font-size: 0.8rem;
+    font-size: var(--fs-md);
   }
   .add-daemon-field > span {
-    opacity: 0.85;
+    color: var(--text-3);
   }
   .add-daemon-field .req {
-    color: var(--danger, #e5604d);
-    opacity: 1;
+    color: var(--error);
   }
   .add-daemon-field input,
   .add-daemon-connstr {
-    background: var(--bg-input, #111114);
+    background: var(--surface-1);
     color: inherit;
-    border: 1px solid var(--border, #34343a);
-    border-radius: 6px;
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
     padding: 0.45rem 0.55rem;
-    font-size: 0.85rem;
+    font-size: var(--fs-lg);
     font-family: inherit;
   }
   .add-daemon-connstr {
     resize: vertical;
     width: 100%;
     box-sizing: border-box;
-    font-family: monospace;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .add-daemon-field input:focus,
   .add-daemon-connstr:focus {
     outline: none;
-    border-color: var(--accent, #5b8def);
+    border-color: var(--brand);
   }
   .add-daemon-field input.invalid {
-    border-color: var(--danger, #e5604d);
+    border-color: var(--error);
   }
   .add-daemon-hint {
-    opacity: 0.6;
-    font-size: 0.72rem;
+    color: var(--text-faint);
+    font-size: var(--fs-sm);
   }
   .add-daemon-advanced {
     margin-bottom: 0.75rem;
   }
   .add-daemon-advanced-summary {
-    font-size: 0.8rem;
-    opacity: 0.75;
+    font-size: var(--fs-md);
+    color: var(--text-muted);
     cursor: pointer;
     user-select: none;
     margin-bottom: 0.6rem;
@@ -332,13 +335,14 @@
     flex: 0 0 6.5rem;
   }
   .err {
-    color: var(--danger, #e5604d);
-    font-size: 0.72rem;
+    color: var(--error-text);
+    font-size: var(--fs-sm);
   }
   .add-daemon-submit-error {
     margin: 0 0 0.75rem;
-    color: var(--danger, #e5604d);
-    font-size: 0.8rem;
+    color: var(--error-text);
+    font-size: var(--fs-lg);
+    white-space: pre-wrap;
   }
   .add-daemon-actions {
     display: flex;
@@ -346,25 +350,28 @@
     gap: 0.5rem;
     margin-top: 0.5rem;
   }
+  /* Match ConfirmDialog's .confirm-btn / .confirm-cancel / .confirm-ok. */
   .add-daemon-actions button {
-    padding: 0.45rem 0.9rem;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    font-family: inherit;
-    cursor: pointer;
-    border: 1px solid var(--border, #34343a);
-  }
-  .add-daemon-actions button:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .btn-secondary {
+    font: inherit;
+    font-size: var(--fs-lg);
+    padding: 0.35rem 0.8rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
     background: transparent;
     color: inherit;
+    cursor: pointer;
+  }
+  .add-daemon-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--chip-default-bg) 45%, transparent);
   }
   .btn-primary {
-    background: var(--accent, #5b8def);
-    color: #fff;
-    border-color: var(--accent, #5b8def);
+    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text-muted) 30%, transparent);
   }
 </style>

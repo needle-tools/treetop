@@ -290,7 +290,20 @@
             on:click={goUp}
             disabled={browseLoading || !browseDir}
             title="Up one level"
-          >↑</button>
+            aria-label="Up one level"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 19V5" />
+              <path d="M5 12l7-7 7 7" />
+            </svg>
+          </button>
           {#if browseDir}
             <span class="add-folder-cwd">
               <FilePathBar path={browseDir} onCrumb={(p) => void loadDir(p)} />
@@ -437,18 +450,27 @@
     border-bottom: 1px solid var(--surface-2);
     background: var(--surface-0);
   }
+  /* Borderless icon button, sized to the breadcrumb text so it reads as part
+     of the path row (matches .fb-crumb's colour + hover). */
   .add-folder-up {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
-    border: 1px solid var(--border-muted);
-    color: inherit;
-    border-radius: var(--radius-sm);
+    border: none;
+    color: var(--text-muted);
     cursor: pointer;
-    padding: 0.05rem 0.4rem;
-    line-height: 1.2;
+    padding: 0;
+    line-height: 1;
+  }
+  .add-folder-up svg {
+    width: 0.85rem;
+    height: 0.85rem;
+    display: block;
   }
   .add-folder-up:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+    color: var(--text-1);
   }
   .add-folder-up:disabled {
     opacity: 0.4;
@@ -469,9 +491,15 @@
     font-size: var(--fs-sm);
   }
   .add-folder-browser-list {
-    max-height: 11rem;
+    min-height: 20vh;
+    max-height: 40vh;
     overflow-y: auto;
-    padding: 0.15rem 0.25rem;
+    /* Keep wheel/touch scroll inside the tree — don't chain to the dialog
+       or page when hitting the top/bottom. */
+    overscroll-behavior: contain;
+    /* ~2 rows of breathing room at the bottom so the last folder can scroll
+       clear of the edge instead of sitting flush against it. */
+    padding: 0.15rem 0.25rem 2.6rem;
   }
   .add-folder-browser-msg {
     padding: 0.6rem 0.55rem;
