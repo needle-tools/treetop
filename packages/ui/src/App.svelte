@@ -1,4 +1,11 @@
 <script lang="ts">
+  import {
+    resolveTermId,
+    isOpenInWt,
+    normalizeSessionForOpen,
+    shellToSession,
+    shellSourceToDismiss,
+  } from "./session-source-routing";
   import { apiUrl } from "./api";
   import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
@@ -963,16 +970,6 @@
   /** Per-terminal SSH cwd, updated by prompt parsing in TerminalView. */
   let sshCwdByTermId: Record<string, string> = {};
 
-  /** Resolve the daemon termId for a `__new__:` or `__attached__:`
-   *  column. `__attached__:` sources carry it directly in the suffix;
-   *  `__new__:` sources are looked up in `newTermIds` (populated by
-   *  NewSessionCol's on:spawn after the daemon assigns one). */
-  function resolveTermId(s: { source: string }): string | undefined {
-    if (s.source.startsWith("__attached__:")) return s.source.split(":").pop();
-    if (s.source.startsWith("__new__:")) return newTermIds[s.source];
-    return undefined;
-  }
-
   /** Unified Dispose handler for live new-session columns.
    *
    *  Shell flips to a `__transcript__:shell:` source so ShellView takes
@@ -990,7 +987,7 @@
     s: OpenSession,
     agents: AgentSession[],
   ): Promise<void> {
-    const termId = resolveTermId(s);
+    const termId = resolveTermId(s, newTermIds);
     if (!termId) {
       // PTY hasn't been spawned yet (no daemon termId to DELETE). Fall
       // back to plain close — the grace timer disposes the half-spawned
@@ -2565,9 +2562,6 @@
     ? ["-NoLogo"]
     : ["-l"];
 
-  function isOpenInWt(wtPath: string, source: string): boolean {
-    return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
-  }
   /** Rewrite a picker-supplied OpenSession when needed. Ollama sessions
    *  surface from `/api/agents` with `source` set to the JSONL header
    *  path under `<workspace>/ollama/`; opening one directly would land
@@ -2577,43 +2571,8 @@
    *  OllamaTranscriptView mounts on — and stash the model from the
    *  matching AgentSession so the read-only view knows what to label
    *  the pill and what to Resume into. */
-  function normalizeSessionForOpen(
-    wtPath: string,
-    s: OpenSession,
-  ): OpenSession {
-    if (
-      s.agent !== "ollama" ||
-      s.source.startsWith("__transcript__:") ||
-      s.source.startsWith("__new__:") ||
-      s.source.startsWith("__attached__:")
-    ) {
-      return s;
-    }
-    // Header path is `<workspace>/ollama/<termId>.jsonl`. The termId is
-    // the basename without the extension.
-    const base = s.source.split(/[\\/]/).pop() ?? "";
-    const termId = base.endsWith(".jsonl")
-      ? base.slice(0, -".jsonl".length)
-      : base;
-    if (!termId) return s;
-    const wt = repos
-      .flatMap((r) => r.worktrees ?? [])
-      .find((w) => w.path === wtPath);
-    const agents = wt?.agents ?? [];
-    const match = agents.find(
-      (a) =>
-        a.agent === "ollama" &&
-        (a.sessionId === termId || a.source === s.source),
-    );
-    return {
-      agent: "ollama",
-      source: `__transcript__:ollama:${termId}`,
-      ollamaModel: match?.model ?? match?.title,
-    };
-  }
-
   function toggleOpenSessionInWt(wtPath: string, s: OpenSession): void {
-    s = normalizeSessionForOpen(wtPath, s);
+    s = normalizeSessionForOpen(wtPath, s, repos);
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
     if (i >= 0) {
@@ -2643,18 +2602,14 @@
    *  re-add it on the next page load. Handles both the synthetic
    *  `__new__:` and the termId-based `__attached__:` forms: if the user
    *  × a fresh column, we also dismiss the attached-form (looked up via
-   *  newTermIds) so the live PTY's own listing entry stays away. */
+   *  newTermIds) so the live PTY's own listing entry stays away.
+   *
+   *  Decision logic lives in `shellSourceToDismiss` (session-source-routing.ts);
+   *  this wrapper owns the side effect (updating dismissedShells + persisting). */
   function dismissIfShell(s: OpenSession): void {
     if (s.agent !== "shell") return;
-    if (
-      s.source.startsWith("__attached__:shell:") ||
-      s.source.startsWith("__transcript__:shell:")
-    ) {
-      dismissShellSource(s.source);
-    } else if (s.source.startsWith("__new__:shell:")) {
-      const termId = newTermIds[s.source];
-      if (termId) dismissShellSource(`__attached__:shell:${termId}`);
-    }
+    const src = shellSourceToDismiss(s.source, newTermIds);
+    if (src) dismissShellSource(src);
   }
 
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
@@ -3031,7 +2986,7 @@
   ): void {
     const plan = planReveal({
       rowFolded: !!rowFolded[rowKey],
-      isOpen: isOpenInWt(wtPath, s.source),
+      isOpen: isOpenInWt(wtPath, s.source, openSessionsByWt),
       mode,
     });
     if (plan.unfold) {
@@ -3067,7 +3022,7 @@
     applyRevealPlan(
       rowKey,
       wtPath,
-      normalizeSessionForOpen(wtPath, s),
+      normalizeSessionForOpen(wtPath, s, repos),
       "reveal",
     );
   }
@@ -5302,32 +5257,6 @@
     }
     return out;
   })();
-
-  /** Map shell records into the same shape as AgentSession so the picker
-   *  can iterate one merged list. The `source` is the synthetic
-   *  attached/transcript token openSessionsByWt expects, so clicking a
-   *  picker row routes through `toggleOpenSessionInWt` unchanged. */
-  function shellToSession(sh: ShellRecord): AgentSession {
-    return {
-      agent: "shell",
-      cwd: sh.wt,
-      // Age by most recent activity, not spawn time, so a shell the
-      // user touched five minutes ago ranks above one they spawned an
-      // hour ago and abandoned.
-      lastActive: sh.lastCmdTs ?? sh.createdAt,
-      source: sh.alive
-        ? `__attached__:shell:${sh.termId}`
-        : `__transcript__:shell:${sh.termId}`,
-      title: sh.currentCwd ?? sh.spawnCwd,
-      sessionId: sh.termId,
-      // Feed the last command through `lastUserMessage` so it both
-      // renders inline on the row and participates in fuzzy search
-      // ("which shell did I run `bun test` in?").
-      lastUserMessage: sh.lastCmd,
-      messageCount: sh.cmdCount,
-      manualTitle: sh.manualTitle,
-    };
-  }
 
   /** Per worktree: which session sources are currently matched by the
    *  inline strip search, and which matches are *not* yet open as a
@@ -7837,7 +7766,7 @@
                     {#if a}
                       <button
                         class="agent-badge agent-{a.agent}"
-                        class:active={isOpenInWt(wt.path, a.source)}
+                        class:active={isOpenInWt(wt.path, a.source, openSessionsByWt)}
                         title={activeTuis.length > 1
                           ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
                           : `${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
@@ -7890,7 +7819,7 @@
                           headText={`${activeTuis.length} active TUIs in this worktree`}
                           dismissedSources={dismissedSessions}
                           starredSources={starredSessions}
-                          isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                          isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
                           tooltipFor={(s) => sessionTooltip(s)}
                           on:pick={(e) => {
                             activeTuisPopoverOpen = {
@@ -7994,7 +7923,7 @@
                           headText={`${pickerSessions.length} sessions in this worktree`}
                           dismissedSources={dismissedSessions}
                           starredSources={starredSessions}
-                          isOpen={(s) => isOpenInWt(wt.path, s.source)}
+                          isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
                           tooltipFor={(s) => sessionTooltip(s)}
                           on:pick={(e) => {
                             agentsPopoverOpen = {
@@ -8856,7 +8785,7 @@
                               // have run first, so guard with isOpenInWt so
                               // we don't park `focusedSource` on a source
                               // that's already been removed.
-                              if (isOpenInWt(wt.path, s.source)) {
+                              if (isOpenInWt(wt.path, s.source, openSessionsByWt)) {
                                 focusedSource = s.source;
                               }
                             }}

@@ -1,244 +1,28 @@
 /**
  * CHARACTERIZATION TESTS — session source routing logic from App.svelte
  *
- * These tests pin the CURRENT behaviour of five routing functions that live
- * inside the <script> of App.svelte.  They are faithful local shims — the
- * logic is copied VERBATIM from App.svelte, with closed-over reactive state
- * turned into explicit parameters where needed.
+ * Extraction landed (step 2): the real implementations live in
+ * packages/ui/src/session-source-routing.ts. These tests now exercise
+ * the real module directly — the shims have been replaced with imports.
  *
- * Step 2 (extraction) will:
- *   1. Move the real implementations to packages/ui/src/session-source-routing.ts
- *   2. Replace the shims in this file with real imports
+ * If all assertions pass, the extraction is proven behaviour-preserving.
  *
- * If behaviour matches after that swap, the extraction is proven safe.
- *
- * Shims match App.svelte as of commit 500dc78 (ui: extract toast system from
- * App.svelte into testable toast-manager.ts).
+ * Shims were written against App.svelte as of commit 500dc78 (ui: extract
+ * toast system from App.svelte into testable toast-manager.ts).
  */
 
 import { test, expect, describe } from "bun:test";
-
-// ---------------------------------------------------------------------------
-// Inline type mirrors (matching App.svelte's local interfaces)
-// ---------------------------------------------------------------------------
-
-interface AgentSession {
-  agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-  cwd: string;
-  lastActive: string;
-  sessionId?: string;
-  source: string;
-  title?: string;
-  lastUserMessage?: string;
-  manualTitle?: string;
-  firstUserMessage?: string;
-  lastUserMessages?: string[];
-  userMessageCount?: number;
-  messageCount?: number;
-  recentMessageCount?: number;
-  lastMessageTs?: string;
-  contextTokens?: number;
-  contextTokensExact?: boolean;
-  contextWindow?: number;
-  model?: string;
-}
-
-interface ShellRecord {
-  termId: string;
-  wt: string;
-  spawnCwd: string;
-  currentCwd?: string;
-  createdAt: string;
-  alive: boolean;
-  cmdCount?: number;
-  lastCmd?: string;
-  lastCmdTs?: string;
-  manualTitle?: string;
-}
-
-interface OpenSession {
-  agent: AgentSession["agent"] | "shell" | "files" | "history";
-  source: string;
-  resumeSessionId?: string;
-  preassignedSessionId?: string;
-  mode?: "terminal";
-  ollamaModel?: string;
-  contextFilePath?: string;
-  attachTermId?: string;
-}
-
-interface Worktree {
-  path: string;
-  agents?: AgentSession[];
-  // other fields omitted — only what the routing functions inspect
-}
-
-interface Repo {
-  worktrees?: Worktree[];
-  // other fields omitted
-}
-
-// ---------------------------------------------------------------------------
-// Shim 1 — resolveTermId
-//
-// Pure transform. Extracts the daemon termId from synthetic source strings.
-// Closed-over state: `newTermIds` (Record<string, string>). Made explicit.
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the daemon termId for a `__new__:` or `__attached__:` column.
- * `__attached__:` sources carry it directly in the suffix;
- * `__new__:` sources are looked up in `newTermIds`.
- *
- * Faithful copy of App.svelte `resolveTermId` (line ~970).
- */
-function resolveTermId(
-  s: { source: string },
-  newTermIds: Record<string, string>,
-): string | undefined {
-  if (s.source.startsWith("__attached__:")) return s.source.split(":").pop();
-  if (s.source.startsWith("__new__:")) return newTermIds[s.source];
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Shim 2 — isOpenInWt
-//
-// Pure predicate. Checks membership in the open-session list for a worktree.
-// Closed-over state: `openSessionsByWt`. Made explicit.
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true when `source` appears in the open-session list for `wtPath`.
- *
- * Faithful copy of App.svelte `isOpenInWt` (line ~2568).
- */
-function isOpenInWt(
-  wtPath: string,
-  source: string,
-  openSessionsByWt: Record<string, OpenSession[]>,
-): boolean {
-  return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
-}
-
-// ---------------------------------------------------------------------------
-// Shim 3 — normalizeSessionForOpen
-//
-// Pure transform. Translates Ollama raw-JSONL sources to the synthetic
-// `__transcript__:ollama:<termId>` form that OllamaTranscriptView mounts on.
-// Closed-over state: `repos`. Made explicit.
-// ---------------------------------------------------------------------------
-
-/**
- * Rewrite a picker-supplied OpenSession when needed.
- *
- * Faithful copy of App.svelte `normalizeSessionForOpen` (line ~2580).
- * `repos` replaces the closed-over reactive variable.
- */
-function normalizeSessionForOpen(
-  wtPath: string,
-  s: OpenSession,
-  repos: Repo[],
-): OpenSession {
-  if (
-    s.agent !== "ollama" ||
-    s.source.startsWith("__transcript__:") ||
-    s.source.startsWith("__new__:") ||
-    s.source.startsWith("__attached__:")
-  ) {
-    return s;
-  }
-  // Header path is `<workspace>/ollama/<termId>.jsonl`. The termId is
-  // the basename without the extension.
-  const base = s.source.split(/[\\/]/).pop() ?? "";
-  const termId = base.endsWith(".jsonl")
-    ? base.slice(0, -".jsonl".length)
-    : base;
-  if (!termId) return s;
-  const wt = repos
-    .flatMap((r) => r.worktrees ?? [])
-    .find((w) => w.path === wtPath);
-  const agents = wt?.agents ?? [];
-  const match = agents.find(
-    (a) =>
-      a.agent === "ollama" &&
-      (a.sessionId === termId || a.source === s.source),
-  );
-  return {
-    agent: "ollama",
-    source: `__transcript__:ollama:${termId}`,
-    ollamaModel: match?.model ?? match?.title,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Shim 4 — dismissIfShell (DECISION LOGIC ONLY)
-//
-// Side-effecting in App.svelte: calls `dismissShellSource(source)` which
-// updates a Set and persists to daemon KV. We cannot replicate that mutation
-// here without a heavy harness.
-//
-// Strategy: extract and test only the *deterministic decision* embedded in
-// the function — i.e. "given this OpenSession, WHICH source string (if any)
-// should be dismissed?"
-//
-// The side-effect (calling dismissShellSource) is deferred to the extraction
-// step, where the real module will expose a testable dismissedSources helper.
-//
-// Faithful copy of the DECISION PART of App.svelte `dismissIfShell` (line ~2647).
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the source string that should be passed to `dismissShellSource`,
- * or null if this session should NOT be dismissed (non-shell, or unknown form).
- *
- * `newTermIds` replaces the closed-over reactive map used to look up
- * the attached form of `__new__:shell:` sources.
- */
-function dismissIfShellDecision(
-  s: OpenSession,
-  newTermIds: Record<string, string>,
-): string | null {
-  if (s.agent !== "shell") return null;
-  if (
-    s.source.startsWith("__attached__:shell:") ||
-    s.source.startsWith("__transcript__:shell:")
-  ) {
-    return s.source;
-  } else if (s.source.startsWith("__new__:shell:")) {
-    const termId = newTermIds[s.source];
-    if (termId) return `__attached__:shell:${termId}`;
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Shim 5 — shellToSession
-//
-// Pure transform. Maps a ShellRecord to an AgentSession-shaped object for
-// the picker. No closed-over state.
-// ---------------------------------------------------------------------------
-
-/**
- * Map shell records into the same shape as AgentSession.
- *
- * Faithful copy of App.svelte `shellToSession` (line ~5310).
- */
-function shellToSession(sh: ShellRecord): AgentSession {
-  return {
-    agent: "shell",
-    cwd: sh.wt,
-    lastActive: sh.lastCmdTs ?? sh.createdAt,
-    source: sh.alive
-      ? `__attached__:shell:${sh.termId}`
-      : `__transcript__:shell:${sh.termId}`,
-    title: sh.currentCwd ?? sh.spawnCwd,
-    sessionId: sh.termId,
-    lastUserMessage: sh.lastCmd,
-    messageCount: sh.cmdCount,
-    manualTitle: sh.manualTitle,
-  };
-}
+import {
+  resolveTermId,
+  isOpenInWt,
+  normalizeSessionForOpen,
+  shellToSession,
+  shellSourceToDismiss,
+  type AgentSession,
+  type ShellRecord,
+  type OpenSession,
+  type Repo,
+} from "../src/session-source-routing";
 
 // ===========================================================================
 // Tests
@@ -513,61 +297,51 @@ describe("normalizeSessionForOpen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dismissIfShell — decision logic only
+// shellSourceToDismiss — decision logic only
 //
 // The SIDE EFFECT (calling dismissShellSource which writes to daemon KV) is
-// NOT tested here — it requires a running daemon or a mock KV store.
-// Deferred to the extraction step, where the real module will expose a
-// `computeDismissTarget(s, newTermIds)` helper or equivalent.
+// NOT tested here — it stays in App.svelte's thin `dismissIfShell` wrapper.
+// The pure decision (`shellSourceToDismiss`) lives in session-source-routing.ts
+// and is tested below. Non-shell sources don't match any shell prefix → null.
 // ---------------------------------------------------------------------------
 
 describe("dismissIfShell — decision logic", () => {
   test("non-shell agent → null (nothing to dismiss)", () => {
+    // source "/ws/x.jsonl" doesn't match any shell prefix → null
     expect(
-      dismissIfShellDecision({ agent: "claude", source: "/ws/x.jsonl" }, {}),
+      shellSourceToDismiss("/ws/x.jsonl", {}),
     ).toBeNull();
   });
 
   test("files agent → null (not a shell)", () => {
+    // source "__files__:/some/path" doesn't match any shell prefix → null
     expect(
-      dismissIfShellDecision({ agent: "files", source: "__files__:/some/path" }, {}),
+      shellSourceToDismiss("__files__:/some/path", {}),
     ).toBeNull();
   });
 
   test("shell + __attached__:shell:<id> → returns the source itself", () => {
     expect(
-      dismissIfShellDecision(
-        { agent: "shell", source: "__attached__:shell:term1" },
-        {},
-      ),
+      shellSourceToDismiss("__attached__:shell:term1", {}),
     ).toBe("__attached__:shell:term1");
   });
 
   test("shell + __transcript__:shell:<id> → returns the source itself", () => {
     expect(
-      dismissIfShellDecision(
-        { agent: "shell", source: "__transcript__:shell:term99" },
-        {},
-      ),
+      shellSourceToDismiss("__transcript__:shell:term99", {}),
     ).toBe("__transcript__:shell:term99");
   });
 
   test("shell + __new__:shell: with termId in map → returns __attached__:shell:<termId>", () => {
     const newTermIds = { "__new__:shell:1": "term-mapped" };
     expect(
-      dismissIfShellDecision(
-        { agent: "shell", source: "__new__:shell:1" },
-        newTermIds,
-      ),
+      shellSourceToDismiss("__new__:shell:1", newTermIds),
     ).toBe("__attached__:shell:term-mapped");
   });
 
   test("shell + __new__:shell: NOT in map → null (no termId known, nothing to dismiss)", () => {
     expect(
-      dismissIfShellDecision(
-        { agent: "shell", source: "__new__:shell:missing" },
-        {},
-      ),
+      shellSourceToDismiss("__new__:shell:missing", {}),
     ).toBeNull();
   });
 
@@ -575,10 +349,7 @@ describe("dismissIfShell — decision logic", () => {
     // A shell source that doesn't start with __attached__:, __transcript__:, or __new__:
     // The real function does nothing in that case → decision is null.
     expect(
-      dismissIfShellDecision(
-        { agent: "shell", source: "/some/bare/path" },
-        {},
-      ),
+      shellSourceToDismiss("/some/bare/path", {}),
     ).toBeNull();
   });
 });
