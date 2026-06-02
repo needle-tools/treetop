@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiUrl } from "./api";
+  import { play } from "./sound";
   import { onMount, onDestroy } from "svelte";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
@@ -717,6 +718,11 @@
     }, DISPOSE_MIN_FEEDBACK_MS);
   }
   async function runActualDispose() {
+    // Session-end sound — mirrors App's disposeNewSessionColumn so
+    // "Stop Session" chimes whether the column is a fresh NewSessionCol
+    // or a resumed SessionView in terminal mode. Fires here (post grace
+    // window) so a cancelled stop stays silent.
+    play("session-stop");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DISPOSE_TIMEOUT_MS);
     let timedOut = false;
