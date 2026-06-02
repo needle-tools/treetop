@@ -380,6 +380,22 @@ async function dropLegacyJsonl(
   } catch {}
 }
 
+/** Infer the path format of a receiver-side local path. The repair pass
+ *  normalizes the origin's separators to the LOCAL path's format, which is
+ *  intrinsic to that path rather than to this process's platform — a workspace
+ *  can be inspected/migrated from a different OS than the one that accepted the
+ *  share (synced workspace, CI, a Windows dev box poking at a Mac import). A
+ *  drive letter (`C:\` / `C:/`) or any backslash ⇒ win32; a leading `/` ⇒
+ *  POSIX; anything ambiguous falls back to the running platform. */
+function platformOfLocalPath(
+  p: string,
+  fallback: SharePlatform,
+): SharePlatform {
+  if (/^[A-Za-z]:[\\/]/.test(p) || p.includes("\\")) return "win32";
+  if (p.startsWith("/")) return fallback === "win32" ? "linux" : fallback;
+  return fallback;
+}
+
 export interface RepairResult {
   /** Claude sidecars examined. */
   scanned: number;
@@ -418,7 +434,11 @@ export async function repairImportedSessionCwds(
     return { scanned: 0, repaired: 0 };
   }
 
-  const toPlatform: SharePlatform =
+  // Fallback only — the real destination platform is inferred per-sidecar
+  // from the LOCAL path's own shape below (a `/Users/...` target is POSIX no
+  // matter which OS runs this migrator), so a workspace accepted on a Mac and
+  // repaired from a Windows dev box still normalizes separators correctly.
+  const processPlatform: SharePlatform =
     process.platform === "win32"
       ? "win32"
       : process.platform === "darwin"
@@ -453,6 +473,13 @@ export async function repairImportedSessionCwds(
         continue;
       }
       scanned += 1;
+
+      // The destination separator format is whatever the LOCAL path uses,
+      // not necessarily this process's platform (see processPlatform above).
+      const toPlatform = platformOfLocalPath(
+        sidecar.localWorktreePath || sidecar.localRepoPath || "",
+        processPlatform,
+      );
 
       // Where the live JSONL lives: prefer the sidecar pointer, fall back
       // to the encoder-derived projects slot (matches scanImported).
