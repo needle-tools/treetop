@@ -263,6 +263,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* Grid cells default to `min-width: auto` (≈ min-content), so a
+       single long subject word would otherwise blow the track past
+       its `1fr` allocation and the ellipsis would never trigger.
+       Forcing 0 lets the cell honor the track's 24ch min and
+       ellipsise the rest. */
+    min-width: 0;
   }
   .dock-rsp-more {
     font-size: 0.65rem;
