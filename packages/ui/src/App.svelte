@@ -135,6 +135,7 @@
     clampSubject,
     sessionTooltip,
   } from "./display-helpers";
+  import { parseNDJSONLines } from "./ndjson-client";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
@@ -3355,41 +3356,12 @@
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (line.length > 0) {
-          // Per-line parse failures shouldn't kill the whole stream
-          // — drop the bad line and keep going so a single corrupt
-          // entry can't blank the dashboard.
-          try {
-            const msg = JSON.parse(line) as
-              | {
-                  type: "manifest";
-                  repos: {
-                    id: string;
-                    path: string;
-                    name: string;
-                    addedAt: string;
-                    color?: string;
-                  }[];
-                }
-              | { type: "repo"; repo: Repo };
-            if (msg.type === "manifest" && Array.isArray(msg.repos)) {
-              const skeletons: Repo[] = msg.repos.map((m) => ({
-                id: m.id,
-                path: m.path,
-                name: m.name,
-                addedAt: m.addedAt,
-                color: m.color,
-                worktrees: [],
-                remotes: [],
-                ...(daemonId ? { daemonId } : {}),
-              }));
-              opts?.onManifest?.(skeletons);
-            } else if (msg.type === "repo" && msg.repo) {
-              const repo = daemonId ? { ...msg.repo, daemonId } : msg.repo;
-              out.push(repo);
-              opts?.onRepo?.(repo);
-            }
-          } catch {
-            // skip malformed line
+          for (const r of parseNDJSONLines([line], {
+            onManifest: opts?.onManifest,
+            onRepo: opts?.onRepo,
+            daemonId,
+          })) {
+            out.push(r as Repo);
           }
         }
         nl = buf.indexOf("\n");

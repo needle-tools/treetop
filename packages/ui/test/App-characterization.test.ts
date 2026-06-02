@@ -725,67 +725,11 @@ describe("formatRelativeTime", () => {
 // fetchReposNDJSON stream-parsing logic  (App.svelte lines 3214–3274)
 // ---------------------------------------------------------------------------
 
-/**
- * Extract the inner NDJSON parse loop so it can be tested without a real
- * HTTP response. The pump function takes a list of raw lines (simulating
- * what a ReadableStream would deliver) and calls the same callbacks that
- * fetchReposNDJSON calls in production.
- *
- * This mirrors the logic in App.svelte:3226–3270.
- */
+import { parseNDJSONLines, type NdjsonRepo } from "../src/ndjson-client";
 
-interface RepoSkeleton {
-  id: string;
-  path: string;
-  name: string;
-  addedAt: string;
-  color?: string;
-  worktrees: never[];
-  remotes: never[];
-}
-interface RepoFull {
-  id: string;
-  path: string;
-  name: string;
-  addedAt: string;
-  worktrees: unknown[];
-}
-
-function parseNDJSONLines(
-  lines: string[],
-  opts?: {
-    onManifest?: (skeletons: RepoSkeleton[]) => void;
-    onRepo?: (repo: RepoFull) => void;
-  },
-): RepoFull[] {
-  const out: RepoFull[] = [];
-  for (const line of lines) {
-    if (!line.length) continue;
-    try {
-      const msg = JSON.parse(line) as
-        | { type: "manifest"; repos: { id: string; path: string; name: string; addedAt: string; color?: string }[] }
-        | { type: "repo"; repo: RepoFull };
-      if (msg.type === "manifest" && Array.isArray(msg.repos)) {
-        const skeletons: RepoSkeleton[] = msg.repos.map((m) => ({
-          id: m.id,
-          path: m.path,
-          name: m.name,
-          addedAt: m.addedAt,
-          color: m.color,
-          worktrees: [],
-          remotes: [],
-        }));
-        opts?.onManifest?.(skeletons);
-      } else if (msg.type === "repo" && msg.repo) {
-        out.push(msg.repo);
-        opts?.onRepo?.(msg.repo);
-      }
-    } catch {
-      // skip malformed line — same as App.svelte
-    }
-  }
-  return out;
-}
+// Local aliases so the test assertions below read the same as before.
+type RepoSkeleton = NdjsonRepo;
+type RepoFull = NdjsonRepo;
 
 describe("fetchReposNDJSON stream-parsing logic", () => {
   const manifestLine = JSON.stringify({
