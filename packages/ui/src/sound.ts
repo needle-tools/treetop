@@ -56,6 +56,15 @@ export interface SoundMapping {
   /** When another sound starts, fade this one out over N ms instead of
    *  letting it finish. 0 = no fade (default for short FX). */
   fadeOutMs?: number;
+  /** Mutual-exclusion: suppress this sound if any of these higher-
+   *  priority tags played within {@link suppressedWithinMs}. Asymmetric
+   *  — the listed tags are unaffected. Used so a single user gesture
+   *  that fires two near-simultaneous sounds only plays the dominant
+   *  one (e.g. ending a session plays the logoff sound and suppresses
+   *  the close whoosh that follows). */
+  suppressedBy?: SoundTag[];
+  /** Window for {@link suppressedBy}. Default 0 (no suppression). */
+  suppressedWithinMs?: number;
 }
 
 export interface QueueEntry {
@@ -164,6 +173,11 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     volume: 0.2,
     overlay: true,
     selfCooldown: 5000,
+    // Session-end takes precedence: closing a column that just ended a
+    // live session plays the logoff sound, not also the whoosh. The
+    // dispose path fires session-stop ~immediately before the close.
+    suppressedBy: ["session-stop"],
+    suppressedWithinMs: 2000,
   },
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
   "ai-disagree": {
@@ -497,6 +511,25 @@ function scheduleDrain(): void {
   queueMicrotask(() => drainQueue());
 }
 
+/** Pure: should `mapping`'s sound be suppressed because a
+ *  higher-priority tag (its `suppressedBy`) played within the window?
+ *  Exported for unit testing. `playedAt` is the per-tag last-played
+ *  clock. */
+export function isSuppressedBy(
+  mapping: SoundMapping | undefined,
+  playedAt: ReadonlyMap<SoundTag, number>,
+  now: number,
+): boolean {
+  if (!mapping?.suppressedBy?.length) return false;
+  const within = mapping.suppressedWithinMs ?? 0;
+  if (within <= 0) return false;
+  for (const other of mapping.suppressedBy) {
+    const last = playedAt.get(other);
+    if (last !== undefined && now - last < within) return true;
+  }
+  return false;
+}
+
 export function play(tag: SoundTag): void {
   if (!enabled) {
     console.debug("[sound] skip %s (disabled)", tag);
@@ -512,6 +545,10 @@ export function play(tag: SoundTag): void {
   const lastSelf = lastPlayedAt.get(tag) ?? 0;
   if (now - lastSelf < selfCd) {
     console.debug("[sound] skip %s (selfCooldown %dms)", tag, selfCd);
+    return;
+  }
+  if (isSuppressedBy(mapping, lastPlayedAt, now)) {
+    console.debug("[sound] skip %s (suppressed by higher-priority sound)", tag);
     return;
   }
 

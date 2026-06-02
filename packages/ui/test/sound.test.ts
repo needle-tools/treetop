@@ -13,6 +13,7 @@ import {
   setMasterVolume,
   DEFAULT_MAPPINGS,
   sound,
+  isSuppressedBy,
   type SoundTag,
 } from "../src/sound";
 
@@ -329,5 +330,81 @@ describe("sound action", () => {
     el.dispatchEvent("click");
     expect(getQueueSnapshot()).toHaveLength(1);
     action.destroy();
+  });
+});
+
+describe("isSuppressedBy", () => {
+  const closeMapping = {
+    files: ["/close"],
+    suppressedBy: ["session-stop"] as SoundTag[],
+    suppressedWithinMs: 2000,
+  };
+
+  test("no suppressedBy → never suppressed", () => {
+    expect(isSuppressedBy({ files: ["/a"] }, new Map(), 1000)).toBe(false);
+  });
+
+  test("suppressed when a listed tag played within the window", () => {
+    const playedAt = new Map<SoundTag, number>([["session-stop", 1000]]);
+    expect(isSuppressedBy(closeMapping, playedAt, 1500)).toBe(true);
+    // boundary: exactly at the window edge is no longer suppressed
+    expect(isSuppressedBy(closeMapping, playedAt, 3000)).toBe(false);
+    expect(isSuppressedBy(closeMapping, playedAt, 2999)).toBe(true);
+  });
+
+  test("not suppressed once the window elapses", () => {
+    const playedAt = new Map<SoundTag, number>([["session-stop", 1000]]);
+    expect(isSuppressedBy(closeMapping, playedAt, 5000)).toBe(false);
+  });
+
+  test("not suppressed if the higher-priority tag never played", () => {
+    expect(isSuppressedBy(closeMapping, new Map(), 5000)).toBe(false);
+  });
+
+  test("a window of 0 (or unset) disables suppression", () => {
+    const playedAt = new Map<SoundTag, number>([["session-stop", 1000]]);
+    expect(
+      isSuppressedBy(
+        { files: ["/c"], suppressedBy: ["session-stop"] },
+        playedAt,
+        1000,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("DEFAULT_MAPPINGS session-close suppression", () => {
+  test("session-close is suppressed by session-stop within 2s", () => {
+    const m = DEFAULT_MAPPINGS["session-close"];
+    expect(m?.suppressedBy).toEqual(["session-stop"]);
+    expect(m?.suppressedWithinMs).toBe(2000);
+  });
+});
+
+describe("play() honors suppression", () => {
+  test("session-end suppresses a close that follows within the window", () => {
+    configure({
+      "session-stop": { files: ["/stop.mp3"], overlay: true },
+      "session-close": {
+        files: ["/close.mp3"],
+        suppressedBy: ["session-stop"],
+        suppressedWithinMs: 2000,
+      },
+    });
+    play("session-stop"); // overlay — stamps lastPlayedAt synchronously
+    play("session-close"); // should be suppressed → not queued
+    expect(getQueueSnapshot()).toHaveLength(0);
+  });
+
+  test("close plays normally when no session-end preceded it", () => {
+    configure({
+      "session-close": {
+        files: ["/close.mp3"],
+        suppressedBy: ["session-stop"],
+        suppressedWithinMs: 2000,
+      },
+    });
+    play("session-close");
+    expect(getQueueSnapshot()).toHaveLength(1);
   });
 });
