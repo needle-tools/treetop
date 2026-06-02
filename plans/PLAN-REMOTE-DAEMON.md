@@ -765,10 +765,15 @@ the UI only QUERIED the local daemon. Split into two principles:
         (open/close on online/offline, message tagging) + the container
         e2e (a real remote change propagating). Pure handleStreamChange is
         unit-testable; the EventSource manager needs the DOM harness gap.
-- [ ] **#16 Session titles for remote shells stored locally** —
-      `/api/session-titles` + `/api/session/title` are local-only; a remote
-      shell's title lives in the local workspace, not the box. Route by
-      daemonId (or accept as a local-view concern — decide).
+- [~] **#16 Session titles for remote shells** — DECIDED: a manual title is
+      a local-view concern, so it stays in the local workspace (not routed to
+      the box). The real risk was a COLLISION: titles are keyed by
+      `shell:<termId>`, and termIds were only per-daemon-unique
+      (`t_<ms>_<seq>`, each daemon counting from 1), so a remote shell could
+      overwrite a local shell's title. Fixed at the root — termIds are now
+      globally unique (random suffix; see `makeTerminalId`), so the key no
+      longer collides. Routing titles to the box (so other clients of the box
+      see them) remains deferred as low value.
 - [x] **#17 Sticky notes follow the repo to the remote box** — DONE.
       Decided notes live on the owning daemon's machine (not a local-only
       board). `StickyNotesLayer` resolves each note's daemon via
@@ -777,12 +782,19 @@ the UI only QUERIED the local daemon. Split into two principles:
       by it; the note's text/image attachments (`/api/attachment`,
       `/api/image`) are read from that daemon too (threaded via `note.daemonId`
       through the attachment helpers — see the routing-guard fix above).
-- [ ] **#18 Remaining global daemon-kv keys not per-daemon namespaced** —
-      openSessions, dismissedShells/Sessions, commitsExpanded,
-      commandTermSources still use bare global keys (collision risk across
-      daemons). repo-scoped keys are already namespaced (repoPrefsKey);
-      extend the same to these board-ish keys where they're repo/source
-      specific.
+- [x] **#18 Global daemon-kv keys — collision audit DONE.** Walked each key:
+      - `openSessionsByWt`, `commitsExpanded` are keyed by absolute **wtPath**,
+        which is unique across daemons (a remote daemon's paths live on its own
+        box), so they never collide — correctly local view-state, left as-is.
+      - `dismissedShells`/`dismissedSessions` + `commandTermSources` are keyed
+        by a **termId-derived source** (`__transcript__:shell:<termId>` etc.).
+        termIds were only per-daemon-unique, so THAT was the real collision —
+        now removed at the root by globally-unique termIds (`makeTerminalId`),
+        so these stay local + collision-free.
+      - repo-id-keyed view state (foldedRows/notesHidden/visibleWorktrees) was
+        already namespaced via `repoPrefsKey` (commit 5fe5c6c).
+      No per-key namespacing churn needed: the one genuine collision (termId)
+      is fixed once, for every consumer.
 
 Rough size: ~1.5–2 days. The proxy design moves the hard part off the
 browser (no CORS/TLS) and onto ordinary, testable daemon code; the

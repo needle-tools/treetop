@@ -233,6 +233,20 @@ function fixSpawnHelperBit() {
   }
 }
 
+/**
+ * Mint a terminal id. The time prefix + per-daemon sequence keep it readable
+ * and roughly time-ordered; the random suffix makes it GLOBALLY unique across
+ * daemons. Each daemon has its own `seq` starting at 1, so `t_<ms>_<seq>`
+ * alone could be minted identically by two daemons that spawn a terminal in
+ * the same millisecond — and the UI keys per-shell state (manual title
+ * `shell:<termId>`, dismissed flag, command-source) by termId, so a remote
+ * shell could then collide with a local one in the merged window. The random
+ * suffix removes that.
+ */
+export function makeTerminalId(seq: number): string {
+  return `t_${Date.now().toString(36)}_${seq}_${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export class NodePtyBackend implements PtyBackend {
   private helper: Subprocess<"pipe", "pipe", "inherit"> | null = null;
   private helperReady: Promise<void> | null = null;
@@ -450,7 +464,7 @@ export class NodePtyBackend implements PtyBackend {
 
   async spawn(opts: SpawnOptions): Promise<TerminalHandle> {
     await this.startHelper();
-    const id = `t_${Date.now().toString(36)}_${this.nextSeq++}`;
+    const id = makeTerminalId(this.nextSeq++);
     const t: InternalTerm = {
       id,
       pid: 0,

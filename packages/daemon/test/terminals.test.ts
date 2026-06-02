@@ -17,6 +17,7 @@ import {
   detectConfigError,
   nextStickyConfigError,
   terminalGoneReason,
+  makeTerminalId,
 } from "../src/terminals/node-pty-backend";
 import {
   sampleProcs,
@@ -749,6 +750,23 @@ describe.skipIf(isWin)("NodePtyBackend.gracefulShutdown", () => {
     await backend.gracefulShutdown(2000);
     expect(Date.now() - start).toBeLessThan(500);
   }, 10_000);
+});
+
+describe("makeTerminalId", () => {
+  test("starts with the t_ prefix and a time+seq core", () => {
+    expect(makeTerminalId(1)).toMatch(/^t_[a-z0-9]+_1_[0-9a-f]{8}$/);
+  });
+
+  test("two ids with the SAME sequence are still distinct (the cross-daemon fix)", () => {
+    // Each daemon counts seq from 1, so without the random suffix two daemons
+    // could mint t_<sameMs>_1 — colliding the UI's per-shell state.
+    expect(makeTerminalId(1)).not.toBe(makeTerminalId(1));
+  });
+
+  test("a batch of ids is fully unique", () => {
+    const ids = new Set(Array.from({ length: 2000 }, (_, i) => makeTerminalId(i)));
+    expect(ids.size).toBe(2000);
+  });
 });
 
 describe("renameArgv", () => {
