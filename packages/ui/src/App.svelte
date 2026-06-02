@@ -13,7 +13,7 @@
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
   import { apiUrl } from "./api";
-  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey, planRepoRemoval } from "./repo-fanout";
+  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey, planRepoRemoval, sortReposByKeys } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -299,6 +299,23 @@
   }
 
   let repos: Repo[] = [];
+  /** User-defined cross-daemon row order, as a list of `daemonRepoKey`s,
+   *  persisted in LOCAL daemon prefs (it's a "how I arrange MY window"
+   *  concern, not state of any one daemon). Empty until the user reorders;
+   *  applied on top of the fan-out so local + remote rows can interleave
+   *  (replaceDaemonRepos otherwise keeps each daemon's rows in one block).
+   *  See reorderRepos + the load() merge. */
+  const REPO_ORDER_KEY = "supergit:repoOrder";
+  let savedRepoOrder: string[] = readSavedRepoOrder();
+  function readSavedRepoOrder(): string[] {
+    try {
+      const raw = getDaemonKV().getItem(REPO_ORDER_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? (arr as string[]) : [];
+    } catch {
+      return [];
+    }
+  }
   // daemonId -> reachable? Rebuilt each load() from the fan-out: a remote
   // whose /api/daemons/<id>/repos fetch rejects (tunnel down) is offline.
   // Drives the online/offline dot in ProcessList. Reassigned (new Map) each
@@ -3309,7 +3326,13 @@
           const merged = filtered.map(
             (s) => existing.get(daemonRepoKey(s)) ?? s,
           );
-          repos = replaceDaemonRepos(repos, daemonId, merged);
+          // Apply the user's cross-daemon row order on top of the per-daemon
+          // block layout so local + remote rows can interleave (no-op until
+          // the user reorders — savedRepoOrder is empty by default).
+          repos = sortReposByKeys(
+            replaceDaemonRepos(repos, daemonId, merged),
+            savedRepoOrder,
+          );
           loading = false;
         },
         onRepo: (full: Repo) => {
@@ -3830,12 +3853,31 @@
    *  re-derives the row order — no optimistic mutation needed here. */
   async function reorderRepos(orderedIds: string[]) {
     error = "";
-    // The dialog hands back the MERGED order across all daemons, but each
-    // daemon's /api/repos/order validates the id list against ITS OWN
-    // registry ("orderedIds length must match existing repos"). So split
-    // the order by owning daemon and POST each daemon only its own repos,
-    // each via apiUrl(..., daemonId). A daemon only sees its slice — the
-    // relative order within it is preserved from the merged list.
+    // The dialog hands back the MERGED order across all daemons as bare repo
+    // ids. Two things happen:
+    //   1. Cross-daemon interleave (local + remote rows mixed): persist the
+    //      full order as `daemonRepoKey`s in LOCAL prefs and apply it now.
+    //      This is what makes "drag a remote repo above a local one" stick —
+    //      it's a local-window concern no single daemon can own.
+    //   2. Within-daemon order: still POST each daemon its own id slice so the
+    //      box's repos.json reflects the order for its other clients.
+    // Map ids → keys by consuming matches, so two repos that share a git id
+    // across daemons map positionally rather than colliding.
+    const remaining = repos.slice();
+    const orderedKeys: string[] = [];
+    for (const id of orderedIds) {
+      const i = remaining.findIndex((r) => r.id === id);
+      if (i >= 0) {
+        const [r] = remaining.splice(i, 1);
+        orderedKeys.push(daemonRepoKey(r!));
+      }
+    }
+    savedRepoOrder = orderedKeys;
+    try {
+      getDaemonKV().setItem(REPO_ORDER_KEY, JSON.stringify(orderedKeys));
+    } catch {}
+    repos = sortReposByKeys(repos, savedRepoOrder); // instant feedback
+
     const byDaemon = new Map<string | undefined, string[]>();
     for (const repoId of orderedIds) {
       const dId = daemonIdForRepoId(repos, repoId);
