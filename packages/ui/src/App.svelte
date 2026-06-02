@@ -130,6 +130,13 @@
     clearErrors,
     type FrontendErrorEntry,
   } from "./errors";
+  import {
+    errorKindLabel,
+    eventToText,
+    anchorLabel,
+    eventLabel,
+    type Event,
+  } from "./event-format";
   import { play } from "./sound";
   import { createToastManager, type Toast } from "./toast-manager";
   import { subscribeToasts } from "./toast-bus";
@@ -279,17 +286,6 @@
      *  editor / Fork / remote buttons in the worktree row's action
      *  strip. */
     customLinks?: CustomLink[];
-  }
-  interface Event {
-    id: string;
-    timestamp: string;
-    type: string;
-    actor: "user" | "agent" | "supergit";
-    payload: any;
-    inverse?: any;
-    undone: boolean;
-    reversible: boolean;
-    redoable: boolean;
   }
   interface EditorDescriptor {
     name: string;
@@ -487,35 +483,12 @@
   function toggleErrorExpanded(id: string) {
     errorExpanded = { ...errorExpanded, [id]: !errorExpanded[id] };
   }
-  function errorKindLabel(e: FrontendErrorEntry): string {
-    if (e.kind === "server") return "server";
-    if (e.kind === "fetch") return "fetch";
-    if (e.kind === "rejection") return "unhandled";
-    return "uncaught";
-  }
   async function clearAllErrors() {
     await clearErrors();
   }
   /** id of the event whose Copy button is flashing "Copied". */
   let copiedErrorId: string | null = null;
   let copiedErrorTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Render one event as plain text for the clipboard. Deduped rows hold
-   *  the latest occurrence's details, so this copies the most recent
-   *  instance (plus the ×N count for context). */
-  function eventToText(e: FrontendErrorEntry): string {
-    const lines: string[] = [
-      `${e.timestamp} ${errorKindLabel(e).toUpperCase()} ${e.source}`,
-    ];
-    const req = [e.method, e.route].filter(Boolean).join(" ");
-    if (req) lines.push(e.status !== undefined ? `${req} → ${e.status}` : req);
-    lines.push(e.message);
-    if (e.count && e.count > 1) lines.push(`(×${e.count} occurrences)`);
-    if (e.stack) lines.push("", e.stack);
-    if (e.extra && Object.keys(e.extra).length > 0) {
-      lines.push("", JSON.stringify(e.extra, null, 2));
-    }
-    return lines.join("\n");
-  }
   function flashCopied(id: string) {
     copiedErrorId = id;
     if (copiedErrorTimer) clearTimeout(copiedErrorTimer);
@@ -4848,86 +4821,6 @@
     return () => es.close();
   }
 
-  function eventLabel(ev: Event): string {
-    if (ev.type === "add_repo") {
-      const inv = ev.inverse as
-        | { repo?: { name?: string; path?: string } }
-        | undefined;
-      const name =
-        inv?.repo?.name ??
-        (ev.payload?.path as string | undefined)
-          ?.split("/")
-          .filter(Boolean)
-          .pop();
-      return `Added ${name ?? "(unknown)"}`;
-    }
-    if (ev.type === "remove_repo") {
-      const inv = ev.inverse as
-        | { repo?: { name?: string; path?: string } }
-        | undefined;
-      const name = inv?.repo?.name ?? inv?.repo?.path;
-      return `Removed ${name ?? "(unknown)"}`;
-    }
-    if (ev.type === "rename_repo") {
-      const p = ev.payload as { newName?: string };
-      const inv = ev.inverse as { oldName?: string };
-      return `Renamed ${inv?.oldName ?? "?"} → ${p?.newName ?? "?"}`;
-    }
-    if (ev.type === "create_note" || ev.type === "remove_note") {
-      const inv = ev.inverse as
-        | { note?: { body?: string; anchors?: string[] } }
-        | undefined;
-      const excerpt = noteExcerpt(inv?.note?.body);
-      const where = anchorLabel(inv?.note?.anchors?.[0]);
-      const verb = ev.type === "create_note" ? "Created note" : "Deleted note";
-      const head = excerpt ? `${verb} “${excerpt}”` : verb;
-      return where ? `${head} · ${where}` : head;
-    }
-    if (ev.type === "session_imported") {
-      // Format: "Imported «<title>» from <machineLabel> → <repoName>"
-      // Falls back gracefully when older payloads lack the enriched
-      // fields (title / originMachineLabel / repoName were added later).
-      const p = ev.payload as {
-        title?: string;
-        originMachineLabel?: string;
-        originMachine?: string;
-        repoName?: string;
-        repoRemote?: string;
-      };
-      const title = p?.title ? `“${p.title.slice(0, 60)}”` : "session";
-      const from = p?.originMachineLabel ?? p?.originMachine ?? "another machine";
-      const repo = p?.repoName ?? p?.repoRemote ?? "repo";
-      return `Imported ${title} from ${from} → ${repo}`;
-    }
-    return ev.type;
-  }
-
-  /** Pretty-print an anchor string for the events list. Maps a
-   *  `worktree:<path>` anchor back to `<repo>/<branch>` by looking up
-   *  the current `repos` snapshot. Falls back to the basename of the
-   *  raw path when the repo's been removed since the event was logged
-   *  (events are historical; repos may have changed). */
-  function anchorLabel(anchor: string | undefined): string {
-    if (!anchor) return "";
-    if (anchor.startsWith("worktree:")) {
-      const path = anchor.slice("worktree:".length);
-      for (const r of repos) {
-        const wt = r.worktrees?.find((w) => w.path === path);
-        if (wt) return `${r.name ?? "?"} · ${wt.branch}`;
-      }
-      return path.split("/").filter(Boolean).pop() ?? path;
-    }
-    if (anchor.startsWith("repo:")) {
-      const path = anchor.slice("repo:".length);
-      const r = repos.find((r) => r.path === path);
-      if (r) return r.name ?? path;
-      return path.split("/").filter(Boolean).pop() ?? path;
-    }
-    if (anchor.startsWith("commit:")) {
-      return `commit ${anchor.slice("commit:".length).slice(0, 8)}`;
-    }
-    return anchor;
-  }
 
   /** Notes whose first usable anchor doesn't resolve to any
    *  currently-registered repo / worktree. These are the rows that
@@ -6520,7 +6413,7 @@
               {#each visibleEvents.slice(0, 50) as ev (ev.id)}
                 <li class:undone={ev.undone}>
                   <div class="ev-row">
-                    <span class="ev-type">{eventLabel(ev)}</span>
+                    <span class="ev-type">{eventLabel(ev, repos)}</span>
                     <span class="muted ev-time">{relTime(ev.timestamp)}</span>
                   </div>
                   <div class="ev-meta">
