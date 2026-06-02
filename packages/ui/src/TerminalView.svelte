@@ -513,6 +513,11 @@
             if (obj?.type === "exit") {
               exitInfo = { code: obj.code, signal: obj.signal };
               phase = "exited";
+              // The config dialog is gone once the PTY exits (the user
+              // chose an option, or it's respawning with a fixed config) —
+              // drop the pill so it doesn't linger on the exited view.
+              configError = null;
+              configAction = null;
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);

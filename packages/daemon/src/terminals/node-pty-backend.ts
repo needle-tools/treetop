@@ -559,11 +559,17 @@ export class NodePtyBackend implements PtyBackend {
         // detector will re-arm it on the next matching prompt; this
         // just stops the UI outlining the panel between the user
         // typing and the next render arriving.
-        if (t.awaitingInput || t.configError) {
+        //
+        // configError is deliberately NOT cleared here: the .claude.json
+        // "Configuration Error" dialog is modal and stays on screen until
+        // the PTY actually exits, so clicking or typing in the TUI must
+        // not make the Repair/Open pill vanish while the config is still
+        // broken. It clears when the term exits (and the respawned term
+        // is fresh).
+        if (t.awaitingInput) {
           t.awaitingInput = false;
-          t.configError = null;
           for (const s of t.subs)
-            s.onState?.({ awaitingInput: false, configError: null });
+            s.onState?.({ awaitingInput: false, configError: t.configError });
         }
       },
       resize: (size) => {
@@ -587,9 +593,17 @@ export class NodePtyBackend implements PtyBackend {
         // Replay the recent scrollback first so a re-attaching client
         // sees the agent's recent output before live frames stream in.
         if (t.bufferBytes > 0) sub.onData(this.concatBuffer(t));
-        // Deliver current awaiting-input state so a freshly-attached
-        // client immediately knows whether to outline the panel.
-        sub.onState?.({ awaitingInput: t.awaitingInput });
+        // Deliver current state so a freshly-attached client immediately
+        // knows whether to outline the panel AND whether a config-error
+        // pill is live. Sending configError here is what makes the pill
+        // show up in EVERY tui that attaches to a broken session — a
+        // reload, or several broken TUIs each mounting after the error
+        // already streamed (the live `data` flip only reaches whoever was
+        // already subscribed).
+        sub.onState?.({
+          awaitingInput: t.awaitingInput,
+          configError: t.configError,
+        });
         if (t.exitedAt)
           sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
         return () => {

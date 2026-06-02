@@ -77,6 +77,72 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     expect(info.code).toBe(0);
   }, 10_000);
 
+  test(
+    "config-error pill state survives keystrokes and reaches late subscribers",
+    async () => {
+      const handle = await backend.spawn({
+        // Print exactly what the detector matches, then block on `read`
+        // so the PTY stays alive — mirrors Claude's modal config dialog,
+        // which sits waiting for the user to choose an option.
+        cmd: [
+          "bash",
+          "-c",
+          'printf "Configuration Error\\n\\nThe configuration file at /home/u/.claude.json contains invalid JSON.\\n\\nChoose an option:\\n"; read x',
+        ],
+        cwd: "/tmp",
+        size: { cols: 80, rows: 24 },
+      });
+
+      // First subscriber records every configError value it's told about.
+      const seen: ({ file: string } | null | undefined)[] = [];
+      handle.subscribe({
+        onData() {},
+        onExit() {},
+        onState(s) {
+          seen.push(s.configError);
+        },
+      });
+
+      // Wait until the detector flips the error on.
+      const deadline = Date.now() + 8000;
+      while (
+        !seen.some((c) => c?.file === "/home/u/.claude.json") &&
+        Date.now() < deadline
+      ) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(seen.some((c) => c?.file === "/home/u/.claude.json")).toBe(true);
+
+      // A keystroke must NOT clear the pill — the write handler used to
+      // null configError on any input, so clicking/typing in the TUI made
+      // the Repair/Open buttons disappear while the config was still broken.
+      handle.write("j");
+      await new Promise((r) => setTimeout(r, 150));
+      expect(seen.some((c) => c === null)).toBe(false);
+
+      // A LATE subscriber (a second broken TUI, or a reload) must receive
+      // the still-active configError in its attach snapshot — subscribe
+      // used to omit it, so the pill never showed for late attachers.
+      const lateErr = await new Promise<{ file: string } | null | undefined>(
+        (resolve) => {
+          const to = setTimeout(() => resolve(undefined), 2000);
+          handle.subscribe({
+            onData() {},
+            onExit() {},
+            onState(s) {
+              clearTimeout(to);
+              resolve(s.configError);
+            },
+          });
+        },
+      );
+      expect(lateErr).toEqual({ file: "/home/u/.claude.json" });
+
+      await handle.kill();
+    },
+    15_000,
+  );
+
   test("spawned PTYs get a color-capable terminal env", async () => {
     const handle = await backend.spawn({
       cmd: [
