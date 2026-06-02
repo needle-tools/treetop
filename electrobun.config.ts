@@ -43,12 +43,17 @@ export default {
       "supergit.exe",
       "pty-helper",
       "pty-helper.exe",
+      // Source tree the daemon tars + ships to provision a remote box.
+      // Must live on a real filesystem (read via existsSync), so unpack it
+      // like ui/**. Absent when the build couldn't bundle it (best-effort).
+      "install-payload/**",
     ],
     copy: {
       [`build/supergit-native/supergit${exe}`]: `supergit${exe}`,
       [`build/supergit-native/pty-helper${exe}`]: `pty-helper${exe}`,
       "build/supergit-native/ui": "ui",
       "build/supergit-native/build-info.json": "build-info.json",
+      "build/supergit-native/install-payload": "install-payload",
     },
   },
 };

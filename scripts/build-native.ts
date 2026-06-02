@@ -71,6 +71,32 @@ await $`cd ${goHelperDir} && go build -o ${ptyHelperPath} .`.quiet();
 
 console.log("     ✓ Go helper + support files copied");
 
+// ── 3b. Bundle install payload (source the app ships to provision a box) ──
+// The packaged app holds only THIS platform's compiled binaries, so it has
+// nothing to run on a remote Linux box. Auto-provision therefore ships the
+// SOURCE over ssh → `install.sh --no-pull` builds native artifacts ON the
+// box. `git archive HEAD` is exactly the tracked tree (no node_modules /
+// build / dist). The daemon finds it next to the binary via
+// resolveInstallPayload(). Best-effort: if it can't be bundled (e.g. built
+// from a non-git tarball), the app still works — auto-provision just reports
+// itself unavailable and the manual paste flow remains.
+console.log("3b/6 Bundling install payload…");
+const payloadDir = join(FLAT, "install-payload");
+try {
+  await mkdir(payloadDir, { recursive: true });
+  await $`git -C ${ROOT} archive --format=tar HEAD | tar -x -C ${payloadDir}`.quiet();
+  if (!existsSync(join(payloadDir, "deploy", "install.sh"))) {
+    throw new Error("deploy/install.sh missing from the archive");
+  }
+  console.log("     ✓ install payload bundled (git archive HEAD)");
+} catch (e) {
+  await rm(payloadDir, { recursive: true, force: true });
+  console.warn(
+    `     ⚠ install payload NOT bundled (${e instanceof Error ? e.message : e}); ` +
+      `auto-provision will be unavailable in this build`,
+  );
+}
+
 // ── 4. Compile Swift launcher (macOS only) ──────────────────────────
 // On Windows/Linux, electrobun ships its own native launcher per platform,
 // so the Swift step is mac-specific and skipped elsewhere.
@@ -95,6 +121,12 @@ if (isMac) {
   await cp(join(FLAT, "supergit"), join(RESOURCES, "supergit"));
   await cp(join(FLAT, "ui"), join(RESOURCES, "ui"), { recursive: true });
   await cp(join(FLAT, "pty-helper"), join(RESOURCES, "pty-helper"));
+  // The install payload (source for remote auto-provision), when bundled.
+  if (existsSync(payloadDir)) {
+    await cp(payloadDir, join(RESOURCES, "install-payload"), {
+      recursive: true,
+    });
+  }
 
   await $`chmod +x ${join(RESOURCES, "supergit")} ${join(RESOURCES, "pty-helper")}`.quiet();
 
