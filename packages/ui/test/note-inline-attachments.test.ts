@@ -25,8 +25,10 @@ import {
   moveInlineAttachmentRefToEnd,
   parseInlineAttachments,
   removeInlineAttachmentRef,
+  resolveSessionAgent,
   restoreEditTextAttachments,
   resolveLiveCommandLink,
+  sessionIdFromValue,
   shouldAttachPastedText,
   textAttachmentMeta,
   trailingImageAttachmentIndexes,
@@ -717,5 +719,57 @@ describe("note inline attachments", () => {
     );
 
     expect([...visualAttachmentIndexes(parts)]).toEqual([1, 3, 5, 7, 9]);
+  });
+});
+
+describe("session link resolution", () => {
+  test("sessionIdFromValue strips a JSONL source path down to its id", () => {
+    expect(
+      sessionIdFromValue(
+        "/Users/me/code/repo/.claude/sessions/ecfad7b5-4e60-4198-b395-9506b3cf61c9.jsonl",
+      ),
+    ).toBe("ecfad7b5-4e60-4198-b395-9506b3cf61c9");
+  });
+
+  test("sessionIdFromValue passes a bare id through unchanged", () => {
+    expect(sessionIdFromValue("ecfad7b5-4e60-4198-b395-9506b3cf61c9")).toBe(
+      "ecfad7b5-4e60-4198-b395-9506b3cf61c9",
+    );
+  });
+
+  const id = "ecfad7b5-4e60-4198-b395-9506b3cf61c9";
+  const liveSource = `/now/moved/worktree/.claude/sessions/${id}.jsonl`;
+
+  test("resolves a bare id to the live agent by sessionId", () => {
+    const agents = [
+      { source: "/other/a.jsonl", sessionId: "aaa" },
+      { source: liveSource, sessionId: id },
+    ];
+    expect(resolveSessionAgent(id, agents)?.source).toBe(liveSource);
+  });
+
+  test("resolves a bare id by source filename when sessionId is absent", () => {
+    const agents = [{ source: liveSource }];
+    expect(resolveSessionAgent(id, agents)?.source).toBe(liveSource);
+  });
+
+  test("a stale stored path still resolves to the renamed live source by id", () => {
+    // Legacy attachment stored the full path; the worktree has since
+    // moved, so only the embedded id survives. We must still find it.
+    const staleStoredValue = `/old/before/rename/sessions/${id}.jsonl`;
+    const agents = [{ source: liveSource, sessionId: id }];
+    expect(resolveSessionAgent(staleStoredValue, agents)?.source).toBe(
+      liveSource,
+    );
+  });
+
+  test("an exact stored full path matches even without an id-keyed match", () => {
+    const path = "/path/with/no-uuid-name.jsonl";
+    const agents = [{ source: path }];
+    expect(resolveSessionAgent(path, agents)?.source).toBe(path);
+  });
+
+  test("returns null when the session is gone from the snapshot", () => {
+    expect(resolveSessionAgent(id, [{ source: "/x/other.jsonl" }])).toBeNull();
   });
 });

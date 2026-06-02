@@ -547,6 +547,45 @@ export function sessionLinkTargetMatchesSource(
   return !!sourceBasename && target.value === sourceBasename;
 }
 
+/** Normalize a session-link value to the bare session id. The value
+ *  may be a full JSONL source path (`/repo/.../<id>.jsonl`, what older
+ *  dragged-session attachments stored) or already the bare id. We key
+ *  session links on the id rather than the path so the link survives
+ *  the worktree/repo being renamed or moved — the path changes, the
+ *  id baked into the JSONL filename doesn't. */
+export function sessionIdFromValue(value: string): string {
+  const match = value.match(/\/([^/]+?)\.jsonl$/i);
+  if (match?.[1]) return match[1];
+  const base = value.split("/").pop() ?? value;
+  return base.replace(/\.jsonl$/i, "");
+}
+
+export interface SessionAgentRef {
+  source: string;
+  sessionId?: string;
+}
+
+/** Resolve a stored session-link value (a bare id OR a possibly-stale
+ *  full path) to the matching live agent from the current snapshot.
+ *  Match priority: the daemon's authoritative `sessionId`, then a
+ *  source path ending in `<id>.jsonl` (sessions whose `sessionId`
+ *  isn't populated yet), then an exact source-path match (legacy
+ *  attachments that stored the full path as the value). Returns null
+ *  when nothing matches — the session is gone or not loaded yet. */
+export function resolveSessionAgent<T extends SessionAgentRef>(
+  value: string,
+  agents: readonly T[],
+): T | null {
+  const id = sessionIdFromValue(value);
+  const suffix = `/${id}.jsonl`;
+  return (
+    agents.find((a) => a.sessionId === id) ??
+    agents.find((a) => a.source.endsWith(suffix)) ??
+    agents.find((a) => a.source === value) ??
+    null
+  );
+}
+
 export async function fetchTextAttachment(
   path: string,
   daemonId?: string,

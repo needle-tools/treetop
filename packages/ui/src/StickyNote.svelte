@@ -102,6 +102,7 @@
     parseInlineAttachments,
     restoreEditTextAttachments,
     resolveLiveCommandLink,
+    resolveSessionAgent,
     shouldAttachPastedText,
     textAttachmentMeta,
     visualAttachmentIndexes,
@@ -408,8 +409,15 @@
     if (t.type === "session") {
       // Surface the session in App's row strip. App owns the actual
       // open / scroll / outline-highlight side effects so this side
-      // of the chip stays UI-state-agnostic.
-      requestSessionFocus(t.value);
+      // of the chip stays UI-state-agnostic. Resolve the stored value
+      // (a bare session id, or a legacy/stale full path) to the
+      // current live source first — App keys focus on `source`, and
+      // the path may have changed since the link was saved (worktree
+      // renamed/moved). Falls back to the raw value when the session
+      // isn't in the live snapshot (orphan), making the click a safe
+      // no-op rather than focusing the wrong column.
+      const live = findSessionAgent(t.value);
+      requestSessionFocus(live?.source ?? t.value);
       return;
     }
     if (t.type === "command") {
@@ -445,16 +453,8 @@
     ) {
       return null;
     }
-    const src = note.target.value;
-    for (const r of repos) {
-      for (const wt of r.worktrees ?? []) {
-        const found = (wt as { agents?: AgentSession[] }).agents?.find(
-          (a) => a.source === src,
-        );
-        if (found) return sessionDisplayTitle(found);
-      }
-    }
-    return null;
+    const found = findSessionAgent(note.target.value);
+    return found ? sessionDisplayTitle(found) : null;
   })();
 
   /** Short display label for the chip body. URLs get their host, file
@@ -2050,14 +2050,11 @@
    *  (for the inline-mention icon) in one pass. Returns null when
    *  nothing matches — caller falls back to the saved label. */
   function findSessionAgent(id: string): AgentSession | null {
-    const suffix = `/${id}.jsonl`;
     for (const r of repos) {
       for (const wt of r.worktrees ?? []) {
         const agents = (wt as { agents?: AgentSession[] }).agents;
         if (!agents) continue;
-        const found =
-          agents.find((x) => x.sessionId === id) ??
-          agents.find((x) => x.source.endsWith(suffix));
+        const found = resolveSessionAgent(id, agents);
         if (found) return found;
       }
     }
@@ -2166,6 +2163,17 @@
     );
   }
 
+  // DOMPurify's default `ALLOWED_URI_REGEXP` only whitelists a fixed
+  // set of schemes (http, https, mailto, tel, …) and strips the `href`
+  // off everything else — including our own `supergit://` links. With
+  // the href gone, `enhanceSupergitLinks` finds nothing to rewrite and
+  // the inline session/commit mentions render as dead, un-clickable
+  // text. This is the default regex with `supergit` appended so our
+  // scheme survives sanitisation while every other safety guarantee
+  // (no `javascript:`, no `data:`, …) stays intact.
+  const SUPERGIT_ALLOWED_URI_REGEXP =
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|supergit):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+
   function renderBody(
     body: string,
     _reposToken: AnchorableRepo[],
@@ -2174,13 +2182,16 @@
     if (!body.trim()) return '<p class="sticky-empty">(empty)</p>';
     const raw = DOMPurify.sanitize(
       marked.parse(body, { async: false }) as string,
+      { ALLOWED_URI_REGEXP: SUPERGIT_ALLOWED_URI_REGEXP },
     );
     return enhanceSupergitLinks(raw);
   }
 
   function renderInlineBody(body: string): string {
     if (!body) return "";
-    const raw = DOMPurify.sanitize(marked.parseInline(body) as string);
+    const raw = DOMPurify.sanitize(marked.parseInline(body) as string, {
+      ALLOWED_URI_REGEXP: SUPERGIT_ALLOWED_URI_REGEXP,
+    });
     return enhanceSupergitLinks(raw);
   }
 
@@ -2385,7 +2396,14 @@
   }
 
   function activateAttachment(raw: string, attachment: InlineAttachment): void {
-    if (isCommandAttachment(attachment)) {
+    // Command and session link chips act on click — run the command /
+    // focus the session — rather than opening the read-only preview
+    // modal the other attachment kinds use.
+    if (
+      attachment.kind === "link" &&
+      (attachment.target.type === "command" ||
+        attachment.target.type === "session")
+    ) {
       openTarget(attachment.target);
       return;
     }

@@ -105,6 +105,7 @@
   import {
     LINK_TARGET_DRAG_MIME,
     SESSION_LINK_DRAG_MIME,
+    sessionIdFromValue,
   } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
   import {
@@ -2526,9 +2527,14 @@
       subtitle = found.messageCount ? `${found.messageCount} msg` : "";
       meta = relativeAge(found.lastActive);
     }
+    // Store the session id, not the source path. The path moves when a
+    // worktree/repo is renamed or relocated; the id baked into the
+    // JSONL filename is stable, so a note linking the session keeps
+    // resolving after the move. StickyNote re-resolves the id back to
+    // the current live source when the chip is clicked.
     return {
       type: "session",
-      value: session.source,
+      value: found?.sessionId || sessionIdFromValue(session.source),
       label,
       ...(agent ? { agent } : {}),
       ...(subtitle ? { subtitle } : {}),
