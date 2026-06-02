@@ -2,8 +2,11 @@ import { describe, it, expect } from "bun:test";
 import {
   emptyDaemonForm,
   normalizeDaemonForm,
+  emptyProvisionForm,
+  normalizeProvisionForm,
   DEFAULT_REMOTE_DAEMON_PORT,
   type DaemonFormFields,
+  type ProvisionFormFields,
 } from "../src/remote-daemon-form";
 
 /**
@@ -158,5 +161,57 @@ describe("emptyDaemonForm", () => {
       identityPath: "",
       color: "",
     });
+  });
+});
+
+/**
+ * The provision form is a subset (host/user/sshPort/label) feeding
+ * POST /api/daemons/provision. host required; blank optionals omitted so the
+ * installer/ssh fall back to their own defaults (root user, port 22).
+ */
+function pform(over: Partial<ProvisionFormFields> = {}): ProvisionFormFields {
+  return { ...emptyProvisionForm(), ...over };
+}
+
+describe("normalizeProvisionForm", () => {
+  it("rejects a blank host", () => {
+    const r = normalizeProvisionForm(pform({ host: "   " }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.host).toMatch(/required/);
+  });
+
+  it("requires only the host — bare host is valid", () => {
+    const r = normalizeProvisionForm(pform({ host: "1.2.3.4" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload).toEqual({ host: "1.2.3.4" });
+  });
+
+  it("omits blank optionals (no empty strings in the payload)", () => {
+    const r = normalizeProvisionForm(
+      pform({ host: "h", user: "  ", sshPort: "", label: "  " }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+  });
+
+  it("carries user / sshPort / label when provided", () => {
+    const r = normalizeProvisionForm(
+      pform({ host: "h", user: "root", sshPort: "2222", label: "hetzner" }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.payload).toEqual({
+        host: "h",
+        user: "root",
+        sshPort: 2222,
+        label: "hetzner",
+      });
+    }
+  });
+
+  it("rejects a non-numeric ssh port", () => {
+    const r = normalizeProvisionForm(pform({ host: "h", sshPort: "abc" }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.sshPort).toMatch(/number/);
   });
 });

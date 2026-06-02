@@ -113,3 +113,56 @@ export function normalizeDaemonForm(fields: DaemonFormFields): DaemonFormResult 
 
   return { ok: true, payload };
 }
+
+// ── Provision form ("provision a fresh box over SSH") ────────────────────
+// The provision flow takes the box's ADMIN ssh details (host/user/sshPort),
+// ships the bundled source, and runs the installer — which mints the
+// forward-only key + prints the token we register. So this form is a SUBSET
+// of the manual one: no daemon port / identity / color (the installer
+// produces those), just where to ssh in + an optional label. host is
+// required; sshPort optional-numeric. Matches POST /api/daemons/provision.
+
+export interface ProvisionFormFields {
+  host: string;
+  user: string;
+  sshPort: string;
+  label: string;
+}
+
+export interface ProvisionFormPayload {
+  host: string;
+  user?: string;
+  sshPort?: number;
+  label?: string;
+}
+
+export type ProvisionFormResult =
+  | { ok: true; payload: ProvisionFormPayload }
+  | { ok: false; errors: Partial<Record<keyof ProvisionFormFields, string>> };
+
+export function emptyProvisionForm(): ProvisionFormFields {
+  return { host: "", user: "", sshPort: "", label: "" };
+}
+
+export function normalizeProvisionForm(
+  fields: ProvisionFormFields,
+): ProvisionFormResult {
+  const errors: Partial<Record<keyof ProvisionFormFields, string>> = {};
+
+  const host = fields.host.trim();
+  if (host === "") errors.host = "host is required";
+
+  const sshPort = parsePort(fields.sshPort);
+  if (sshPort.error) errors.sshPort = sshPort.error;
+
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+
+  const payload: ProvisionFormPayload = { host };
+  const user = fields.user.trim();
+  if (user !== "") payload.user = user;
+  if (sshPort.value != null) payload.sshPort = sshPort.value;
+  const label = fields.label.trim();
+  if (label !== "") payload.label = label;
+
+  return { ok: true, payload };
+}

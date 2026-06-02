@@ -35,9 +35,15 @@
   } from "./sse-change-kinds";
   import { installIdleTracker, isUiIdle, onResume } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
-  import AddRemoteDaemonDialog from "./AddRemoteDaemonDialog.svelte";
+  import AddRemoteDaemonDialog, {
+    type ProvisionApi,
+    type ProvisionStreamHandlers,
+  } from "./AddRemoteDaemonDialog.svelte";
   import AddRemoteFolderDialog from "./AddRemoteFolderDialog.svelte";
-  import type { DaemonFormPayload } from "./remote-daemon-form";
+  import type {
+    DaemonFormPayload,
+    ProvisionFormPayload,
+  } from "./remote-daemon-form";
   import SessionView from "./SessionView.svelte";
   import ShellView from "./ShellView.svelte";
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
@@ -3630,6 +3636,100 @@
       message: `Remote daemon "${d.label ?? "remote"}" connected.`,
     });
   }
+
+  // ── Auto-provision ("connect a daemon"): ship the bundled source to a box
+  // over the user's own ssh, run the installer with live progress, register
+  // when it prints its token. All endpoints are workspace-global (local
+  // daemon owns the ssh), so no daemonId routing. ──
+  /** Whether this build can auto-provision (payload bundled + ssh present).
+   *  Probed when the Add-daemon dialog opens; default true → provision-first,
+   *  and a failed POST surfaces the real reason if the probe was wrong. */
+  let provisionCapable = true;
+  async function refreshProvisionCapability(): Promise<void> {
+    try {
+      const r = await fetch(apiUrl("/api/daemons/provision/capability"));
+      if (!r.ok) return;
+      const j = (await r.json()) as {
+        available?: boolean;
+        sshAvailable?: boolean;
+      };
+      provisionCapable = !!j.available && j.sshAvailable !== false;
+    } catch {
+      // keep the default; the POST path reports the real error if needed.
+    }
+  }
+  $: if (addDaemonOpen) void refreshProvisionCapability();
+
+  const provisionApi: ProvisionApi = {
+    start: async (payload: ProvisionFormPayload): Promise<string> => {
+      const res = await fetch(apiUrl("/api/daemons/provision"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = (await res.json().catch(() => null)) as {
+        jobId?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !j?.jobId) {
+        throw new Error(j?.error || `provision failed (${res.status})`);
+      }
+      return j.jobId;
+    },
+    stream: (jobId: string, handlers: ProvisionStreamHandlers): (() => void) => {
+      const es = new EventSource(
+        apiUrl(`/api/daemons/provision/${jobId}/stream`),
+      );
+      let announced = false;
+      es.addEventListener("output", (e) => {
+        try {
+          handlers.onOutput(
+            (JSON.parse((e as MessageEvent).data) as { chunk: string }).chunk,
+          );
+        } catch {
+          /* malformed frame — skip */
+        }
+      });
+      es.addEventListener("status", (e) => {
+        try {
+          const d = JSON.parse((e as MessageEvent).data) as {
+            status: string;
+            daemonId?: string;
+            error?: string;
+          };
+          handlers.onStatus(d.status, {
+            daemonId: d.daemonId,
+            error: d.error,
+          });
+          // On success the row appears via the registry reload; one toast.
+          if (d.status === "done" && !announced) {
+            announced = true;
+            void load();
+            addToast({
+              kind: "success",
+              message: "Remote daemon provisioned + connected.",
+            });
+          }
+        } catch {
+          /* malformed frame — skip */
+        }
+      });
+      es.addEventListener("done", () => {
+        es.close();
+        handlers.onEnd();
+      });
+      es.onerror = () => {
+        // The daemon also sends an explicit `done`; ignore transient SSE
+        // hiccups rather than tearing the stream down prematurely.
+      };
+      return () => es.close();
+    },
+    abort: async (jobId: string): Promise<void> => {
+      await fetch(apiUrl(`/api/daemons/provision/${jobId}/abort`), {
+        method: "POST",
+      }).catch(() => {});
+    },
+  };
 
   /** Suggestion returned by /api/sessions/folder-suggestions — a folder
    *  the user might want to import as a repo, derived from cwds the
@@ -9300,7 +9400,13 @@
   defaultColor={defaultChipHex}
   highlightId={reorderHighlightRepoId}
 />
-<AddRemoteDaemonDialog bind:open={addDaemonOpen} onAdd={addRemoteDaemon} onConnect={connectRemoteDaemon} />
+<AddRemoteDaemonDialog
+  bind:open={addDaemonOpen}
+  onAdd={addRemoteDaemon}
+  onConnect={connectRemoteDaemon}
+  provision={provisionApi}
+  canProvision={provisionCapable}
+/>
 <AddRemoteFolderDialog
   bind:open={addRemoteFolderOpen}
   daemons={remoteDaemons}
