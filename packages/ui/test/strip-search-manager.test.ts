@@ -22,16 +22,12 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { filterSessions, type AgentSession } from "../src/sessionSearch";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface StripFilter {
-  matched: Set<string>;
-  notOpen: AgentSession[];
-}
+import { type AgentSession } from "../src/sessionSearch";
+import {
+  computeStripFilterByWt,
+  createStripSearchManager,
+  type StripFilter,
+} from "../src/strip-search-manager";
 
 // ---------------------------------------------------------------------------
 // State shape injected into every shim
@@ -79,129 +75,39 @@ function makeHarness(opts?: {
     flashCalls.push({ wtPath, source });
   }
 
-  // ---------------------------------------------------------------------------
-  // Shim: computeStripFilterByWt
-  // Faithful copy of App.svelte lines 5193-5208.
-  // ---------------------------------------------------------------------------
-  function computeStripFilterByWt(): Record<string, StripFilter> {
-    const m: Record<string, StripFilter> = {};
-    for (const wtPath of Object.keys(state.stripSearchQuery)) {
-      const q = state.stripSearchQuery[wtPath] ?? "";
-      if (!q.trim()) continue;
-      const all = pickerSessionsByWt[wtPath] ?? [];
-      const ranked = filterSessions(all, q);
-      const matched = new Set(ranked.map((s) => s.source));
-      const openSet = new Set(
-        (openSessionsByWt[wtPath] ?? []).map((o) => o.source),
-      );
-      const notOpen = ranked.filter((s) => !openSet.has(s.source));
-      m[wtPath] = { matched, notOpen };
-    }
-    return m;
+  // The pure derive now comes straight from the real module; the local
+  // wrapper feeds it the current `state`/session-map collaborators so
+  // every test that calls h.computeStripFilterByWt() reads live state.
+  function computeStripFilterByWtLocal(): Record<string, StripFilter> {
+    return computeStripFilterByWt(
+      state.stripSearchQuery,
+      pickerSessionsByWt,
+      openSessionsByWt,
+    );
   }
 
-  // ---------------------------------------------------------------------------
-  // Shim: openStripSearch
-  // Faithful copy of App.svelte lines 620-635.
-  // ---------------------------------------------------------------------------
-  function openStripSearch(rowKey: string, wtPath: string): void {
-    if (rowFolded[rowKey]) {
-      state = {
-        ...state,
-        stripSearchAutoUnfolded: {
-          ...state.stripSearchAutoUnfolded,
-          [rowKey]: true,
-        },
-      };
-      rowFolded = { ...rowFolded, [rowKey]: false };
-    }
-    state = {
-      ...state,
-      stripSearchOpen: { ...state.stripSearchOpen, [wtPath]: true },
-    };
-    const restore = state.lastStripSearchQuery[wtPath];
-    if (restore) {
-      state = {
-        ...state,
-        stripSearchQuery: { ...state.stripSearchQuery, [wtPath]: restore },
-      };
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Shim: closeStripSearch
-  // Faithful copy of App.svelte lines 639-658.
-  // ---------------------------------------------------------------------------
-  function closeStripSearch(rowKey: string, wtPath: string): void {
-    state = {
-      ...state,
-      stripSearchOpen: { ...state.stripSearchOpen, [wtPath]: false },
-      stripSearchQuery: { ...state.stripSearchQuery, [wtPath]: "" },
-    };
-    if (state.lastStripSearchQuery[wtPath]) {
-      state = {
-        ...state,
-        lastStripSearchQuery: {
-          ...state.lastStripSearchQuery,
-          [wtPath]: "",
-        },
-      };
-    }
-    if (state.stripSearchAutoUnfolded[rowKey]) {
-      rowFolded = { ...rowFolded, [rowKey]: true };
-      state = {
-        ...state,
-        stripSearchAutoUnfolded: {
-          ...state.stripSearchAutoUnfolded,
-          [rowKey]: false,
-        },
-      };
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Shim: pinRowOpenAfterPick
-  // Faithful copy of App.svelte lines 688-695.
-  // ---------------------------------------------------------------------------
-  function pinRowOpenAfterPick(rowKey: string): void {
-    if (state.stripSearchAutoUnfolded[rowKey]) {
-      state = {
-        ...state,
-        stripSearchAutoUnfolded: {
-          ...state.stripSearchAutoUnfolded,
-          [rowKey]: false,
-        },
-      };
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Shim: commitStripSearch
-  // Faithful copy of App.svelte lines 666-682.
-  // ---------------------------------------------------------------------------
-  function commitStripSearch(
-    rowKey: string,
-    wtPath: string,
-    source: string,
-  ): void {
-    if (!state.stripSearchOpen[wtPath]) return;
-    const filter = computeStripFilterByWt()[wtPath];
-    if (!filter || !filter.matched.has(source)) return;
-    const q = state.stripSearchQuery[wtPath] ?? "";
-    if (q.trim()) {
-      state = {
-        ...state,
-        lastStripSearchQuery: { ...state.lastStripSearchQuery, [wtPath]: q },
-      };
-    }
-    pinRowOpenAfterPick(rowKey);
-    state = {
-      ...state,
-      stripSearchOpen: { ...state.stripSearchOpen, [wtPath]: false },
-      stripSearchQuery: { ...state.stripSearchQuery, [wtPath]: "" },
-    };
-    scrollToAndFlashSession(wtPath, source);
-  }
+  // The four actions come from the real factory, wired to the same
+  // injectable collaborators the shims modeled: get/set over `state`'s
+  // four Records, get/set over `rowFolded`, getStripFilterByWt reading
+  // the live derive, and the flash spy.
+  const manager = createStripSearchManager({
+    getStripSearchOpen: () => state.stripSearchOpen,
+    setStripSearchOpen: (v) => (state = { ...state, stripSearchOpen: v }),
+    getStripSearchQuery: () => state.stripSearchQuery,
+    setStripSearchQuery: (v) => (state = { ...state, stripSearchQuery: v }),
+    getStripSearchAutoUnfolded: () => state.stripSearchAutoUnfolded,
+    setStripSearchAutoUnfolded: (v) =>
+      (state = { ...state, stripSearchAutoUnfolded: v }),
+    getLastStripSearchQuery: () => state.lastStripSearchQuery,
+    setLastStripSearchQuery: (v) =>
+      (state = { ...state, lastStripSearchQuery: v }),
+    getRowFolded: () => rowFolded,
+    setRowFolded: (v) => (rowFolded = v),
+    getStripFilterByWt: () => computeStripFilterByWtLocal(),
+    scrollToAndFlashSession,
+  });
+  const { openStripSearch, closeStripSearch, commitStripSearch, pinRowOpenAfterPick } =
+    manager;
 
   return {
     get state() {
@@ -217,7 +123,7 @@ function makeHarness(opts?: {
       rowFolded = v;
     },
     flashCalls,
-    computeStripFilterByWt,
+    computeStripFilterByWt: computeStripFilterByWtLocal,
     openStripSearch,
     closeStripSearch,
     commitStripSearch,

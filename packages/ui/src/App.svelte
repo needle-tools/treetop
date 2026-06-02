@@ -92,6 +92,11 @@
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
   import { filterSessions } from "./sessionSearch";
+  import {
+    computeStripFilterByWt,
+    createStripSearchManager,
+    type StripFilter,
+  } from "./strip-search-manager";
   import { relativeAge } from "./mention-providers";
   import {
     LINK_TARGET_DRAG_MIME,
@@ -611,88 +616,30 @@
   // explicit cancel (× / ESC) drops it.
   let lastStripSearchQuery: Record<string, string> = {};
 
-  /** Open the inline strip search for a worktree. If the row is
-   *  currently folded we unfold it and remember (so close-without-pick
-   *  re-folds it). The search input itself is rendered in the row
-   *  head, which is visible regardless of fold state — only the strip
-   *  below is hidden when folded, so unfolding is what reveals the
-   *  matches the search is filtering for. */
-  function openStripSearch(rowKey: string, wtPath: string): void {
-    if (rowFolded[rowKey]) {
-      stripSearchAutoUnfolded = {
-        ...stripSearchAutoUnfolded,
-        [rowKey]: true,
-      };
-      rowFolded = { ...rowFolded, [rowKey]: false };
-    }
-    stripSearchOpen = { ...stripSearchOpen, [wtPath]: true };
-    // Restore the last committed query so re-opening picks up where
-    // the user left off; absent / empty entry = blank input.
-    const restore = lastStripSearchQuery[wtPath];
-    if (restore) {
-      stripSearchQuery = { ...stripSearchQuery, [wtPath]: restore };
-    }
-  }
-  /** Close the inline strip search. Clears the query, hides the input,
-   *  and re-folds the row iff opening the search was what unfolded it
-   *  AND no session pick has cleared the flag in the meantime. */
-  function closeStripSearch(rowKey: string, wtPath: string): void {
-    stripSearchOpen = { ...stripSearchOpen, [wtPath]: false };
-    stripSearchQuery = { ...stripSearchQuery, [wtPath]: "" };
-    // Explicit cancel (× / ESC) → drop the saved query so the next
-    // open starts blank. A commit (`commitStripSearch`) takes the
-    // opposite path: it saves the query first, then closes.
-    if (lastStripSearchQuery[wtPath]) {
-      lastStripSearchQuery = {
-        ...lastStripSearchQuery,
-        [wtPath]: "",
-      };
-    }
-    if (stripSearchAutoUnfolded[rowKey]) {
-      rowFolded = { ...rowFolded, [rowKey]: true };
-      stripSearchAutoUnfolded = {
-        ...stripSearchAutoUnfolded,
-        [rowKey]: false,
-      };
-    }
-  }
-  /** Commit the active strip search by clicking a matched session
-   *  column. Saves the typed query (so re-opening restores it), pins
-   *  the row open, hides the search input, and flashes/scrolls to the
-   *  picked column — same "look here" cue the synthetic-column pick
-   *  produces. No-op when search isn't open or the source isn't in
-   *  the matched set (defensive — filtered-out columns are display:
-   *  none and shouldn't receive clicks anyway). */
-  function commitStripSearch(
-    rowKey: string,
-    wtPath: string,
-    source: string,
-  ): void {
-    if (!stripSearchOpen[wtPath]) return;
-    const filter = stripFilterByWt[wtPath];
-    if (!filter || !filter.matched.has(source)) return;
-    const q = stripSearchQuery[wtPath] ?? "";
-    if (q.trim()) {
-      lastStripSearchQuery = { ...lastStripSearchQuery, [wtPath]: q };
-    }
-    pinRowOpenAfterPick(rowKey);
-    stripSearchOpen = { ...stripSearchOpen, [wtPath]: false };
-    stripSearchQuery = { ...stripSearchQuery, [wtPath]: "" };
-    void scrollToAndFlashSession(wtPath, source);
-  }
-  /** Cancel the auto-re-fold for this row. Called as soon as the user
-   *  picks a session from the synthetic "matches not in strip" column
-   *  (or presses Enter on the top match): from that point on, closing
-   *  the search must leave the row expanded so the just-opened column
-   *  stays in view. */
-  function pinRowOpenAfterPick(rowKey: string): void {
-    if (stripSearchAutoUnfolded[rowKey]) {
-      stripSearchAutoUnfolded = {
-        ...stripSearchAutoUnfolded,
-        [rowKey]: false,
-      };
-    }
-  }
+  // The four strip-search actions live in strip-search-manager.ts; the
+  // reactive `let`s above stay here so Svelte tracks them. The get/set
+  // bridges below let the extracted closures read/reassign those lets
+  // (every reassign triggers reactivity, same as the inline versions),
+  // and getStripFilterByWt feeds commit the current derived value.
+  const {
+    openStripSearch,
+    closeStripSearch,
+    commitStripSearch,
+    pinRowOpenAfterPick,
+  } = createStripSearchManager({
+    getStripSearchOpen: () => stripSearchOpen,
+    setStripSearchOpen: (v) => (stripSearchOpen = v),
+    getStripSearchQuery: () => stripSearchQuery,
+    setStripSearchQuery: (v) => (stripSearchQuery = v),
+    getStripSearchAutoUnfolded: () => stripSearchAutoUnfolded,
+    setStripSearchAutoUnfolded: (v) => (stripSearchAutoUnfolded = v),
+    getLastStripSearchQuery: () => lastStripSearchQuery,
+    setLastStripSearchQuery: (v) => (lastStripSearchQuery = v),
+    getRowFolded: () => rowFolded,
+    setRowFolded: (v) => (rowFolded = v),
+    getStripFilterByWt: () => stripFilterByWt,
+    scrollToAndFlashSession,
+  });
 
   // clampToViewport (the popover-viewport-edge Svelte action) lives in
   // packages/ui/src/popover.ts now; Popover.svelte applies it
@@ -5186,26 +5133,15 @@
    *  inline strip search, and which matches are *not* yet open as a
    *  column (those become the synthetic "more matches" pseudo-column).
    *  Absent entry / empty query → strip renders without filtering. */
-  interface StripFilter {
-    matched: Set<string>;
-    notOpen: AgentSession[];
-  }
-  $: stripFilterByWt = ((): Record<string, StripFilter> => {
-    const m: Record<string, StripFilter> = {};
-    for (const wtPath of Object.keys(stripSearchQuery)) {
-      const q = stripSearchQuery[wtPath] ?? "";
-      if (!q.trim()) continue;
-      const all = pickerSessionsByWt[wtPath] ?? [];
-      const ranked = filterSessions(all, q);
-      const matched = new Set(ranked.map((s) => s.source));
-      const openSet = new Set(
-        (openSessionsByWt[wtPath] ?? []).map((o) => o.source),
-      );
-      const notOpen = ranked.filter((s) => !openSet.has(s.source));
-      m[wtPath] = { matched, notOpen };
-    }
-    return m;
-  })();
+  // StripFilter + the pure derive now live in strip-search-manager.ts.
+  // Referencing all three inputs directly in the `$:` keeps Svelte's
+  // reactive dependency tracking intact.
+  let stripFilterByWt: Record<string, StripFilter> = {};
+  $: stripFilterByWt = computeStripFilterByWt(
+    stripSearchQuery,
+    pickerSessionsByWt,
+    openSessionsByWt,
+  );
 
   /** wt.path → agents + shells merged, sorted by lastActive desc.
    *  Drives the "+N sessions in this worktree" picker. Dead shells with
