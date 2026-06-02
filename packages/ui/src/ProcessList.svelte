@@ -55,6 +55,11 @@
     memBytes: number;
     kind?: "tui" | "external";
     comm?: string;
+    /** Owning daemon (undefined ⇒ local). Today `/api/processes` only lists
+     *  local-machine procs so this is always undefined, but a TUI belongs to
+     *  the daemon it runs on — carried so the terminal-kill targets the right
+     *  one once procs are fetched per-daemon (#6). */
+    daemonId?: string;
   }
 
   interface RepoGroup {
@@ -327,7 +332,7 @@
   }
   async function sendTerm(p: TuiProc) {
     if (p.kind !== "external") {
-      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(p.id)}`), {
+      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(p.id)}`, p.daemonId), {
         method: "DELETE",
       }).catch(() => {});
     } else {

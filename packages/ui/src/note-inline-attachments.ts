@@ -547,8 +547,13 @@ export function sessionLinkTargetMatchesSource(
   return !!sourceBasename && target.value === sourceBasename;
 }
 
-export async function fetchTextAttachment(path: string): Promise<string> {
-  const res = await fetch(apiUrl(`/api/attachment?path=${encodeURIComponent(path)}`));
+export async function fetchTextAttachment(
+  path: string,
+  daemonId?: string,
+): Promise<string> {
+  const res = await fetch(
+    apiUrl(`/api/attachment?path=${encodeURIComponent(path)}`, daemonId),
+  );
   if (!res.ok) throw new Error(`attachment read failed: ${res.status}`);
   return res.text();
 }

@@ -2321,7 +2321,7 @@
     try {
       const chunks = await expandNoteBodyForTerminalPasteChunks(
         note.body,
-        fetchTextAttachment,
+        (p) => fetchTextAttachment(p, note.daemonId),
         { omitTargetSessionSource: sessionSource },
       );
       if (!chunks.some((chunk) => chunk.trim())) return;

@@ -870,9 +870,15 @@
     }
     try {
       play("session-stop");
-      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(termId)}`), {
-        method: "DELETE",
-      }).catch(() => {});
+      await fetch(
+        apiUrl(
+          `/api/terminals/${encodeURIComponent(termId)}`,
+          daemonIdForWorktreePath(repos, wtPath),
+        ),
+        {
+          method: "DELETE",
+        },
+      ).catch(() => {});
     } finally {
       // Drop the now-stale termId mapping.
       const next = { ...newTermIds };
@@ -8343,6 +8349,7 @@
                     <RepoRecentSummary
                       repoId={repo.id}
                       repoName={repo.name}
+                      daemonId={repo.daemonId}
                       inline
                     />
                   {/if}

@@ -41,6 +41,10 @@
      *  (300ms) or the note is opened for editing. Only meaningful for
      *  kind="note". */
     secret?: boolean;
+    /** Owning daemon (undefined ⇒ local). Tagged in-memory by the layer so a
+     *  note pinned to a remote repo reads its text/image attachments from
+     *  that box rather than the local daemon. */
+    daemonId?: string;
   }
 </script>
 
@@ -1217,7 +1221,9 @@
     let text: string;
     let payload: ReturnType<typeof makeNoteClipboardPayload>;
     try {
-      text = await expandNoteBodyForCopyAsync(body, fetchTextAttachment);
+      text = await expandNoteBodyForCopyAsync(body, (p) =>
+        fetchTextAttachment(p, note.daemonId),
+      );
       payload = makeNoteClipboardPayload({ ...(id ? { id } : {}), body, text });
     } catch (err) {
       console.warn("Could not read note attachments for copy", err);
@@ -1278,7 +1284,7 @@
     attachment: InlineAttachment,
   ): Promise<string> {
     if (attachment.kind !== "text") return "";
-    return fetchTextAttachment(attachment.path);
+    return fetchTextAttachment(attachment.path, note.daemonId);
   }
 
   function openInlineAttachment(
@@ -1428,7 +1434,8 @@
   }
 
   function attachmentCopyText(attachment: InlineAttachment): Promise<string> {
-    if (attachment.kind === "text") return fetchTextAttachment(attachment.path);
+    if (attachment.kind === "text")
+      return fetchTextAttachment(attachment.path, note.daemonId);
     if (attachment.kind === "image") return Promise.resolve(attachment.path);
     if (attachment.kind === "note" || attachment.kind === "emoji") {
       return Promise.resolve(attachment.body);
@@ -2191,7 +2198,7 @@
     )
       return;
     pendingTextStats.add(attachment.path);
-    void fetchTextAttachment(attachment.path)
+    void fetchTextAttachment(attachment.path, note.daemonId)
       .then((text) => {
         pendingTextStats.delete(attachment.path);
         textStatsByPath = {

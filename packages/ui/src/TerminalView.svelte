@@ -1082,7 +1082,11 @@
                 await pasteChunks(
                   await expandNoteBodyForTerminalPasteChunks(
                     payload.body,
-                    fetchTextAttachment,
+                    // A pasted note's text attachment lives on the note's
+                    // owning daemon, which the clipboard payload doesn't carry;
+                    // fall back to this terminal's daemon (the common same-row
+                    // copy→paste case).
+                    (p) => fetchTextAttachment(p, daemonId),
                   ),
                 );
               } catch (err) {
@@ -1137,7 +1141,8 @@
       e.stopPropagation();
       void expandNoteBodyForTerminalPasteChunks(
         payload.body,
-        fetchTextAttachment,
+        // See note above: best-effort to this terminal's daemon.
+        (p) => fetchTextAttachment(p, daemonId),
         { omitTargetSessionSource: sessionSource },
       )
         .then((chunks) => pasteChunks(chunks))

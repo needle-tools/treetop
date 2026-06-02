@@ -22,6 +22,9 @@
   export let repoId: string;
   export let repoName: string;
   export let inline: boolean = false;
+  /** Owning daemon for this repo. Undefined ⇒ local daemon (byte-identical).
+   *  Set for a remote folder row so the summary is read from the box. */
+  export let daemonId: string | undefined = undefined;
 
   interface Frontmatter {
     model: string;
@@ -76,7 +79,7 @@
   async function fetchCached(): Promise<GetResponse | null> {
     try {
       const res = await fetch(
-        apiUrl(`/api/repos/${encodeURIComponent(repoId)}/summary`),
+        apiUrl(`/api/repos/${encodeURIComponent(repoId)}/summary`, daemonId),
       );
       if (!res.ok) return null;
       return (await res.json()) as GetResponse;

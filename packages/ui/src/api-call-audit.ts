@@ -15,12 +15,24 @@
  * guard relies on — pure and unit-tested so the guard's verdicts are
  * trustworthy. See `packages/ui/test/daemon-routing-guard.test.ts`.
  *
- * It is deliberately a lexical scanner, not a full TS parser: it walks the
- * source tracking string / template / comment context, finds each
- * `apiUrl(`/`apiWsUrl(` call, balances parentheses to capture the whole
- * argument list, splits the top-level arguments, extracts the static path
- * prefix from the first argument, and reports whether the daemonId
- * argument slot is populated.
+ * It is deliberately a lexical scanner, not a full TS parser. The scan has
+ * two stages:
+ *
+ *   1. `blankNonCode` rewrites every comment, string, template-literal text
+ *      segment, and **regex literal** to same-length whitespace (newlines
+ *      preserved), leaving only real code tokens. This is what makes the
+ *      scanner robust: a regex literal containing a quote — e.g.
+ *      `s.replace(/["\\]/g, …)` — used to open a phantom string in the old
+ *      quote-tracking lexer and desync the rest of the file, silently hiding
+ *      every later call (StickyNotesLayer's 28 note calls were ALL invisible;
+ *      SessionView hid 7). Blanking the regex as a unit closes that hole.
+ *      Template `${…}` interpolations are KEPT as code (recursively blanked)
+ *      so a nested `apiUrl(...)` inside a template is still seen.
+ *   2. On the blanked skeleton (which has no strings/comments/regex to trip
+ *      it) finding each `apiUrl(`/`apiWsUrl(`, balancing parens, and
+ *      splitting top-level args is trivial bracket counting. Argument TEXT
+ *      (the path literal, the daemonId expression) is read from the ORIGINAL
+ *      source at the same offsets.
  */
 
 export interface ApiCall {
@@ -40,24 +52,22 @@ export interface ApiCall {
   raw: string;
 }
 
-/** Scan `source` for all apiUrl/apiWsUrl calls. Calls inside comments and
- *  string literals are skipped (so a doc-comment mentioning `apiUrl(...)`
- *  doesn't register as a real call). */
+/** Scan `source` for all apiUrl/apiWsUrl calls. Calls inside comments,
+ *  string/template literals, and regex literals are skipped (so a doc-comment
+ *  mentioning `apiUrl(...)` doesn't register as a real call). */
 export function findApiCalls(source: string): ApiCall[] {
+  const blanked = blankNonCode(source);
   const calls: ApiCall[] = [];
   const re = /\bapi(Ws)?Url\s*\(/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(source)) !== null) {
+  while ((m = re.exec(blanked)) !== null) {
     const tokenIdx = m.index;
-    // Skip a match that sits inside a comment or string literal — those
-    // aren't real calls. We re-scan context up to the token; cheap enough
-    // for the handful of files we audit.
-    if (isInIgnoredContext(source, tokenIdx)) continue;
     const openParen = tokenIdx + m[0].length - 1;
-    const close = matchParen(source, openParen);
+    const close = matchParen(blanked, openParen);
     if (close < 0) continue; // unbalanced — bail on this match
-    const inner = source.slice(openParen + 1, close);
-    const args = splitTopLevelArgs(inner);
+    const innerBlanked = blanked.slice(openParen + 1, close);
+    const innerOrig = source.slice(openParen + 1, close);
+    const args = splitTopLevelArgs(innerBlanked, innerOrig);
     const fn = m[1] ? "apiWsUrl" : "apiUrl";
     const daemonArgIdx = fn === "apiWsUrl" ? 3 : 1;
     const path = args.length > 0 ? staticPathPrefix(args[0]!) : null;
@@ -79,33 +89,159 @@ export function findApiCalls(source: string): ApiCall[] {
   return calls;
 }
 
-/** Find the index of the `)` that closes the `(` at `open`, tracking
- *  nested (), [], {}, strings, templates (incl. ${} interpolation), and
- *  comments. Returns -1 if unbalanced. */
-function matchParen(source: string, open: string | number): number {
-  let i = typeof open === "number" ? open : 0;
-  let depth = 0;
+/**
+ * Rewrite every comment, string, template-literal text, and regex literal in
+ * `source` to same-length whitespace (newlines kept, so line numbers and
+ * offsets are preserved). Template `${…}` interpolations are left as code
+ * (their `${` / `}` kept as structural braces, their contents recursively
+ * blanked), so a nested apiUrl call inside an interpolation survives.
+ */
+function blankNonCode(source: string): string {
+  const out = source.split("");
   const n = source.length;
-  for (; i < n; i++) {
+  const blank = (k: number) => {
+    if (out[k] !== "\n") out[k] = " ";
+  };
+  // A code context tracks brace depth so we can tell an interpolation's
+  // closing `}` (depth 0 in an `interp` context → back to the template) from
+  // an ordinary block/object `}`.
+  type Ctx =
+    | { kind: "code"; interp: boolean; brace: number }
+    | { kind: "tmpl" };
+  const stack: Ctx[] = [{ kind: "code", interp: false, brace: 0 }];
+  let prevSig = ""; // last significant code char — disambiguates regex vs `/`
+  let i = 0;
+  while (i < n) {
+    const top = stack[stack.length - 1]!;
     const c = source[i]!;
+
+    if (top.kind === "tmpl") {
+      if (c === "\\") {
+        blank(i);
+        if (i + 1 < n) blank(i + 1);
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        blank(i);
+        stack.pop();
+        prevSig = ")"; // a template is a value; following `/` is division
+        i++;
+        continue;
+      }
+      if (c === "$" && source[i + 1] === "{") {
+        // Enter the interpolation as code; keep `${` and its matching `}` as
+        // structural braces (don't blank) so arg-splitting sees the nesting.
+        stack.push({ kind: "code", interp: true, brace: 0 });
+        prevSig = "{";
+        i += 2;
+        continue;
+      }
+      blank(i); // literal template text
+      i++;
+      continue;
+    }
+
+    // --- code context ---
     if (c === "/" && source[i + 1] === "/") {
-      const nl = source.indexOf("\n", i);
-      i = nl < 0 ? n : nl;
+      let j = source.indexOf("\n", i);
+      if (j < 0) j = n;
+      for (let k = i; k < j; k++) blank(k);
+      i = j;
       continue;
     }
     if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      i = end < 0 ? n : end + 1;
+      let j = source.indexOf("*/", i + 2);
+      j = j < 0 ? n : j + 2;
+      for (let k = i; k < j; k++) blank(k);
+      i = j;
       continue;
     }
     if (c === '"' || c === "'") {
-      i = skipString(source, i, c);
+      const close = skipString(source, i, c);
+      for (let k = i; k <= close; k++) blank(k);
+      i = close + 1;
+      prevSig = ")"; // a string is a value
       continue;
     }
     if (c === "`") {
-      i = skipTemplate(source, i);
+      blank(i);
+      stack.push({ kind: "tmpl" });
+      i++;
+      prevSig = "`";
       continue;
     }
+    if (c === "{") {
+      top.brace++;
+      prevSig = "{";
+      i++;
+      continue;
+    }
+    if (c === "}") {
+      if (top.brace > 0) {
+        top.brace--;
+      } else if (top.interp && stack.length > 1) {
+        stack.pop(); // close the interpolation → back to the template
+      }
+      prevSig = ")";
+      i++;
+      continue;
+    }
+    if (c === "/" && regexAllowed(prevSig)) {
+      const close = skipRegex(source, i);
+      if (close > i) {
+        for (let k = i; k <= close; k++) blank(k);
+        i = close + 1;
+        prevSig = ")"; // a regex is a value
+        continue;
+      }
+      // not a regex (division / unterminated) — fall through as ordinary char
+    }
+    if (c !== " " && c !== "\t" && c !== "\n" && c !== "\r") prevSig = c;
+    i++;
+  }
+  return out.join("");
+}
+
+/** Whether a `/` at this position begins a regex literal rather than a
+ *  division. Heuristic: a regex can't follow a value-ending token. Treats `/`
+ *  as division when the previous significant char is an identifier/number
+ *  char, `)`, `]`, or `.`; otherwise as a regex. Imperfect (e.g. `return
+ *  /re/`) but covers this codebase; a miss only fails to blank, it never
+ *  blanks real code. */
+function regexAllowed(prevSig: string): boolean {
+  if (prevSig === "") return true;
+  return !/[A-Za-z0-9_$)\].]/.test(prevSig);
+}
+
+/** Index of the closing `/` of a regex literal starting at `start` (the
+ *  opening `/`), honoring `\` escapes and `[...]` character classes (a `/`
+ *  inside a class doesn't end it). Returns -1 if it hits a newline or EOF
+ *  first (then it wasn't a regex — treat the `/` as division). */
+function skipRegex(source: string, start: number): number {
+  let inClass = false;
+  const n = source.length;
+  for (let i = start + 1; i < n; i++) {
+    const c = source[i]!;
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === "\n") return -1;
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) return i;
+  }
+  return -1;
+}
+
+/** Find the index of the `)` that closes the `(` at `open` on the BLANKED
+ *  skeleton (no strings/comments/regex remain, so this is pure bracket
+ *  counting). Returns -1 if unbalanced. */
+function matchParen(blanked: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < blanked.length; i++) {
+    const c = blanked[i]!;
     if (c === "(" || c === "[" || c === "{") depth++;
     else if (c === ")" || c === "]" || c === "}") {
       depth--;
@@ -118,9 +254,8 @@ function matchParen(source: string, open: string | number): number {
 /** Index of the closing quote of a single/double-quoted string starting at
  *  `start` (the opening quote). Honors backslash escapes. */
 function skipString(source: string, start: number, quote: string): number {
-  let i = start + 1;
   const n = source.length;
-  for (; i < n; i++) {
+  for (let i = start + 1; i < n; i++) {
     const c = source[i]!;
     if (c === "\\") {
       i++;
@@ -131,63 +266,25 @@ function skipString(source: string, start: number, quote: string): number {
   return n - 1;
 }
 
-/** Index of the closing backtick of a template literal starting at `start`
- *  (the opening backtick), descending into `${ ... }` interpolations so a
- *  backtick or paren inside them doesn't end the scan early. */
-function skipTemplate(source: string, start: number): number {
-  let i = start + 1;
-  const n = source.length;
-  for (; i < n; i++) {
-    const c = source[i]!;
-    if (c === "\\") {
-      i++;
-      continue;
-    }
-    if (c === "`") return i;
-    if (c === "$" && source[i + 1] === "{") {
-      // Skip the interpolation, balancing its braces (which may contain
-      // nested templates / strings).
-      let depth = 1;
-      i += 2;
-      for (; i < n && depth > 0; i++) {
-        const d = source[i]!;
-        if (d === "{") depth++;
-        else if (d === "}") depth--;
-        else if (d === '"' || d === "'") i = skipString(source, i, d);
-        else if (d === "`") i = skipTemplate(source, i);
-      }
-      i--; // for-loop will ++ again
-    }
-  }
-  return n - 1;
-}
-
-/** Split an argument-list body into top-level argument strings, ignoring
- *  commas nested inside (), [], {}, strings, and templates. */
-function splitTopLevelArgs(inner: string): string[] {
+/** Split an argument-list body into top-level argument strings. Comma
+ *  positions and bracket depth are read from the BLANKED inner (so a comma
+ *  inside a string / template / `${…}` interpolation can't split the args);
+ *  the returned argument TEXT is sliced from the ORIGINAL inner. */
+function splitTopLevelArgs(innerBlanked: string, innerOrig: string): string[] {
   const args: string[] = [];
   let depth = 0;
   let start = 0;
-  const n = inner.length;
-  for (let i = 0; i < n; i++) {
-    const c = inner[i]!;
-    if (c === '"' || c === "'") {
-      i = skipString(inner, i, c);
-      continue;
-    }
-    if (c === "`") {
-      i = skipTemplate(inner, i);
-      continue;
-    }
+  for (let i = 0; i < innerBlanked.length; i++) {
+    const c = innerBlanked[i]!;
     if (c === "(" || c === "[" || c === "{") depth++;
     else if (c === ")" || c === "]" || c === "}") depth--;
     else if (c === "," && depth === 0) {
-      args.push(inner.slice(start, i));
+      args.push(innerOrig.slice(start, i));
       start = i + 1;
     }
   }
-  const last = inner.slice(start);
-  if (last.trim() !== "" || args.length > 0) args.push(last);
+  const tail = innerOrig.slice(start);
+  if (tail.trim() !== "" || args.length > 0) args.push(tail);
   return args;
 }
 
@@ -212,41 +309,6 @@ function staticPathPrefix(arg: string): string | null {
     out += c;
   }
   return out;
-}
-
-/** Whether the regex match at `idx` falls inside a comment or string,
- *  scanned from the start of the file. */
-function isInIgnoredContext(source: string, idx: number): boolean {
-  let i = 0;
-  while (i < idx) {
-    const c = source[i]!;
-    if (c === "/" && source[i + 1] === "/") {
-      const nl = source.indexOf("\n", i);
-      if (nl < 0 || nl >= idx) return true;
-      i = nl + 1;
-      continue;
-    }
-    if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      if (end < 0 || end + 1 >= idx) return true;
-      i = end + 2;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      const end = skipString(source, i, c);
-      if (end >= idx) return true;
-      i = end + 1;
-      continue;
-    }
-    if (c === "`") {
-      const end = skipTemplate(source, i);
-      if (end >= idx) return true;
-      i = end + 1;
-      continue;
-    }
-    i++;
-  }
-  return false;
 }
 
 function lineAt(source: string, idx: number): number {

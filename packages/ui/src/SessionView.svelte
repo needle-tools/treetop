@@ -74,7 +74,10 @@
     const processed = text.replace(
       /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi,
       (_match, filePath) => {
-        const url = apiUrl(`/api/image?path=${encodeURIComponent(filePath.trim())}`);
+        const url = apiUrl(
+          `/api/image?path=${encodeURIComponent(filePath.trim())}`,
+          daemonId,
+        );
         return `![pasted image](${url})`;
       },
     );
@@ -719,7 +722,7 @@
     let timedOut = false;
     try {
       if (terminalId) {
-        await fetch(apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}`), {
+        await fetch(apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}`, daemonId), {
           method: "DELETE",
           signal: controller.signal,
         }).catch((e) => {

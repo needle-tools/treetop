@@ -92,24 +92,41 @@ const GLOBAL_ALLOWLIST: string[] = [
   "/api/commands",
   "/api/notes",
   "/api/attach",
-  // --- Repo registry mutations: adding/removing/reordering LOCAL repos and
-  //     the top-level repo list. The fan-out call passes a daemonId for
-  //     remote repos; these workspace-management calls are local. Dual-use,
-  //     so allowlisted. ---
-  "/api/repos",
-  // --- Terminal registry: GET list / persisted-terminal management are
-  //     global. The live I/O socket + per-cwd spawn are scoped and DO carry
-  //     a daemonId; this prefix is dual-use so it's allowlisted (the scoped
-  //     variants pass via their daemonId regardless). ---
-  "/api/terminals",
   // --- SSH file-view feature: a separate axis (local daemon reaching OUT to
   //     an ssh host), not daemon-routing. Always local. ---
   "/api/ssh",
 ];
 
-/** True when `path` is allowlisted as global (exact or prefix match). */
+/**
+ * Dual-use roots that are global ONLY at the EXACT path (optionally with a
+ * `?query`) — NOT as a subtree prefix. Their `/<id>/...` sub-paths are
+ * repo/worktree-scoped and a bare call to one is a routing bug.
+ *
+ * Why these can't be plain prefix entries: the list/registry call
+ * (`GET /api/repos`, `GET /api/terminals`) is genuinely global, but the
+ * per-id calls underneath them (`/api/repos/<id>/color`,
+ * `/api/terminals/<id>/io`, `/api/repos/order`, `/api/terminals/persisted`)
+ * target one daemon's repo/terminal and MUST thread a daemonId. Allowlisting
+ * the whole `/api/repos` / `/api/terminals` prefix (as we did originally)
+ * blinded the guard to exactly the half-and-half bugs it exists to catch — a
+ * remote row's color/rename/summary/terminal-kill silently hitting the LOCAL
+ * daemon (the #1/#4 live bugs slipped through this hole). Exact-only closes it.
+ *
+ * The spawn POST `/api/terminals` and the local-add POST `/api/repos` share
+ * the exact path+method of their global GET twins, so a remote-targeted one
+ * that forgot its daemonId can't be told apart lexically here — those rest on
+ * their own routing (the spawn threads daemonId) plus dedicated tests.
+ */
+const GLOBAL_EXACT: string[] = ["/api/repos", "/api/terminals"];
+
+/** True when `path` is allowlisted as global. A GLOBAL_ALLOWLIST entry
+ *  matches its whole subtree (exact, `/sub`, or `?query`); a GLOBAL_EXACT
+ *  entry matches ONLY the exact path or `?query` (its sub-paths are scoped). */
 function isGlobal(path: string | null): boolean {
   if (path == null) return false;
+  if (GLOBAL_EXACT.some((g) => path === g || path.startsWith(g + "?"))) {
+    return true;
+  }
   return GLOBAL_ALLOWLIST.some(
     (g) => path === g || path.startsWith(g + "/") || path.startsWith(g + "?"),
   );
@@ -145,6 +162,33 @@ function findOffenders(): Offender[] {
   }
   return offenders;
 }
+
+describe("isGlobal — dual-use roots are global only at the exact path", () => {
+  it("treats /api/repos as global only for the list/registry call, NOT per-repo sub-paths", () => {
+    expect(isGlobal("/api/repos")).toBe(true); // list + local add
+    expect(isGlobal("/api/repos?foo=1")).toBe(true);
+    // The blind spot this guard exists to close: a remote repo's scoped
+    // mutation that forgot its daemonId must NOT be waved through.
+    expect(isGlobal("/api/repos/abc/color")).toBe(false);
+    expect(isGlobal("/api/repos/abc/rename")).toBe(false);
+    expect(isGlobal("/api/repos/abc/summary")).toBe(false);
+    expect(isGlobal("/api/repos/order")).toBe(false);
+  });
+
+  it("treats /api/terminals as global only for the list, NOT the per-terminal sub-paths", () => {
+    expect(isGlobal("/api/terminals")).toBe(true); // list / spawn
+    expect(isGlobal("/api/terminals/xyz/io")).toBe(false);
+    expect(isGlobal("/api/terminals/xyz")).toBe(false); // kill by id
+    expect(isGlobal("/api/terminals/persisted")).toBe(false);
+  });
+
+  it("keeps genuinely workspace-global subtrees global all the way down", () => {
+    expect(isGlobal("/api/events")).toBe(true);
+    expect(isGlobal("/api/prefs/foo")).toBe(true);
+    expect(isGlobal("/api/notes/123")).toBe(true);
+    expect(isGlobal("/api/processes/42/kill")).toBe(true);
+  });
+});
 
 describe("daemon routing guard — no un-routed repo-scoped calls", () => {
   it("every bare apiUrl/apiWsUrl call targets an allowlisted global endpoint", () => {
