@@ -13,7 +13,7 @@
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
   import { apiUrl } from "./api";
-  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey } from "./repo-fanout";
+  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey, planRepoRemoval } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -4269,9 +4269,16 @@
   async function removeRepo(id: string) {
     error = "";
     pendingRemoval.add(id);
-    repos = repos.filter((r) => r.id !== id);
+    // Resolve the owning daemon BEFORE the optimistic removal — otherwise the
+    // repo is already gone from `repos` and the DELETE loses its daemonId,
+    // hitting the LOCAL daemon and 404'ing for a remote repo. planRepoRemoval
+    // captures both in lockstep so the order can't regress.
+    const { daemonId, nextRepos } = planRepoRemoval(repos, id);
+    repos = nextRepos;
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}`, daemonIdForRepoId(repos, id)), { method: "DELETE" });
+      const res = await fetch(apiUrl(`/api/repos/${id}`, daemonId), {
+        method: "DELETE",
+      });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
     } catch (e) {
