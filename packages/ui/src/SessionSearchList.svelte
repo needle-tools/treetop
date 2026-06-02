@@ -780,14 +780,25 @@
     grid-column: 3;
     justify-self: center;
   }
+  /* All three occupants of column 4 (the title plus the optional
+     orphan / imported markers that share the title cell) MUST be pinned
+     to grid-row 1. They're explicitly placed in the same column with an
+     auto row; the grid cannot overlap two auto-row items, so it spills
+     the second onto an implicit row 2 — which then drags every
+     source-later cell (msgs / time / sid / close / action) down with it,
+     wrapping the right half of the row to a second line. (Surfaced once
+     the imported download glyph started co-occurring with a title.)
+     Pinning the row keeps them overlapping in one cell as intended. */
   :global(.session-search-popover .agent-row > .agent-title) {
     grid-column: 4;
+    grid-row: 1;
   }
   /* Orphan tag (rare) shares the title column, pinned to the right
      edge of that cell. Inline rendering would otherwise push the
      msgs / time columns rightward and break the alignment. */
   :global(.session-search-popover .agent-row > .orphan-tag) {
     grid-column: 4;
+    grid-row: 1;
     justify-self: end;
   }
   /* Imported marker (small download glyph) shares the title cell like
@@ -796,6 +807,7 @@
      orphan — no practical collision with .orphan-tag. */
   :global(.session-search-popover .agent-row > .row-imported) {
     grid-column: 4;
+    grid-row: 1;
     justify-self: end;
   }
   :global(.session-search-popover .agent-row > .agent-msgs) {
