@@ -384,6 +384,27 @@ describe("NotesStore", () => {
     });
   });
 
+  test("create + update + roundtrip preserves message stamp id", async () => {
+    const w = await tempDir();
+    const store = await NotesStore.open(w);
+    const created = await store.create({
+      body: "hello with a stamp",
+      stampId: 37,
+    });
+    expect(created.stampId).toBe(37);
+
+    const changed = await store.update(created.id, { stampId: 112 });
+    expect(changed.stampId).toBe(112);
+
+    const cleared = await store.update(created.id, { stampId: null });
+    expect(cleared.stampId).toBeUndefined();
+
+    const restored = await store.update(created.id, { stampId: 5 });
+    const reopened = await NotesStore.open(w);
+    const round = await reopened.get(restored.id);
+    expect(round?.stampId).toBe(5);
+  });
+
   test("survives newlines in snapshot fields (collapses to space)", async () => {
     const store = await NotesStore.open(await tempDir());
     const created = await store.create({

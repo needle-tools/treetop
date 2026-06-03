@@ -889,6 +889,11 @@ function parseSender(v: unknown): MessageSender | undefined {
   return sender;
 }
 
+function parseStampId(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) return undefined;
+  return v;
+}
+
 function parseMessageNote(v: unknown): MessageNotePayload | undefined {
   if (!v || typeof v !== "object") return undefined;
   const obj = v as Record<string, unknown>;
@@ -912,6 +917,9 @@ function parseMessageNote(v: unknown): MessageNotePayload | undefined {
       ? { receiver: parseReceiver(obj.receiver)! }
       : {}),
     ...(parseSender(obj.sender) ? { sender: parseSender(obj.sender)! } : {}),
+    ...(parseStampId(obj.stampId) !== undefined
+      ? { stampId: parseStampId(obj.stampId)! }
+      : {}),
   };
 }
 
@@ -7953,6 +7961,7 @@ const server = Bun.serve<TermWsData, never>({
 	          secret?: unknown;
 	          receiver?: unknown;
 	          sender?: unknown;
+	          stampId?: unknown;
 	        } | null;
         if (!body || typeof body.body !== "string") {
           return json(
@@ -7979,6 +7988,7 @@ const server = Bun.serve<TermWsData, never>({
 	            ...(body.secret === true ? { secret: true } : {}),
 	            receiver: parseReceiver(body.receiver),
 	            sender: parseSender(body.sender),
+	            stampId: parseStampId(body.stampId),
 	          });
           const ev = await events.append({
             type: "create_note",
@@ -8013,6 +8023,7 @@ const server = Bun.serve<TermWsData, never>({
 	            secret?: unknown;
 	            receiver?: unknown;
 	            sender?: unknown;
+	            stampId?: unknown;
 	          } | null;
           if (!body) {
             return json({ error: "JSON body required" }, { status: 400 });
@@ -8033,6 +8044,10 @@ const server = Bun.serve<TermWsData, never>({
               "sender" in body && body.sender === null
                 ? null
                 : parseSender(body.sender);
+            const stampIdField: number | null | undefined =
+              "stampId" in body && body.stampId === null
+                ? null
+                : parseStampId(body.stampId);
             const note = await notes.update(id, {
               body: typeof body.body === "string" ? body.body : undefined,
               anchors: Array.isArray(body.anchors)
@@ -8052,6 +8067,7 @@ const server = Bun.serve<TermWsData, never>({
 	                : {}),
 	              receiver: receiverField,
 	              sender: senderField,
+	              stampId: stampIdField,
 	            });
             broadcast("change", { kind: "note_update", id: note.id });
             return json(note);

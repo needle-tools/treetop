@@ -121,6 +121,7 @@ export interface MessageNotePayload {
   target?: LinkTarget;
   receiver?: MessageReceiver;
   sender?: MessageSender;
+  stampId?: number;
 }
 
 export interface OutgoingMessageOptions {

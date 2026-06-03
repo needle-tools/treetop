@@ -54,6 +54,7 @@
     };
     receiver?: import("./StickyNote.svelte").NoteShape["receiver"];
     sender?: import("./StickyNote.svelte").NoteShape["sender"];
+    stampId?: number;
   };
 
   let registered: ((args: SpawnArgs) => Promise<void>) | null = null;
@@ -1084,6 +1085,7 @@
     };
     receiver?: NoteShape["receiver"];
     sender?: NoteShape["sender"];
+    stampId?: number;
   }): Promise<void> {
     const kind = args.kind ?? "note";
     const hasTarget = !!args.target;
@@ -1100,6 +1102,7 @@
           ...(args.target ? { target: args.target } : {}),
           ...(args.receiver ? { receiver: args.receiver } : {}),
           ...(args.sender ? { sender: args.sender } : {}),
+          ...(args.stampId !== undefined ? { stampId: args.stampId } : {}),
         }),
       });
       if (!res.ok) return;
@@ -1177,6 +1180,7 @@
       tags?: string[];
       receiver?: NoteShape["receiver"];
       sender?: NoteShape["sender"];
+      stampId?: number;
     },
     target: { anchor: string; li: HTMLElement },
     clientX: number,
@@ -1192,6 +1196,9 @@
           tags: inboxNote.tags ?? ["message"],
           ...(inboxNote.receiver ? { receiver: inboxNote.receiver } : {}),
           ...(inboxNote.sender ? { sender: inboxNote.sender } : {}),
+          ...(inboxNote.stampId !== undefined
+            ? { stampId: inboxNote.stampId }
+            : {}),
         }),
       });
       if (!res.ok) return;
@@ -1278,6 +1285,11 @@
         ...(obj.sender && typeof obj.sender === "object"
           ? { sender: obj.sender as NoteShape["sender"] }
           : {}),
+        ...(typeof obj.stampId === "number" &&
+          Number.isInteger(obj.stampId) &&
+          obj.stampId >= 0
+            ? { stampId: obj.stampId }
+            : {}),
       };
     } catch {
       return null;
@@ -1972,6 +1984,7 @@
 	      secret?: boolean;
 	      receiver?: NoteShape["receiver"] | null;
 	      sender?: NoteShape["sender"] | null;
+	      stampId?: number | null;
 	    }>,
 	  ): Promise<void> {
     if (staging[e.detail.id]) {
@@ -2010,6 +2023,7 @@
       if (e.detail.secret !== undefined) putBody.secret = e.detail.secret;
       if (e.detail.receiver !== undefined) putBody.receiver = e.detail.receiver;
       if (e.detail.sender !== undefined) putBody.sender = e.detail.sender;
+      if (e.detail.stampId !== undefined) putBody.stampId = e.detail.stampId;
       const savingNote = notes.find((n) => n.id === e.detail.id);
       const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`, savingNote?.daemonId), {
         method: "PUT",
@@ -2503,6 +2517,7 @@
           target: source.target,
           receiver,
           sender: source.sender,
+          stampId: source.stampId,
         },
       }),
     });

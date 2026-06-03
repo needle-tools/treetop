@@ -328,6 +328,7 @@
       tags: note?.tags ?? ["message"],
       receiver: note?.receiver,
       sender: note?.sender,
+      stampId: note?.stampId,
     });
   }
 

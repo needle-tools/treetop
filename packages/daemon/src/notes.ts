@@ -113,6 +113,7 @@ export interface Note {
    *  clicks Send. */
   receiver?: MessageReceiver;
   sender?: MessageSender;
+  stampId?: number;
 }
 
 const NOTES_DIR = "notes";
@@ -164,6 +165,11 @@ export function parseNoteFile(raw: string): Note {
   // Secret flag. Only `true` flips it on; anything else (absent, "false",
   // a fat-fingered value) leaves the note visible.
   if (fm.scalars.get("secret") === "true") note.secret = true;
+  const stampIdRaw = fm.scalars.get("stampId");
+  if (stampIdRaw !== undefined) {
+    const stampId = Number(stampIdRaw);
+    if (Number.isInteger(stampId) && stampId >= 0) note.stampId = stampId;
+  }
   // Flat target fields. Both must be present and the type recognized;
   // otherwise we treat the file as if no target was set so the UI
   // falls back to plain-note rendering rather than a half-broken chip.
@@ -337,6 +343,9 @@ export function serializeNoteFile(note: Note): string {
   if (note.secret === true) {
     out.push("secret: true");
   }
+  if (note.stampId !== undefined) {
+    out.push(`stampId: ${note.stampId}`);
+  }
   if (note.target !== undefined) {
     // Snapshot fields may contain arbitrary user text (session
     // titles, commit subjects). Collapse newlines so the flat-YAML
@@ -437,6 +446,7 @@ export interface CreateInput {
   secret?: boolean;
   receiver?: MessageReceiver;
   sender?: MessageSender;
+  stampId?: number;
 }
 
 export interface UpdateInput {
@@ -456,6 +466,7 @@ export interface UpdateInput {
   secret?: boolean;
   receiver?: MessageReceiver | null;
   sender?: MessageSender | null;
+  stampId?: number | null;
 }
 
 export interface ListFilter {
@@ -571,6 +582,7 @@ export class NotesStore {
       ...(input.secret === true ? { secret: true } : {}),
       ...(input.receiver !== undefined ? { receiver: input.receiver } : {}),
       ...(input.sender !== undefined ? { sender: input.sender } : {}),
+      ...(input.stampId !== undefined ? { stampId: input.stampId } : {}),
       ...(input.secret === true ? { secret: true } : {}),
     };
     await writeFile(this.filePath(id), serializeNoteFile(note));
@@ -588,6 +600,7 @@ export class NotesStore {
       input.target !== undefined ||
       input.receiver !== undefined ||
       input.sender !== undefined ||
+      input.stampId !== undefined ||
       input.secret !== undefined;
     if (!hasAny) return existing;
     const next: Note = {
@@ -627,6 +640,11 @@ export class NotesStore {
       delete next.sender;
     } else if (input.sender !== undefined) {
       next.sender = input.sender;
+    }
+    if (input.stampId === null) {
+      delete next.stampId;
+    } else if (input.stampId !== undefined) {
+      next.stampId = input.stampId;
     }
     await writeFile(this.filePath(id), serializeNoteFile(next));
     return next;

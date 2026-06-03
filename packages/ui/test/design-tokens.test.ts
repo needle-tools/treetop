@@ -357,6 +357,16 @@ describe("message postcard layout contract", () => {
     expect(buttonStart).toBeLessThan(flapStart);
     expect(buttonStart).toBeLessThan(letterStart);
   });
+
+  test("message stamp is an interactive reroll button", () => {
+    const source = readStickyNoteSvelte();
+    const stampStart = source.indexOf('class="message-stamp"');
+    const stampSource = source.slice(stampStart - 80, stampStart + 260);
+
+    expect(stampSource).toContain("<button");
+    expect(stampSource).toContain('type="button"');
+    expect(stampSource).toContain("on:click|stopPropagation={rerollMessageStamp}");
+  });
 });
 
 describe("attachment media modal layout contract", () => {

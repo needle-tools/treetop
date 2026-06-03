@@ -170,6 +170,7 @@ describe("addIncomingMessage + getMessages", () => {
         tags: ["message"],
         sender: { kind: "peer", id: "peer-a", label: "Alice" },
         receiver: { kind: "peer", peerId: "test-identity-uuid", label: "Test" },
+        stampId: 42,
       },
     });
     const got = await getMessages(w);
@@ -182,6 +183,7 @@ describe("addIncomingMessage + getMessages", () => {
       peerId: "test-identity-uuid",
       label: "Test",
     });
+    expect(msg?.note?.stampId).toBe(42);
   });
 
   test("outgoing note messages keep receiver metadata", async () => {

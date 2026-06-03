@@ -27,6 +27,7 @@ export interface StoredMessage {
     target?: unknown;
     receiver?: MessageReceiver;
     sender?: MessageSender;
+    stampId?: number;
   };
 }
 

@@ -65,6 +65,7 @@
       source?: string;
       terminalId?: string;
     };
+    stampId?: number;
   }
 
   const MESSAGE_STAMP_SHEETS = [
@@ -360,6 +361,7 @@
 	      secret?: boolean;
 	      receiver?: NoteShape["receiver"] | null;
 	      sender?: NoteShape["sender"] | null;
+	      stampId?: number | null;
 	    };
     remove: { id: string };
     focus: { id: string };
@@ -552,7 +554,7 @@
     return formatted;
   }
 
-  function messageStampStyle(): string {
+  function messageBaseStampId(): number {
     const sessionAnchor = note.anchors.find((a) => a.startsWith("session:"));
     const seed = [
       note.sender?.id ?? note.sender?.source ?? sessionAnchor ?? note.id,
@@ -563,7 +565,15 @@
     for (let i = 0; i < seed.length; i++) {
       h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
     }
-    const stampId = h >>> 0;
+    return h >>> 0;
+  }
+
+  function messageStampId(): number {
+    return note.stampId ?? messageBaseStampId();
+  }
+
+  function messageStampStyle(): string {
+    const stampId = messageStampId();
     const index = stampId % 64;
     const sheet = MESSAGE_STAMP_SHEETS[Math.floor(stampId / 64) % MESSAGE_STAMP_SHEETS.length];
     const col = index % 8;
@@ -575,6 +585,20 @@
       `background-position: ${x === 0 ? 0 : -x}px ${y === 0 ? 0 : -y}px`,
       `background-size: ${MESSAGE_STAMP_CELL_PX * 8}px ${MESSAGE_STAMP_CELL_PX * 8}px`,
     ].join("; ");
+  }
+
+  function randomMessageStampId(current: number): number {
+    const total = MESSAGE_STAMP_SHEETS.length * 64;
+    if (total <= 1) return current;
+    return (current + 1 + Math.floor(Math.random() * (total - 1))) % total;
+  }
+
+  function rerollMessageStamp(): void {
+    dispatch("save", {
+      id: note.id,
+      body: note.body,
+      stampId: randomMessageStampId(messageStampId()),
+    });
   }
 
   function findSessionBySource(source: string): AgentSession | null {
@@ -715,6 +739,7 @@
               target: note.target,
               receiver: r,
               sender: note.sender,
+              stampId: note.stampId,
             },
           }),
         });
@@ -786,6 +811,7 @@
               id: fromId,
               label: fromLabel,
             },
+            stampId: note.stampId,
           },
         }),
       });
@@ -3095,9 +3121,12 @@
         </div>
         <strong class="message-window-title">{messageTitle()}</strong>
       </div>
-      <div
+      <button
+        type="button"
         class="message-stamp"
-        aria-label={messageWhenLabel()}
+        aria-label="Choose another stamp"
+        title="Choose another stamp"
+        on:click|stopPropagation={rerollMessageStamp}
       >
         <span
           class="message-stamp-art"
@@ -3105,7 +3134,7 @@
           style={stampStyle}
         ></span>
         <span class="message-postmark">{messageDeliveryLabel()}</span>
-      </div>
+      </button>
       <div class="message-delivery-line">
         <span class="message-delivery-badge">{messageDeliveryLabel()}</span>
         <span>{messageWhenLabel()}</span>

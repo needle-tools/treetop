@@ -1323,7 +1323,15 @@
   display: block;
   width: 76px;
   height: 76px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
   transform: rotate(1deg);
+}
+.message-stamp:focus-visible {
+  outline: 2px solid rgba(42, 37, 22, 0.52);
+  outline-offset: 3px;
 }
 .message-stamp-art {
   display: block;
