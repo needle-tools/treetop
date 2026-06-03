@@ -1978,3 +1978,20 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   opacity: 0.5;
   cursor: default;
 }
+
+/* Brief highlight when a row is scrolled into view from the manage-daemon
+   dialog's "focus" button. Added/removed via classList at runtime, so it
+   lives here (global) rather than in App.svelte's scoped <style>, which
+   Svelte would prune as an unused selector. */
+.row-focus-flash {
+  animation: row-focus-flash 1.6s ease-out;
+}
+@keyframes row-focus-flash {
+  0%,
+  15% {
+    background: color-mix(in srgb, var(--brand) 28%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}

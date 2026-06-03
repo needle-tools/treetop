@@ -39,6 +39,7 @@
     type ProvisionApi,
     type ProvisionStreamHandlers,
   } from "./AddRemoteDaemonDialog.svelte";
+  import DaemonInfoDialog from "./DaemonInfoDialog.svelte";
   import AddRemoteFolderDialog from "./AddRemoteFolderDialog.svelte";
   import type {
     DaemonFormPayload,
@@ -427,6 +428,8 @@
   let actionsOpen = false;
   let eventsOpen = false;
   let daemonsMenuOpen = false;
+  /** Which daemon's "manage" dialog is open (its id), or null. */
+  let daemonDialogId: string | null = null;
   /** Daemon ids with an in-flight DELETE — drives the per-row spinner +
    *  disables the remove button so a double-click can't double-delete. */
   let daemonRemoving = new Set<string>();
@@ -4418,7 +4421,7 @@
   /** Unregister a remote daemon (DELETE /api/daemons/<id>). The registry
    *  is always local, so NOT daemon-routed (no daemonId arg). Optimistically
    *  drop the daemon's repos from the row list, then reload. */
-  async function removeDaemon(daemonId: string) {
+  async function removeDaemon(daemonId: string): Promise<boolean> {
     // Confirm first — removing a daemon drops all its rows + tears down the
     // tunnel + deletes the stored key. The custom dialog (confirm-dialog.ts
     // / ConfirmDialog.svelte) names the daemon so the user sees exactly
@@ -4434,7 +4437,20 @@
       cancelLabel: "Cancel",
       danger: true,
     });
-    if (!ok) return;
+    if (!ok) return false;
+    // Second, deliberate confirmation — removal is destructive and easy to
+    // trigger by accident, so it's gated behind a double confirm (replacing
+    // the old one-click "×" on the row).
+    const reallyOk = await confirmDialog({
+      title: `Really remove "${label}"?`,
+      message:
+        "Confirm once more to remove this remote daemon from the window. " +
+        "You can re-add it later with its connection string.",
+      confirmLabel: "Yes, remove it",
+      cancelLabel: "Keep it",
+      danger: true,
+    });
+    if (!reallyOk) return false;
     error = "";
     // Optimistically drop the daemon from BOTH the repo rows AND the
     // menubar daemon list (the list iterates `remoteDaemons` — filtering
@@ -4445,12 +4461,14 @@
     const prevDaemons = remoteDaemons;
     repos = repos.filter((r) => r.daemonId !== daemonId);
     remoteDaemons = remoteDaemons.filter((d) => d.id !== daemonId);
+    let removed = false;
     try {
       const res = await fetch(apiUrl(`/api/daemons/${daemonId}`), {
         method: "DELETE",
       });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
+      removed = true;
     } catch (e) {
       // Roll back the optimistic removal so the daemon doesn't vanish on a
       // failed delete.
@@ -4461,6 +4479,23 @@
       next.delete(daemonId);
       daemonRemoving = next;
     }
+    return removed;
+  }
+
+  /** Close the manage-daemon dialog and scroll the dashboard to a repo's
+   *  row (rows carry data-repo-id). Two ticks so the dialog has unmounted
+   *  and layout settled before scrollIntoView reads geometry. */
+  async function focusRepoRow(repoId: string): Promise<void> {
+    daemonDialogId = null;
+    await tick();
+    await tick();
+    const el = document.querySelector(
+      `[data-repo-id="${CSS.escape(repoId)}"]`,
+    ) as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("row-focus-flash");
+    setTimeout(() => el.classList.remove("row-focus-flash"), 1600);
   }
 
   /** Remove a worktree (the directory + git's per-worktree state slot).
@@ -6662,7 +6697,7 @@
         <Popover variant="actions" extraClass="daemons-popover" unclamped>
           <svelte:fragment slot="head"><span>Remote daemons</span></svelte:fragment>
           {#if remoteDaemons.length === 0}
-            <p class="muted small nopad">No remote daemons. Use "Add remote daemon" to connect one.</p>
+            <p class="muted small nopad">No remote daemons yet.</p>
           {:else}
             <ul class="daemons-list">
               {#each remoteDaemons as d (d.id)}
@@ -6686,15 +6721,45 @@
                     }}
                   >+ Folder</button>
                   <button
-                    class="daemons-remove"
-                    title="Remove daemon"
+                    class="daemons-kebab"
+                    title="Manage this daemon"
+                    aria-label="Manage daemon"
                     disabled={daemonRemoving.has(d.id)}
-                    on:click|stopPropagation={() => void removeDaemon(d.id)}
-                  >{daemonRemoving.has(d.id) ? "…" : "×"}</button>
+                    on:click|stopPropagation={() => {
+                      daemonDialogId = d.id;
+                      daemonsMenuOpen = false;
+                    }}
+                  >
+                    {#if daemonRemoving.has(d.id)}…{:else}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M2 4h12M2 8h12M2 12h12"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                      </svg>
+                    {/if}
+                  </button>
                 </li>
               {/each}
             </ul>
           {/if}
+          <div class="daemons-footer">
+            <button
+              class="add-folder-cta add-folder-cta-compact daemons-addremote"
+              on:click|stopPropagation={() => {
+                addDaemonOpen = true;
+                daemonsMenuOpen = false;
+              }}
+            >+ Add remote</button>
+          </div>
         </Popover>
       {/if}
     </div>
@@ -9461,6 +9526,21 @@
   onConnect={connectRemoteDaemon}
   provision={provisionApi}
   canProvision={provisionCapable}
+/>
+<DaemonInfoDialog
+  open={daemonDialogId !== null}
+  daemon={remoteDaemons.find((d) => d.id === daemonDialogId) ?? null}
+  repos={daemonDialogId
+    ? repos.filter((r) => r.daemonId === daemonDialogId)
+    : []}
+  online={daemonDialogId ? daemonsOnline.get(daemonDialogId) : undefined}
+  onRemove={async () => {
+    const id = daemonDialogId;
+    if (!id) return;
+    if (await removeDaemon(id)) daemonDialogId = null;
+  }}
+  onFocus={(r) => void focusRepoRow(r.id)}
+  onClose={() => (daemonDialogId = null)}
 />
 <AddRemoteFolderDialog
   bind:open={addRemoteFolderOpen}
