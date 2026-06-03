@@ -358,3 +358,36 @@ describe("message postcard layout contract", () => {
     expect(buttonStart).toBeLessThan(letterStart);
   });
 });
+
+describe("attachment media modal layout contract", () => {
+  test("toolbar uses normal note button sizing, not tiny buttons", () => {
+    const source = readStickyNoteSvelte();
+    const start = source.indexOf('class="attachment-media-actions"');
+    const end = source.indexOf('class="attachment-media-nav"', start);
+    const actionsSource = source.slice(start, end);
+
+    expect(actionsSource).toContain('class="sticky-btn"');
+    expect(actionsSource).not.toContain('class="sticky-btn tiny');
+  });
+
+  test("media header flows controls to the right without a title", () => {
+    const css = readAllStylesCss();
+    const head = cssRule(css, ".attachment-media-head");
+    const actions = cssRule(css, ".attachment-media-actions");
+
+    expect(head).toContain("display: flex");
+    expect(head).not.toContain("grid-template-columns");
+    expect(head).toContain("padding: 0.44rem 0.72rem");
+    expect(actions).toContain("margin-left: auto");
+  });
+
+  test("close button stays in the media header flow", () => {
+    const css = readAllStylesCss();
+    const close = cssRule(css, ".attachment-media-close");
+
+    expect(close).toContain("flex: 0 0 auto");
+    expect(close).not.toContain("position: absolute");
+    expect(close).not.toContain("top:");
+    expect(close).not.toContain("right:");
+  });
+});

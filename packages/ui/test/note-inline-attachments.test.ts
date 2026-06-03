@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  attachmentMediaTitle,
   commandCopyText,
   commandPowerDisplay,
   commandPowerLabel,
@@ -205,6 +206,31 @@ describe("note inline attachments", () => {
         "events-overlay-sheet.jpg",
       );
     }
+  });
+
+  test("media viewer titles only describe file-backed attachments", () => {
+    expect(
+      attachmentMediaTitle({
+        kind: "image",
+        path: "/tmp/screens/shot.png",
+      }),
+    ).toBe("shot.png");
+    expect(
+      attachmentMediaTitle({
+        kind: "text",
+        path: "/tmp/paste.txt",
+        filename: "paste.txt",
+        charCount: 42,
+      }),
+    ).toBe("paste.txt");
+    expect(attachmentMediaTitle({ kind: "emoji", body: "📚" })).toBe("");
+    expect(attachmentMediaTitle({ kind: "note", body: "📚" })).toBe("");
+    expect(
+      attachmentMediaTitle({
+        kind: "link",
+        target: { type: "url", value: "https://example.test", label: "📚" },
+      }),
+    ).toBe("");
   });
 
   test("round-trips note, emoji, and link attachment references", () => {

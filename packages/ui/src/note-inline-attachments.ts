@@ -674,6 +674,20 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
   return attachment.target.label ?? attachment.target.value;
 }
 
+export function attachmentMediaTitle(attachment: InlineAttachment): string {
+  if (attachment.kind === "image") {
+    return (
+      attachment.filename ??
+      attachment.path.split("/").pop() ??
+      "Image attachment"
+    );
+  }
+  if (attachment.kind === "text") {
+    return attachment.filename ?? inlineAttachmentLabel(attachment);
+  }
+  return "";
+}
+
 export function noteBodyToEditText(
   body: string,
   opts: {

@@ -109,6 +109,7 @@
   } from "./preview-action";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
+    attachmentMediaTitle,
     commandCopyText,
     commandPowerDisplay,
     commandPowerLabel,
@@ -3709,6 +3710,7 @@
     )}
     {@const openPart = openIndex >= 0 ? attachmentParts[openIndex] : null}
     {#if openPart}
+      {@const mediaTitle = attachmentMediaTitle(openPart.attachment)}
       <section
         use:portal
         class="attachment-media-scrim"
@@ -3739,9 +3741,11 @@
             <div class="attachment-delete-progress" aria-hidden="true"></div>
           {/if}
           <header class="attachment-media-head">
-            <span class="attachment-media-title">
-              {inlineAttachmentLabel(openPart.attachment)}
-            </span>
+            {#if mediaTitle}
+              <span class="attachment-media-title">
+                {mediaTitle}
+              </span>
+            {/if}
             <span
               class="attachment-media-actions"
               role="toolbar"
@@ -3749,7 +3753,7 @@
             >
               <button
                 type="button"
-                class="sticky-btn tiny"
+                class="sticky-btn"
                 title={copied
                   ? "Copied"
                   : isCommandAttachment(openPart.attachment)
@@ -3763,7 +3767,7 @@
               >
               <button
                 type="button"
-                class="sticky-btn tiny"
+                class="sticky-btn"
                 title={isCommandAttachment(openPart.attachment)
                   ? "Edit command in toolbar"
                   : "Edit attachment"}
@@ -3776,7 +3780,7 @@
               >
               <button
                 type="button"
-                class="sticky-btn tiny danger"
+                class="sticky-btn danger"
                 class:confirming={confirmingAttachmentDeleteRaw ===
                   openPart.raw}
                 title={confirmingAttachmentDeleteRaw === openPart.raw
@@ -3815,7 +3819,7 @@
             <span class="attachment-media-separator" aria-hidden="true"></span>
             <button
               type="button"
-              class="sticky-btn tiny attachment-media-close"
+              class="sticky-btn attachment-media-close"
               title="Close"
               on:click={closeInlineAttachment}>×</button
             >

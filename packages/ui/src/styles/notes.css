@@ -1889,15 +1889,17 @@
   width: min(34rem, 94vw);
 }
 .attachment-media-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
+  display: flex;
   align-items: center;
-  gap: 0.32rem;
-  padding: 0.42rem 0.58rem;
+  gap: 0.42rem;
+  min-height: 2.55rem;
+  padding: 0.44rem 0.72rem;
   border-bottom: 1px solid rgba(42, 37, 22, 0.14);
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .attachment-media-title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: rgba(42, 37, 22, 0.82);
   font-size: 12px;
@@ -1906,39 +1908,40 @@
   white-space: nowrap;
 }
 .attachment-media-actions {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 0.18rem;
+  gap: 0.2rem;
 }
 .attachment-media-count {
   color: rgba(42, 37, 22, 0.52);
-  font-size: 11px;
+  font-size: 14px;
 }
 .attachment-media-separator {
   width: 1px;
-  height: 1.1rem;
+  height: 1.45rem;
   margin: 0 0.18rem;
   background: rgba(42, 37, 22, 0.2);
 }
 .attachment-media-close {
-  margin-left: 0.02rem;
+  flex: 0 0 auto;
 }
 .attachment-media-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   overflow: hidden;
-  padding: 0.45rem 0.55rem 0.55rem;
+  padding: 0.85rem 1rem 1rem;
 }
 .attachment-media-shell-image {
-  padding: 0.55rem 0.65rem 0.7rem;
+  padding: 0.85rem 1rem 1rem;
 }
 .attachment-media-shell-text,
 .attachment-media-shell-note {
   align-items: stretch;
 }
 .attachment-media-shell-card {
-  padding: 0.45rem;
+  padding: 1rem;
 }
 .attachment-media-body {
   display: grid;
@@ -1946,6 +1949,9 @@
   min-height: 0;
   overflow: auto;
   place-items: center;
+}
+.attachment-media-shell-card .attachment-media-body {
+  overflow: hidden;
 }
 .attachment-media-shell-image .attachment-media-body {
   min-height: 0;
@@ -2048,15 +2054,16 @@
   gap: 0.45rem;
 }
 .attachment-media-nav {
-  width: 1.7rem;
-  height: 1.7rem;
+  width: 2rem;
+  height: 2rem;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: rgba(42, 37, 22, 0.74);
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   line-height: 1;
+  cursor: pointer;
 }
 .attachment-media-nav:hover:not(:disabled) {
   background: rgba(42, 37, 22, 0.08);
