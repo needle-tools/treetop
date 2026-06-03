@@ -3286,15 +3286,16 @@
           repoCount += 1;
           loadingDone = repoCount;
           if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
-          // If a color save is still in flight for this repo, the
-          // daemon's snapshot of `color` is stale (the POST hasn't
-          // persisted yet). Preserve the optimistic local value so the
-          // UI doesn't flicker back to the old color. (pendingRemoval /
-          // pendingRepoColor are local-only; remote repos never appear in
-          // them, so these guards are no-ops for remote rows.)
+          // If a color save is still in flight for this repo, the daemon's
+          // snapshot of `color` is stale (the POST hasn't persisted yet).
+          // Preserve the optimistic local value so the UI doesn't flicker
+          // back to the old color. Keyed by daemonRepoKey (daemonId+id), not
+          // bare id, so two rows for the same repo on different daemons don't
+          // share a guard. (`full` is daemonId-stamped by parseNDJSONLines.)
           if (pendingRemoval.has(full.id)) return;
-          if (pendingRepoColor.has(full.id)) {
-            const pending = pendingRepoColor.get(full.id);
+          const colorKey = daemonRepoKey(full);
+          if (pendingRepoColor.has(colorKey)) {
+            const pending = pendingRepoColor.get(colorKey);
             if (pending === null) delete (full as { color?: string }).color;
             else full.color = pending;
           }
@@ -3344,9 +3345,18 @@
         }
         // Populate per-daemon agent/shell caches so the "Start a new session"
         // dropdown shows the remote box's CLIs, not the local machine's.
-        agentsByDaemon = { local: installedAgents };
-        shellByDaemon = { local: defaultShell };
-        shellArgsByDaemon = { local: defaultShellArgs };
+        // Build into temp maps and assign ONCE at the end. Assigning the live
+        // `agentsByDaemon = { local }` up front would, on every reload,
+        // momentarily drop the remote entries — a remote row's "+" menu then
+        // flips to the LOCAL agents until the async fetches refill it (the
+        // "Claude here / Claude there" flip-flop).
+        const nextAgents: Record<string, { name: string; path: string }[]> = {
+          local: installedAgents,
+        };
+        const nextShell: Record<string, string> = { local: defaultShell };
+        const nextShellArgs: Record<string, string[]> = {
+          local: defaultShellArgs,
+        };
         for (const d of remoteDaemons) {
           try {
             const [aRes, sRes] = await Promise.all([
@@ -3355,27 +3365,32 @@
             ]);
             if (aRes.ok) {
               const body = (await aRes.json()) as { installed?: { name: string; path: string }[] };
-              agentsByDaemon[d.id] = Array.isArray(body?.installed) ? body.installed : [];
+              nextAgents[d.id] = Array.isArray(body?.installed) ? body.installed : [];
             }
             if (sRes.ok) {
               const body = (await sRes.json()) as { shell?: unknown; args?: unknown };
               if (typeof body.shell === "string" && body.shell.length > 0) {
-                shellByDaemon[d.id] = body.shell;
+                nextShell[d.id] = body.shell;
               }
               if (Array.isArray(body.args)) {
-                shellArgsByDaemon[d.id] = body.args.filter(
+                nextShellArgs[d.id] = body.args.filter(
                   (a): a is string => typeof a === "string",
                 );
               }
             }
           } catch {
-            // offline daemon — row falls back to local set
+            // Offline daemon — keep its prior entries so the row doesn't flap
+            // to local agents just because one refresh couldn't reach it.
+            if (agentsByDaemon[d.id]) nextAgents[d.id] = agentsByDaemon[d.id];
+            if (shellByDaemon[d.id]) nextShell[d.id] = shellByDaemon[d.id];
+            if (shellArgsByDaemon[d.id])
+              nextShellArgs[d.id] = shellArgsByDaemon[d.id];
           }
         }
-        // ensure reactivity
-        agentsByDaemon = agentsByDaemon;
-        shellByDaemon = shellByDaemon;
-        shellArgsByDaemon = shellArgsByDaemon;
+        // Single atomic assignment — no intermediate wipe, no flip-flop.
+        agentsByDaemon = nextAgents;
+        shellByDaemon = nextShell;
+        shellArgsByDaemon = nextShellArgs;
       } else {
         remoteDaemons = [];
       }
@@ -3977,24 +3992,48 @@
    *  load() with the pre-delete one. Same guard pattern as pendingRepoColor. */
   const pendingRemoval = new Set<string>();
 
+  /** Live preview while the colour picker is open (on:input). Sets the
+   *  optimistic colour AND the in-flight guard — WITHOUT POSTing (on:change
+   *  does that) — so a `load()` landing mid-edit (the dashboard refreshes
+   *  often) can't repaint the pre-edit colour and snap the picker back. This
+   *  is the actual "colour resets while editing" fix. */
+  function previewRepoColor(
+    repo: { id: string; daemonId?: string; color?: string },
+    color: string,
+  ): void {
+    repo.color = color;
+    repos = repos;
+    pendingRepoColor.set(daemonRepoKey(repo), color);
+  }
+
   /** Push a new accent colour for the given repo to the daemon. The
    *  optimistic local mutation here is just for snappy UI; the SSE
    *  `change → repo_color` broadcast triggers a full /api/repos
    *  refresh which re-syncs whatever the daemon now has on disk. */
-  async function setRepoColor(id: string, color: string | null) {
-    const repo = repos.find((r) => r.id === id);
-    if (repo) {
-      if (color === null) delete repo.color;
-      else repo.color = color;
-      repos = repos;
-    }
-    pendingRepoColor.set(id, color);
+  async function setRepoColor(
+    repo: { id: string; daemonId?: string; color?: string },
+    color: string | null,
+  ) {
+    // Operate on the EXACT repo passed in (the row's own object) — NOT
+    // repos.find(id), which returns the first id-match and misroutes /
+    // mutates the wrong row when the same repo is tracked on two daemons (the
+    // duplicate-row case). Route by the repo's own daemonId and key the
+    // in-flight guard by daemonRepoKey so the two rows can't clobber each
+    // other's pending colour.
+    const key = daemonRepoKey(repo);
+    if (color === null) delete repo.color;
+    else repo.color = color;
+    repos = repos;
+    pendingRepoColor.set(key, color);
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}/color`, daemonIdForRepoId(repos, id)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ color }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/repos/${repo.id}/color`, repo.daemonId),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ color }),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -4002,10 +4041,15 @@
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      // Clear the guard only if no newer save has superseded it. If a
-      // second setRepoColor for the same id ran while we were awaiting,
-      // its entry is the one that should outlive ours — leave it alone.
-      if (pendingRepoColor.get(id) === color) pendingRepoColor.delete(id);
+      // Clear the guard a beat AFTER the POST resolves, not instantly. For a
+      // REMOTE repo the confirming `change → repo_color` SSE and its
+      // /api/repos reload round-trip back over the (possibly slow) tunnel and
+      // can land just after the POST returns; dropping the guard immediately
+      // lets that late reload repaint the pre-save colour. The supersession
+      // check still applies — a newer save for the same id keeps its entry.
+      setTimeout(() => {
+        if (pendingRepoColor.get(key) === color) pendingRepoColor.delete(key);
+      }, 2500);
     }
   }
 
@@ -5106,7 +5150,7 @@
   // still appears as a placeholder so the user can find it via its
   // picker. Placeholder also covers the "registered path has no
   // worktrees yet" edge case.
-  $: rows = repos.flatMap((repo) => {
+  $: rawRows = repos.flatMap((repo) => {
     const diskPaths = repo.worktrees.map((w) => w.path);
     const visiblePaths = effectiveVisibleWorktrees(
       repoPrefsKey(repo),
@@ -5130,6 +5174,18 @@
       return { repo, wt, key: `${repoPrefsKey(repo)}|${wt.path}` };
     });
   });
+  // Drop duplicate row keys (e.g. the same repo accidentally tracked twice).
+  // The keyed {#each rows (row.key)} mis-reconciles on duplicate keys — it
+  // recreates the row's DOM on every reactive tick, which tears down the
+  // color <input> mid-edit and snaps the picker back to the old value.
+  $: rows = (() => {
+    const seen = new Set<string>();
+    return rawRows.filter((r) => {
+      if (seen.has(r.key)) return false;
+      seen.add(r.key);
+      return true;
+    });
+  })();
 
   // Only "real" actions in the dropdown; toggle events are hidden.
   $: visibleEvents = events.filter(
@@ -6949,26 +7005,25 @@
                             style={repo.color
                               ? `--swatch-bg: ${repo.color}`
                               : `--swatch-bg: ${defaultChipHex}`}
-                            on:input={(e) => {
-                              const v = (e.currentTarget as HTMLInputElement)
-                                .value;
-                              repo.color = v;
-                              repos = repos;
-                            }}
+                            on:input={(e) =>
+                              previewRepoColor(
+                                repo,
+                                (e.currentTarget as HTMLInputElement).value,
+                              )}
                             on:change={(e) =>
                               setRepoColor(
-                                repo.id,
+                                repo,
                                 (e.currentTarget as HTMLInputElement).value,
                               )}
                             on:contextmenu|preventDefault={() =>
-                              setRepoColor(repo.id, null)}
+                              setRepoColor(repo, null)}
                           />
                           {#if repo.color}
                             <button
                               class="repo-edit-clear"
                               title="Clear accent color"
                               on:click|stopPropagation={() =>
-                                setRepoColor(repo.id, null)}>Clear</button
+                                setRepoColor(repo, null)}>Clear</button
                             >
                           {/if}
                         </span>
