@@ -2242,7 +2242,8 @@ describe("Codex scan cache (memory regression)", () => {
     clearCodexScanCache();
     const dir = await tempDir();
     const { path: file } = await synthesizeLargeCodexSession(dir, {
-      messageCount: 10,
+      messageCount: 250,
+      fillerEvents: 8,
     });
     const { statSync } = await import("node:fs");
 
@@ -2257,5 +2258,6 @@ describe("Codex scan cache (memory regression)", () => {
     expect(s!.model).toBe("gpt-5.5");
     expect(s!.contextTokens).toBe(185_000);
     expect(s!.contextTokensExact).toBe(true);
+    expect(s!.messageCount).toBeUndefined();
   });
 });

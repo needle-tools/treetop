@@ -118,6 +118,37 @@ describe("repsCacheGen generation counter", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 10a. Activity tail startup — background scan shares in-flight detectAgents
+// ---------------------------------------------------------------------------
+describe("activity tail startup", () => {
+  test("uses sharedDetectAgents instead of kicking off a duplicate cold scan", () => {
+    expect(SERVER_TS).toMatch(
+      /startActivityTail\(\{\s*detectAgents:\s*sharedDetectAgents,\s*\}\)/,
+    );
+  });
+
+  test("agent detection shares only in-flight scans, not completed results", () => {
+    expect(SERVER_TS).toContain("let agentsInflight");
+    expect(SERVER_TS).not.toContain("AGENTS_CACHE_MS");
+    expect(SERVER_TS).not.toContain("let agentsCache");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10b. /api/repos streaming — start() must not await the full enrich pass
+// ---------------------------------------------------------------------------
+describe("/api/repos streaming startup", () => {
+  test("ReadableStream.start stays synchronous so the manifest can flush early", () => {
+    const start = SERVER_TS.indexOf("function reposNDJSONFresh");
+    const end = SERVER_TS.indexOf("async function reposNDJSONResponse");
+    const fnBody = SERVER_TS.slice(start, end);
+    expect(fnBody).toContain("start(controller)");
+    expect(fnBody).not.toContain("async start(controller)");
+    expect(fnBody).toContain("void (async () => {");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 11. GRACE_MS — 60s PTY grace timer (not the old 3s)
 // ---------------------------------------------------------------------------
 describe("PTY grace timer (GRACE_MS)", () => {
@@ -125,7 +156,10 @@ describe("PTY grace timer (GRACE_MS)", () => {
     const m = SERVER_TS.match(/const GRACE_MS\s*=\s*([\d_]+)/);
     expect(m, "GRACE_MS constant not found").not.toBeNull();
     const val = Number(m![1]!.replace(/_/g, ""));
-    expect(val, "GRACE_MS must be >= 60000 to survive page-reload round trips").toBeGreaterThanOrEqual(60_000);
+    expect(
+      val,
+      "GRACE_MS must be >= 60000 to survive page-reload round trips",
+    ).toBeGreaterThanOrEqual(60_000);
   });
 
   test("startGraceIfIdle only starts a timer when subscriberCount() is 0", () => {
@@ -169,8 +203,14 @@ describe("/api/session stat()-based ETag short-circuit", () => {
       }
     }
     expect(quickEtagLine, "quickEtag declaration not found").toBeGreaterThan(0);
-    expect(getSessionCallLine, "getSessionResponseJson invocation not found").toBeGreaterThan(0);
-    expect(quickEtagLine, "stat()-based ETag must be built before the heavier getSessionResponseJson call").toBeLessThan(getSessionCallLine);
+    expect(
+      getSessionCallLine,
+      "getSessionResponseJson invocation not found",
+    ).toBeGreaterThan(0);
+    expect(
+      quickEtagLine,
+      "stat()-based ETag must be built before the heavier getSessionResponseJson call",
+    ).toBeLessThan(getSessionCallLine);
   });
 });
 
@@ -196,8 +236,13 @@ describe("/api/active-sends ETag from inflight revision", () => {
 // ---------------------------------------------------------------------------
 describe("maxRequestBodySize matches MAX_OFFER_BYTES (50 MB)", () => {
   test("maxRequestBodySize is 50 * 1024 * 1024", () => {
-    const m = SERVER_TS.match(/maxRequestBodySize\s*:\s*(\d+\s*\*\s*\d+\s*\*\s*\d+)/);
-    expect(m, "maxRequestBodySize constant expression not found").not.toBeNull();
+    const m = SERVER_TS.match(
+      /maxRequestBodySize\s*:\s*(\d+\s*\*\s*\d+\s*\*\s*\d+)/,
+    );
+    expect(
+      m,
+      "maxRequestBodySize constant expression not found",
+    ).not.toBeNull();
     // Evaluate to verify it is exactly 50 MB.
     // eslint-disable-next-line no-eval
     const bytes: number = eval(m![1]!.replace(/\s/g, ""));
@@ -218,9 +263,7 @@ describe("zsh procName 'zsh-' prefix guard", () => {
     // Must NOT match 'zshare', 'mkzsh', etc. — uses (^|[-_/])zsh([-_]|$)
     expect(SERVER_TS).toContain("zsh");
     // The guard regex rejects false positives (e.g. 'zshare').
-    const guardLine = SERVER_TS.match(
-      /\([\^\|].*?zsh.*?[\-\_\|].*?\)/,
-    );
+    const guardLine = SERVER_TS.match(/\([\^\|].*?zsh.*?[\-\_\|].*?\)/);
     expect(guardLine).not.toBeNull();
   });
 
@@ -239,9 +282,7 @@ describe("zsh procName 'zsh-' prefix guard", () => {
 // ---------------------------------------------------------------------------
 describe("shutdown() re-entry guard", () => {
   test("shuttingDown bool prevents double execution", () => {
-    const fnBody = SERVER_TS.match(
-      /const shutdown = async[\s\S]*?\n\};/,
-    )?.[0];
+    const fnBody = SERVER_TS.match(/const shutdown = async[\s\S]*?\n\};/)?.[0];
     expect(fnBody, "shutdown function not found").toBeTruthy();
     expect(fnBody).toContain("shuttingDown");
     expect(fnBody).toContain("if (shuttingDown) return");
@@ -249,17 +290,13 @@ describe("shutdown() re-entry guard", () => {
   });
 
   test("hard-exit timer fires after 2s to guarantee port release", () => {
-    const fnBody = SERVER_TS.match(
-      /const shutdown = async[\s\S]*?\n\};/,
-    )?.[0];
+    const fnBody = SERVER_TS.match(/const shutdown = async[\s\S]*?\n\};/)?.[0];
     expect(fnBody).toContain("2000");
     expect(fnBody).toContain("process.exit");
   });
 
   test("hard-exit timer is unref()'d so it doesn't pin the event loop", () => {
-    const fnBody = SERVER_TS.match(
-      /const shutdown = async[\s\S]*?\n\};/,
-    )?.[0];
+    const fnBody = SERVER_TS.match(/const shutdown = async[\s\S]*?\n\};/)?.[0];
     expect(fnBody).toContain(".unref");
   });
 
@@ -363,5 +400,23 @@ describe("repoSummaryInflight single-flight", () => {
       /repoSummaryInflight[\s\S]{0,400}\.get\([\w]+\)/,
     )?.[0];
     expect(block, "repoSummaryInflight.get() not found").toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. /api/repos includes agents in the initial enriched rows
+// ---------------------------------------------------------------------------
+describe("/api/repos agent enrichment", () => {
+  test("fresh repo stream starts sharedDetectAgents before worktree enrichment", () => {
+    const start = SERVER_TS.indexOf("function reposNDJSONFresh");
+    const end = SERVER_TS.indexOf("async function reposNDJSONResponse", start);
+    const fnBody = start >= 0 && end > start ? SERVER_TS.slice(start, end) : "";
+    const agentsAt = fnBody.indexOf("sharedDetectAgents()");
+    const detailsAt = fnBody.indexOf("getWorktreeDetails(wt.path)");
+    const agentsForWtAt = fnBody.indexOf("agentsForWorktree(wt.path, titled)");
+    expect(agentsAt).toBeGreaterThan(-1);
+    expect(detailsAt).toBeGreaterThan(-1);
+    expect(agentsForWtAt).toBeGreaterThan(-1);
+    expect(agentsAt).toBeLessThan(detailsAt);
   });
 });

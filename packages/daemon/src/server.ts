@@ -70,7 +70,6 @@ import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import {
-  changeKindInvalidatesAgents,
   changeKindInvalidatesRepos,
 } from "./sse-change-kinds";
 import {
@@ -982,8 +981,8 @@ if (SSE_HEARTBEAT_MS > 0) {
 }
 
 function broadcast(event: string, data: unknown): void {
-  // Mutations expire the /api/repos and agents caches so the UI's
-  // follow-up GET sees the change. The set of "real" mutations is
+  // Mutations expire the /api/repos cache so the UI's follow-up GET sees
+  // the change. The set of "real" mutations is
   // narrow — see `sse-change-kinds.ts` for the rationale. Notification
   // kinds (sound_play, note_*, undo/redo, peerDiscovery, command_*,
   // message_*, session_invite_*) burst many times per second with live
@@ -995,7 +994,6 @@ function broadcast(event: string, data: unknown): void {
   if (event === "change") {
     const kind = (data as { kind?: unknown } | null)?.kind;
     if (changeKindInvalidatesRepos(kind)) invalidateReposCache();
-    if (changeKindInvalidatesAgents(kind)) invalidateAgentsCache();
   }
   const payload = sseEncoder.encode(
     `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
@@ -1060,33 +1058,18 @@ let claudeTopSessionsCache: {
   value: Awaited<ReturnType<typeof topClaudeSessionsByTokens>> | null;
 } = { at: 0, value: null };
 
-// detectAgents() walks ~/.claude + ~/.codex + workspaceStorage on every
-// call. Cache the result for 10s + single-flight so rapid-fire /api/repos
-// refreshes (SSE bursts, page reloads, mutations) share a single scan.
+// detectAgents() walks ~/.claude + ~/.codex + workspaceStorage. Share only
+// the in-flight scan so startup bursts coalesce, but do not cache the finished
+// result: newly-created Claude/Codex sessions should appear on the next fetch.
 import type { AgentSession } from "./agents";
-const AGENTS_CACHE_MS = 10_000;
-let agentsCache: { at: number; value: AgentSession[] } | null = null;
 let agentsInflight: Promise<AgentSession[]> | null = null;
 
-async function cachedDetectAgents(): Promise<AgentSession[]> {
-  const now = Date.now();
-  if (agentsCache && now - agentsCache.at < AGENTS_CACHE_MS) {
-    return agentsCache.value;
-  }
+async function sharedDetectAgents(): Promise<AgentSession[]> {
   if (agentsInflight) return agentsInflight;
-  agentsInflight = detectAgents(WORKSPACE_PATH)
-    .then((result) => {
-      agentsCache = { at: Date.now(), value: result };
-      return result;
-    })
-    .finally(() => {
-      agentsInflight = null;
-    });
+  agentsInflight = detectAgents(WORKSPACE_PATH).finally(() => {
+    agentsInflight = null;
+  });
   return agentsInflight;
-}
-
-function invalidateAgentsCache(): void {
-  agentsCache = null;
 }
 
 // Per-worktree git-status cache. Keyed by worktree path; invalidated
@@ -1227,7 +1210,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
   // get the cached result — just stop touching the controller.
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       const safeEnqueue = (chunk: Uint8Array): void => {
         if (cancelled) return;
         try {
@@ -1248,135 +1231,144 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
       let tEnrichStart = 0;
       const perRepoMs = new Map<string, number>();
       const perWorktreeMs: { wt: string; ms: number }[] = [];
-      try {
-        const tPrelude = performance.now();
-        // Flush the manifest as soon as repos are listed — don't wait
-        // for agent detection. The UI renders skeleton rows immediately.
-        const repos = await workspace.listRepos();
-        tManifest = performance.now() - tPrelude;
-        safeEnqueue(enc.encode(manifestLineFor(repos)));
+      void (async () => {
+        try {
+          const tPrelude = performance.now();
+          // Flush the manifest as soon as repos are listed — don't wait
+          // for agent detection. The UI renders skeleton rows immediately.
+          const repos = await workspace.listRepos();
+          tManifest = performance.now() - tPrelude;
+          safeEnqueue(enc.encode(manifestLineFor(repos)));
 
-        // Agent detection + titles run in parallel with repo enrichment.
-        // The git operations (listWorktrees, getWorktreeDetails) overlap
-        // with agent scanning so the total wall time is max(git, agents)
-        // instead of git + agents.
-        const tAgentsStart = performance.now();
-        let titledAgentCount = 0;
-        const titledP = Promise.all([
-          cachedDetectAgents(),
-          workspace.listSessionTitles(),
-        ]).then(([agents, titles]) => {
-          const agentsMs = performance.now() - tAgentsStart;
-          titledAgentCount = agents.length;
-          if (agentsMs > 200) {
-            console.log(
-              `supergit daemon: agents=${agentsMs.toFixed(0)}ms (${agents.length} sessions)`,
-            );
-          }
-          return agents.map((s) =>
-            titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-          );
-        });
-
-        const enriched: EnrichedRepo[] = [];
-        tEnrichStart = performance.now();
-        await Promise.all(
-          repos.map(async (repo) => {
-            const tRepo = performance.now();
-            let result: EnrichedRepo;
-            try {
-              // Git ops + agent detection run concurrently. Await
-              // agents only after git finishes so the overlap is real.
-              const [[worktrees, remotes], titled] = await Promise.all([
-                Promise.all([listWorktrees(repo.path), listRemotes(repo.path)]),
-                titledP,
-              ]);
-              const withDetails = await Promise.all(
-                worktrees.map(async (wt) => {
-                  const tWt = performance.now();
-                  let details = getCachedWorktreeDetails(wt.path);
-                  if (!details) {
-                    details = await worktreeDetailLimit(() =>
-                      getWorktreeDetails(wt.path),
-                    );
-                    worktreeDetailsCache.set(wt.path, {
-                      at: Date.now(),
-                      value: details,
-                    });
-                  }
-                  perWorktreeMs.push({
-                    wt: wt.path,
-                    ms: performance.now() - tWt,
-                  });
-                  return {
-                    ...wt,
-                    ...details,
-                    agents: agentsForWorktree(wt.path, titled),
-                  };
-                }),
+          // Agent detection + titles run in parallel with repo enrichment.
+          // The git operations (listWorktrees, getWorktreeDetails) overlap
+          // with agent scanning so the total wall time is max(git, agents)
+          // instead of git + agents.
+          const tAgentsStart = performance.now();
+          let titledAgentCount = 0;
+          const titledP = Promise.all([
+            sharedDetectAgents(),
+            workspace.listSessionTitles(),
+          ]).then(([agents, titles]) => {
+            const agentsMs = performance.now() - tAgentsStart;
+            titledAgentCount = agents.length;
+            if (agentsMs > 200) {
+              console.log(
+                `supergit daemon: agents=${agentsMs.toFixed(0)}ms (${agents.length} sessions)`,
               );
-              result = {
-                ...repo,
-                worktrees: withDetails,
-                remotes,
-              } as EnrichedRepo;
-            } catch {
-              result = { ...repo, worktrees: [], remotes: [] } as EnrichedRepo;
             }
-            perRepoMs.set(repo.id, performance.now() - tRepo);
-            enriched.push(result);
-            safeEnqueue(enc.encode(repoLineFor(result)));
-          }),
-        );
-        const agentsMs = performance.now() - tAgentsStart;
+            return agents.map((s) =>
+              titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
+            );
+          });
 
-        // Stable ordering for the cached array so cache-hit replays
-        // match the workspace.listRepos() order. The streaming path
-        // already flushed in completion-order, which is fine.
-        const byId = new Map(enriched.map((r) => [r.id, r]));
-        const ordered = repos
-          .map((r) => byId.get(r.id))
-          .filter((r): r is EnrichedRepo => r !== undefined);
-        if (myGen === repsCacheGen) {
-          reposCache = { at: Date.now(), value: ordered };
-        }
-        resolveInflight(ordered);
-        const totalMs = performance.now() - t0;
-        const enrichMs = performance.now() - tEnrichStart;
-        const slowestRepo = [...perRepoMs.entries()].sort(
-          (a, b) => b[1] - a[1],
-        )[0];
-        const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
-        console.log(
-          `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
-            `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${titledAgentCount}) ` +
-            `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
-            (slowestRepo
-              ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms`
-              : "") +
-            (slowestWt
-              ? ` slowestWt=${slowestWt.wt}:${slowestWt.ms.toFixed(0)}ms`
-              : ""),
-        );
-        if (!cancelled) {
-          try {
-            controller.close();
-          } catch {
-            /* already closed */
+          const enriched: EnrichedRepo[] = [];
+          tEnrichStart = performance.now();
+          await Promise.all(
+            repos.map(async (repo) => {
+              const tRepo = performance.now();
+              let result: EnrichedRepo;
+              try {
+                // Git ops + agent detection run concurrently. Await
+                // agents only after git finishes so the overlap is real.
+                const [[worktrees, remotes], titled] = await Promise.all([
+                  Promise.all([
+                    listWorktrees(repo.path),
+                    listRemotes(repo.path),
+                  ]),
+                  titledP,
+                ]);
+                const withDetails = await Promise.all(
+                  worktrees.map(async (wt) => {
+                    const tWt = performance.now();
+                    let details = getCachedWorktreeDetails(wt.path);
+                    if (!details) {
+                      details = await worktreeDetailLimit(() =>
+                        getWorktreeDetails(wt.path),
+                      );
+                      worktreeDetailsCache.set(wt.path, {
+                        at: Date.now(),
+                        value: details,
+                      });
+                    }
+                    perWorktreeMs.push({
+                      wt: wt.path,
+                      ms: performance.now() - tWt,
+                    });
+                    return {
+                      ...wt,
+                      ...details,
+                      agents: agentsForWorktree(wt.path, titled),
+                    };
+                  }),
+                );
+                result = {
+                  ...repo,
+                  worktrees: withDetails,
+                  remotes,
+                } as EnrichedRepo;
+              } catch {
+                result = {
+                  ...repo,
+                  worktrees: [],
+                  remotes: [],
+                } as EnrichedRepo;
+              }
+              perRepoMs.set(repo.id, performance.now() - tRepo);
+              enriched.push(result);
+              safeEnqueue(enc.encode(repoLineFor(result)));
+            }),
+          );
+          const agentsMs = performance.now() - tAgentsStart;
+
+          // Stable ordering for the cached array so cache-hit replays
+          // match the workspace.listRepos() order. The streaming path
+          // already flushed in completion-order, which is fine.
+          const byId = new Map(enriched.map((r) => [r.id, r]));
+          const ordered = repos
+            .map((r) => byId.get(r.id))
+            .filter((r): r is EnrichedRepo => r !== undefined);
+          if (myGen === repsCacheGen) {
+            reposCache = { at: Date.now(), value: ordered };
           }
-        }
-      } catch (err) {
-        rejectInflight(err);
-        if (!cancelled) {
-          try {
-            controller.error(err);
-          } catch {
-            /* already closed */
+          resolveInflight(ordered);
+          const totalMs = performance.now() - t0;
+          const enrichMs = performance.now() - tEnrichStart;
+          const slowestRepo = [...perRepoMs.entries()].sort(
+            (a, b) => b[1] - a[1],
+          )[0];
+          const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
+          console.log(
+            `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
+              `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${titledAgentCount}) ` +
+              `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
+              (slowestRepo
+                ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms`
+                : "") +
+              (slowestWt
+                ? ` slowestWt=${slowestWt.wt}:${slowestWt.ms.toFixed(0)}ms`
+                : ""),
+          );
+          if (!cancelled) {
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
           }
+        } catch (err) {
+          rejectInflight(err);
+          if (!cancelled) {
+            try {
+              controller.error(err);
+            } catch {
+              /* already closed */
+            }
+          }
+        } finally {
+          reposInflight = null;
         }
-      } finally {
-        reposInflight = null;
-      }
+      })();
     },
     cancel() {
       cancelled = true;
@@ -2615,7 +2607,7 @@ const server = Bun.serve<TermWsData, never>({
 
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const [agents, titles] = await Promise.all([
-          cachedDetectAgents(),
+          sharedDetectAgents(),
           workspace.listSessionTitles(),
         ]);
         return json(
@@ -2645,7 +2637,7 @@ const server = Bun.serve<TermWsData, never>({
         ) {
           return json(agentUsageCache.value);
         }
-        const agents = await cachedDetectAgents();
+        const agents = await sharedDetectAgents();
         const report = await computeAgentUsage(agents, now, {
           skipClaudeTopSessions: true,
         });
@@ -2675,7 +2667,7 @@ const server = Bun.serve<TermWsData, never>({
         // Top-Sessions list shows whatever the user renamed sessions to
         // rather than the auto-derived first-prompt title.
         const [agents, titles] = await Promise.all([
-          cachedDetectAgents(),
+          sharedDetectAgents(),
           workspace.listSessionTitles(),
         ]);
         const enriched = agents.map((s) =>
@@ -2698,7 +2690,7 @@ const server = Bun.serve<TermWsData, never>({
         req.method === "GET"
       ) {
         const [agents, repos] = await Promise.all([
-          cachedDetectAgents(),
+          sharedDetectAgents(),
           workspace.listRepos(),
         ]);
         // Suppress already-registered repos AND every worktree they own,
@@ -8224,7 +8216,9 @@ async function runFetchCycle(repoIds?: string[]): Promise<void> {
 // Live tail of agent session JSONLs. New entries within a session arrive
 // here and we forward each as an "activity" SSE event so the dashboard can
 // render a live activity line per worktree.
-const stopActivity = await startActivityTail();
+const stopActivity = await startActivityTail({
+  detectAgents: sharedDetectAgents,
+});
 onActivity((ev) => broadcast("activity", ev));
 console.log("supergit daemon: agent activity tail started");
 

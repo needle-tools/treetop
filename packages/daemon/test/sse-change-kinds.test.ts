@@ -8,10 +8,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import {
-  changeKindInvalidatesAgents,
-  changeKindInvalidatesRepos,
-} from "../src/sse-change-kinds";
+import { changeKindInvalidatesRepos } from "../src/sse-change-kinds";
 
 describe("change-kind cache gating", () => {
   test("repo mutations invalidate repos cache", () => {
@@ -68,36 +65,9 @@ describe("change-kind cache gating", () => {
     }
   });
 
-  test("only session_copied / session_imported invalidate agents cache", () => {
-    expect(changeKindInvalidatesAgents("session_copied")).toBe(true);
-    expect(changeKindInvalidatesAgents("session_imported")).toBe(true);
-
-    for (const kind of [
-      "add_repo",
-      "remove_repo",
-      "rename_repo",
-      "repo_color",
-      "create_worktree",
-      "pull",
-      "push",
-      "checkout_branch",
-      "fetch_complete",
-      "fs_change",
-      "sound_play",
-      "note_create",
-      "session_title",
-      "undo",
-      "redo",
-    ]) {
-      expect(changeKindInvalidatesAgents(kind)).toBe(false);
-    }
-  });
-
   test("non-string kinds are ignored", () => {
     expect(changeKindInvalidatesRepos(undefined)).toBe(false);
     expect(changeKindInvalidatesRepos(null)).toBe(false);
     expect(changeKindInvalidatesRepos(42)).toBe(false);
-    expect(changeKindInvalidatesAgents(undefined)).toBe(false);
-    expect(changeKindInvalidatesAgents(null)).toBe(false);
   });
 });

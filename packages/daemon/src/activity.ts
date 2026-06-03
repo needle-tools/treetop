@@ -13,7 +13,7 @@
 
 import { watch, type FSWatcher } from "node:fs";
 import { open, stat } from "node:fs/promises";
-import { detectAgents, type AgentKind } from "./agents";
+import { detectAgents, type AgentKind, type AgentSession } from "./agents";
 
 export interface ActivityEvent {
   agent: AgentKind;
@@ -58,6 +58,13 @@ export async function readTailChunk(
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
 const REDISCOVER_INTERVAL_MS = 30_000;
 const MAX_TRACKED = 64;
+
+type DetectAgents = () => Promise<AgentSession[]>;
+
+export interface ActivityTailOptions {
+  detectAgents?: DetectAgents;
+  rediscoverIntervalMs?: number;
+}
 
 interface Tracked {
   path: string;
@@ -164,8 +171,12 @@ function shortPath(p: string, n = 48): string {
   return "…" + p.slice(-(n - 1));
 }
 
-async function rediscover(): Promise<void> {
-  const sessions = await detectAgents();
+async function rediscover(
+  detect: DetectAgents,
+  isStopped: () => boolean,
+): Promise<void> {
+  const sessions = await detect();
+  if (isStopped()) return;
   const now = Date.now();
   const recent = sessions
     .filter((s) => now - Date.parse(s.lastActive) < RECENT_WINDOW_MS)
@@ -183,6 +194,7 @@ async function rediscover(): Promise<void> {
 
   // Add trackers for new recent sessions.
   for (const s of recent) {
+    if (isStopped()) return;
     if (tracked.has(s.source)) continue;
     const stats = await stat(s.source).catch(() => null);
     if (!stats) continue;
@@ -194,6 +206,7 @@ async function rediscover(): Promise<void> {
       agent: s.agent,
     };
     try {
+      if (isStopped()) return;
       t.watcher = watch(s.source, () => {
         void checkTail(s.source);
       });
@@ -237,15 +250,28 @@ async function checkTail(path: string): Promise<void> {
 let started = false;
 let rediscoverTimer: ReturnType<typeof setInterval> | null = null;
 
-export async function startActivityTail(): Promise<() => void> {
+export async function startActivityTail(
+  options: ActivityTailOptions = {},
+): Promise<() => void> {
   if (started) return () => {};
   started = true;
-  await rediscover();
+  const detect = options.detectAgents ?? detectAgents;
+  let stopped = false;
+  const rediscoverSafely = () => {
+    void rediscover(detect, () => stopped).catch((err) => {
+      if (!stopped) {
+        console.warn("supergit daemon: activity tail rediscover failed", err);
+      }
+    });
+  };
+  rediscoverSafely();
   rediscoverTimer = setInterval(() => {
-    void rediscover();
-  }, REDISCOVER_INTERVAL_MS);
+    rediscoverSafely();
+  }, options.rediscoverIntervalMs ?? REDISCOVER_INTERVAL_MS);
   return () => {
+    stopped = true;
     if (rediscoverTimer) clearInterval(rediscoverTimer);
+    rediscoverTimer = null;
     for (const t of tracked.values()) t.watcher?.close();
     tracked.clear();
     started = false;

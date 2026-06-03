@@ -1,8 +1,19 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { summarize, readTailChunk } from "../src/activity";
+import {
+  summarize,
+  readTailChunk,
+  onActivity,
+  startActivityTail,
+  type ActivityEvent,
+} from "../src/activity";
+import type { AgentSession } from "../src/agents";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 describe("summarize (claude)", () => {
   test("returns null for non-objects", () => {
@@ -161,5 +172,69 @@ describe("readTailChunk", () => {
     expect(r).not.toBeNull();
     expect(r!.text).toBe("");
     expect(r!.newOffset).toBe(2);
+  });
+});
+
+describe("startActivityTail", () => {
+  test("does not wait for the initial agent scan before returning", async () => {
+    let detectStarted = false;
+    let resolveDetect: ((sessions: AgentSession[]) => void) | null = null;
+    const detectAgents = () => {
+      detectStarted = true;
+      return new Promise<AgentSession[]>((resolve) => {
+        resolveDetect = resolve;
+      });
+    };
+
+    const stopOrTimeout = await Promise.race([
+      startActivityTail({ detectAgents, rediscoverIntervalMs: 60_000 }),
+      delay(20).then(() => "timeout" as const),
+    ]);
+
+    expect(stopOrTimeout).not.toBe("timeout");
+    expect(detectStarted).toBe(true);
+
+    if (typeof stopOrTimeout === "function") stopOrTimeout();
+    resolveDetect?.([]);
+  });
+
+  test("does not attach watchers after being stopped during the initial scan", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-activity-"));
+    const source = join(dir, "session.jsonl");
+    await writeFile(source, "");
+
+    let resolveDetect: ((sessions: AgentSession[]) => void) | null = null;
+    const detectAgents = () =>
+      new Promise<AgentSession[]>((resolve) => {
+        resolveDetect = resolve;
+      });
+
+    const events: ActivityEvent[] = [];
+    const unsubscribe = onActivity((event) => events.push(event));
+    const stop = await startActivityTail({
+      detectAgents,
+      rediscoverIntervalMs: 60_000,
+    });
+
+    stop();
+    resolveDetect?.([
+      {
+        agent: "codex",
+        cwd: dir,
+        lastActive: new Date().toISOString(),
+        sessionId: "session",
+        source,
+      },
+    ]);
+
+    await delay(20);
+    await appendFile(
+      source,
+      JSON.stringify({ role: "user", content: "hello after stop" }) + "\n",
+    );
+    await delay(30);
+
+    unsubscribe();
+    expect(events).toEqual([]);
   });
 });

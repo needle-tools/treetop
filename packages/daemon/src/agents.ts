@@ -10,6 +10,7 @@
 import { readdir, stat, readFile, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { createLimiter } from "./concurrency";
 
 export type AgentKind = "claude" | "codex" | "copilot" | "ollama";
 
@@ -500,10 +501,7 @@ function ingestUserScanLines(
       if (countLines) result.totalMessageCount++;
       if (isRecent) result.recentMessageCount++;
       if (typeof obj.timestamp === "string") {
-        if (
-          !result.lastMessageTs ||
-          obj.timestamp > result.lastMessageTs
-        ) {
+        if (!result.lastMessageTs || obj.timestamp > result.lastMessageTs) {
           result.lastMessageTs = obj.timestamp;
         }
       }
@@ -520,10 +518,7 @@ function ingestUserScanLines(
       if (countLines) result.totalMessageCount++;
       if (isRecent) result.recentMessageCount++;
       if (typeof obj.timestamp === "string") {
-        if (
-          !result.lastMessageTs ||
-          obj.timestamp > result.lastMessageTs
-        ) {
+        if (!result.lastMessageTs || obj.timestamp > result.lastMessageTs) {
           result.lastMessageTs = obj.timestamp;
         }
       }
@@ -711,6 +706,242 @@ export function clearCodexScanCache(): void {
 const CODEX_HEAD_BYTES = 64 * 1024;
 /** Tail bytes for token_count / turn_context. */
 const CODEX_TAIL_BYTES = 64 * 1024;
+const CODEX_SCAN_CONCURRENCY = 8;
+const codexScanLimit = createLimiter(CODEX_SCAN_CONCURRENCY);
+
+interface CodexSessionOverview {
+  meta: { cwd?: string; id?: string };
+  usage: CodexTokenUsage;
+  firstUserMessage?: string;
+  lastUserMessages: string[];
+  messageCount?: number;
+  contextTokens?: number;
+  contextTokensExact?: boolean;
+}
+
+function isCodexSystemInjected(text: string): boolean {
+  const t = text.trimStart();
+  if (t.startsWith("<")) return true;
+  if (t.startsWith("# AGENTS.md") || t.startsWith("# CLAUDE.md")) return true;
+  if (/^#\s+(Instructions|Context|System)\b/i.test(t)) return true;
+  return false;
+}
+
+function extractCodexUserText(line: string): string | undefined {
+  const MSG_CAP = 200;
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+    // 0.130+
+    if (
+      obj.type === "response_item" &&
+      typeof obj.payload === "object" &&
+      obj.payload
+    ) {
+      const p = obj.payload as Record<string, unknown>;
+      if (
+        p.type === "message" &&
+        p.role === "user" &&
+        Array.isArray(p.content)
+      ) {
+        for (const block of p.content) {
+          if (typeof block === "object" && block !== null) {
+            const t = (block as { text?: unknown }).text;
+            if (
+              typeof t === "string" &&
+              t.length > 0 &&
+              !isCodexSystemInjected(t)
+            ) {
+              return t.length > MSG_CAP ? t.slice(0, MSG_CAP) + "…" : t;
+            }
+          }
+        }
+      }
+    }
+    // Pre-0.130
+    if (
+      obj.role === "user" &&
+      typeof obj.content === "string" &&
+      obj.content.length > 0 &&
+      !isCodexSystemInjected(obj.content)
+    ) {
+      return obj.content.length > MSG_CAP
+        ? obj.content.slice(0, MSG_CAP) + "…"
+        : obj.content;
+    }
+  } catch {
+    /* skip */
+  }
+  return undefined;
+}
+
+function ingestCodexOverviewLine(
+  line: string,
+  state: {
+    meta: { cwd?: string; id?: string };
+    usage: CodexTokenUsage;
+    firstUserMessage?: string;
+    lastUserMessages: string[];
+    messageCount: number;
+    contextChars: number;
+    countMessages: boolean;
+    estimateContext: boolean;
+  },
+): void {
+  if (!line) return;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  if (
+    !state.meta.cwd &&
+    obj.type === "session_meta" &&
+    typeof obj.payload === "object" &&
+    obj.payload
+  ) {
+    const p = obj.payload as Record<string, unknown>;
+    state.meta = {
+      cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+      id: typeof p.id === "string" ? p.id : undefined,
+    };
+  }
+  if (!state.meta.cwd && typeof obj.cwd === "string") {
+    state.meta = { cwd: obj.cwd };
+  }
+  if (
+    obj.type === "turn_context" &&
+    typeof obj.payload === "object" &&
+    obj.payload
+  ) {
+    const p = obj.payload as Record<string, unknown>;
+    if (typeof p.model === "string") state.usage.model = p.model;
+  }
+  if (
+    obj.type === "event_msg" &&
+    typeof obj.payload === "object" &&
+    obj.payload
+  ) {
+    const p = obj.payload as Record<string, unknown>;
+    if (p.type === "token_count") {
+      const info = p.info;
+      if (info && typeof info === "object") {
+        const infoObj = info as Record<string, unknown>;
+        const last = infoObj.last_token_usage as
+          | { input_tokens?: unknown }
+          | undefined;
+        if (last && typeof last.input_tokens === "number") {
+          state.usage.lastInputTokens = last.input_tokens;
+        }
+        if (typeof infoObj.model_context_window === "number") {
+          state.usage.modelContextWindow = infoObj.model_context_window;
+        }
+      }
+    }
+  }
+
+  const isCodexMessage =
+    obj.type === "response_item" &&
+    typeof obj.payload === "object" &&
+    obj.payload &&
+    (obj.payload as Record<string, unknown>).type === "message";
+  const isLegacyMessage =
+    typeof obj.role === "string" &&
+    (obj.role === "user" || obj.role === "assistant");
+
+  if (isCodexMessage || isLegacyMessage) {
+    const payload = isCodexMessage
+      ? ((obj.payload as Record<string, unknown>) ?? {})
+      : obj;
+    const role = payload.role;
+    if (role === "user" || role === "assistant") {
+      if (state.countMessages) state.messageCount++;
+      if (state.estimateContext) {
+        const content = payload.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (typeof block === "object" && block !== null) {
+              const t = (block as { text?: unknown }).text;
+              if (typeof t === "string") state.contextChars += t.length;
+            }
+          }
+        } else if (typeof content === "string") {
+          state.contextChars += content.length;
+        }
+      }
+      if (role === "user") {
+        const text = extractCodexUserText(line);
+        if (text) {
+          if (!state.firstUserMessage) state.firstUserMessage = text;
+          state.lastUserMessages.push(text);
+          if (state.lastUserMessages.length > 3) {
+            state.lastUserMessages.shift();
+          }
+        }
+      }
+    }
+  }
+}
+
+async function readCodexSessionOverview(
+  path: string,
+  fileSize: number,
+): Promise<CodexSessionOverview> {
+  const exact = fileSize <= CODEX_HEAD_BYTES + CODEX_TAIL_BYTES;
+  const head = await readHead(path, exact ? fileSize : CODEX_HEAD_BYTES);
+  const tail = !exact ? await readTail(path, CODEX_TAIL_BYTES) : "";
+  const state = {
+    meta: {} as { cwd?: string; id?: string },
+    usage: {
+      lastInputTokens: undefined,
+      modelContextWindow: undefined,
+      model: undefined,
+    } satisfies CodexTokenUsage,
+    firstUserMessage: undefined as string | undefined,
+    lastUserMessages: [] as string[],
+    messageCount: 0,
+    contextChars: 0,
+    countMessages: exact,
+    estimateContext: exact,
+  };
+
+  for (const line of head.split("\n")) {
+    ingestCodexOverviewLine(line, state);
+  }
+  if (tail) {
+    // Tail should update "latest" fields (model/token_count/last user
+    // messages) without forcing a full transcript pass.
+    state.lastUserMessages = [];
+    for (const line of tail.split("\n")) {
+      ingestCodexOverviewLine(line, state);
+    }
+  }
+
+  let contextTokens: number | undefined;
+  let contextTokensExact: boolean | undefined;
+  if (
+    state.usage.lastInputTokens !== undefined &&
+    state.usage.lastInputTokens > 0
+  ) {
+    contextTokens = state.usage.lastInputTokens;
+    contextTokensExact = true;
+  } else if (exact && state.contextChars > 0) {
+    contextTokens = Math.floor(state.contextChars / 4);
+    contextTokensExact = false;
+  }
+
+  return {
+    meta: state.meta,
+    usage: state.usage,
+    firstUserMessage: state.firstUserMessage,
+    lastUserMessages: state.lastUserMessages,
+    messageCount:
+      exact && state.messageCount > 0 ? state.messageCount : undefined,
+    contextTokens,
+    contextTokensExact,
+  };
+}
 
 async function ensureCodexScanCached(
   path: string,
@@ -826,69 +1057,9 @@ async function ensureCodexScanCached(
   const MAX_LAST_USER = 3;
   const MSG_CAP = 200;
 
-  /** True when the text looks like a Codex system-injected message
-   *  (AGENTS.md, environment_context, permissions) rather than a real
-   *  user prompt. These get role:"user" in the JSONL but shouldn't
-   *  surface as titles or previews. */
-  function isSystemInjected(text: string): boolean {
-    const t = text.trimStart();
-    if (t.startsWith("<")) return true;
-    if (t.startsWith("# AGENTS.md") || t.startsWith("# CLAUDE.md")) return true;
-    if (/^#\s+(Instructions|Context|System)\b/i.test(t)) return true;
-    return false;
-  }
-
-  /** Extract a capped user-message text from a parsed line, skipping
-   *  system-injected content that Codex wraps in role:"user". */
-  function extractUserText(line: string): string | undefined {
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      // 0.130+
-      if (
-        obj.type === "response_item" &&
-        typeof obj.payload === "object" &&
-        obj.payload
-      ) {
-        const p = obj.payload as Record<string, unknown>;
-        if (
-          p.type === "message" &&
-          p.role === "user" &&
-          Array.isArray(p.content)
-        ) {
-          for (const block of p.content) {
-            if (typeof block === "object" && block !== null) {
-              const t = (block as { text?: unknown }).text;
-              if (
-                typeof t === "string" &&
-                t.length > 0 &&
-                !isSystemInjected(t)
-              ) {
-                return t.length > MSG_CAP ? t.slice(0, MSG_CAP) + "…" : t;
-              }
-            }
-          }
-        }
-      }
-      // Pre-0.130
-      if (
-        obj.role === "user" &&
-        typeof obj.content === "string" &&
-        obj.content.length > 0 &&
-        !isSystemInjected(obj.content)
-      ) {
-        return obj.content.length > MSG_CAP
-          ? obj.content.slice(0, MSG_CAP) + "…"
-          : obj.content;
-      }
-    } catch {
-      /* skip */
-    }
-    return undefined;
-  }
-
   function trackUserMessage(line: string): void {
     if (!line.includes('"user"')) return;
-    const text = extractUserText(line);
+    const text = extractCodexUserText(line);
     if (!text) return;
     if (!firstUserMessage) firstUserMessage = text;
     lastUserMessages.push(text);
@@ -1254,60 +1425,62 @@ export async function scanCodex(
     const sessions: AgentSession[] = [];
     let slowestFile = "";
     let slowestMs = 0;
-    for (const sessionPath of files) {
-      try {
-        const tFile = performance.now();
-        const stats = await stat(sessionPath);
-        const mt = stats.mtimeMs;
-        const meta = await readCodexSessionMeta(sessionPath, mt);
-        if (!meta.cwd) continue;
-        const messageCount = await scanCodexMessageCount(sessionPath, mt);
-        const usage = await scanCodexTokenUsage(sessionPath, mt);
-        let contextTokens: number | undefined;
-        let contextTokensExact: boolean | undefined;
-        if (usage.lastInputTokens !== undefined && usage.lastInputTokens > 0) {
-          contextTokens = usage.lastInputTokens;
-          contextTokensExact = true;
-        } else {
-          const estimate = await scanCodexContextTokens(sessionPath, mt);
-          if (estimate > 0) {
-            contextTokens = estimate;
-            contextTokensExact = false;
+    const results = await Promise.all(
+      files.map((sessionPath) =>
+        codexScanLimit(async () => {
+          try {
+            const tFile = performance.now();
+            const stats = await stat(sessionPath);
+            const overview = await readCodexSessionOverview(
+              sessionPath,
+              stats.size,
+            );
+            const meta = overview.meta;
+            if (!meta.cwd) return null;
+            const fileMs = performance.now() - tFile;
+            const lastMsgs = overview.lastUserMessages;
+            return {
+              ms: fileMs,
+              path: sessionPath,
+              session: {
+                agent: "codex" as const,
+                cwd: resolve(meta.cwd),
+                lastActive: stats.mtime.toISOString(),
+                sessionId:
+                  meta.id ??
+                  sessionPath
+                    .split(/[/\\]/)
+                    .pop()!
+                    .replace(/\.(jsonl|json)$/, ""),
+                source: sessionPath,
+                title: overview.firstUserMessage,
+                firstUserMessage: overview.firstUserMessage,
+                lastUserMessage: lastMsgs[lastMsgs.length - 1],
+                lastUserMessages: lastMsgs.length > 0 ? lastMsgs : undefined,
+                userMessageCount:
+                  overview.messageCount !== undefined
+                    ? Math.ceil(overview.messageCount / 2)
+                    : undefined,
+                messageCount: overview.messageCount,
+                contextTokens: overview.contextTokens,
+                contextTokensExact: overview.contextTokensExact,
+                contextWindow: overview.usage.modelContextWindow,
+                model: overview.usage.model,
+              },
+            };
+          } catch {
+            return null;
           }
-        }
-        const fileMs = performance.now() - tFile;
-        if (fileMs > slowestMs) {
-          slowestMs = fileMs;
-          slowestFile = sessionPath;
-        }
-        const cached = codexScanCache.get(sessionPath);
-        const lastMsgs = cached?.lastUserMessages ?? [];
-        sessions.push({
-          agent: "codex",
-          cwd: resolve(meta.cwd),
-          lastActive: stats.mtime.toISOString(),
-          sessionId:
-            meta.id ??
-            sessionPath
-              .split(/[/\\]/)
-              .pop()!
-              .replace(/\.(jsonl|json)$/, ""),
-          source: sessionPath,
-          title: cached?.firstUserMessage,
-          firstUserMessage: cached?.firstUserMessage,
-          lastUserMessage: lastMsgs[lastMsgs.length - 1],
-          lastUserMessages: lastMsgs.length > 0 ? lastMsgs : undefined,
-          userMessageCount:
-            messageCount > 0 ? Math.ceil(messageCount / 2) : undefined,
-          messageCount: messageCount > 0 ? messageCount : undefined,
-          contextTokens,
-          contextTokensExact,
-          contextWindow: usage.modelContextWindow,
-          model: usage.model,
-        });
-      } catch {
-        // skip
+        }),
+      ),
+    );
+    for (const result of results) {
+      if (!result) continue;
+      if (result.ms > slowestMs) {
+        slowestMs = result.ms;
+        slowestFile = result.path;
       }
+      sessions.push(result.session);
     }
     const totalMs = performance.now() - tScan;
     if (totalMs > 500) {

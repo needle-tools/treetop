@@ -2,8 +2,8 @@
  * Classifies the `kind` of a `broadcast("change", { kind, … })` event so
  * the daemon only invalidates caches that actually depend on it.
  *
- * Before this split the broadcast handler invalidated the repos + agents +
- * worktree-details caches on EVERY non-`fs_change` event — including chatty
+ * Before this split the broadcast handler invalidated repos/worktree caches
+ * on EVERY non-`fs_change` event — including chatty
  * notifications (`sound_play`, `note_*`, `undo`/`redo`, `peerDiscovery`,
  * `command_*`, `message_*`, `session_invite_*`) that never touch repo or
  * agent state. With a live TUI writing JSONL those bursts blew the cache
@@ -52,17 +52,6 @@ export const CHANGE_KINDS_INVALIDATING_REPOS: ReadonlySet<string> = new Set([
   "session_imported",
 ]);
 
-export const CHANGE_KINDS_INVALIDATING_AGENTS: ReadonlySet<string> = new Set([
-  // The only mutations that change `detectAgents()` output without a
-  // filesystem change the file watchers would already see.
-  "session_copied",
-  "session_imported",
-]);
-
 export function changeKindInvalidatesRepos(kind: unknown): boolean {
   return typeof kind === "string" && CHANGE_KINDS_INVALIDATING_REPOS.has(kind);
-}
-
-export function changeKindInvalidatesAgents(kind: unknown): boolean {
-  return typeof kind === "string" && CHANGE_KINDS_INVALIDATING_AGENTS.has(kind);
 }
