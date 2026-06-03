@@ -3111,12 +3111,12 @@
       </div>
       <button
         type="button"
-        class="message-fold-toggle message-face-fold-toggle"
+        class="sticky-btn message-face-fold-toggle"
         aria-label="Fold message"
         on:click|stopPropagation={() => {
           messageOpen = false;
         }}
-      >⌄</button>
+      >{#if messageOpen}⌃{:else}⌄{/if}</button>
     </div>
     {#if addressPicker}
       <div
