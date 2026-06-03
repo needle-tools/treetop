@@ -270,7 +270,12 @@
           {statusLine(provStatus)}
         </p>
 
-        <div class="provision-log" bind:this={logEl} aria-label="install log">
+        <div
+          class="provision-log"
+          class:running={provRunning}
+          bind:this={logEl}
+          aria-label="install log"
+        >
           {#if provLog}{provLog}{:else}<span class="provision-log-empty"
               >waiting for the installer…</span
             >{/if}
@@ -625,7 +630,8 @@
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: break-word;
-    background: var(--surface-0, var(--surface-1));
+    /* Transparent — just an outline; no surface fill. */
+    background: transparent;
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-md);
     padding: 0.5rem 0.6rem;
@@ -633,6 +639,39 @@
     font-size: var(--fs-sm);
     line-height: 1.4;
     color: var(--text-2, inherit);
+  }
+  /* While the install is working, sweep a soft gradient THROUGH the text —
+     a skeleton-style shimmer, but magical: a brand-tinted band drifting over
+     muted glyphs. Seamless loop (the 200% gradient tiles, so a -200% shift
+     lands exactly one tile over). Once done/errored the class drops and the
+     text settles to a solid, readable colour. */
+  .provision-log.running {
+    background-image: linear-gradient(
+      90deg,
+      var(--text-faint) 0%,
+      var(--text-2) 25%,
+      var(--brand) 50%,
+      var(--text-2) 75%,
+      var(--text-faint) 100%
+    );
+    background-size: 200% auto;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: provision-shimmer 3s linear infinite;
+  }
+  @keyframes provision-shimmer {
+    to {
+      background-position: -200% center;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .provision-log.running {
+      animation: none;
+      -webkit-text-fill-color: var(--text-2);
+      color: var(--text-2);
+    }
   }
   .provision-log-empty {
     color: var(--text-faint);
