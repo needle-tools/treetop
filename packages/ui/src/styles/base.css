@@ -113,7 +113,7 @@ button {
   font-size: 0.95rem;
 }
 button:hover:not(:disabled) {
-  background: var(--selected-text);
+  background: var(--surface-3);
 }
 button:disabled {
   opacity: 0.5;
