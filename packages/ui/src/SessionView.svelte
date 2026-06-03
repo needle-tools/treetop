@@ -662,7 +662,12 @@
     if (mode === "terminal") {
       if (!tuiSummaryTimer) {
         tuiSummaryTimer = setInterval(() => {
-          if (!summaryRefreshing) void summarizeFromChip();
+          // Only re-summarise when there's an EXISTING summary that has
+          // drifted (≥2 new messages) — `shouldShowRefresh`. Firing Ollama
+          // every 5 min on idle or never-summarised TUIs is wasted load and
+          // is what made the summarise calls pile up. The user can still
+          // generate a first summary manually via the chip.
+          if (!summaryRefreshing && shouldShowRefresh) void summarizeFromChip();
         }, TUI_SUMMARY_INTERVAL_MS);
       }
     } else {
