@@ -66,6 +66,12 @@
       terminalId?: string;
     };
   }
+
+  const MESSAGE_STAMP_SHEETS = [
+    "/stamps/nature-stamps-8x8.png",
+    "/stamps/nature-stamps-8x8-flat-variant.png",
+  ] as const;
+  const MESSAGE_STAMP_CELL_PX = 76;
 </script>
 
 <script lang="ts">
@@ -466,8 +472,15 @@
     // file: TODO — `/api/open` with the resolved absolute path.
   }
 
-	  let messageStatus = "";
-	  let addressPicker: "from" | "to" | null = null;
+  let messageStatus = "";
+  let addressPicker: "from" | "to" | null = null;
+  let fromAddressChipEl: HTMLButtonElement | null = null;
+  let toAddressChipEl: HTMLButtonElement | null = null;
+  let addressPickerEl: HTMLDivElement | null = null;
+  let addressPickerTop = 0;
+  let addressPickerLeft = 0;
+  let addressPickerMaxWidth = 520;
+  let addressPickerMinWidth = 260;
 
   function receiverLookupIds(): string[] {
     const r = note.receiver;
@@ -549,12 +562,18 @@
     for (let i = 0; i < seed.length; i++) {
       h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
     }
-    const index = (h >>> 0) % 64;
+    const stampId = h >>> 0;
+    const index = stampId % 64;
+    const sheet = MESSAGE_STAMP_SHEETS[Math.floor(stampId / 64) % MESSAGE_STAMP_SHEETS.length];
     const col = index % 8;
     const row = Math.floor(index / 8);
-    const x = col === 0 ? 0 : (col / 7) * 100;
-    const y = row === 0 ? 0 : (row / 7) * 100;
-    return `background-position: ${x}% ${y}%;`;
+    const x = col * MESSAGE_STAMP_CELL_PX;
+    const y = row * MESSAGE_STAMP_CELL_PX;
+    return [
+      `background-image: url("${sheet}")`,
+      `background-position: ${x === 0 ? 0 : -x}px ${y === 0 ? 0 : -y}px`,
+      `background-size: ${MESSAGE_STAMP_CELL_PX * 8}px ${MESSAGE_STAMP_CELL_PX * 8}px`,
+    ].join("; ");
   }
 
   function findSessionBySource(source: string): AgentSession | null {
@@ -613,6 +632,48 @@
       });
     }
     addressPicker = null;
+  }
+
+  function addressPickerAnchor(): HTMLButtonElement | null {
+    return addressPicker === "from" ? fromAddressChipEl : toAddressChipEl;
+  }
+
+  function repositionAddressPicker(): void {
+    if (!addressPicker || typeof window === "undefined") return;
+    const anchor = addressPickerAnchor();
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 18;
+    const maxW = Math.min(520, vw - margin * 2);
+    const minW = Math.max(260, Math.min(maxW, r.width));
+    const measuredH = addressPickerEl?.offsetHeight ?? 0;
+    const estH = measuredH > 0 ? measuredH : Math.min(vh - margin * 2, 330);
+    let left = r.left;
+    if (left + maxW > vw - margin) {
+      left = Math.max(margin, vw - margin - maxW);
+    }
+    const spaceBelow = vh - r.bottom - margin;
+    const spaceAbove = r.top - margin;
+    const top =
+      spaceBelow >= estH || spaceBelow >= spaceAbove
+        ? r.bottom + 6
+        : Math.max(margin, r.top - estH - 6);
+    addressPickerTop = top;
+    addressPickerLeft = left;
+    addressPickerMaxWidth = maxW;
+    addressPickerMinWidth = minW;
+  }
+
+  function toggleAddressPicker(which: "from" | "to"): void {
+    addressPicker = addressPicker === which ? null : which;
+    if (addressPicker) queueMicrotask(repositionAddressPicker);
+  }
+
+  $: if (addressPicker) {
+    void addressPickerEl;
+    queueMicrotask(repositionAddressPicker);
   }
 
   function showReceiver(): boolean {
@@ -1990,9 +2051,19 @@
     // the current draft. Mousedown rather than click so we beat any
     // focus / blur shuffling that might happen on the next element.
     const onWindowDown = (e: MouseEvent) => {
-      if (!editing) return;
       const t = e.target as Node | null;
+      if (
+        addressPicker &&
+        t &&
+        !addressPickerEl?.contains(t) &&
+        !fromAddressChipEl?.contains(t) &&
+        !toAddressChipEl?.contains(t)
+      ) {
+        addressPicker = null;
+      }
+      if (!editing) return;
       if (!t || !stickyEl) return;
+      if (addressPickerEl?.contains(t)) return;
       if (stickyEl.contains(t)) return;
       saveEdit();
     };
@@ -2015,6 +2086,7 @@
     // viewport needs to retrigger the clamp-to-viewport math.
     const onWindowReflow = () => {
       if (mentionOpen) repositionMentionPopover();
+      if (addressPicker) repositionAddressPicker();
       if (editing && isLink) recomputeChipMaxWidth();
     };
     window.addEventListener("scroll", onWindowReflow, true);
@@ -2994,45 +3066,34 @@
       <div class="message-window">
         <div class="message-address-lines">
           <button
+            bind:this={fromAddressChipEl}
             type="button"
             class="message-window-row"
-            on:click|stopPropagation={() =>
-              (addressPicker = addressPicker === "from" ? null : "from")}
+            class:active={addressPicker === "from"}
+            aria-haspopup="listbox"
+            aria-expanded={addressPicker === "from"}
+            on:click|stopPropagation={() => toggleAddressPicker("from")}
             title="Change sender session"
           >
             <span>From:</span>
-            <strong>{messageFromLabel()}</strong>
+            <strong class="message-session-chip">{messageFromLabel()}</strong>
           </button>
           <button
+            bind:this={toAddressChipEl}
             type="button"
             class="message-window-row"
-            on:click|stopPropagation={() =>
-              (addressPicker = addressPicker === "to" ? null : "to")}
+            class:active={addressPicker === "to"}
+            aria-haspopup="listbox"
+            aria-expanded={addressPicker === "to"}
+            on:click|stopPropagation={() => toggleAddressPicker("to")}
             title="Change target session"
           >
             <span>To:</span>
-            <strong>{messageToLabel()}</strong>
+            <strong class="message-session-chip">{messageToLabel()}</strong>
           </button>
         </div>
         <strong class="message-window-title">{messageTitle()}</strong>
       </div>
-      {#if addressPicker}
-        <div
-          class="message-address-picker"
-          role="presentation"
-          on:click|stopPropagation
-        >
-          <MentionPicker
-            providers={[sessionsProvider]}
-            scope={pickerScope}
-            placeholder={addressPicker === "from"
-              ? "Pick sender session..."
-              : "Pick target session..."}
-            on:pick={onAddressPick}
-            on:cancel={() => (addressPicker = null)}
-          />
-        </div>
-      {/if}
       <div
         class="message-stamp"
         aria-label={messageWhenLabel()}
@@ -3048,19 +3109,48 @@
         <span class="message-delivery-badge">{messageDeliveryLabel()}</span>
         <span>{messageWhenLabel()}</span>
       </div>
+      <button
+        type="button"
+        class="message-fold-toggle message-face-fold-toggle"
+        aria-label="Fold message"
+        on:click|stopPropagation={() => {
+          messageOpen = false;
+        }}
+      >⌄</button>
     </div>
+    {#if addressPicker}
+      <div
+        bind:this={addressPickerEl}
+        class="message-address-picker"
+        role="presentation"
+        style:top={`${addressPickerTop}px`}
+        style:left={`${addressPickerLeft}px`}
+        style:max-width={`${addressPickerMaxWidth}px`}
+        style:min-width={`${addressPickerMinWidth}px`}
+        use:portal
+      >
+        <Popover
+          variant="agents"
+          extraClass="message-address-popover"
+          unclamped
+        >
+          <span slot="head">
+            {addressPicker === "from" ? "Pick sender session" : "Pick target session"}
+          </span>
+          <MentionPicker
+            providers={[sessionsProvider]}
+            scope={pickerScope}
+            placeholder={addressPicker === "from"
+              ? "Find sender by name, ID, or repo..."
+              : "Find target by name, ID, or repo..."}
+            on:pick={onAddressPick}
+            on:cancel={() => (addressPicker = null)}
+          />
+        </Popover>
+      </div>
+    {/if}
     <div class="message-envelope-flap" aria-hidden="true"></div>
     <div class="message-letter">
-      <div class="message-letter-meta">
-        <button
-          type="button"
-          class="message-fold-toggle"
-          aria-label="Fold message"
-          on:click|stopPropagation={() => {
-            messageOpen = false;
-          }}
-        >⌄</button>
-      </div>
       <div class="message-letter-body">
         {@render renderedNoteBody(
           bodyParts,

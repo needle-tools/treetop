@@ -40,6 +40,7 @@ import { join } from "node:path";
 const UI_SRC = join(import.meta.dir, "../src");
 const STYLES_DIR = join(UI_SRC, "styles");
 const TOKENS_FILE = join(STYLES_DIR, "tokens.css");
+const STICKY_NOTE_FILE = join(UI_SRC, "StickyNote.svelte");
 
 function readTokensCss(): string {
   return readFileSync(TOKENS_FILE, "utf-8");
@@ -50,6 +51,10 @@ function readAllStylesCss(): string {
   return files
     .map((f) => readFileSync(join(STYLES_DIR, f), "utf-8"))
     .join("\n");
+}
+
+function readStickyNoteSvelte(): string {
+  return readFileSync(STICKY_NOTE_FILE, "utf-8");
 }
 
 /** Extract all `--name` tokens defined in a CSS :root block. */
@@ -73,6 +78,26 @@ function extractVarReferences(css: string): Set<string> {
     refs.add(m[1]!);
   }
   return refs;
+}
+
+function cssRule(css: string, selector: string): string {
+  let found = "";
+  const re = /([^{}]+)\{([^{}]*)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css)) !== null) {
+    const selectors = m[1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (selectors.includes(selector)) found = m[2]!;
+  }
+  return found;
+}
+
+function pxDeclaration(rule: string, prop: string): number | null {
+  const escaped = prop.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = rule.match(new RegExp(`${escaped}\\s*:\\s*(-?\\d+(?:\\.\\d+)?)px\\b`));
+  return m ? Number(m[1]) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,5 +322,39 @@ describe("design tokens — var() references in styles/*.css (roadmap info)", ()
     // change their semantics (they'd become global defaults, not per-element
     // values set by JS). Fail if that happens accidentally.
     expect(leaked).toEqual([]);
+  });
+});
+
+describe("message postcard layout contract", () => {
+  test("opened message letter starts below the envelope face with compact body padding", () => {
+    const css = readAllStylesCss();
+    const letter = cssRule(css, ".message-letter");
+    const body = cssRule(css, ".message-letter-body");
+
+    expect(pxDeclaration(letter, "top")).toBe(164);
+    expect(body).toContain("padding: 0.95rem 1.5rem 1.25rem");
+  });
+
+  test("opened envelope and letter render as one continuous paper surface", () => {
+    const css = readAllStylesCss();
+    const openFace = cssRule(css, ".message-envelope.open .message-envelope-face");
+    const openLetter = cssRule(css, ".message-envelope.open .message-letter");
+
+    expect(openFace).toContain("border-bottom-color: transparent");
+    expect(openFace).toContain("border-bottom-left-radius: 0");
+    expect(openFace).toContain("border-bottom-right-radius: 0");
+    expect(openLetter).toContain("border-top-color: transparent");
+  });
+
+  test("fold button lives on the top postcard face, not the opened letter", () => {
+    const source = readStickyNoteSvelte();
+    const faceStart = source.indexOf('<div class="message-envelope-face"');
+    const flapStart = source.indexOf('<div class="message-envelope-flap"');
+    const letterStart = source.indexOf('<div class="message-letter">');
+    const buttonStart = source.indexOf("message-face-fold-toggle");
+
+    expect(buttonStart).toBeGreaterThan(faceStart);
+    expect(buttonStart).toBeLessThan(flapStart);
+    expect(buttonStart).toBeLessThan(letterStart);
   });
 });
