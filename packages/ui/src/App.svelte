@@ -350,6 +350,7 @@
   let editors: EditorDescriptor[] = [];
   let runningCommandIds: Set<string> = new Set();
   let commandUrls: Record<string, string[]> = {};
+  let commandErrors: Record<string, { message: string }> = {};
   let commandEditRequest: {
     repoId: string;
     linkId: string;
@@ -2467,6 +2468,7 @@
       if (entry.source === s.source) {
         commandTermSources.delete(linkId);
         persistCommandTermSources();
+        setCommandError(linkId, null);
         if (runningCommandIds.has(linkId)) {
           const next = new Set(runningCommandIds);
           next.delete(linkId);
@@ -4168,6 +4170,54 @@
     commandTermStore.save(map);
   }
 
+  function commandLinkIdForSource(source: string): string | null {
+    for (const [linkId, entry] of commandTermSources) {
+      if (entry.source === source) return linkId;
+    }
+    return null;
+  }
+
+  function setCommandError(
+    linkId: string,
+    error: { message: string } | null,
+  ): void {
+    if (error) {
+      commandErrors = { ...commandErrors, [linkId]: error };
+      return;
+    }
+    if (!(linkId in commandErrors)) return;
+    const next = { ...commandErrors };
+    delete next[linkId];
+    commandErrors = next;
+  }
+
+  function setCommandErrorForSource(
+    source: string,
+    error: { message: string } | null,
+  ): void {
+    const linkId = commandLinkIdForSource(source);
+    if (!linkId) return;
+    setCommandError(linkId, error);
+  }
+
+  function markCommandTermExited(
+    source: string,
+    info: { code?: number; signal?: string } | null = null,
+  ): void {
+    const linkId = commandLinkIdForSource(source);
+    if (!linkId) return;
+    const nextRunning = new Set(runningCommandIds);
+    nextRunning.delete(linkId);
+    runningCommandIds = nextRunning;
+    if (info && (info.code ?? 0) !== 0 && !commandErrors[linkId]) {
+      const message =
+        info.signal && !info.code
+          ? `exited by ${info.signal}`
+          : `exited code ${info.code ?? 0}`;
+      setCommandError(linkId, { message });
+    }
+  }
+
   async function commandTermAlive(source: string): Promise<boolean> {
     const termId = source.replace("__attached__:shell:", "");
     if (!termId || termId === source) return false;
@@ -4187,6 +4237,7 @@
   ): void {
     commandTermSources.delete(linkId);
     persistCommandTermSources();
+    setCommandError(linkId, null);
     const nextSet = new Set(runningCommandIds);
     nextSet.delete(linkId);
     runningCommandIds = nextSet;
@@ -4269,6 +4320,7 @@
       }
 
       if (body.mode === "internal" && body.termId) {
+        setCommandError(link.id, null);
         const source = `__attached__:shell:${body.termId}`;
         commandTermSources.set(link.id, { wtPath, source });
         persistCommandTermSources();
@@ -4286,6 +4338,7 @@
           dismissShellSource(source);
         }
       } else if (body.mode === "shell") {
+        setCommandError(link.id, null);
         void refreshRunningCommands();
       }
     } catch (e) {
@@ -4642,7 +4695,36 @@
       const res = await fetch(apiUrl("/api/commands/running"));
       if (!res.ok) return;
       const body = (await res.json()) as { running: { linkId: string }[] };
-      runningCommandIds = new Set(body.running.map((r) => r.linkId));
+      const next = new Set(body.running.map((r) => r.linkId));
+      const nextErrors = { ...commandErrors };
+      const termsRes = await fetch(apiUrl("/api/terminals")).catch(() => null);
+      if (termsRes?.ok) {
+        const terms = (await termsRes.json()) as {
+          id: string;
+          exitedAt?: string;
+          commandError?: { message: string } | null;
+        }[];
+        const liveTerms = new Map(
+          terms.filter((t) => !t.exitedAt).map((t) => [t.id, t]),
+        );
+        for (const [linkId, entry] of commandTermSources) {
+          const termId = entry.source.replace("__attached__:shell:", "");
+          const term =
+            termId && termId !== entry.source
+              ? liveTerms.get(termId)
+              : undefined;
+          if (term) {
+            next.add(linkId);
+            if (term.commandError) {
+              nextErrors[linkId] = term.commandError;
+            } else {
+              delete nextErrors[linkId];
+            }
+          }
+        }
+      }
+      runningCommandIds = next;
+      commandErrors = nextErrors;
     } catch {}
   }
 
@@ -4852,8 +4934,50 @@
           (payload as { enabled?: unknown }).enabled === true;
         return;
       }
-      if (payload.kind === "command_start" || payload.kind === "command_exit") {
-        void refreshRunningCommands();
+      if (payload.kind === "command_start") {
+        const linkId = (payload as { linkId?: unknown }).linkId;
+        if (typeof linkId === "string") {
+          runningCommandIds = new Set([...runningCommandIds, linkId]);
+          setCommandError(linkId, null);
+        } else {
+          void refreshRunningCommands();
+        }
+        return;
+      }
+      if (payload.kind === "command_exit") {
+        const { linkId, code, signal } = payload as {
+          linkId?: unknown;
+          code?: unknown;
+          signal?: unknown;
+        };
+        if (typeof linkId === "string") {
+          const next = new Set(runningCommandIds);
+          next.delete(linkId);
+          runningCommandIds = next;
+          const exitCode = typeof code === "number" ? code : 0;
+          const exitSignal = typeof signal === "string" ? signal : undefined;
+          if (exitCode !== 0 && !commandErrors[linkId]) {
+            setCommandError(linkId, {
+              message: exitSignal
+                ? `exited by ${exitSignal}`
+                : `exited code ${exitCode}`,
+            });
+          }
+        } else {
+          void refreshRunningCommands();
+        }
+        return;
+      }
+      if (payload.kind === "command_error") {
+        const { linkId, error } = payload as {
+          linkId?: unknown;
+          error?: { message?: unknown } | null;
+        };
+        if (typeof linkId === "string") {
+          const message =
+            typeof error?.message === "string" ? error.message : "";
+          setCommandError(linkId, message ? { message } : null);
+        }
         return;
       }
       if (payload.kind === "command_url") {
@@ -8304,6 +8428,7 @@
                   remotes={repo.remotes ?? []}
                   customLinks={repo.customLinks ?? []}
                   {runningCommandIds}
+                  {commandErrors}
                   editRequest={commandEditRequest}
                   onCommandClick={(l) => handleCommandClick(wt.path, l)}
                   {commandUrls}
@@ -8399,6 +8524,7 @@
                     remotes={repo.remotes ?? []}
                     customLinks={repo.customLinks ?? []}
                     {runningCommandIds}
+                    {commandErrors}
                     editRequest={commandEditRequest}
                     onCommandClick={(l) => handleCommandClick(wt.path, l)}
                     {commandUrls}
@@ -8936,11 +9062,17 @@
                                       clearFinishedFor(s.source);
                                     }
                                   }}
-                                  on:exit={() => {
+                                  on:commandErrorChange={(e) =>
+                                    setCommandErrorForSource(
+                                      s.source,
+                                      e.detail.error,
+                                    )}
+                                  on:exit={(e) => {
                                     transientExited = {
                                       ...transientExited,
                                       [s.source]: true,
                                     };
+                                    markCommandTermExited(s.source, e.detail);
                                     if (transientWorking[s.source]) {
                                       transientWorking = {
                                         ...transientWorking,
@@ -9385,6 +9517,7 @@
   onCommandLinkEdit={handleCommandLinkEdit}
   {runningCommandIds}
   {commandUrls}
+  {commandErrors}
 />
 
 <ConfirmDialog />

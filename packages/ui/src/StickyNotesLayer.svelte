@@ -220,6 +220,7 @@
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  export let commandErrors: Record<string, { message: string }> = {};
 
   let notes: NoteShape[] = [];
   let viewerPeerId: string | null = null;
@@ -3052,6 +3053,7 @@
         {onCommandLinkEdit}
         {runningCommandIds}
         {commandUrls}
+        {commandErrors}
         {viewerPeerId}
         on:move={handleMove}
         on:save={handleSave}

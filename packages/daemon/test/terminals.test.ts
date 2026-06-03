@@ -14,6 +14,7 @@ import { $ } from "bun";
 import {
   NodePtyBackend,
   detectAgentLabel,
+  detectCommandError,
   detectConfigError,
   nextStickyConfigError,
   terminalGoneReason,
@@ -119,7 +120,11 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
       // the Repair/Open buttons disappear while the config was still broken.
       handle.write("j");
       await new Promise((r) => setTimeout(r, 150));
-      expect(seen.some((c) => c === null)).toBe(false);
+      const firstErr = seen.findIndex(
+        (c) => c?.file === "/home/u/.claude.json",
+      );
+      expect(firstErr).toBeGreaterThanOrEqual(0);
+      expect(seen.slice(firstErr + 1).some((c) => c === null)).toBe(false);
 
       // A LATE subscriber (a second broken TUI, or a reload) must receive
       // the still-active configError in its attach snapshot — subscribe
@@ -1153,6 +1158,49 @@ describe("detectConfigError", () => {
 
   test("returns null for empty buffer", () => {
     expect(detectConfigError([], 0)).toBeNull();
+  });
+});
+
+describe("detectCommandError", () => {
+  function bufferFrom(text: string): [Uint8Array[], number] {
+    const buf = new TextEncoder().encode(text);
+    return [[buf], buf.byteLength];
+  }
+
+  test("detects a dev-server TypeError while the PTY remains alive", () => {
+    const [buf, len] = bufferFrom(
+      "> vuepress dev documentation\n\n" +
+        "error TypeError: localStorage.getItem is not a function\n" +
+        "    at Object.<anonymous> (/repo/node_modules/@typescript/vfs/dist/index.js:25:64)\n",
+    );
+    expect(detectCommandError(buf, len)).toEqual({
+      message: "error TypeError: localStorage.getItem is not a function",
+    });
+  });
+
+  test("detects npm script failures", () => {
+    const [buf, len] = bufferFrom(
+      "npm ERR! code ELIFECYCLE\nnpm ERR! command sh -c vite --host\n",
+    );
+    expect(detectCommandError(buf, len)?.message).toBe(
+      "npm ERR! code ELIFECYCLE",
+    );
+  });
+
+  test("detects port binding failures", () => {
+    const [buf, len] = bufferFrom(
+      "Error: listen EADDRINUSE: address already in use 0.0.0.0:5173\n",
+    );
+    expect(detectCommandError(buf, len)?.message).toContain("EADDRINUSE");
+  });
+
+  test("ignores ordinary warnings and successful dev-server output", () => {
+    const [buf, len] = bufferFrom(
+      "(node:1) Warning: experimental feature\n" +
+        "VITE v5.0.0 ready in 210 ms\n" +
+        "Local: http://localhost:5173/\n",
+    );
+    expect(detectCommandError(buf, len)).toBeNull();
   });
 });
 

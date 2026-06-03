@@ -6311,10 +6311,26 @@ const server = Bun.serve<TermWsData, never>({
               .catch(() => {});
             const cmdCleanup = handle.subscribe({
               onData() {},
-              onExit() {
+              onState(state) {
+                if (!state.commandError) return;
+                broadcast("change", {
+                  kind: "command_error",
+                  linkId,
+                  repoId,
+                  error: state.commandError,
+                });
+              },
+              onExit(info) {
                 shellTermIds.delete(handle.id);
                 clearShellInputBuffer(handle.id);
                 void terminalPersist.remove(handle.id).catch(() => {});
+                broadcast("change", {
+                  kind: "command_exit",
+                  linkId,
+                  repoId,
+                  code: info.code,
+                  signal: info.signal,
+                });
                 cmdCleanup();
               },
             });
@@ -6350,9 +6366,9 @@ const server = Bun.serve<TermWsData, never>({
           };
           runningCommands.set(linkId, entry);
           // Auto-clean when the process exits
-          void proc.exited.then(() => {
+          void proc.exited.then((code) => {
             runningCommands.delete(linkId);
-            broadcast("change", { kind: "command_exit", linkId, repoId });
+            broadcast("change", { kind: "command_exit", linkId, repoId, code });
           });
           broadcast("change", {
             kind: "command_start",

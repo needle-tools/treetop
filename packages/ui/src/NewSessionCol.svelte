@@ -109,7 +109,8 @@
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
-    exit: void;
+    commandErrorChange: { error: { message: string } | null };
+    exit: { code: number; signal?: string };
     titleSave: { title: string };
     titleEditingChange: { editing: boolean };
     sshBrowse: { user: string | undefined; host: string; port: number };
@@ -305,11 +306,13 @@
     onSpawn={(id) => dispatch("spawn", { id })}
     onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
     onWorkingChange={(next) => dispatch("workingChange", { working: next })}
+    onCommandErrorChange={(error) =>
+      dispatch("commandErrorChange", { error })}
     onSshChange={(ssh) => {
       sshSession = ssh;
       if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
     }}
-    onExit={() => {
+    onExit={(info) => {
       /* Deliberately NOT closing the column on PTY exit. Some agents
          (notably `codex`) restart themselves after an in-place update —
          they exit, then a fresh process spawns. If we auto-disposed
@@ -318,7 +321,7 @@
          output; the user dismisses via the × in the header. We do
          bubble an exit event up so the side dock can shrink the
          row's dot to mark the session as ended. */
-      dispatch("exit");
+      dispatch("exit", info);
     }}
   />
 </div>

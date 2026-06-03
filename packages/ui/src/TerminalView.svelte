@@ -142,6 +142,9 @@
    *  no extra latency. Parent uses it to flip the agent pill between
    *  the working/idle border styles. */
   export let onWorkingChange: (working: boolean) => void = () => {};
+  export let onCommandErrorChange: (
+    error: { message: string } | null,
+  ) => void = () => {};
   /** A PTY that hasn't emitted a byte in this many ms is treated as
    *  "idle" (waiting for input or done with the current turn). Short
    *  enough that "done" feels responsive, long enough that a typical
@@ -521,6 +524,7 @@
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
+              onCommandErrorChange(obj.commandError ?? null);
               configError = obj.configError ?? null;
               // Error gone (or replaced) → drop any stale action feedback.
               if (!configError) configAction = null;

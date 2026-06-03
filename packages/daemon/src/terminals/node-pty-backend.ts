@@ -49,6 +49,7 @@ interface InternalTerm {
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
   configError: { file: string } | null;
+  commandError: { message: string } | null;
   /** When this PTY runs an agent TUI whose user-message box we recolour
    *  (currently Claude), the stateful byte-stream filter that rewrites
    *  the box's truecolour SGR sequences. Undefined for shells and other
@@ -84,6 +85,8 @@ const AWAITING_INPUT_PATTERNS: RegExp[] = [
 
 const CONFIG_ERROR_RE =
   /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/;
+const COMMAND_ERROR_CODE_RE =
+  /\b(?:EADDRINUSE|ELIFECYCLE|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT|EACCES)\b/;
 
 /** Strip common ANSI/terminal escape sequences from a chunk so the
  *  prompt-pattern regexes can match the plain text. We don't try to
@@ -132,6 +135,34 @@ export function detectConfigError(
   const text = getTailText(buffer, bufferBytes);
   const m = CONFIG_ERROR_RE.exec(text);
   return m ? { file: m[1]!.trim() } : null;
+}
+
+function isCommandErrorLine(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  if (/^(?:npm ERR!|pnpm ERR!)\b/i.test(s)) return true;
+  if (/^yarn(?:\s+\w+)*\s+error\b/i.test(s)) return true;
+  if (/^(?:Uncaught\s+)?(?:[A-Z][\w]*Error|Error):\s+/.test(s)) return true;
+  if (/^error\s+Command failed\b/i.test(s)) return true;
+  if (
+    /^error\s+(?:[A-Z][\w]*Error\b|Error\b|Cannot\b|Failed\b)/i.test(s)
+  ) {
+    return true;
+  }
+  return COMMAND_ERROR_CODE_RE.test(s);
+}
+
+export function detectCommandError(
+  buffer: Uint8Array[],
+  bufferBytes: number,
+): { message: string } | null {
+  const text = getTailText(buffer, bufferBytes);
+  for (const raw of text.split(/\r?\n/)) {
+    if (!isCommandErrorLine(raw)) continue;
+    const message = raw.trim().replace(/\s+/g, " ").slice(0, 220);
+    return message ? { message } : null;
+  }
+  return null;
 }
 
 /**
@@ -400,13 +431,24 @@ export class NodePtyBackend implements PtyBackend {
         const configFlipped =
           (nextConfigErr === null) !== (t.configError === null) ||
           nextConfigErr?.file !== t.configError?.file;
-        if (nextAwaiting !== t.awaitingInput || configFlipped) {
+        const nextCommandErr =
+          detectCommandError(t.buffer, t.bufferBytes) ?? t.commandError;
+        const commandErrFlipped =
+          (nextCommandErr === null) !== (t.commandError === null) ||
+          nextCommandErr?.message !== t.commandError?.message;
+        if (
+          nextAwaiting !== t.awaitingInput ||
+          configFlipped ||
+          commandErrFlipped
+        ) {
           t.awaitingInput = nextAwaiting;
           t.configError = nextConfigErr;
+          t.commandError = nextCommandErr;
           for (const s of t.subs)
             s.onState?.({
               awaitingInput: nextAwaiting,
               configError: nextConfigErr,
+              commandError: nextCommandErr,
             });
         }
         return;
@@ -480,6 +522,7 @@ export class NodePtyBackend implements PtyBackend {
       subs: new Set(),
       awaitingInput: false,
       configError: null,
+      commandError: null,
     };
     // Claude paints its user-message box with truecolour SGR the xterm
     // theme can't reach (see sgr-remap.ts) — attach a stream filter that
@@ -583,7 +626,11 @@ export class NodePtyBackend implements PtyBackend {
         if (t.awaitingInput) {
           t.awaitingInput = false;
           for (const s of t.subs)
-            s.onState?.({ awaitingInput: false, configError: t.configError });
+            s.onState?.({
+              awaitingInput: false,
+              configError: t.configError,
+              commandError: t.commandError,
+            });
         }
       },
       resize: (size) => {
@@ -617,6 +664,7 @@ export class NodePtyBackend implements PtyBackend {
         sub.onState?.({
           awaitingInput: t.awaitingInput,
           configError: t.configError,
+          commandError: t.commandError,
         });
         if (t.exitedAt)
           sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
@@ -661,6 +709,7 @@ export class NodePtyBackend implements PtyBackend {
       createdAt: t.createdAt,
       lastOutputAt: t.lastOutputAt,
       awaitingInput: t.awaitingInput,
+      commandError: t.commandError,
       exitedAt: t.exitedAt,
       exitCode: t.exitCode,
       exitSignal: t.exitSignal,

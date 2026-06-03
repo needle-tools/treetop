@@ -338,6 +338,7 @@
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  export let commandErrors: Record<string, { message: string }> = {};
   export let viewerPeerId: string | null = null;
 
   const dispatch = createEventDispatcher<{
@@ -2704,8 +2705,16 @@
   function linkAttachmentMeta(attachment: InlineAttachment): string {
     if (attachment.kind !== "link") return "";
     if (attachment.target.type === "command") {
+      const commandError = commandErrorForTarget(
+        attachment.target,
+        commandStateKey,
+      );
       const parts = [
-        isCommandRunning(attachment.target, commandStateKey) ? "ON" : "OFF",
+        commandError
+          ? "ERR"
+          : isCommandRunning(attachment.target, commandStateKey)
+            ? "ON"
+            : "OFF",
         liveCommandSubtitle(attachment.target, commandStateKey),
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "command";
@@ -2749,6 +2758,10 @@
 
   $: commandStateKey = [
     [...runningCommandIds].sort().join("|"),
+    Object.entries(commandErrors)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, err]) => `${id}:${err.message}`)
+      .join("\u001e"),
     repos
       .map(
         (repo) =>
@@ -2790,8 +2803,19 @@
     void stateKey;
     return (
       target?.type === "command" &&
-      runningCommandIds.has(commandLinkIdForTarget(target))
+      runningCommandIds.has(commandLinkIdForTarget(target)) &&
+      !commandErrorForTarget(target)
     );
+  }
+
+  function commandErrorForTarget(
+    target: LinkTarget | undefined,
+    stateKey = commandStateKey,
+  ): { message: string } | undefined {
+    void stateKey;
+    if (target?.type !== "command") return undefined;
+    const liveId = commandLinkIdForTarget(target);
+    return commandErrors[liveId] ?? commandErrors[target.value];
   }
 
   function isCommandAttachment(
@@ -3271,18 +3295,24 @@
   mode: "detached" | "stack" | "media",
 )}
   {@const running = isCommandRunning(target, commandStateKey)}
-  {@const subtitle = liveCommandSubtitle(target, commandStateKey)}
+  {@const commandError = commandErrorForTarget(target, commandStateKey)}
+  {@const subtitle =
+    commandError?.message ?? liveCommandSubtitle(target, commandStateKey)}
   {@const urls = commandUrlsForTarget(target, commandUrlsKey)}
   <span
     class="command-power-card"
     class:command-power-card-running={running}
+    class:command-power-card-error={!!commandError}
     class:command-power-card-detached={mode === "detached"}
     class:command-power-card-stack={mode === "stack"}
     class:command-power-card-media={mode === "media"}
+    title={commandError ? `Command error: ${commandError.message}` : undefined}
   >
     <span class="command-power-ring" aria-hidden="true">
       <span class="command-power-led"></span>
-      <span class="command-power-state">{running ? "ON" : "OFF"}</span>
+      <span class="command-power-state"
+        >{commandError ? "ERR" : running ? "ON" : "OFF"}</span
+      >
     </span>
     <span class="command-power-details">
       <span class="command-power-name">{liveCommandLabel(target, commandStateKey)}</span>

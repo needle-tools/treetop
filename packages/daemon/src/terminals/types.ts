@@ -29,6 +29,7 @@ export interface TerminalRecord {
    *  a few seconds is almost certainly waiting on the user or done. */
   lastOutputAt: string;
   awaitingInput?: boolean;
+  commandError?: { message: string } | null;
   exitedAt?: string;
   exitCode?: number;
   exitSignal?: string;
@@ -64,6 +65,7 @@ export interface TerminalSubscriber {
   onState?(state: {
     awaitingInput: boolean;
     configError?: { file: string } | null;
+    commandError?: { message: string } | null;
   }): void;
 }
 

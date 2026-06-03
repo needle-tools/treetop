@@ -93,6 +93,7 @@
   export let customLinks: CustomLink[] = [];
   export let runningCommandIds: ReadonlySet<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  export let commandErrors: Record<string, { message: string }> = {};
   export let editRequest: {
     repoId: string;
     linkId: string;
@@ -1305,7 +1306,9 @@
     {@const failed = failedFavicons.has(link.id)}
     {@const kind = customLinkKind(link)}
     {@const target = customLinkTarget(link)}
-    {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
+    {@const cmdError = kind === "command" ? commandErrors[link.id] : undefined}
+    {@const cmdRunning =
+      kind === "command" && runningCommandIds.has(link.id) && !cmdError}
     {@const cmdUrls = kind === "command" ? commandUrls[link.id] : undefined}
     {@const cmdUrl =
       cmdUrls &&
@@ -1332,7 +1335,12 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        title={cmdRunning ? `Running: ${target}` : linkTooltip(link)}
+        class:command-error={!!cmdError}
+        title={cmdError
+          ? `Command error: ${cmdError.message}`
+          : cmdRunning
+            ? `Running: ${target}`
+            : linkTooltip(link)}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);
@@ -1378,7 +1386,19 @@
             />
           </svg>
         {:else if kind === "command"}
-          {#if cmdRunning}
+          {#if cmdError}
+            <svg
+              class="open-in-icon cmd-error-icon"
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              aria-hidden="true"
+            >
+              <path d="M12 3 22 20H2z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <circle cx="12" cy="17" r="1" />
+            </svg>
+          {:else if cmdRunning}
             <svg
               class="open-in-icon cmd-spinner"
               viewBox="0 0 24 24"
@@ -2208,6 +2228,16 @@
     to {
       transform: rotate(360deg);
     }
+  }
+  .custom-link-btn.command-error {
+    color: #ff6b5f;
+  }
+  .cmd-error-icon {
+    fill: color-mix(in srgb, currentColor 14%, transparent);
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .cmd-url-inner {
     display: inline-flex;
