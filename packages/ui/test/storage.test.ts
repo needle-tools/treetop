@@ -11,6 +11,7 @@ import {
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  isForeignToWorktree,
   resolveTitleSource,
   setSessionMode,
   stampDiscoveredSessionId,
@@ -525,6 +526,40 @@ describe("filterToExistingSessions", () => {
     expect(filterToExistingSessions(persisted, new Set<string>())).toEqual([
       mkSess("__new__:claude:abc"),
     ]);
+  });
+});
+
+describe("isForeignToWorktree", () => {
+  // The real-world bug this guards: a needle-logs-view session got filed
+  // under the supergit worktree's open-sessions list. supergit's agent
+  // snapshot doesn't list it, so it's foreign and the activity dock must
+  // skip it — otherwise it renders as a phantom dot labelled with
+  // supergit's branch ("supergit main"). The sessions-strip already drops
+  // these via filterToExistingSessions; the dock was missing the gate.
+  test("a real source absent from the worktree's known set is foreign", () => {
+    const known = new Set([
+      "/Users/me/.claude/projects/-Users-me-git-supergit/7081c9db.jsonl",
+    ]);
+    expect(
+      isForeignToWorktree(
+        "/Users/me/.claude/projects/-Users-me-git-needle-logs-view/abcf1abf.jsonl",
+        known,
+      ),
+    ).toBe(true);
+  });
+
+  test("a real source present in the worktree's known set is not foreign", () => {
+    const src =
+      "/Users/me/.claude/projects/-Users-me-git-supergit/7081c9db.jsonl";
+    expect(isForeignToWorktree(src, new Set([src]))).toBe(false);
+  });
+
+  test("synthetic sources are never foreign, even with an empty known set", () => {
+    const empty = new Set<string>();
+    expect(isForeignToWorktree("__new__:claude:abc", empty)).toBe(false);
+    expect(isForeignToWorktree("__attached__:shell:t_1", empty)).toBe(false);
+    expect(isForeignToWorktree("__restore__:t_2", empty)).toBe(false);
+    expect(isForeignToWorktree("__transcript__:shell:t_3", empty)).toBe(false);
   });
 });
 

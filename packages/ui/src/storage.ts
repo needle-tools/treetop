@@ -387,6 +387,30 @@ export function filterToExistingSessions(
   });
 }
 
+/**
+ * Whether a real (file-backed) open-session source is "foreign" to a
+ * worktree — i.e. the daemon's per-worktree agent/shell snapshot does NOT
+ * list it. Synthetic columns (brand-new TUIs, attached/restored shells,
+ * browse panels — see `SYNTHETIC_SOURCE_PREFIXES`) are never foreign: they
+ * are supergit-internal and never appear in `/api/agents`.
+ *
+ * The activity dock uses this to skip cross-worktree-contaminated or stale
+ * entries. If a session whose JSONL belongs to another repo gets filed
+ * under this worktree's `openSessionsByWt` list, the dock would otherwise
+ * render it as a phantom dot labelled with this worktree's branch (e.g. a
+ * needle-logs-view session showing up as "supergit main"). The dashboard
+ * sessions-strip already drops these via `filterToExistingSessions`; this
+ * is the same per-worktree existence gate for the dock, where it was
+ * missing.
+ */
+export function isForeignToWorktree(
+  source: string,
+  knownSources: ReadonlySet<string>,
+): boolean {
+  if (SYNTHETIC_SOURCE_PREFIXES.some((p) => source.startsWith(p))) return false;
+  return !knownSources.has(source);
+}
+
 /** Build the cmd[] supergit should hand to a `TerminalView` mounted in
  *  a transient (`__new__:` / `__attached__:`) column.
  *

@@ -128,6 +128,7 @@
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
+    isForeignToWorktree,
     setSessionMode,
     stampDiscoveredSessionIdWithDetail,
     resolveTitleSource,
@@ -5361,8 +5362,17 @@
         const known = pickerSessionsByWt[wt.path] ?? [];
         const bySource = new Map<string, (typeof known)[number]>();
         for (const a of known) bySource.set(a.source, a);
+        const knownSources = new Set(bySource.keys());
         const rowKey = `${repo.id}|${wt.path}`;
         for (const s of opens) {
+          // Skip real (file-backed) sessions the daemon doesn't associate
+          // with THIS worktree. A session whose JSONL belongs to another
+          // repo but got filed under this worktree's open-sessions list
+          // would otherwise render as a phantom dot labelled with this
+          // worktree's branch (e.g. a needle-logs-view session showing as
+          // "supergit main"). The sessions-strip already drops these via
+          // filterToExistingSessions; this is the same per-worktree gate.
+          if (isForeignToWorktree(s.source, knownSources)) continue;
           // Live TUI ⇔ the column currently hosts a running PTY:
           //   - any `__new__:` source (NewSessionCol always spawns one),
           //   - any `__attached__:shell:<termId>` source (reattach to
