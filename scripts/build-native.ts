@@ -20,6 +20,7 @@ import { $ } from "bun";
 import { resolve, join } from "node:path";
 import { rm, mkdir, cp, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { installPayloadPathspec } from "../packages/daemon/src/provision";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BUILD = resolve(ROOT, "build");
@@ -82,19 +83,33 @@ console.log("     ✓ Go helper + support files copied");
 // itself unavailable and the manual paste flow remains.
 console.log("3b/6 Bundling install payload…");
 const payloadDir = join(FLAT, "install-payload");
+const payloadTar = join(FLAT, "_install-payload.tar");
+// Always leave the dir present so the electrobun copy step (which lists it
+// statically) never hard-fails — even if the bundling below can't run.
+await mkdir(payloadDir, { recursive: true });
 try {
-  await mkdir(payloadDir, { recursive: true });
-  await $`git -C ${ROOT} archive --format=tar HEAD | tar -x -C ${payloadDir}`.quiet();
-  if (!existsSync(join(payloadDir, "deploy", "install.sh"))) {
-    throw new Error("deploy/install.sh missing from the archive");
+  // Archive to a FILE then extract — no shell pipe (Bun's `$` pipe + a bare
+  // `tar -x` reading stdin is flaky on Windows) and an explicit `-f`.
+  // installPayloadPathspec() drops the lone symlink (Windows `tar` can't
+  // create it) + internal docs / AI-agent rules the box doesn't need — same
+  // exclusions the dev ship uses. git archive HEAD = tracked tree only (no
+  // node_modules / build / dist).
+  await $`git -C ${ROOT} archive --format=tar -o ${payloadTar} HEAD -- ${installPayloadPathspec()}`.quiet();
+  await $`tar -x -f ${payloadTar} -C ${payloadDir}`.quiet();
+  if (
+    !existsSync(join(payloadDir, "deploy", "install.sh")) ||
+    !existsSync(join(payloadDir, "packages", "daemon", "src", "server.ts"))
+  ) {
+    throw new Error("essential source files missing from the archive");
   }
   console.log("     ✓ install payload bundled (git archive HEAD)");
 } catch (e) {
-  await rm(payloadDir, { recursive: true, force: true });
   console.warn(
     `     ⚠ install payload NOT bundled (${e instanceof Error ? e.message : e}); ` +
-      `auto-provision will be unavailable in this build`,
+      `auto-provision will be unavailable in this build (manual paste still works)`,
   );
+} finally {
+  await rm(payloadTar, { force: true });
 }
 
 // ── 4. Compile Swift launcher (macOS only) ──────────────────────────

@@ -69,6 +69,24 @@ export interface ShipCommand {
 }
 
 /**
+ * git-archive pathspec for the shipped source: everything tracked EXCEPT the
+ * repo's lone symlink and the internal docs / AI-agent rules the box doesn't
+ * need to build the daemon. Shared by the packaged build (build-native.ts)
+ * and the dev ship (buildShipCommand) so they can't drift. Appended after
+ * `git archive … HEAD --`.
+ */
+export function installPayloadPathspec(): string[] {
+  return [
+    ".",
+    ":!AGENTS.md", // symlink → CLAUDE.md; Windows tar can't even extract it
+    ":!CLAUDE.md", // AI-agent dev rules — internal, not needed on the box
+    ":!plans", // internal design docs
+    ":!demos", // sample content
+    ":!artifacts", // scratch / build artifacts
+  ];
+}
+
+/**
  * The local command that streams the source tree (as a tar archive) to
  * stdout, to be piped into the provisioning ssh.
  *
@@ -89,10 +107,19 @@ export function buildShipCommand(
   if (mode === "dev") {
     return {
       bin: "git",
-      args: ["-C", payloadRoot, "archive", "--format=tar", "HEAD"],
+      args: [
+        "-C",
+        payloadRoot,
+        "archive",
+        "--format=tar",
+        "HEAD",
+        "--",
+        ...installPayloadPathspec(),
+      ],
     };
   }
-  // create + gzip + to stdout, chdir into the payload, archive everything.
+  // packaged: install-payload/ is already the pruned source (build-native.ts
+  // applied the same pathspec) — gzip it straight up.
   return { bin: "tar", args: ["-c", "-z", "-f", "-", "-C", payloadRoot, "."] };
 }
 

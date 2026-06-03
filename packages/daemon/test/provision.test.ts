@@ -4,6 +4,7 @@ import {
   buildShipCommand,
   buildProvisionPlan,
   isUpdateAvailable,
+  installPayloadPathspec,
 } from "../src/provision";
 
 /**
@@ -52,6 +53,16 @@ describe("extractConnectionToken", () => {
   });
 });
 
+describe("installPayloadPathspec", () => {
+  test("includes the tree but excludes the symlink + internal docs", () => {
+    const ps = installPayloadPathspec();
+    expect(ps[0]).toBe(".");
+    expect(ps).toContain(":!AGENTS.md"); // symlink Windows tar can't extract
+    expect(ps).toContain(":!CLAUDE.md"); // AI-agent rules, internal
+    expect(ps).toContain(":!plans"); // internal design docs
+  });
+});
+
 describe("buildShipCommand", () => {
   test("packaged: gzip-tar the already-pruned bundle straight to stdout", () => {
     expect(buildShipCommand("/app/install-payload", "packaged")).toEqual({
@@ -60,11 +71,20 @@ describe("buildShipCommand", () => {
     });
   });
 
-  test("dev: git archive the tracked tree (NOT a raw tar — repo has node_modules)", () => {
-    expect(buildShipCommand("/repo", "dev")).toEqual({
-      bin: "git",
-      args: ["-C", "/repo", "archive", "--format=tar", "HEAD"],
-    });
+  test("dev: git archive the tracked tree, excluding internals (repo has node_modules)", () => {
+    const cmd = buildShipCommand("/repo", "dev");
+    expect(cmd.bin).toBe("git");
+    expect(cmd.args.slice(0, 6)).toEqual([
+      "-C",
+      "/repo",
+      "archive",
+      "--format=tar",
+      "HEAD",
+      "--",
+    ]);
+    expect(cmd.args).toContain(".");
+    expect(cmd.args).toContain(":!CLAUDE.md");
+    expect(cmd.args).toContain(":!AGENTS.md");
   });
 });
 
