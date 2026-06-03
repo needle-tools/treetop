@@ -214,4 +214,24 @@ describe("normalizeProvisionForm", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors.sshPort).toMatch(/number/);
   });
+
+  it("defaults to posix — os is omitted from the payload", () => {
+    // posix is the implicit default; the daemon already treats a missing
+    // os as posix, so we keep the payload clean (no redundant field).
+    const r = normalizeProvisionForm(pform({ host: "h", os: "posix" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+  });
+
+  it("carries os when the target is Windows", () => {
+    const r = normalizeProvisionForm(pform({ host: "nuc", os: "windows" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload).toEqual({ host: "nuc", os: "windows" });
+  });
+
+  it("empty os string is treated as posix (omitted)", () => {
+    const r = normalizeProvisionForm(pform({ host: "h", os: "" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+  });
 });

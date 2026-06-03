@@ -50,6 +50,11 @@ export function extractConnectionToken(output: string): string | null {
   return lastToken;
 }
 
+/** Target OS family — decides which remote shell + installer we drive.
+ *  "posix" ships tar|bash for Linux/macOS; "windows" ships cmd/PowerShell
+ *  for a Windows box (whose default ssh shell is cmd.exe). Default posix. */
+export type TargetOs = "posix" | "windows";
+
 export interface ProvisionTarget {
   host: string;
   /** Admin user on the box (e.g. "root"). Omit to use ssh's own default. */
@@ -57,10 +62,14 @@ export interface ProvisionTarget {
   sshPort?: number;
   /** Explicit admin identity; omit to use the user's ssh agent/config. */
   identityPath?: string;
-  /** Where the source lands on the box. Defaults to install.sh's APP_DIR. */
+  /** Where the source lands on the box. Defaults to the installer's APP_DIR
+   *  (/opt/supergit on posix, C:\supergit on windows). */
   remoteDir?: string;
-  /** Args passed to install.sh. Defaults to ["--no-pull"]. */
+  /** Args passed to the installer. Defaults to the OS installer's "use the
+   *  code already here" flag (["--no-pull"] posix / ["-NoPull"] windows). */
   installArgs?: string[];
+  /** OS family of the box. Default "posix". */
+  os?: TargetOs;
 }
 
 export interface ShipCommand {
@@ -181,12 +190,56 @@ function baseSshArgs(t: ProvisionTarget, tty: boolean): string[] {
  * AND a tty for streaming — a single combined ssh can't do both.
  */
 export function buildProvisionPlan(target: ProvisionTarget): ProvisionPlan {
+  const dest = destination(target);
+  if ((target.os ?? "posix") === "windows") return windowsPlan(target, dest);
+
   const remoteDir = target.remoteDir ?? "/opt/supergit";
   const installArgs = target.installArgs ?? ["--no-pull"];
-  const dest = destination(target);
 
   const shipRemote = `mkdir -p ${remoteDir} && tar -x -f - -C ${remoteDir}`;
   const runRemote = `cd ${remoteDir} && bash deploy/install.sh ${installArgs.join(" ")}`;
+
+  return {
+    ship: {
+      ssh: [...baseSshArgs(target, false), dest, shipRemote],
+      remoteCommand: shipRemote,
+    },
+    run: {
+      ssh: [...baseSshArgs(target, true), dest, runRemote],
+      remoteCommand: runRemote,
+    },
+  };
+}
+
+/**
+ * The Windows variant of buildProvisionPlan. A Windows box's default ssh
+ * subsystem is cmd.exe, which rejects the POSIX plan (`mkdir -p … && … bash`)
+ * with "The syntax of the command is incorrect." So:
+ *
+ *   - ship runs through `cmd /c`. Two reasons it beats PowerShell here:
+ *     (1) it works whether the box's DefaultShell is cmd.exe or PowerShell
+ *     (sshd wraps either, and cmd is always present), and (2) cmd hands the
+ *     piped binary tar to tar.exe's stdin untouched — PowerShell re-encodes
+ *     stdin as text and corrupts the archive. Windows 10/11 ship tar.exe
+ *     (bsdtar) in System32; like the posix side it auto-detects gzip vs plain.
+ *     We use a single `mkdir` (cmd makes intermediate dirs by default — no
+ *     `-p`) guarded by `if not exist`, then `&` (not `&&`) to run tar next
+ *     regardless, since the guard already made the success path exit 0.
+ *
+ *   - run uses PowerShell to execute install.ps1 (a real script, no binary
+ *     stdin) with -tt for live output, mirroring the posix tty rationale.
+ *     `-ExecutionPolicy Bypass` lets the unsigned, just-shipped script run.
+ */
+function windowsPlan(target: ProvisionTarget, dest: string): ProvisionPlan {
+  const remoteDir = target.remoteDir ?? "C:\\supergit";
+  const installArgs = target.installArgs ?? ["-NoPull"];
+
+  const shipRemote =
+    `cmd /c if not exist ${remoteDir} mkdir ${remoteDir} & ` +
+    `tar -x -f - -C ${remoteDir}`;
+  const runRemote =
+    `powershell -NoProfile -ExecutionPolicy Bypass -File ` +
+    `${remoteDir}\\deploy\\install.ps1 ${installArgs.join(" ")}`;
 
   return {
     ship: {

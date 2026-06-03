@@ -147,6 +147,62 @@ describe("buildProvisionPlan", () => {
       "deploy/install.sh --no-pull --no-restart",
     );
   });
+
+  test("posix is the default when os is unset", () => {
+    const plan = buildProvisionPlan({ host: "h" });
+    expect(plan.ship.remoteCommand).toContain("mkdir -p /opt/supergit");
+    expect(plan.run.remoteCommand).toContain("bash deploy/install.sh");
+  });
+});
+
+describe("buildProvisionPlan — Windows target", () => {
+  // A Windows box's default ssh shell is cmd.exe, which rejects POSIX
+  // (`mkdir -p`, `&&`, `bash`) with "The syntax of the command is
+  // incorrect." So a windows target needs cmd/PowerShell-native commands.
+  const win = { host: "nuc", user: "needle", os: "windows" as const };
+
+  test("ship: cmd /c so it works under cmd.exe AND passes binary tar stdin", () => {
+    const plan = buildProvisionPlan(win);
+    // No tty (a pty corrupts the piped tar) — same rule as posix.
+    expect(plan.ship.ssh).not.toContain("-tt");
+    expect(plan.ship.ssh).toContain("needle@nuc");
+    // cmd /c, not bash; mkdir without the posix -p; tar.exe extracts stdin.
+    expect(plan.ship.remoteCommand).toContain("cmd /c");
+    expect(plan.ship.remoteCommand).toContain("C:\\supergit");
+    expect(plan.ship.remoteCommand).toContain("tar -x -f - -C C:\\supergit");
+    expect(plan.ship.remoteCommand).not.toContain("mkdir -p");
+    expect(plan.ship.remoteCommand).not.toContain("&&");
+  });
+
+  test("run: PowerShell runs install.ps1 WITH a tty for live output", () => {
+    const plan = buildProvisionPlan(win);
+    expect(plan.run.ssh).toContain("-tt");
+    expect(plan.run.remoteCommand).toContain("powershell");
+    expect(plan.run.remoteCommand).toContain("-ExecutionPolicy Bypass");
+    expect(plan.run.remoteCommand).toContain("deploy\\install.ps1");
+    expect(plan.run.remoteCommand).toContain("-NoPull");
+    expect(plan.run.remoteCommand).not.toContain("bash");
+    expect(plan.run.remoteCommand).not.toContain("install.sh");
+  });
+
+  test("honors a custom remote dir (Windows path) + install args", () => {
+    const plan = buildProvisionPlan({
+      host: "nuc",
+      os: "windows",
+      remoteDir: "D:\\apps\\supergit",
+      installArgs: ["-NoPull", "-Force"],
+    });
+    expect(plan.ship.remoteCommand).toContain("D:\\apps\\supergit");
+    expect(plan.run.remoteCommand).toContain("D:\\apps\\supergit\\deploy\\install.ps1");
+    expect(plan.run.remoteCommand).toContain("-NoPull -Force");
+  });
+
+  test("shares the ssh hardening flags with posix (BatchMode, ConnectTimeout)", () => {
+    const plan = buildProvisionPlan(win);
+    expect(plan.ship.ssh).toContain("BatchMode=yes");
+    expect(plan.ship.ssh).toContain("ConnectTimeout=15");
+    expect(plan.run.ssh[plan.run.ssh.length - 1]).toBe(plan.run.remoteCommand);
+  });
 });
 
 describe("isUpdateAvailable", () => {

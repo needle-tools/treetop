@@ -16,6 +16,7 @@ import {
 import { existsSync, mkdirSync } from "node:fs";
 import { Workspace } from "./workspace";
 import { initDaemonLog } from "./daemon-log";
+import { installCrashGuard } from "./process-safety-net";
 import { repairAllClaudeJson, repairClaudeJsonFile } from "./claude-json-repair";
 import {
   listWorktrees,
@@ -190,6 +191,12 @@ const WORKSPACE_PATH =
 // startup banners survive headless runs. Best-effort; failures here
 // are non-fatal — the daemon keeps logging to stderr regardless.
 const daemonLogPath = await initDaemonLog(WORKSPACE_PATH);
+
+// Last-resort crash guard: a stray unhandledRejection / uncaughtException
+// must NOT exit the daemon — every hosted TUI is a child of our PTY helper,
+// so the process dying kills every live session at once. Installed after
+// the log is teed so the cause lands in daemon.log. See process-safety-net.ts.
+installCrashGuard(process);
 
 // Port resolution order:
 //   1. SUPERGIT_PORT — explicit override, wins.
@@ -7326,6 +7333,9 @@ const server = Bun.serve<TermWsData, never>({
                 ? body.user.trim()
                 : undefined,
             sshPort: typeof body.sshPort === "number" ? body.sshPort : undefined,
+            // Windows boxes need cmd/PowerShell commands (their default ssh
+            // shell is cmd.exe); anything else ships the posix tar|bash plan.
+            os: body.os === "windows" ? "windows" : undefined,
           },
           label: typeof body.label === "string" ? body.label : undefined,
         });

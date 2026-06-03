@@ -127,6 +127,9 @@ export interface ProvisionFormFields {
   user: string;
   sshPort: string;
   label: string;
+  /** Target OS: "" / "posix" (Linux/macOS, the default) or "windows".
+   *  Windows boxes need cmd/PowerShell remote commands + install.ps1. */
+  os: string;
 }
 
 export interface ProvisionFormPayload {
@@ -134,6 +137,8 @@ export interface ProvisionFormPayload {
   user?: string;
   sshPort?: number;
   label?: string;
+  /** Only sent for Windows; absent ⇒ the daemon defaults to posix. */
+  os?: "windows";
 }
 
 export type ProvisionFormResult =
@@ -141,7 +146,7 @@ export type ProvisionFormResult =
   | { ok: false; errors: Partial<Record<keyof ProvisionFormFields, string>> };
 
 export function emptyProvisionForm(): ProvisionFormFields {
-  return { host: "", user: "", sshPort: "", label: "" };
+  return { host: "", user: "", sshPort: "", label: "", os: "" };
 }
 
 export function normalizeProvisionForm(
@@ -163,6 +168,9 @@ export function normalizeProvisionForm(
   if (sshPort.value != null) payload.sshPort = sshPort.value;
   const label = fields.label.trim();
   if (label !== "") payload.label = label;
+  // Only Windows needs to be carried — posix is the daemon's default, so we
+  // keep the payload clean (an empty/"posix" selection sends nothing).
+  if (fields.os === "windows") payload.os = "windows";
 
   return { ok: true, payload };
 }

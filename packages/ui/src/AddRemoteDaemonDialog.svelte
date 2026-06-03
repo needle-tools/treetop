@@ -357,6 +357,21 @@
             </div>
 
             <label class="add-daemon-field">
+              <span>Operating system</span>
+              <select bind:value={pfields.os} class="add-daemon-os">
+                <option value="">Linux / macOS</option>
+                <option value="windows">Windows</option>
+              </select>
+              {#if pfields.os === "windows"}
+                <small class="add-daemon-hint"
+                  >Windows needs the OpenSSH Server feature enabled. Support is
+                  new — if provisioning stalls, check the box has
+                  <code>tar.exe</code> + PowerShell and report the install log.</small
+                >
+              {/if}
+            </label>
+
+            <label class="add-daemon-field">
               <span>Label</span>
               <input
                 type="text"

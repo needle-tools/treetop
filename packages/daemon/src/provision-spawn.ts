@@ -211,9 +211,21 @@ export function makeProvisionSpawner(): (
         if (shipCode !== 0) {
           const dest = `${opts.target.user ? opts.target.user + "@" : ""}${host}`;
           const port = opts.target.sshPort ?? 22;
+          // ssh exit 1 has two very different causes worth disambiguating:
+          // an unreachable box (firewall) vs. a reachable box that rejected
+          // the command. The latter is the classic "wrong OS" case — a
+          // Windows box's cmd.exe answers a POSIX command with "The syntax
+          // of the command is incorrect." Tailor the hints to the target OS.
+          const isWindows = opts.target.os === "windows";
+          const osHint = isWindows
+            ? `  • This is a Windows target. Confirm it has the OpenSSH Server feature enabled, ` +
+              `\`tar.exe\` on PATH (Windows 10/11 ship it), and PowerShell available.\n`
+            : `  • If this is actually a Windows box, re-run and pick "Windows" — supergit was ` +
+              `sending POSIX commands (a Windows cmd.exe replies "The syntax of the command is incorrect").\n`;
           queue.push(
             `[supergit] could not reach ${host} over SSH (ssh exit ${shipCode}).\n` +
               `  • Is the box reachable? A firewall dropping port ${port} looks exactly like this.\n` +
+              osHint +
               `  • Can you run \`ssh ${dest}\` yourself with a key (no password prompt)?\n`,
           );
           resolveExit(shipCode);
