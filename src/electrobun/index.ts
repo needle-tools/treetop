@@ -12,7 +12,7 @@
  * the time we reach here, the WebView2 profile is unlocked and ready.
  */
 
-import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
+import Electrobun, { BrowserWindow, ApplicationMenu } from "electrobun/bun";
 import { resolve, dirname, join } from "node:path";
 import {
   existsSync,
@@ -26,6 +26,7 @@ import {
 import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
+import { repoCandidateFromNativeOpenUrl } from "../../packages/daemon/src/open";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
 // Why no bunSpawnSync: this whole file runs inside a Bun Worker that
@@ -57,6 +58,43 @@ let PORT = PREFERRED_PORT;
 let DAEMON_URL = `http://localhost:${PORT}`;
 const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
+const pendingOpenUrls: string[] = [];
+let mainWindow: BrowserWindow | null = null;
+
+async function addNativeOpenedRepo(url: string): Promise<void> {
+  const path = await repoCandidateFromNativeOpenUrl(url);
+  if (!path) return;
+  try {
+    await waitForDaemon();
+    const res = await fetch(`${DAEMON_URL}/api/repos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    if (!res.ok && res.status !== 409) {
+      console.warn(`supergit: failed to add opened repo ${path}: ${res.status}`);
+    }
+  } catch (e) {
+    console.warn(
+      `supergit: failed to add opened repo ${path}: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+function handleNativeOpenUrl(url: string): void {
+  if (!mainWindow) {
+    pendingOpenUrls.push(url);
+    return;
+  }
+  mainWindow.show();
+  void addNativeOpenedRepo(url);
+}
+
+Electrobun.events.on("open-url", (event) => {
+  handleNativeOpenUrl(event.data.url);
+});
 
 // ── Resolve user's login PATH ────────────────────────────────────────
 // On mac/linux, a .app bundle launched from Finder gets a minimal system
@@ -458,6 +496,8 @@ const win = new BrowserWindow({
   url: DAEMON_URL,
   frame: bounds,
 });
+mainWindow = win;
+for (const url of pendingOpenUrls.splice(0)) handleNativeOpenUrl(url);
 
 // Windows: set taskbar icon + dark title bar via Win32 API.
 // Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,

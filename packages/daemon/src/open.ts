@@ -13,8 +13,9 @@
  */
 
 import { access, readdir, stat } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 /** Absolute path to cmd.exe. Bare `"cmd"` fails under Bun.spawn when the
  *  cwd is a repo directory — Bun resolves it relative to cwd first. */
@@ -219,6 +220,28 @@ export async function openDefault(path: string): Promise<{ via: string }> {
  *  not `://`. */
 export function isUrlLike(path: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(path);
+}
+
+export function pathFromFileUrl(url: string): string | null {
+  if (!url.startsWith("file://")) return null;
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return null;
+  }
+}
+
+export async function repoCandidateFromNativeOpenUrl(
+  url: string,
+): Promise<string | null> {
+  const path = pathFromFileUrl(url);
+  if (!path) return null;
+  try {
+    const s = await stat(path);
+    return s.isDirectory() ? path : dirname(path);
+  } catch {
+    return path;
+  }
 }
 
 /**

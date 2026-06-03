@@ -7,10 +7,20 @@ import {
   detectEditors,
   findWorkspaceFile,
   isUrlLike,
+  pathFromFileUrl,
+  repoCandidateFromNativeOpenUrl,
   resetDetectEditorsCache,
   windowsOpenCommand,
   windowsOpensWithNotepad,
 } from "../src/open";
+import electrobunConfig, { macSigningConfig } from "../../../electrobun.config";
+import {
+  SUPERGIT_DIRECTORY_DOCUMENT_TYPE,
+  SUPERGIT_FOLDER_DOCUMENT_TYPE,
+  candidateInfoPlists,
+  withSupergitMacOpenWith,
+} from "../../../scripts/patch-macos-open-with";
+import { macBuildAppCandidates } from "../../../scripts/install-macos";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-open-"));
@@ -90,6 +100,104 @@ describe("isUrlLike", () => {
     expect(isUrlLike("../config.json")).toBe(false);
     expect(isUrlLike("attachments/paste.png")).toBe(false);
     expect(isUrlLike("\\\\server\\share\\file.json")).toBe(false);
+  });
+});
+
+describe("native open URLs", () => {
+  test("decodes file URLs for macOS open-url events", () => {
+    expect(pathFromFileUrl("file:///Users/me/has%20space")).toBe(
+      "/Users/me/has space",
+    );
+    expect(pathFromFileUrl("supergit://repo/abc")).toBeNull();
+  });
+
+  test("uses a file's parent as the repo candidate", async () => {
+    const d = await tempDir();
+    const workspace = join(d, "project.code-workspace");
+    await writeFile(workspace, "{}");
+    expect(await repoCandidateFromNativeOpenUrl(`file://${workspace}`)).toBe(d);
+  });
+});
+
+describe("macOS Open With metadata", () => {
+  test("declares .code-workspace files in the Electrobun bundle config", () => {
+    expect(electrobunConfig.app.urlSchemes).toContain("supergit");
+    expect(electrobunConfig.app.fileAssociations).toContainEqual({
+      ext: ["code-workspace"],
+      name: "Supergit Workspace",
+      role: "Editor",
+    });
+  });
+
+  test("keeps macOS signing opt-in for local builds", () => {
+    expect(macSigningConfig({})).toEqual({
+      codesign: false,
+      notarize: false,
+    });
+    expect(macSigningConfig({ SUPERGIT_CODESIGN: "1" })).toEqual({
+      codesign: true,
+      notarize: false,
+    });
+    expect(
+      macSigningConfig({
+        SUPERGIT_CODESIGN: "1",
+        SUPERGIT_NOTARIZE: "1",
+      }),
+    ).toEqual({
+      codesign: true,
+      notarize: true,
+    });
+  });
+
+  test("post-wrap patch adds a public.folder document type", () => {
+    expect(withSupergitMacOpenWith({}).CFBundleDocumentTypes).toContainEqual(
+      SUPERGIT_FOLDER_DOCUMENT_TYPE,
+    );
+    expect(withSupergitMacOpenWith({}).CFBundleDocumentTypes).toContainEqual(
+      SUPERGIT_DIRECTORY_DOCUMENT_TYPE,
+    );
+    expect(withSupergitMacOpenWith({}).CFBundleURLTypes).toContainEqual({
+      CFBundleTypeRole: "Editor",
+      CFBundleURLName: "Supergit",
+      CFBundleURLSchemes: ["supergit"],
+    });
+  });
+
+  test("post-wrap patch is idempotent", () => {
+    const plist = withSupergitMacOpenWith({});
+    const twice = withSupergitMacOpenWith(plist);
+    expect(twice.CFBundleDocumentTypes).toEqual(plist.CFBundleDocumentTypes);
+  });
+
+  test("post-wrap patch targets the wrapped macOS bundle", () => {
+    expect(
+      candidateInfoPlists({
+        ELECTROBUN_OS: "macos",
+        ELECTROBUN_WRAPPER_BUNDLE_PATH: "/tmp/Supergit.app",
+        ELECTROBUN_BUILD_DIR: "/tmp/build",
+        ELECTROBUN_APP_NAME: "Supergit",
+      }),
+    ).toEqual([
+      "/tmp/Supergit.app/Contents/Info.plist",
+      "/tmp/build/Supergit.app/Contents/Info.plist",
+    ]);
+  });
+
+  test("post-build patch is a no-op on non-mac hosts", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      expect(candidateInfoPlists({})).toEqual([]);
+    } finally {
+      if (platform) Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  test("build:install looks for the stable app before the legacy flat app", () => {
+    expect(macBuildAppCandidates("/repo", "arm64")).toEqual([
+      "/repo/build/stable-macos-arm64/Supergit.app",
+      "/repo/build/Supergit.app",
+    ]);
   });
 });
 

@@ -3,10 +3,15 @@ import { resolve, join, basename } from "node:path";
 import { existsSync, statSync, readdirSync, rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { $ } from "bun";
+import { candidateInfoPlists, patchInfoPlist } from "./patch-macos-open-with";
 
 const ROOT = resolve(import.meta.dir, "..");
 const platform = `${process.platform}-${process.arch}`;
 const isWin = process.platform === "win32";
+const isSignedMacBuild =
+  process.platform === "darwin" &&
+  (process.env.SUPERGIT_CODESIGN === "1" ||
+    process.env.ELECTROBUN_CODESIGN === "1");
 
 const paths: Record<string, string> = {
   flat: resolve(ROOT, "build/supergit-native"),
@@ -23,7 +28,12 @@ if (isWin) {
 // Electrobun stable builds produce a self-extracting .app that decompresses on
 // first launch. We pre-extract it here so the build output is ready to run
 // immediately (no "open once to initialize" step needed for AirDrop/sharing).
-if (process.platform === "darwin" && paths.app && existsSync(paths.app)) {
+if (
+  process.platform === "darwin" &&
+  !isSignedMacBuild &&
+  paths.app &&
+  existsSync(paths.app)
+) {
   const resources = join(paths.app, "Contents", "Resources");
   const zstFile = readdirSync(resources).find(f => f.endsWith(".tar.zst"));
   if (zstFile) {
@@ -56,6 +66,14 @@ if (process.platform === "darwin" && paths.app && existsSync(paths.app)) {
       console.log(`  Extracted → ready-to-run app bundle (${await sizeOf(paths.app)})`);
     }
   }
+}
+
+if (process.platform === "darwin" && !isSignedMacBuild) {
+  for (const infoPath of candidateInfoPlists(process.env)) {
+    if (existsSync(infoPath)) patchInfoPlist(infoPath);
+  }
+} else if (isSignedMacBuild) {
+  console.log("  Keeping signed macOS bundle intact (no post-sign plist edits)");
 }
 
 // Cross-platform recursive size (avoids `du`, which doesn't exist on Windows).

@@ -8,11 +8,33 @@
 const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
 
+export function macSigningConfig(env: NodeJS.ProcessEnv = process.env): {
+  codesign: boolean;
+  notarize: boolean;
+} {
+  const codesign =
+    env.SUPERGIT_CODESIGN === "1" || env.ELECTROBUN_CODESIGN === "1";
+  return {
+    codesign,
+    notarize:
+      codesign &&
+      (env.SUPERGIT_NOTARIZE === "1" || env.ELECTROBUN_NOTARIZE === "1"),
+  };
+}
+
 export default {
   app: {
     name: "Supergit",
     identifier: "tools.needle.supergit",
     version: "0.1.0",
+    urlSchemes: ["supergit"],
+    fileAssociations: [
+      {
+        ext: ["code-workspace"],
+        name: "Supergit Workspace",
+        role: "Editor",
+      },
+    ],
   },
   build: {
     bun: {
@@ -20,6 +42,7 @@ export default {
     },
     mac: {
       icons: "icon.iconset",
+      ...macSigningConfig(),
     },
     win: {
       icon: "icon.ico",
@@ -55,5 +78,8 @@ export default {
       "build/supergit-native/build-info.json": "build-info.json",
       "build/supergit-native/install-payload": "install-payload",
     },
+  },
+  scripts: {
+    postWrap: "scripts/patch-macos-open-with.ts",
   },
 };
