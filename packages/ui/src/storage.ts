@@ -213,6 +213,14 @@ export interface PersistedSession {
    *  page reload doesn't drop the user back to the read-only history.
    *  Absence implies the default `"read"` mode. */
   mode?: "terminal";
+  /** Optional. The daemon terminal id of the live PTY this column is
+   *  currently attached to, stamped on spawn so a remount/reopen in the
+   *  same page reattaches to the running TUI instead of re-spawning. NOT
+   *  round-tripped through `sanitizeSession` (deliberately dropped on load):
+   *  it's only valid within the daemon run that minted it, and a stale one
+   *  after a daemon restart now self-heals via TerminalView's spawn
+   *  fallback. */
+  attachTermId?: string;
 }
 
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
@@ -523,6 +531,28 @@ export function setSessionMode(
   else delete updated.mode;
   const next = list.slice();
   next[idx] = updated;
+  return { ...byWt, [wtPath]: next };
+}
+
+/** Point a session's `attachTermId` at a freshly-spawned PTY so a remount
+ *  or reopen in the same page reattaches to the live terminal instead of a
+ *  stale id (which 404s the WS and — post spawn-fallback — forces another
+ *  spawn). No-op when the source isn't present or the id is unchanged;
+ *  returns the same reference in that case so reactive `$:` consumers can
+ *  skip work. */
+export function setSessionAttachTermId(
+  byWt: Record<string, PersistedSession[]>,
+  wtPath: string,
+  source: string,
+  termId: string,
+): Record<string, PersistedSession[]> {
+  const list = byWt[wtPath];
+  if (!list) return byWt;
+  const idx = list.findIndex((s) => s.source === source);
+  if (idx === -1) return byWt;
+  if (list[idx]!.attachTermId === termId) return byWt;
+  const next = list.slice();
+  next[idx] = { ...list[idx]!, attachTermId: termId };
   return { ...byWt, [wtPath]: next };
 }
 

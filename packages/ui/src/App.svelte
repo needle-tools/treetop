@@ -130,6 +130,7 @@
     filterToExistingSessions,
     isForeignToWorktree,
     setSessionMode,
+    setSessionAttachTermId,
     stampDiscoveredSessionIdWithDetail,
     resolveTitleSource,
     type PersistedSession,
@@ -9150,7 +9151,22 @@
                                     setClaudeSessionFlag(wt.path, s.source, {
                                       claudeEffort: e,
                                     })}
-                                  attachTermId={(s as any).attachTermId}
+                                  attachTermId={s.attachTermId}
+                                  onSpawn={(id) => {
+                                    // Keep this session's attachTermId on the
+                                    // live PTY so a remount (model/effort
+                                    // switch) or reopen reattaches to the
+                                    // running TUI instead of a stale id —
+                                    // which would 404 and force a respawn.
+                                    const next = setSessionAttachTermId(
+                                      openSessionsByWt,
+                                      wt.path,
+                                      s.source,
+                                      id,
+                                    );
+                                    if (next !== openSessionsByWt)
+                                      openSessionsByWt = next;
+                                  }}
                                   initialMode={s.mode === "terminal"
                                     ? "terminal"
                                     : "read"}

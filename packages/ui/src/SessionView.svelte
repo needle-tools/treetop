@@ -144,6 +144,10 @@
      shape as NewSessionCol's on:workingChange / on:awaitingChange. */
   export let onWorkingChange: (working: boolean) => void = () => {};
   export let onAwaitingChange: (awaiting: boolean) => void = () => {};
+  /** Bubble the daemon terminal id up to App when this column spawns (or
+   *  re-spawns, e.g. after a stale-attach fallback) a PTY, so the parent
+   *  can keep the session's `attachTermId` pointed at the live terminal. */
+  export let onSpawn: (id: string) => void = () => {};
   /** Whole-file message count for this session, supplied by the parent
    *  from `/api/repos`'s pre-scanned agent metadata. `/api/session`
    *  only ships the trimmed tail (last MAX_CACHED_MESSAGES = 100), so
@@ -1820,7 +1824,10 @@
       {attachTermId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
       {daemonId}
-      onSpawn={(id) => (terminalId = id)}
+      onSpawn={(id) => {
+        terminalId = id;
+        onSpawn(id);
+      }}
       onAwaitingChange={(a) => {
         awaitingInput = a;
         onAwaitingChange(a);

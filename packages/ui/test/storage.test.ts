@@ -14,6 +14,7 @@ import {
   isForeignToWorktree,
   resolveTitleSource,
   setSessionMode,
+  setSessionAttachTermId,
   stampDiscoveredSessionId,
   stampDiscoveredSessionIdWithDetail,
   type KVStore,
@@ -1361,6 +1362,78 @@ describe("setSessionMode", () => {
     const beforeJson = JSON.stringify(before);
     setSessionMode(before, "/wt", SOURCE, "terminal");
     expect(JSON.stringify(before)).toBe(beforeJson);
+  });
+});
+
+describe("setSessionAttachTermId", () => {
+  const SOURCE = "/Users/me/.claude/projects/-Users-me-wt/abc.jsonl";
+
+  test("stamps the live terminal id on the matching entry only", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt-a": [
+        { agent: "claude", source: SOURCE, mode: "terminal" },
+        { agent: "codex", source: "/other.jsonl" },
+      ],
+      "/wt-b": [{ agent: "claude", source: SOURCE }],
+    };
+    const after = setSessionAttachTermId(before, "/wt-a", SOURCE, "t_new_1");
+    expect(after["/wt-a"]).toEqual([
+      { agent: "claude", source: SOURCE, mode: "terminal", attachTermId: "t_new_1" },
+      { agent: "codex", source: "/other.jsonl" },
+    ]);
+    expect(after["/wt-b"]).toBe(before["/wt-b"]);
+  });
+
+  test("replaces a stale attachTermId with the fresh one", () => {
+    // The daemon-restart case: the persisted/in-memory id is dead; after
+    // the fallback respawns we must repoint it at the live PTY so a
+    // subsequent remount doesn't 404 against the dead id again.
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        { agent: "claude", source: SOURCE, attachTermId: "t_dead_13" },
+      ],
+    };
+    const after = setSessionAttachTermId(before, "/wt", SOURCE, "t_live_20");
+    expect(after["/wt"]![0]!.attachTermId).toBe("t_live_20");
+  });
+
+  test("returns same reference when the id is unchanged", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE, attachTermId: "t_x" }],
+    };
+    expect(setSessionAttachTermId(before, "/wt", SOURCE, "t_x")).toBe(before);
+  });
+
+  test("returns same reference when the wt or source is missing", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    };
+    expect(setSessionAttachTermId(before, "/nope", SOURCE, "t_1")).toBe(before);
+    expect(setSessionAttachTermId(before, "/wt", "/missing.jsonl", "t_1")).toBe(
+      before,
+    );
+  });
+
+  test("doesn't mutate the input map or its inner arrays", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    };
+    const beforeJson = JSON.stringify(before);
+    setSessionAttachTermId(before, "/wt", SOURCE, "t_1");
+    expect(JSON.stringify(before)).toBe(beforeJson);
+  });
+
+  test("attachTermId is dropped on load (only valid within its daemon run)", () => {
+    // It must never be trusted across a reload: the PTY it names may be
+    // gone. sanitizeSession deliberately omits it.
+    const m = new MemStore();
+    const store = new OpenSessionsStore(m, "supergit:openSessions-attach");
+    store.save({
+      "/wt": [{ agent: "claude", source: SOURCE, attachTermId: "t_dead" }],
+    });
+    expect(store.load()).toEqual({
+      "/wt": [{ agent: "claude", source: SOURCE }],
+    });
   });
 });
 
