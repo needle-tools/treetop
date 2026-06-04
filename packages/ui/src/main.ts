@@ -1,7 +1,13 @@
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
 import { apiUrl } from "./api";
-import { configure, DEFAULT_MAPPINGS, installGestureListener } from "./sound";
+import {
+  configure,
+  DEFAULT_MAPPINGS,
+  installGestureListener,
+  playOnFirstGesture,
+} from "./sound";
+import { startPeerWatcher } from "./peer-watcher";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/popover.css";
@@ -86,6 +92,8 @@ await initDaemonKV();
 
 configure(DEFAULT_MAPPINGS);
 installGestureListener();
+playOnFirstGesture("app-startup");
+startPeerWatcher();
 
 const app = mount(App, { target });
 

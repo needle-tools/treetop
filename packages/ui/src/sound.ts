@@ -38,7 +38,12 @@ export type SoundTag =
   | "ai-braam"
   | "ai-crowd-gasp"
   | "usage-over-pace"
-  | "toast-warning";
+  | "toast-warning"
+  | "lan-peer-connect"
+  | "git-pull"
+  | "daemon-connect-fail"
+  | "daemon-connect-ok"
+  | "app-startup";
 
 export type SoundTrigger = "click" | "hover" | "appear";
 
@@ -131,9 +136,12 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     overlay: true,
   },
   "message-receive": {
-    files: ["/sounds/message-receive.mp3"],
+    files: [
+      "/sounds/message-receive.mp3",
+      "/sounds/message-receive-alt1.ogg",
+    ],
     volume: 0.5,
-    selfCooldown: 2000,
+    selfCooldown: 5000,
     overlay: true,
   },
   error: {
@@ -296,7 +304,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // selfCooldown here is just a guard against two agents tripping in
   // the same render tick.
   "usage-over-pace": {
-    files: ["/sounds/usage-over-pace.mp3"],
+    files: ["/sounds/usage-over-pace.ogg"],
     volume: 0.4,
     overlay: true,
     selfCooldown: 1000,
@@ -310,6 +318,51 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     volume: 0.35,
     overlay: true,
     selfCooldown: 3000,
+  },
+  // Glockenspiel A# — chimes when a new LAN peer (other supergit
+  // daemon discovered via mDNS) appears. Per-host 60-minute dedup
+  // lives in peer-watcher.ts; the 1-minute selfCooldown here keeps
+  // distinct hosts from triggering the chime in lockstep.
+  "lan-peer-connect": {
+    files: ["/sounds/lan-peer-connect.ogg"],
+    volume: 0.6,
+    overlay: true,
+    selfCooldown: 60_000,
+  },
+  // Short marimba flourish — successful `git pull` that actually
+  // advanced HEAD. "Already up to date" doesn't fire it.
+  "git-pull": {
+    files: ["/sounds/git-pull.ogg"],
+    volume: 0.5,
+    overlay: true,
+    selfCooldown: 2000,
+  },
+  // Cartoon dissonant vibraphone — Add Remote Daemon dialog fails to
+  // connect / provision / paste-add. Replaces the generic error chime
+  // for this specific flow.
+  "daemon-connect-fail": {
+    files: ["/sounds/daemon-connect-fail.ogg"],
+    volume: 0.5,
+    overlay: true,
+    selfCooldown: 2000,
+  },
+  // Big ethnic drum — Add Remote Daemon dialog connects / provisions
+  // / paste-adds successfully. Companion to "daemon-connect-fail".
+  "daemon-connect-ok": {
+    files: ["/sounds/daemon-connect-ok.ogg"],
+    volume: 0.5,
+    overlay: true,
+    selfCooldown: 2000,
+  },
+  // Bongo stinger — one-shot app-load chime fired by
+  // playOnFirstGesture() on the first user gesture after page load.
+  // (Browser autoplay policy blocks audio before that; the gesture is
+  // also what creates the AudioContext.)
+  "app-startup": {
+    files: ["/sounds/app-startup.ogg"],
+    volume: 0.6,
+    overlay: true,
+    selfCooldown: 60 * 60 * 1000,
   },
 };
 
@@ -358,6 +411,7 @@ export function warmAudioContext(): void {
 }
 
 let gestureListenerInstalled = false;
+let pendingOnFirstGesture: SoundTag[] = [];
 
 export function installGestureListener(): void {
   if (gestureListenerInstalled) return;
@@ -367,9 +421,24 @@ export function installGestureListener(): void {
     warmAudioContext();
     document.removeEventListener("click", handler, true);
     document.removeEventListener("keydown", handler, true);
+    const queued = pendingOnFirstGesture;
+    pendingOnFirstGesture = [];
+    for (const tag of queued) play(tag);
   };
   document.addEventListener("click", handler, { capture: true, once: false });
   document.addEventListener("keydown", handler, { capture: true, once: false });
+}
+
+/** Queue a sound to play on the first user gesture after page load.
+ *  Used by the app-startup chime — the AudioContext can't exist
+ *  before that gesture, so playing eagerly would silently no-op. If
+ *  the gesture has already happened (context exists), plays now. */
+export function playOnFirstGesture(tag: SoundTag): void {
+  if (audioCtx) {
+    play(tag);
+    return;
+  }
+  pendingOnFirstGesture.push(tag);
 }
 
 function ensureContext(): AudioContext | null {
@@ -600,6 +669,7 @@ export function resetForTesting(): void {
   masterVolume = 1.0;
   enabled = true;
   activeSources = [];
+  pendingOnFirstGesture = [];
 }
 
 export interface SoundActionOptions {

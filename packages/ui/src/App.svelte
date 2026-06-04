@@ -1149,6 +1149,7 @@
             ttlMs: 4_000,
           });
         } else {
+          play("git-pull");
           addToast({
             kind: "success",
             message: "Pulled latest from upstream.",
@@ -1226,6 +1227,7 @@
     try {
       const result = await doPull(ctx.repoId, ctx.wtPath, { preStash: true });
       if (result.ok) {
+        play("git-pull");
         if (result.stashed && result.stashConflict) {
           addToast({
             kind: "error",

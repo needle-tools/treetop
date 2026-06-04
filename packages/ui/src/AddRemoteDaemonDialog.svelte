@@ -47,6 +47,7 @@
     type DaemonFormPayload,
     type ProvisionFormFields,
   } from "./remote-daemon-form";
+  import { play } from "./sound";
 
   export let open = false;
   /** Manual add (Advanced form) → POST /api/daemons. Throws on failure. */
@@ -150,6 +151,7 @@
     } catch (e) {
       provStatus = "error";
       provError = e instanceof Error ? e.message : String(e);
+      play("daemon-connect-fail");
       // A "no payload bundled" failure → reveal the paste option as the path.
       if (/payload|unavailable|paste/i.test(provError)) showOther = true;
       return;
@@ -159,6 +161,8 @@
       onStatus: (status, info) => {
         provStatus = status;
         if (info.error) provError = info.error;
+        if (status === "error") play("daemon-connect-fail");
+        else if (status === "done") play("daemon-connect-ok");
       },
       onEnd: () => {
         provUnsub?.();
@@ -195,6 +199,7 @@
     try {
       if (connectionString.trim()) {
         await onConnect(connectionString.trim());
+        play("daemon-connect-ok");
         open = false;
         onClose();
       } else {
@@ -206,11 +211,13 @@
         }
         errors = {};
         await onAdd(result.payload);
+        play("daemon-connect-ok");
         open = false;
         onClose();
       }
     } catch (e) {
       submitError = e instanceof Error ? e.message : String(e);
+      play("daemon-connect-fail");
     } finally {
       busy = false;
     }

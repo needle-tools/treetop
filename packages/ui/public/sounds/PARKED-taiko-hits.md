@@ -1,4 +1,4 @@
-## parked-taiko-hits.ogg / .mp3
+## parked-taiko-hits.ogg
 
 Multiple taiko hits — ~2s percussion burst. User likes it; no
 assigned use yet.
@@ -11,5 +11,4 @@ assigned use yet.
 
 ### Status
 - Parked: not yet referenced in `sound.ts` `DEFAULT_MAPPINGS`.
-- Files: `parked-taiko-hits.mp3`, `parked-taiko-hits.ogg`
-  (metadata stripped, libmp3lame -q:a 4 / libopus 96k).
+- File: `parked-taiko-hits.ogg` (metadata stripped, libopus 96k).
