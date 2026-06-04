@@ -567,6 +567,14 @@
                   <path d="M6 9l6 6 6-6" />
                 </svg>
                 <span class="proc-group-label">
+                  {#if group.daemonStatus !== "local"}
+                    <span
+                      class="proc-group-status proc-group-status-{group.daemonStatus}"
+                      title={group.daemonStatus === "online"
+                        ? "Remote daemon online"
+                        : "Remote daemon offline"}
+                    ></span>
+                  {/if}
                   <span
                     class="proc-group-badge"
                     class:proc-group-badge-colored={!!group.repoColor}
@@ -578,14 +586,6 @@
                   >
                   <span class="proc-group-count">{group.procs.length}</span>
                 </span>
-                {#if group.daemonStatus !== "local"}
-                  <span
-                    class="proc-group-status proc-group-status-{group.daemonStatus}"
-                    title={group.daemonStatus === "online"
-                      ? "Remote daemon online"
-                      : "Remote daemon offline"}
-                  ></span>
-                {/if}
                 <span class="proc-group-stat proc-group-cpu"
                   >{formatPercent(group.totalCpu)}</span
                 >
