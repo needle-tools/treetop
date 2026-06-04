@@ -54,6 +54,7 @@ import { computeAgentUsage, topClaudeSessionsByTokens } from "./agent-usage";
 import { startActivityTail, onActivity } from "./activity";
 import {
   getSessionResponseJson,
+  getSessionsBatchResults,
   sessionCacheStats,
   parseSessionFile,
 } from "./sessions";
@@ -2910,6 +2911,38 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(body, {
           headers: { "Content-Type": "application/json", ETag: etag, ...CORS },
         });
+      }
+
+      // Batched sibling of GET /api/session: the dashboard coalesces every
+      // mounted SessionView's 2 s poll into ONE request per daemon instead of
+      // one-per-column (see plans/performance.md "per-column session-poll
+      // storm"). Body: { sources: [{ source, etag? }] }. Per-source 304/200/403
+      // mirrors the single route; logic lives in getSessionsBatchResults so it
+      // stays unit-tested.
+      if (url.pathname === "/api/sessions/batch" && req.method === "POST") {
+        const payload = await req.json().catch(() => null);
+        const sources = (payload as { sources?: unknown } | null)?.sources;
+        if (!Array.isArray(sources)) {
+          return json(
+            { error: "{ sources: [{ source, etag? }] } required" },
+            { status: 400 },
+          );
+        }
+        const items = sources
+          .filter(
+            (s): s is { source: string; etag?: string } =>
+              !!s && typeof s.source === "string",
+          )
+          // Cap the fan-out so a malformed/hostile client can't ask the daemon
+          // to stat+parse thousands of files in one request.
+          .slice(0, 200);
+        const titles = await workspace.listSessionTitles();
+        const results = await getSessionsBatchResults(
+          items,
+          (s) => resolveSessionAgent(s)?.agent ?? null,
+          (s) => titles[s],
+        );
+        return json({ results });
       }
 
       if (url.pathname === "/api/session/context" && req.method === "GET") {

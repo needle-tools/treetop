@@ -26,7 +26,7 @@
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
   } from "./last-user-message";
-  import { isUiIdle, onResume } from "./ui-idle";
+  import { registerSessionPoll } from "./session-poll";
   import { splitParent } from "./file-browser-utils";
 
   marked.setOptions({ breaks: true, gfm: true });
@@ -1121,6 +1121,27 @@
   let lastEtag: string | null = null;
   let lastResponseBody: string | null = null;
 
+  /** Apply a freshly-parsed session payload. Forces a new identity for the
+   *  messages array so Svelte's reactivity always re-renders, and clears the
+   *  composer once a pending send has landed in the JSONL. Shared by load()
+   *  (event-driven immediate refresh) and the shared poller (periodic). */
+  function applyParsedSession(next: NormalizedSession) {
+    session = { ...next, messages: [...next.messages] };
+    lastLoadedAt = Date.now();
+    pollCount += 1;
+    // If a send is in flight, watch for the message count to grow — that
+    // means the agent has written at least the user-turn into the JSONL.
+    if (pendingSinceLen !== null && session.messages.length > pendingSinceLen) {
+      inputText = "";
+      sending = false;
+      pendingSinceLen = null;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+    }
+  }
+
   async function load() {
     if (loading) return;
     if (ollamaStreamingIdx !== null) return;
@@ -1142,30 +1163,7 @@
       if (bodyText === lastResponseBody) return;
       lastResponseBody = bodyText;
       const next = JSON.parse(bodyText) as NormalizedSession;
-      // Force a new identity for the messages array so Svelte's
-      // reactivity definitely picks it up.
-      session = { ...next, messages: [...next.messages] };
-      lastLoadedAt = Date.now();
-      pollCount += 1;
-      console.debug(
-        `[SessionView] poll #${pollCount}: ${session.messages.length} messages`,
-      );
-      // If a send is in flight, watch for the message count to grow —
-      // that means claude has written at least the user-turn (and likely
-      // the assistant turn too) into the JSONL. At that point we clear
-      // the composer.
-      if (
-        pendingSinceLen !== null &&
-        session.messages.length > pendingSinceLen
-      ) {
-        inputText = "";
-        sending = false;
-        pendingSinceLen = null;
-        if (pendingTimer) {
-          clearTimeout(pendingTimer);
-          pendingTimer = null;
-        }
-      }
+      applyParsedSession(next);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1465,40 +1463,45 @@
     hasRenderedOnce = true;
   }
 
-  // Live sync: dead-simple polling. Every 2s, refetch /api/session.
-  // load() guards against overlapping calls and forces a new identity for
-  // the messages array so Svelte's reactivity always re-renders. SSE was
-  // proving fragile through Vite's proxy; this path is boring and works.
+  // Live sync. Registers with the SHARED session poller instead of running a
+  // per-column setInterval: one timer + one batched request per daemon for the
+  // whole dashboard, instead of ~50 req/s when 30+ columns are open (see
+  // plans/performance.md "per-column session-poll storm"). The poller is
+  // idle-gated and resume-aware centrally; it dispatches a changed body via
+  // onSession and this column's active-sends slice via onInflight. load() /
+  // refreshInflight() remain for event-driven immediate refresh (post-send).
+  // `source` is keyed in App.svelte's {#each}, so it's stable for this mount.
 
-  let pollTimer: number | null = null;
-  let resumeOff: (() => void) | null = null;
+  let unregisterPoll: (() => void) | null = null;
 
   onMount(() => {
-    pollTimer = window.setInterval(() => {
-      // Skip the poll while the dashboard is idle (tab hidden or no
-      // input for the idle window). Each SessionView polls every 2 s
-      // and there can easily be 30+ columns mounted; without this
-      // gate the daemon sees ~50 req/s of /api/session + /api/active-sends
-      // even with nobody looking. onResume() fires a catch-up below.
-      if (isUiIdle()) return;
-      void load();
-      void refreshInflight();
-    }, 2_000);
-    // Kick off an immediate inflight refresh so the indicator's accurate
-    // from the first render, not 2s later.
-    void refreshInflight();
-    // When the user comes back (visibilitychange or first input after
-    // a quiet period) fire one catch-up immediately so the view doesn't
-    // wait up to 2 s for the next tick.
-    resumeOff = onResume(() => {
-      void load();
-      void refreshInflight();
+    unregisterPoll = registerSessionPoll({
+      source,
+      daemonId,
+      getSessionId: () => session?.sessionId,
+      onSession: (bodyText, etag) => {
+        // Don't clobber a live Ollama stream mid-flight.
+        if (ollamaStreamingIdx !== null) return;
+        if (bodyText === lastResponseBody) return;
+        lastEtag = etag;
+        lastResponseBody = bodyText;
+        try {
+          applyParsedSession(JSON.parse(bodyText) as NormalizedSession);
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+      },
+      onInflight: (list) => {
+        inflight = list as InflightRec[];
+      },
     });
+    // Kick off an immediate inflight refresh so the indicator's accurate
+    // from the first render, not up to 2s later.
+    void refreshInflight();
   });
 
   onDestroy(() => {
-    if (pollTimer !== null) window.clearInterval(pollTimer);
-    if (resumeOff) resumeOff();
+    if (unregisterPoll) unregisterPoll();
     if (pendingTimer) clearTimeout(pendingTimer);
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);

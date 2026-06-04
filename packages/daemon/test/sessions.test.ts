@@ -10,6 +10,7 @@ import {
   isMarker,
   parseSessionFile,
   getSessionResponseJson as _getSessionResponseJson,
+  getSessionsBatchResults,
   tailParseSessionFile,
   clearParseCache,
 } from "../src/sessions";
@@ -1004,5 +1005,112 @@ describe("parseSessionFile", () => {
   test("returns an empty session for a non-existent path", async () => {
     const s = await parseSessionFile("claude", "/does/not/exist.jsonl");
     expect(s.messages).toEqual([]);
+  });
+});
+
+describe("getSessionsBatchResults", () => {
+  beforeEach(() => clearParseCache());
+
+  function claudeLine(content: string, ts: string) {
+    return JSON.stringify({
+      type: "user",
+      message: { role: "user", content },
+      timestamp: ts,
+    });
+  }
+
+  const agentClaude = () => "claude" as const;
+  const noTitle = () => undefined;
+
+  test("first request (no etag) returns 200 with body + etag per source", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    const b = join(dir, "b.jsonl");
+    await writeFile(a, claudeLine("aaa", "2026-05-12T01:00:00Z") + "\n");
+    await writeFile(b, claudeLine("bbb", "2026-05-12T01:00:00Z") + "\n");
+
+    const results = await getSessionsBatchResults(
+      [{ source: a }, { source: b }],
+      agentClaude,
+      noTitle,
+    );
+
+    expect(results).toHaveLength(2);
+    const ra = results.find((r) => r.source === a)!;
+    const rb = results.find((r) => r.source === b)!;
+    expect(ra.status).toBe(200);
+    expect(rb.status).toBe(200);
+    expect(ra.status === 200 && ra.etag).toBeTruthy();
+    const parsedA = JSON.parse((ra as { body: string }).body);
+    expect(parsedA.messages[0]?.blocks[0]?.text).toBe("aaa");
+  });
+
+  test("matching etag returns 304 with no body (unchanged session)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    const fixed = new Date("2026-05-12T01:00:00Z");
+    await writeFile(a, claudeLine("aaa", "2026-05-12T01:00:00Z") + "\n");
+    await utimes(a, fixed, fixed);
+
+    const [first] = await getSessionsBatchResults(
+      [{ source: a }],
+      agentClaude,
+      noTitle,
+    );
+    expect(first.status).toBe(200);
+    const etag = (first as { etag: string }).etag;
+
+    const [second] = await getSessionsBatchResults(
+      [{ source: a, etag }],
+      agentClaude,
+      noTitle,
+    );
+    expect(second.status).toBe(304);
+    expect((second as { body?: string }).body).toBeUndefined();
+  });
+
+  test("stale etag after append returns 200 with the new body", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    await writeFile(a, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
+
+    const [first] = await getSessionsBatchResults(
+      [{ source: a }],
+      agentClaude,
+      noTitle,
+    );
+    const etag = (first as { etag: string }).etag;
+
+    await appendFile(a, claudeLine("second", "2026-05-12T01:00:01Z") + "\n");
+    const [second] = await getSessionsBatchResults(
+      [{ source: a, etag }],
+      agentClaude,
+      noTitle,
+    );
+    expect(second.status).toBe(200);
+    const parsed = JSON.parse((second as { body: string }).body);
+    expect(parsed.messages).toHaveLength(2);
+  });
+
+  test("unresolved source (resolver returns null) returns 403", async () => {
+    const results = await getSessionsBatchResults(
+      [{ source: "/outside/any/root.jsonl" }],
+      () => null,
+      noTitle,
+    );
+    expect(results[0]!.status).toBe(403);
+  });
+
+  test("injects manualTitle from getTitle into the 200 body", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    await writeFile(a, claudeLine("hi", "2026-05-12T01:00:00Z") + "\n");
+    const [r] = await getSessionsBatchResults(
+      [{ source: a }],
+      agentClaude,
+      (s) => (s === a ? "Pinned title" : undefined),
+    );
+    const parsed = JSON.parse((r as { body: string }).body);
+    expect(parsed.manualTitle).toBe("Pinned title");
   });
 });

@@ -1069,3 +1069,58 @@ export async function getSessionResponseJson(
   evictLRU();
   return { body: injectManualTitle(jsonNoTitle, manualTitle), etag };
 }
+
+/** One source's outcome in a `/api/sessions/batch` response. Mirrors the
+ *  single-source `/api/session` route: 200 carries the body + ETag, 304 just
+ *  the ETag (caller keeps its cached copy), 403 means the source is outside
+ *  any known agent root. */
+export type BatchSessionResult =
+  | { source: string; status: 200; etag: string; body: string }
+  | { source: string; status: 304; etag: string }
+  | { source: string; status: 403 };
+
+/**
+ * Batched equivalent of the `/api/session` GET handler: resolve + 304/200 each
+ * source in one call so the client can coalesce N per-column polls into a single
+ * request (see plans/performance.md "per-column session-poll storm"). Kept here
+ * (not in the server monolith) so it's unit-testable.
+ *
+ * Per source: `resolveAgent` gates it to a known agent root (null → 403); a
+ * cheap stat-based ETag short-circuits to 304 *before* the full parse when the
+ * client's ETag still matches; otherwise the full body is built and compared,
+ * returning 304 on an exact ETag match and 200 with the body otherwise.
+ *
+ * @param items        sources to fetch, each with the client's last ETag (if any)
+ * @param resolveAgent maps a source to its AgentKind, or null if disallowed
+ * @param getTitle     manual title to inject for a source, or undefined
+ */
+export async function getSessionsBatchResults(
+  items: { source: string; etag?: string }[],
+  resolveAgent: (source: string) => AgentKind | null,
+  getTitle: (source: string) => string | undefined,
+): Promise<BatchSessionResult[]> {
+  return Promise.all(
+    items.map(async ({ source, etag }): Promise<BatchSessionResult> => {
+      const agent = resolveAgent(source);
+      if (!agent) return { source, status: 403 };
+
+      // Quick stat ETag: skip the parse entirely when the file is unchanged.
+      // Matches getSessionResponseJson's `"<mtimeMs>-<size>"` scheme.
+      if (etag) {
+        const st = await stat(source).catch(() => null);
+        if (st) {
+          const quick = `"${st.mtimeMs}-${st.size}"`;
+          if (etag === quick) return { source, status: 304, etag: quick };
+        }
+      }
+
+      const { body, etag: full } = await getSessionResponseJson(
+        agent,
+        source,
+        getTitle(source),
+      );
+      if (etag && etag === full) return { source, status: 304, etag: full };
+      return { source, status: 200, etag: full, body };
+    }),
+  );
+}

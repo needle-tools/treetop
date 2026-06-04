@@ -358,3 +358,64 @@ changes need a native rebuild to reach prod.
    `bun run start` builds once at startup; if you changed CSS since
    then, restart prod (asking first, per CLAUDE.md) or test the
    change against `bun dev` instead.
+
+## Renderer CPU: per-column session-poll storm (2026-06-05)
+
+**Symptom.** `Supergit Web Content` (the WebKit renderer) pinned at
+**55% CPU / 1.5 GB RSS** while the dashboard was open. A 5.85 s Web
+Inspector timeline showed the main thread ~50% busy: 1.60 s in script
+(758 ms microtasks, 725 ms requestAnimationFrame), 1.30 s in
+layout (748 ms recalculate-styles, 109 forced reflows). Network: **165
+requests in 5.85 s (~28/s)** — `/api/session` ×78 and `/api/active-sends`
+×78, i.e. **~13 Hz each**.
+
+**Root cause — it scales with open columns, not with activity.** Each
+`SessionView` runs its **own** `setInterval(2 s)` (`SessionView.svelte`
+`onMount`) firing `load()` (`/api/session`) + `refreshInflight()`
+(`/api/active-sends`). 13.3 req/s ÷ 0.5 req/s-per-column ⇒ **~27 columns
+mounted**, each its own timer + fetch + promise chain + reactive flush.
+The idle-gate + ETag/304 already added only help when *idle/unchanged*;
+with a wall of columns actively polled the per-column fan-out is the cost.
+
+Two amplifiers:
+- `/api/session`'s `load()` is well-guarded (304 + body-equality early
+  return) — cheap when unchanged.
+- `/api/active-sends`' `refreshInflight()` is **not**: it does
+  `inflight = await res.json()` every tick — a *new array even when
+  empty* (the normal case) ⇒ a forced reactive re-render per column.
+- The scroll-stick `requestAnimationFrame(() => el.scrollTop =
+  el.scrollHeight)` reads layout after mutation ⇒ forced reflow ×columns.
+
+### Lever 1 — coalesce N per-column polls into one shared poll *(DOING)*
+
+Collapse the per-column timers/fetches to **one timer + one batched
+request per daemon per tick** → O(1) in column count.
+
+- **Daemon:** `POST /api/sessions/batch` `{ sources:[{source,etag?}] }`
+  → `{ results:[{source, status:200|304|403, etag?, body?}] }`. Logic
+  lives in a testable `getSessionsBatchResults()` in `sessions.ts`
+  (reuses the quick stat-ETag short-circuit + `getSessionResponseJson`);
+  the route is thin glue (the server monolith is source-text tested only).
+- **Client:** a shared `session-poll.ts` store — a single idle-gated,
+  resume-aware 2 s timer. Per tick, per `daemonId`: one batch POST for
+  all registered sources (dispatch a source's body only when it changes),
+  and **one** `GET /api/active-sends` (no `sessionId`, If-None-Match on
+  the revision ETag) whose list is sliced to each column — dispatched
+  only when that column's slice changes. `SessionView` registers/
+  unregisters instead of owning a timer; `load()`/`refreshInflight()`
+  stay for event-driven immediate refresh (post-send, resume).
+
+Coalescing active-sends behind the global revision-ETag also removes the
+unconditional `inflight` reassignment (folds in much of Lever 3 for free).
+
+### Deferred levers (do only if Lever 1 isn't enough)
+
+2. **Poll only visible columns** — register/unregister the poll via an
+   IntersectionObserver so off-screen columns go quiet. Biggest extra win
+   if the user keeps many columns scrolled out of view.
+3. **Change-detect `/api/active-sends` per column** — if Lever 1's global
+   ETag isn't sufficient, skip the `inflight` reassign when the sliced
+   list is deep-equal to the previous one.
+4. **Fix the forced reflow** — in the scroll-stick path read `scrollHeight`
+   *before* the DOM write, or only when `shouldStick` actually changed, to
+   drop the 109 forced layouts.
