@@ -447,6 +447,65 @@ function shellExec(cmd: string): string[] {
     : ["sh", "-c", cmd];
 }
 
+// GUI launchers can give the daemon a minimal system PATH. Sample the user's
+// login shell once so Supergit-launched commands can still find npm/bun/node.
+async function readInteractiveShellPath(): Promise<string | undefined> {
+  if (process.platform === "win32") return undefined;
+  const shell = process.env.SHELL || "/bin/zsh";
+  try {
+    const proc = Bun.spawn(
+      [shell, "-lic", "printf '\\n__SUPERGIT_PATH__%s\\n' \"$PATH\""],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+        env: process.env,
+      },
+    );
+    const timeout = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {}
+    }, 2000);
+    const [stdout, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timeout);
+    if (code !== 0) return undefined;
+    const line = stdout
+      .split("\n")
+      .filter((x) => x.startsWith("__SUPERGIT_PATH__"))
+      .at(-1);
+    const path = line?.slice("__SUPERGIT_PATH__".length).trim();
+    return path && path.includes(":") ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const INTERACTIVE_SHELL_PATH = await readInteractiveShellPath();
+const COMMAND_PATH = INTERACTIVE_SHELL_PATH ?? process.env.PATH;
+
+function terminalSpawnEnv(): Record<string, string> | undefined {
+  return COMMAND_PATH && COMMAND_PATH !== process.env.PATH
+    ? { PATH: COMMAND_PATH }
+    : undefined;
+}
+
+function backgroundCommandEnv(): Record<string, string> {
+  // Background commands do not get a login shell, so pass the sampled PATH
+  // explicitly while still removing launcher/proxy variables that break Vite.
+  const env = {
+    ...process.env,
+    ...(COMMAND_PATH ? { PATH: COMMAND_PATH } : {}),
+  };
+  delete env.PORT;
+  delete env.PORTLESS_URL;
+  delete env.NODE_EXTRA_CA_CERTS;
+  return env;
+}
+
 const commandDetectedUrls = new Map<string, string[]>();
 
 type DetectedPackageManager = "npm" | "yarn" | "bun";
@@ -3106,6 +3165,9 @@ const server = Bun.serve<TermWsData, never>({
             cwd: body.cwd,
             ownerId: body.ownerId,
             agent: agentHint,
+            // Plain shell sessions initialize their own login shell; agent PTYs
+            // need the daemon to supply the developer PATH explicitly.
+            env: agentHint === "shell" ? undefined : terminalSpawnEnv(),
             userBoxColor,
             // Clamp absurd dims to a sane floor. The frontend reads
             // xterm.cols/rows in onMount; if the container hasn't laid out
@@ -5914,6 +5976,7 @@ const server = Bun.serve<TermWsData, never>({
               cmd: spawnCmd,
               cwd,
               size: { cols: 120, rows: 30 },
+              env: terminalSpawnEnv(),
             });
             // Scan PTY output for localhost/LAN URLs for up to 2 minutes
             detectCommandUrl(handle, linkId, repoId);
@@ -5959,6 +6022,7 @@ const server = Bun.serve<TermWsData, never>({
             stdout: "ignore",
             stderr: "ignore",
             stdin: "ignore",
+            env: backgroundCommandEnv(),
           });
           const entry: RunningCommand = {
             proc,
