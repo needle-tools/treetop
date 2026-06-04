@@ -319,21 +319,15 @@
   color: var(--text-muted);
 }
 
-/* Remote-daemon badge shown before a remote row's path, so it's obvious
-   the worktree lives on another box (not the local filesystem). */
-.daemon-row-chip {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  padding: 0.05rem 0.35rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.68rem;
+/* Remote-daemon prefix INSIDE the repo-name chip: the daemon name as a
+   URL-style scheme, so a remote repo reads like an address
+   (e.g. needle-playground://  home). Inherits the chip's own foreground
+   colour (so it works on any chip background), lightly de-emphasised, with a
+   gap before the repo name. */
+.daemon-scheme {
+  margin-right: 0.4rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--accent, #5b8def);
-  background: color-mix(in srgb, var(--accent, #5b8def) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent, #5b8def) 35%, transparent);
-  white-space: nowrap;
+  opacity: 0.8;
 }
 
 /* Branch chip — both the static label and the button variant. */

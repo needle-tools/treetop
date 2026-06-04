@@ -7040,7 +7040,7 @@
                       ? cancelRenameRepo()
                       : openRepoEdit(repo, row.key)}
                 >
-                  {repo.name}
+                  {#if repo.daemonId}<span class="daemon-scheme">{daemonLabelForRepo(repo.daemonId)}://</span>{/if}{repo.name}
                   <span class="chip-tail">
                     <span class="pencil">✎</span>
                   </span>
@@ -7895,18 +7895,8 @@
                     aria-label="agent activity"
                   ></span>
                 {/if}
-                {#if repo.daemonId}<span
-                    class="daemon-row-chip"
-                    title={`Runs on remote daemon "${daemonLabelForRepo(repo.daemonId)}"`}
-                    >{daemonLabelForRepo(repo.daemonId)}</span
-                  >{/if}
                 <code class="wt-path">{wt.path}</code>
               {:else}
-                {#if repo.daemonId}<span
-                    class="daemon-row-chip"
-                    title={`Runs on remote daemon "${daemonLabelForRepo(repo.daemonId)}"`}
-                    >{daemonLabelForRepo(repo.daemonId)}</span
-                  >{/if}
                 <code class="wt-path">{repo.path}</code>
                 <span class="branch warn">no worktrees</span>
               {/if}
