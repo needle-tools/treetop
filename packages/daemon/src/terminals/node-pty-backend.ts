@@ -701,6 +701,7 @@ export class NodePtyBackend implements PtyBackend {
       size: t.size,
       createdAt: t.createdAt,
       lastOutputAt: t.lastOutputAt,
+      awaitingInput: t.awaitingInput,
       exitedAt: t.exitedAt,
       exitCode: t.exitCode,
       exitSignal: t.exitSignal,

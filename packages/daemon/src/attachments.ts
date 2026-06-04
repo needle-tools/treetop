@@ -1,4 +1,4 @@
-import { mkdir, writeFile, stat } from "node:fs/promises";
+import { mkdir, writeFile, stat, open } from "node:fs/promises";
 import { join, basename, extname, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -21,6 +21,13 @@ export type ServeAttachmentResult =
   | { status: 404; error: string }
   | { status: 500; error: string }
   | { status: 200; file: ReturnType<typeof Bun.file> };
+
+export type ServeAttachmentPreviewResult =
+  | { status: 400; error: string }
+  | { status: 403; error: string }
+  | { status: 404; error: string }
+  | { status: 500; error: string }
+  | { status: 200; text: string };
 
 /**
  * Persist a pasted / dropped attachment under `attachmentsDir` and
@@ -53,6 +60,51 @@ export async function serveAttachment(
   attachmentsDir: string,
   path: string | null | undefined,
 ): Promise<ServeAttachmentResult> {
+  const checked = resolveAttachmentPath(attachmentsDir, path);
+  if (checked.status !== 200) return checked;
+  try {
+    const file = Bun.file(checked.path);
+    if (!(await file.exists())) {
+      return { status: 404, error: "not found" };
+    }
+    return { status: 200, file };
+  } catch {
+    return { status: 500, error: "cannot read file" };
+  }
+}
+
+export async function serveAttachmentPreview(
+  attachmentsDir: string,
+  path: string | null | undefined,
+  opts: { maxBytes?: number } = {},
+): Promise<ServeAttachmentPreviewResult> {
+  const checked = resolveAttachmentPath(attachmentsDir, path);
+  if (checked.status !== 200) return checked;
+  const maxBytes = Math.max(1, Math.min(opts.maxBytes ?? 8192, 65536));
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(checked.path, "r");
+    const buf = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buf, 0, maxBytes, 0);
+    return {
+      status: 200,
+      text: new TextDecoder("utf-8", { fatal: false }).decode(buf.subarray(0, bytesRead)),
+    };
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return { status: 404, error: "not found" };
+    return { status: 500, error: "cannot read file" };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function resolveAttachmentPath(
+  attachmentsDir: string,
+  path: string | null | undefined,
+):
+  | { status: 400; error: string }
+  | { status: 403; error: string }
+  | { status: 200; path: string } {
   if (typeof path !== "string" || path.length === 0) {
     return { status: 400, error: "?path required" };
   }
@@ -61,15 +113,7 @@ export async function serveAttachment(
   if (!resolved.startsWith(root + sep)) {
     return { status: 403, error: "outside attachments directory" };
   }
-  try {
-    const file = Bun.file(resolved);
-    if (!(await file.exists())) {
-      return { status: 404, error: "not found" };
-    }
-    return { status: 200, file };
-  } catch {
-    return { status: 500, error: "cannot read file" };
-  }
+  return { status: 200, path: resolved };
 }
 
 function sanitizeName(

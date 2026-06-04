@@ -16,6 +16,12 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
+import type {
+  AttachmentKind,
+  LinkTarget,
+  MessageReceiver,
+  MessageSender,
+} from "./notes";
 
 const MESSAGES_FILE = "messages.json";
 const MUTES_FILE = "peer-mutes.json";
@@ -71,6 +77,20 @@ function decryptBody(stored: string, key: Buffer): string {
   return decipher.update(ct).toString("utf-8") + decipher.final("utf-8");
 }
 
+function decryptMessage(m: StoredMessage, key: Buffer): void {
+  if (!m.direction) m.direction = "in";
+  m.body = decryptBody(m.body, key);
+  if (m.note?.body) m.note = { ...m.note, body: decryptBody(m.note.body, key) };
+}
+
+function encryptMessage(m: StoredMessage, key: Buffer): StoredMessage {
+  return {
+    ...m,
+    body: encryptBody(m.body, key),
+    ...(m.note ? { note: { ...m.note, body: encryptBody(m.note.body, key) } } : {}),
+  };
+}
+
 export interface IncomingMessage {
   from: { id: string; label: string };
   body: string;
@@ -80,6 +100,8 @@ export interface IncomingMessage {
    *  ignored instead of duplicated. Absent on older senders, in which
    *  case every receive is stored. */
   id?: string;
+  kind?: "text" | "note";
+  note?: MessageNotePayload;
 }
 
 export type MessageDirection = "in" | "out";
@@ -92,6 +114,24 @@ export interface StoredMessage {
    *  Optional in older data — backward-compat code defaults absent
    *  entries to "in". */
   direction: MessageDirection;
+  kind?: "text" | "note";
+  note?: MessageNotePayload;
+}
+
+export interface MessageNotePayload {
+  body: string;
+  anchors?: string[];
+  tags?: string[];
+  kind?: AttachmentKind;
+  target?: LinkTarget;
+  receiver?: MessageReceiver;
+  sender?: MessageSender;
+  stampId?: number;
+}
+
+export interface OutgoingMessageOptions {
+  kind?: "text" | "note";
+  note?: MessageNotePayload;
 }
 
 export interface PeerInbox {
@@ -114,8 +154,7 @@ async function loadStore(workspaceDir: string): Promise<OnDisk> {
       let pruned = false;
       for (const [peerId, entry] of Object.entries(parsed.byPeer)) {
         for (const m of entry.messages) {
-          if (!m.direction) m.direction = "in";
-          m.body = decryptBody(m.body, key);
+          decryptMessage(m, key);
         }
         const before = entry.messages.length;
         entry.messages = entry.messages.filter((m) => {
@@ -147,10 +186,7 @@ async function saveStore(workspaceDir: string, store: OnDisk): Promise<void> {
   for (const [peerId, entry] of Object.entries(store.byPeer)) {
     encrypted.byPeer[peerId] = {
       label: entry.label,
-      messages: entry.messages.map((m) => ({
-        ...m,
-        body: encryptBody(m.body, key),
-      })),
+      messages: entry.messages.map((m) => encryptMessage(m, key)),
     };
   }
   await writeFile(
@@ -176,6 +212,8 @@ export async function addIncomingMessage(
       sentAt: msg.sentAt,
       receivedAt: new Date().toISOString(),
       direction: "in",
+      ...(msg.kind ? { kind: msg.kind } : {}),
+      ...(msg.note ? { note: msg.note } : {}),
     },
     { dedupe: msg.id !== undefined },
   );
@@ -192,6 +230,7 @@ export async function addOutgoingMessage(
   to: { id: string; label: string },
   body: string,
   sentAt: string,
+  opts: OutgoingMessageOptions = {},
 ): Promise<void> {
   await pushMessage(workspaceDir, to.id, to.label, {
     id: crypto.randomUUID(),
@@ -199,6 +238,8 @@ export async function addOutgoingMessage(
     sentAt,
     receivedAt: new Date().toISOString(),
     direction: "out",
+    ...(opts.kind ? { kind: opts.kind } : {}),
+    ...(opts.note ? { note: opts.note } : {}),
   });
 }
 

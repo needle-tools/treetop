@@ -51,6 +51,28 @@ export interface LinkTarget {
   runMode?: "internal" | "external" | "shell";
 }
 
+export interface MessageReceiver {
+  kind?: "session" | "peer";
+  sessionId?: string;
+  peerId?: string;
+  label?: string;
+  agent?: string;
+  source?: string;
+  terminalId?: string;
+  host?: string;
+  port?: number;
+  delivery?: "draft" | "staged" | "sent";
+}
+
+export interface MessageSender {
+  kind: "session" | "peer";
+  id: string;
+  label?: string;
+  agent?: string;
+  source?: string;
+  terminalId?: string;
+}
+
 export interface Note {
   /** Filename-safe id (lowercase letters, digits, dashes). Also the
    *  basename on disk: `<id>.md`. */
@@ -85,6 +107,13 @@ export interface Note {
    *  meaningful for `kind === "note"`. Stored as a single `secret: true`
    *  frontmatter scalar; absent (the common case) means not secret. */
   secret?: boolean;
+  /** Optional receiver metadata for agent-to-agent message notes. The
+   *  note body remains normal markdown; this flat receiver object tells
+   *  the UI which live terminal/session should receive it when the human
+   *  clicks Send. */
+  receiver?: MessageReceiver;
+  sender?: MessageSender;
+  stampId?: number;
 }
 
 const NOTES_DIR = "notes";
@@ -136,6 +165,11 @@ export function parseNoteFile(raw: string): Note {
   // Secret flag. Only `true` flips it on; anything else (absent, "false",
   // a fat-fingered value) leaves the note visible.
   if (fm.scalars.get("secret") === "true") note.secret = true;
+  const stampIdRaw = fm.scalars.get("stampId");
+  if (stampIdRaw !== undefined) {
+    const stampId = Number(stampIdRaw);
+    if (Number.isInteger(stampId) && stampId >= 0) note.stampId = stampId;
+  }
   // Flat target fields. Both must be present and the type recognized;
   // otherwise we treat the file as if no target was set so the UI
   // falls back to plain-note rendering rather than a half-broken chip.
@@ -178,6 +212,49 @@ export function parseNoteFile(raw: string): Note {
       target.runMode = tRunMode;
     }
     note.target = target;
+  }
+  const rKind = fm.scalars.get("receiverKind");
+  const rSessionId = fm.scalars.get("receiverSessionId");
+  const rPeerId = fm.scalars.get("receiverPeerId");
+  if (rSessionId || rPeerId) {
+    const receiver: MessageReceiver = {};
+    if (rKind === "session" || rKind === "peer") receiver.kind = rKind;
+    if (rSessionId) receiver.sessionId = rSessionId;
+    if (rPeerId) receiver.peerId = rPeerId;
+    const rLabel = fm.scalars.get("receiverLabel");
+    const rAgent = fm.scalars.get("receiverAgent");
+    const rSource = fm.scalars.get("receiverSource");
+    const rTerminalId = fm.scalars.get("receiverTerminalId");
+    const rHost = fm.scalars.get("receiverHost");
+    const rPort = fm.scalars.get("receiverPort");
+    const rDelivery = fm.scalars.get("receiverDelivery");
+    if (rLabel !== undefined) receiver.label = rLabel;
+    if (rAgent !== undefined) receiver.agent = rAgent;
+    if (rSource !== undefined) receiver.source = rSource;
+    if (rTerminalId !== undefined) receiver.terminalId = rTerminalId;
+    if (rHost !== undefined) receiver.host = rHost;
+    if (rPort !== undefined) {
+      const port = Number(rPort);
+      if (Number.isFinite(port) && port > 0) receiver.port = port;
+    }
+    if (rDelivery === "draft" || rDelivery === "staged" || rDelivery === "sent") {
+      receiver.delivery = rDelivery;
+    }
+    note.receiver = receiver;
+  }
+  const sKind = fm.scalars.get("senderKind");
+  const sId = fm.scalars.get("senderId");
+  if ((sKind === "session" || sKind === "peer") && sId) {
+    const sender: MessageSender = { kind: sKind, id: sId };
+    const sLabel = fm.scalars.get("senderLabel");
+    const sAgent = fm.scalars.get("senderAgent");
+    const sSource = fm.scalars.get("senderSource");
+    const sTerminalId = fm.scalars.get("senderTerminalId");
+    if (sLabel !== undefined) sender.label = sLabel;
+    if (sAgent !== undefined) sender.agent = sAgent;
+    if (sSource !== undefined) sender.source = sSource;
+    if (sTerminalId !== undefined) sender.terminalId = sTerminalId;
+    note.sender = sender;
   }
   return note;
 }
@@ -266,6 +343,9 @@ export function serializeNoteFile(note: Note): string {
   if (note.secret === true) {
     out.push("secret: true");
   }
+  if (note.stampId !== undefined) {
+    out.push(`stampId: ${note.stampId}`);
+  }
   if (note.target !== undefined) {
     // Snapshot fields may contain arbitrary user text (session
     // titles, commit subjects). Collapse newlines so the flat-YAML
@@ -301,6 +381,56 @@ export function serializeNoteFile(note: Note): string {
       out.push(`targetRunMode: ${safe(note.target.runMode)}`);
     }
   }
+  if (note.receiver !== undefined) {
+    const safe = (s: string) => s.replace(/\r?\n/g, " ").trim();
+    if (note.receiver.kind !== undefined) {
+      out.push(`receiverKind: ${safe(note.receiver.kind)}`);
+    }
+    if (note.receiver.sessionId !== undefined) {
+      out.push(`receiverSessionId: ${safe(note.receiver.sessionId)}`);
+    }
+    if (note.receiver.peerId !== undefined) {
+      out.push(`receiverPeerId: ${safe(note.receiver.peerId)}`);
+    }
+    if (note.receiver.label !== undefined) {
+      out.push(`receiverLabel: ${safe(note.receiver.label)}`);
+    }
+    if (note.receiver.agent !== undefined) {
+      out.push(`receiverAgent: ${safe(note.receiver.agent)}`);
+    }
+    if (note.receiver.source !== undefined) {
+      out.push(`receiverSource: ${safe(note.receiver.source)}`);
+    }
+    if (note.receiver.terminalId !== undefined) {
+      out.push(`receiverTerminalId: ${safe(note.receiver.terminalId)}`);
+    }
+    if (note.receiver.host !== undefined) {
+      out.push(`receiverHost: ${safe(note.receiver.host)}`);
+    }
+    if (note.receiver.port !== undefined) {
+      out.push(`receiverPort: ${safe(String(note.receiver.port))}`);
+    }
+    if (note.receiver.delivery !== undefined) {
+      out.push(`receiverDelivery: ${safe(note.receiver.delivery)}`);
+    }
+  }
+  if (note.sender !== undefined) {
+    const safe = (s: string) => s.replace(/\r?\n/g, " ").trim();
+    out.push(`senderKind: ${safe(note.sender.kind)}`);
+    out.push(`senderId: ${safe(note.sender.id)}`);
+    if (note.sender.label !== undefined) {
+      out.push(`senderLabel: ${safe(note.sender.label)}`);
+    }
+    if (note.sender.agent !== undefined) {
+      out.push(`senderAgent: ${safe(note.sender.agent)}`);
+    }
+    if (note.sender.source !== undefined) {
+      out.push(`senderSource: ${safe(note.sender.source)}`);
+    }
+    if (note.sender.terminalId !== undefined) {
+      out.push(`senderTerminalId: ${safe(note.sender.terminalId)}`);
+    }
+  }
   out.push("---");
   out.push(note.body);
   return out.join("\n");
@@ -314,6 +444,9 @@ export interface CreateInput {
   kind?: AttachmentKind;
   target?: LinkTarget;
   secret?: boolean;
+  receiver?: MessageReceiver;
+  sender?: MessageSender;
+  stampId?: number;
 }
 
 export interface UpdateInput {
@@ -331,6 +464,9 @@ export interface UpdateInput {
    *  alone; `false` clears it (we drop the property rather than store
    *  `secret: false`). */
   secret?: boolean;
+  receiver?: MessageReceiver | null;
+  sender?: MessageSender | null;
+  stampId?: number | null;
 }
 
 export interface ListFilter {
@@ -444,6 +580,10 @@ export class NotesStore {
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.target !== undefined ? { target: input.target } : {}),
       ...(input.secret === true ? { secret: true } : {}),
+      ...(input.receiver !== undefined ? { receiver: input.receiver } : {}),
+      ...(input.sender !== undefined ? { sender: input.sender } : {}),
+      ...(input.stampId !== undefined ? { stampId: input.stampId } : {}),
+      ...(input.secret === true ? { secret: true } : {}),
     };
     await writeFile(this.filePath(id), serializeNoteFile(note));
     return note;
@@ -458,6 +598,9 @@ export class NotesStore {
       input.tags !== undefined ||
       input.kind !== undefined ||
       input.target !== undefined ||
+      input.receiver !== undefined ||
+      input.sender !== undefined ||
+      input.stampId !== undefined ||
       input.secret !== undefined;
     if (!hasAny) return existing;
     const next: Note = {
@@ -487,6 +630,21 @@ export class NotesStore {
       delete next.secret;
     } else if (input.secret === true) {
       next.secret = true;
+    }
+    if (input.receiver === null) {
+      delete next.receiver;
+    } else if (input.receiver !== undefined) {
+      next.receiver = input.receiver;
+    }
+    if (input.sender === null) {
+      delete next.sender;
+    } else if (input.sender !== undefined) {
+      next.sender = input.sender;
+    }
+    if (input.stampId === null) {
+      delete next.stampId;
+    } else if (input.stampId !== undefined) {
+      next.stampId = input.stampId;
     }
     await writeFile(this.filePath(id), serializeNoteFile(next));
     return next;
