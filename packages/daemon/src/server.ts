@@ -449,6 +449,39 @@ function shellExec(cmd: string): string[] {
 
 const commandDetectedUrls = new Map<string, string[]>();
 
+type DetectedPackageManager = "npm" | "yarn" | "bun";
+
+async function detectPackageManagers(
+  dir: string,
+  pkg: unknown,
+): Promise<DetectedPackageManager[]> {
+  const found = new Set<DetectedPackageManager>();
+  if (pkg && typeof pkg === "object") {
+    const packageManager = (pkg as Record<string, unknown>).packageManager;
+    if (typeof packageManager === "string") {
+      const name = packageManager.split("@", 1)[0];
+      if (name === "npm" || name === "yarn" || name === "bun") found.add(name);
+    }
+  }
+
+  const locks: Array<[DetectedPackageManager, string]> = [
+    ["npm", "package-lock.json"],
+    ["npm", "npm-shrinkwrap.json"],
+    ["yarn", "yarn.lock"],
+    ["bun", "bun.lock"],
+    ["bun", "bun.lockb"],
+  ];
+  for (const [manager, file] of locks) {
+    if (await Bun.file(join(dir, file)).exists().catch(() => false)) {
+      found.add(manager);
+    }
+  }
+
+  if (found.size === 0) found.add("npm");
+  return (["npm", "yarn", "bun"] as const).filter((manager) =>
+    found.has(manager),
+  );
+}
 
 function detectCommandUrl(
   handle: {
@@ -5792,7 +5825,7 @@ const server = Bun.serve<TermWsData, never>({
         } else if (dir) {
           resolved = dir;
         } else {
-          return json({ scripts: [] });
+          return json({ scripts: [], packageManagers: [] });
         }
         try {
           const pkgPath = join(resolved, "package.json");
@@ -5802,9 +5835,10 @@ const server = Bun.serve<TermWsData, never>({
             pkg && typeof pkg.scripts === "object" && pkg.scripts !== null
               ? Object.keys(pkg.scripts)
               : [];
-          return json({ scripts });
+          const packageManagers = await detectPackageManagers(resolved, pkg);
+          return json({ scripts, packageManagers });
         } catch {
-          return json({ scripts: [] });
+          return json({ scripts: [], packageManagers: [] });
         }
       }
 

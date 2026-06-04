@@ -8,6 +8,7 @@ const SCRIPTS = [
   "start",
   "dev",
   "build",
+  "build:launch",
   "test",
   "test:watch",
   "test:coverage",
@@ -240,6 +241,9 @@ describe("filterNpmSuggestions", () => {
       "npm run build",
       "yarn build",
       "bun build",
+      "npm run build:launch",
+      "yarn build:launch",
+      "bun build:launch",
     ]);
   });
 
@@ -292,6 +296,22 @@ describe("filterNpmSuggestions", () => {
       "yarn dev",
       "bun dev",
     ]);
+  });
+
+  test("limits suggestions to package managers detected for the repo", () => {
+    expect(
+      filterNpmSuggestions("build", SCRIPTS, { packageManagers: ["bun"] }),
+    ).toEqual(["bun build", "bun build:launch"]);
+    expect(
+      filterNpmSuggestions("npm run build", SCRIPTS, {
+        packageManagers: ["bun"],
+      }),
+    ).toEqual([]);
+    expect(
+      filterNpmSuggestions("bun run build", SCRIPTS, {
+        packageManagers: ["bun"],
+      }),
+    ).toEqual(["bun run build", "bun run build:launch"]);
   });
 });
 

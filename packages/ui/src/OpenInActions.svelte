@@ -75,6 +75,7 @@
   import {
     filterNpmSuggestions,
     npmScriptsPlaceholder,
+    type PackageManager,
   } from "./npm-suggestions";
   import { relativizeToWorktree as relativizeToWorktreeFn } from "./worktree-path";
   import { LINK_TARGET_DRAG_MIME } from "./note-inline-attachments";
@@ -209,6 +210,7 @@
 
   // npm script autocomplete
   let npmScripts: string[] = [];
+  let npmPackageManagers: PackageManager[] = [];
   let npmScriptsDir = "";
   let showSuggestions = false;
   let selectedSuggestionIdx = -1;
@@ -223,12 +225,18 @@
       const res = await fetch(apiUrl(`/api/npm-scripts?${qs}`));
       if (!res.ok) {
         npmScripts = [];
+        npmPackageManagers = [];
         return;
       }
-      const body = (await res.json()) as { scripts?: string[] };
+      const body = (await res.json()) as {
+        scripts?: string[];
+        packageManagers?: PackageManager[];
+      };
       npmScripts = body.scripts ?? [];
+      npmPackageManagers = body.packageManagers ?? [];
     } catch {
       npmScripts = [];
+      npmPackageManagers = [];
     }
   }
 
@@ -242,7 +250,9 @@
   }
 
   function filteredSuggestions(cmd: string, scripts: string[]): string[] {
-    return filterNpmSuggestions(cmd, scripts);
+    return filterNpmSuggestions(cmd, scripts, {
+      packageManagers: npmPackageManagers,
+    });
   }
 
   $: addSuggestions = filteredSuggestions(newCmd, npmScripts);
