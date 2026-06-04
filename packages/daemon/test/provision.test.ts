@@ -71,14 +71,16 @@ describe("buildShipCommand", () => {
     });
   });
 
-  test("dev: git archive the tracked tree, excluding internals (repo has node_modules)", () => {
+  test("dev: git archive (gzip) the tracked tree, excluding internals (repo has node_modules)", () => {
     const cmd = buildShipCommand("/repo", "dev");
     expect(cmd.bin).toBe("git");
+    // tar.gz, not plain tar — the remote always extracts with -z (some tar
+    // builds won't auto-detect gzip on a pipe).
     expect(cmd.args.slice(0, 6)).toEqual([
       "-C",
       "/repo",
       "archive",
-      "--format=tar",
+      "--format=tar.gz",
       "HEAD",
       "--",
     ]);
@@ -97,10 +99,10 @@ describe("buildProvisionPlan", () => {
     expect(plan.ship.ssh).toContain("root@box.example");
     expect(plan.ship.ssh).not.toContain("-tt");
     expect(plan.ship.ssh[plan.ship.ssh.length - 1]).toBe(plan.ship.remoteCommand);
-    // make the dir + extract stdin (no -z: auto-detect gzip vs plain). NOT the installer.
+    // make the dir + extract the gzip stdin explicitly (-z; ship is always
+    // gzip and tar auto-detect over a pipe is unreliable). NOT the installer.
     expect(plan.ship.remoteCommand).toContain("mkdir -p /opt/supergit");
-    expect(plan.ship.remoteCommand).toContain("tar -x -f - -C /opt/supergit");
-    expect(plan.ship.remoteCommand).not.toContain("tar -x -z");
+    expect(plan.ship.remoteCommand).toContain("tar -x -z -f - -C /opt/supergit");
     expect(plan.ship.remoteCommand).not.toContain("install.sh");
   });
 
@@ -169,7 +171,7 @@ describe("buildProvisionPlan — Windows target", () => {
     // cmd /c, not bash; mkdir without the posix -p; tar.exe extracts stdin.
     expect(plan.ship.remoteCommand).toContain("cmd /c");
     expect(plan.ship.remoteCommand).toContain("C:\\supergit");
-    expect(plan.ship.remoteCommand).toContain("tar -x -f - -C C:\\supergit");
+    expect(plan.ship.remoteCommand).toContain("tar -x -z -f - -C C:\\supergit");
     expect(plan.ship.remoteCommand).not.toContain("mkdir -p");
     expect(plan.ship.remoteCommand).not.toContain("&&");
   });

@@ -106,8 +106,11 @@ export function installPayloadPathspec(): string[] {
  *     node_modules/build/.git. `git archive HEAD` ships exactly the tracked
  *     tree instead — no exclude globs to get wrong, no multi-GB node_modules.
  *
- * Either way the remote side runs `tar -x` with no `-z`, which auto-detects
- * gzip (packaged) vs plain (git archive) — so one remote command fits both.
+ * BOTH produce a GZIP stream (packaged via `tar -z`, dev via
+ * `git archive --format=tar.gz`) and the remote side always extracts with
+ * `tar -x -z`. We do NOT rely on tar auto-detecting compression: some tar
+ * builds refuse to auto-detect gzip on a non-seekable pipe ("Archive is
+ * compressed. Use -z option"), so ship and extract must agree explicitly.
  */
 export function buildShipCommand(
   payloadRoot: string,
@@ -120,7 +123,7 @@ export function buildShipCommand(
         "-C",
         payloadRoot,
         "archive",
-        "--format=tar",
+        "--format=tar.gz",
         "HEAD",
         "--",
         ...installPayloadPathspec(),
@@ -179,9 +182,9 @@ function baseSshArgs(t: ProvisionTarget, tty: boolean): string[] {
 /**
  * Build the two ssh steps for provisioning. They run sequentially:
  *
- *   1. ship — local archive piped to ssh stdin; the remote extracts it.
- *      No tty (a pty corrupts the binary stream). The remote `tar -x` omits
- *      `-z` so it auto-detects gzip (packaged) vs plain (git archive).
+ *   1. ship — local gzip archive piped to ssh stdin; the remote extracts it
+ *      with `tar -x -z` (ship is always gzip — see buildShipCommand). No tty
+ *      (a pty corrupts the binary stream).
  *   2. run — the installer, with a tty for live output. Foreground, so
  *      closing the ssh SIGHUPs a half-finished install — recoverable because
  *      install.sh --no-pull is idempotent.
@@ -196,7 +199,7 @@ export function buildProvisionPlan(target: ProvisionTarget): ProvisionPlan {
   const remoteDir = target.remoteDir ?? "/opt/supergit";
   const installArgs = target.installArgs ?? ["--no-pull"];
 
-  const shipRemote = `mkdir -p ${remoteDir} && tar -x -f - -C ${remoteDir}`;
+  const shipRemote = `mkdir -p ${remoteDir} && tar -x -z -f - -C ${remoteDir}`;
   const runRemote = `cd ${remoteDir} && bash deploy/install.sh ${installArgs.join(" ")}`;
 
   return {
@@ -221,7 +224,7 @@ export function buildProvisionPlan(target: ProvisionTarget): ProvisionPlan {
  *     (sshd wraps either, and cmd is always present), and (2) cmd hands the
  *     piped binary tar to tar.exe's stdin untouched — PowerShell re-encodes
  *     stdin as text and corrupts the archive. Windows 10/11 ship tar.exe
- *     (bsdtar) in System32; like the posix side it auto-detects gzip vs plain.
+ *     (bsdtar) in System32; like the posix side it extracts gzip with -z.
  *     We use a single `mkdir` (cmd makes intermediate dirs by default — no
  *     `-p`) guarded by `if not exist`, then `&` (not `&&`) to run tar next
  *     regardless, since the guard already made the success path exit 0.
@@ -236,7 +239,7 @@ function windowsPlan(target: ProvisionTarget, dest: string): ProvisionPlan {
 
   const shipRemote =
     `cmd /c if not exist ${remoteDir} mkdir ${remoteDir} & ` +
-    `tar -x -f - -C ${remoteDir}`;
+    `tar -x -z -f - -C ${remoteDir}`;
   const runRemote =
     `powershell -NoProfile -ExecutionPolicy Bypass -File ` +
     `${remoteDir}\\deploy\\install.ps1 ${installArgs.join(" ")}`;
