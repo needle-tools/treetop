@@ -1758,7 +1758,7 @@
     color: var(--text-muted);
   }
   .work-thinking-chip {
-    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+    color: var(--text-1);
   }
   .work-thinking-chip .thinking-icon {
     width: 0.86rem;
@@ -2343,7 +2343,7 @@
     width: 0.95rem;
     height: 0.95rem;
     margin-top: 0;
-    color: color-mix(in srgb, var(--text-muted) 78%, var(--brand));
+    color: var(--text-1);
   }
   .live-thinking-dots {
     display: inline-flex;
@@ -2415,7 +2415,7 @@
     width: 1rem;
     height: 1rem;
     margin-top: 0.1rem;
-    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+    color: var(--text-1);
     opacity: 0.9;
   }
   .thinking-copy {

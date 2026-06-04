@@ -138,6 +138,37 @@ export async function resolveAgentBinary(name: string): Promise<string | null> {
   return best?.path ?? candidates[0] ?? null;
 }
 
+export async function processAncestorPids(pid: number): Promise<number[]> {
+  if (!Number.isFinite(pid) || pid <= 0) return [];
+  const ancestors: number[] = [];
+  let current = Math.trunc(pid);
+  const seen = new Set<number>([current]);
+  for (let i = 0; i < 32; i++) {
+    const parent = await parentPid(current);
+    if (!parent || parent <= 0 || seen.has(parent)) break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+
+async function parentPid(pid: number): Promise<number | null> {
+  if (process.platform === "win32") {
+    const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; if ($p) { $p.ParentProcessId }`;
+    const result = await $`powershell.exe -NoLogo -NoProfile -Command ${script}`
+      .quiet()
+      .nothrow();
+    if (result.exitCode !== 0) return null;
+    const parent = Number(result.stdout.toString().trim());
+    return Number.isFinite(parent) ? parent : null;
+  }
+  const result = await $`ps -o ppid= -p ${pid}`.quiet().nothrow();
+  if (result.exitCode !== 0) return null;
+  const parent = Number(result.stdout.toString().trim());
+  return Number.isFinite(parent) ? parent : null;
+}
+
 /** Wrap a Windows command so node-pty's ConPTY backend can spawn it.
  *
  *  CreateProcess (which ConPTY ultimately calls) can only execute PE

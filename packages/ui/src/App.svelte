@@ -748,13 +748,18 @@
   }
   function toggleZenRow(key: string) {
     const exiting = zenRowKey === key;
+    const wtPath = key.split("|").slice(1).join("|");
+    if (!exiting && wtPath) {
+      jumpToWorktreeRow(wtPath, {
+        behavior: "auto",
+        block: "start",
+        pulse: false,
+      });
+    }
     zenRowKey = exiting ? null : key;
     notesShownInZen = false;
     resetZenMenu();
-    if (exiting) {
-      const wtPath = key.split("|").slice(1).join("|");
-      if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
-    }
+    if (exiting && wtPath) void settleAndJumpToWorktreeRow(wtPath);
   }
   // toggleFullscreen() lives in NewSessionCol.svelte now (it's only
   // called from inside the new-session-column header).
@@ -2797,15 +2802,32 @@
     );
   }
 
-  /** Smooth-scroll the dashboard to the row representing this worktree
+  /** Scroll the dashboard to the row representing this worktree
    *  and pulse it briefly so the user can locate it. */
-  function jumpToWorktreeRow(path: string) {
+  function jumpToWorktreeRow(
+    path: string,
+    opts: {
+      behavior?: ScrollBehavior;
+      block?: ScrollLogicalPosition;
+      pulse?: boolean;
+    } = {},
+  ) {
     const sel = `[data-wt-row="${CSS.escape(path)}"]`;
     const el = document.querySelector<HTMLElement>(sel);
     if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.scrollIntoView({
+      behavior: opts.behavior ?? "smooth",
+      block: opts.block ?? "center",
+    });
+    if (opts.pulse === false) return;
     el.classList.add("wt-row-pulse");
     setTimeout(() => el.classList.remove("wt-row-pulse"), 1200);
+  }
+
+  async function settleAndJumpToWorktreeRow(path: string): Promise<void> {
+    await tick();
+    await tick();
+    jumpToWorktreeRow(path, { behavior: "auto", block: "center" });
   }
   let newWtBranch: Record<string, string> = {};
   let newWtBusy: Record<string, boolean> = {};
@@ -7057,7 +7079,7 @@
         zenRowKey = null;
         notesShownInZen = false;
         resetZenMenu();
-        if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
+        if (wtPath) void settleAndJumpToWorktreeRow(wtPath);
       }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
       // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input

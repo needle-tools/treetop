@@ -3,12 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  buildCliMessageBody,
   buildSupergitCliScript,
   buildSupergitSessions,
-  isSelfMessageTarget,
-  isSelfSessionTarget,
   openSessionRefsFromPrefs,
+  parseSupergitMessageRequest,
+  resolveSupergitMessageSender,
   resolveSupergitCallerSession,
   resolveSupergitSelfSession,
   resolveSupergitSession,
@@ -16,16 +15,18 @@ import {
   supergitSelfResolutionError,
 } from "../src/supergit-cli";
 
-async function runGeneratedCli(args: string[]): Promise<{
+async function runGeneratedCli(args: string[], opts: {
+  defaultDaemonUrl?: string;
+} = {}): Promise<{
   stdout: string;
   stderr: string;
   exitCode: number;
 }> {
-  const dir = await mkdtemp(join(tmpdir(), "supergit-cli-test-"));
-  const scriptPath = join(dir, "supergit");
+  const dir = await mkdtemp(join(tmpdir(), "treetop-cli-test-"));
+  const scriptPath = join(dir, "treetop");
   try {
     await writeFile(scriptPath, buildSupergitCliScript({
-      defaultDaemonUrl: "http://127.0.0.1:1",
+      defaultDaemonUrl: opts.defaultDaemonUrl ?? "http://127.0.0.1:1",
     }));
     const proc = Bun.spawn([process.execPath, scriptPath, ...args], {
       stdout: "pipe",
@@ -39,6 +40,32 @@ async function runGeneratedCli(args: string[]): Promise<{
     return { stdout, stderr, exitCode };
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function captureGeneratedCliRequest(args: string[]): Promise<{
+  request: { path: string; body: unknown };
+  result: { stdout: string; stderr: string; exitCode: number };
+}> {
+  let request: { path: string; body: unknown } | undefined;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      request = {
+        path: new URL(req.url).pathname,
+        body: await req.json(),
+      };
+      return Response.json({ ok: true });
+    },
+  });
+  try {
+    const result = await runGeneratedCli(args, {
+      defaultDaemonUrl: `http://127.0.0.1:${server.port}`,
+    });
+    if (!request) throw new Error("generated CLI did not make a request");
+    return { request, result };
+  } finally {
+    server.stop(true);
   }
 }
 
@@ -372,6 +399,18 @@ describe("supergit terminal CLI helpers", () => {
     });
   });
 
+  test("message sender resolution lets inbox notes fall back to peer identity outside Treetop", () => {
+    expect(resolveSupergitMessageSender({
+      senderMode: "auto",
+      target: { kind: "inbox" },
+      peerIdentity: { id: "peer-1", label: "Me" },
+    })).toEqual({
+      kind: "peer",
+      id: "peer-1",
+      label: "Me",
+    });
+  });
+
   test("resolveSupergitCallerSession maps the CLI parent pid to its owning session", () => {
     const terminals = [{
       id: "t_1",
@@ -398,6 +437,38 @@ describe("supergit terminal CLI helpers", () => {
 
     expect(resolveSupergitCallerSession(sessions, terminals, 4242)?.id).toBe("ses-1");
     expect(resolveSupergitCallerSession(sessions, terminals, 99)).toBeUndefined();
+  });
+
+  test("resolveSupergitCallerSession maps descendant shell commands to their terminal session", () => {
+    const terminals = [{
+      id: "t_1",
+      ownerId: "ses-1",
+      cmd: ["codex"],
+      cwd: "/repo",
+      agent: "codex",
+      pid: 4242,
+      size: { cols: 80, rows: 24 },
+      createdAt: "1970-01-01T00:00:00.000Z",
+      lastOutputAt: "1970-01-01T00:00:00.000Z",
+    }];
+    const sessions = buildSupergitSessions({
+      nowMs: 0,
+      terminals,
+      agents: [{
+        agent: "codex",
+        cwd: "/repo",
+        source: "/sessions/ses-1.jsonl",
+        sessionId: "ses-1",
+        lastActive: "1970-01-01T00:00:00.000Z",
+      }],
+    });
+
+    expect(resolveSupergitCallerSession(
+      sessions,
+      terminals,
+      7001,
+      [7000, 4242, 1],
+    )?.id).toBe("ses-1");
   });
 
   test("resolveSupergitSelfSession falls back to the only live session in the caller cwd", () => {
@@ -453,37 +524,67 @@ describe("supergit terminal CLI helpers", () => {
 
   test("self resolution failure message gives actionable recovery commands", () => {
     expect(supergitSelfResolutionError()).toContain("Could not resolve current session");
-    expect(supergitSelfResolutionError()).toContain("supergit session list --all --json");
-    expect(supergitSelfResolutionError()).toContain("supergit message me");
+    expect(supergitSelfResolutionError()).toContain("treetop session list --all --json");
+    expect(supergitSelfResolutionError()).toContain("treetop message <sessionId>");
+    expect(supergitSelfResolutionError()).toContain("Use `treetop message me ...` only when you want an inbox note.");
   });
 
-  test("message body treats positional words as the markdown content", () => {
-    expect(buildCliMessageBody("", ["hello", "there"]))
-      .toBe("hello there");
-    expect(buildCliMessageBody("hello", ["image.png", "https://x.test/a.png"]))
-      .toBe("hello\n\nimage.png\nhttps://x.test/a.png");
-    expect(buildCliMessageBody("", ["only.png"])).toBe("only.png");
+  test("message request parser accepts the daemon-domain payload", () => {
+    expect(parseSupergitMessageRequest({
+      body: "hello",
+      target: { kind: "session", id: "ses-1" },
+      sender: { mode: "me" },
+      caller: { pid: 123, cwd: "/repo" },
+    })).toEqual({
+      ok: true,
+      value: {
+        body: "hello",
+        target: { kind: "session", id: "ses-1" },
+        senderMode: "me",
+        callerPid: 123,
+        callerCwd: "/repo",
+      },
+    });
   });
 
-  test("message targets distinguish current session from local inbox", () => {
-    expect(isSelfSessionTarget("self")).toBe(true);
-    expect(isSelfSessionTarget("me")).toBe(false);
-    expect(isSelfMessageTarget("self")).toBe(false);
-    expect(isSelfMessageTarget("me")).toBe(true);
-    expect(isSelfMessageTarget("session-id")).toBe(false);
+  test("message request parser defaults to auto sender and optional target", () => {
+    expect(parseSupergitMessageRequest({ body: "unaddressed note" })).toEqual({
+      ok: true,
+      value: {
+        body: "unaddressed note",
+        senderMode: "auto",
+      },
+    });
+  });
+
+  test("message request parser rejects legacy CLI-shaped payloads", () => {
+    expect(parseSupergitMessageRequest({
+      sessionId: "ses-1",
+      content: "hello",
+      args: ["there"],
+      from: "auto",
+      callerPid: 123,
+      callerCwd: "/repo",
+    })).toEqual({
+      ok: false,
+      status: 400,
+      error: "body is required",
+    });
   });
 
   test("generated CLI help exposes only session list and message", () => {
     const script = buildSupergitCliScript({
       defaultDaemonUrl: "http://127.0.0.1:7777",
     });
-    expect(script).toContain("supergit session list");
-    expect(script).toContain("supergit list [--all] [--json]");
-    expect(script).toContain("supergit session list [--all] [--json]");
-    expect(script).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
-    expect(script).toContain("--from auto  Use the Supergit session running this command (default).");
+    expect(script).toContain("treetop session list");
+    expect(script).toContain("treetop list [--all] [--json]");
+    expect(script).toContain("treetop session list [--all] [--json]");
+    expect(script).toContain("treetop message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(script).toContain("--from auto  Use the Treetop session running this command (default).");
+    expect(script).toContain("Omitting the target is the same as self");
     expect(script).toContain("Use self for the session running this command");
-    expect(script).toContain("callerPid: process.ppid");
+    expect(script).toContain("Use me only when you explicitly want an inbox note");
+    expect(script).toContain("caller: { pid: process.ppid, cwd: process.cwd() }");
     expect(script).not.toContain("SUPERGIT_DAEMON_URL");
     expect(script).not.toContain("SUPERGIT_WORKSPACE");
     expect(script).not.toContain("SUPERGIT_TERM_ID");
@@ -493,35 +594,87 @@ describe("supergit terminal CLI helpers", () => {
   test("generated message help exits before creating a note", async () => {
     const long = await runGeneratedCli(["message", "--help"]);
     expect(long.exitCode).toBe(0);
-    expect(long.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(long.stdout).toContain("treetop message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(long.stdout).toContain("Omitting the target is the same as self");
+    expect(long.stdout).toContain("Only use this for explicit inbox notes.");
     expect(long.stdout).toContain("--from me    Use this machine's peer identity as sender.");
     expect(long.stderr).toBe("");
 
     const short = await runGeneratedCli(["message", "-h"]);
     expect(short.exitCode).toBe(0);
-    expect(short.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(short.stdout).toContain("treetop message [--from auto|me] [sessionId|self|me] <content...>");
     expect(short.stderr).toBe("");
 
     const word = await runGeneratedCli(["message", "help"]);
     expect(word.exitCode).toBe(0);
-    expect(word.stdout).toContain("supergit message [--from auto|me] [sessionId|self|me] <content...>");
+    expect(word.stdout).toContain("treetop message [--from auto|me] [sessionId|self|me] <content...>");
     expect(word.stderr).toBe("");
   });
 
   test("generated session help is subcommand-specific", async () => {
     const help = await runGeneratedCli(["session", "--help"]);
     expect(help.exitCode).toBe(0);
-    expect(help.stdout).toContain("supergit session list [--all] [--json]");
+    expect(help.stdout).toContain("treetop session list [--all] [--json]");
     expect(help.stderr).toBe("");
 
     const listHelp = await runGeneratedCli(["session", "list", "--help"]);
     expect(listHelp.exitCode).toBe(0);
-    expect(listHelp.stdout).toContain("supergit session list [--all] [--json]");
+    expect(listHelp.stdout).toContain("treetop session list [--all] [--json]");
     expect(listHelp.stderr).toBe("");
 
     const missing = await runGeneratedCli(["session"]);
     expect(missing.exitCode).toBe(2);
-    expect(missing.stdout).toContain("supergit session list [--all] [--json]");
+    expect(missing.stdout).toContain("treetop session list [--all] [--json]");
     expect(missing.stderr).toContain("session requires a subcommand");
+  });
+
+  test("generated CLI sends message payloads in daemon-domain shape", async () => {
+    const { request, result } = await captureGeneratedCliRequest([
+      "message",
+      "--from",
+      "auto",
+      "ses-1",
+      "--content",
+      "hello",
+      "image.png",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(request.path).toBe("/api/supergit/messages");
+    expect(request.body).toEqual({
+      body: "hello\n\nimage.png",
+      target: { kind: "session", id: "ses-1" },
+      sender: { mode: "auto" },
+      caller: {
+        pid: expect.any(Number),
+        cwd: expect.any(String),
+      },
+    });
+  });
+
+  test("generated CLI maps self and me to explicit message target kinds", async () => {
+    const omitted = await captureGeneratedCliRequest(["message", "ping"]);
+    expect(omitted.request.body).toMatchObject({
+      body: "ping",
+      target: { kind: "self" },
+    });
+
+    const session = await captureGeneratedCliRequest(["message", "--to", "ses-1", "ping"]);
+    expect(session.request.body).toMatchObject({
+      body: "ping",
+      target: { kind: "session", id: "ses-1" },
+    });
+
+    const self = await captureGeneratedCliRequest(["message", "self", "ping"]);
+    expect(self.request.body).toMatchObject({
+      body: "ping",
+      target: { kind: "self" },
+    });
+
+    const inbox = await captureGeneratedCliRequest(["message", "me", "ping"]);
+    expect(inbox.request.body).toMatchObject({
+      body: "ping",
+      target: { kind: "inbox" },
+    });
   });
 });

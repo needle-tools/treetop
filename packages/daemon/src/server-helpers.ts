@@ -310,7 +310,9 @@ export function patchWorktreeDetailsInRepos(
   return false;
 }
 
-export function codexThreadIdFromTitleSource(source: string): string | undefined {
+export function codexThreadIdFromTitleSource(
+  source: string,
+): string | undefined {
   const livePrefix = "__codex_app__:";
   if (source.startsWith(livePrefix)) return source.slice(livePrefix.length);
   const m = basename(source).match(
@@ -362,7 +364,9 @@ export function applyCodexThreadTitleIndex(
     return { raw, changed: false, matched, appended: false };
   }
 
-  const row: Record<string, unknown> = retained ? { ...retained } : { id: threadId };
+  const row: Record<string, unknown> = retained
+    ? { ...retained }
+    : { id: threadId };
   if (trimmed) row.thread_name = trimmed;
   else delete row.thread_name;
   row.updated_at = updatedAt;

@@ -13,6 +13,7 @@ import {
   mkdir as fsMkdir,
   rename as fsRename,
   chmod as fsChmod,
+  rm as fsRm,
 } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { DuplicateRepoError, Workspace } from "./workspace";
@@ -118,6 +119,7 @@ import {
   sampleCwds,
   renameArgv,
   resolveAgentBinary,
+  processAncestorPids,
   discoverRepoProcesses,
   throttleAsync,
   withTimeout,
@@ -143,16 +145,15 @@ import {
   type MessageSender,
 } from "./notes";
 import {
-  buildCliMessageBody,
   buildSupergitCliScript,
   buildSupergitSessions,
-  isSelfMessageTarget,
-  isSelfSessionTarget,
+  TREETOP_CLI_BIN_NAME,
   openSessionRefsFromPrefs,
+  parseSupergitMessageRequest,
   receiverForSession,
+  resolveSupergitMessageSender,
   resolveSupergitSelfSession,
   resolveSupergitSession,
-  senderForSession,
   supergitSelfResolutionError,
 } from "./supergit-cli";
 import {
@@ -387,13 +388,14 @@ const SUPERGIT_CLI_BIN_DIR = join(WORKSPACE_PATH, ".supergit", "bin");
 async function ensureSupergitCliWrapper(): Promise<string | null> {
   try {
     await fsMkdir(SUPERGIT_CLI_BIN_DIR, { recursive: true });
-    const path = join(SUPERGIT_CLI_BIN_DIR, "supergit");
+    const path = join(SUPERGIT_CLI_BIN_DIR, TREETOP_CLI_BIN_NAME);
     await fsWriteFile(
       path,
       buildSupergitCliScript({ defaultDaemonUrl: CLI_DAEMON_URL }),
       "utf-8",
     );
     await fsChmod(path, 0o755);
+    await fsRm(join(SUPERGIT_CLI_BIN_DIR, "supergit"), { force: true });
     return path;
   } catch (e) {
     console.warn(
@@ -1769,7 +1771,9 @@ function reposNDJSONFromCache(
 /** Fresh build that yields each repo as soon as its worktrees finish
  *  enriching. Also populates the cache + resolves `reposInflight` so
  *  concurrent callers can share the work. */
-function reposSelectionCacheKey(selectedRemotes: Record<string, string>): string {
+function reposSelectionCacheKey(
+  selectedRemotes: Record<string, string>,
+): string {
   return JSON.stringify(
     Object.keys(selectedRemotes)
       .sort()
@@ -3218,20 +3222,20 @@ const server = Bun.serve<TermWsData, never>({
               method: "GET",
               path: "/api/supergit/sessions",
               description:
-                "agent-friendly session list for the injected `supergit` CLI. Default returns open UI sessions; ?all=1 includes older detected sessions.",
+                "agent-friendly session list for the injected `treetop` CLI. Default returns open UI sessions; ?all=1 includes older detected sessions.",
             },
             {
               method: "POST",
               path: "/api/supergit/messages",
               body: {
-                sessionId: "string?",
-                content: "markdown",
-                args: "string[]?",
-                callerPid: "number?",
-                callerCwd: "string?",
+                body: "markdown",
+                "target?":
+                  "{kind:'session',id:string} | {kind:'self'} | {kind:'inbox'}",
+                sender: "{mode:'auto'|'me'}?",
+                caller: "{pid?:number,cwd?:string}?",
               },
               description:
-                "create a workspace note, optionally addressed to a session. Used by `supergit message [sessionId|self|me] <content...>`.",
+                "create a workspace note, optionally addressed to a session. Used by `treetop message [sessionId|self|me] <content...>`.",
             },
             {
               method: "GET",
@@ -3691,79 +3695,50 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/supergit/messages" && req.method === "POST") {
-        const body = (await req.json().catch(() => null)) as
-          | {
-              sessionId?: unknown;
-              content?: unknown;
-              args?: unknown;
-              from?: unknown;
-              callerPid?: unknown;
-              callerCwd?: unknown;
-            }
-          | null;
-        const sessionId =
-          typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
-        const content = typeof body?.content === "string" ? body.content : "";
-        const args = Array.isArray(body?.args)
-          ? body.args.filter((x): x is string => typeof x === "string")
-          : [];
-        const fromMode =
-          body?.from === undefined || body.from === "auto"
-            ? "auto"
-            : body.from === "me"
-              ? "me"
-              : "";
-        const callerPid =
-          typeof body?.callerPid === "number" && Number.isFinite(body.callerPid)
-            ? body.callerPid
-            : undefined;
-        const callerCwd =
-          typeof body?.callerCwd === "string" ? body.callerCwd : undefined;
-        const messageBody = buildCliMessageBody(content, args);
-        if (!messageBody.trim()) {
-          return json(
-            { error: "content or positional args required" },
-            { status: 400 },
-          );
+        const parsed = parseSupergitMessageRequest(
+          await req.json().catch(() => null),
+        );
+        if (!parsed.ok) {
+          return json({ error: parsed.error }, { status: parsed.status });
         }
-        if (!fromMode) {
-          return json(
-            { error: "--from must be one of: auto, me" },
-            { status: 400 },
-          );
-        }
+        const {
+          body: messageBody,
+          target: messageTarget,
+          senderMode,
+          callerPid,
+          callerCwd,
+        } = parsed.value;
         const allSessions = await supergitSessions({ includeAll: true });
+        const callerAncestorPids =
+          senderMode === "auto" && callerPid
+            ? await processAncestorPids(callerPid).catch(() => [])
+            : [];
         const callerSession =
-          fromMode === "auto"
+          senderMode === "auto"
             ? resolveSupergitSelfSession(allSessions, terminalBackend.list(), {
                 callerPid,
+                callerAncestorPids,
                 callerCwd,
               })
             : undefined;
-        const peerSender =
-          fromMode === "me" && peerIdentity
-            ? {
-                kind: "peer" as const,
-                id: peerIdentity.id,
-                label: peerIdentity.label,
-              }
-            : undefined;
-        const sender =
-          fromMode === "auto" && callerSession
-            ? senderForSession(callerSession)
-            : peerSender;
+        const sender = resolveSupergitMessageSender({
+          senderMode,
+          target: messageTarget,
+          callerSession,
+          peerIdentity,
+        });
         if (!sender) {
           return json(
             {
               error:
-                fromMode === "auto"
+                senderMode === "auto"
                   ? supergitSelfResolutionError()
                   : "identity not ready",
             },
-            { status: fromMode === "auto" ? 404 : 503 },
+            { status: senderMode === "auto" ? 404 : 503 },
           );
         }
-        if (isSelfMessageTarget(sessionId)) {
+        if (messageTarget?.kind === "inbox") {
           if (messageBody.length > MAX_BODY_BYTES) {
             return json(
               { error: `body exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})` },
@@ -3771,10 +3746,9 @@ const server = Bun.serve<TermWsData, never>({
             );
           }
           const sentAt = new Date().toISOString();
-          const selfPeer =
-            peerIdentity
-              ? { id: peerIdentity.id, label: peerIdentity.label }
-              : { id: sender.id, label: sender.label ?? sender.id };
+          const selfPeer = peerIdentity
+            ? { id: peerIdentity.id, label: peerIdentity.label }
+            : { id: sender.id, label: sender.label ?? sender.id };
           const receiver: MessageReceiver = {
             kind: "peer",
             peerId: selfPeer.id,
@@ -3801,22 +3775,25 @@ const server = Bun.serve<TermWsData, never>({
           });
           return json({ ok: true, inbox: true, sentAt }, { status: 202 });
         }
-        const target = sessionId
-          ? isSelfSessionTarget(sessionId)
+        const target = messageTarget
+          ? messageTarget.kind === "self"
             ? callerSession
-            : resolveSupergitSession(allSessions, sessionId)
+            : messageTarget.kind === "session"
+              ? resolveSupergitSession(allSessions, messageTarget.id)
+              : undefined
           : undefined;
-        if (sessionId && !target) {
+        if (messageTarget && !target) {
           return json(
             {
-              error: isSelfSessionTarget(sessionId)
-                ? supergitSelfResolutionError()
-                : "session not found",
+              error:
+                messageTarget.kind === "self"
+                  ? supergitSelfResolutionError()
+                  : "session not found",
             },
             { status: 404 },
           );
         }
-        const canvasSession = fromMode === "auto" ? callerSession : undefined;
+        const canvasSession = senderMode === "auto" ? callerSession : undefined;
         const anchors = [
           ...(canvasSession?.cwd ? [`worktree:${canvasSession.cwd}`] : []),
           ...(canvasSession?.source ? [`session:${canvasSession.source}`] : []),
@@ -3834,7 +3811,11 @@ const server = Bun.serve<TermWsData, never>({
           payload: { note },
           inverse: { note },
         });
-        broadcast("change", { kind: "note_create", id: note.id, eventId: ev.id });
+        broadcast("change", {
+          kind: "note_create",
+          id: note.id,
+          eventId: ev.id,
+        });
         return json({ note: { ...note, eventId: ev.id } }, { status: 201 });
       }
 
@@ -6133,7 +6114,9 @@ const server = Bun.serve<TermWsData, never>({
           // Stable delivery id so a retry (after a dropped ACK) is
           // deduped by the receiver instead of duplicated.
           id: crypto.randomUUID(),
-          ...(kind === "note" && notePayload ? { kind, note: notePayload } : {}),
+          ...(kind === "note" && notePayload
+            ? { kind, note: notePayload }
+            : {}),
         };
         const peerUrl = `http://${peerHost}:${peerPort}/api/messages/receive`;
         let peerRes: Response;
@@ -9446,14 +9429,14 @@ const server = Bun.serve<TermWsData, never>({
           id?: unknown;
           body?: unknown;
           anchors?: unknown;
-	          tags?: unknown;
-	          kind?: unknown;
-	          target?: unknown;
-	          secret?: unknown;
-	          receiver?: unknown;
-	          sender?: unknown;
-	          stampId?: unknown;
-	        } | null;
+          tags?: unknown;
+          kind?: unknown;
+          target?: unknown;
+          secret?: unknown;
+          receiver?: unknown;
+          sender?: unknown;
+          stampId?: unknown;
+        } | null;
         if (!body || typeof body.body !== "string") {
           return json(
             { error: "body.body (string) is required" },
@@ -9474,13 +9457,13 @@ const server = Bun.serve<TermWsData, never>({
                   (x): x is string => typeof x === "string",
                 )
               : undefined,
-	            kind: parseKind(body.kind),
-	            target: parseTarget(body.target),
-	            ...(body.secret === true ? { secret: true } : {}),
-	            receiver: parseReceiver(body.receiver),
-	            sender: parseSender(body.sender),
-	            stampId: parseStampId(body.stampId),
-	          });
+            kind: parseKind(body.kind),
+            target: parseTarget(body.target),
+            ...(body.secret === true ? { secret: true } : {}),
+            receiver: parseReceiver(body.receiver),
+            sender: parseSender(body.sender),
+            stampId: parseStampId(body.stampId),
+          });
           const ev = await events.append({
             type: "create_note",
             actor: "user",
@@ -9508,14 +9491,14 @@ const server = Bun.serve<TermWsData, never>({
           const body = (await req.json().catch(() => null)) as {
             body?: unknown;
             anchors?: unknown;
-	            tags?: unknown;
-	            kind?: unknown;
-	            target?: unknown;
-	            secret?: unknown;
-	            receiver?: unknown;
-	            sender?: unknown;
-	            stampId?: unknown;
-	          } | null;
+            tags?: unknown;
+            kind?: unknown;
+            target?: unknown;
+            secret?: unknown;
+            receiver?: unknown;
+            sender?: unknown;
+            stampId?: unknown;
+          } | null;
           if (!body) {
             return json({ error: "JSON body required" }, { status: 400 });
           }
@@ -9551,15 +9534,15 @@ const server = Bun.serve<TermWsData, never>({
                     (x): x is string => typeof x === "string",
                   )
                 : undefined,
-	              kind: parseKind(body.kind),
-	              target: targetField,
-	              ...(typeof body.secret === "boolean"
-	                ? { secret: body.secret }
-	                : {}),
-	              receiver: receiverField,
-	              sender: senderField,
-	              stampId: stampIdField,
-	            });
+              kind: parseKind(body.kind),
+              target: targetField,
+              ...(typeof body.secret === "boolean"
+                ? { secret: body.secret }
+                : {}),
+              receiver: receiverField,
+              sender: senderField,
+              stampId: stampIdField,
+            });
             broadcast("change", { kind: "note_update", id: note.id });
             return json(note);
           } catch (e) {

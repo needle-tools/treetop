@@ -1604,9 +1604,19 @@
 
   function onStagePrompt(e: Event): void {
     const detail = (
-      e as CustomEvent<{ source?: string; text?: string; chunks?: string[] }>
+      e as CustomEvent<{
+        source?: string;
+        termId?: string;
+        text?: string;
+        chunks?: string[];
+      }>
     ).detail;
-    if (!detail || detail.source !== sessionSource || !xterm) return;
+    if (!detail || !xterm) return;
+    if (detail.termId) {
+      if (detail.termId !== terminalId) return;
+    } else if (detail.source !== sessionSource) {
+      return;
+    }
     const chunks = detail.chunks ?? (detail.text ? [detail.text] : []);
     if (chunks.length === 0) return;
     xterm.focus();

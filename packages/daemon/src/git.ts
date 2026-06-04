@@ -688,7 +688,9 @@ export async function pushUpstream(
 ): Promise<PushResult> {
   let r;
   try {
-    const branch = options.remote ? await currentBranchName(worktreePath) : null;
+    const branch = options.remote
+      ? await currentBranchName(worktreePath)
+      : null;
     const refspec = branch ? `HEAD:refs/heads/${branch}` : null;
     r = await runGitWithLockRetry(() =>
       raceTimeout(
@@ -1015,10 +1017,11 @@ export async function getWorktreeDetails(
     // has-upstream path stays at one round-trip. `.catch("")` covers the
     // no-commits-yet repo (rev-list with no HEAD errors).
     if (branchStatus && branchStatus.upstream === null) {
-      const countOut = await $`git -C ${worktreePath} rev-list --count HEAD --not --remotes`
-        .quiet()
-        .text()
-        .catch(() => "");
+      const countOut =
+        await $`git -C ${worktreePath} rev-list --count HEAD --not --remotes`
+          .quiet()
+          .text()
+          .catch(() => "");
       const n = Number.parseInt(countOut.trim(), 10);
       if (!Number.isNaN(n)) branchStatus.unpushed = n;
     }
@@ -1197,7 +1200,14 @@ export function parseBranchStatus(porcelain: string): BranchStatus | null {
     }
   }
   if (branch === null) return null;
-  return { branch, upstream, ahead, behind, aheadOldestTime: null, unpushed: null };
+  return {
+    branch,
+    upstream,
+    ahead,
+    behind,
+    aheadOldestTime: null,
+    unpushed: null,
+  };
 }
 
 export function parseLastCommit(logOut: string): LastCommit | null {

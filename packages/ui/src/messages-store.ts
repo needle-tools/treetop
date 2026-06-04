@@ -18,6 +18,61 @@ export interface StoredMessage {
    *  Older messages predate this field — backward-compat treats them
    *  as "in" client-side. */
   direction?: "in" | "out";
+  kind?: "text" | "note";
+  note?: {
+    body: string;
+    anchors?: string[];
+    tags?: string[];
+    kind?: "note" | "link" | "emoji";
+    target?: unknown;
+    receiver?: MessageReceiver;
+    sender?: MessageSender;
+    stampId?: number;
+  };
+}
+
+export interface MessageReceiver {
+  kind?: "session" | "peer";
+  sessionId?: string;
+  peerId?: string;
+  label?: string;
+  agent?: string;
+  source?: string;
+  terminalId?: string;
+  host?: string;
+  port?: number;
+  delivery?: "draft" | "staged" | "sent";
+}
+
+export interface MessageSender {
+  kind: "session" | "peer";
+  id: string;
+  label?: string;
+  agent?: string;
+  source?: string;
+  terminalId?: string;
+}
+
+export function messageTitleFromMarkdown(body: string): string {
+  const heading = body.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim();
+  const source = heading || body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[\s>*+-]*\[[ xX]]\s+/gm, "")
+    .replace(/^[\s>*+-]+/gm, "")
+    .replace(/[*_~#>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) return "Untitled message";
+  const sentence = source.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? "";
+  const candidate = sentence && sentence.length <= 64 ? sentence : source;
+  const words = candidate.split(/\s+/).filter(Boolean);
+  const clipped = words.slice(0, 7).join(" ");
+  return words.length > 7 ? `${clipped}...` : clipped;
 }
 export interface PeerInbox {
   peer: { id: string; label: string };
@@ -116,12 +171,16 @@ export async function sendMessage(
   peerHost: string,
   peerPort: number,
   body: string,
+  opts: {
+    kind?: "text" | "note";
+    note?: StoredMessage["note"];
+  } = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const res = await fetch(apiUrl("/api/messages/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ peerHost, peerPort, body }),
+      body: JSON.stringify({ peerHost, peerPort, body, ...opts }),
     });
     if (res.status === 202) return { ok: true };
     const err = (await res.json().catch(() => null)) as {

@@ -861,7 +861,9 @@ describe("Codex session_index title sync", () => {
   test("extracts a Codex thread id from JSONL and live app sources", () => {
     expect(codexThreadIdFromTitleSource(source)).toBe(id);
     expect(codexThreadIdFromTitleSource(`__codex_app__:${id}`)).toBe(id);
-    expect(codexThreadIdFromTitleSource("/tmp/not-a-session.txt")).toBeUndefined();
+    expect(
+      codexThreadIdFromTitleSource("/tmp/not-a-session.txt"),
+    ).toBeUndefined();
   });
 
   test("creates exactly one title row when the app index is missing the session", () => {
@@ -874,7 +876,10 @@ describe("Codex session_index title sync", () => {
     );
     expect(result.changed).toBe(true);
     expect(result.appended).toBe(true);
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows.filter((row) => row.id === id)).toEqual([
       {
         id,
@@ -898,7 +903,10 @@ describe("Codex session_index title sync", () => {
     );
     expect(result.changed).toBe(true);
     expect(result.appended).toBe(false);
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows).toEqual([
       {
         id,
@@ -920,7 +928,10 @@ describe("Codex session_index title sync", () => {
       "Performance Testing",
       now,
     );
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows.filter((row) => row.id === id)).toEqual([
       {
         id,

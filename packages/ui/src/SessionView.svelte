@@ -1102,28 +1102,50 @@
         onSelect: () => void resumeInExternalTerminal(),
       },
       {
-        kind: "copy",
-        label: "Copy session ID + path",
-        icon: "⧉",
-        disabled: !sid,
-        title: sid
-          ? "Copy session id and transcript path to clipboard"
-          : "No session id yet",
-        getText: () => `${sid}\n${sessionFileSource}`,
-      },
-      {
-        kind: "action",
-        label: "Open session directory",
+        kind: "submenu",
+        label: "Session Info",
         iconSvg: [
-          // Lucide "folder-open" — an open folder, reads as "reveal in
-          // the file manager".
-          "M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+          "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z",
+          "M14 2v6h6",
+          "M16 13H8",
+          "M16 17H8",
+          "M10 9H8",
         ],
-        disabled: !sessionFileSource,
-        title: sessionFileSource
-          ? "Open the folder containing this session's on-disk log file"
-          : "No session file for this session yet",
-        onSelect: () => void openSessionDirectory(),
+        title: "Copy ids and open this session's directory",
+        children: [
+          {
+            kind: "copy",
+            label: "Copy session ID",
+            icon: "⧉",
+            disabled: !sid,
+            title: sid ? "Copy session id to clipboard" : "No session id yet",
+            getText: () => sid ?? "",
+          },
+          {
+            kind: "copy",
+            label: "Copy session ID + path",
+            icon: "⧉",
+            disabled: !sid,
+            title: sid
+              ? "Copy session id and transcript path to clipboard"
+              : "No session id yet",
+            getText: () => `${sid}\n${sessionFileSource}`,
+          },
+          {
+            kind: "action",
+            label: "Open session directory",
+            iconSvg: [
+              // Lucide "folder-open" — an open folder, reads as "reveal in
+              // the file manager".
+               "M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+            ],
+            disabled: !sessionFileSource,
+            title: sessionFileSource
+              ? "Open the folder containing this session's on-disk log file"
+              : "No session file for this session yet",
+            onSelect: () => void openSessionDirectory(),
+          },
+        ],
       },
       {
         kind: "action",
@@ -2153,6 +2175,7 @@
 
     if (event.kind === "request") {
       flushCodexDeltaPatches();
+      upsertCodexToolUseFromRequest(event);
       codexRequests = [
         ...codexRequests.filter((r) => r.id !== event.id),
         event,
@@ -2256,6 +2279,9 @@
         `codex-file-${event.params.itemId ?? event.turnId ?? "file"}`,
         "file change",
         event.params.changes ?? event.params,
+        typeof event.params.itemId === "string"
+          ? event.params.itemId
+          : event.turnId,
       );
       return;
     }
@@ -2310,11 +2336,17 @@
     id: string,
     toolName: string,
     toolInput: unknown,
+    toolUseId?: string,
   ): void {
     if (!session) return;
     const messages = [...session.messages];
     const existingIndex = messages.findIndex((m) => m.id === id);
-    const block: NormalizedBlock = { type: "tool_use", toolName, toolInput };
+    const block: NormalizedBlock = {
+      type: "tool_use",
+      toolName,
+      toolInput,
+      toolUseId,
+    };
     if (existingIndex >= 0) {
       messages[existingIndex] = {
         ...messages[existingIndex]!,
@@ -2329,6 +2361,29 @@
       });
     }
     session = { ...session, messages };
+  }
+
+  function upsertCodexToolUseFromRequest(event: CodexAppEvent): void {
+    const itemId =
+      typeof event.params.itemId === "string"
+        ? event.params.itemId
+        : event.turnId;
+    if (!itemId) return;
+    if (event.method.includes("commandExecution")) {
+      upsertCodexToolUse(
+        `codex-tool-${itemId}`,
+        "exec_command",
+        event.params,
+        itemId,
+      );
+    } else if (event.method.includes("fileChange")) {
+      upsertCodexToolUse(
+        `codex-file-${itemId}`,
+        "file change",
+        event.params.changes ?? event.params,
+        itemId,
+      );
+    }
   }
 
   function codexPlanFromParams(params: unknown): VisualPlan | undefined {

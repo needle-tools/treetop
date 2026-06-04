@@ -832,7 +832,8 @@
    derived from --ctx-hot via color-mix so the ring + button stay
    visually unified, and so a future redesign that re-tones --ctx-hot
    doesn't require a second edit here. */
-.sticky .sticky-btn.danger.confirming {
+.sticky .sticky-btn.danger.confirming,
+.attachment-media-modal .sticky-btn.danger.confirming {
   background: var(--ctx-hot);
   color: #fff;
   border-color: var(--ctx-hot);
@@ -1028,7 +1029,8 @@
    in base.css — that dark surface clashes hard with the note's
    warm-paper palette and rendered the dark-brown button text
    unreadable on hover. */
-.sticky .sticky-btn:hover:not(:disabled) {
+.sticky .sticky-btn:hover:not(:disabled),
+.attachment-media-modal .sticky-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.1);
   color: #2a2516;
 }
@@ -1037,11 +1039,13 @@
   color: #fff4a8;
   border-color: #2a2516;
 }
-.sticky .sticky-btn.primary:hover:not(:disabled) {
+.sticky .sticky-btn.primary:hover:not(:disabled),
+.attachment-media-modal .sticky-btn.primary:hover:not(:disabled) {
   background: #1a1610;
   color: #fff4a8;
 }
-.sticky .sticky-btn.danger:hover:not(:disabled) {
+.sticky .sticky-btn.danger:hover:not(:disabled),
+.attachment-media-modal .sticky-btn.danger:hover:not(:disabled) {
   background: rgb(180, 30, 30);
   color: #fff;
   border-color: rgb(180, 30, 30);
@@ -1050,7 +1054,8 @@
    smaller than primary actions so the toolbar still reads "Cancel /
    Save" as the main choices, with the destination operations as
    ancillary helpers. */
-.sticky .sticky-btn.tiny {
+.sticky .sticky-btn.tiny,
+.attachment-media-modal .sticky-btn.tiny {
   font-size: 11px;
   padding: 2px 5px;
   opacity: 0.75;
@@ -1058,10 +1063,13 @@
   letter-spacing: 0.02em;
 }
 .sticky .sticky-btn.tiny:hover:not(:disabled),
-.sticky .sticky-btn.tiny.active {
+.sticky .sticky-btn.tiny.active,
+.attachment-media-modal .sticky-btn.tiny:hover:not(:disabled),
+.attachment-media-modal .sticky-btn.tiny.active {
   opacity: 1;
 }
-.sticky .sticky-btn.tiny.active {
+.sticky .sticky-btn.tiny.active,
+.attachment-media-modal .sticky-btn.tiny.active {
   background: rgba(0, 0, 0, 0.08);
 }
 
@@ -1072,7 +1080,7 @@
 }
 
 /* Secret notes — the body is blurred and un-selectable until the
- * reader hovers the 🙈 toggle (300ms) or opens the note to edit.
+ * reader hovers the secret toggle (300ms) or opens the note to edit.
  * The veil sits on top; everything else inside the body gets the
  * spoiler blur. Not real cryptography — it just defeats a glance
  * over the shoulder, which is the whole ask. */
@@ -1117,12 +1125,465 @@
 .sticky-body p {
   margin: 0 0 0.4em;
 }
-.sticky-body p:last-child {
-  margin-bottom: 0;
+.sticky.sticky-message {
+  width: 390px;
+  min-height: 0;
+  padding: 0.35rem;
+  border-radius: 6px;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.25;
 }
-.sticky-body h1,
-.sticky-body h2,
-.sticky-body h3 {
+.sticky.sticky-message .sticky-header {
+  z-index: 8;
+  margin: 0;
+  padding: 0 0.1rem;
+}
+.sticky.sticky-message .sticky-header::before {
+  top: -5px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 0 10px rgba(60, 44, 18, 0.08);
+}
+.sticky.sticky-message .sticky-body {
+  margin-top: -1.42rem;
+  max-height: none;
+  overflow: visible;
+}
+.sticky.sticky-message-editing {
+  width: min(430px, calc(100vw - 48px));
+  min-height: 0;
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: 1px solid rgba(82, 64, 37, 0.18);
+  border-radius: 6px;
+  background:
+    linear-gradient(rgba(74, 55, 24, 0.032) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.72), transparent 36%),
+    linear-gradient(180deg, #fffaf0 0%, #f8ebc4 100%);
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.13),
+    0 10px 24px -10px rgba(0, 0, 0, 0.4);
+  color: #2a2516;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.sticky.sticky-message-editing .sticky-header::before {
+  top: -6px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.14),
+    inset 0 0 10px rgba(60, 44, 18, 0.07);
+}
+.sticky.sticky-message-editing .sticky-textarea {
+  min-height: 220px;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  border-color: rgba(82, 64, 37, 0.16);
+  background: rgba(255, 252, 241, 0.42);
+  box-shadow: inset 0 1px 9px rgba(255, 255, 255, 0.44);
+}
+.message-envelope {
+  position: relative;
+  isolation: isolate;
+  min-height: 190px;
+  outline: none;
+  perspective: 900px;
+  transform-style: preserve-3d;
+  transition: min-height 340ms cubic-bezier(0.2, 0.85, 0.25, 1);
+}
+.message-envelope.open {
+  min-height: 610px;
+}
+.message-envelope-face,
+.message-letter {
+  border: 1px solid rgba(80, 62, 33, 0.2);
+  color: #2b2418;
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.16),
+    0 12px 28px -14px rgba(0, 0, 0, 0.58);
+}
+.message-envelope-face {
+  position: relative;
+  z-index: 4;
+  height: 165px;
+  overflow: hidden;
+  border-radius: 6px;
+  background:
+    linear-gradient(rgba(74, 55, 24, 0.028) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 20% 16%, rgba(255, 255, 255, 0.74), transparent 36%),
+    linear-gradient(180deg, #fffaf0 0%, #f7e7bd 100%);
+}
+.message-envelope.open .message-envelope-face {
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: none;
+}
+.message-envelope-face::before,
+.message-envelope-face::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.message-envelope-face::before {
+  bottom: 0;
+  height: 1px;
+  background: rgba(80, 62, 33, 0.12);
+  box-shadow: 0 -8px 28px rgba(120, 89, 38, 0.08);
+}
+.message-envelope.open .message-envelope-face::before {
+  background: transparent;
+  box-shadow: none;
+}
+.message-envelope-face::after {
+  top: 0;
+  height: 76px;
+  border-bottom: 1px solid rgba(80, 62, 33, 0.13);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent);
+}
+.message-envelope-flap {
+  display: none;
+}
+.message-window {
+  position: absolute;
+  left: 28px;
+  top: 57px;
+  z-index: 4;
+  display: grid;
+  gap: 0.32rem;
+  width: min(238px, calc(100% - 126px));
+  padding: 0;
+}
+.message-address-lines {
+  display: grid;
+  gap: 0.16rem;
+  font-size: 11px;
+  line-height: 1.18;
+}
+.message-window-row {
+  display: grid;
+  grid-template-columns: 4.6ch minmax(0, 1fr);
+  align-items: center;
+  gap: 0.34rem;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+}
+.message-window-row:hover .message-session-chip,
+.message-window-row.active .message-session-chip {
+  border-color: rgba(73, 55, 28, 0.3);
+  background: rgba(255, 250, 238, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    0 1px 2px rgba(84, 62, 28, 0.12);
+}
+.message-window-row span {
+  color: rgba(43, 36, 24, 0.76);
+  white-space: nowrap;
+}
+.message-session-chip {
+  min-width: 0;
+  overflow: hidden;
+  padding: 1px 7px 2px;
+  border: 1px solid rgba(73, 55, 28, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 246, 221, 0.52);
+  color: rgba(43, 36, 24, 0.94);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-window-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(43, 36, 24, 0.92);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.18;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-address-picker {
+  position: fixed;
+  z-index: 2700;
+  width: min(520px, calc(100vw - 36px));
+}
+.message-address-popover {
+  position: static;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(360px, calc(100vh - 36px));
+  overflow: auto;
+}
+.message-address-popover .mention-picker {
+  width: 100%;
+  min-width: 0;
+}
+.message-stamp {
+  position: absolute;
+  top: 24px;
+  right: 20px;
+  z-index: 5;
+  display: block;
+  width: 76px;
+  height: 76px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  transform: rotate(var(--message-stamp-rotation, 1deg));
+}
+.message-stamp:focus-visible {
+  outline: 2px solid rgba(42, 37, 22, 0.52);
+  outline-offset: 3px;
+}
+.message-stamp-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: transparent;
+  background-image: url("/stamps/nature-stamps-8x8.png");
+  background-position: 0% 0%;
+  background-repeat: no-repeat;
+  background-size: 800% 800%;
+  filter: drop-shadow(0 0 0.5px rgba(0, 0, 0, 0.4));
+}
+.message-postmark {
+  position: absolute;
+  right: -16px;
+  bottom: -10px;
+  display: grid;
+  width: 62px;
+  height: 62px;
+  place-items: center;
+  border: 2px solid rgba(48, 40, 28, 0.58);
+  border-radius: 50%;
+  color: rgba(48, 40, 28, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  opacity: 0;
+  text-transform: uppercase;
+  transform: rotate(-10deg) scale(0.9);
+}
+.message-envelope.postmarked .message-postmark {
+  opacity: 0.9;
+}
+.message-delivery-line {
+  position: absolute;
+  left: 28px;
+  right: 24px;
+  bottom: 15px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: rgba(43, 36, 24, 0.62);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.1;
+}
+.message-delivery-line > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-delivery-badge {
+  flex: 0 0 auto;
+  padding: 0.14rem 0.38rem;
+  border: 1px solid rgba(71, 51, 20, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 248, 220, 0.52);
+  color: rgba(43, 36, 24, 0.78);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.message-letter {
+  position: absolute;
+  top: 164px;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 430px;
+  overflow: hidden;
+  border-top-color: rgba(80, 62, 33, 0.12);
+  border-radius: 0 0 6px 6px;
+  background:
+    linear-gradient(rgba(74, 55, 24, 0.026) 1px, transparent 1px) 0 0 / 100% 18px,
+    radial-gradient(circle at 24% 2%, rgba(255, 255, 255, 0.68), transparent 34%),
+    linear-gradient(180deg, #fff9e6 0%, #f7e7bb 100%);
+  opacity: 0;
+  pointer-events: none;
+  transform: rotateX(-86deg) translateY(-76px) scaleY(0.36);
+  transform-origin: 50% 0;
+  transition:
+    opacity 160ms ease,
+    transform 500ms cubic-bezier(0.2, 0.85, 0.25, 1),
+    z-index 0ms linear 180ms;
+}
+.message-envelope.open .message-letter {
+  z-index: 2;
+  border-top-color: transparent;
+  opacity: 1;
+  pointer-events: auto;
+  transform: rotateX(0deg) translateY(0) scaleY(1);
+  transition:
+    opacity 180ms ease 110ms,
+    transform 520ms cubic-bezier(0.2, 0.85, 0.25, 1);
+}
+.message-letter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: rgba(92, 66, 27, 0.14);
+  box-shadow: 0 2px 6px rgba(70, 48, 18, 0.12);
+}
+.message-envelope.open .message-letter::before {
+  background: transparent;
+  box-shadow: none;
+}
+.message-fold-toggle {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid rgba(80, 62, 33, 0.12);
+  border-radius: 4px;
+  background: rgba(255, 252, 242, 0.58);
+  color: rgba(75, 56, 32, 0.82);
+  cursor: pointer;
+  font: inherit;
+  box-shadow: 0 1px 2px rgba(50, 36, 18, 0.08);
+}
+.message-face-fold-toggle {
+  position: absolute;
+  right: 20px;
+  bottom: 13px;
+  z-index: 7;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 180ms ease;
+}
+.message-envelope.open .message-face-fold-toggle {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.message-fold-toggle:hover {
+  background: rgba(255, 248, 226, 0.9);
+  color: rgba(48, 37, 23, 0.95);
+}
+.message-letter-body {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 0.95rem 1.5rem 1.25rem;
+  color: #242018;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.message-letter-body h1,
+.message-letter-body h2,
+.message-letter-body h3 {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0 0 0.35rem;
+}
+.message-letter-body pre {
+  max-width: 100%;
+}
+.message-receiver {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+  padding: 0.22rem 0.35rem;
+  border: 1px solid rgba(80, 64, 38, 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.28);
+  color: #4a3921;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+}
+.message-receiver:not(.message-receiver-stacked) span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-receiver-stacked {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.18rem 0.4rem;
+  align-items: start;
+}
+.message-receiver-stacked .message-receiver-icon {
+  grid-row: 1 / span 2;
+  padding-top: 0.05rem;
+}
+.message-receiver-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.35rem;
+  min-width: 0;
+}
+.message-receiver-label {
+  color: rgba(74, 57, 33, 0.68);
+  font-weight: 700;
+}
+.message-receiver-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-receiver-state {
+  margin-left: auto;
+  color: rgba(74, 57, 33, 0.7);
+}
+.message-receiver-stacked .message-receiver-state {
+  align-self: start;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+.sticky-body p { margin: 0 0 0.4em; }
+.sticky-body p:last-child { margin-bottom: 0; }
+.sticky-body h1, .sticky-body h2, .sticky-body h3 {
   margin: 0.2em 0;
   font-weight: 700;
 }
@@ -1427,6 +1888,7 @@
   backdrop-filter: blur(3px);
 }
 .attachment-media-modal {
+  position: relative;
   width: fit-content;
   max-width: 94vw;
   max-height: 90vh;
@@ -1438,6 +1900,18 @@
   background: #fffaf0;
   box-shadow: 0 24px 70px -28px rgba(0, 0, 0, 0.72);
   color: #2a2516;
+}
+.attachment-delete-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: 0;
+  height: 6px;
+  background: var(--ctx-hot);
+  pointer-events: none;
+  border-radius: 6px 6px 0 0;
+  animation: sticky-delete-fill 2s linear forwards;
 }
 .attachment-media-modal-image {
   width: fit-content;
@@ -1451,15 +1925,17 @@
   width: min(34rem, 94vw);
 }
 .attachment-media-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
+  display: flex;
   align-items: center;
-  gap: 0.32rem;
-  padding: 0.42rem 0.58rem;
+  gap: 0.42rem;
+  min-height: 2.55rem;
+  padding: 0.44rem 0.72rem;
   border-bottom: 1px solid rgba(42, 37, 22, 0.14);
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .attachment-media-title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: rgba(42, 37, 22, 0.82);
   font-size: 12px;
@@ -1468,30 +1944,40 @@
   white-space: nowrap;
 }
 .attachment-media-actions {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 0.18rem;
+  gap: 0.2rem;
 }
 .attachment-media-count {
   color: rgba(42, 37, 22, 0.52);
-  font-size: 11px;
+  font-size: 14px;
+}
+.attachment-media-separator {
+  width: 1px;
+  height: 1.45rem;
+  margin: 0 0.18rem;
+  background: rgba(42, 37, 22, 0.2);
+}
+.attachment-media-close {
+  flex: 0 0 auto;
 }
 .attachment-media-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   overflow: hidden;
-  padding: 0.45rem 0.55rem 0.55rem;
+  padding: 0.85rem 1rem 1rem;
 }
 .attachment-media-shell-image {
-  padding: 0.55rem 0.65rem 0.7rem;
+  padding: 0.85rem 1rem 1rem;
 }
 .attachment-media-shell-text,
 .attachment-media-shell-note {
   align-items: stretch;
 }
 .attachment-media-shell-card {
-  padding: 0.45rem;
+  padding: 1rem;
 }
 .attachment-media-body {
   display: grid;
@@ -1499,6 +1985,9 @@
   min-height: 0;
   overflow: auto;
   place-items: center;
+}
+.attachment-media-shell-card .attachment-media-body {
+  overflow: hidden;
 }
 .attachment-media-shell-image .attachment-media-body {
   min-height: 0;
@@ -1601,15 +2090,16 @@
   gap: 0.45rem;
 }
 .attachment-media-nav {
-  width: 1.7rem;
-  height: 1.7rem;
+  width: 2rem;
+  height: 2rem;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: rgba(42, 37, 22, 0.74);
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   line-height: 1;
+  cursor: pointer;
 }
 .attachment-media-nav:hover:not(:disabled) {
   background: rgba(42, 37, 22, 0.08);
@@ -1806,25 +2296,90 @@
 }
 .sticky-snippet-card {
   display: grid;
+  position: relative;
   width: 100%;
   min-width: 6.4rem;
-  aspect-ratio: 1 / 0.92;
-  grid-template-rows: 1fr auto auto;
-  place-items: center;
-  padding: 0.7rem 0.55rem 0.5rem;
+  aspect-ratio: 1 / 0.98;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  padding: 0.48rem 0.52rem 0.88rem;
   border: 1px solid rgba(42, 37, 22, 0.16);
+  border-bottom: 0;
   background:
-    linear-gradient(rgba(42, 37, 22, 0.055) 1px, transparent 1px) 0 0 / 100%
-      16px,
+    linear-gradient(rgba(42, 37, 22, 0.055) 1px, transparent 1px) 0 0 / 100% 13px,
     #fffaf0;
   box-shadow:
-    0 1px 1px rgba(0, 0, 0, 0.12),
-    0 5px 13px -8px rgba(0, 0, 0, 0.45);
+    0 2px 2px rgba(0, 0, 0, 0.14),
+    0 9px 18px -10px rgba(0, 0, 0, 0.58),
+    0 18px 26px -24px rgba(0, 0, 0, 0.72);
   color: #2a2516;
-  text-align: center;
+  text-align: left;
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% 93%,
+    96% 98%,
+    91% 93%,
+    86% 100%,
+    80% 94%,
+    74% 99%,
+    68% 93%,
+    61% 100%,
+    54% 94%,
+    47% 99%,
+    40% 93%,
+    33% 100%,
+    26% 94%,
+    19% 99%,
+    12% 93%,
+    5% 100%,
+    0 94%
+  );
 }
 .sticky-snippet-card-media {
   width: min(18rem, 70vw);
+}
+.sticky-snippet-preview {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 3.15rem;
+  overflow: hidden;
+  color: rgba(42, 37, 22, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.52rem;
+  line-height: 1.16;
+  white-space: pre;
+}
+.sticky-snippet-preview span {
+  overflow: hidden;
+  text-overflow: clip;
+}
+.sticky-snippet-title {
+  min-width: 0;
+  margin-top: 0.34rem;
+  overflow: hidden;
+  color: rgba(42, 37, 22, 0.82);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.56rem;
+  font-weight: 800;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sticky-snippet-meta {
+  min-width: 0;
+  margin-top: 0.1rem;
+  overflow: hidden;
+  color: rgba(42, 37, 22, 0.54);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.46rem;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sticky-mini-note-card {
   display: grid;
@@ -1941,25 +2496,6 @@
   width: 22px;
   height: 22px;
 }
-.sticky-snippet-title {
-  max-width: 100%;
-  overflow: hidden;
-  color: rgba(42, 37, 22, 0.82);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sticky-snippet-meta {
-  max-width: 100%;
-  overflow: hidden;
-  color: rgba(42, 37, 22, 0.58);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .sticky-trailing-emoji {
   display: inline-flex;
   align-items: center;
@@ -2068,6 +2604,19 @@
   background: rgba(74, 57, 18, 0.1);
   padding: 0.15rem 0.25rem;
   font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.sticky-trailing-emoji-app,
+.sticky-detached-emoji-app {
+  font-family: inherit;
+}
+.sticky-attachment-app-img {
+  display: block;
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .sticky-meta {

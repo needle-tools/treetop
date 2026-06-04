@@ -33,11 +33,37 @@ export interface SupergitMessageSender {
   terminalId?: string;
 }
 
+export interface SupergitPeerSender {
+  kind: "peer";
+  id: string;
+  label?: string;
+}
+
+export type SupergitMessageTarget =
+  | { kind: "session"; id: string }
+  | { kind: "self" }
+  | { kind: "inbox" };
+
+export type SupergitMessageSenderMode = "auto" | "me";
+
+export interface SupergitMessageRequest {
+  body: string;
+  target?: SupergitMessageTarget;
+  senderMode: SupergitMessageSenderMode;
+  callerPid?: number;
+  callerCwd?: string;
+}
+
+export type SupergitMessageRequestParseResult =
+  | { ok: true; value: SupergitMessageRequest }
+  | { ok: false; status: number; error: string };
+
 export interface SupergitTerminalRecord extends TerminalRecord {
   awaitingInput?: boolean;
 }
 
 const RUNNING_OUTPUT_MS = 1500;
+export const TREETOP_CLI_BIN_NAME = "treetop";
 const OPEN_SESSIONS_PREF_KEY = "supergit:openSessions";
 const NON_SESSION_SOURCE_PREFIXES = [
   "__files__:",
@@ -210,9 +236,15 @@ export function resolveSupergitCallerSession(
   sessions: SupergitSession[],
   terminals: SupergitTerminalRecord[],
   callerPid: number | undefined,
+  callerAncestorPids: number[] = [],
 ): SupergitSession | undefined {
-  if (!callerPid || !Number.isFinite(callerPid)) return undefined;
-  const terminal = terminals.find((t) => t.pid === callerPid);
+  const pids = new Set(
+    [callerPid, ...callerAncestorPids].filter(
+      (pid): pid is number => typeof pid === "number" && Number.isFinite(pid),
+    ),
+  );
+  if (pids.size === 0) return undefined;
+  const terminal = terminals.find((t) => pids.has(t.pid));
   if (!terminal) return undefined;
   return resolveSupergitSession(sessions, terminal.ownerId ?? terminal.id);
 }
@@ -226,9 +258,14 @@ function comparablePath(value: string | undefined): string {
 export function resolveSupergitSelfSession(
   sessions: SupergitSession[],
   terminals: SupergitTerminalRecord[],
-  opts: { callerPid?: number; callerCwd?: string },
+  opts: { callerPid?: number; callerAncestorPids?: number[]; callerCwd?: string },
 ): SupergitSession | undefined {
-  const byPid = resolveSupergitCallerSession(sessions, terminals, opts.callerPid);
+  const byPid = resolveSupergitCallerSession(
+    sessions,
+    terminals,
+    opts.callerPid,
+    opts.callerAncestorPids,
+  );
   if (byPid) return byPid;
 
   const callerCwd = comparablePath(opts.callerCwd);
@@ -244,25 +281,69 @@ export function resolveSupergitSelfSession(
 }
 
 export function supergitSelfResolutionError(): string {
-  return "Could not resolve current session. Are you running outside a Supergit terminal? Use `supergit message <sessionId> ...` after `supergit session list --all --json`, or use `supergit message me ...` to send yourself an inbox note.";
+  return "Could not resolve current session. Are you running outside a Treetop terminal? Use `treetop message <sessionId> --content ...` after `treetop session list --all --json`. Use `treetop message me ...` only when you want an inbox note.";
 }
 
-export function buildCliMessageBody(content: string, args: string[]): string {
-  const text = content.trimEnd();
-  const extras = text
-    ? args.map((x) => x.trim()).filter(Boolean).join("\n")
-    : args.map((x) => x.trim()).filter(Boolean).join(" ");
-  if (text && extras) return `${text}\n\n${extras}`;
-  return text || extras;
+function parseMessageTarget(value: unknown): SupergitMessageTarget | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const o = value as Record<string, unknown>;
+  if (o.kind === "inbox") return { kind: "inbox" };
+  if (o.kind === "self") return { kind: "self" };
+  if (o.kind === "session" && typeof o.id === "string" && o.id.trim()) {
+    return { kind: "session", id: o.id.trim() };
+  }
+  return null;
 }
 
-export function isSelfMessageTarget(value: string): boolean {
-  return value.trim().toLowerCase() === "me";
-}
-
-export function isSelfSessionTarget(value: string): boolean {
-  const lower = value.trim().toLowerCase();
-  return lower === "self";
+export function parseSupergitMessageRequest(input: unknown): SupergitMessageRequestParseResult {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return { ok: false, status: 400, error: "JSON object required" };
+  }
+  const o = input as Record<string, unknown>;
+  if (typeof o.body !== "string") {
+    return { ok: false, status: 400, error: "body is required" };
+  }
+  const messageBody = o.body;
+  if (!messageBody.trim()) {
+    return { ok: false, status: 400, error: "body is required" };
+  }
+  const target = parseMessageTarget(o.target);
+  if (target === null) {
+    return { ok: false, status: 400, error: "target must be {kind:'session',id}, {kind:'self'}, or {kind:'inbox'}" };
+  }
+  const sender = o.sender;
+  let senderMode: SupergitMessageSenderMode = "auto";
+  if (sender !== undefined) {
+    if (typeof sender !== "object" || sender === null || Array.isArray(sender)) {
+      return { ok: false, status: 400, error: "sender must be an object" };
+    }
+    const mode = (sender as Record<string, unknown>).mode;
+    if (mode === undefined || mode === "auto") senderMode = "auto";
+    else if (mode === "me") senderMode = "me";
+    else return { ok: false, status: 400, error: "sender.mode must be one of: auto, me" };
+  }
+  const caller = o.caller;
+  let callerPid: number | undefined;
+  let callerCwd: string | undefined;
+  if (caller !== undefined) {
+    if (typeof caller !== "object" || caller === null || Array.isArray(caller)) {
+      return { ok: false, status: 400, error: "caller must be an object" };
+    }
+    const c = caller as Record<string, unknown>;
+    callerPid = typeof c.pid === "number" && Number.isFinite(c.pid) ? c.pid : undefined;
+    callerCwd = typeof c.cwd === "string" ? c.cwd : undefined;
+  }
+  return {
+    ok: true,
+    value: {
+      body: messageBody,
+      ...(target ? { target } : {}),
+      senderMode,
+      ...(callerPid !== undefined ? { callerPid } : {}),
+      ...(callerCwd !== undefined ? { callerCwd } : {}),
+    },
+  };
 }
 
 export function receiverForSession(s: SupergitSession): SupergitMessageReceiver {
@@ -288,33 +369,57 @@ export function senderForSession(s: SupergitSession): SupergitMessageSender {
   };
 }
 
+export function resolveSupergitMessageSender(opts: {
+  senderMode: SupergitMessageSenderMode;
+  target?: SupergitMessageTarget;
+  callerSession?: SupergitSession;
+  peerIdentity?: { id: string; label?: string } | null;
+}): SupergitMessageSender | SupergitPeerSender | undefined {
+  if (opts.senderMode === "auto" && opts.callerSession) {
+    return senderForSession(opts.callerSession);
+  }
+  if (
+    (opts.senderMode === "me" ||
+      (opts.senderMode === "auto" && opts.target?.kind === "inbox")) &&
+    opts.peerIdentity
+  ) {
+    return {
+      kind: "peer",
+      id: opts.peerIdentity.id,
+      label: opts.peerIdentity.label,
+    };
+  }
+  return undefined;
+}
+
 export function buildSupergitCliScript(opts: { defaultDaemonUrl: string }): string {
   const defaultUrl = JSON.stringify(opts.defaultDaemonUrl);
   return `#!/usr/bin/env node
 const DEFAULT_DAEMON_URL = ${defaultUrl};
 
 function help() {
-  console.log(\`supergit experimental terminal CLI
+  console.log(\`treetop experimental terminal CLI
 
 Commands:
-  supergit list [--all] [--json]
-  supergit session list [--all] [--json]
-      List open Supergit UI sessions with ids, names, and state.
+  treetop list [--all] [--json]
+  treetop session list [--all] [--json]
+      List open Treetop UI sessions with ids, names, and state.
       Use --all to include older detected sessions.
 
-  supergit message [--from auto|me] [sessionId|self|me] <content...>
-      Create a Supergit note, optionally addressed to a session.
+  treetop message [--from auto|me] [sessionId|self|me] <content...>
+      Create a Treetop note, optionally addressed to a session.
+      Omitting the target is the same as self: message the session running this command.
       Use self for the session running this command.
-      Use me to send the note to your own inbox.
+      Use me only when you explicitly want an inbox note.
       Legacy --content "content as md" is still accepted.
 \`);
 }
 
 function sessionHelp() {
-  console.log(\`supergit session
+  console.log(\`treetop session
 
 Usage:
-  supergit session list [--all] [--json]
+  treetop session list [--all] [--json]
 
 Options:
   --all   Include older detected sessions, not just open UI sessions.
@@ -323,21 +428,25 @@ Options:
 }
 
 function messageHelp() {
-  console.log(\`supergit message
+  console.log(\`treetop message
 
 Usage:
-  supergit message [--from auto|me] [sessionId|self|me] <content...>
+  treetop message [--from auto|me] [sessionId|self|me] <content...>
+  treetop message [--from auto|me] --to <sessionId|self|me> <content...>
 
 Targets:
-  self  Address the note to the Supergit session running this command.
-  me    Send the note to your own inbox.
+  Omitting the target is the same as self.
+  no target  Same as self: address the Treetop session running this command.
+  self       Address the note to the Treetop session running this command.
+  me         Send the note to your own inbox. Only use this for explicit inbox notes.
+  --to       Address a session id, self, or me without positional ambiguity.
 
 Content:
   Positional words become markdown content.
   Legacy --content "content as md" is still accepted.
 
 Options:
-  --from auto  Use the Supergit session running this command (default).
+  --from auto  Use the Treetop session running this command (default).
   --from me    Use this machine's peer identity as sender.
 \`);
 }
@@ -346,6 +455,23 @@ function argValue(args, name) {
   const i = args.indexOf(name);
   if (i < 0) return "";
   return args[i + 1] || "";
+}
+
+function buildMessageBody(content, args) {
+  const text = content.trimEnd();
+  const extras = text
+    ? args.map((x) => x.trim()).filter(Boolean).join("\\n")
+    : args.map((x) => x.trim()).filter(Boolean).join(" ");
+  if (text && extras) return \`\${text}\\n\\n\${extras}\`;
+  return text || extras;
+}
+
+function targetFromArg(value) {
+  const lower = value.trim().toLowerCase();
+  if (!lower) return undefined;
+  if (lower === "self") return { kind: "self" };
+  if (lower === "me") return { kind: "inbox" };
+  return { kind: "session", id: value.trim() };
 }
 
 async function request(path, init) {
@@ -407,6 +533,7 @@ async function main() {
     }
     const fromIndex = args.indexOf("--from");
     const contentIndex = args.indexOf("--content");
+    const toIndex = args.indexOf("--to");
     const optionIndexes = new Set([0]);
     if (fromIndex >= 0) {
       optionIndexes.add(fromIndex);
@@ -416,19 +543,42 @@ async function main() {
       optionIndexes.add(contentIndex);
       optionIndexes.add(contentIndex + 1);
     }
-    const receiverArg = args.find(
-      (x, i) => i > 0 && !optionIndexes.has(i) && !x.startsWith("-")
-    );
-    const hasReceiver = typeof receiverArg === "string" && receiverArg !== "";
-    const sessionId = hasReceiver ? receiverArg : "";
+    if (toIndex >= 0) {
+      optionIndexes.add(toIndex);
+      optionIndexes.add(toIndex + 1);
+    }
+    const targetFromOption = argValue(args, "--to");
+    if (toIndex >= 0 && !targetFromOption.trim()) {
+      console.error("--to requires one of: sessionId, self, me");
+      process.exitCode = 2;
+      return;
+    }
+    const positional = args
+      .map((x, i) => ({ x, i }))
+      .filter(({ x, i }) => i > 0 && !optionIndexes.has(i) && !x.startsWith("-"));
+    const firstPositional = positional[0];
+    const firstTarget = firstPositional ? targetFromArg(firstPositional.x) : undefined;
+    const firstIsNamedTarget =
+      firstTarget && (firstTarget.kind === "self" || firstTarget.kind === "inbox");
+    const firstIsLegacySessionTarget =
+      firstTarget && firstTarget.kind === "session" && contentIndex >= 0 && toIndex < 0;
+    const targetArg = targetFromOption || (firstIsNamedTarget || firstIsLegacySessionTarget ? firstPositional.x : "");
+    const hasReceiver = targetArg.trim() !== "";
     const content = argValue(args, "--content");
     const used = new Set(optionIndexes);
-    if (hasReceiver) used.add(args.indexOf(sessionId));
+    if (!targetFromOption && hasReceiver && firstPositional) used.add(firstPositional.i);
     const extraArgs = args.filter((_x, i) => !used.has(i));
+    const messageBody = buildMessageBody(content, extraArgs);
+    const target = hasReceiver ? targetFromArg(targetArg) : { kind: "self" };
     const body = await request("/api/supergit/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, content, args: extraArgs, from: fromMode, callerPid: process.ppid, callerCwd: process.cwd() }),
+      body: JSON.stringify({
+        body: messageBody,
+        ...(target ? { target } : {}),
+        sender: { mode: fromMode },
+        caller: { pid: process.ppid, cwd: process.cwd() },
+      }),
     });
     console.log(JSON.stringify(body, null, 2));
     return;

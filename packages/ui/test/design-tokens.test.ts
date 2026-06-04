@@ -196,9 +196,11 @@ const COMPONENT_LOCAL_VARS: ReadonlySet<string> = new Set([
   "--grab-x", // notes.css: transform-origin for grab animation
   "--grab-y", // notes.css: transform-origin for grab animation
   "--stack-index", // notes.css: z-index ladder per-sticky
+  "--message-stamp-rotation", // notes.css: per-message stamp tilt set inline
   "--swatch-bg", // worktree-row.css: per-repo color swatch set inline
   "--repo-bg", // worktree-row.css: per-repo accent color set inline
   "--repo-fg", // worktree-row.css: per-repo foreground color set inline
+  "--project-color", // header.css: per-project accent color set inline
   "--command-accent", // notes.css: idle/running accent for command-power-card
   "--warm-glow-soft", // header.css: glow colour pre-resolved on .actions-btn.warm (composited warm-glow)
   "--warm-glow-core", // header.css: glow colour pre-resolved on .actions-btn.warm (composited warm-glow)

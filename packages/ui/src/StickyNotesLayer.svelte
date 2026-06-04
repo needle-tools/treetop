@@ -52,6 +52,9 @@
       command?: string;
       runMode?: "internal" | "external" | "shell";
     };
+    receiver?: import("./StickyNote.svelte").NoteShape["receiver"];
+    sender?: import("./StickyNote.svelte").NoteShape["sender"];
+    stampId?: number;
   };
 
   let registered: ((args: SpawnArgs) => Promise<void>) | null = null;
@@ -164,9 +167,11 @@
     parseInlineAttachments,
     removeInlineAttachmentRef,
     sessionLinkTargetMatchesSource,
-    standaloneAttachmentKind,
+    singleInlineAttachmentPart,
     type InlineAttachment,
   } from "./note-inline-attachments";
+
+  const INBOX_NOTE_DRAG_MIME = "application/x-supergit-inbox-note";
 
   /** Bumped by App.svelte on any SSE `change` event so the layer
    *  refetches if a note was created/updated/deleted via another tab
@@ -223,6 +228,7 @@
   export let commandUrls: Record<string, string[]> = {};
 
   let notes: NoteShape[] = [];
+  let viewerPeerId: string | null = null;
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
    *  fraction of the anchor row's width (0 = row's left edge, 1 =
    *  right edge), so notes ride window resizes proportionally rather
@@ -623,7 +629,7 @@
 
   function noteIsStandaloneNoteAttachment(note: NoteShape): boolean {
     if (note.kind === "link" || note.kind === "emoji") return false;
-    return standaloneAttachmentKind(note.body) === "note";
+    return !!singleInlineAttachmentPart(note.body);
   }
 
   function attachmentCandidateNoteAtPoint(
@@ -1084,6 +1090,9 @@
       command?: string;
       runMode?: "internal" | "external" | "shell";
     };
+    receiver?: NoteShape["receiver"];
+    sender?: NoteShape["sender"];
+    stampId?: number;
   }): Promise<void> {
     const kind = args.kind ?? "note";
     const hasTarget = !!args.target;
@@ -1098,6 +1107,9 @@
           anchors: [args.anchor],
           ...(kind !== "note" ? { kind } : {}),
           ...(args.target ? { target: args.target } : {}),
+          ...(args.receiver ? { receiver: args.receiver } : {}),
+          ...(args.sender ? { sender: args.sender } : {}),
+          ...(args.stampId !== undefined ? { stampId: args.stampId } : {}),
         }),
       });
       if (!res.ok) return;
@@ -1169,6 +1181,42 @@
     } catch {}
   }
 
+  async function createDroppedInboxNote(
+    inboxNote: {
+      body: string;
+      tags?: string[];
+      receiver?: NoteShape["receiver"];
+      sender?: NoteShape["sender"];
+      stampId?: number;
+    },
+    target: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: inboxNote.body,
+          anchors: [target.anchor],
+          tags: inboxNote.tags ?? ["message"],
+          ...(inboxNote.receiver ? { receiver: inboxNote.receiver } : {}),
+          ...(inboxNote.sender ? { sender: inboxNote.sender } : {}),
+          ...(inboxNote.stampId !== undefined
+            ? { stampId: inboxNote.stampId }
+            : {}),
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as NoteShape;
+      setDroppedOffset(created.id, target.li, clientX, clientY);
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      tick++;
+    } catch {}
+  }
+
   interface InlineAttachmentDragPayload {
     sourceNoteId: string;
     raw: string;
@@ -1214,6 +1262,46 @@
       types.includes(LINK_TARGET_DRAG_MIME) ||
       types.includes(SESSION_LINK_DRAG_MIME)
     );
+  }
+
+  function hasInboxNoteDrag(e: DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes(INBOX_NOTE_DRAG_MIME);
+  }
+
+  function parseInboxNoteDrag(e: DragEvent): {
+    body: string;
+    tags?: string[];
+    receiver?: NoteShape["receiver"];
+    sender?: NoteShape["sender"];
+    stampId?: number;
+  } | null {
+    const raw = e.dataTransfer?.getData(INBOX_NOTE_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!value || typeof value !== "object") return null;
+      const obj = value as Record<string, unknown>;
+      if (typeof obj.body !== "string" || !obj.body) return null;
+      return {
+        body: obj.body,
+        ...(Array.isArray(obj.tags)
+          ? { tags: obj.tags.filter((x): x is string => typeof x === "string") }
+          : {}),
+        ...(obj.receiver && typeof obj.receiver === "object"
+          ? { receiver: obj.receiver as NoteShape["receiver"] }
+          : {}),
+        ...(obj.sender && typeof obj.sender === "object"
+          ? { sender: obj.sender as NoteShape["sender"] }
+          : {}),
+        ...(typeof obj.stampId === "number" &&
+          Number.isInteger(obj.stampId) &&
+          obj.stampId >= 0
+            ? { stampId: obj.stampId }
+            : {}),
+      };
+    } catch {
+      return null;
+    }
   }
 
   function imageFileFromTransfer(dt: DataTransfer | null): File | null {
@@ -1443,6 +1531,11 @@
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
       return;
     }
+    if (hasInboxNoteDrag(e) && dropTargetAt(e.clientX, e.clientY)) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      return;
+    }
     if (
       hasImageFileTransfer(e.dataTransfer) &&
       (attachmentZoneNoteAtPoint(e.clientX, e.clientY) ||
@@ -1494,8 +1587,9 @@
     }
     const hasInline = hasInlineAttachmentDrag(e);
     const hasTargetLink = hasLinkTargetDrag(e);
+    const hasInboxNote = hasInboxNoteDrag(e);
     const image = imageFileFromTransfer(e.dataTransfer);
-    if (!hasInline && !hasTargetLink && !image) return;
+    if (!hasInline && !hasTargetLink && !hasInboxNote && !image) return;
     const payload = hasInline ? parseInlineAttachmentDrag(e) : null;
     const targetNote = attachmentZoneNoteAtPoint(
       e.clientX,
@@ -1514,6 +1608,22 @@
       if (target && rowTarget) {
         e.preventDefault();
         await createLinkTargetNote(target, rowTarget, e.clientX, e.clientY);
+      }
+      return;
+    }
+    if (hasInboxNote) {
+      const inboxNote = parseInboxNoteDrag(e);
+      const sessionCol = sessionColumnAtPoint(e.clientX, e.clientY);
+      const sessionSource = sessionCol?.dataset.sessionSource;
+      if (inboxNote && sessionSource) {
+        e.preventDefault();
+        await stageInboxNoteIntoSessionPrompt(inboxNote, sessionSource);
+        return;
+      }
+      const rowTarget = dropTargetAt(e.clientX, e.clientY);
+      if (inboxNote && rowTarget) {
+        e.preventDefault();
+        await createDroppedInboxNote(inboxNote, rowTarget, e.clientX, e.clientY);
       }
       return;
     }
@@ -1889,18 +1999,18 @@
     return Math.max(0, Math.min(max, bestCentre));
   }
 
-  async function handleSave(
-    e: CustomEvent<{
-      id: string;
-      body: string;
-      target?: {
-        type: "url" | "commit" | "session" | "file" | "command";
-        value: string;
-      } | null;
-      kind?: "note" | "link";
-      secret?: boolean;
-    }>,
-  ): Promise<void> {
+	  async function handleSave(
+	    e: CustomEvent<{
+	      id: string;
+	      body: string;
+	      target?: NoteShape["target"] | null;
+	      kind?: NoteShape["kind"];
+	      secret?: boolean;
+	      receiver?: NoteShape["receiver"] | null;
+	      sender?: NoteShape["sender"] | null;
+	      stampId?: number | null;
+	    }>,
+	  ): Promise<void> {
     if (staging[e.detail.id]) {
       // First commit of a staged note. Optimistically apply the
       // picked target + kind locally so the chip wears the right
@@ -1935,7 +2045,22 @@
       if (e.detail.kind !== undefined) putBody.kind = e.detail.kind;
       if (e.detail.target !== undefined) putBody.target = e.detail.target;
       if (e.detail.secret !== undefined) putBody.secret = e.detail.secret;
+      if (e.detail.receiver !== undefined) putBody.receiver = e.detail.receiver;
+      if (e.detail.sender !== undefined) putBody.sender = e.detail.sender;
+      if (e.detail.stampId !== undefined) putBody.stampId = e.detail.stampId;
       const savingNote = notes.find((n) => n.id === e.detail.id);
+      if (e.detail.stampId !== undefined) {
+        notes = notes.map((n) =>
+          n.id === e.detail.id
+            ? {
+                ...n,
+                ...(e.detail.stampId === null
+                  ? { stampId: undefined }
+                  : { stampId: e.detail.stampId }),
+              }
+            : n,
+        );
+      }
       const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`, savingNote?.daemonId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -2227,10 +2352,8 @@
         ? makeLinkAttachmentRef({ target: note.target })
         : null;
     }
-    const parts = parseInlineAttachments(note.body);
-    if (parts.length === 1 && parts[0]?.kind === "attachment") {
-      return parts[0].raw;
-    }
+    const singleAttachment = singleInlineAttachmentPart(note.body);
+    if (singleAttachment) return singleAttachment.raw;
     return makeNoteAttachmentRef({ body: note.body });
   }
 
@@ -2396,11 +2519,109 @@
     } catch {}
   }
 
+  async function stageInboxNoteIntoSessionPrompt(
+    inboxNote: { body: string },
+    sessionSource: string,
+  ): Promise<void> {
+    try {
+      const chunks = await expandNoteBodyForTerminalPasteChunks(
+        inboxNote.body,
+        fetchTextAttachment,
+        { omitTargetSessionSource: sessionSource },
+      );
+      if (!chunks.some((chunk) => chunk.trim())) return;
+      window.dispatchEvent(
+        new CustomEvent(STAGE_PROMPT_EVENT, {
+          detail: { source: sessionSource, chunks },
+        }),
+      );
+    } catch {}
+  }
+
+  function inboxPeerAtPoint(clientX: number, clientY: number): {
+    id: string;
+    label: string;
+    host: string;
+    port: number;
+  } | null {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const row = el instanceof Element
+        ? el.closest<HTMLElement>(".inbox-row[data-peer-id]")
+        : null;
+      if (!row) continue;
+      const id = row.dataset.peerId ?? "";
+      const label = row.dataset.peerLabel ?? id;
+      const host = row.dataset.peerHost ?? "";
+      const port = Number(row.dataset.peerPort ?? 0);
+      if (id && host && Number.isFinite(port) && port > 0) {
+        return { id, label, host, port };
+      }
+    }
+    return null;
+  }
+
+  async function sendPinnedNoteToPeer(source: NoteShape, peer: {
+    id: string;
+    label: string;
+    host: string;
+    port: number;
+  }): Promise<void> {
+    if (source.kind === "emoji") return;
+    const receiver: NoteShape["receiver"] = {
+      kind: "peer",
+      peerId: peer.id,
+      label: peer.label,
+      host: peer.host,
+      port: peer.port,
+      delivery: "sent",
+    };
+    const body = source.body || source.target?.label || source.target?.value || "";
+    if (!body.trim()) return;
+    const res = await fetch("/api/messages/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peerHost: peer.host,
+        peerPort: peer.port,
+        body,
+        kind: "note",
+        note: {
+          body,
+          anchors: source.anchors,
+          tags: source.tags,
+          kind: source.kind,
+          target: source.target,
+          receiver,
+          sender: source.sender,
+          stampId: source.stampId,
+        },
+      }),
+    });
+    if (!res.ok) return;
+    const update = await fetch(`/api/notes/${encodeURIComponent(source.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: source.body, receiver }),
+    });
+    if (!update.ok) return;
+    const updated = (await update.json()) as NoteShape;
+    notes = notes.map((n) => (n.id === updated.id ? updated : n));
+    bringToFront(updated.id);
+    tick++;
+  }
+
   async function handleDragDrop(
     e: CustomEvent<{ id: string; clientX: number; clientY: number }>,
   ): Promise<void> {
     const source = notes.find((n) => n.id === e.detail.id);
     if (!source) return;
+    const inboxPeer = inboxPeerAtPoint(e.detail.clientX, e.detail.clientY);
+    if (inboxPeer) {
+      restoreDragStartOffset(source.id);
+      clearDragState(source.id);
+      await sendPinnedNoteToPeer(source, inboxPeer);
+      return;
+    }
     const sessionCol = sessionColumnAtPoint(e.detail.clientX, e.detail.clientY);
     const sessionSource = sessionCol?.dataset.sessionSource;
     if (sessionSource) {
@@ -2804,6 +3025,12 @@
     _registerLayer(handleSpawn);
     _registerFlyRestore(handleFlyRestore);
     void refresh();
+    void fetch("/api/identity")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { id?: string } | null) => {
+        viewerPeerId = typeof body?.id === "string" ? body.id : null;
+      })
+      .catch(() => {});
 
     // No scroll listener — the layer is `position: absolute` at the
     // document's top-left, so notes inside it are part of the document
@@ -2928,6 +3155,7 @@
         {onCommandLinkEdit}
         {runningCommandIds}
         {commandUrls}
+        {viewerPeerId}
         on:move={handleMove}
         on:save={handleSave}
         on:remove={handleRemove}
