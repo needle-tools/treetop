@@ -316,6 +316,15 @@
   const SPAWN_RETRY_BACKOFF_MS = 750;
   let spawnAttempts = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the column is asked to RE-ATTACH to a pre-existing PTY
+   *  (`attachTermId`) but that PTY is gone — most often because the daemon
+   *  restarted, so every prior terminal id is dead and the WS upgrade 404s
+   *  before we ever go live — fall back to a fresh spawn exactly once
+   *  instead of dead-ending on "terminal not found". `attachedThisAttempt`
+   *  records that the current attempt skipped the spawn POST;
+   *  `triedAttachFallback` makes the fallback one-shot. */
+  let attachedThisAttempt = false;
+  let triedAttachFallback = false;
 
   // Working-state plumbing. `lastActivityTs` is a plain mutable held
   // outside Svelte's reactive graph (never referenced from the
@@ -390,6 +399,7 @@
 
   async function spawnPtyAndConnect() {
     spawnAttempts++;
+    attachedThisAttempt = false;
     startupAbort = new AbortController();
     startupTimer = setTimeout(() => {
       if (phase !== "starting") return;
@@ -422,9 +432,13 @@
     }, STARTUP_TIMEOUT_MS);
     try {
       let id: string;
-      if (attachTermId) {
+      if (attachTermId && !triedAttachFallback) {
         // Reattach path — daemon already has this PTY alive (see GET
-        // /api/shells). Skip the spawn POST and go straight to WS.
+        // /api/shells). Skip the spawn POST and go straight to WS. If the
+        // PTY is actually gone (e.g. the daemon restarted since this
+        // attachTermId was persisted), the WS upgrade 404s and onclose
+        // falls back to a fresh spawn below.
+        attachedThisAttempt = true;
         id = attachTermId;
       } else {
         // xterm.cols/rows can be near-zero when the container hasn't
@@ -562,6 +576,24 @@
           phase = "exited";
           if (!exitInfo) exitInfo = { code: 0 };
           onExit(exitInfo);
+          return;
+        }
+        // Re-attach target is gone: we tried to attach to a pre-existing
+        // PTY (attachTermId) but the daemon 404'd the WS upgrade before we
+        // ever went live — the canonical case is a daemon restart, which
+        // kills every prior terminal id while the persisted attachTermId
+        // lives on. Don't dead-end the column; fall back to spawning a
+        // fresh PTY (e.g. `claude --resume <sid>`) exactly once.
+        if (
+          attachedThisAttempt &&
+          !triedAttachFallback &&
+          phase === "starting"
+        ) {
+          triedAttachFallback = true;
+          detachSocket(ws);
+          ws = null;
+          spawnAttempts = 0;
+          void spawnPtyAndConnect();
           return;
         }
         // Abnormal close (or onerror fired first): surface *why* from the
