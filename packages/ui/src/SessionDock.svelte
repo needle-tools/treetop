@@ -16,12 +16,13 @@
    */
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
+  import DirtyGlyph from "./DirtyGlyph.svelte";
   import RepoStatusPreview, {
     type DockWorktreeStatus,
   } from "./RepoStatusPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { splitDockEntries } from "./dock-split";
-  import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
+  import { GIT_AHEAD, GIT_BEHIND } from "./icons";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -800,11 +801,7 @@
                   aria-hidden="true"
                   ><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && !rs?.ahead && !rs?.behind}<svg
-                  class="dock-arrow-glyph dock-arrow-dirty"
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"><path d={GIT_DIRTY} /></svg
-                >{/if}
+              {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
             </span>
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
@@ -957,11 +954,7 @@
                   aria-hidden="true"
                   ><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && !rs?.ahead && !rs?.behind}<svg
-                  class="dock-arrow-glyph dock-arrow-dirty"
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"><path d={GIT_DIRTY} /></svg
-                >{/if}
+              {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
             </span>
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
@@ -1094,11 +1087,7 @@
                 aria-hidden="true"
                 ><path d={GIT_BEHIND} /></svg
               >{/if}
-            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<svg
-                class="dock-arrow-glyph dock-arrow-dirty"
-                viewBox="0 0 12 12"
-                aria-hidden="true"><path d={GIT_DIRTY} /></svg
-              >{/if}
+            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<DirtyGlyph />{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs.repoName}</span>
@@ -1423,46 +1412,14 @@
       transform: translateY(0);
     }
   }
-  /* Dirty glyph waves: morph the tilde's `d` between itself and its
-     vertical mirror. The two control-point sets differ only in the sign
-     of their y offsets, so interpolation sweeps each hump up↔down and
-     passes through a flat line at the midpoint — the two ends rock like
-     a wave. We animate the path geometry itself (the CSS `d` property),
-     not a transform on the element. */
-  /* Loop: hold → flip → gap → flip back. The segment times live in the
-     vars below and the total duration is computed from them. @keyframes
-     percentages can't reference CSS vars, so they're derived by hand from
-     the same numbers (shown per stop) — keep them in sync if you retune. */
-  .dock-arrow-dirty path {
-    --wave-hold: 1400ms;
-    --wave-flip: 200ms;
-    --wave-gap: 30ms; /* brief hold between the two flips */
-    animation: dock-wave
-      calc(
-        var(--wave-hold) + var(--wave-flip) + var(--wave-gap) +
-          var(--wave-flip)
-      )
-      ease-in-out infinite;
-  }
-  /* total = 1400+200+30+200 = 1830ms.
-     1400/1830=76.503%  1600/1830=87.432%  1630/1830=89.071% */
-  @keyframes dock-wave {
-    0%,
-    76.503% {
-      d: path("M2 6c1 -2 3 -2 4 0s3 2 4 0");
-    }
-    87.432%,
-    89.071% {
-      d: path("M2 6c1 2 3 2 4 0s3 -2 4 0");
-    }
-    100% {
-      d: path("M2 6c1 -2 3 -2 4 0s3 2 4 0");
-    }
-  }
+  /* The dirty tilde and its wave live in DirtyGlyph.svelte — the wave is a
+     SMIL <animate>, not a CSS `d:` keyframe, because CSS `d` only animates
+     in Chromium and supergit ships in electrobun's WKWebView (WebKit) on
+     macOS, where it would sit frozen (it works on Windows = WebView2 /
+     Chromium). See that component for the details. */
   @media (prefers-reduced-motion: reduce) {
     .dock-arrow-up,
-    .dock-arrow-down,
-    .dock-arrow-dirty path {
+    .dock-arrow-down {
       animation: none;
     }
   }
