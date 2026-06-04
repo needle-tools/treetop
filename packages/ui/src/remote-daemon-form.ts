@@ -164,7 +164,15 @@ export function normalizeProvisionForm(
 
   const payload: ProvisionFormPayload = { host };
   const user = fields.user.trim();
-  if (user !== "") payload.user = user;
+  if (user !== "") {
+    payload.user = user;
+  } else if (fields.os !== "windows") {
+    // install.sh requires root. With a blank user, ssh falls back to the
+    // operator's LOCAL username (e.g. "marcel@box") which a fresh box rejects
+    // ("Permission denied (publickey,password)"). Default POSIX provisioning
+    // to root; Windows has no universal admin name, so leave it to the form.
+    payload.user = "root";
+  }
   if (sshPort.value != null) payload.sshPort = sshPort.value;
   const label = fields.label.trim();
   if (label !== "") payload.label = label;

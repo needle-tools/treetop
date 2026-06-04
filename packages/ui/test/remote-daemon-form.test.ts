@@ -180,18 +180,26 @@ describe("normalizeProvisionForm", () => {
     if (!r.ok) expect(r.errors.host).toMatch(/required/);
   });
 
-  it("requires only the host — bare host is valid", () => {
+  it("requires only the host — bare host defaults the user to root", () => {
+    // install.sh needs root; a blank user otherwise falls back to ssh's LOCAL
+    // username, which a fresh box rejects.
     const r = normalizeProvisionForm(pform({ host: "1.2.3.4" }));
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.payload).toEqual({ host: "1.2.3.4" });
+    if (r.ok) expect(r.payload).toEqual({ host: "1.2.3.4", user: "root" });
   });
 
-  it("omits blank optionals (no empty strings in the payload)", () => {
+  it("omits blank optionals but still defaults the POSIX user to root", () => {
     const r = normalizeProvisionForm(
       pform({ host: "h", user: "  ", sshPort: "", label: "  " }),
     );
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+    if (r.ok) expect(r.payload).toEqual({ host: "h", user: "root" });
+  });
+
+  it("does NOT default to root for a Windows target (no universal admin name)", () => {
+    const r = normalizeProvisionForm(pform({ host: "nuc", os: "windows" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.user).toBeUndefined();
   });
 
   it("carries user / sshPort / label when provided", () => {
@@ -220,7 +228,7 @@ describe("normalizeProvisionForm", () => {
     // os as posix, so we keep the payload clean (no redundant field).
     const r = normalizeProvisionForm(pform({ host: "h", os: "posix" }));
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+    if (r.ok) expect(r.payload).toEqual({ host: "h", user: "root" });
   });
 
   it("carries os when the target is Windows", () => {
@@ -229,9 +237,9 @@ describe("normalizeProvisionForm", () => {
     if (r.ok) expect(r.payload).toEqual({ host: "nuc", os: "windows" });
   });
 
-  it("empty os string is treated as posix (omitted)", () => {
+  it("empty os string is treated as posix (omitted, user defaults to root)", () => {
     const r = normalizeProvisionForm(pform({ host: "h", os: "" }));
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.payload).toEqual({ host: "h" });
+    if (r.ok) expect(r.payload).toEqual({ host: "h", user: "root" });
   });
 });
