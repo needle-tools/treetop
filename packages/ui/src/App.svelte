@@ -3720,15 +3720,32 @@
    *  Probed when the Add-daemon dialog opens; default true → provision-first,
    *  and a failed POST surfaces the real reason if the probe was wrong. */
   let provisionCapable = true;
+  /** Human reason the provision section is hidden, shown in the dialog so it's
+   *  not a silent absence. Empty when provisioning is available. */
+  let provisionUnavailableReason = "";
   async function refreshProvisionCapability(): Promise<void> {
     try {
       const r = await fetch(apiUrl("/api/daemons/provision/capability"));
       if (!r.ok) return;
       const j = (await r.json()) as {
         available?: boolean;
+        mode?: string;
         sshAvailable?: boolean;
       };
       provisionCapable = !!j.available && j.sshAvailable !== false;
+      if (provisionCapable) {
+        provisionUnavailableReason = "";
+      } else if (j.sshAvailable === false) {
+        provisionUnavailableReason =
+          "The local app can't find the ssh client. Install / enable OpenSSH " +
+          "Client and make sure ssh is on PATH, then reopen this dialog.";
+      } else {
+        // mode "none": no installer payload bundled in this build.
+        provisionUnavailableReason =
+          "This build doesn't include the installer payload, so it can't set " +
+          "up a box for you. Update / rebuild supergit to enable one-click " +
+          "provisioning. You can still connect a daemon manually below.";
+      }
     } catch {
       // keep the default; the POST path reports the real error if needed.
     }
@@ -9686,6 +9703,7 @@
   onConnect={connectRemoteDaemon}
   provision={provisionApi}
   canProvision={provisionCapable}
+  provisionUnavailableReason={provisionUnavailableReason}
   attachJob={provisionAttachJob}
   onDone={({ status, mode }) => {
     if (status === "done") {

@@ -64,6 +64,9 @@
   /** Whether this build can auto-provision (capability probe). When false the
    *  provision section is hidden and paste/manual become primary. */
   export let canProvision = true;
+  /** When provisioning is unavailable, the human reason to show (so it's not a
+   *  silent absence). Empty when available. */
+  export let provisionUnavailableReason = "";
   /** Attach mode: open straight into the live-log view for an already-started
    *  job (e.g. an uninstall kicked off from the manage dialog), instead of the
    *  provision form. The parent starts the job + supplies its id + a title. */
@@ -364,6 +367,13 @@
           repos appear as folder rows beside your local ones.
         </p>
 
+        {#if !provisionEnabled && provisionUnavailableReason}
+          <p class="add-daemon-unavailable">
+            <strong>One-click provisioning is unavailable.</strong>
+            {provisionUnavailableReason}
+          </p>
+        {/if}
+
         {#if provisionEnabled}
           <div class="provision-section">
             <p class="provision-heading">Provision a fresh box over SSH</p>
@@ -476,6 +486,21 @@
               >Paste the string the installer printed — it fills in everything
               below.</small
             >
+            <details class="add-daemon-help">
+              <summary>How do I get a connection string?</summary>
+              <p>
+                On the box (Linux), run supergit's installer as root — it prints
+                a <code>supergit1:…</code> string at the end:
+              </p>
+              <pre>sudo bash deploy/install.sh</pre>
+              <p>
+                Copy <code>deploy/install.sh</code> from this repo to the box
+                first (e.g. <code>scp</code> / <code>rsync</code>), or once
+                published run it via <code>curl … | sudo bash</code>. The string
+                carries the host, user, and a forward-only key — treat it as a
+                secret.
+              </p>
+            </details>
           </label>
 
           <details class="add-daemon-advanced nested" bind:open={showAdvanced}>
@@ -717,6 +742,50 @@
   }
   .provision-sub code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* Why the provision section is absent (capability probe failed). */
+  .add-daemon-unavailable {
+    margin: 0 0 0.85rem;
+    padding: 0.55rem 0.65rem;
+    font-size: var(--fs-md);
+    line-height: 1.45;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--surface-2) 30%, transparent);
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+  }
+  .add-daemon-unavailable strong {
+    color: var(--text-2, inherit);
+  }
+
+  /* "How do I get a connection string?" disclosure. */
+  .add-daemon-help {
+    margin-top: 0.4rem;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+  .add-daemon-help summary {
+    cursor: pointer;
+    color: var(--brand);
+    user-select: none;
+  }
+  .add-daemon-help p {
+    margin: 0.4rem 0;
+    line-height: 1.45;
+  }
+  .add-daemon-help code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .add-daemon-help pre {
+    margin: 0.3rem 0;
+    padding: 0.4rem 0.55rem;
+    background: var(--surface-0, var(--surface-1));
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-md);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--fs-sm);
+    overflow-x: auto;
   }
 
   /* Install-log view. */
