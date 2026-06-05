@@ -374,8 +374,18 @@ const installPayload = resolveInstallPayload({
 
 /** Register a remote daemon from a `supergit1:` connection string: persist
  *  the (forward-only) key server-side, add the daemon, broadcast. Shared by
- *  the manual /api/daemons/connect route and auto-provisioning. */
-async function registerRemoteFromConnectionString(cs: string) {
+ *  the manual /api/daemons/connect route and auto-provisioning.
+ *
+ *  `hostOverride` (provisioning only): the installer's token embeds the box's
+ *  SELF-detected IP (e.g. its LAN address), but the box can't know which
+ *  address the operator actually reaches it by — a Tailscale/public IP, a
+ *  hostname, etc. The provision flow DOES know: it's the host the user typed
+ *  + ssh'd through. Prefer that for the tunnel, or the daemon registers at an
+ *  address the user can't reach (→ permanently "offline"). */
+async function registerRemoteFromConnectionString(
+  cs: string,
+  hostOverride?: string,
+) {
   const decoded = decodeConnectionString(cs);
   if (!decoded.ok) throw new Error(decoded.error);
   const p = decoded.payload;
@@ -388,7 +398,7 @@ async function registerRemoteFromConnectionString(cs: string) {
   }
   const daemon = await workspace.addRemoteDaemon({
     label: p.label ?? "",
-    host: p.host,
+    host: hostOverride?.trim() || p.host,
     user: p.user,
     port: p.port,
     sshPort: p.sshPort,
@@ -401,8 +411,10 @@ async function registerRemoteFromConnectionString(cs: string) {
 const provisionManager = new ProvisionManager({
   spawn: makeProvisionSpawner(),
   newId: () => crypto.randomUUID(),
-  register: async (token) => {
-    const daemon = await registerRemoteFromConnectionString(token);
+  register: async (token, hostOverride) => {
+    // Register at the host the user provisioned THROUGH (reachable from here),
+    // not the box's self-detected IP baked into the token.
+    const daemon = await registerRemoteFromConnectionString(token, hostOverride);
     // Best-effort: bring the tunnel up so the row goes live immediately. A
     // tunnel hiccup mustn't fail the (already-registered) provision.
     ensureRemoteTunnelPort(daemon.id).catch(() => {});

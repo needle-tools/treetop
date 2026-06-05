@@ -57,8 +57,10 @@ export interface ProvisionJobView {
 export interface ProvisionManagerDeps {
   /** Spawn the ship+install process for a job. */
   spawn: (opts: ProvisionStartOpts) => ProvisionProc;
-  /** Register a captured connection token; resolves with the new daemon id. */
-  register: (token: string) => Promise<{ id: string }>;
+  /** Register a captured connection token; resolves with the new daemon id.
+   *  `hostOverride` is the host the user provisioned through (reachable from
+   *  here), which beats the box's self-detected IP inside the token. */
+  register: (token: string, hostOverride?: string) => Promise<{ id: string }>;
   /** Unregister a daemon after a successful uninstall (close tunnel + forget). */
   unregister?: (daemonId: string) => Promise<void>;
   /** Fresh job id. */
@@ -198,7 +200,9 @@ export class ProvisionManager {
       }
       job.status = "registering";
       this.emit(job, "\n[supergit] installer finished — registering daemon…\n");
-      const daemon = await this.deps.register(token);
+      // Register at the host the user provisioned through (job.host), not the
+      // box's self-detected IP in the token — see ProvisionManagerDeps.register.
+      const daemon = await this.deps.register(token, job.host);
       job.daemonId = daemon.id;
       job.status = "done";
       this.emit(job, "[supergit] daemon connected.\n");

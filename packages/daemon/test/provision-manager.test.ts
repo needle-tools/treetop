@@ -51,7 +51,7 @@ function killableProc(): ProvisionProc & { killed: boolean } {
 
 function manager(
   proc: ProvisionProc,
-  register: (token: string) => Promise<{ id: string }>,
+  register: (token: string, hostOverride?: string) => Promise<{ id: string }>,
 ) {
   let n = 0;
   return new ProvisionManager({
@@ -93,6 +93,21 @@ describe("ProvisionManager — happy path", () => {
     await mgr.wait(id);
     expect(seen.join("")).toContain("a");
     expect(seen.join("")).toContain("b");
+  });
+});
+
+describe("ProvisionManager — host override", () => {
+  test("registers at the provisioned host, not just the token's", async () => {
+    let gotHost: string | undefined = "UNSET";
+    const mgr = manager(scriptedProc(["supergit1:T\n"], 0), async (_t, host) => {
+      gotHost = host;
+      return { id: "d" };
+    });
+    const id = mgr.start({ payloadRoot: "/p", target: { host: "5.6.7.8" } });
+    await mgr.wait(id);
+    // The box's token may carry its own LAN IP; we must register at the host
+    // the user actually reached (job.host), or the daemon is unreachable.
+    expect(gotHost).toBe("5.6.7.8");
   });
 });
 
