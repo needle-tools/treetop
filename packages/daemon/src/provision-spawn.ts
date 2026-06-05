@@ -2,14 +2,20 @@
  * The real ship+install process for a provision job. Two sequential ssh
  * phases (see buildProvisionPlan):
  *
- *   1. ship — pipe the local archive (git-archive in dev / gzip-tar for a
- *      packaged bundle) into ssh's stdin; the remote extracts it. No tty.
+ *   1. ship — package the source to a TEMP FILE (so we know its exact size),
+ *      then stream it into ssh's stdin while reporting an upload %. The remote
+ *      extracts it. No tty (a pty corrupts the binary stream).
  *   2. run  — run the installer over a tty (`-tt`) so its output streams
  *      line-by-line instead of block-buffering until exit.
  *
  * Both phases' output is surfaced as one text stream, prefixed with synthetic
- * "[supergit] …" lines so the dialog shows progress immediately rather than a
- * silent "waiting for the installer…".
+ * "[supergit] …" lines so the dialog shows progress immediately.
+ *
+ * Cross-platform: the LOCAL daemon doing the upload may run on Windows,
+ * macOS, or Linux, so this uses only portable APIs (os.tmpdir, Bun.file,
+ * node:path/fs) — no `/tmp`, no shell. The packaging command itself
+ * (git-archive / tar) is chosen per-mode in buildShipCommand and exists on
+ * all three.
  *
  * This is the thin, impure edge — the decisions (which ship command, the ssh
  * argv, token parsing) are pure + tested in provision.ts. The lifecycle
@@ -17,17 +23,22 @@
  * ProvisionProc, so the process plumbing here isn't unit-tested.
  */
 
-import {
-  buildProvisionPlan,
-  buildShipCommand,
-} from "./provision";
+import { buildProvisionPlan, buildShipCommand } from "./provision";
 import type { ProvisionProc, ProvisionStartOpts } from "./provision-manager";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stat, unlink } from "node:fs/promises";
 
-/** Hard backstop for the connect/ship phase. Longer than ssh's
- *  ConnectTimeout (15s) so ssh's own timeout reports first on a clean drop;
- *  this only fires if ssh wedges, and is generous enough not to kill a slow
- *  archive transfer. Overridable for testing / slow links. */
-const SHIP_TIMEOUT_MS = Number(process.env.SUPERGIT_PROVISION_SHIP_TIMEOUT_MS) || 45_000;
+/** Abort the upload if it makes NO progress for this long — a genuine stall
+ *  (dropped/dead connection), NOT a slow-but-moving upload (which must be
+ *  allowed to finish). Longer than ssh's ConnectTimeout (15s) so a
+ *  firewall/connect failure reports with its own clearer message first. */
+const STALL_MS = Number(process.env.SUPERGIT_PROVISION_STALL_MS) || 30_000;
+
+/** After the upload finishes, bound the remote extraction so a wedged box
+ *  can't hang the job forever. Extracting a few MB is normally seconds. */
+const EXTRACT_TIMEOUT_MS =
+  Number(process.env.SUPERGIT_PROVISION_EXTRACT_TIMEOUT_MS) || 90_000;
 
 /** A single-consumer async queue of strings with an explicit close. */
 class StringQueue implements AsyncIterable<string> {
@@ -80,11 +91,14 @@ async function pump(
 ): Promise<void> {
   if (!stream) return;
   try {
-    for await (const chunk of stream) queue.push(dec.decode(chunk, { stream: true }));
+    for await (const chunk of stream)
+      queue.push(dec.decode(chunk, { stream: true }));
   } catch {
     // stream torn down on kill — expected on abort
   }
 }
+
+const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
 
 export function makeProvisionSpawner(): (
   opts: ProvisionStartOpts,
@@ -102,18 +116,49 @@ export function makeProvisionSpawner(): (
     let resolveExit!: (code: number) => void;
     const exited = new Promise<number>((r) => (resolveExit = r));
 
+    // Temp archive path — portable (Windows/macOS/Linux). Cleaned up at the end.
+    const tmpArchive = join(
+      tmpdir(),
+      `supergit-provision-${crypto.randomUUID()}.tar.gz`,
+    );
+
     (async () => {
       try {
-        // ── Phase 1: ship the source (archive | ssh stdin) ──────────────
-        queue.push(`[supergit] connecting to ${host} over SSH…\n`);
+        // ── Phase 1a: package the source to a temp file (know its size) ──
+        queue.push(`[supergit] packaging the installer…\n`);
         console.log(
-          `provision ${host}: ship via ${shipCmd.bin} | ssh ${plan.ship.ssh.join(" ")}`,
+          `provision ${host}: archive ${shipCmd.bin} ${shipCmd.args.join(" ")} → ${tmpArchive}`,
         );
         const archive = Bun.spawn([shipCmd.bin, ...shipCmd.args], {
           stdin: "ignore",
-          stdout: "pipe",
+          stdout: Bun.file(tmpArchive),
           stderr: "pipe",
         });
+        active = archive;
+        const archiveErr = (await new Response(archive.stderr).text()).trim();
+        const archiveCode = await archive.exited;
+        if (killed) {
+          resolveExit(143);
+          queue.close();
+          return;
+        }
+        if (archiveCode !== 0) {
+          queue.push(
+            `[supergit] could not package the local source (${shipCmd.bin} exit ${archiveCode})` +
+              (archiveErr ? `: ${archiveErr}` : "") +
+              "\n",
+          );
+          resolveExit(archiveCode || 1);
+          queue.close();
+          return;
+        }
+        const totalBytes = (await stat(tmpArchive)).size;
+
+        // ── Phase 1b: stream the temp file to ssh stdin with an upload % ──
+        queue.push(
+          `[supergit] connecting to ${host} and uploading the installer (${mb(totalBytes)} MB)…\n`,
+        );
+        console.log(`provision ${host}: ship ssh ${plan.ship.ssh.join(" ")}`);
         const shipSsh = Bun.spawn([sshPath, ...plan.ship.ssh], {
           stdin: "pipe",
           stdout: "pipe",
@@ -121,48 +166,58 @@ export function makeProvisionSpawner(): (
         });
         active = shipSsh;
 
-        // Heartbeat so the connect wait is visibly alive (a firewall drop
-        // looks like a freeze otherwise — ssh is silent until ConnectTimeout).
-        const startedAt = Date.now();
+        let sent = 0;
+        let lastProgress = Date.now();
+        let stalled = false;
+        let uploadDone = false;
+
         const heartbeat = setInterval(() => {
-          // The ship phase is connect + upload of the (~MB) source archive,
-          // which dominates the wait on a reachable box — say so rather than
-          // a vague "still waiting" that reads as a freeze.
+          if (uploadDone) return;
+          const pct =
+            totalBytes > 0
+              ? Math.min(100, Math.round((sent / totalBytes) * 100))
+              : 0;
           queue.push(
-            `[supergit] …uploading the installer to ${host} (${Math.round(
-              (Date.now() - startedAt) / 1000,
-            )}s)\n`,
+            `[supergit] …uploading to ${host}: ${pct}% (${mb(sent)}/${mb(totalBytes)} MB)\n`,
           );
-        }, 5000);
+        }, 4000);
 
-        // Hard backstop: ssh's own ConnectTimeout (15s) should fire first on a
-        // dropped connection, but if it wedges (DNS, half-open) this guarantees
-        // the connect/ship phase ALWAYS ends — never an infinite silent wait.
-        let timedOut = false;
-        const shipWatchdog = setTimeout(() => {
-          timedOut = true;
-          try {
-            shipSsh.kill();
-          } catch {
-            /* gone */
+        // Progress-aware stall guard: only fires if NO bytes move for STALL_MS
+        // (dropped/dead link), so a slow-but-progressing upload is never killed.
+        const stallWatch = setInterval(() => {
+          if (uploadDone) return;
+          if (Date.now() - lastProgress > STALL_MS) {
+            stalled = true;
+            clearInterval(stallWatch);
+            try {
+              shipSsh.kill();
+            } catch {
+              /* gone */
+            }
           }
-          try {
-            archive.kill();
-          } catch {
-            /* gone */
-          }
-        }, SHIP_TIMEOUT_MS);
+        }, 2000);
 
-        // Manually pump archive → ssh.stdin (more robust than handing Bun a
-        // subprocess stream as stdin) and close stdin so the remote `tar`
-        // sees EOF and finishes extracting.
+        // Stream the temp archive → ssh.stdin. Await each write so `sent`
+        // tracks what ssh has actually accepted (backpressure), making the %
+        // and the stall detection real rather than just buffer-fill.
         const writer = shipSsh.stdin;
         const feed = (async () => {
           try {
-            for await (const chunk of archive.stdout as ReadableStream<Uint8Array>)
-              writer.write(chunk);
+            const reader = (
+              Bun.file(tmpArchive).stream() as ReadableStream<Uint8Array>
+            ).getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const w = writer.write(value);
+              if (w && typeof (w as { then?: unknown }).then === "function") {
+                await w;
+              }
+              sent += value.byteLength;
+              lastProgress = Date.now();
+            }
           } catch {
-            // ssh closed early (error/kill) — stop feeding
+            // ssh closed early (stall kill / error) — stop feeding
           } finally {
             try {
               writer.end();
@@ -177,37 +232,54 @@ export function makeProvisionSpawner(): (
           queue,
           dec,
         );
-        const shipCode = await shipSsh.exited;
+
+        await feed; // upload finished (or ssh was killed)
+        uploadDone = true;
         clearInterval(heartbeat);
-        clearTimeout(shipWatchdog);
-        await feed;
+        clearInterval(stallWatch);
+        if (!killed && !stalled) {
+          queue.push(
+            `[supergit] upload complete (${mb(totalBytes)} MB) — extracting on ${host}…\n`,
+          );
+        }
+
+        // Bound the remote extraction.
+        let extractTimedOut = false;
+        const extractTimer = setTimeout(() => {
+          extractTimedOut = true;
+          try {
+            shipSsh.kill();
+          } catch {
+            /* gone */
+          }
+        }, EXTRACT_TIMEOUT_MS);
+        const shipCode = await shipSsh.exited;
+        clearTimeout(extractTimer);
         await shipErr;
-        const archiveErr = (await new Response(archive.stderr).text()).trim();
-        const archiveCode = await archive.exited;
 
         if (killed) {
           resolveExit(143);
           queue.close();
           return;
         }
-        if (timedOut) {
+        if (stalled) {
           queue.push(
-            `[supergit] no response from ${host} after ${Math.round(
-              SHIP_TIMEOUT_MS / 1000,
-            )}s — aborting. The box is unreachable (a firewall dropping the ` +
-              `connection looks exactly like this).\n`,
+            `[supergit] upload stalled — no progress for ${Math.round(
+              STALL_MS / 1000,
+            )}s at ${mb(sent)}/${mb(totalBytes)} MB. The connection to ${host} ` +
+              `dropped or is too slow.\n`,
           );
-          resolveExit(124); // conventional "timed out" exit code
+          resolveExit(124);
           queue.close();
           return;
         }
-        if (archiveCode !== 0) {
+        if (extractTimedOut) {
           queue.push(
-            `[supergit] could not read the local source (${shipCmd.bin} exit ${archiveCode})` +
-              (archiveErr ? `: ${archiveErr}` : "") +
-              "\n",
+            `[supergit] the box took too long to extract the source (>${Math.round(
+              EXTRACT_TIMEOUT_MS / 1000,
+            )}s) — aborting.\n`,
           );
-          resolveExit(archiveCode || 1);
+          resolveExit(124);
           queue.close();
           return;
         }
@@ -245,16 +317,8 @@ export function makeProvisionSpawner(): (
           stderr: "pipe",
         });
         active = run;
-        const runOut = pump(
-          run.stdout as ReadableStream<Uint8Array>,
-          queue,
-          dec,
-        );
-        const runErr = pump(
-          run.stderr as ReadableStream<Uint8Array>,
-          queue,
-          dec,
-        );
+        const runOut = pump(run.stdout as ReadableStream<Uint8Array>, queue, dec);
+        const runErr = pump(run.stderr as ReadableStream<Uint8Array>, queue, dec);
         const runCode = await run.exited;
         await runOut;
         await runErr;
@@ -267,6 +331,13 @@ export function makeProvisionSpawner(): (
         console.error(`provision ${host}: error ${msg}`);
         resolveExit(1);
         queue.close();
+      } finally {
+        // Clean up the temp archive (best-effort, portable).
+        try {
+          await unlink(tmpArchive);
+        } catch {
+          /* never created / already gone */
+        }
       }
     })();
 
