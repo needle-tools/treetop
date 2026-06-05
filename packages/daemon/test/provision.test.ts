@@ -185,9 +185,11 @@ describe("buildProvisionPlan — Windows target", () => {
     expect(plan.ship.remoteCommand).not.toContain("&&");
   });
 
-  test("run: PowerShell runs install.ps1 WITH a tty for live output", () => {
+  test("run: PowerShell runs install.ps1 WITHOUT a tty (ConPTY swallows output)", () => {
     const plan = buildProvisionPlan(win);
-    expect(plan.run.ssh).toContain("-tt");
+    // No -tt on Windows: a forced pty + PowerShell ate the output (blank log,
+    // exit 0). Plain pipes capture it. POSIX keeps -tt for live streaming.
+    expect(plan.run.ssh).not.toContain("-tt");
     expect(plan.run.remoteCommand).toContain("powershell");
     expect(plan.run.remoteCommand).toContain("-ExecutionPolicy Bypass");
     expect(plan.run.remoteCommand).toContain("deploy\\install.ps1");

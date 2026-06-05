@@ -186,7 +186,13 @@ export class ProvisionManager {
       }
       const token = extractConnectionToken(job.output);
       if (!token) {
-        job.error = "no connection token found in installer output";
+        // Distinguish "ran but didn't finish" from "produced nothing at all"
+        // — the latter (common on the unverified Windows path) means the
+        // installer never really executed or hung before any output.
+        job.error = job.output.trim()
+          ? "the installer finished but printed no connection token — it likely failed before the end (check the log above)"
+          : 'the installer produced NO output and no token — it may not have run (on Windows, confirm you picked "Windows" and that install.ps1 ran without prompting for input)';
+        this.emit(job, `\n[supergit] ${job.error}\n`);
         job.status = "error";
         return;
       }

@@ -240,8 +240,10 @@ export function buildProvisionPlan(target: ProvisionTarget): ProvisionPlan {
  *     regardless, since the guard already made the success path exit 0.
  *
  *   - run uses PowerShell to execute install.ps1 (a real script, no binary
- *     stdin) with -tt for live output, mirroring the posix tty rationale.
- *     `-ExecutionPolicy Bypass` lets the unsigned, just-shipped script run.
+ *     stdin). Unlike posix it does NOT force a pty (`-tt`): on Windows a
+ *     ConPTY + PowerShell ate the output entirely (exit 0, blank log), so we
+ *     capture via plain pipes instead — chunkier than live, but actually
+ *     visible. `-ExecutionPolicy Bypass` lets the unsigned, shipped script run.
  */
 function windowsPlan(target: ProvisionTarget, dest: string): ProvisionPlan {
   const remoteDir = target.remoteDir ?? "C:\\supergit";
@@ -259,8 +261,12 @@ function windowsPlan(target: ProvisionTarget, dest: string): ProvisionPlan {
       ssh: [...baseSshArgs(target, false), dest, shipRemote],
       remoteCommand: shipRemote,
     },
+    // NO -tt for the Windows run: a forced pty + ConPTY + PowerShell swallows
+    // the output (install.ps1's lines never reached us — exit 0 but a blank
+    // log). Plain pipes capture stdout/stderr reliably; we lose live line-by-
+    // line streaming (it arrives in chunks) but we actually SEE it.
     run: {
-      ssh: [...baseSshArgs(target, true), dest, runRemote],
+      ssh: [...baseSshArgs(target, false), dest, runRemote],
       remoteCommand: runRemote,
     },
   };
