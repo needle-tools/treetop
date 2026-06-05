@@ -4,10 +4,27 @@ import {
   normalizeDaemonForm,
   emptyProvisionForm,
   normalizeProvisionForm,
+  stripHostPort,
   DEFAULT_REMOTE_DAEMON_PORT,
   type DaemonFormFields,
   type ProvisionFormFields,
 } from "../src/remote-daemon-form";
+
+describe("stripHostPort", () => {
+  it("strips a trailing :port from an IPv4 / hostname", () => {
+    expect(stripHostPort("1.2.3.4:7777")).toBe("1.2.3.4");
+    expect(stripHostPort("host.example:22")).toBe("host.example");
+    expect(stripHostPort("  box:80  ")).toBe("box");
+  });
+  it("leaves a bare host untouched", () => {
+    expect(stripHostPort("1.2.3.4")).toBe("1.2.3.4");
+    expect(stripHostPort("host.example")).toBe("host.example");
+  });
+  it("leaves IPv6 (multiple colons) untouched", () => {
+    expect(stripHostPort("::1")).toBe("::1");
+    expect(stripHostPort("fe80::1")).toBe("fe80::1");
+  });
+});
 
 /**
  * The "Add remote daemon" form normalizer mirrors the daemon-side
@@ -200,6 +217,12 @@ describe("normalizeProvisionForm", () => {
     const r = normalizeProvisionForm(pform({ host: "nuc", os: "windows" }));
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.payload.user).toBeUndefined();
+  });
+
+  it("strips a :port the user pasted onto the host", () => {
+    const r = normalizeProvisionForm(pform({ host: "49.12.219.153:7777" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.host).toBe("49.12.219.153");
   });
 
   it("carries root:true when runAsRoot is set (POSIX)", () => {

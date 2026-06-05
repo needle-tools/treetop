@@ -341,6 +341,9 @@
     host: string;
     port: number;
     color?: string;
+    /** The SSH/run-as user the box reports (root vs the sandboxed service
+     *  user) — surfaced so it's clear when a daemon runs as root. */
+    user?: string;
   }> = [];
   /** Label for a repo's owning remote daemon, or "" for a local repo —
    *  used to prefix a remote row's worktree path so it's clear the path
@@ -6771,7 +6774,15 @@
                     title={daemonsOnline.get(d.id) ? "online" : "offline / no tunnel"}
                   ></span>
                   <span class="daemons-meta">
-                    <span class="daemons-label">{d.label}</span>
+                    <span class="daemons-label"
+                      >{d.label}{#if d.user}<span
+                          class="daemons-user"
+                          class:root={d.user === "root"}
+                          title={d.user === "root"
+                            ? "runs as root — full access to the box"
+                            : `runs as ${d.user}`}>{d.user}</span
+                        >{/if}</span
+                    >
                     <span class="daemons-host">{d.host}:{d.port}</span>
                   </span>
                   <button

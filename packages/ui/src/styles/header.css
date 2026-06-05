@@ -386,6 +386,8 @@ main > header > h1 {
 .daemons-dot.online { background: #3fb950; }
 .daemons-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .daemons-label { font-size: 0.82rem; }
+.daemons-user { margin-left: 0.4rem; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.03em; padding: 0.05rem 0.3rem; border-radius: 4px; background: color-mix(in srgb, var(--text-muted) 18%, transparent); color: var(--text-muted); vertical-align: middle; }
+.daemons-user.root { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error-text, var(--error)); }
 .daemons-host { font-size: 0.7rem; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .daemons-addfolder { flex: 0 0 auto; background: transparent; border: 1px solid var(--border, #34343a); color: var(--text-muted); cursor: pointer; font-size: 0.7rem; line-height: 1; padding: 0.2rem 0.4rem; border-radius: 4px; white-space: nowrap; }
 .daemons-addfolder:hover { background: color-mix(in srgb, var(--accent, #4f7cff) 18%, transparent); color: inherit; }

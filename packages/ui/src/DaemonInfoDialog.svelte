@@ -14,6 +14,7 @@
     label: string;
     host: string;
     port: number;
+    user?: string;
   } | null = null;
   /** Repos/folders tracked on this daemon. */
   export let repos: Array<{ id: string; name: string; path: string }> = [];
@@ -78,6 +79,13 @@
       <h2 class="dd-title">{daemon.label}</h2>
       <p class="dd-host">
         <span class="dd-addr">{daemon.host}:{daemon.port}</span>
+        {#if daemon.user}<span
+            class="dd-user"
+            class:root={daemon.user === "root"}
+            title={daemon.user === "root"
+              ? "runs as root — full access to the box"
+              : `runs as ${daemon.user}`}>{daemon.user}</span
+          >{/if}
         {#if online === true}<span class="dd-status online">online</span>
         {:else if online === false}<span class="dd-status offline"
             >offline</span
@@ -188,6 +196,19 @@
   .dd-status.offline {
     color: #f85149;
     background: color-mix(in srgb, #f85149 16%, transparent);
+  }
+  .dd-user {
+    font-size: var(--fs-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+    color: var(--text-muted);
+  }
+  .dd-user.root {
+    background: color-mix(in srgb, var(--error) 20%, transparent);
+    color: var(--error-text, var(--error));
   }
   .dd-section {
     margin-bottom: 1rem;

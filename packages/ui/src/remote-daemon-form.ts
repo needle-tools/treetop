@@ -77,6 +77,17 @@ function isHexColor(s: string): boolean {
   return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s);
 }
 
+/** Strip a trailing `:<port>` a user pasted onto the host (e.g.
+ *  "1.2.3.4:7777" → "1.2.3.4"). The daemon/ssh port is its own field; left on
+ *  the host, ssh tries to resolve "host:port" as a name and fails. Only a
+ *  hostname/IPv4 followed by `:digits` is stripped — IPv6 (multiple colons)
+ *  and bare hosts are left untouched. */
+export function stripHostPort(host: string): string {
+  const h = host.trim();
+  const m = h.match(/^([A-Za-z0-9._-]+):\d+$/);
+  return m ? m[1]! : h;
+}
+
 /**
  * Validate + normalize the form. On success returns the POST payload with
  * blank optionals omitted and defaults applied (label←host, port←7777).
@@ -85,7 +96,7 @@ function isHexColor(s: string): boolean {
 export function normalizeDaemonForm(fields: DaemonFormFields): DaemonFormResult {
   const errors: Partial<Record<keyof DaemonFormFields, string>> = {};
 
-  const host = fields.host.trim();
+  const host = stripHostPort(fields.host);
   if (host === "") errors.host = "host is required";
 
   const port = parsePort(fields.port);
@@ -159,7 +170,7 @@ export function normalizeProvisionForm(
 ): ProvisionFormResult {
   const errors: Partial<Record<keyof ProvisionFormFields, string>> = {};
 
-  const host = fields.host.trim();
+  const host = stripHostPort(fields.host);
   if (host === "") errors.host = "host is required";
 
   const sshPort = parsePort(fields.sshPort);

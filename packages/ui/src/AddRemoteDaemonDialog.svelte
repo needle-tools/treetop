@@ -43,6 +43,7 @@
     normalizeDaemonForm,
     emptyProvisionForm,
     normalizeProvisionForm,
+    stripHostPort,
     type DaemonFormFields,
     type DaemonFormPayload,
     type ProvisionFormFields,
@@ -333,6 +334,7 @@
               <input
                 type="text"
                 bind:value={pfields.host}
+                on:blur={() => (pfields.host = stripHostPort(pfields.host))}
                 placeholder="hetzner.example.com or 1.2.3.4"
                 autocomplete="off"
                 spellcheck="false"

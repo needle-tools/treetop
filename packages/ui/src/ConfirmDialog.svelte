@@ -95,7 +95,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2000;
+    /* Above the other dialogs (all z-index 2000) — a confirm is always asked
+       ON TOP of whatever opened it (e.g. the manage-daemon dialog), so at the
+       same level it rendered BEHIND and looked like "no feedback". */
+    z-index: 3000;
     backdrop-filter: blur(2px);
   }
   .confirm-dialog {
