@@ -108,6 +108,12 @@ describe("throttleAsync", () => {
 });
 
 describe("sampleProcs", () => {
+  // Longer timeout: on Windows sampleProcs shells out to a PowerShell pass
+  // over Win32_PerfFormattedData_PerfProc_Process, which enumerates every
+  // process's perf counters and can take several seconds on a loaded /
+  // shared CI runner — well past bun's 5s default. In production this call
+  // is wrapped in throttleAsync, so the cost is amortized; here we call it
+  // raw, so give it room.
   test("reports this process within a machine-relative 0..100 band", async () => {
     const out = await sampleProcs([process.pid]);
     const s = out.get(process.pid);
@@ -116,7 +122,7 @@ describe("sampleProcs", () => {
     // Normalized: even a fully-pegged machine tops out near 100, not N*100.
     expect(s!.cpuPercent).toBeLessThanOrEqual(101);
     expect(s!.memBytes).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
   test("fills zeros for a pid that isn't running", async () => {
     const out = await sampleProcs([99999999]);

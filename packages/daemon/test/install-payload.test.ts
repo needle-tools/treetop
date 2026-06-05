@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { resolveInstallPayload } from "../src/install-payload";
 
 /**
@@ -74,8 +74,12 @@ describe("resolveInstallPayload", () => {
       sourceRoot: "/repo",
       exists: () => false, // override must win even when nothing exists on disk
     });
+    // The override is run through path.resolve(), so the expectation must be
+    // too — on Windows resolve("/custom/payload") is "C:\\custom\\payload",
+    // on POSIX it's "/custom/payload" unchanged.
+    const expectedRoot = resolve("/custom/payload");
     expect(loc.mode).toBe("packaged");
-    expect(loc.root).toBe("/custom/payload");
-    expect(loc.installScript).toBe(join("/custom/payload", SCRIPT));
+    expect(loc.root).toBe(expectedRoot);
+    expect(loc.installScript).toBe(join(expectedRoot, SCRIPT));
   });
 });

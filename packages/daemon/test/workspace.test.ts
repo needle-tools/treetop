@@ -55,6 +55,11 @@ describe("Workspace", () => {
   test("addRepo resolves a subdirectory to the git toplevel", async () => {
     const repoDir = await realpath(await tempDir());
     await $`git init ${repoDir}`.quiet();
+    // Identity must be set locally — CI runners have no global git identity,
+    // so an unconfigured `git commit` fails with exit 128 ("Author identity
+    // unknown") before the test can assert anything.
+    await $`git -C ${repoDir} config user.email test@example.com`.quiet();
+    await $`git -C ${repoDir} config user.name TestUser`.quiet();
     await writeFile(join(repoDir, "README"), "hi");
     await $`git -C ${repoDir} add . && git -C ${repoDir} commit -m init`.quiet();
     const subDir = join(repoDir, "deep", "nested");
@@ -69,6 +74,8 @@ describe("Workspace", () => {
   test("addRepo deduplicates when subdirectory resolves to already-registered root", async () => {
     const repoDir = await realpath(await tempDir());
     await $`git init ${repoDir}`.quiet();
+    await $`git -C ${repoDir} config user.email test@example.com`.quiet();
+    await $`git -C ${repoDir} config user.name TestUser`.quiet();
     await writeFile(join(repoDir, "README"), "hi");
     await $`git -C ${repoDir} add . && git -C ${repoDir} commit -m init`.quiet();
     const subDir = join(repoDir, "sub");

@@ -191,6 +191,10 @@ describe("isGlobal — dual-use roots are global only at the exact path", () => 
 });
 
 describe("daemon routing guard — no un-routed repo-scoped calls", () => {
+  // Longer timeout: this reads and regex-parses every .ts/.svelte file under
+  // packages/ui/src synchronously. On a loaded / shared CI runner that file
+  // sweep can exceed bun's 5s default even though it's well under a second
+  // locally.
   it("every bare apiUrl/apiWsUrl call targets an allowlisted global endpoint", () => {
     const offenders = findOffenders();
     if (offenders.length > 0) {
@@ -206,5 +210,5 @@ describe("daemon routing guard — no un-routed repo-scoped calls", () => {
       expect(offenders, msg).toHaveLength(0);
     }
     expect(offenders).toHaveLength(0);
-  });
+  }, 30_000);
 });

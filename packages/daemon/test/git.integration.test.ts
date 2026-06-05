@@ -28,6 +28,20 @@ import {
 } from "../src/git";
 import { stat } from "node:fs/promises";
 
+// Hermetic git: these integration tests must not inherit the host's
+// global/system git config. CI runners (and some dev machines) configure a
+// credential-injecting `url.<token>@github.com/.insteadOf https://github.com/`
+// so private clones work — but `git remote -v` then returns a token-laden URL
+// (masked as `***` in Actions logs), breaking listRemotes' exact-match
+// assertion. Disabling system config and pointing global config at a
+// nonexistent file leaves only each temp repo's LOCAL config (identity +
+// remotes) in play, which is exactly what these tests mean to exercise.
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_CONFIG_GLOBAL = join(
+  tmpdir(),
+  "supergit-tests-no-such-gitconfig",
+);
+
 async function tempRepo(): Promise<string> {
   // realpath resolves macOS's /var -> /private/var symlink so the path
   // matches what `git worktree list` reports.
