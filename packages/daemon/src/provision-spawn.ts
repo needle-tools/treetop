@@ -124,6 +124,28 @@ export function makeProvisionSpawner(): (
 
     (async () => {
       try {
+        // ── Uninstall: no ship (the code's already on the box) — just run
+        // the uninstaller over a tty and stream it. ──────────────────────
+        if (opts.kind === "uninstall") {
+          queue.push(`[supergit] uninstalling on ${host}…\n`);
+          console.log(`provision ${host}: uninstall ssh ${plan.run.ssh.join(" ")}`);
+          const run = Bun.spawn([sshPath, ...plan.run.ssh], {
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          active = run;
+          const ro = pump(run.stdout as ReadableStream<Uint8Array>, queue, dec);
+          const re = pump(run.stderr as ReadableStream<Uint8Array>, queue, dec);
+          const code = await run.exited;
+          await ro;
+          await re;
+          console.log(`provision ${host}: uninstaller exit ${code}`);
+          resolveExit(killed ? 143 : code);
+          queue.close();
+          return;
+        }
+
         // ── Phase 1a: package the source to a temp file (know its size) ──
         queue.push(`[supergit] packaging the installer…\n`);
         console.log(

@@ -422,6 +422,9 @@
   // repo-edit popover). Global — reorders the whole repo list.
   let reorderDialogOpen = false;
   let addDaemonOpen = false;
+  /** When set, the Add-daemon dialog opens in attach mode (live-log only) for
+   *  an already-started job — currently used for "Uninstall on box". */
+  let provisionAttachJob: { jobId: string; title: string } | null = null;
   // "Add a folder on a remote daemon" dialog (#3) + the daemon it opened
   // against (preselected target).
   let addRemoteFolderOpen = false;
@@ -3705,7 +3708,6 @@
       const es = new EventSource(
         apiUrl(`/api/daemons/provision/${jobId}/stream`),
       );
-      let announced = false;
       es.addEventListener("output", (e) => {
         try {
           handlers.onOutput(
@@ -3726,15 +3728,6 @@
             daemonId: d.daemonId,
             error: d.error,
           });
-          // On success the row appears via the registry reload; one toast.
-          if (d.status === "done" && !announced) {
-            announced = true;
-            void load();
-            addToast({
-              kind: "success",
-              message: "Remote daemon provisioned + connected.",
-            });
-          }
         } catch {
           /* malformed frame — skip */
         }
@@ -4505,7 +4498,9 @@
       danger: true,
     });
     if (!ok) return false;
-    daemonRemoving = new Set(daemonRemoving).add(daemonId);
+    // Start the streaming uninstall job, then open the same live-log dialog
+    // (attach mode) the install uses. The job's manager unregisters the daemon
+    // on success; the dialog's onDone refreshes + toasts.
     try {
       const res = await fetch(apiUrl(`/api/daemons/${daemonId}/uninstall`), {
         method: "POST",
@@ -4513,18 +4508,17 @@
         body: JSON.stringify({ user: "root" }),
       });
       const j = (await res.json().catch(() => null)) as {
-        ok?: boolean;
-        output?: string;
+        jobId?: string;
         error?: string;
       } | null;
-      if (!res.ok || !j?.ok) {
+      if (!res.ok || !j?.jobId) {
         throw new Error(j?.error || `uninstall failed (${res.status})`);
       }
-      await load();
-      addToast({
-        kind: "success",
-        message: `Uninstalled the daemon on "${label}".`,
-      });
+      provisionAttachJob = {
+        jobId: j.jobId,
+        title: `Uninstalling "${label}"`,
+      };
+      addDaemonOpen = true;
       return true;
     } catch (e) {
       addToast({
@@ -4532,10 +4526,6 @@
         message: `Uninstall failed: ${e instanceof Error ? e.message : String(e)}`,
       });
       return false;
-    } finally {
-      const next = new Set(daemonRemoving);
-      next.delete(daemonId);
-      daemonRemoving = next;
     }
   }
 
@@ -6829,6 +6819,7 @@
             <button
               class="add-folder-cta add-folder-cta-compact daemons-addremote"
               on:click|stopPropagation={() => {
+                provisionAttachJob = null;
                 addDaemonOpen = true;
                 daemonsMenuOpen = false;
               }}
@@ -7040,7 +7031,7 @@
             </Popover>
           {/if}
         </div>
-        <button class="add-folder-cta" on:click={() => (addDaemonOpen = true)}>
+        <button class="add-folder-cta" on:click={() => { provisionAttachJob = null; addDaemonOpen = true; }}>
           <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Add remote daemon</span>
         </button>
@@ -9533,7 +9524,7 @@
             </Popover>
           {/if}
         </div>
-        <button class="add-folder-cta add-folder-cta-compact" on:click={() => (addDaemonOpen = true)}>
+        <button class="add-folder-cta add-folder-cta-compact" on:click={() => { provisionAttachJob = null; addDaemonOpen = true; }}>
           <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Add remote daemon</span>
         </button>
@@ -9605,6 +9596,20 @@
   onConnect={connectRemoteDaemon}
   provision={provisionApi}
   canProvision={provisionCapable}
+  attachJob={provisionAttachJob}
+  onDone={({ status, mode }) => {
+    if (status === "done") {
+      void load();
+      addToast({
+        kind: "success",
+        message:
+          mode === "uninstall"
+            ? "Daemon uninstalled from the box."
+            : "Remote daemon provisioned + connected.",
+      });
+    }
+  }}
+  onClose={() => (provisionAttachJob = null)}
 />
 <DaemonInfoDialog
   open={daemonDialogId !== null}

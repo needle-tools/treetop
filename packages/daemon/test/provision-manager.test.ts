@@ -157,3 +157,54 @@ describe("ProvisionManager — views", () => {
     await mgr.wait(id);
   });
 });
+
+describe("ProvisionManager — uninstall", () => {
+  test("on success calls unregister(daemonId); NO token needed; ends 'done'", async () => {
+    const unregistered: string[] = [];
+    let registerCalled = false;
+    const mgr = new ProvisionManager({
+      // No supergit1: token in the output — uninstall must not require one.
+      spawn: () => scriptedProc(["stopping service…\n", "removed.\n"], 0),
+      register: async () => {
+        registerCalled = true;
+        return { id: "x" };
+      },
+      unregister: async (id) => {
+        unregistered.push(id);
+      },
+      newId: () => "u1",
+    });
+    const id = mgr.start({
+      kind: "uninstall",
+      daemonId: "d-42",
+      payloadRoot: "",
+      target: { host: "h" },
+    });
+    await mgr.wait(id);
+    expect(mgr.get(id)!.status).toBe("done");
+    expect(unregistered).toEqual(["d-42"]);
+    expect(registerCalled).toBe(false); // uninstall never registers
+  });
+
+  test("non-zero uninstaller exit → 'error', unregister NOT called", async () => {
+    let unregisterCalled = false;
+    const mgr = new ProvisionManager({
+      spawn: () => scriptedProc(["boom\n"], 1),
+      register: async () => ({ id: "x" }),
+      unregister: async () => {
+        unregisterCalled = true;
+      },
+      newId: () => "u1",
+    });
+    const id = mgr.start({
+      kind: "uninstall",
+      daemonId: "d",
+      payloadRoot: "",
+      target: { host: "h" },
+    });
+    await mgr.wait(id);
+    expect(mgr.get(id)!.status).toBe("error");
+    expect(mgr.get(id)!.error).toMatch(/uninstaller exited/);
+    expect(unregisterCalled).toBe(false);
+  });
+});

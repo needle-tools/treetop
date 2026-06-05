@@ -64,6 +64,16 @@
   /** Whether this build can auto-provision (capability probe). When false the
    *  provision section is hidden and paste/manual become primary. */
   export let canProvision = true;
+  /** Attach mode: open straight into the live-log view for an already-started
+   *  job (e.g. an uninstall kicked off from the manage dialog), instead of the
+   *  provision form. The parent starts the job + supplies its id + a title. */
+  export let attachJob: { jobId: string; title: string } | null = null;
+  /** Fired when a streamed job reaches a terminal state, so the parent can
+   *  refresh + toast appropriately for the flow. */
+  export let onDone: (info: {
+    status: string;
+    mode: "provision" | "uninstall";
+  }) => void = () => {};
 
   // Manual / paste form (under the disclosure).
   let fields: DaemonFormFields = emptyDaemonForm();
@@ -86,6 +96,11 @@
   let aborting = false;
   let provUnsub: (() => void) | null = null;
   let logEl: HTMLDivElement | null = null;
+  /** Header for the log view: the provision host, or an attached job's title. */
+  let provTitle = "";
+  /** Which flow this streamed job is, so onDone reports it correctly. */
+  let jobMode: "provision" | "uninstall" = "provision";
+  let doneFired = false;
 
   $: provisionEnabled = canProvision && provision != null;
   $: provRunning = provStatus === "running" || provStatus === "registering";
@@ -104,16 +119,54 @@
     pfields = emptyProvisionForm();
     perrors = {};
     provError = "";
-    phase = "form";
     provStatus = "running";
     provLog = "";
     provJobId = "";
     aborting = false;
+    doneFired = false;
     provUnsub?.();
     provUnsub = null;
     wasOpen = true;
+    if (attachJob) {
+      // Attach mode: skip the form, stream the already-running job's log.
+      phase = "provisioning";
+      jobMode = "uninstall";
+      provTitle = attachJob.title;
+      provJobId = attachJob.jobId;
+      streamJob(attachJob.jobId);
+    } else {
+      phase = "form";
+      jobMode = "provision";
+      provTitle = "";
+    }
   } else if (!open && wasOpen) {
     wasOpen = false;
+  }
+
+  /** Wire a job's SSE stream into the log view + status, and report a terminal
+   *  state to the parent exactly once. Shared by provision + attach(uninstall). */
+  function streamJob(jobId: string): void {
+    if (!provision) return;
+    provUnsub = provision.stream(jobId, {
+      onOutput: (chunk) => void appendLog(chunk),
+      onStatus: (status, info) => {
+        provStatus = status;
+        if (info.error) provError = info.error;
+        if (status === "error") play("daemon-connect-fail");
+        else if (status === "done") play("daemon-connect-ok");
+        if (
+          (status === "done" || status === "error" || status === "aborted") &&
+          !doneFired
+        ) {
+          doneFired = true;
+          onDone({ status, mode: jobMode });
+        }
+      },
+      onEnd: () => {
+        provUnsub?.();
+        provUnsub = null;
+      },
+    });
   }
 
   function close(): void {
@@ -143,10 +196,13 @@
       return;
     }
     phase = "provisioning";
+    jobMode = "provision";
+    provTitle = "";
     provStatus = "running";
     provError = "";
     provLog = "";
     aborting = false;
+    doneFired = false;
     try {
       provJobId = await provision.start(result.payload);
     } catch (e) {
@@ -160,19 +216,7 @@
     // Job accepted — start the mysterious waiting cue. The success
     // / fail chime overlays on top and fades this out via fadeOutMs.
     play("daemon-connect-waiting");
-    provUnsub = provision.stream(provJobId, {
-      onOutput: (chunk) => void appendLog(chunk),
-      onStatus: (status, info) => {
-        provStatus = status;
-        if (info.error) provError = info.error;
-        if (status === "error") play("daemon-connect-fail");
-        else if (status === "done") play("daemon-connect-ok");
-      },
-      onEnd: () => {
-        provUnsub?.();
-        provUnsub = null;
-      },
-    });
+    streamJob(provJobId);
   }
 
   async function cancelProvision(): Promise<void> {
@@ -271,7 +315,7 @@
       {#if phase === "provisioning"}
         <!-- ── Live install log ──────────────────────────────────────── -->
         <h2 class="add-daemon-title">
-          Provisioning {pfields.host || "remote box"}…
+          {provTitle ? `${provTitle}…` : `Provisioning ${pfields.host || "remote box"}…`}
         </h2>
         <p
           class="add-daemon-status"

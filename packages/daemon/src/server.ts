@@ -407,6 +407,11 @@ const provisionManager = new ProvisionManager({
     ensureRemoteTunnelPort(daemon.id).catch(() => {});
     return { id: daemon.id };
   },
+  unregister: async (daemonId) => {
+    await tunnelManager.close(daemonId);
+    await workspace.removeRemoteDaemon(daemonId);
+    broadcast("change", { kind: "remote_daemon_remove", id: daemonId });
+  },
 });
 
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
@@ -7595,48 +7600,23 @@ const server = Bun.serve<TermWsData, never>({
               ? body.sshPort
               : daemon.sshPort;
           const isWin = (daemon as { os?: string }).os === "windows";
-          const plan = buildProvisionPlan({
-            host: daemon.host,
-            user: adminUser,
-            sshPort: typeof sshPort === "number" ? sshPort : undefined,
-            os: isWin ? "windows" : undefined,
-            installArgs: isWin ? ["-Uninstall"] : ["--uninstall"],
+          // Start a streaming uninstall JOB (same manager/SSE as provision)
+          // so the dialog shows the live uninstaller log. On success the
+          // manager's `unregister` dep tears down the tunnel + forgets it.
+          const jobId = provisionManager.start({
+            kind: "uninstall",
+            daemonId: id,
+            payloadRoot: installPayload.root ?? "",
+            target: {
+              host: daemon.host,
+              user: adminUser,
+              sshPort: typeof sshPort === "number" ? sshPort : undefined,
+              os: isWin ? "windows" : undefined,
+              installArgs: isWin ? ["-Uninstall"] : ["--uninstall"],
+            },
+            label: daemon.label,
           });
-          // Capture, don't stream — uninstall is quick. Drop the run step's
-          // `-tt` (no pty needed when we're not streaming to a terminal).
-          const sshArgs = plan.run.ssh.filter((a) => a !== "-tt");
-          const proc = Bun.spawn([sshBin, ...sshArgs], {
-            stdin: "ignore",
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          const killer = setTimeout(() => {
-            try {
-              proc.kill();
-            } catch {
-              /* gone */
-            }
-          }, 90_000);
-          const out = await new Response(proc.stdout).text();
-          const err = await new Response(proc.stderr).text();
-          const code = await proc.exited;
-          clearTimeout(killer);
-          const output = (out + err).trim();
-          if (code !== 0) {
-            return json(
-              {
-                ok: false,
-                output,
-                error: `the uninstaller exited with code ${code}`,
-              },
-              { status: 400 },
-            );
-          }
-          // Box uninstalled → tear down the tunnel + forget it locally.
-          await tunnelManager.close(id);
-          await workspace.removeRemoteDaemon(id);
-          broadcast("change", { kind: "remote_daemon_remove", id });
-          return json({ ok: true, output });
+          return json({ jobId });
         }
       }
 

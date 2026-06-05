@@ -37,6 +37,11 @@ export interface ProvisionStartOpts {
   mode?: "packaged" | "dev";
   target: ProvisionTarget;
   label?: string;
+  /** "provision" (default): ship + install, then register the printed token.
+   *  "uninstall": run the uninstaller (no ship), then unregister `daemonId`. */
+  kind?: "provision" | "uninstall";
+  /** The daemon to unregister on a successful uninstall. */
+  daemonId?: string;
 }
 
 export interface ProvisionJobView {
@@ -54,6 +59,8 @@ export interface ProvisionManagerDeps {
   spawn: (opts: ProvisionStartOpts) => ProvisionProc;
   /** Register a captured connection token; resolves with the new daemon id. */
   register: (token: string) => Promise<{ id: string }>;
+  /** Unregister a daemon after a successful uninstall (close tunnel + forget). */
+  unregister?: (daemonId: string) => Promise<void>;
   /** Fresh job id. */
   newId: () => string;
 }
@@ -63,6 +70,9 @@ interface Job extends ProvisionJobView {
   aborted: boolean;
   done: Promise<void>;
   subscribers: Set<(chunk: string) => void>;
+  kind: "provision" | "uninstall";
+  /** For uninstall: the daemon to forget on success. */
+  targetDaemonId?: string;
 }
 
 export class ProvisionManager {
@@ -82,6 +92,8 @@ export class ProvisionManager {
       aborted: false,
       subscribers: new Set(),
       done: Promise.resolve(),
+      kind: opts.kind ?? "provision",
+      targetDaemonId: opts.daemonId,
     };
     this.jobs.set(id, job);
     job.done = this.run(job);
@@ -158,8 +170,18 @@ export class ProvisionManager {
         return;
       }
       if (code !== 0) {
-        job.error = `installer exited with code ${code}`;
+        job.error = `${job.kind === "uninstall" ? "uninstaller" : "installer"} exited with code ${code}`;
         job.status = "error";
+        return;
+      }
+      if (job.kind === "uninstall") {
+        job.status = "registering"; // shared "finishing" phase label
+        this.emit(job, "\n[supergit] uninstalled on the box — removing here…\n");
+        if (this.deps.unregister && job.targetDaemonId) {
+          await this.deps.unregister(job.targetDaemonId);
+        }
+        job.status = "done";
+        this.emit(job, "[supergit] removed.\n");
         return;
       }
       const token = extractConnectionToken(job.output);
