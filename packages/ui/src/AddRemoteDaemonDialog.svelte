@@ -381,6 +381,22 @@
               {/if}
             </label>
 
+            {#if pfields.os !== "windows"}
+              <label class="add-daemon-check">
+                <input type="checkbox" bind:checked={pfields.runAsRoot} />
+                <span
+                  >Run as <code>root</code> — full access to every folder on the
+                  box</span
+                >
+              </label>
+              {#if pfields.runAsRoot}
+                <small class="add-daemon-hint add-daemon-check-hint">
+                  The daemon runs privileged. Fine for a box only you reach over
+                  the tunnel; leave it off (sandboxed user) for shared machines.
+                </small>
+              {/if}
+            {/if}
+
             <label class="add-daemon-field">
               <span>Label</span>
               <input
@@ -612,6 +628,28 @@
   .add-daemon-hint {
     color: var(--text-faint);
     font-size: var(--fs-sm);
+  }
+  /* Run-as-root checkbox row. */
+  .add-daemon-check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.6rem;
+    font-size: var(--fs-md);
+    color: var(--text-3);
+    cursor: pointer;
+    user-select: none;
+  }
+  .add-daemon-check input {
+    flex: 0 0 auto;
+    margin: 0;
+  }
+  .add-daemon-check code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .add-daemon-check-hint {
+    display: block;
+    margin: -0.35rem 0 0.7rem;
   }
 
   /* Provision-first section — the headline flow. */

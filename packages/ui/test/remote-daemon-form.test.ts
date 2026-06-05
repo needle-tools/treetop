@@ -202,6 +202,26 @@ describe("normalizeProvisionForm", () => {
     if (r.ok) expect(r.payload.user).toBeUndefined();
   });
 
+  it("carries root:true when runAsRoot is set (POSIX)", () => {
+    const r = normalizeProvisionForm(pform({ host: "h", runAsRoot: true }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.root).toBe(true);
+  });
+
+  it("omits root when not set", () => {
+    const r = normalizeProvisionForm(pform({ host: "h" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.root).toBeUndefined();
+  });
+
+  it("ignores runAsRoot for Windows (SUPERGIT_USER is POSIX-only)", () => {
+    const r = normalizeProvisionForm(
+      pform({ host: "nuc", os: "windows", runAsRoot: true }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.root).toBeUndefined();
+  });
+
   it("carries user / sshPort / label when provided", () => {
     const r = normalizeProvisionForm(
       pform({ host: "h", user: "root", sshPort: "2222", label: "hetzner" }),

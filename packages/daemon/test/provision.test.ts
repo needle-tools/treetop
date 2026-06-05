@@ -113,6 +113,15 @@ describe("buildProvisionPlan", () => {
     expect(plan.run.ssh[plan.run.ssh.length - 1]).toBe(plan.run.remoteCommand);
     expect(plan.run.remoteCommand).toContain("cd /opt/supergit");
     expect(plan.run.remoteCommand).toContain("deploy/install.sh --no-pull");
+    // Sandboxed by default — no SUPERGIT_USER override.
+    expect(plan.run.remoteCommand).not.toContain("SUPERGIT_USER");
+  });
+
+  test("runAsRoot: install.sh runs with SUPERGIT_USER=root (full box access)", () => {
+    const plan = buildProvisionPlan({ host: "h", runAsRoot: true });
+    expect(plan.run.remoteCommand).toContain(
+      "SUPERGIT_USER=root bash deploy/install.sh --no-pull",
+    );
   });
 
   test("host-only destination when no user is given", () => {

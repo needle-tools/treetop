@@ -70,6 +70,12 @@ export interface ProvisionTarget {
   installArgs?: string[];
   /** OS family of the box. Default "posix". */
   os?: TargetOs;
+  /** Run the daemon as root (full filesystem access — sees every folder on
+   *  the box) instead of the sandboxed `supergit` service user. POSIX only:
+   *  passes SUPERGIT_USER=root to install.sh. The forward-only tunnel key is
+   *  unaffected (still port-forward only), so this widens FILE access, not
+   *  network exposure. */
+  runAsRoot?: boolean;
 }
 
 export interface ShipCommand {
@@ -200,7 +206,11 @@ export function buildProvisionPlan(target: ProvisionTarget): ProvisionPlan {
   const installArgs = target.installArgs ?? ["--no-pull"];
 
   const shipRemote = `mkdir -p ${remoteDir} && tar -x -z -f - -C ${remoteDir}`;
-  const runRemote = `cd ${remoteDir} && bash deploy/install.sh ${installArgs.join(" ")}`;
+  // SUPERGIT_USER=root makes install.sh run the daemon as root (full box
+  // access) instead of the sandboxed `supergit` user. Env var, so it must be
+  // on the install.sh invocation itself.
+  const asRoot = target.runAsRoot ? "SUPERGIT_USER=root " : "";
+  const runRemote = `cd ${remoteDir} && ${asRoot}bash deploy/install.sh ${installArgs.join(" ")}`;
 
   return {
     ship: {

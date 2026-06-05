@@ -130,6 +130,9 @@ export interface ProvisionFormFields {
   /** Target OS: "" / "posix" (Linux/macOS, the default) or "windows".
    *  Windows boxes need cmd/PowerShell remote commands + install.ps1. */
   os: string;
+  /** Run the daemon as root (full access to every folder) instead of the
+   *  sandboxed `supergit` service user. POSIX only. */
+  runAsRoot: boolean;
 }
 
 export interface ProvisionFormPayload {
@@ -139,6 +142,8 @@ export interface ProvisionFormPayload {
   label?: string;
   /** Only sent for Windows; absent ⇒ the daemon defaults to posix. */
   os?: "windows";
+  /** Only sent when true (POSIX); absent ⇒ sandboxed service user. */
+  root?: true;
 }
 
 export type ProvisionFormResult =
@@ -146,7 +151,7 @@ export type ProvisionFormResult =
   | { ok: false; errors: Partial<Record<keyof ProvisionFormFields, string>> };
 
 export function emptyProvisionForm(): ProvisionFormFields {
-  return { host: "", user: "", sshPort: "", label: "", os: "" };
+  return { host: "", user: "", sshPort: "", label: "", os: "", runAsRoot: false };
 }
 
 export function normalizeProvisionForm(
@@ -179,6 +184,8 @@ export function normalizeProvisionForm(
   // Only Windows needs to be carried — posix is the daemon's default, so we
   // keep the payload clean (an empty/"posix" selection sends nothing).
   if (fields.os === "windows") payload.os = "windows";
+  // Run-as-root is a POSIX-only concept (SUPERGIT_USER); ignore it for Windows.
+  if (fields.runAsRoot && fields.os !== "windows") payload.root = true;
 
   return { ok: true, payload };
 }

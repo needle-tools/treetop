@@ -190,9 +190,13 @@ if [ ! -f "${KEY_PATH}" ]; then
   ssh-keygen -t ed25519 -N "" -C "supergit-tunnel" -f "${KEY_PATH}" >/dev/null
 fi
 PUBKEY="$(cat "${KEY_PATH}.pub")"
-AUTH="/home/${SERVICE_USER}/.ssh/authorized_keys"
+# Resolve the service user's REAL home — root's is /root, not /home/root, so
+# don't hardcode /home/<user> (that broke the tunnel key for SUPERGIT_USER=root).
+HOME_DIR="$(getent passwd "${SERVICE_USER}" | cut -d: -f6)"
+[ -n "${HOME_DIR}" ] || HOME_DIR="/home/${SERVICE_USER}"
+AUTH="${HOME_DIR}/.ssh/authorized_keys"
 RESTRICT="restrict,port-forwarding,permitopen=\"127.0.0.1:${PORT}\",command=\"echo 'supergit: this key is for port-forwarding only'\""
-install -d -m 700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "/home/${SERVICE_USER}/.ssh"
+install -d -m 700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${HOME_DIR}/.ssh"
 # Replace any prior supergit-tunnel line, then append the current one.
 touch "${AUTH}"
 grep -v "supergit-tunnel" "${AUTH}" > "${AUTH}.tmp" 2>/dev/null || true

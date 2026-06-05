@@ -7459,6 +7459,8 @@ const server = Bun.serve<TermWsData, never>({
             // Windows boxes need cmd/PowerShell commands (their default ssh
             // shell is cmd.exe); anything else ships the posix tar|bash plan.
             os: body.os === "windows" ? "windows" : undefined,
+            // Run the daemon as root (full box access) vs the sandboxed user.
+            runAsRoot: body.root === true,
           },
           label: typeof body.label === "string" ? body.label : undefined,
         });
