@@ -83,10 +83,15 @@ fi
 # Must live somewhere the SERVICE_USER can execute — the default
 # `curl|bash` installs to the invoking user's ~/.bun (here /root/.bun),
 # which 'supergit' can't reach. Install to a shared prefix instead.
+#
+# CRUCIAL: BUN_INSTALL must be set for `bash` (the installer reads it), NOT
+# for `curl`. `BUN_INSTALL=… curl | bash` applies the var to curl only, so
+# bun lands in /root/.bun and the check below fails ("bun not found at
+# /usr/local/bin/bun"). Set it on the bash side of the pipe instead.
 BUN_INSTALL="/usr/local"
 if [ ! -x "${BUN_INSTALL}/bin/bun" ]; then
   err "installing bun → ${BUN_INSTALL}/bin…"
-  BUN_INSTALL="${BUN_INSTALL}" curl -fsSL https://bun.sh/install | bash >/dev/null
+  curl -fsSL https://bun.sh/install | BUN_INSTALL="${BUN_INSTALL}" bash
 fi
 BUN_BIN="${BUN_INSTALL}/bin/bun"
 [ -x "${BUN_BIN}" ] || { err "bun not found at ${BUN_BIN} after install"; exit 1; }
