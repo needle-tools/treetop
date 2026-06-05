@@ -308,12 +308,17 @@ $DAEMON_ENTRY = Join-Path $APP_DIR 'packages\daemon\src\server.ts'
 # Scheduled Task action: the program is cmd.exe; arguments carry the rest.
 # Split like this because Register-ScheduledTask wants program + arguments
 # separately (the CIM class doesn't accept a combined command line).
+# NOTE: NO space before each `&&`. In cmd, `set VAR=value && next` captures
+# the trailing space INTO the value (VAR becomes "value "). That silently
+# broke SUPERGIT_BIND="127.0.0.1 " -> Bun.serve({hostname}) fails -> the
+# daemon never serves -> the tunnel just gets "socket closed". `value&& next`
+# keeps the value clean.
 $Action  = New-ScheduledTaskAction `
   -Execute 'cmd.exe' `
-  -Argument ("/c `"set SUPERGIT_BIND=127.0.0.1 && " +
-              "set SUPERGIT_PORT=$PORT && " +
-              "set SUPERGIT_UI_DIR=$UI_DIR && " +
-              "set SUPERGIT_WORKSPACE=$WORKSPACE && " +
+  -Argument ("/c `"set SUPERGIT_BIND=127.0.0.1&& " +
+              "set SUPERGIT_PORT=$PORT&& " +
+              "set SUPERGIT_UI_DIR=$UI_DIR&& " +
+              "set SUPERGIT_WORKSPACE=$WORKSPACE&& " +
               "`"$BUN_BIN`" run `"$DAEMON_ENTRY`"`"") `
   -WorkingDirectory $APP_DIR
 
