@@ -62,6 +62,23 @@ fi
 
 need_root
 
+# ---- 0. base dependencies ----------------------------------------------
+# A fresh minimal Debian/Ubuntu box ships without these. bun's installer
+# unzips its release, so without `unzip` (and curl to fetch it) step 1 dies
+# with "error: unzip is required to install bun". `git` is only needed for a
+# non --no-pull clone, but it's cheap to ensure. Idempotent: only the
+# missing ones are installed; apt-only, like the Go step below.
+if command -v apt-get >/dev/null 2>&1; then
+  NEED=""
+  for dep in curl unzip git; do
+    command -v "${dep}" >/dev/null 2>&1 || NEED="${NEED} ${dep}"
+  done
+  if [ -n "${NEED}" ]; then
+    err "installing base dependencies:${NEED}…"
+    apt-get update -qq && apt-get install -y ${NEED} >/dev/null
+  fi
+fi
+
 # ---- 1. bun (system-wide) ----------------------------------------------
 # Must live somewhere the SERVICE_USER can execute — the default
 # `curl|bash` installs to the invoking user's ~/.bun (here /root/.bun),

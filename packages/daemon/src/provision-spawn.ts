@@ -125,8 +125,11 @@ export function makeProvisionSpawner(): (
         // looks like a freeze otherwise — ssh is silent until ConnectTimeout).
         const startedAt = Date.now();
         const heartbeat = setInterval(() => {
+          // The ship phase is connect + upload of the (~MB) source archive,
+          // which dominates the wait on a reachable box — say so rather than
+          // a vague "still waiting" that reads as a freeze.
           queue.push(
-            `[supergit] …still waiting for ${host} (${Math.round(
+            `[supergit] …uploading the installer to ${host} (${Math.round(
               (Date.now() - startedAt) / 1000,
             )}s)\n`,
           );
