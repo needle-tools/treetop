@@ -615,6 +615,12 @@
   let wtPickerOpen: Record<string, boolean> = {};
   // Per-row: is the emoji sticker picker open?
   let emojiPickerOpen: Record<string, boolean> = {};
+  // One pickable interactive shell on a box (from /api/shells/available).
+  interface ShellOption {
+    shell: string;
+    args: string[];
+    label: string;
+  }
   // Agent CLIs we detected on PATH at the daemon. Loaded once on mount.
   let installedAgents: { name: string; path: string }[] = [];
   // Per-daemon caches for the "Start a new session" dropdown, keyed by
@@ -626,6 +632,11 @@
   // shellByDaemon so a remote terminal spawns the REMOTE box's shell with
   // ITS flags, not the local machine's.
   let shellArgsByDaemon: Record<string, string[]> = {};
+  // Every interactive shell the box can spawn, per daemon (from
+  // /api/shells/available). On Windows that's PowerShell + CMD as two
+  // entries so the picker can offer each; on POSIX a single login shell.
+  // When a daemon lists >1 the picker fans out one Terminal entry per shell.
+  let shellsByDaemon: Record<string, ShellOption[]> = {};
   // Per-worktree: is the "+ new agent" popover open?
   let newAgentPopoverOpen: Record<string, boolean> = {};
   // Per-worktree: is the Ollama models submenu inside the picker expanded?
@@ -1571,11 +1582,17 @@
   /** Open a brand-new "Terminal" column in this worktree — a plain PTY
    *  running the user's $SHELL. Mirrors `openNewAgentSession` but uses
    *  agent="shell"; the render branch picks `defaultShell` as the cmd. */
-  function openNewTerminalInWt(wtPath: string) {
+  function openNewTerminalInWt(wtPath: string, shell?: ShellOption) {
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__new__:shell:${id}`;
     const existing = openSessionsByWt[wtPath] ?? [];
-    const entry: OpenSession = { agent: "shell", source: synthetic };
+    // When the box offered >1 shell (Windows: PowerShell vs CMD) stamp the
+    // exact pick so cmdForOpenSession spawns it instead of the default shell.
+    const entry: OpenSession = {
+      agent: "shell",
+      source: synthetic,
+      ...(shell ? { shellCmd: [shell.shell, ...shell.args] } : {}),
+    };
     const insertAt = visibleLeftInsertIndex(wtPath, existing);
     const next = [...existing];
     next.splice(insertAt, 0, entry);
@@ -1843,6 +1860,19 @@
       }
     } catch {
       // best-effort — keeps the platform fallback
+    }
+    try {
+      const res = await fetch(apiUrl("/api/shells/available"));
+      if (!res.ok) return;
+      const body = (await res.json()) as { shells?: unknown };
+      if (Array.isArray(body.shells)) {
+        shellsByDaemon = {
+          ...shellsByDaemon,
+          local: body.shells as ShellOption[],
+        };
+      }
+    } catch {
+      // best-effort — picker falls back to the single default-shell entry
     }
   }
 
@@ -2409,6 +2439,11 @@
      *  migrates to SessionView mid-flight. Set during the source swap
      *  so SessionView reattaches instead of spawning a duplicate. */
     attachTermId?: string;
+    /** Explicit shell command for a plain terminal column, stamped by
+     *  openNewTerminalInWt when the box offered >1 shell (Windows:
+     *  PowerShell vs CMD). cmdForOpenSession prefers it over the
+     *  daemon's default shell. */
+    shellCmd?: string[];
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
 
@@ -3370,11 +3405,15 @@
         const nextShellArgs: Record<string, string[]> = {
           local: defaultShellArgs,
         };
+        const nextShells: Record<string, ShellOption[]> = {
+          local: shellsByDaemon.local ?? [],
+        };
         for (const d of remoteDaemons) {
           try {
-            const [aRes, sRes] = await Promise.all([
+            const [aRes, sRes, lsRes] = await Promise.all([
               fetch(apiUrl("/api/agents/installed", d.id)),
               fetch(apiUrl("/api/shell-default", d.id)),
+              fetch(apiUrl("/api/shells/available", d.id)),
             ]);
             if (aRes.ok) {
               const body = (await aRes.json()) as { installed?: { name: string; path: string }[] };
@@ -3391,6 +3430,12 @@
                 );
               }
             }
+            if (lsRes.ok) {
+              const body = (await lsRes.json()) as { shells?: unknown };
+              if (Array.isArray(body.shells)) {
+                nextShells[d.id] = body.shells as ShellOption[];
+              }
+            }
           } catch {
             // Offline daemon — keep its prior entries so the row doesn't flap
             // to local agents just because one refresh couldn't reach it.
@@ -3398,12 +3443,14 @@
             if (shellByDaemon[d.id]) nextShell[d.id] = shellByDaemon[d.id];
             if (shellArgsByDaemon[d.id])
               nextShellArgs[d.id] = shellArgsByDaemon[d.id];
+            if (shellsByDaemon[d.id]) nextShells[d.id] = shellsByDaemon[d.id];
           }
         }
         // Single atomic assignment — no intermediate wipe, no flip-flop.
         agentsByDaemon = nextAgents;
         shellByDaemon = nextShell;
         shellArgsByDaemon = nextShellArgs;
+        shellsByDaemon = nextShells;
       } else {
         remoteDaemons = [];
       }
@@ -7505,6 +7552,7 @@
                       {@const rowDaemonId = daemonIdForWorktreePath(repos, wt.path)}
                       {@const rowAgents = agentsByDaemon[rowDaemonId ?? "local"] ?? installedAgents}
                       {@const rowShell = shellByDaemon[rowDaemonId ?? "local"] ?? defaultShell}
+                      {@const rowShells = shellsByDaemon[rowDaemonId ?? "local"] ?? []}
                       <Popover variant="agents" extraClass="new-agent-popover">
                         <svelte:fragment slot="head"
                           >Start a new session</svelte:fragment
@@ -7643,42 +7691,84 @@
                               {/if}
                             </li>
                           {/each}
-                          <!-- Always-present Terminal entry. Spawns the user's
-                             $SHELL (resolved server-side via /api/shell-default)
-                             as a plain PTY in this worktree — no JSONL
-                             transcript, just an interactive shell column. -->
-                          <li>
-                            <button
-                              class="agent-row new-agent-row"
-                              on:click={() => {
-                                newAgentPopoverOpen = {
-                                  ...newAgentPopoverOpen,
-                                  [wt.path]: false,
-                                };
-                                unfoldRowIfFolded(row.key);
-                                openNewTerminalInWt(wt.path);
-                              }}
-                              title={`Spawn ${rowShell} as a plain terminal in ${wt.path}`}
-                            >
-                              <svg
-                                class="agent-row-icon-svg"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="1.8"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                aria-hidden="true"
-                                ><path d="M4 17l5-5-5-5" /><path
-                                  d="M11 19h8"
-                                /></svg
+                          <!-- Terminal entry/entries. Spawns a plain PTY in
+                             this worktree — no JSONL transcript, just an
+                             interactive shell column. When the box reports
+                             >1 shell (Windows: PowerShell + CMD via
+                             /api/shells/available) we fan out one entry per
+                             shell; otherwise a single "Terminal" running the
+                             box's default $SHELL. -->
+                          {#if rowShells.length > 1}
+                            {#each rowShells as shellOpt}
+                              <li>
+                                <button
+                                  class="agent-row new-agent-row"
+                                  on:click={() => {
+                                    newAgentPopoverOpen = {
+                                      ...newAgentPopoverOpen,
+                                      [wt.path]: false,
+                                    };
+                                    unfoldRowIfFolded(row.key);
+                                    openNewTerminalInWt(wt.path, shellOpt);
+                                  }}
+                                  title={`Spawn ${shellOpt.shell} as a plain terminal in ${wt.path}`}
+                                >
+                                  <svg
+                                    class="agent-row-icon-svg"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                    ><path d="M4 17l5-5-5-5" /><path
+                                      d="M11 19h8"
+                                    /></svg
+                                  >
+                                  <span class="agent-row-name"
+                                    >{shellOpt.label}</span
+                                  >
+                                  <span class="agent-title muted"
+                                    >{shellOpt.shell}</span
+                                  >
+                                </button>
+                              </li>
+                            {/each}
+                          {:else}
+                            <li>
+                              <button
+                                class="agent-row new-agent-row"
+                                on:click={() => {
+                                  newAgentPopoverOpen = {
+                                    ...newAgentPopoverOpen,
+                                    [wt.path]: false,
+                                  };
+                                  unfoldRowIfFolded(row.key);
+                                  openNewTerminalInWt(wt.path);
+                                }}
+                                title={`Spawn ${rowShell} as a plain terminal in ${wt.path}`}
                               >
-                              <span class="agent-row-name">Terminal</span>
-                              <span class="agent-title muted"
-                                >{rowShell}</span
-                              >
-                            </button>
-                          </li>
+                                <svg
+                                  class="agent-row-icon-svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="1.8"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  aria-hidden="true"
+                                  ><path d="M4 17l5-5-5-5" /><path
+                                    d="M11 19h8"
+                                  /></svg
+                                >
+                                <span class="agent-row-name">Terminal</span>
+                                <span class="agent-title muted"
+                                  >{rowShell}</span
+                                >
+                              </button>
+                            </li>
+                          {/if}
                           <li>
                             <button
                               class="agent-row new-agent-row"

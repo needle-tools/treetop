@@ -638,6 +638,33 @@ describe("cmdForOpenSession", () => {
     ).toEqual(["/bin/fish", "-l"]);
   });
 
+  test("shell with a shellCmd override spawns that exact command (CMD vs PowerShell pick)", () => {
+    // The new-session picker stamps shellCmd when the box offers >1 shell
+    // (Windows: PowerShell + CMD). It must win over the daemon's default
+    // shell so the user gets the shell they clicked.
+    expect(
+      cmdForOpenSession(
+        { agent: "shell", shellCmd: ["cmd.exe"] },
+        "powershell.exe",
+        ["-NoLogo"],
+      ),
+    ).toEqual(["cmd.exe"]);
+    expect(
+      cmdForOpenSession(
+        { agent: "shell", shellCmd: ["powershell.exe", "-NoLogo"] },
+        "cmd.exe",
+        [],
+      ),
+    ).toEqual(["powershell.exe", "-NoLogo"]);
+  });
+
+  test("shell with an empty shellCmd falls back to the default login shell", () => {
+    // Defensive: a stale/blank override must not spawn an empty command.
+    expect(
+      cmdForOpenSession({ agent: "shell", shellCmd: [] }, "/bin/zsh"),
+    ).toEqual(["/bin/zsh", "-l"]);
+  });
+
   test("brand-new claude column with neither sid nor preassignedSessionId spawns bare `claude`", () => {
     // Defensive fallback — in normal flow openNewAgentSession always
     // preassigns a UUID, but if some persisted entry predates that

@@ -128,6 +128,7 @@ import { NotesStore, type AttachmentKind, type LinkTarget } from "./notes";
 import {
   stripThinkingArtifacts,
   defaultLoginShell,
+  availableShells,
   URL_RE,
   urlPriority,
   sanitiseMachineId,
@@ -1997,6 +1998,15 @@ const server = Bun.serve<TermWsData, never>({
         return json(defaultLoginShell());
       }
 
+      // Every interactive shell this box can spawn for a plain terminal
+      // column. On Windows that's PowerShell + CMD as separate picker
+      // entries; on POSIX a single login shell. Daemon-routed, so a remote
+      // row's picker lists the REMOTE box's shells (a Windows box reached
+      // over SSH offers PowerShell, whose history works where cmd's doesn't).
+      if (url.pathname === "/api/shells/available") {
+        return json({ shells: availableShells() });
+      }
+
       // Diagnostics: snapshot of the /api/session cache. Shows entries,
       // bounds, per-entry sizes, total bytes held. Used to find out where
       // heapUsed is actually going when the totals don't match the cache cap.
@@ -2159,6 +2169,12 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/shell-default",
               description:
                 "the user's default login shell ($SHELL, falling back to /bin/zsh). Used by the new-session picker's 'Terminal' entry.",
+            },
+            {
+              method: "GET",
+              path: "/api/shells/available",
+              description:
+                "every interactive shell this box can spawn (Windows: PowerShell + CMD; POSIX: the login shell). Drives the new-session picker's per-shell entries.",
             },
             {
               method: "GET",

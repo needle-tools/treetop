@@ -442,6 +442,7 @@ export function cmdForOpenSession(
     contextFilePath?: string;
     claudeModel?: string;
     claudeEffort?: string;
+    shellCmd?: string[];
   },
   defaultShell: string,
   defaultShellArgs: string[] = ["-l"],
@@ -449,7 +450,12 @@ export function cmdForOpenSession(
   // Shell path + flags come from the daemon via /api/shell-default
   // (defaultLoginShell()). The daemon resolves $SHELL / COMSPEC with
   // platform-appropriate flags so the UI doesn't duplicate that logic.
-  if (s.agent === "shell") return [defaultShell, ...defaultShellArgs];
+  // A `shellCmd` override wins when the picker offered >1 shell (Windows:
+  // PowerShell vs CMD) and the user clicked a specific one.
+  if (s.agent === "shell") {
+    if (s.shellCmd && s.shellCmd.length > 0) return [...s.shellCmd];
+    return [defaultShell, ...defaultShellArgs];
+  }
   const sid = s.resumeSessionId;
   if (s.agent === "claude") {
     // Model/effort flags apply to both the fresh-spawn and resume paths

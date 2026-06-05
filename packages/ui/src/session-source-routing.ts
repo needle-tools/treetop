@@ -54,6 +54,10 @@ export interface OpenSession {
   ollamaModel?: string;
   contextFilePath?: string;
   attachTermId?: string;
+  /** Explicit shell command for a plain terminal column, stamped by the
+   *  new-session picker when the box offers >1 shell (Windows: PowerShell
+   *  vs CMD). Overrides the daemon's default shell in cmdForOpenSession. */
+  shellCmd?: string[];
 }
 
 export interface Worktree {

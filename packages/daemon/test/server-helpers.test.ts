@@ -8,6 +8,7 @@ import { test, expect, describe } from "bun:test";
 import {
   stripThinkingArtifacts,
   defaultLoginShell,
+  availableShells,
   URL_RE,
   urlPriority,
   sanitiseMachineId,
@@ -183,6 +184,61 @@ describe("defaultLoginShell", () => {
     withCleanShellEnv(() => {
       const result = defaultLoginShell({ platform: "linux", exists: () => false });
       expect(result.shell).toBe("/bin/sh");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// availableShells
+// ---------------------------------------------------------------------------
+describe("availableShells", () => {
+  // defaultLoginShell (used by the POSIX branch) reads process.env directly,
+  // so clear SHELL/COMSPEC to pin the fallback regardless of the test host.
+  function withCleanShellEnv<T>(fn: () => T): T {
+    const sh = process.env.SHELL;
+    const cs = process.env.COMSPEC;
+    delete process.env.SHELL;
+    delete process.env.COMSPEC;
+    try {
+      return fn();
+    } finally {
+      if (sh === undefined) delete process.env.SHELL;
+      else process.env.SHELL = sh;
+      if (cs === undefined) delete process.env.COMSPEC;
+      else process.env.COMSPEC = cs;
+    }
+  }
+
+  test("windows → PowerShell first (fixes SSH arrow-key history), then CMD", () => {
+    // PowerShell leads because its PSReadLine line editor gives working
+    // arrow-up history over SSH, where cmd.exe behind a ConPTY pipe just
+    // echoes ^[[A. Both ship with every Windows install, so both always show.
+    const shells = availableShells({
+      platform: "win32",
+      env: { COMSPEC: "C:\\Windows\\System32\\cmd.exe" },
+    });
+    expect(shells).toEqual([
+      { shell: "powershell.exe", args: ["-NoLogo"], label: "PowerShell" },
+      { shell: "C:\\Windows\\System32\\cmd.exe", args: [], label: "CMD" },
+    ]);
+  });
+
+  test("windows without COMSPEC → CMD falls back to bare cmd.exe (PATH-resolved)", () => {
+    const shells = availableShells({ platform: "win32", env: {} });
+    expect(shells[1]).toEqual({ shell: "cmd.exe", args: [], label: "CMD" });
+  });
+
+  test("posix → a single 'Terminal' entry mirroring the default login shell", () => {
+    // One shell on POSIX → the picker shows today's single Terminal entry,
+    // so Mac/Linux behaviour is unchanged.
+    withCleanShellEnv(() => {
+      const shells = availableShells({
+        platform: "linux",
+        exists: (p) => p === "/bin/bash",
+      });
+      expect(shells).toEqual([
+        { shell: "/bin/bash", args: ["-l"], label: "Terminal" },
+      ]);
     });
   });
 });

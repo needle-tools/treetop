@@ -65,6 +65,38 @@ export function defaultLoginShell(deps?: {
   return { shell, args: ["-l"] };
 }
 
+export interface ShellOption {
+  shell: string;
+  args: string[];
+  label: string;
+}
+
+/** The interactive shells a user can pick for a plain terminal column on THIS
+ *  box. On Windows we surface BOTH PowerShell and CMD (both ship with every
+ *  install), so the new-session picker offers each as its own entry —
+ *  PowerShell first, because its PSReadLine line editor gives working
+ *  arrow-key history over SSH, whereas cmd.exe behind a ConPTY pipe has no
+ *  console line editor and just echoes the raw `^[[A`. On POSIX there's a
+ *  single login shell, so we return one entry and the picker shows today's
+ *  single "Terminal". Env is injected so the choice is unit-testable. */
+export function availableShells(deps?: {
+  exists?: (p: string) => boolean;
+  platform?: NodeJS.Platform;
+  env?: Record<string, string | undefined>;
+}): ShellOption[] {
+  const platform = deps?.platform ?? process.platform;
+  const env = deps?.env ?? process.env;
+  if (platform === "win32") {
+    const cmd = env.COMSPEC || "cmd.exe";
+    return [
+      { shell: "powershell.exe", args: ["-NoLogo"], label: "PowerShell" },
+      { shell: cmd, args: [], label: "CMD" },
+    ];
+  }
+  const def = defaultLoginShell({ exists: deps?.exists, platform });
+  return [{ shell: def.shell, args: def.args, label: "Terminal" }];
+}
+
 export const URL_RE =
   /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d{2,5}[^\s'")}\]>]*/g;
 
