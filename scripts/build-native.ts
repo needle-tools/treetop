@@ -17,7 +17,7 @@
  */
 
 import { $ } from "bun";
-import { resolve, join } from "node:path";
+import { resolve, join, relative } from "node:path";
 import { rm, mkdir, cp, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { installPayloadPathspec } from "../packages/daemon/src/provision";
@@ -89,13 +89,20 @@ const payloadTar = join(FLAT, "_install-payload.tar");
 await mkdir(payloadDir, { recursive: true });
 try {
   // Archive to a FILE then extract — no shell pipe (Bun's `$` pipe + a bare
-  // `tar -x` reading stdin is flaky on Windows) and an explicit `-f`.
-  // installPayloadPathspec() drops the lone symlink (Windows `tar` can't
-  // create it) + internal docs / AI-agent rules the box doesn't need — same
-  // exclusions the dev ship uses. git archive HEAD = tracked tree only (no
-  // node_modules / build / dist).
-  await $`git -C ${ROOT} archive --format=tar -o ${payloadTar} HEAD -- ${installPayloadPathspec()}`.quiet();
-  await $`tar -x -f ${payloadTar} -C ${payloadDir}`.quiet();
+  // `tar -x` reading stdin is flaky on Windows). installPayloadPathspec()
+  // drops the lone symlink (Windows `tar` can't create it) + internal docs /
+  // AI-agent rules the box doesn't need. git archive HEAD = tracked tree only.
+  //
+  // CRITICAL (Windows): pass tar RELATIVE, forward-slash paths — never an
+  // absolute "C:\…". GNU tar (Git Bash) reads a leading "C:" as a remote host
+  // ("tar: Cannot connect to C: resolve failed") and the whole step silently
+  // failed, shipping an EMPTY install-payload → the app reports mode "none".
+  // git runs from the repo root (default cwd) so the `.` pathspec is correct.
+  const rel = (p: string) => relative(ROOT, p).split("\\").join("/");
+  const tarRel = rel(payloadTar);
+  const dirRel = rel(payloadDir);
+  await $`git archive --format=tar -o ${tarRel} HEAD -- ${installPayloadPathspec()}`.quiet();
+  await $`tar -x -f ${tarRel} -C ${dirRel}`.quiet();
   if (
     !existsSync(join(payloadDir, "deploy", "install.sh")) ||
     !existsSync(join(payloadDir, "packages", "daemon", "src", "server.ts"))
