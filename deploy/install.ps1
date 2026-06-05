@@ -331,11 +331,14 @@ $Principal = New-ScheduledTaskPrincipal `
   -LogonType ServiceAccount `
   -RunLevel Highest
 
-# Settings: restart on failure (mirrors systemd Restart=on-failure + RestartSec=2).
+# Settings: restart on failure (mirrors systemd Restart=on-failure). NOTE:
+# Task Scheduler's RestartInterval minimum is 1 MINUTE - anything smaller
+# (e.g. 2s) makes Register-ScheduledTask fail with "value out of range"
+# (0x80041318, Interval:PT2S). So this is 1 min, not systemd's RestartSec=2.
 $Settings = New-ScheduledTaskSettingsSet `
   -StartWhenAvailable `
   -RestartCount 5 `
-  -RestartInterval (New-TimeSpan -Seconds 2) `
+  -RestartInterval (New-TimeSpan -Minutes 1) `
   -ExecutionTimeLimit ([TimeSpan]::Zero)   # no timeout - daemon runs forever
 
 Err "registering Scheduled Task '$TASK_NAME'..."
