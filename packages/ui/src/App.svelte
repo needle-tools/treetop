@@ -4486,6 +4486,56 @@
     return removed;
   }
 
+  /** Uninstall the daemon ON the box: SSH in as admin (root) and run the
+   *  uninstaller, then drop it locally. The registry call is always local
+   *  (not daemon-routed). Returns true when the box was uninstalled. */
+  async function uninstallDaemonOnBox(daemonId: string): Promise<boolean> {
+    const label = daemonLabelForRepo(daemonId) || daemonId;
+    const ok = await confirmDialog({
+      title: `Uninstall "${label}" on the box?`,
+      message:
+        "This SSHes into the box as root and runs the supergit uninstaller " +
+        "(stops + removes the daemon service), then removes it from this " +
+        "window. Your repos on the box are left untouched.",
+      confirmLabel: "Uninstall on box",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return false;
+    daemonRemoving = new Set(daemonRemoving).add(daemonId);
+    try {
+      const res = await fetch(apiUrl(`/api/daemons/${daemonId}/uninstall`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: "root" }),
+      });
+      const j = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        output?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !j?.ok) {
+        throw new Error(j?.error || `uninstall failed (${res.status})`);
+      }
+      await load();
+      addToast({
+        kind: "success",
+        message: `Uninstalled the daemon on "${label}".`,
+      });
+      return true;
+    } catch (e) {
+      addToast({
+        kind: "error",
+        message: `Uninstall failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return false;
+    } finally {
+      const next = new Set(daemonRemoving);
+      next.delete(daemonId);
+      daemonRemoving = next;
+    }
+  }
+
   /** Close the manage-daemon dialog and scroll the dashboard to a repo's
    *  row (rows carry data-repo-id). Two ticks so the dialog has unmounted
    *  and layout settled before scrollIntoView reads geometry. */
@@ -9556,6 +9606,11 @@
     const id = daemonDialogId;
     if (!id) return;
     if (await removeDaemon(id)) daemonDialogId = null;
+  }}
+  onUninstall={async () => {
+    const id = daemonDialogId;
+    if (!id) return;
+    if (await uninstallDaemonOnBox(id)) daemonDialogId = null;
   }}
   onFocus={(r) => void focusRepoRow(r.id)}
   onClose={() => (daemonDialogId = null)}

@@ -182,6 +182,7 @@ import { writePrivateKey } from "./write-private-key";
 import { resolveInstallPayload } from "./install-payload";
 import { ProvisionManager } from "./provision-manager";
 import { makeProvisionSpawner } from "./provision-spawn";
+import { buildProvisionPlan } from "./provision";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -7559,6 +7560,83 @@ const server = Bun.serve<TermWsData, never>({
             return json({ error: "unknown provision job" }, { status: 404 });
           }
           return json(job);
+        }
+      }
+
+      {
+        // Uninstall the daemon ON the box: SSH in as admin (the stored tunnel
+        // key is forward-only and can't run commands), run the OS installer's
+        // uninstall flag, then unregister locally. No ship — the code is
+        // already on the box. Must precede the generic /api/daemons/<id> proxy.
+        const uninstallM = url.pathname.match(
+          /^\/api\/daemons\/([^/]+)\/uninstall$/,
+        );
+        if (uninstallM && req.method === "POST") {
+          const id = uninstallM[1]!;
+          const daemons = await workspace.listRemoteDaemons();
+          const daemon = daemons.find((d) => d.id === id);
+          if (!daemon) {
+            return json({ error: "remote daemon not found" }, { status: 404 });
+          }
+          const sshBin = Bun.which("ssh");
+          if (!sshBin) {
+            return json({ error: "ssh is not on PATH" }, { status: 400 });
+          }
+          const body = (await req.json().catch(() => null)) as Record<
+            string,
+            unknown
+          > | null;
+          const adminUser =
+            body && typeof body.user === "string" && body.user.trim()
+              ? body.user.trim()
+              : "root";
+          const sshPort =
+            body && typeof body.sshPort === "number"
+              ? body.sshPort
+              : daemon.sshPort;
+          const isWin = (daemon as { os?: string }).os === "windows";
+          const plan = buildProvisionPlan({
+            host: daemon.host,
+            user: adminUser,
+            sshPort: typeof sshPort === "number" ? sshPort : undefined,
+            os: isWin ? "windows" : undefined,
+            installArgs: isWin ? ["-Uninstall"] : ["--uninstall"],
+          });
+          // Capture, don't stream — uninstall is quick. Drop the run step's
+          // `-tt` (no pty needed when we're not streaming to a terminal).
+          const sshArgs = plan.run.ssh.filter((a) => a !== "-tt");
+          const proc = Bun.spawn([sshBin, ...sshArgs], {
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const killer = setTimeout(() => {
+            try {
+              proc.kill();
+            } catch {
+              /* gone */
+            }
+          }, 90_000);
+          const out = await new Response(proc.stdout).text();
+          const err = await new Response(proc.stderr).text();
+          const code = await proc.exited;
+          clearTimeout(killer);
+          const output = (out + err).trim();
+          if (code !== 0) {
+            return json(
+              {
+                ok: false,
+                output,
+                error: `the uninstaller exited with code ${code}`,
+              },
+              { status: 400 },
+            );
+          }
+          // Box uninstalled → tear down the tunnel + forget it locally.
+          await tunnelManager.close(id);
+          await workspace.removeRemoteDaemon(id);
+          broadcast("change", { kind: "remote_daemon_remove", id });
+          return json({ ok: true, output });
         }
       }
 

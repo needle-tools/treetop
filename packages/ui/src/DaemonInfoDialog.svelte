@@ -21,6 +21,9 @@
   export let online: boolean | undefined = undefined;
   /** Run the (double-confirmed) removal. May be async. */
   export let onRemove: () => void | Promise<void> = () => {};
+  /** Uninstall the daemon ON the box (stop+remove the service over SSH), then
+   *  remove it here. Distinct from onRemove, which only forgets it locally. */
+  export let onUninstall: () => void | Promise<void> = () => {};
   /** Scroll the dashboard to a folder's row (and close this dialog). */
   export let onFocus: (repo: { id: string }) => void = () => {};
   export let onClose: () => void = () => {};
@@ -38,6 +41,16 @@
     busy = true;
     try {
       await onRemove();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function uninstall(): Promise<void> {
+    if (busy) return;
+    busy = true;
+    try {
+      await onUninstall();
     } finally {
       busy = false;
     }
@@ -107,6 +120,14 @@
 
       <div class="dd-actions">
         <button class="dd-cancel" on:click={close} disabled={busy}>Close</button>
+        <button
+          class="dd-uninstall"
+          on:click={uninstall}
+          disabled={busy}
+          title="SSH in and run the uninstaller on the box, then remove it here"
+        >
+          Uninstall on box
+        </button>
         <button class="dd-remove" on:click={remove} disabled={busy}>
           Remove daemon
         </button>
@@ -235,9 +256,13 @@
   }
   .dd-actions {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 0.5rem;
     margin-top: 0.5rem;
+  }
+  /* Close stays on the left; the two destructive actions group on the right. */
+  .dd-cancel {
+    margin-right: auto;
   }
   .dd-actions button {
     font: inherit;
@@ -267,5 +292,15 @@
   .dd-remove:hover:not(:disabled) {
     background: color-mix(in srgb, var(--error) 28%, transparent);
     border-color: color-mix(in srgb, var(--error) 70%, transparent);
+  }
+  /* Uninstall touches the box — danger, but outlined (an extra, deliberate
+     step) so it reads distinct from the local-only Remove. */
+  .dd-uninstall {
+    border: 1px solid color-mix(in srgb, var(--error) 45%, transparent);
+    background: transparent;
+    color: var(--error-text, var(--error));
+  }
+  .dd-uninstall:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 14%, transparent);
   }
 </style>
