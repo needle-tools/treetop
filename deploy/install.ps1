@@ -397,12 +397,15 @@ if (-not (Test-Path $KEY_PATH)) {
   #              and the authorized_keys restrict options; a passphrase would
   #              prevent unattended tunnel setup).
   # -C supergit-tunnel : comment so the key is identifiable in authorized_keys.
-  # On Windows, ssh-keygen interprets -N "" as an empty passphrase when the
-  # empty string is passed as a genuine empty argument. We use a stop-parsing
-  # token (--%) to pass the arguments verbatim to the native binary, bypassing
-  # PowerShell's own quoting expansion. Alternatively: pipe a blank line.
-  # The --% approach is reliable across all recent Windows OpenSSH builds.
-  & ssh-keygen --% -t ed25519 -N "" -C supergit-tunnel -f "$KEY_PATH"
+  # Empty passphrase is the tricky part on Windows PowerShell 5.1:
+  #   - `-N ""` directly: PS 5.1 drops empty-string args to native commands.
+  #   - `--% -N "" ... -f "$KEY_PATH"`: the stop-parsing token passes EVERYTHING
+  #     literally, so $KEY_PATH is NOT expanded and the key lands in a file
+  #     literally named "$KEY_PATH" (then Get-Content "$KEY_PATH.pub" fails).
+  # Route through cmd /c with the path expanded by PowerShell FIRST: cmd treats
+  # -N "" as a genuine empty passphrase, and "$KEY_PATH" is a normal expanded
+  # PowerShell string. (`-q` keeps ssh-keygen quiet.)
+  cmd /c "ssh-keygen -q -t ed25519 -N `"`" -C supergit-tunnel -f `"$KEY_PATH`""
   # On Windows, ssh-keygen may leave the private key with inherited ACLs.
   # Lock it down immediately.
   icacls $KEY_PATH /inheritance:r /grant:r "${env:USERNAME}:(F)" | Out-Null
