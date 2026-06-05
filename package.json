@@ -14,6 +14,7 @@
     "test:watch": "bun test --watch packages/",
     "test:coverage": "bun test --coverage packages/",
     "test:two-daemon": "SUPERGIT_TWO_DAEMON_TESTS=1 bun test packages/daemon/test/two-daemon-e2e.test.ts",
+    "test:provision-docker": "SUPERGIT_DOCKER_TESTS=1 bun test packages/daemon/test/provision-docker-e2e.test.ts",
     "format": "prettier --write \"packages/**/*.{js,ts,svelte,css,json}\" \"*.ts\"",
     "format:check": "prettier --check \"packages/**/*.{js,ts,svelte,css,json}\" \"*.ts\"",
     "build": "bun run scripts/patch-launcher.ts && bun run build:native && electrobun build --env=stable && bun run scripts/build-summary.ts",
