@@ -2509,7 +2509,12 @@
   }
 
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
-    play("session-close");
+    // X-ing a column with a live PTY (resolveTermId returns a termId
+    // for `__new__:` and `__attached__:` sources) feels like
+    // "stopping" the session to the user — play the stop sound. The
+    // swoosh stays for read-only transcript columns and other
+    // already-dead sessions.
+    play(resolveTermId(s, newTermIds) ? "session-stop" : "session-close");
     dismissIfShell(s);
     for (const [linkId, entry] of commandTermSources) {
       if (entry.source === s.source) {
