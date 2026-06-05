@@ -43,6 +43,7 @@ export type SoundTag =
   | "git-pull"
   | "daemon-connect-fail"
   | "daemon-connect-ok"
+  | "daemon-connect-waiting"
   | "app-startup";
 
 export type SoundTrigger = "click" | "hover" | "appear";
@@ -353,6 +354,17 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     volume: 0.5,
     overlay: true,
     selfCooldown: 2000,
+  },
+  // Dark mysterious pulse — plays while provisioning is in flight
+  // (waiting for the remote daemon to come up). 60s selfCooldown so
+  // long provisions don't trigger a continuous re-fire; the success
+  // / fail chime fades this out via the overlay system's fadeOutMs.
+  "daemon-connect-waiting": {
+    files: ["/sounds/daemon-connect-waiting.ogg"],
+    volume: 0.35,
+    overlay: true,
+    selfCooldown: 60_000,
+    fadeOutMs: 800,
   },
   // Bongo stinger — one-shot app-load chime fired by
   // playOnFirstGesture() on the first user gesture after page load.

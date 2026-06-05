@@ -156,6 +156,9 @@
       if (/payload|unavailable|paste/i.test(provError)) showOther = true;
       return;
     }
+    // Job accepted — start the mysterious waiting cue. The success
+    // / fail chime overlays on top and fades this out via fadeOutMs.
+    play("daemon-connect-waiting");
     provUnsub = provision.stream(provJobId, {
       onOutput: (chunk) => void appendLog(chunk),
       onStatus: (status, info) => {
