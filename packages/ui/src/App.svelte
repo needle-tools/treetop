@@ -4533,6 +4533,7 @@
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await load();
       removed = true;
+      play("daemon-remove");
     } catch (e) {
       // Roll back the optimistic removal so the daemon doesn't vanish on a
       // failed delete.

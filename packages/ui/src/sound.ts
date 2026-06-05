@@ -44,6 +44,7 @@ export type SoundTag =
   | "daemon-connect-fail"
   | "daemon-connect-ok"
   | "daemon-connect-waiting"
+  | "daemon-remove"
   | "app-startup";
 
 export type SoundTrigger = "click" | "hover" | "appear";
@@ -365,6 +366,14 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 800,
+  },
+  // Short percussion accent — daemon removed locally OR uninstalled
+  // on the remote box.
+  "daemon-remove": {
+    files: ["/sounds/daemon-remove.ogg"],
+    volume: 0.5,
+    overlay: true,
+    selfCooldown: 2000,
   },
   // Bongo stinger — one-shot app-load chime fired by
   // playOnFirstGesture() on the first user gesture after page load.

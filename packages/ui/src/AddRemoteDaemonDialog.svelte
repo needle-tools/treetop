@@ -156,7 +156,8 @@
         provStatus = status;
         if (info.error) provError = info.error;
         if (status === "error") play("daemon-connect-fail");
-        else if (status === "done") play("daemon-connect-ok");
+        else if (status === "done")
+          play(jobMode === "uninstall" ? "daemon-remove" : "daemon-connect-ok");
         if (
           (status === "done" || status === "error" || status === "aborted") &&
           !doneFired
