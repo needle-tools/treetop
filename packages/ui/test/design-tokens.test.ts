@@ -194,6 +194,8 @@ const COMPONENT_LOCAL_VARS: ReadonlySet<string> = new Set([
   "--repo-bg", // worktree-row.css: per-repo accent color set inline
   "--repo-fg", // worktree-row.css: per-repo foreground color set inline
   "--command-accent", // notes.css: idle/running accent for command-power-card
+  "--warm-glow-soft", // header.css: glow colour pre-resolved on .actions-btn.warm (composited warm-glow)
+  "--warm-glow-core", // header.css: glow colour pre-resolved on .actions-btn.warm (composited warm-glow)
 ]);
 
 /**

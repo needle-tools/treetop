@@ -419,3 +419,43 @@ unconditional `inflight` reassignment (folds in much of Lever 3 for free).
 4. **Fix the forced reflow** — in the scroll-stick path read `scrollHeight`
    *before* the DOM write, or only when `shouldStick` actually changed, to
    drop the 109 forced layouts.
+
+### Renderer CPU round 2: color-mix-in-keyframes style-recalc storm (DONE)
+
+After Lever 1 the network/script storm was gone (165→17 req, 1601→51 ms
+script, 758→7.5 ms microtasks) — but a second capture still showed the
+renderer at **~28 % CPU** (the recording's own samples; the earlier 55 %
+was the pre-Lever-1 snapshot) with **style recalc as the entire cost: 939
+ms / 771 events, perfectly continuous at ~2/frame, ~1.9 ms each**, paint
+≈ 0, script ≈ 0.
+
+Cause: always-on `infinite` animations that **interpolate a `box-shadow`
+value containing `color-mix(… var(--…) …)`**. WebKit re-resolves the
+`color-mix(var())` every frame and bills it to **style recalculation**
+(hence huge recalc, ~0 paint). Each awaiting session/column/dot running
+one = 1 recalc/frame; it scales with how many agents sit "awaiting input."
+(NOT a minification/bundling issue — recalc cost is runtime invalidation,
+independent of how the CSS is compiled.)
+
+Where `awaiting-input` comes from: the PTY emits `{type:"state",
+awaitingInput:true}` when an agent is parked at its prompt →
+`SessionView.svelte:1515` (terminal column), `NewSessionCol.svelte:249`
+(new column), and per-session **dock dots** (`dot-awaiting` →
+`dot-awaiting-urgent`). So the cost tracks "how many agents are done and
+waiting on you."
+
+Fix — make the pulses **composited**: animate `opacity` (and `transform`)
+instead of an interpolated `color-mix` box-shadow. The glow colour is
+resolved **once** into a static value; opacity/transform run on the
+compositor with no per-frame recalc.
+- `.session.awaiting-input` / `.new-session-col.awaiting-input`: glow moved
+  to an `::after` (inset, since both are `overflow:hidden`) whose opacity
+  pulses.
+- dock `dot-awaiting`/`-urgent`: keep the composited `transform: scale`,
+  move the halo to an `::after` static ring with opacity pulse.
+- `warm-glow` (single conditional button): `color-mix` hoisted into static
+  `--warm-glow-*` custom props so the keyframe stops re-resolving it.
+- `status-badge-ahead-blink` left as-is — animates `background` between two
+  *solid* colours (no `color-mix`), its `::before`/`::after` are taken by
+  edge-streaks, and it's a conditional opt-in badge; low value, would need a
+  restructure. Recorded here if it ever shows up in a capture.

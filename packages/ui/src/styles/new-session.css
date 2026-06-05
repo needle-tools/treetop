@@ -16,20 +16,35 @@
   border-radius: var(--radius-md);
   background: var(--surface-1);
   overflow: hidden;
+  /* Containing block for the awaiting-input pulse pseudo-element below. */
+  position: relative;
 }
 
 .new-session-col.awaiting-input {
   border-color: var(--status-dirty);
+}
+/* Composited attention pulse — opacity of a pseudo-element carrying a
+   STATIC inset glow, instead of animating box-shadow with an interpolated
+   color-mix(var()) (which bills per-frame to style recalc). Mirrors
+   .session.awaiting-input in SessionView.svelte. Inset because
+   .new-session-col is overflow:hidden. See plans/performance.md. */
+.new-session-col.awaiting-input::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 8px 2px
+    color-mix(in srgb, var(--status-dirty) 45%, transparent);
   animation: awaiting-pulse 1.8s ease-in-out infinite;
 }
 @keyframes awaiting-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-dirty) 0%, transparent);
+    opacity: 0;
   }
   50% {
-    box-shadow: 0 0 0 4px
-      color-mix(in srgb, var(--status-dirty) 25%, transparent);
+    opacity: 1;
   }
 }
 

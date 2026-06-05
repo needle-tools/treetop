@@ -2048,17 +2048,32 @@
      transient TUI columns. */
   .session.awaiting-input {
     border-color: var(--status-dirty);
+  }
+  /* Composited attention pulse. The old version animated box-shadow with
+     an interpolated color-mix(var()), which WebKit re-resolves EVERY frame
+     as a style recalc over the whole column subtree (~1.9ms each, ~2/frame
+     across awaiting columns — see plans/performance.md). Here we animate
+     only the OPACITY of a pseudo-element holding a STATIC inset glow
+     (color-mix resolved once): opacity is GPU-composited, so no per-frame
+     recalc/layout/paint. Inset (not an outer ring) because .session is
+     overflow:hidden and would clip an outer ::after. */
+  .session.awaiting-input::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: inset 0 0 8px 2px
+      color-mix(in srgb, var(--status-dirty) 45%, transparent);
     animation: session-awaiting-pulse 1.8s ease-in-out infinite;
   }
   @keyframes session-awaiting-pulse {
     0%,
     100% {
-      box-shadow: 0 0 0 0
-        color-mix(in srgb, var(--status-dirty) 0%, transparent);
+      opacity: 0;
     }
     50% {
-      box-shadow: 0 0 0 4px
-        color-mix(in srgb, var(--status-dirty) 25%, transparent);
+      opacity: 1;
     }
   }
   /* When this column goes fullscreen, drop the rounded border + fill
@@ -2079,17 +2094,6 @@
     max-height: none;
     min-height: 0;
     flex: 1 1 0;
-  }
-  @keyframes session-awaiting-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0
-        color-mix(in srgb, var(--status-dirty) 0%, transparent);
-    }
-    50% {
-      box-shadow: 0 0 0 4px
-        color-mix(in srgb, var(--status-dirty) 25%, transparent);
-    }
   }
   /* The head-stack hosts the header + the absolutely-positioned pin.
      `z-index: 2` lifts its entire compositing layer above the TUI

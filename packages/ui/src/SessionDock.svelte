@@ -1794,6 +1794,12 @@
 
   /* Awaiting (mild): gentle pulse for the first 20s — the user
      probably noticed but hasn't acted yet. */
+  /* Composited: the dot scales (transform only — GPU), and the halo is a
+     pseudo-element whose OPACITY pulses over a STATIC ring. The old version
+     interpolated a box-shadow color-mix(var()) which WebKit re-resolves
+     every frame as a style recalc (~2/frame across awaiting dots — see
+     plans/performance.md). ::before is taken by the working ring, so the
+     halo uses ::after. */
   .dock-dot.dot-awaiting .dock-dot-inner {
     animation: dock-awaiting 1.1s ease-in-out infinite;
   }
@@ -1801,12 +1807,19 @@
     0%,
     100% {
       transform: scale(1);
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
     }
     50% {
       transform: scale(1.35);
-      box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-fill) 0%, transparent);
     }
+  }
+  .dock-dot.dot-awaiting .dock-dot-inner::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
+    animation: dock-awaiting-halo 1.1s ease-in-out infinite;
   }
   /* Awaiting (urgent): after 20s without user action, escalate —
      bigger scale, faster cadence, stronger glow so the dot is
@@ -1818,17 +1831,36 @@
     0%,
     100% {
       transform: scale(1);
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-fill) 40%, #fff 60%);
     }
     50% {
       transform: scale(1.5);
-      box-shadow: 0 0 0 6px color-mix(in oklch, var(--dot-fill) 0%, transparent);
+    }
+  }
+  .dock-dot.dot-awaiting-urgent .dock-dot-inner::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-fill) 40%, #fff 60%);
+    animation: dock-awaiting-halo 0.7s ease-in-out infinite;
+  }
+  /* Shared halo: fade a static ring in/out — composited opacity only. */
+  @keyframes dock-awaiting-halo {
+    0%,
+    100% {
+      opacity: 0;
+    }
+    50% {
+      opacity: 0.85;
     }
   }
   @media (prefers-reduced-motion: reduce) {
     .dock-dot-spinner,
     .dock-dot.dot-awaiting .dock-dot-inner,
-    .dock-dot.dot-awaiting-urgent .dock-dot-inner {
+    .dock-dot.dot-awaiting-urgent .dock-dot-inner,
+    .dock-dot.dot-awaiting .dock-dot-inner::after,
+    .dock-dot.dot-awaiting-urgent .dock-dot-inner::after {
       animation: none;
     }
   }
