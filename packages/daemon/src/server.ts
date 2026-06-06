@@ -359,6 +359,9 @@ const PROXY_TIME_TO_HEADERS_MS =
 
 const tunnelManager = new TunnelManager({
   direct: process.env.SUPERGIT_TUNNEL_DIRECT === "1",
+  // How long to wait for the ssh -L listener to bind. Windows cold-connects
+  // routinely need >8s; override per-box with SUPERGIT_TUNNEL_READY_MS.
+  readyTimeoutMs: Number(process.env.SUPERGIT_TUNNEL_READY_MS) || undefined,
   // Breadcrumbs to daemon.log so "the remote went offline after my laptop
   // slept" is diagnosable — the ssh exits on wake, the next request reopens.
   log: (msg) => console.log(`supergit daemon: ${msg}`),

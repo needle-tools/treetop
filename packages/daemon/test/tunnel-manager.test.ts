@@ -154,6 +154,64 @@ describe("TunnelManager", () => {
     expect(spawned).toHaveLength(1); // not re-spawned
   });
 
+  // A proc whose stderr carries `text`, for exercising the failure-diagnosis
+  // path (readStderr). kill() resolves exited so open()'s teardown completes.
+  function procWithStderr(text: string) {
+    let resolveExit: (n: number) => void;
+    const exited = new Promise<number>((r) => (resolveExit = r));
+    return {
+      pid: 99,
+      kill() {
+        resolveExit(143);
+      },
+      exited,
+      stderr: new Response(text).body!,
+    };
+  }
+
+  function failingMgr(proc: { stderr: ReadableStream<Uint8Array> }) {
+    return new TunnelManager({
+      spawn: () => proc as never,
+      allocatePort: async () => 7801,
+      waitForPort: async () => false, // listener never comes up
+      readyTimeoutMs: 50,
+    });
+  }
+
+  test("open() failure drops the post-quantum advisory from ssh stderr", async () => {
+    // Newer ssh prints this benign banner against an older server; it must NOT
+    // become the failure reason. A real "Permission denied" alongside it MUST.
+    const proc = procWithStderr(
+      "** WARNING: connection is not using a post-quantum key exchange algorithm.\n" +
+        '** This session may be vulnerable to "store now, decrypt later" attacks.\n' +
+        "** The server may need to be upgraded. See https://openssh.com/pq.html\n" +
+        "Permission denied (publickey).\n",
+    );
+    let msg = "";
+    try {
+      await failingMgr(proc).open(daemon());
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    expect(msg).toMatch(/Permission denied/);
+    expect(msg).not.toMatch(/post-quantum|WARNING|store now/);
+  });
+
+  test("stderr that's ONLY the PQ advisory yields no misleading 'ssh said'", async () => {
+    const proc = procWithStderr(
+      "** WARNING: connection is not using a post-quantum key exchange algorithm.\n" +
+        "** The server may need to be upgraded. See https://openssh.com/pq.html\n",
+    );
+    let msg = "";
+    try {
+      await failingMgr(proc).open(daemon());
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    expect(msg).toMatch(/did not come up/);
+    expect(msg).not.toMatch(/ssh said|post-quantum/);
+  });
+
   test("close() kills the ssh process and forgets the tunnel", async () => {
     const { mgr, procs } = mk();
     await mgr.open(daemon());

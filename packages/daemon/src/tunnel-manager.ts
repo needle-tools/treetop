@@ -53,7 +53,10 @@ export interface TunnelManagerOptions {
   allocatePort?: PortAllocator;
   waitForPort?: PortReadyCheck;
   /** How long open() waits for the tunnel's local listener to come up
-   *  before giving up. Default 8000ms. */
+   *  before giving up. Default 15000ms — a Windows box cold-connecting (ssh
+   *  ConnectTimeout=10 + Defender/ConPTY latency + the listener bind) routinely
+   *  needs >8s, and the budget must exceed ConnectTimeout or we'd kill ssh
+   *  mid-connect. Override per-box pressure with SUPERGIT_TUNNEL_READY_MS. */
   readyTimeoutMs?: number;
   /** Test/loopback mode: skip ssh entirely and proxy straight at the
    *  remote daemon's `127.0.0.1:<daemon.port>`. Used by the two-daemon e2e
@@ -172,7 +175,14 @@ async function allocateEphemeralPort(): Promise<number> {
  *  last few non-empty lines (the actionable ones — "Permission denied",
  *  "Host key verification failed", "Connection refused"), trimmed. Never
  *  throws and never blocks: the stream is already closed/closing by the
- *  time we read it on a failed open(). Returns "" when unavailable. */
+ *  time we read it on a failed open(). Returns "" when unavailable.
+ *
+ *  Drops benign banners so they don't masquerade as the failure reason:
+ *  the host-key-added notice, and OpenSSH's post-quantum advisory
+ *  ("** WARNING: connection is not using a post-quantum key exchange…") that
+ *  newer ssh prints when the server is older. The PQ banner means kex
+ *  actually SUCCEEDED, so reporting it as the error sent users chasing a
+ *  non-problem when the real cause was just a slow listener bind. */
 async function readStderr(
   stream: ReadableStream<Uint8Array> | undefined,
 ): Promise<string> {
@@ -182,7 +192,12 @@ async function readStderr(
     const lines = text
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("Warning: Permanently"));
+      .filter(
+        (l) =>
+          l.length > 0 &&
+          !l.startsWith("Warning: Permanently") &&
+          !l.startsWith("**"), // OpenSSH PQ advisory banner — benign
+      );
     return lines.slice(-3).join("; ").slice(0, 300);
   } catch {
     return "";
@@ -204,7 +219,7 @@ export class TunnelManager {
       ((argv) => bunSpawn(["ssh", ...argv], { stdout: "ignore", stderr: "pipe" }));
     this.allocatePort = opts.allocatePort ?? allocateEphemeralPort;
     this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
-    this.readyTimeoutMs = opts.readyTimeoutMs ?? 8000;
+    this.readyTimeoutMs = opts.readyTimeoutMs ?? 15000;
     this.direct = opts.direct ?? false;
     this.log = opts.log ?? (() => {});
   }
