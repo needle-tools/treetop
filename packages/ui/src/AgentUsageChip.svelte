@@ -21,6 +21,7 @@
   import { openUrl } from "./open-url";
   import { getAudioContext, play } from "./sound";
   import { pushToast } from "./toast-bus";
+  import { classifyWeeklyPace } from "./usage-pace";
 
   /** Per-agent + per-condition 8h dedup for usage warnings. The
    *  reactive triggers below fire every time the poll refreshes
@@ -514,6 +515,7 @@
     projectedPct: number;
     isOverPace: boolean;
     isEarly: boolean;
+    isPerfect: boolean;
     label: string;
   }
 
@@ -534,18 +536,15 @@
     const isEarly = elapsed < minReliable;
     const rate = utilization / elapsed;
     const projected = Math.min(rate * windowMs, 2);
-    const isOverPace = projected > 1.0;
-    const pp = Math.round(projected * 100);
     const hoursUntilReliable = Math.ceil((minReliable - elapsed) / 3_600_000);
-    let label: string;
-    if (isEarly) {
-      label = `Projection available in ~${hoursUntilReliable}h (need more data)`;
-    } else if (isOverPace) {
-      label = `On pace to exceed limit (~${pp}%)`;
-    } else {
-      label = `On pace for ~${pp}% — ${Math.round((1 - projected) * 100)}% headroom`;
-    }
-    return { projectedPct: projected, isOverPace, isEarly, label };
+    // Classification (incl. the PERFECT-at-100% case) lives in usage-pace.ts
+    // so it's unit-tested without mounting the component or mocking the clock.
+    const { label, isOverPace, isPerfect } = classifyWeeklyPace(
+      projected,
+      isEarly,
+      hoursUntilReliable,
+    );
+    return { projectedPct: projected, isOverPace, isEarly, isPerfect, label };
   }
 
   /** Compact token formatter — 1,234 → "1.2k", 5,432,100 → "5.4M".
@@ -784,6 +783,7 @@
               class="usage-projection"
               class:over-pace={weekProj.isOverPace}
               class:early={weekProj.isEarly}
+              class:perfect={weekProj.isPerfect}
             >
               <span class="usage-projection-label">{weekProj.label}</span>
               {#if claudeLive.fetchedAt}
@@ -837,6 +837,7 @@
             <div
               class="usage-projection"
               class:over-pace={codexProj.isOverPace}
+              class:perfect={codexProj.isPerfect}
             >
               <span class="usage-projection-label">{codexProj.label}</span>
               {#if codexLive.fetchedAt}
@@ -1276,6 +1277,23 @@
   .usage-projection.early {
     color: var(--text-muted);
     font-style: italic;
+  }
+  /* On pace for exactly 100% — landing right on the weekly limit is the
+     IDEAL outcome (full utilization, zero overage), so celebrate it instead
+     of tinting it red like an overage. Emerald→gold gradient label with a
+     soft glow reads as an achievement, not a warning. */
+  .usage-projection.perfect {
+    font-weight: 700;
+  }
+  .usage-projection.perfect .usage-projection-label {
+    letter-spacing: 0.04em;
+    background: linear-gradient(90deg, #34d399, #fbbf24);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    /* Fallback for any engine without background-clip:text. */
+    color: #34d399;
+    filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.4));
   }
 
   .usage-bar {
