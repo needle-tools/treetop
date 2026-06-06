@@ -26,6 +26,7 @@
   } from "./file-browser-utils";
   import FileTreeNode from "./FileTreeNode.svelte";
   import FilePathBar from "./FilePathBar.svelte";
+  import { getDaemonKV } from "./daemon-kv";
 
   export let open = false;
   /** The connected remote daemons to choose a target from. */
@@ -67,31 +68,100 @@
   /** Token to ignore the response of a superseded load (daemon switch /
    *  rapid navigation) so a slow earlier request can't clobber a newer view. */
   let browseSeq = 0;
+  /** The box's filesystem roots (drive letters on Windows, "/" on POSIX). */
+  let drives: string[] = [];
+  /** Showing the "This PC" drive list (vs a directory's contents). */
+  let atDrives = false;
+
+  // Per-daemon "last browsed folder" — so re-opening "Add folder" on a daemon
+  // returns to where you were (rule 11: daemon prefs, not raw localStorage).
+  // One KV key holds a { daemonId: path } map.
+  const LAST_PATH_KEY = "supergit:addFolder:lastPath";
+  function lastPathMap(): Record<string, string> {
+    try {
+      return JSON.parse(getDaemonKV().getItem(LAST_PATH_KEY) ?? "{}") as Record<
+        string,
+        string
+      >;
+    } catch {
+      return {};
+    }
+  }
+  function saveLastPath(daemonId: string, path: string): void {
+    if (!daemonId) return;
+    const map = lastPathMap();
+    map[daemonId] = path;
+    try {
+      getDaemonKV().setItem(LAST_PATH_KEY, JSON.stringify(map));
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /** A filesystem root (drive letter or "/") — going "up" from here returns to
+   *  the This PC view rather than a nonexistent parent. */
+  function isRoot(p: string): boolean {
+    return p === "/" || /^[A-Za-z]:[\\/]?$/.test(p);
+  }
 
   function onlyDirs(entries: FileEntry[]): FileEntry[] {
     return entries.filter((e) => e.type === "directory");
   }
 
-  /** Load `dir` as the tree root: list its subfolders + select it. */
-  async function loadDir(dir: string): Promise<void> {
+  /** Load `dir` as the tree root: list its subfolders + select it. Returns
+   *  whether it loaded (so a restore of a stale saved path can fall back). */
+  async function loadDir(dir: string): Promise<boolean> {
     const seq = ++browseSeq;
     browseLoading = true;
     browseError = "";
     try {
       const entries = await fetchDir(dir, fields.daemonId);
-      if (seq !== browseSeq) return; // superseded
+      if (seq !== browseSeq) return false; // superseded
+      atDrives = false;
       browseDir = dir;
       fields.path = dir; // navigating into a directory selects it
       selected = new Set([dir]);
       expanded = {};
       rootDirs = onlyDirs(entries);
+      saveLastPath(fields.daemonId, dir); // remember per daemon
+      return true;
     } catch {
-      if (seq !== browseSeq) return;
+      if (seq !== browseSeq) return false;
       browseError = `Couldn't read ${dir}`;
       rootDirs = [];
+      return false;
     } finally {
       if (seq === browseSeq) browseLoading = false;
     }
+  }
+
+  /** Show the box's drives ("This PC"). A single root (POSIX "/" or a lone
+   *  drive) is entered directly rather than shown as a one-item picker. */
+  async function loadDrives(): Promise<void> {
+    if (!fields.daemonId) return;
+    browseError = "";
+    let list: string[] = [];
+    try {
+      const res = await fetch(apiUrl("/api/drives", fields.daemonId));
+      if (res.ok) {
+        list = ((await res.json()) as { drives?: string[] }).drives ?? [];
+      }
+    } catch {
+      browseError = "Couldn't reach the daemon to list drives.";
+      return;
+    }
+    drives = list;
+    if (list.length === 1) {
+      await loadDir(list[0]!);
+      return;
+    }
+    atDrives = true;
+    browseDir = "";
+    rootDirs = [];
+    expanded = {};
+    selected = new Set();
+    fields.path = "";
+    saveLastPath(fields.daemonId, ""); // "" = the This PC view
   }
 
   /** Expand / collapse a folder in place (FileTreeNode's onToggleExpand). */
@@ -128,34 +198,26 @@
   async function startBrowse(): Promise<void> {
     if (!fields.daemonId) return;
     browseError = "";
-    try {
-      const res = await fetch(apiUrl("/api/home", fields.daemonId));
-      if (res.ok) {
-        const home = (await res.json()) as { home?: string };
-        if (home.home) {
-          await loadDir(home.home);
-          return;
-        }
-      }
-    } catch {
-      // fall through
+    atDrives = false;
+    // Restore where we last browsed on THIS daemon, if any. "" means the user
+    // was at the This PC view; a stale/unreadable path falls back to drives.
+    const saved = lastPathMap()[fields.daemonId];
+    if (saved) {
+      if (await loadDir(saved)) return;
     }
-    const sibling = repos.find((r) => r.daemonId === fields.daemonId && r.path);
-    if (sibling) {
-      const parent = splitParent(sibling.path).dir;
-      if (parent) {
-        await loadDir(parent);
-        return;
-      }
-    }
-    rootDirs = [];
-    browseDir = "";
-    browseError = "Type a path above and press Enter to browse.";
+    await loadDrives();
   }
 
   function goUp(): void {
+    if (atDrives) return;
+    // From a filesystem root, "up" is the This PC drive list.
+    if (isRoot(browseDir)) {
+      void loadDrives();
+      return;
+    }
     const { dir } = splitParent(browseDir);
     if (dir && dir !== browseDir) void loadDir(dir);
+    else void loadDrives();
   }
 
   function onPathKeydown(e: KeyboardEvent): void {
@@ -177,10 +239,21 @@
     expanded = {};
     selected = new Set();
     browseError = "";
+    atDrives = false;
+    drives = [];
     wasOpen = true;
+    lastDaemonId = fields.daemonId;
     void startBrowse();
   } else if (!open && wasOpen) {
     wasOpen = false;
+  }
+
+  // Re-browse when the user switches the target daemon (restore THAT daemon's
+  // last path / drives).
+  let lastDaemonId = "";
+  $: if (open && fields.daemonId && fields.daemonId !== lastDaemonId) {
+    lastDaemonId = fields.daemonId;
+    void startBrowse();
   }
 
   $: selectedLabel =
@@ -288,7 +361,7 @@
             type="button"
             class="add-folder-up"
             on:click={goUp}
-            disabled={browseLoading || !browseDir}
+            disabled={browseLoading || atDrives}
             title="Up one level"
             aria-label="Up one level"
           >
@@ -304,7 +377,17 @@
               <path d="M5 12l7-7 7 7" />
             </svg>
           </button>
-          {#if browseDir}
+          <button
+            type="button"
+            class="add-folder-thispc"
+            class:active={atDrives}
+            on:click={() => void loadDrives()}
+            disabled={browseLoading}
+            title="This PC — all drives"
+          >This PC</button>
+          {#if atDrives}
+            <span class="add-folder-cwd add-folder-cwd-empty">This PC</span>
+          {:else if browseDir}
             <span class="add-folder-cwd">
               <FilePathBar path={browseDir} onCrumb={(p) => void loadDir(p)} />
             </span>
@@ -317,6 +400,33 @@
             <div class="add-folder-browser-msg">Loading…</div>
           {:else if browseError}
             <div class="add-folder-browser-msg">{browseError}</div>
+          {:else if atDrives}
+            <ul class="fb-list">
+              {#each drives as d (d)}
+                <li>
+                  <button
+                    type="button"
+                    class="add-folder-drive"
+                    on:click={() => void loadDir(d)}
+                    title={d}
+                  >
+                    <svg
+                      class="add-folder-drive-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <rect x="2" y="6" width="20" height="12" rx="2" />
+                      <circle cx="17.5" cy="12" r="1" />
+                    </svg>
+                    <span>{d}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
           {:else if rootDirs.length === 0}
             <div class="add-folder-browser-msg">No subfolders here.</div>
           {:else}
@@ -475,6 +585,56 @@
   .add-folder-up:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  /* "This PC" jump-to-drives button. */
+  .add-folder-thispc {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--surface-2);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: 0.1rem 0.4rem;
+    line-height: 1.3;
+  }
+  .add-folder-thispc:hover:not(:disabled) {
+    color: var(--text-1);
+    border-color: var(--text-muted);
+  }
+  .add-folder-thispc.active {
+    color: var(--text-1);
+    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  }
+  .add-folder-thispc:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  /* Drive rows in the This PC view. */
+  .add-folder-drive {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    padding: 0.3rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .add-folder-drive:hover {
+    background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  }
+  .add-folder-drive-icon {
+    flex: 0 0 auto;
+    width: 1rem;
+    height: 1rem;
+    color: var(--text-muted);
   }
   /* Holds the FilePathBar breadcrumb; scroll horizontally on long paths
      instead of wrapping or clipping. */

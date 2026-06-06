@@ -181,6 +181,7 @@ import { buildDiagnostics } from "./diagnostics";
 import { decodeConnectionString } from "./connection-string";
 import { writePrivateKey } from "./write-private-key";
 import { resolveInstallPayload } from "./install-payload";
+import { listDrives } from "./drives";
 import { ProvisionManager } from "./provision-manager";
 import { makeProvisionSpawner } from "./provision-spawn";
 import { buildProvisionPlan } from "./provision";
@@ -6966,6 +6967,17 @@ const server = Bun.serve<TermWsData, never>({
         // locally or through the daemon proxy. Per-daemon by nature: the
         // proxied form returns the REMOTE box's home.
         return json({ home: homedir() });
+      }
+
+      if (url.pathname === "/api/drives" && req.method === "GET") {
+        // Filesystem roots for the picker's "This PC" view. Per-daemon by
+        // nature (proxied → the REMOTE box's drives). `platform` lets the UI
+        // label them (drives vs "/") and decide whether to default to the
+        // drive list (Windows) or home (POSIX).
+        return json({
+          drives: listDrives({ exists: existsSync }),
+          platform: process.platform,
+        });
       }
 
       if (url.pathname === "/api/files" && req.method === "GET") {
