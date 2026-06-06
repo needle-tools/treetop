@@ -197,8 +197,15 @@
    *  user type a path. */
   async function startBrowse(): Promise<void> {
     if (!fields.daemonId) return;
+    // Clear stale state up front so a failed restore/listing can never leave
+    // the PREVIOUS daemon's path showing (the bug this fixes).
     browseError = "";
     atDrives = false;
+    browseDir = "";
+    rootDirs = [];
+    expanded = {};
+    selected = new Set();
+    fields.path = "";
     // Restore where we last browsed on THIS daemon, if any. "" means the user
     // was at the This PC view; a stale/unreadable path falls back to drives.
     const saved = lastPathMap()[fields.daemonId];
@@ -242,17 +249,22 @@
     atDrives = false;
     drives = [];
     wasOpen = true;
-    lastDaemonId = fields.daemonId;
+    prevDaemonId = fields.daemonId;
     void startBrowse();
   } else if (!open && wasOpen) {
     wasOpen = false;
   }
 
-  // Re-browse when the user switches the target daemon (restore THAT daemon's
-  // last path / drives).
-  let lastDaemonId = "";
-  $: if (open && fields.daemonId && fields.daemonId !== lastDaemonId) {
-    lastDaemonId = fields.daemonId;
+  // Re-browse when the user switches the target daemon. Driven by a REACTIVE
+  // (runs AFTER bind:value updates fields.daemonId) rather than the select's
+  // on:change, which could fire with the OLD id and load the wrong daemon's
+  // path. Saves the leaving daemon's selected path first, then restores the
+  // target's.
+  let prevDaemonId = "";
+  $: if (open && fields.daemonId && fields.daemonId !== prevDaemonId) {
+    // fields.daemonId already changed; fields.path is still the OLD daemon's.
+    if (prevDaemonId) saveLastPath(prevDaemonId, fields.path);
+    prevDaemonId = fields.daemonId;
     void startBrowse();
   }
 
@@ -322,11 +334,7 @@
       {#if daemons.length > 1}
         <label class="add-folder-field">
           <span>Daemon</span>
-          <select
-            bind:value={fields.daemonId}
-            class:invalid={!!errors.daemonId}
-            on:change={() => void startBrowse()}
-          >
+          <select bind:value={fields.daemonId} class:invalid={!!errors.daemonId}>
             {#each daemons as d (d.id)}
               <option value={d.id}>{d.label} ({d.host}:{d.port})</option>
             {/each}
