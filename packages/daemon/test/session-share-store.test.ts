@@ -314,6 +314,55 @@ describe("acceptOffer", () => {
     expect(await readFile(r2.importedPath, "utf-8")).toBe("second");
   });
 
+  test("mode=merge combines both divergent tails into the default path, deduped", async () => {
+    const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
+    const j1 = [
+      JSON.stringify({ uuid: "u1" }),
+      JSON.stringify({ uuid: "u2" }),
+      JSON.stringify({ uuid: "x1" }),
+    ].join("\n");
+    await storePendingOffer(ws, manifest({ offerId: "o1" }), j1);
+    const first = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o1",
+      repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
+    });
+    if (!first.ok) throw new Error("expected ok");
+
+    const j2 = [
+      JSON.stringify({ uuid: "u1" }),
+      JSON.stringify({ uuid: "u2" }),
+      JSON.stringify({ uuid: "y1" }),
+      JSON.stringify({ uuid: "y2" }),
+    ].join("\n");
+    await storePendingOffer(ws, manifest({ offerId: "o2" }), j2);
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o2",
+      repoLookup: repoFound("/local/bar"),
+      mode: "merge",
+      claudeProjectsDir: cpd,
+    });
+    if (!r.ok) throw new Error("expected ok, got " + r.error);
+    // Merged in place — same file as the first import, not a sibling.
+    expect(r.importedPath).toBe(first.importedPath);
+    const merged = await readFile(r.importedPath, "utf-8");
+    const ids = merged
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l).uuid);
+    expect(ids).toEqual(["u1", "u2", "x1", "y1", "y2"]);
+    // No temp file left behind by the atomic swap.
+    const leftover = await readFile(`${r.importedPath}.merge-tmp`, "utf-8").catch(
+      () => null,
+    );
+    expect(leftover).toBeNull();
+    // Pending offer consumed.
+    expect(await loadPendingOffer(ws, "o2")).toBeNull();
+  });
+
   test("first import succeeds even when mode defaults — exists check applies only on collision", async () => {
     const ws = await tempWorkspace();
     const cpd = await tempClaudeProjects();
@@ -462,6 +511,47 @@ describe("acceptOffer", () => {
     );
     // The shared claude projects dir stays empty for codex imports.
     expect(await readdir(cpd)).toEqual([]);
+  });
+
+  test("mode=merge works on the codex path too (content-hash identity, sidecar layout)", async () => {
+    const ws = await tempWorkspace();
+    const cpd = await tempClaudeProjects();
+    // Codex lines carry no top-level uuid → merge keys on content hash.
+    const codex = (text: string) =>
+      JSON.stringify({ type: "response_item", payload: { text } });
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: "s" } });
+    const j1 = [meta, codex("hello"), codex("mine")].join("\n");
+    await storePendingOffer(ws, manifest({ offerId: "o1", agent: "codex" }), j1);
+    const first = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o1",
+      repoLookup: repoFound("/local/bar"),
+      claudeProjectsDir: cpd,
+    });
+    if (!first.ok) throw new Error("expected ok");
+
+    const j2 = [meta, codex("hello"), codex("theirs-1"), codex("theirs-2")].join(
+      "\n",
+    );
+    await storePendingOffer(ws, manifest({ offerId: "o2", agent: "codex" }), j2);
+    const r = await acceptOffer({
+      workspaceDir: ws,
+      offerId: "o2",
+      repoLookup: repoFound("/local/bar"),
+      mode: "merge",
+      claudeProjectsDir: cpd,
+    });
+    if (!r.ok) throw new Error("expected ok, got " + r.error);
+    // Merged in place under the codex sidecar layout, not the claude dir.
+    expect(r.importedPath).toBe(
+      join(ws, "imported-sessions", "marcels-laptop", "codex", "sid-aaa.jsonl"),
+    );
+    expect(await readdir(cpd)).toEqual([]);
+    const texts = (await readFile(r.importedPath, "utf-8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l).payload?.text ?? "(meta)");
+    expect(texts).toEqual(["(meta)", "hello", "mine", "theirs-1", "theirs-2"]);
   });
 
   test("ollama offer: JSONL lands in <workspace>/ollama/<sid>.jsonl, sidecar under imported-sessions", async () => {

@@ -67,7 +67,7 @@
     title: string;
     repoName: string;
     agent: string;
-    mode: "fresh" | "replace" | "keep_both";
+    mode: "fresh" | "replace" | "keep_both" | "merge";
   } | null = null;
 
   let lastOfferId: string | null = null;
@@ -108,7 +108,7 @@
     }
   }
 
-  async function accept(mode?: "replace" | "keep_both") {
+  async function accept(mode?: "replace" | "keep_both" | "merge") {
     if (!invite || actionPending) return;
     actionPending = true;
     action = null;
@@ -125,11 +125,23 @@
         const body = (await res.json().catch(() => null)) as {
           error?: string;
           remote?: string;
+          reason?: string;
           divergence?: Divergence;
         } | null;
         if (body?.error === "exists" && body.divergence) {
-          // Surface the three-button conflict view instead of an error.
+          // Surface the conflict view instead of an error.
           conflict = body.divergence;
+          return;
+        }
+        if (body?.error === "merge_failed" && body.divergence) {
+          // Merge couldn't complete; the local copy was left intact.
+          // Keep the conflict view up (so replace / keep both stay
+          // reachable) and explain why merge didn't land.
+          conflict = body.divergence;
+          action = {
+            kind: "err",
+            message: `Merge failed: ${body.reason ?? "unknown error"}. Your local copy is unchanged — try Replace or Keep both.`,
+          };
           return;
         }
         action = {
@@ -166,7 +178,9 @@
               ? "replace"
               : mode === "keep_both"
                 ? "keep_both"
-                : "fresh",
+                : mode === "merge"
+                  ? "merge"
+                  : "fresh",
         };
         conflict = null;
       } else {
@@ -177,7 +191,9 @@
               ? "Replaced. Session updated."
               : mode === "keep_both"
                 ? "Saved alongside the existing copy."
-                : "Accepted. Session imported.",
+                : mode === "merge"
+                  ? "Merged. Both copies combined into one session."
+                  : "Accepted. Session imported.",
         };
         setTimeout(() => closeInvite(), 1200);
       }
@@ -273,7 +289,9 @@
             ? "Session updated"
             : imported.mode === "keep_both"
               ? "Session saved alongside existing copy"
-              : "Session imported"}
+              : imported.mode === "merge"
+                ? "Sessions merged"
+                : "Session imported"}
         </h2>
         <dl class="invite-meta">
           <div>
@@ -394,27 +412,42 @@
           <div class="invite-conflict">
             {#if conflict.supersetOfExisting}
               <p class="invite-conflict-head">
-                You already have this session. The new offer adds <strong
-                  >{conflict.incomingAfter}</strong
-                >
-                message{conflict.incomingAfter === 1 ? "" : "s"} on top of the existing
-                {conflict.commonPrefix} you have.
+                You already have this session — the sender's copy just goes
+                <strong>{conflict.incomingAfter.toLocaleString()}</strong>
+                message{conflict.incomingAfter === 1 ? "" : "s"} further than yours.
               </p>
             {:else}
               <p class="invite-conflict-head">
-                Diverged from your copy at message {conflict.commonPrefix}. You
-                have <strong>{conflict.existingAfter}</strong>
-                message{conflict.existingAfter === 1 ? "" : "s"} the sender doesn't;
-                sender has
-                <strong>{conflict.incomingAfter}</strong>
-                message{conflict.incomingAfter === 1 ? "" : "s"} you don't.
+                You and the sender agree on the first
+                <strong>{conflict.commonPrefix.toLocaleString()}</strong>
+                messages, then your copies split:
               </p>
+              <ul class="invite-conflict-split">
+                <li>
+                  you added <strong>{conflict.existingAfter.toLocaleString()}</strong>
+                  message{conflict.existingAfter === 1 ? "" : "s"} the sender doesn't
+                  have
+                </li>
+                <li>
+                  the sender added
+                  <strong>{conflict.incomingAfter.toLocaleString()}</strong>
+                  message{conflict.incomingAfter === 1 ? "" : "s"} you don't have
+                </li>
+              </ul>
             {/if}
             <p class="invite-conflict-help">
-              <strong>Replace</strong> overwrites your local copy.
-              <strong>Keep both</strong> saves the incoming next to it as a
-              sibling file.
-              <strong>Cancel</strong> leaves everything alone.
+              {#if conflict.supersetOfExisting}
+                <strong>Update</strong> fast-forwards your copy to the sender's.
+                <strong>Keep both</strong> saves the incoming next to it as a
+                sibling file.
+                <strong>Cancel</strong> leaves everything alone.
+              {:else}
+                <strong>Merge</strong> keeps both branches in one session
+                (nothing lost).
+                <strong>Replace</strong> overwrites your local copy.
+                <strong>Keep both</strong> saves the incoming as a sibling file.
+                <strong>Cancel</strong> leaves everything alone.
+              {/if}
             </p>
             <div class="invite-buttons">
               <button
@@ -433,11 +466,21 @@
               >
               <button
                 type="button"
-                class="invite-btn invite-accept"
+                class="invite-btn {conflict.supersetOfExisting
+                  ? 'invite-accept'
+                  : ''}"
                 disabled={actionPending}
                 on:click={() => accept("replace")}
                 >{conflict.supersetOfExisting ? "Update" : "Replace"}</button
               >
+              {#if !conflict.supersetOfExisting}
+                <button
+                  type="button"
+                  class="invite-btn invite-accept"
+                  disabled={actionPending}
+                  on:click={() => accept("merge")}>Merge</button
+                >
+              {/if}
             </div>
           </div>
         {:else}
@@ -615,6 +658,13 @@
     margin: 0;
     font-size: 0.82rem;
     line-height: 1.45;
+    color: var(--text-1, inherit);
+  }
+  .invite-conflict-split {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: 0.82rem;
+    line-height: 1.5;
     color: var(--text-1, inherit);
   }
   .invite-conflict-help {

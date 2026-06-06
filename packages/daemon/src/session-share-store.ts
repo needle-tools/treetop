@@ -27,6 +27,7 @@ import {
   readdir,
   unlink,
   access,
+  rename,
 } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -34,7 +35,11 @@ import {
   type SessionShareManifest,
   type SharePlatform,
 } from "./session-share";
-import { findDivergence, type Divergence } from "./session-share-divergence";
+import {
+  findDivergence,
+  mergeTranscripts,
+  type Divergence,
+} from "./session-share-divergence";
 import { claudeProjectDirForCwd, CLAUDE_ROOT } from "./agents";
 
 const INVITES_DIR = "session-invites";
@@ -94,10 +99,18 @@ export type RepoLookup = (
  *   - `replace`: overwrite the existing file.
  *   - `keep_both`: write to a sibling path `<sid>.from-<machine>-<n>.jsonl`
  *     so both copies live side by side.
+ *   - `merge`: combine the two transcripts in place — shared prefix once,
+ *     then both divergent tails (deduped). Written atomically via a temp
+ *     file + rename so a failed write leaves the existing copy intact;
+ *     on failure returns `{ ok: false, error: "merge_failed", ... }`.
  *
  *  The default is intentionally cautious — the v1 implementation
  *  silently overwrote, which lost data when two machines diverged. */
-export type AcceptMode = "abort_if_exists" | "replace" | "keep_both";
+export type AcceptMode =
+  | "abort_if_exists"
+  | "replace"
+  | "keep_both"
+  | "merge";
 
 export interface AcceptOfferArgs {
   workspaceDir: string;
@@ -123,6 +136,13 @@ export type AcceptResult =
   | {
       ok: false;
       error: "exists";
+      divergence: Divergence;
+      existingPath: string;
+    }
+  | {
+      ok: false;
+      error: "merge_failed";
+      reason: string;
       divergence: Divergence;
       existingPath: string;
     };
@@ -295,28 +315,67 @@ export async function acceptOffer(
 
   // Check collision + compute divergence so the caller can decide.
   let existingPath: string | null = null;
+  let existingJsonl = "";
   let divergence: Divergence | null = null;
   try {
     await access(defaultPath);
     existingPath = defaultPath;
-    const existingJsonl = await readFile(defaultPath, "utf-8").catch(() => "");
+    existingJsonl = await readFile(defaultPath, "utf-8").catch(() => "");
     divergence = findDivergence(existingJsonl, rewritten);
   } catch {
     // No collision — proceed normally below.
   }
 
   let importedPath = defaultPath;
+  let mergeRequested = false;
   if (existingPath && divergence) {
     if (mode === "abort_if_exists") {
       return { ok: false, error: "exists", divergence, existingPath };
     }
     if (mode === "keep_both") {
       importedPath = await pickKeepBothPath(jsonlDir, manifest.sid);
+    } else if (mode === "merge") {
+      // Combine the two transcripts in memory first — a bad merge can't
+      // touch disk. The write below goes through a temp + rename so the
+      // existing copy survives a write failure too.
+      mergeRequested = true;
+      try {
+        rewritten = mergeTranscripts(existingJsonl, rewritten);
+      } catch (e) {
+        return {
+          ok: false,
+          error: "merge_failed",
+          reason: e instanceof Error ? e.message : String(e),
+          divergence,
+          existingPath,
+        };
+      }
     }
     // mode === "replace" → keep defaultPath, writeFile will overwrite.
   }
 
-  await writeFile(importedPath, rewritten);
+  if (mergeRequested) {
+    // Atomic swap: write the merged transcript to a sibling temp file,
+    // then rename over the original. rename is atomic on the same
+    // filesystem, so a crash mid-write can never leave a truncated
+    // session behind — the original stays until the rename lands.
+    const tmp = `${importedPath}.merge-tmp`;
+    try {
+      await writeFile(tmp, rewritten);
+      await rename(tmp, importedPath);
+    } catch (e) {
+      await unlink(tmp).catch(() => {});
+      return {
+        ok: false,
+        error: "merge_failed",
+        reason: e instanceof Error ? e.message : String(e),
+        divergence: divergence!,
+        existingPath: existingPath!,
+      };
+    }
+  } else {
+    await writeFile(importedPath, rewritten);
+  }
   await writeFile(
     sidecarPath,
     JSON.stringify(

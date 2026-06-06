@@ -26,9 +26,18 @@ export interface Divergence {
   diverged: boolean;
 }
 
-function lineIds(jsonl: string): string[] {
+interface LineEntry {
+  /** Stable identity key — `u:<uuid>` for lines with Claude's uuid,
+   *  else `h:<hash>` of the raw line. */
+  id: string;
+  /** The line verbatim (trimmed). Preserved so a merge keeps parentUuid
+   *  links and every other field intact. */
+  raw: string;
+}
+
+function lineEntries(jsonl: string): LineEntry[] {
   if (!jsonl) return [];
-  const ids: string[] = [];
+  const out: LineEntry[] = [];
   for (const raw of jsonl.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
@@ -36,19 +45,23 @@ function lineIds(jsonl: string): string[] {
     try {
       parsed = JSON.parse(line);
     } catch {
-      ids.push("h:" + hash(line));
+      out.push({ id: "h:" + hash(line), raw: line });
       continue;
     }
     if (parsed && typeof parsed === "object") {
       const uuid = (parsed as { uuid?: unknown }).uuid;
       if (typeof uuid === "string" && uuid.length > 0) {
-        ids.push("u:" + uuid);
+        out.push({ id: "u:" + uuid, raw: line });
         continue;
       }
     }
-    ids.push("h:" + hash(line));
+    out.push({ id: "h:" + hash(line), raw: line });
   }
-  return ids;
+  return out;
+}
+
+function lineIds(jsonl: string): string[] {
+  return lineEntries(jsonl).map((e) => e.id);
 }
 
 /** Tiny FNV-1a 32-bit hash. Cryptographically meaningless — we only
@@ -82,4 +95,52 @@ export function findDivergence(existing: string, incoming: string): Divergence {
     supersetOfExisting,
     diverged,
   };
+}
+
+/**
+ * Merge two transcripts that share a common prefix into a single one:
+ * the shared prefix once, then the existing copy's divergent tail, then
+ * the incoming copy's divergent tail with any line already emitted
+ * (by {@link LineEntry.id}) dropped.
+ *
+ * Lines are kept verbatim, so for Claude transcripts every `parentUuid`
+ * link survives — the result is a valid branching tree where the fork
+ * point gains a second child, exactly the shape Claude Code itself
+ * writes when you rewind and branch a session. Renderers that follow
+ * `parentUuid` reconstruct both branches; ones that read top-to-bottom
+ * see the receiver's branch followed by the imported one.
+ *
+ * Dedup by identity means a tool result (or any line) that landed on
+ * both sides past the fork appears once, not twice. Pure: no I/O, safe
+ * to call before touching disk so a bad input can't corrupt a file.
+ */
+export function mergeTranscripts(existing: string, incoming: string): string {
+  const a = lineEntries(existing);
+  const b = lineEntries(incoming);
+
+  let i = 0;
+  while (i < a.length && i < b.length && a[i]!.id === b[i]!.id) i++;
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  // Shared prefix, taken from the existing copy (authoritative for the
+  // region both sides agree on). Emitted before dedup kicks in so a
+  // legitimately repeated prefix line isn't collapsed.
+  for (let k = 0; k < i; k++) {
+    out.push(a[k]!.raw);
+    seen.add(a[k]!.id);
+  }
+  // Existing tail, then incoming tail — each skipping anything already
+  // emitted so overlap past the fork isn't duplicated.
+  for (let k = i; k < a.length; k++) {
+    if (seen.has(a[k]!.id)) continue;
+    out.push(a[k]!.raw);
+    seen.add(a[k]!.id);
+  }
+  for (let k = i; k < b.length; k++) {
+    if (seen.has(b[k]!.id)) continue;
+    out.push(b[k]!.raw);
+    seen.add(b[k]!.id);
+  }
+  return out.length ? out.join("\n") + "\n" : "";
 }
