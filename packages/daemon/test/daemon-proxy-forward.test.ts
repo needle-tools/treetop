@@ -98,6 +98,29 @@ beforeAll(() => {
           },
         });
       }
+      if (u.pathname === "/api/hang") {
+        // Never sends response headers (simulates a half-dead tunnel that
+        // ACCEPTS the connection but the remote never replies). The proxy's
+        // time-to-headers timeout must fire and turn this into a 502.
+        await Bun.sleep(5000);
+        return new Response("late", { status: 200 });
+      }
+      if (u.pathname === "/api/slowbody") {
+        // Headers immediately, first body chunk only after a delay — like an
+        // idle SSE stream. Proves the timeout is cleared once headers arrive
+        // (the body is NOT subject to the deadline).
+        const enc = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          async start(c) {
+            await Bun.sleep(250);
+            c.enqueue(enc.encode("delayed-chunk"));
+            c.close();
+          },
+        });
+        return new Response(stream, {
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
       return new Response("nope", { status: 404 });
     },
   });
@@ -200,6 +223,37 @@ describe("forwardToRemote (Tier 2: real in-process remote)", () => {
     const res = await forwardToRemote(deadPort, proxied, req, "", NO_CORS);
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatch(/unreachable/);
+  });
+
+  test("times out to 502 when the remote accepts but never sends headers", async () => {
+    // The sleep/wake failure mode: the connection succeeds (listener up) but
+    // no response comes. Without the timeout this hung for minutes; now it's
+    // a prompt 502 the self-heal can act on.
+    const proxied = parseDaemonProxyPath("/api/daemons/d1/hang")!;
+    const req = new Request("http://local/api/daemons/d1/hang");
+    const t0 = performance.now();
+    const res = await forwardToRemote(remotePort, proxied, req, "", NO_CORS, {
+      timeToHeadersMs: 150,
+    });
+    const elapsed = performance.now() - t0;
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toMatch(/no response within 150ms/);
+    expect(elapsed).toBeLessThan(2000); // bounded, not the remote's 5s
+  });
+
+  test("an SSE request is exempt from the timeout (idle stream survives)", async () => {
+    // EventSource sends `Accept: text/event-stream`; such streams may be idle
+    // for minutes. The first chunk here is 250ms out — past a 100ms budget —
+    // and must still arrive, proving SSE requests bypass the cap entirely.
+    const proxied = parseDaemonProxyPath("/api/daemons/d1/slowbody")!;
+    const req = new Request("http://local/api/daemons/d1/slowbody", {
+      headers: { accept: "text/event-stream" },
+    });
+    const res = await forwardToRemote(remotePort, proxied, req, "", NO_CORS, {
+      timeToHeadersMs: 100,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("delayed-chunk");
   });
 });
 

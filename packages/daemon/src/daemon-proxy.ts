@@ -78,25 +78,53 @@ export function buildProxyWsUrl(
  * - A failed fetch (tunnel/remote down) becomes a 502 with a JSON error,
  *   distinct from a real upstream 404/5xx which passes through verbatim.
  */
+/** Default ceiling on how long we wait for the remote to send RESPONSE
+ *  HEADERS before declaring the tunnel dead. NOT a whole-request timeout —
+ *  it's cleared the instant headers arrive, so a slow/long-lived body (a big
+ *  repo enrich, an idle SSE stream) is never cut off. The failure it guards:
+ *  a half-dead tunnel after the box slept still ACCEPTS the TCP connection
+ *  (the local ssh listener is up), so `fetch` connects and then waits forever
+ *  for a reply that never comes — hanging the request for minutes and piling
+ *  up until the daemon wedges. Override with SUPERGIT_PROXY_TIMEOUT_MS. */
+const DEFAULT_TIME_TO_HEADERS_MS = 15_000;
+
 export async function forwardToRemote(
   localPort: number,
   proxied: DaemonProxyPath,
   req: Request,
   search: string,
   cors: Record<string, string>,
+  opts?: { timeToHeadersMs?: number },
 ): Promise<Response> {
   const target = buildProxyTargetUrl(localPort, proxied.rest, search);
   const fwdHeaders = new Headers(req.headers);
   fwdHeaders.delete("host");
+  const timeToHeadersMs = opts?.timeToHeadersMs ?? DEFAULT_TIME_TO_HEADERS_MS;
+  // SSE (EventSource) requests are long-lived by design — an idle stream may
+  // send nothing for minutes — and Bun's fetch only resolves once the FIRST
+  // body chunk lands, so a time-to-headers cap would wrongly kill an idle
+  // stream. Exempt them; the connect itself still fails fast if the box is
+  // truly down. Everything else (repo lists, diffs, JSON) gets the cap.
+  const wantsStream = (req.headers.get("accept") || "")
+    .toLowerCase()
+    .includes("text/event-stream");
+  const useTimeout = !wantsStream && timeToHeadersMs > 0;
+  const ac = new AbortController();
+  const timer = useTimeout
+    ? setTimeout(() => ac.abort(), timeToHeadersMs)
+    : null;
   try {
     const upstream = await fetch(target, {
       method: req.method,
       headers: fwdHeaders,
       body:
         req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+      signal: useTimeout ? ac.signal : undefined,
       // @ts-expect-error Bun supports duplex for streaming request bodies
       duplex: "half",
     });
+    // First response in — stop the clock so a slow/large body streams freely.
+    if (timer) clearTimeout(timer);
     const respHeaders = new Headers(upstream.headers);
     for (const [k, v] of Object.entries(cors)) respHeaders.set(k, v);
     return new Response(upstream.body, {
@@ -104,12 +132,14 @@ export async function forwardToRemote(
       headers: respHeaders,
     });
   } catch (e) {
+    if (timer) clearTimeout(timer);
+    const timedOut =
+      ac.signal.aborted || (e instanceof Error && e.name === "AbortError");
+    const detail = timedOut
+      ? `no response within ${timeToHeadersMs}ms (stale tunnel?)`
+      : String(e instanceof Error ? e.message : e);
     return new Response(
-      JSON.stringify({
-        error: `remote daemon unreachable: ${String(
-          e instanceof Error ? e.message : e,
-        )}`,
-      }),
+      JSON.stringify({ error: `remote daemon unreachable: ${detail}` }),
       {
         status: 502,
         headers: { "Content-Type": "application/json", ...cors },
@@ -127,6 +157,8 @@ export interface ReconnectDeps {
   closeTunnel: () => Promise<void>;
   /** Optional breadcrumb sink (server wires console.log → daemon.log). */
   log?: (msg: string) => void;
+  /** Forwarded to forwardToRemote — the connect+first-byte ceiling. */
+  timeToHeadersMs?: number;
 }
 
 /**
@@ -156,6 +188,7 @@ export async function forwardWithReconnect(
   cors: Record<string, string>,
   deps: ReconnectDeps,
 ): Promise<Response> {
+  const fwdOpts = { timeToHeadersMs: deps.timeToHeadersMs };
   // First openPort() throw propagates (→ handler's 404/502 mapping).
   const resp = await forwardToRemote(
     await deps.openPort(),
@@ -163,6 +196,7 @@ export async function forwardWithReconnect(
     req,
     search,
     cors,
+    fwdOpts,
   );
   if (resp.status !== 502) return resp;
 
@@ -180,6 +214,7 @@ export async function forwardWithReconnect(
       req,
       search,
       cors,
+      fwdOpts,
     );
   } catch {
     // Reopen failed (host still unreachable) — surface the original 502.

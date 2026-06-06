@@ -349,6 +349,13 @@ const sshSyncTracker = new SyncTracker(
 // SUPERGIT_TUNNEL_DIRECT=1 skips ssh and proxies straight at the remote's
 // 127.0.0.1:<port> — ONLY for the two-daemon e2e harness, which runs both
 // daemons on localhost (no real network hop to tunnel). Never set in prod.
+// How long a proxied request waits for the remote's response headers before
+// giving up (→ 502 → self-heal reopens). A half-dead tunnel after sleep still
+// ACCEPTS the connection, so without this the fetch hangs for minutes and the
+// daemon wedges. Cleared once headers arrive, so it never cuts a long body.
+const PROXY_TIME_TO_HEADERS_MS =
+  Number(process.env.SUPERGIT_PROXY_TIMEOUT_MS) || 15_000;
+
 const tunnelManager = new TunnelManager({
   direct: process.env.SUPERGIT_TUNNEL_DIRECT === "1",
   // Breadcrumbs to daemon.log so "the remote went offline after my laptop
@@ -7799,6 +7806,7 @@ const server = Bun.serve<TermWsData, never>({
               closeTunnel: () =>
                 tunnelManager.close(proxied.id).then(() => undefined),
               log: (m) => console.log(`supergit daemon: ${m}`),
+              timeToHeadersMs: PROXY_TIME_TO_HEADERS_MS,
             });
           } catch (e) {
             // ensureRemoteTunnelPort threw on the FIRST attempt. Distinguish

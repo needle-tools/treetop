@@ -82,6 +82,9 @@ describe("buildSshTunnelArgs", () => {
     // ExitOnForwardFailure: if the forward can't bind, ssh exits rather
     // than sitting there with a useless connection.
     expect(args).toContain("ExitOnForwardFailure=yes");
+    // ConnectTimeout: a reopen to a sleeping/unreachable box must give up
+    // promptly, not sit in the OS's multi-minute TCP connect retry.
+    expect(args).toContain("ConnectTimeout=10");
   });
 });
 

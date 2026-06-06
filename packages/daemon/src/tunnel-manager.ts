@@ -132,6 +132,11 @@ export function buildSshTunnelArgs(
     "ExitOnForwardFailure=yes",
     "-o",
     "StrictHostKeyChecking=accept-new",
+    // Fail fast when the box is unreachable (asleep / network down) instead of
+    // sitting in the OS's multi-minute TCP connect retry — so a reopen attempt
+    // to a sleeping box gives up promptly and the next request can retry.
+    "-o",
+    "ConnectTimeout=10",
     "-o",
     "ServerAliveInterval=15",
     "-o",
