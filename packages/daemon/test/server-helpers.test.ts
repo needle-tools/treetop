@@ -16,6 +16,7 @@ import {
   parseTarget,
   decodeHtmlEntities,
   extractIconHrefs,
+  patchWorktreeDetailsInRepos,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -665,5 +666,98 @@ describe("extractIconHrefs", () => {
       '<link rel="preload" href="/font.woff2" as="font">',
     ].join("\n");
     expect(extractIconHrefs(html)).toEqual(["/fav.svg"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// patchWorktreeDetailsInRepos
+//
+// Guards the fs_change → live-badge path: when the file watcher recomputes
+// one worktree's git state, it patches that worktree's details into the
+// cached /api/repos payload IN PLACE (the full reposCache short-circuits the
+// route before any rebuild, so a bare cache delete is invisible until the
+// payload TTL expires AND a later cache-missing fetch happens). This is what
+// keeps push/pull/dirty badges live without paying a detectAgents rebuild.
+// ---------------------------------------------------------------------------
+describe("patchWorktreeDetailsInRepos", () => {
+  function sampleRepos() {
+    return [
+      {
+        id: "r1",
+        worktrees: [
+          {
+            path: "/w/a",
+            branch: "main",
+            agents: ["claude"],
+            fileStatus: { dirtyLines: 0 },
+            branchStatus: { ahead: 0, behind: 0 },
+          },
+          {
+            path: "/w/b",
+            branch: "feat",
+            agents: [],
+            fileStatus: { dirtyLines: 0 },
+            branchStatus: { ahead: 0, behind: 0 },
+          },
+        ],
+      },
+      { id: "r2", worktrees: [{ path: "/w/c", agents: ["codex"] }] },
+    ];
+  }
+
+  test("overwrites the matching worktree's detail fields", () => {
+    const repos = sampleRepos();
+    const ok = patchWorktreeDetailsInRepos(repos, "/w/b", {
+      fileStatus: { dirtyLines: 7 },
+      branchStatus: { ahead: 2, behind: 1 },
+      lastCommit: { hash: "abc" },
+    });
+    expect(ok).toBe(true);
+    const wt = repos[0]!.worktrees[1]! as Record<string, unknown>;
+    expect(wt.fileStatus).toEqual({ dirtyLines: 7 });
+    expect(wt.branchStatus).toEqual({ ahead: 2, behind: 1 });
+    expect(wt.lastCommit).toEqual({ hash: "abc" });
+  });
+
+  test("preserves non-detail fields (agents, branch, path)", () => {
+    const repos = sampleRepos();
+    patchWorktreeDetailsInRepos(repos, "/w/a", {
+      fileStatus: { dirtyLines: 3 },
+      branchStatus: { ahead: 0, behind: 0 },
+    });
+    const wt = repos[0]!.worktrees[0]! as Record<string, unknown>;
+    expect(wt.agents).toEqual(["claude"]);
+    expect(wt.branch).toBe("main");
+    expect(wt.path).toBe("/w/a");
+    expect(wt.fileStatus).toEqual({ dirtyLines: 3 });
+  });
+
+  test("matches a worktree in any repo, not just the first", () => {
+    const repos = sampleRepos();
+    const ok = patchWorktreeDetailsInRepos(repos, "/w/c", {
+      fileStatus: { dirtyLines: 1 },
+    });
+    expect(ok).toBe(true);
+    expect(
+      (repos[1]!.worktrees[0]! as Record<string, unknown>).fileStatus,
+    ).toEqual({ dirtyLines: 1 });
+  });
+
+  test("returns false and mutates nothing when the path is unknown", () => {
+    const repos = sampleRepos();
+    const before = JSON.stringify(repos);
+    const ok = patchWorktreeDetailsInRepos(repos, "/w/missing", {
+      fileStatus: { dirtyLines: 9 },
+    });
+    expect(ok).toBe(false);
+    expect(JSON.stringify(repos)).toBe(before);
+  });
+
+  test("tolerates repos with no worktrees array", () => {
+    const repos = [{ id: "r1" }, { id: "r2", worktrees: [{ path: "/w/a" }] }];
+    const ok = patchWorktreeDetailsInRepos(repos as never, "/w/a", {
+      fileStatus: { dirtyLines: 4 },
+    });
+    expect(ok).toBe(true);
   });
 });

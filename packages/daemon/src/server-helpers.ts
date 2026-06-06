@@ -225,6 +225,41 @@ export function decodeHtmlEntities(s: string): string {
     .replace(/&apos;/g, "'");
 }
 
+/**
+ * Patch one worktree's freshly-recomputed git details into a cached
+ * `/api/repos` payload array, IN PLACE. Returns true if a matching
+ * worktree was found and updated.
+ *
+ * The fs watcher recomputes a single worktree's `getWorktreeDetails`
+ * (fileStatus / branchStatus / lastCommit) after a change. The route's
+ * full-payload `reposCache` short-circuits before any rebuild, so just
+ * deleting the per-worktree details cache is invisible until that payload
+ * TTL expires AND a later cache-missing fetch happens — leaving push/pull/
+ * dirty badges stale for an unbounded time. Splicing the new details into
+ * the cached row keeps the badges live without forcing a full rebuild (and
+ * its expensive `detectAgents` JSONL scan). Non-detail fields the enrich
+ * adds — `agents`, `branch`, `path`, … — are preserved by spreading the
+ * existing row first.
+ */
+export function patchWorktreeDetailsInRepos(
+  repos: Array<{ worktrees?: unknown }>,
+  wtPath: string,
+  details: Record<string, unknown>,
+): boolean {
+  for (const repo of repos) {
+    const wts = repo.worktrees;
+    if (!Array.isArray(wts)) continue;
+    const idx = wts.findIndex(
+      (w) => w && (w as { path?: unknown }).path === wtPath,
+    );
+    if (idx >= 0) {
+      wts[idx] = { ...wts[idx], ...details };
+      return true;
+    }
+  }
+  return false;
+}
+
 export function extractIconHrefs(html: string): string[] {
   const out: string[] = [];
   // <link rel="icon" ...>, <link rel="shortcut icon" ...>, apple-touch-icon

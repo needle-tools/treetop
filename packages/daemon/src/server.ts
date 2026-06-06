@@ -136,6 +136,7 @@ import {
   parseTarget,
   decodeHtmlEntities,
   extractIconHrefs,
+  patchWorktreeDetailsInRepos,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -1159,6 +1160,43 @@ function invalidateWorktreeDetails(wtPath: string): void {
   worktreeDetailsCache.delete(wtPath);
 }
 
+// fs-watcher reaction: recompute just the changed worktree's git state and
+// splice it into the cached /api/repos payload in place, THEN broadcast.
+//
+// Why not simply `invalidateWorktreeDetails(path)` + broadcast (the old
+// behaviour)? The route's full-payload `reposCache` (REPOS_CACHE_MS)
+// short-circuits before any rebuild, so the per-worktree delete was
+// invisible until that payload TTL expired AND a later cache-missing fetch
+// happened — push/pull/dirty badges went stale for an unbounded time after
+// external edits/commits/fetches. Why not `invalidateReposCache()`? That
+// forces a full rebuild including the expensive `detectAgents` JSONL scan on
+// every fs_change (including no-op visible-fetch ticks) — the CPU pulse the
+// change-kind gating was added to kill. Patching the one row that changed
+// keeps badges live for ~free. Patch before broadcast so the UI's follow-up
+// /api/repos GET sees the fresh row instead of racing the recompute.
+async function onWorktreeFsChange(wtPath: string): Promise<void> {
+  let details: WorktreeDetails;
+  try {
+    details = await worktreeDetailLimit(() => getWorktreeDetails(wtPath));
+  } catch {
+    // git failed (dir vanished mid-rename, etc.) — drop both caches so the
+    // next GET rebuilds from scratch rather than serving a stale row.
+    worktreeDetailsCache.delete(wtPath);
+    invalidateReposCache();
+    broadcast("change", { kind: "fs_change", path: wtPath });
+    return;
+  }
+  worktreeDetailsCache.set(wtPath, { at: Date.now(), value: details });
+  if (reposCache) {
+    patchWorktreeDetailsInRepos(
+      reposCache.value as Array<{ worktrees?: unknown }>,
+      wtPath,
+      details as unknown as Record<string, unknown>,
+    );
+  }
+  broadcast("change", { kind: "fs_change", path: wtPath });
+}
+
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
   return {
     "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -1693,8 +1731,7 @@ async function reconcileWorktreeWatchers(): Promise<void> {
   for (const path of wanted) {
     if (worktreeWatchers.has(path)) continue;
     const stop = watchWorktree(path, () => {
-      invalidateWorktreeDetails(path);
-      broadcast("change", { kind: "fs_change", path });
+      void onWorktreeFsChange(path);
     });
     worktreeWatchers.set(path, stop);
   }
