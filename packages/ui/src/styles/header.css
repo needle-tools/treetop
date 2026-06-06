@@ -15,51 +15,122 @@
    `<header>` on the page — most notably SessionView's chat header,
    where 1.5rem margin-bottom showed up as a "gap between header and
    chat content." main > header keeps the rule where it belongs. */
+/* Normal-flow header — now holds only the quiet version/build/port
+   line (the brand lockup moved into the centred pill). Top padding
+   reserves space so the fixed pill doesn't overlap the first content;
+   centred to sit visually beneath the pill. */
 main > header {
-  margin-bottom: 1.5rem;
-}
-main > header > h1 {
-  margin: 0;
-  font-size: 1.5rem;
-  letter-spacing: -0.01em;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  padding-top: 3.1rem;
+  margin-bottom: 1rem;
+  text-align: center;
 }
 .brand-mark {
-  height: 1.6rem;
+  height: 1.15rem;
   width: auto;
   display: inline-block;
 }
+/* Brand lockup inside the pill (needle mark + wordmark). Links to
+   needle.tools; non-selectable so it reads as a UI affordance rather
+   than copyable text. */
+.menubar-brand {
+  margin: 0;
+  /* Flex container (not block) so the inner link is centred as a flex
+     item rather than baseline-aligned inline content — the latter left
+     leftover descender space below, shifting the lockup upward. */
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  font-family: var(--font-brand);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+  padding: 0 0.3rem 0 0.2rem;
+  /* Extra breathing room before the action buttons (on top of the
+     menubar's flex gap) so the brand reads as its own zone. */
+  margin-right: 0.65rem;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.menubar-brand a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  line-height: 1;
+  color: var(--text-1);
+  text-decoration: none;
+  cursor: pointer;
+}
+.menubar-brand a:hover {
+  color: var(--needle-green);
+}
 
-/* Fixed top-right menubar that holds the action-button cluster. Stays
-   pinned while the page scrolls so TUIs/Undo/Events are always one
-   click away. The soft surface + blur reads as a unified bar without
-   obscuring whatever scrolls underneath.
+/* Fixed top-right stack: the menubar pill plus a quiet metadata line
+   (version · build · port) directly beneath it. The wrapper owns the
+   fixed positioning + z-index so the build line tracks the pill's
+   bottom edge regardless of the pill's height.
 
    z-index 2550 sits above every notes layer (sticky-host 1000+,
    sticky-link-preview 2200, mention-popover 2500) and below toasts
-   (3000). Has to be this high because `backdrop-filter` creates a
-   stacking context — every popover anchored INSIDE the menubar
-   (.inbox-anchor, .tuis-anchor, etc.) is trapped at the menubar's
-   z-index in the root context, regardless of any z-index they set
-   on themselves. So the menubar's z-index = the ceiling for every
-   popover that lives in it. */
-.menubar {
+   (3000). Has to be this high because this fixed + z-indexed wrapper
+   creates a stacking context — every popover anchored INSIDE the
+   menubar (.inbox-anchor, .tuis-anchor, etc.) is trapped at this
+   z-index in the root context, regardless of any z-index they set on
+   themselves. So this z-index = the ceiling for every popover that
+   lives in the pill. */
+/* Full-width fixed bar that horizontally centres the pill. It's
+   pointer-events:none so the empty space left/right of the pill passes
+   clicks through to the content beneath; the pill re-enables them.
+   Owns the z-index/stacking context — 2550 sits above every notes
+   layer (sticky-host 1000+, sticky-link-preview 2200, mention-popover
+   2500) and below toasts (3000); it's the ceiling for every popover
+   anchored inside the pill. No transform here on purpose: a transform
+   would become the containing block for JS-positioned fixed tooltips. */
+.menubar-stack {
   position: fixed;
   top: 0.55rem;
-  right: 0.7rem;
+  left: 0;
+  right: 0;
   z-index: 2550;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* The brand pill. Per the Needle guidelines the workbench UI uses
+   solid surfaces — no blur/glass/gradients — with restrained accents,
+   so this is a flat dark surface with the brand typeface; the Needle
+   green only appears on hover/active/focus (see button rules below).
+   Fully-rounded pill shape. `position: relative` keeps it a positioning
+   context; per-button popovers anchor to their own .actions-anchor. */
+.menubar {
+  position: relative;
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.3rem 0.4rem;
-  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  padding: 0.3rem 0.55rem;
+  font-family: var(--font-brand);
+  background: var(--surface-2);
   border: 1px solid var(--border-muted);
-  border-radius: var(--radius-md);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px var(--shadow-md);
+}
+
+/* Quiet version/build/port metadata. Lives in the normal-flow header
+   (NOT sticky) so it scrolls away with the page; muted + monospace so
+   it reads as technical metadata. Centred via `main > header`. */
+.menubar-build {
+  margin: 0;
+  font-size: 0.66rem;
+  line-height: 1.3;
+  color: var(--text-faint);
+}
+.menubar-build code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: inherit;
+  background: transparent;
+  color: inherit;
 }
 
 /* Anchor stays `position: relative` so the existing popover anchoring
@@ -87,6 +158,9 @@ main > header > h1 {
   font-size: 0.78rem;
   gap: 0.35rem;
   border: none;
+  /* Fully-rounded so the hover/active fill matches the pill's
+     roundness instead of showing rounded-rect corners inside it. */
+  border-radius: 999px;
   min-height: 1.85rem;
   box-sizing: border-box;
 }
@@ -96,9 +170,20 @@ main > header > h1 {
   padding: 0.3rem 0.4rem;
   text-align: center;
 }
+/* Restrained brand accent: the Needle green only surfaces on
+   hover/active/focus — a soft green wash + green text/icon — keeping
+   the resting pill calm and neutral per the brand guidelines. The
+   warm/hot TUI states (orange/red, defined below) still win because
+   they come later in the cascade. */
 .menubar .actions-btn:hover,
 .menubar .actions-btn.open {
   border: none;
+  background: color-mix(in srgb, var(--needle-green) 14%, transparent);
+  color: var(--needle-green);
+}
+.menubar .actions-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--needle-green) 60%, transparent);
+  outline-offset: 1px;
 }
 .menubar .actions-btn .count {
   font-size: 0.65rem;
@@ -328,14 +413,11 @@ main > header > h1 {
 }
 .menubar .btn-group > :first-child,
 .menubar .btn-group > :first-child .actions-btn {
-  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  border-radius: 999px 0 0 999px;
 }
 .menubar .btn-group > :last-child,
 .menubar .btn-group > :last-child .actions-btn {
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-}
-.menubar .btn-group > * + * {
-  border-left: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+  border-radius: 0 999px 999px 0;
 }
 
 /* Peer discovery tooltip illustration */
@@ -355,9 +437,10 @@ main > header > h1 {
   margin-bottom: 0.2rem;
 }
 
-/* Peer discovery toggle */
+/* Peer discovery toggle. No background tint when on — the inline
+   ON/OFF badge already signals state, so the button stays flush with
+   the pill surface. */
 .peer-toggle.peer-on {
-  background: var(--chip-green-bg, #1a3a1a);
   color: var(--chip-green-text, #8fdf8f);
 }
 .peer-badge {

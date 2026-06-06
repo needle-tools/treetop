@@ -15,7 +15,7 @@
    The activity dock stays visible; the row's extra left padding
    (2.2rem) keeps content clear of the dot strip. */
 main.zen-row > header,
-main.zen-row > .menubar {
+main.zen-row > .menubar-stack {
   display: none;
 }
 main.zen-row .row:not(.row-zen) {

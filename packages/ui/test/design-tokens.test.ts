@@ -108,6 +108,12 @@ const EXPECTED_TOKEN_NAMES: ReadonlyArray<string> = [
   // brand
   "--brand",
   "--brand-hover",
+  // Needle brand palette (official) + brand typeface
+  "--needle-green",
+  "--needle-green-dark",
+  "--needle-green-light",
+  "--needle-purple",
+  "--font-brand",
   // status / error
   "--status-clean",
   "--status-dirty",
@@ -237,7 +243,7 @@ const KNOWN_DANGLING_WITHOUT_DEFINITION: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 describe("design tokens — name snapshot (MUST STAY GREEN)", () => {
-  test("tokens.css defines exactly the expected set of 77 token names", () => {
+  test("tokens.css defines exactly the expected set of 82 token names", () => {
     const css = readTokensCss();
     const defined = extractDefinedTokens(css);
 

@@ -202,23 +202,6 @@ input[type="checkbox"]:disabled {
   color: var(--text-muted);
 }
 
-/* Header tagline + build info. Build line sits below the tagline on
-   its own row, small + monospace so it reads as metadata. Hidden
-   when the daemon reports neither version nor buildTime. */
-.tagline-text {
-  margin: 0;
-}
-.tagline-build {
-  margin: 0.15rem 0 0;
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-.tagline-build code {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 0.7rem;
-  background: transparent;
-  color: inherit;
-}
 .small {
   font-size: 0.8rem;
 }

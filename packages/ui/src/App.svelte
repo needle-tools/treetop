@@ -6457,18 +6457,12 @@
 
 <main class:zen-row={zenRowKey !== null}>
   <header>
-    <h1>
-      <img src="/needle-logo.svg" alt="" class="brand-mark" />
-      supergit
-    </h1>
-    <p class="muted tagline-text">
-      multi-repo, multi-agent, worktree-first dashboard
-    </p>
     {#if daemonVersion || daemonBuildTime}
-      <p class="tagline-build">
+      <p class="menubar-build">
+        Welcome to the jungle –
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
         {#if daemonVersion && daemonBuildTime}
-          –
+          ·
         {/if}
         {#if daemonBuildTime}<code
             >built {new Date(daemonBuildTime).toLocaleString(undefined, {
@@ -6480,16 +6474,25 @@
             })}</code
           >{/if}
         {#if (daemonVersion || daemonBuildTime) && typeof window !== "undefined" && window.location.port}
-          – <code title="daemon port">:{window.location.port}</code>{/if}
+          · <code title="daemon port">:{window.location.port}</code>{/if}
       </p>
     {/if}
   </header>
 
-  <!-- Fixed top-right menubar. Always visible (including while the
-       page is scrolled). Anchored containers stay `position: relative`
-       so the existing actions-popover (top-right anchored) keeps
-       working unchanged. -->
-  <nav class="menubar" aria-label="Workspace actions">
+  <!-- Fixed, horizontally-centred menubar. Always visible while the
+       page scrolls; the brand lockup lives inside the pill. The
+       full-width wrapper centres the pill without a transform (a
+       transform would become the containing block for the
+       JS-positioned fixed tooltips anchored inside). Per-button
+       popovers still anchor to their own `.actions-anchor`. -->
+  <div class="menubar-stack">
+    <nav class="menubar" aria-label="Workspace actions">
+      <h1 class="menubar-brand">
+        <a href="https://needle.tools" target="_blank" rel="noopener noreferrer">
+          <img src="/needle-logo.svg" alt="" class="brand-mark" />
+          jungle
+        </a>
+      </h1>
     <!-- Per-agent usage buttons live leftmost — one icon-only button
          per detected coding agent (Claude / Codex / Ollama / Copilot),
          each with its own hover tooltip. Claude renders the real
@@ -6998,7 +7001,8 @@
         /><line x1="12" y1="17" x2="12.01" y2="17" /></svg
       ></button
     >
-  </nav>
+    </nav>
+  </div>
 
   {#if loading && repos.length === 0}
     <div class="loading-screen">

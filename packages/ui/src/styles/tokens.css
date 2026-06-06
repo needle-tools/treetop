@@ -49,6 +49,20 @@
   --brand: #60b74c;
   --brand-hover: #a4d843;
 
+  /* Needle brand palette (official guidelines) — dark-UI usage. The
+     greens read well on the dark canvas; purple is the tertiary accent.
+     Kept separate from the generic --brand tokens above so adopting the
+     official marks is opt-in per surface (today: the top-right menubar). */
+  --needle-green: #99cc33;
+  --needle-green-dark: #74af52;
+  --needle-green-light: #d7db0a;
+  --needle-purple: #826aed;
+
+  /* Brand typeface (Nunito Sans, loaded in index.html). Falls back to
+     the system sans stack when the web font is unavailable (offline). */
+  --font-brand: "Nunito Sans", -apple-system, BlinkMacSystemFont, system-ui,
+    sans-serif;
+
   /* status */
   --status-clean: #16a34a;
   --status-dirty: #d97706;
