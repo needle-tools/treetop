@@ -255,15 +255,13 @@ export function makeProvisionSpawner(): (
           dec,
         );
 
-        await feed; // upload finished (or ssh was killed)
+        await feed; // upload finished (or ssh was killed/failed)
         uploadDone = true;
         clearInterval(heartbeat);
         clearInterval(stallWatch);
-        if (!killed && !stalled) {
-          queue.push(
-            `[supergit] upload complete (${mb(totalBytes)} MB) — extracting on ${host}…\n`,
-          );
-        }
+        // NOTE: don't announce "upload complete" here — the ship ssh may have
+        // failed (e.g. the connect timed out and `sent` is just buffered
+        // bytes). Confirm success only after shipCode === 0, below.
 
         // Bound the remote extraction.
         let extractTimedOut = false;
@@ -329,6 +327,9 @@ export function makeProvisionSpawner(): (
           queue.close();
           return;
         }
+
+        // Ship genuinely succeeded (connected, uploaded, extracted).
+        queue.push(`[supergit] source uploaded + extracted on ${host}.\n`);
 
         // ── Phase 2: run the installer over a tty (live output) ─────────
         queue.push(`[supergit] running installer on ${host}…\n`);
