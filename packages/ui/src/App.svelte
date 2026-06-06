@@ -51,6 +51,7 @@
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
   import DebugPanel from "./DebugPanel.svelte";
+  import { colVisibility } from "./col-visibility";
   import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
@@ -8937,6 +8938,7 @@
                               dragOverTarget.side === "right" &&
                               dragSource?.index !== i}
                             data-session-source={s.source}
+                            use:colVisibility
                             animate:flip={{ duration: 220 }}
                             on:dragover={(e) =>
                               handleSessionDragOver(e, wt.path, i)}

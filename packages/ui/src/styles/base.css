@@ -261,3 +261,21 @@ body.ui-idle .walkthrough-emoji-heartbeat,
 body.ui-idle .new-session-col.awaiting-input {
   animation-play-state: paused !important;
 }
+
+/* Session column scrolled out of the horizontal strip (toggled by the
+   `colVisibility` action / IntersectionObserver in col-visibility.ts). Each
+   column header runs always-on animations — the agent "working" glow and the
+   idle "zZZ" sleep trail. An always-running animation auto-promotes its
+   element to a compositor layer, and `Layerize` walks the WHOLE tree (on- and
+   off-screen) every frame; with a wall of working agents the off-screen pills
+   contribute 0 paint but dominate that walk (plans/performance.md, round 3).
+   Unlike the `paused` gates above we use `animation: none` here ON PURPOSE:
+   `paused` keeps the element composited (the layer survives, the walk doesn't
+   shrink); `none` removes the auto-promotion so the layer leaves the tree.
+   Off-screen, so resuming from rest when it scrolls back in is invisible. */
+.col-offscreen,
+.col-offscreen *,
+.col-offscreen *::before,
+.col-offscreen *::after {
+  animation: none !important;
+}
