@@ -344,12 +344,26 @@ type WindowBounds = { x: number; y: number; width: number; height: number };
 const BOUNDS_DIR = join(homedir(), ".config", "supergit");
 const BOUNDS_FILE = join(BOUNDS_DIR, "window.json");
 
+// Win32 parks minimized windows at (-32000, -32000) with thumbnail-sized
+// frames (~160x39). If we ever persist those, the next launch hands them
+// straight to electrobun's createWindow, which rejects them with
+// "Parent window has invalid client area: 144x0" and no window ever
+// appears. Treat anything that looks minimized/zero-ish as garbage.
+function isSaneBounds(b: WindowBounds): boolean {
+  return (
+    Number.isFinite(b.x) && Number.isFinite(b.y) &&
+    Number.isFinite(b.width) && Number.isFinite(b.height) &&
+    b.width >= 400 && b.height >= 300 &&
+    b.x > -10000 && b.y > -10000
+  );
+}
+
 function loadBounds(): WindowBounds {
   const fallback = { x: 100, y: 100, width: 1400, height: 900 };
   try {
     const raw = readFileSync(BOUNDS_FILE, "utf-8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed.x === "number" && typeof parsed.width === "number")
+    if (typeof parsed.x === "number" && typeof parsed.width === "number" && isSaneBounds(parsed))
       return parsed;
   } catch {}
   return fallback;
@@ -357,6 +371,7 @@ function loadBounds(): WindowBounds {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function saveBounds(bounds: WindowBounds): void {
+  if (!isSaneBounds(bounds)) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
