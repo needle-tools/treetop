@@ -50,6 +50,7 @@
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
+  import DebugPanel from "./DebugPanel.svelte";
   import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
@@ -9766,6 +9767,8 @@
   {runningCommandIds}
   {commandUrls}
 />
+
+<DebugPanel />
 
 <ConfirmDialog />
 <SummarizeDialog />

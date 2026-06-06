@@ -294,7 +294,7 @@ export function iconFor(key: string | null | undefined): IconDef | null {
  */
 export const GIT_AHEAD = "M6 10V2M6 2L2.5 5.5M6 2l3.5 3.5";
 export const GIT_BEHIND = "M6 2v8M6 10l-3.5-3.5M6 10l3.5-3.5";
-/** A proper tilde — rise then dip — not a single hump. In the SessionDock
- *  the path's `d` is morphed between this and its vertical mirror (see the
- *  `dock-wave` keyframes) so the humps rock up↔down like a gentle wave. */
+/** A proper tilde — rise then dip — not a single hump. DirtyGlyph.svelte
+ *  morphs this between itself and its vertical mirror via a SMIL <animate> so
+ *  the humps rock up↔down like a gentle wave. */
 export const GIT_DIRTY = "M2 6c1-2 3-2 4 0s3 2 4 0";

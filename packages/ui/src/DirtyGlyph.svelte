@@ -1,18 +1,30 @@
 <script lang="ts">
   /**
-   * The dirty-status tilde (`~`) plus its rocking wave, as shown in the
-   * SessionDock's push/pull/dirty arrow rows.
+   * The dirty-status tilde (`~`) plus its rocking wave, shown in the
+   * SessionDock's push/pull/dirty arrow rows. The motion is intentional — the
+   * dock is always on screen and the wiggle draws attention to uncommitted
+   * work.
    *
-   * The wave is a SMIL <animate> that morphs the path geometry — NOT a CSS
-   * `d:` keyframe. CSS `d` only interpolates in Chromium; supergit ships in
-   * electrobun's WKWebView (WebKit) on macOS, where a CSS `d:` animation is
-   * ignored and the glyph sits frozen (it animates on Windows because that
-   * is WebView2 / Chromium). SMIL morphs in both engines, so the original
-   * flowing wave works everywhere.
+   * Technique: a SMIL `<animate>` that morphs the path geometry (the humps
+   * rock up↔down). NOT a CSS `d:` keyframe — CSS `d` only interpolates in
+   * Chromium; in electrobun's WKWebView (WebKit, macOS) it freezes. SMIL
+   * morphs in both engines.
    *
-   * It lives in its own component for two reasons: SMIL has no reduced-motion
-   * gate (so we omit <animate> in JS here), and keeping the <animate> element
-   * out of the large SessionDock template sidesteps a svelte2tsx parse quirk.
+   * Perf history (see plans/performance.md): we briefly replaced this morph
+   * with a composited `translateX` scroll, thinking the per-frame geometry
+   * repaint was a major renderer cost. Tracing with the F8 debug panel proved
+   * otherwise — the real cost (Layerize 54%) was a layer tree bloated by an
+   * always-running invisible dock-spinner promoting every idle dot. Gating
+   * that spinner dropped Layerize to ~5%. With the tree small, this morph's
+   * marginal cost is just a little Paint that scales with the number of
+   * visible dirty sessions — affordable for normal dirty counts — so we kept
+   * the nicer rock. If you ever have dozens of dirty repos on screen at once
+   * and Paint climbs, the composited alternative is documented in the perf
+   * notes.
+   *
+   * Lives in its own component because SMIL has no reduced-motion gate (so we
+   * omit the <animate> in JS), and keeping <animate> out of the large
+   * SessionDock template sidesteps a svelte2tsx parse quirk.
    */
   import { onMount } from "svelte";
   import { GIT_DIRTY } from "./icons";
@@ -47,9 +59,7 @@
 <style>
   /* Mirrors SessionDock's `.dock-arrow-glyph` so the dirty tilde matches the
      ↑/↓ arrows: 12px, repo-coloured stroke (inherits `--arrow-color` from the
-     dock's arrow row through the DOM; falls back to muted), no fill. The
-     dirty glyph only renders when there's no ahead/behind arrow, so it's
-     never a sibling of one — no sibling-margin rule needed here. */
+     dock's arrow row through the DOM; falls back to muted), no fill. */
   .dirty-glyph {
     width: 12px;
     height: 12px;

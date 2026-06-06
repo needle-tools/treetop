@@ -1412,11 +1412,13 @@
       transform: translateY(0);
     }
   }
-  /* The dirty tilde and its wave live in DirtyGlyph.svelte — the wave is a
-     SMIL <animate>, not a CSS `d:` keyframe, because CSS `d` only animates
-     in Chromium and supergit ships in electrobun's WKWebView (WebKit) on
-     macOS, where it would sit frozen (it works on Windows = WebView2 /
-     Chromium). See that component for the details. */
+  /* The dirty tilde and its wave live in DirtyGlyph.svelte — a SMIL
+     <animate> morphs the path `d` (rocks the humps up↔down). Not a CSS `d:`
+     keyframe: CSS `d` only interpolates in Chromium and freezes in WKWebView
+     (WebKit, macOS); SMIL morphs in both. We briefly tried a composited
+     translateX scroll for perf, but the F8 trace showed the real Layerize
+     cost was the always-on dock spinner, not this morph — so the rock stayed.
+     See that component + plans/performance.md. */
   @media (prefers-reduced-motion: reduce) {
     .dock-arrow-up,
     .dock-arrow-down {
@@ -1754,16 +1756,19 @@
        bounding circle; visible overflow keeps them from clipping. */
     overflow: visible;
     pointer-events: none;
-    /* Hidden by default; the .dot-working modifier fades it in. The
-       spin animation runs unconditionally so the arc is already
-       moving the moment it becomes visible (a freshly-mounted
-       spinner doesn't snap from rest into motion). */
+    /* Hidden by default; the .dot-working modifier fades it in. */
     opacity: 0;
     transition: opacity 220ms ease;
-    animation: dock-spin 0.9s linear infinite;
   }
+  /* Only spin while actually working. An always-running animation auto-
+     promotes its element to a compositor layer — so leaving `dock-spin` on
+     every (invisible) spinner kept EVERY idle dock dot on its own layer,
+     inflating the Layerize walk for nothing. Gating on `.dot-working` lets
+     idle dots de-promote. The tiny cost — the arc snaps from rest instead of
+     already-moving when a turn starts — is imperceptible at 0.9s/rev. */
   .dock-dot.dot-working .dock-dot-spinner {
     opacity: 1;
+    animation: dock-spin 0.9s linear infinite;
   }
   .dock-dot-spinner circle {
     fill: none;

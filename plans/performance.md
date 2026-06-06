@@ -459,3 +459,84 @@ compositor with no per-frame recalc.
   *solid* colours (no `color-mix`), its `::before`/`::after` are taken by
   edge-streaks, and it's a conditional opt-in badge; low value, would need a
   restructure. Recorded here if it ever shows up in a capture.
+
+## Renderer CPU round 3: the layer-tree bloat — an invisible dock spinner (2026-06-06)
+
+**Symptom.** Dashboard pinned the renderer (fans audible). A trace showed the
+main thread ~99% busy with **Layerize at 54%** (the compositor rebuilding its
+layer tree ~once per frame, ~17 ms each). Paint was only ~5% and there was no
+layout shift — Chrome's paint-flashing lit up *only* the dirty-changes wiggle,
+which was a red herring.
+
+### New tooling built for this (keep it)
+
+- **`DebugPanel.svelte` + `anim-debug.ts`** — an **F8** overlay that kills CSS
+  animation groups live (sets `animation: none` via `html.dbg-<id>` classes, so
+  the layer *de-promotes* — `paused` wouldn't). Lets you A/B which animation
+  owns the Layerize cost without a rebuild. Each toggle emits trace markers:
+  `performance.mark` (Timings track), `performance.measure` (a labelled BAR over
+  the disabled window), and `console.timeStamp` (a line across all tracks).
+- **Marker-correlation script** — parse the trace, segment by `dbg: disabled
+  [...]` marks, and table Layerize% per state. The bun one-offs used live under
+  the session tmp dir; the recipe at the bottom of this file still applies.
+
+### Root cause — layer COUNT, not any single animation
+
+The `.dock-dot-spinner` carried `animation: dock-spin … infinite` on the **bare
+selector**, running unconditionally even though the spinner sits at `opacity:0`
+on idle dots (the comment rationalised it as "already moving when it becomes
+visible"). An always-running transform animation **auto-promotes its element to
+a compositor layer** (web.dev animations guide; no `will-change` needed). Every
+dock dot contains a spinner, so **every idle session dot was its own layer** —
+dozens of them — and each `Layerize` had to walk that whole bloated tree.
+
+**The markers initially misled us.** In the bloated-tree trace, disabling the
+`working-pill` glow dropped Layerize 54%→30%, so it *looked* like the culprit.
+It wasn't: the working pill was merely *triggering* full-tree relayerizes, and
+the tree was huge because of the idle spinners. Lesson: a single-group marker
+delta is only trustworthy once the tree size is controlled — always check the
+**all-off baseline** and watch whether `UpdateLayer` count vs `Layerize` cost
+*decouple* (they did: UpdateLayer stayed ~800/s while Layerize cost cratered →
+the tree shrank).
+
+### Fix (done)
+
+Gate the spin on the working state — `animation: dock-spin` moved from
+`.dock-dot-spinner` onto `.dock-dot.dot-working .dock-dot-spinner`
+(`SessionDock.svelte`). Idle dots de-promote. Guarded by
+`packages/ui/test/dock-spinner.test.ts`.
+
+**Result (same workload, before → after rebuild):**
+
+| | before | after |
+|---|--:|--:|
+| main-thread busy | ~99% | **42%** |
+| Layerize | 54% | **5%** |
+| top cost | Layerize (compositing) | **JavaScript** (v8/microtasks ~36%) |
+
+The compositing bottleneck is gone; the new ceiling is JS (reactivity /
+session-poll — see the round-1/2 notes above).
+
+### The DirtyGlyph detour (resolved: kept SMIL)
+
+Chasing the paint-flashing red herring, we first replaced DirtyGlyph's SMIL
+`d`-morph with a composited `translateX` scroll of a static wave. It worked but
+changed the motion (travel vs rock) and wasn't where the cost was. Once the
+spinner fix shrank the tree, the morph's marginal cost is just a little Paint
+that scales with the number of *visible dirty sessions* — affordable for normal
+counts — so we **reverted to the SMIL rock** (the preferred look, cross-engine).
+The composited alternative: a static multi-period wave path (4× `GIT_DIRTY`
+periods from x=-2) translated by exactly one 8u period for a seamless loop —
+revive it only if you routinely have dozens of dirty repos on screen and Paint
+climbs.
+
+### Open / deferred
+
+- [ ] **`working-pill` composited glow** — now ~3 points (was an artefact of the
+      bloated tree). Deferred; revisit only if a trace captured during heavy
+      *multi-agent working* shows it spiking. The doc records a failed
+      rotating-conic attempt — use an opacity-pulse glow, not a rotating one.
+- [ ] **Long tail of always-on dock animations** (arrows bounce, unread/awaiting
+      pulses, sleep `zZZ`) — each auto-promotes while running; individually
+      small now, collectively the 5%→2% residual. Cap by visibility/row count if
+      the JS-side work is ever cleared and this becomes the ceiling.
