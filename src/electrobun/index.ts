@@ -13,6 +13,7 @@
  */
 
 import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
+import { PRODUCT_NAME } from "../../product";
 import { resolve, dirname, join } from "node:path";
 import {
   existsSync,
@@ -469,7 +470,9 @@ try {
 const bounds = loadBounds();
 
 const win = new BrowserWindow({
-  title: "Supergit",
+  // Pre-load title; the page's <title>/document.title (same source) takes
+  // over once the UI loads. Name from the shared product module.
+  title: PRODUCT_NAME,
   url: DAEMON_URL,
   frame: bounds,
 });

@@ -1,8 +1,19 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { PRODUCT_NAME } from "../../product";
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [
+    svelte(),
+    // Inject the product name into index.html's <title> from the shared
+    // product module, so the static HTML isn't a second source of truth.
+    {
+      name: "product-title",
+      transformIndexHtml(html) {
+        return html.replace(/%PRODUCT_NAME%/g, PRODUCT_NAME);
+      },
+    },
+  ],
   server: {
     // 7779 sits next to the daemon's 7777 so supergit's two ports cluster
     // together, and avoids the very common 5173 clash with other Vite
