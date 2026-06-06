@@ -45,6 +45,23 @@
   z-index: 1100;
 }
 
+/* Menubar popovers centre horizontally on their trigger button. The
+   menubar is now centred in the viewport, so the default right-edge
+   anchoring (`right: 0`) made every dropdown hang to the LEFT of its
+   button. Centre with left:50% + the `translate` property (NOT
+   `transform`) so it composes with clampToViewport's transform-based
+   edge correction instead of being overwritten by it. left:50% is
+   relative to the anchor (the button) and translate -50% to the
+   popover's own width, so it's width-agnostic — the wider
+   events/tuis variants centre correctly too. Scoped to `.menubar`
+   so the chat-header session menu (also `.actions-popover`) keeps its
+   right-edge anchoring. */
+.menubar .actions-popover {
+  right: auto;
+  left: 50%;
+  translate: -50% 0;
+}
+
 /* Inbox menu has to clear every notes layer (mention-popover at
    z 2500, sticky-link-preview at 2200, bumped sticky-hosts at 1015+)
    so chat from a peer is never hidden behind a sticky note. The

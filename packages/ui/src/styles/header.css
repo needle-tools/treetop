@@ -121,7 +121,8 @@ main > header {
    (NOT sticky) so it scrolls away with the page; muted + monospace so
    it reads as technical metadata. Centred via `main > header`. */
 .menubar-build {
-  margin: 0;
+  /* Nudge up by half a line so it tucks closer under the pill. */
+  margin: -0.5lh 0 0;
   font-size: 0.66rem;
   line-height: 1.3;
   color: var(--text-faint);
