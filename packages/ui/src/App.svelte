@@ -4615,22 +4615,37 @@
   async function reconnectDaemon(
     daemonId: string,
   ): Promise<{ ok: boolean; error?: string }> {
+    let res: Response;
     try {
-      const res = await fetch(apiUrl(`/api/daemons/${daemonId}/reconnect`), {
+      res = await fetch(apiUrl(`/api/daemons/${daemonId}/reconnect`), {
         method: "POST",
       });
-      const j = (await res.json().catch(() => null)) as {
-        ok?: boolean;
-        error?: string;
-      } | null;
-      if (res.ok && j?.ok) {
-        void load(); // refresh online state / rows
-        return { ok: true };
-      }
-      return { ok: false, error: j?.error || `HTTP ${res.status}` };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      // A bare fetch throw is a network-level failure (the browser's terse
+      // "Load failed"/"NetworkError") — name what it actually means.
+      return {
+        ok: false,
+        error: `couldn't reach the local daemon — is it running? (${e instanceof Error ? e.message : String(e)})`,
+      };
     }
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      // HTML/empty ⇒ the route doesn't exist on this daemon build.
+      return {
+        ok: false,
+        error: `unexpected response (HTTP ${res.status}${ct ? `, ${ct}` : ""}). Your local daemon may be an older build without the reconnect route — rebuild + restart it.`,
+      };
+    }
+    const j = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      localPort?: number;
+      error?: string;
+    } | null;
+    if (res.ok && j?.ok) {
+      void load(); // refresh online state / rows
+      return { ok: true };
+    }
+    return { ok: false, error: j?.error || `reconnect failed (HTTP ${res.status})` };
   }
 
   /** Diagnose a remote daemon's connection (GET .../connection): ssh present
@@ -4638,12 +4653,25 @@
   async function diagnoseDaemonConnection(
     daemonId: string,
   ): Promise<ConnectionDiagnosis> {
-    const res = await fetch(apiUrl(`/api/daemons/${daemonId}/connection`));
+    let res: Response;
+    try {
+      res = await fetch(apiUrl(`/api/daemons/${daemonId}/connection`));
+    } catch (e) {
+      throw new Error(
+        `couldn't reach the local daemon — is it running? (${e instanceof Error ? e.message : String(e)})`,
+      );
+    }
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      throw new Error(
+        `unexpected response (HTTP ${res.status}${ct ? `, ${ct}` : ""}). Your local daemon may be an older build without this route — rebuild + restart it.`,
+      );
+    }
     const j = (await res.json().catch(() => null)) as
       | (Partial<ConnectionDiagnosis> & { error?: string })
       | null;
     if (!res.ok || !j || !Array.isArray(j.steps)) {
-      throw new Error(j?.error || `diagnose failed (${res.status})`);
+      throw new Error(j?.error || `diagnose failed (HTTP ${res.status})`);
     }
     return j as ConnectionDiagnosis;
   }

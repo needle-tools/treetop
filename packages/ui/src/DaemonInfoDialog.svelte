@@ -169,7 +169,8 @@
             disabled={busy || reconnecting || diagnosing}
             title="Tear down and reopen the SSH tunnel (fixes a stale tunnel after sleep)"
           >
-            {reconnecting ? "Reconnecting…" : "Reconnect"}
+            {#if reconnecting}<span class="dd-spin" aria-hidden="true"></span
+              >Reconnecting…{:else}Reconnect{/if}
           </button>
           <button
             class="dd-conn-btn"
@@ -177,7 +178,8 @@
             disabled={busy || reconnecting || diagnosing}
             title="Check ssh, the tunnel, and the remote daemon's health"
           >
-            {diagnosing ? "Diagnosing…" : "Diagnose connection"}
+            {#if diagnosing}<span class="dd-spin" aria-hidden="true"></span
+              >Diagnosing…{:else}Diagnose connection{/if}
           </button>
         </div>
         {#if connMsg}
@@ -345,6 +347,25 @@
   .dd-conn-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Inline, text-height spinner that sits before the button label while a
+     reconnect/diagnose is in flight. currentColor so it matches the button
+     text in both themes. */
+  .dd-spin {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-right: 0.45em;
+    vertical-align: -0.1em;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: dd-spin 0.7s linear infinite;
+  }
+  @keyframes dd-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .dd-conn-msg {
     margin: 0.5rem 0 0;
