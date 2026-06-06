@@ -63,6 +63,11 @@ export interface TunnelManagerOptions {
    *  remote isn't on the client's loopback). See plans/PLAN-REMOTE-DAEMON.md
    *  "Two-daemon integration tests". */
   direct?: boolean;
+  /** Where to send lifecycle breadcrumbs (open / up / ssh-exit / close).
+   *  Defaults to a no-op; server.ts wires `console.log` so they land in
+   *  `<workspace>/daemon.log` — the trail for "the remote went offline after
+   *  the laptop slept" (the ssh exits on wake; the next request reopens). */
+  log?: (msg: string) => void;
 }
 
 /** A stand-in TunnelProc for direct mode — there's no ssh child, so kill()
@@ -186,6 +191,7 @@ export class TunnelManager {
   private readonly waitForPort: PortReadyCheck;
   private readonly readyTimeoutMs: number;
   private readonly direct: boolean;
+  private readonly log: (msg: string) => void;
 
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
@@ -195,6 +201,7 @@ export class TunnelManager {
     this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 8000;
     this.direct = opts.direct ?? false;
+    this.log = opts.log ?? (() => {});
   }
 
   /** Open (or return the existing) tunnel for a remote daemon. Idempotent
@@ -228,17 +235,24 @@ export class TunnelManager {
       return tunnel;
     }
 
+    const who = daemon.label || daemon.host;
     const localPort = await this.allocatePort();
+    this.log(`[tunnel] opening ${who} → ssh -L ${localPort}:127.0.0.1:${daemon.port}`);
     const proc = this.spawn(buildSshTunnelArgs(daemon, localPort));
     const tunnel: Tunnel = { id: daemon.id, localPort, proc };
     this.tunnels.set(daemon.id, tunnel);
 
     // If ssh exits (connection dropped, auth failed, forward couldn't
     // bind), stop tracking it so the next open() spawns a fresh one. Guard
-    // on identity: a later open() may have replaced this tunnel.
-    void proc.exited.then(() => {
+    // on identity: a later open() may have replaced this tunnel. This is the
+    // sleep/wake path: the laptop wakes, ssh's keepalive trips, the proc
+    // exits here, and the next proxied request reopens a fresh tunnel.
+    void proc.exited.then((code) => {
       if (this.tunnels.get(daemon.id) === tunnel) {
         this.tunnels.delete(daemon.id);
+        this.log(
+          `[tunnel] ssh for ${who} exited (code ${code}) — will reopen on next request`,
+        );
       }
     });
 
@@ -259,11 +273,13 @@ export class TunnelManager {
         // already dead
       }
       const detail = sshErr ? ` — ssh said: ${sshErr}` : "";
+      this.log(`[tunnel] failed to open ${who}${detail}`);
       throw new Error(
-        `tunnel to ${daemon.label || daemon.host} did not come up within ${this.readyTimeoutMs}ms${detail}`,
+        `tunnel to ${who} did not come up within ${this.readyTimeoutMs}ms${detail}`,
       );
     }
 
+    this.log(`[tunnel] up: ${who} on :${localPort}`);
     return tunnel;
   }
 
@@ -286,6 +302,7 @@ export class TunnelManager {
     } catch {
       // already dead — nothing to do
     }
+    this.log(`[tunnel] closed ${id}`);
     return true;
   }
 

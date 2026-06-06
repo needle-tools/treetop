@@ -117,3 +117,72 @@ export async function forwardToRemote(
     );
   }
 }
+
+export interface ReconnectDeps {
+  /** Ensure a tunnel is open for this daemon and return its local port.
+   *  Throws on "no such daemon" / "tunnel couldn't be opened" — the FIRST
+   *  call's throw propagates so the handler can map it to 404/502. */
+  openPort: () => Promise<number>;
+  /** Tear down the current tunnel so the next openPort() spawns a fresh ssh. */
+  closeTunnel: () => Promise<void>;
+  /** Optional breadcrumb sink (server wires console.log → daemon.log). */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Forward to a remote daemon, self-healing a stale tunnel.
+ *
+ * The failure this fixes: after the laptop (or the box) sleeps and wakes,
+ * the `ssh -L` process is half-dead — the TCP connection is broken but ssh
+ * hasn't noticed yet (its keepalive takes ServerAliveInterval*CountMax ≈
+ * 45s to trip). Until then the tunnel stays "open", so every forwarded
+ * request lands on a dead local port → forwardToRemote returns its 502
+ * ("remote daemon unreachable"). The user sees the remote go offline for
+ * ~45s for no apparent reason.
+ *
+ * Here, a 502 from the FIRST forward (a connection error — an upstream 5xx
+ * passes through with its own status, never 502 from us) means "tunnel
+ * probably dead": tear it down so the next request reopens. For idempotent
+ * methods (GET/HEAD) we also reopen + retry inline so the very request that
+ * hit the stale tunnel still succeeds. A non-idempotent body is already
+ * consumed by the first fetch and can't be replayed, so those only get the
+ * teardown (their natural retry / the UI's 5s poll then lands on a fresh
+ * tunnel).
+ */
+export async function forwardWithReconnect(
+  proxied: DaemonProxyPath,
+  req: Request,
+  search: string,
+  cors: Record<string, string>,
+  deps: ReconnectDeps,
+): Promise<Response> {
+  // First openPort() throw propagates (→ handler's 404/502 mapping).
+  const resp = await forwardToRemote(
+    await deps.openPort(),
+    proxied,
+    req,
+    search,
+    cors,
+  );
+  if (resp.status !== 502) return resp;
+
+  const idempotent = req.method === "GET" || req.method === "HEAD";
+  deps.log?.(
+    `[tunnel] forward to ${proxied.id} failed (502) — reopening stale tunnel` +
+      (idempotent ? " and retrying" : ` (${req.method}: won't replay body)`),
+  );
+  await deps.closeTunnel();
+  if (!idempotent) return resp;
+  try {
+    return await forwardToRemote(
+      await deps.openPort(),
+      proxied,
+      req,
+      search,
+      cors,
+    );
+  } catch {
+    // Reopen failed (host still unreachable) — surface the original 502.
+    return resp;
+  }
+}

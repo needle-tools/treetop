@@ -1,5 +1,9 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { forwardToRemote, parseDaemonProxyPath } from "../src/daemon-proxy";
+import {
+  forwardToRemote,
+  forwardWithReconnect,
+  parseDaemonProxyPath,
+} from "../src/daemon-proxy";
 
 /**
  * TIER 2 — in-process two-"daemon" proxy test.
@@ -196,5 +200,113 @@ describe("forwardToRemote (Tier 2: real in-process remote)", () => {
     const res = await forwardToRemote(deadPort, proxied, req, "", NO_CORS);
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatch(/unreachable/);
+  });
+});
+
+describe("forwardWithReconnect (sleep/wake self-heal)", () => {
+  const proxied = () => parseDaemonProxyPath("/api/daemons/d1/health")!;
+  const DEAD = 1; // privileged + nothing there → connection fails fast
+
+  test("GET hitting a stale tunnel reopens and retries onto the live one", async () => {
+    // First openPort hands back a dead port (the half-dead tunnel after
+    // wake); the retry hands back the real remote → the SAME request still
+    // succeeds, and the stale tunnel got torn down exactly once.
+    const ports = [DEAD, remotePort];
+    let closed = 0;
+    const res = await forwardWithReconnect(
+      proxied(),
+      new Request("http://local/api/daemons/d1/health"),
+      "",
+      NO_CORS,
+      {
+        openPort: async () => ports.shift()!,
+        closeTunnel: async () => {
+          closed++;
+        },
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(closed).toBe(1);
+  });
+
+  test("a healthy first forward never closes/reopens", async () => {
+    let opens = 0;
+    let closed = 0;
+    const res = await forwardWithReconnect(
+      proxied(),
+      new Request("http://local/api/daemons/d1/health"),
+      "",
+      NO_CORS,
+      {
+        openPort: async () => {
+          opens++;
+          return remotePort;
+        },
+        closeTunnel: async () => {
+          closed++;
+        },
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(opens).toBe(1);
+    expect(closed).toBe(0);
+  });
+
+  test("a non-idempotent POST tears the tunnel down but does NOT retry (body spent)", async () => {
+    let opens = 0;
+    let closed = 0;
+    const res = await forwardWithReconnect(
+      parseDaemonProxyPath("/api/daemons/d1/echo")!,
+      new Request("http://local/api/daemons/d1/echo", {
+        method: "POST",
+        body: "payload",
+      }),
+      "",
+      NO_CORS,
+      {
+        openPort: async () => {
+          opens++;
+          return DEAD;
+        },
+        closeTunnel: async () => {
+          closed++;
+        },
+      },
+    );
+    expect(res.status).toBe(502); // surfaced, not retried
+    expect(opens).toBe(1); // opened once; no reopen
+    expect(closed).toBe(1); // but the stale tunnel was dropped for next time
+  });
+
+  test("GET where the reopen also fails surfaces the original 502", async () => {
+    const res = await forwardWithReconnect(
+      proxied(),
+      new Request("http://local/api/daemons/d1/health"),
+      "",
+      NO_CORS,
+      {
+        openPort: async () => DEAD, // dead both times
+        closeTunnel: async () => {},
+      },
+    );
+    expect(res.status).toBe(502);
+  });
+
+  test("the FIRST openPort throw propagates (handler maps it to 404/502)", async () => {
+    await expect(
+      forwardWithReconnect(
+        proxied(),
+        new Request("http://local/api/daemons/d1/health"),
+        "",
+        NO_CORS,
+        {
+          openPort: async () => {
+            throw new Error("remote daemon not found");
+          },
+          closeTunnel: async () => {},
+        },
+      ),
+    ).rejects.toThrow(/not found/);
   });
 });

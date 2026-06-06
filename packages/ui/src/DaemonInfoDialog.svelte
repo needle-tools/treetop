@@ -29,7 +29,75 @@
   export let onFocus: (repo: { id: string }) => void = () => {};
   export let onClose: () => void = () => {};
 
+  type ConnectionDiagnosis = {
+    ok: boolean;
+    localPort: number | null;
+    reachable: boolean;
+    latencyMs: number | null;
+    steps: Array<{ label: string; ok: boolean; detail: string }>;
+    summary: string;
+  };
+  /** Tear down + reopen the SSH tunnel (fixes a stale post-sleep tunnel). */
+  export let onReconnect: () => Promise<{ ok: boolean; error?: string }> =
+    async () => ({ ok: true });
+  /** Run a connection diagnosis (ssh → tunnel → health checklist). */
+  export let onDiagnose: () => Promise<ConnectionDiagnosis> = async () => ({
+    ok: true,
+    localPort: null,
+    reachable: true,
+    latencyMs: null,
+    steps: [],
+    summary: "",
+  });
+
   let busy = false;
+  let reconnecting = false;
+  let diagnosing = false;
+  let diagnosis: ConnectionDiagnosis | null = null;
+  let connMsg: { kind: "ok" | "error"; text: string } | null = null;
+
+  async function reconnect(): Promise<void> {
+    if (busy || reconnecting) return;
+    reconnecting = true;
+    connMsg = null;
+    diagnosis = null;
+    try {
+      const r = await onReconnect();
+      connMsg = r.ok
+        ? { kind: "ok", text: "Reconnected." }
+        : { kind: "error", text: r.error || "Reconnect failed." };
+    } catch (e) {
+      connMsg = {
+        kind: "error",
+        text: e instanceof Error ? e.message : String(e),
+      };
+    } finally {
+      reconnecting = false;
+    }
+  }
+
+  async function diagnose(): Promise<void> {
+    if (busy || diagnosing) return;
+    diagnosing = true;
+    connMsg = null;
+    try {
+      diagnosis = await onDiagnose();
+    } catch (e) {
+      diagnosis = null;
+      connMsg = {
+        kind: "error",
+        text: e instanceof Error ? e.message : String(e),
+      };
+    } finally {
+      diagnosing = false;
+    }
+  }
+
+  // Forget any connection result when the dialog is reopened for a daemon.
+  $: if (!open) {
+    diagnosis = null;
+    connMsg = null;
+  }
 
   function close(): void {
     if (busy) return;
@@ -91,6 +159,49 @@
             >offline</span
           >{/if}
       </p>
+
+      <div class="dd-section">
+        <span class="dd-section-label">Connection</span>
+        <div class="dd-conn-actions">
+          <button
+            class="dd-conn-btn"
+            on:click={reconnect}
+            disabled={busy || reconnecting || diagnosing}
+            title="Tear down and reopen the SSH tunnel (fixes a stale tunnel after sleep)"
+          >
+            {reconnecting ? "Reconnecting…" : "Reconnect"}
+          </button>
+          <button
+            class="dd-conn-btn"
+            on:click={diagnose}
+            disabled={busy || reconnecting || diagnosing}
+            title="Check ssh, the tunnel, and the remote daemon's health"
+          >
+            {diagnosing ? "Diagnosing…" : "Diagnose connection"}
+          </button>
+        </div>
+        {#if connMsg}
+          <p class="dd-conn-msg" class:err={connMsg.kind === "error"}>
+            {connMsg.text}
+          </p>
+        {/if}
+        {#if diagnosis}
+          <div class="dd-diag" class:ok={diagnosis.ok}>
+            <p class="dd-diag-summary">{diagnosis.summary}</p>
+            <ul class="dd-diag-steps">
+              {#each diagnosis.steps as s (s.label)}
+                <li class="dd-diag-step">
+                  <span class="dd-diag-mark" class:bad={!s.ok}
+                    >{s.ok ? "✓" : "✗"}</span
+                  >
+                  <span class="dd-diag-label">{s.label}</span>
+                  <span class="dd-diag-detail">{s.detail}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+      </div>
 
       <div class="dd-section">
         <span class="dd-section-label">Folders ({repos.length})</span>
@@ -212,6 +323,80 @@
   }
   .dd-section {
     margin-bottom: 1rem;
+  }
+  .dd-conn-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .dd-conn-btn {
+    font: inherit;
+    font-size: var(--fs-md);
+    padding: 0.3rem 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .dd-conn-btn:hover:not(:disabled) {
+    border-color: var(--brand);
+  }
+  .dd-conn-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .dd-conn-msg {
+    margin: 0.5rem 0 0;
+    font-size: var(--fs-md);
+    color: #3fb950;
+  }
+  .dd-conn-msg.err {
+    color: var(--error-text, var(--error));
+  }
+  .dd-diag {
+    margin-top: 0.6rem;
+    border: 1px solid var(--surface-2);
+    border-left: 3px solid var(--error);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.7rem;
+  }
+  .dd-diag.ok {
+    border-left-color: #3fb950;
+  }
+  .dd-diag-summary {
+    margin: 0 0 0.45rem;
+    font-size: var(--fs-md);
+  }
+  .dd-diag-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .dd-diag-step {
+    display: grid;
+    grid-template-columns: 1rem auto 1fr;
+    gap: 0.45rem;
+    align-items: baseline;
+    font-size: var(--fs-sm);
+  }
+  .dd-diag-mark {
+    color: #3fb950;
+    font-weight: 700;
+  }
+  .dd-diag-mark.bad {
+    color: var(--error-text, var(--error));
+  }
+  .dd-diag-label {
+    color: var(--text-3);
+  }
+  .dd-diag-detail {
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-word;
   }
   .dd-section-label {
     display: block;

@@ -172,6 +172,56 @@ describe("TunnelManager", () => {
     expect(mgr.get("d1")).toBeUndefined();
   });
 
+  test("close() then open() spawns a FRESH ssh (the reconnect path)", async () => {
+    // The "Reconnect" button + the sleep/wake auto-heal both do close→open.
+    // After close, open() must NOT hand back the dead tunnel — it spawns a
+    // brand-new ssh on a new local port.
+    const { mgr, spawned } = mk();
+    const a = await mgr.open(daemon());
+    await mgr.close("d1");
+    const b = await mgr.open(daemon());
+    expect(spawned).toHaveLength(2); // re-spawned, not reused
+    expect(b.localPort).not.toBe(a.localPort);
+    expect(mgr.get("d1")?.localPort).toBe(b.localPort);
+  });
+
+  test("emits log breadcrumbs for open / up / close (daemon.log trail)", async () => {
+    const logs: string[] = [];
+    const mgr = new TunnelManager({
+      spawn: () => fakeProc(),
+      allocatePort: async () => 7801,
+      waitForPort: async () => true,
+      readyTimeoutMs: 50,
+      log: (m) => logs.push(m),
+    });
+    await mgr.open(daemon());
+    await mgr.close("d1");
+    const joined = logs.join("\n");
+    expect(joined).toContain("[tunnel] opening hetzner");
+    expect(joined).toContain("[tunnel] up: hetzner on :7801");
+    expect(joined).toContain("[tunnel] closed d1");
+  });
+
+  test("logs when ssh exits on its own (the sleep/wake breadcrumb)", async () => {
+    const logs: string[] = [];
+    const procs: ReturnType<typeof fakeProc>[] = [];
+    const mgr = new TunnelManager({
+      spawn: () => {
+        const p = fakeProc();
+        procs.push(p);
+        return p;
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => true,
+      readyTimeoutMs: 50,
+      log: (m) => logs.push(m),
+    });
+    await mgr.open(daemon());
+    procs[0]!.die(255);
+    await Promise.resolve();
+    expect(logs.join("\n")).toMatch(/ssh for hetzner exited \(code 255\)/);
+  });
+
   test("closeAll() kills every tracked tunnel (shutdown cleanup)", async () => {
     const { mgr, procs } = mk();
     await mgr.open(daemon({ id: "d1" }));

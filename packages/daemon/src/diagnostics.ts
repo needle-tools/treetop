@@ -163,3 +163,96 @@ export async function buildDiagnostics(opts: {
 
   return { ok, role, self: { ...self, warnings }, daemons: results, summary };
 }
+
+// ── Per-daemon connection diagnosis ("Diagnose connection" button) ────────
+// A focused, actionable check of ONE remote daemon's link, presented as an
+// ordered checklist (ssh present → tunnel up → daemon answers health). The
+// UI renders the steps; the summary is the one-line takeaway. Pure: server.ts
+// gathers the facts (ssh path, the tunnel-open attempt, a timed health probe)
+// and passes them in.
+
+export interface DiagnosisStep {
+  /** Short name of the thing checked. */
+  label: string;
+  ok: boolean;
+  /** Human detail — the address forwarded, the version seen, or the error. */
+  detail: string;
+}
+
+export interface ConnectionDiagnosisInput {
+  daemon: { label: string; host: string; port: number };
+  /** Absolute path to ssh, or null if not on PATH. */
+  sshPath: string | null;
+  /** Result of (re)opening the tunnel for this diagnosis. */
+  tunnel: { ok: boolean; localPort: number | null; error?: string };
+  /** Result of probing /api/health through the tunnel — null if there was no
+   *  tunnel to probe through. */
+  probe: ProbeResult | null;
+  /** Round-trip time of the health probe, when it ran. */
+  latencyMs: number | null;
+}
+
+export interface ConnectionDiagnosis {
+  ok: boolean;
+  daemon: { label: string; host: string; port: number };
+  localPort: number | null;
+  reachable: boolean;
+  probe: ProbeResult | null;
+  latencyMs: number | null;
+  steps: DiagnosisStep[];
+  summary: string;
+}
+
+export function buildConnectionDiagnosis(
+  input: ConnectionDiagnosisInput,
+): ConnectionDiagnosis {
+  const { daemon, sshPath, tunnel, probe, latencyMs } = input;
+  const reachable = probe?.ok === true;
+
+  const steps: DiagnosisStep[] = [
+    {
+      label: "ssh client",
+      ok: sshPath !== null,
+      detail: sshPath ?? "not found on PATH — tunnels can't be opened",
+    },
+    {
+      label: "SSH tunnel",
+      ok: tunnel.ok,
+      detail: tunnel.ok
+        ? `forwarding 127.0.0.1:${tunnel.localPort} → ${daemon.host}:${daemon.port}`
+        : (tunnel.error ?? "could not open the tunnel"),
+    },
+    {
+      label: "daemon health",
+      ok: reachable,
+      detail: reachable
+        ? `responded${probe?.version ? ` (v${probe.version})` : ""}` +
+          (latencyMs != null ? ` in ${latencyMs}ms` : "")
+        : !tunnel.ok
+          ? "skipped — no tunnel"
+          : (probe?.error ?? "no response from /api/health"),
+    },
+  ];
+
+  const ok = steps.every((s) => s.ok);
+  const name = daemon.label || daemon.host;
+  const summary = ok
+    ? `${name} is reachable — ${daemon.host}:${daemon.port}` +
+      (probe?.version ? ` (v${probe.version})` : "") +
+      (latencyMs != null ? `, ${latencyMs}ms` : "")
+    : (() => {
+        const failed = steps.find((s) => !s.ok)!;
+        return `${name} unreachable — ${failed.label}: ${failed.detail}`;
+      })();
+
+  return {
+    ok,
+    daemon,
+    localPort: tunnel.localPort,
+    reachable,
+    probe,
+    latencyMs,
+    steps,
+    summary,
+  };
+}

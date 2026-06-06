@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   buildDiagnostics,
+  buildConnectionDiagnosis,
   type DaemonSelfInfo,
   type RemoteDaemonProbeInput,
   type Probe,
@@ -180,5 +181,69 @@ describe("buildDiagnostics — remote role (this daemon diagnosed as someone's r
     );
     expect(r.ok).toBe(false);
     expect(r.summary).toMatch(/all interfaces/);
+  });
+});
+
+describe("buildConnectionDiagnosis (per-daemon 'Diagnose connection')", () => {
+  const daemon = { label: "hetzner", host: "1.2.3.4", port: 7777 };
+
+  test("all green: ssh + tunnel + health → reachable", () => {
+    const d = buildConnectionDiagnosis({
+      daemon,
+      sshPath: "/usr/bin/ssh",
+      tunnel: { ok: true, localPort: 7801 },
+      probe: { ok: true, status: "ok", version: "0.1.0" },
+      latencyMs: 12,
+    });
+    expect(d.ok).toBe(true);
+    expect(d.reachable).toBe(true);
+    expect(d.steps.map((s) => s.ok)).toEqual([true, true, true]);
+    expect(d.summary).toMatch(/reachable/);
+    expect(d.summary).toMatch(/v0\.1\.0/);
+    expect(d.summary).toMatch(/12ms/);
+  });
+
+  test("no ssh on PATH: first step fails, summary blames ssh", () => {
+    const d = buildConnectionDiagnosis({
+      daemon,
+      sshPath: null,
+      tunnel: { ok: false, localPort: null, error: "ssh not found" },
+      probe: null,
+      latencyMs: null,
+    });
+    expect(d.ok).toBe(false);
+    expect(d.steps[0]!.ok).toBe(false);
+    expect(d.summary).toMatch(/ssh client/);
+  });
+
+  test("tunnel won't open: health is skipped, summary blames the tunnel", () => {
+    const d = buildConnectionDiagnosis({
+      daemon,
+      sshPath: "/usr/bin/ssh",
+      tunnel: {
+        ok: false,
+        localPort: null,
+        error: "Permission denied (publickey)",
+      },
+      probe: null,
+      latencyMs: null,
+    });
+    expect(d.ok).toBe(false);
+    expect(d.steps[1]!.ok).toBe(false);
+    expect(d.steps[2]!.detail).toMatch(/skipped/);
+    expect(d.summary).toMatch(/Permission denied/);
+  });
+
+  test("tunnel up but daemon silent: surfaces the probe error", () => {
+    const d = buildConnectionDiagnosis({
+      daemon,
+      sshPath: "/usr/bin/ssh",
+      tunnel: { ok: true, localPort: 7801 },
+      probe: { ok: false, error: "connection reset" },
+      latencyMs: null,
+    });
+    expect(d.ok).toBe(false);
+    expect(d.steps[2]!.ok).toBe(false);
+    expect(d.summary).toMatch(/connection reset/);
   });
 });

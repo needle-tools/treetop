@@ -99,7 +99,7 @@ import { SyncTracker } from "./ssh-sync";
 import { TunnelManager } from "./tunnel-manager";
 import {
   parseDaemonProxyPath,
-  forwardToRemote,
+  forwardWithReconnect,
   buildProxyWsUrl,
 } from "./daemon-proxy";
 import { RemoteWsBridge } from "./daemon-ws-proxy";
@@ -177,7 +177,7 @@ import {
   MAX_BODY_BYTES,
 } from "./messages";
 import { record, snapshot as timingsSnapshot } from "./timings";
-import { buildDiagnostics } from "./diagnostics";
+import { buildDiagnostics, buildConnectionDiagnosis } from "./diagnostics";
 import { decodeConnectionString } from "./connection-string";
 import { writePrivateKey } from "./write-private-key";
 import { resolveInstallPayload } from "./install-payload";
@@ -351,7 +351,31 @@ const sshSyncTracker = new SyncTracker(
 // daemons on localhost (no real network hop to tunnel). Never set in prod.
 const tunnelManager = new TunnelManager({
   direct: process.env.SUPERGIT_TUNNEL_DIRECT === "1",
+  // Breadcrumbs to daemon.log so "the remote went offline after my laptop
+  // slept" is diagnosable — the ssh exits on wake, the next request reopens.
+  log: (msg) => console.log(`supergit daemon: ${msg}`),
 });
+
+/** Probe a remote daemon's `/api/health` through its local tunnel port.
+ *  Shared by `/api/diagnose` and the per-daemon `/connection` check. Never
+ *  throws — a failure becomes `{ ok: false, error }`. */
+async function healthProbe(
+  localPort: number,
+): Promise<{ ok: boolean; status?: string; version?: string; error?: string }> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${localPort}/api/health`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+    return {
+      ok: r.ok,
+      status: typeof j.status === "string" ? j.status : undefined,
+      version: typeof j.version === "string" ? j.version : undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 /** Ensure a tunnel is open for a registered remote daemon and return its
  *  local loopback port. Throws if the id isn't registered. */
@@ -1978,27 +2002,7 @@ const server = Bun.serve<TermWsData, never>({
           },
           role,
           daemons: daemonInputs,
-          probe: (localPort) =>
-            fetch(`http://127.0.0.1:${localPort}/api/health`, {
-              signal: AbortSignal.timeout(4000),
-            })
-              .then(async (r) => {
-                const j = (await r.json().catch(() => ({}))) as Record<
-                  string,
-                  unknown
-                >;
-                return {
-                  ok: r.ok,
-                  status:
-                    typeof j.status === "string" ? j.status : undefined,
-                  version:
-                    typeof j.version === "string" ? j.version : undefined,
-                };
-              })
-              .catch((e) => ({
-                ok: false,
-                error: e instanceof Error ? e.message : String(e),
-              })),
+          probe: (localPort) => healthProbe(localPort),
         });
         return json(report);
       }
@@ -7660,6 +7664,75 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      {
+        // Force-reconnect a remote daemon's tunnel: tear down the (possibly
+        // half-dead, post-sleep) ssh and open a fresh one. Manual counterpart
+        // to the proxy's automatic self-heal. Must precede the generic proxy.
+        const reM = url.pathname.match(/^\/api\/daemons\/([^/]+)\/reconnect$/);
+        if (reM && req.method === "POST") {
+          const id = reM[1]!;
+          const daemons = await workspace.listRemoteDaemons();
+          const daemon = daemons.find((d) => d.id === id);
+          if (!daemon) {
+            return json({ error: "remote daemon not found" }, { status: 404 });
+          }
+          console.log(
+            `supergit daemon: [tunnel] manual reconnect requested for ${daemon.label || daemon.host}`,
+          );
+          await tunnelManager.close(id);
+          try {
+            const tunnel = await tunnelManager.open(daemon);
+            return json({ ok: true, localPort: tunnel.localPort });
+          } catch (e) {
+            return json(
+              { ok: false, error: e instanceof Error ? e.message : String(e) },
+              { status: 502 },
+            );
+          }
+        }
+      }
+
+      {
+        // Diagnose ONE remote daemon's connection: ssh-on-PATH → tunnel up →
+        // health probe (timed), returned as an ordered checklist. (Re)opens
+        // the tunnel as part of the check so it doubles as a probe. Local —
+        // must precede the generic proxy.
+        const dgM = url.pathname.match(/^\/api\/daemons\/([^/]+)\/connection$/);
+        if (dgM && req.method === "GET") {
+          const id = dgM[1]!;
+          const daemons = await workspace.listRemoteDaemons();
+          const daemon = daemons.find((d) => d.id === id);
+          if (!daemon) {
+            return json({ error: "remote daemon not found" }, { status: 404 });
+          }
+          const sshPath = Bun.which("ssh");
+          let tunnel: { ok: boolean; localPort: number | null; error?: string };
+          let probe: Awaited<ReturnType<typeof healthProbe>> | null = null;
+          let latencyMs: number | null = null;
+          try {
+            const localPort = await ensureRemoteTunnelPort(id);
+            tunnel = { ok: true, localPort };
+            const t0 = performance.now();
+            probe = await healthProbe(localPort);
+            latencyMs = Math.round(performance.now() - t0);
+          } catch (e) {
+            tunnel = {
+              ok: false,
+              localPort: null,
+              error: e instanceof Error ? e.message : String(e),
+            };
+          }
+          const diagnosis = buildConnectionDiagnosis({
+            daemon: { label: daemon.label, host: daemon.host, port: daemon.port },
+            sshPath: sshPath ?? null,
+            tunnel,
+            probe,
+            latencyMs,
+          });
+          return json(diagnosis);
+        }
+      }
+
       if (url.pathname === "/api/daemons" && req.method === "POST") {
         const body = (await req.json().catch(() => null)) as Record<
           string,
@@ -7715,14 +7788,23 @@ const server = Bun.serve<TermWsData, never>({
           return json({ ok: true });
         }
         if (proxied) {
-          let localPort: number;
+          // Forwarding (and the sleep/wake self-heal) live in daemon-proxy.ts
+          // so they're testable against a real in-process remote. A stale
+          // tunnel (laptop slept → ssh half-dead) makes the first forward
+          // 502; forwardWithReconnect tears it down + reopens, retrying the
+          // request inline when it's idempotent.
           try {
-            localPort = await ensureRemoteTunnelPort(proxied.id);
+            return await forwardWithReconnect(proxied, req, url.search, CORS, {
+              openPort: () => ensureRemoteTunnelPort(proxied.id),
+              closeTunnel: () =>
+                tunnelManager.close(proxied.id).then(() => undefined),
+              log: (m) => console.log(`supergit daemon: ${m}`),
+            });
           } catch (e) {
-            // Distinguish "no such daemon" (404) from "the tunnel couldn't
-            // be brought up" (502) — they need different fixes and lumping
-            // both under "not found" hid real tunnel failures (auth, host
-            // unreachable, listener never bound). Surface the actual error.
+            // ensureRemoteTunnelPort threw on the FIRST attempt. Distinguish
+            // "no such daemon" (404) from "the tunnel couldn't be brought up"
+            // (502) — they need different fixes, and lumping both under "not
+            // found" hid real tunnel failures (auth, host unreachable).
             const msg = e instanceof Error ? e.message : String(e);
             const notFound = msg.includes("remote daemon not found");
             return json(
@@ -7730,9 +7812,6 @@ const server = Bun.serve<TermWsData, never>({
               { status: notFound ? 404 : 502 },
             );
           }
-          // Forwarding logic lives in daemon-proxy.ts so it can be tested
-          // against a real in-process remote (daemon-proxy-forward.test.ts).
-          return forwardToRemote(localPort, proxied, req, url.search, CORS);
         }
       }
 

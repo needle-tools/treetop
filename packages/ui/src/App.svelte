@@ -4599,6 +4599,55 @@
     }
   }
 
+  type ConnectionDiagnosis = {
+    ok: boolean;
+    daemon: { label: string; host: string; port: number };
+    localPort: number | null;
+    reachable: boolean;
+    latencyMs: number | null;
+    steps: Array<{ label: string; ok: boolean; detail: string }>;
+    summary: string;
+  };
+
+  /** Force-reconnect a remote daemon's SSH tunnel (POST .../reconnect). The
+   *  daemon registry/tunnel is local, so NOT daemon-routed. Refreshes the
+   *  row list on success so the online badge flips. */
+  async function reconnectDaemon(
+    daemonId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(apiUrl(`/api/daemons/${daemonId}/reconnect`), {
+        method: "POST",
+      });
+      const j = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+      } | null;
+      if (res.ok && j?.ok) {
+        void load(); // refresh online state / rows
+        return { ok: true };
+      }
+      return { ok: false, error: j?.error || `HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Diagnose a remote daemon's connection (GET .../connection): ssh present
+   *  → tunnel up → health probe, as an ordered checklist. Local route. */
+  async function diagnoseDaemonConnection(
+    daemonId: string,
+  ): Promise<ConnectionDiagnosis> {
+    const res = await fetch(apiUrl(`/api/daemons/${daemonId}/connection`));
+    const j = (await res.json().catch(() => null)) as
+      | (Partial<ConnectionDiagnosis> & { error?: string })
+      | null;
+    if (!res.ok || !j || !Array.isArray(j.steps)) {
+      throw new Error(j?.error || `diagnose failed (${res.status})`);
+    }
+    return j as ConnectionDiagnosis;
+  }
+
   /** Close the manage-daemon dialog and scroll the dashboard to a repo's
    *  row (rows carry data-repo-id). Two ticks so the dialog has unmounted
    *  and layout settled before scrollIntoView reads geometry. */
@@ -9741,6 +9790,16 @@
     const id = daemonDialogId;
     if (!id) return;
     if (await uninstallDaemonOnBox(id)) daemonDialogId = null;
+  }}
+  onReconnect={async () => {
+    const id = daemonDialogId;
+    if (!id) return { ok: false, error: "no daemon" };
+    return reconnectDaemon(id);
+  }}
+  onDiagnose={async () => {
+    const id = daemonDialogId;
+    if (!id) throw new Error("no daemon");
+    return diagnoseDaemonConnection(id);
   }}
   onFocus={(r) => void focusRepoRow(r.id)}
   onClose={() => (daemonDialogId = null)}
