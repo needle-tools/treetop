@@ -490,7 +490,11 @@ if (isWin) {
       SendMessageW: { args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.u64], returns: FFIType.u64 },
       LoadImageW:   { args: [FFIType.u64, FFIType.u64, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.u64 },
     });
-    const title16 = new Uint8Array(Buffer.from("Supergit\0", "utf-16le"));
+    // Must match the BrowserWindow title above (PRODUCT_NAME). If this
+    // string drifts from the real window title, FindWindowW returns 0 and
+    // the dark caption / icon below are silently skipped — the title bar
+    // reverts to default light Windows chrome.
+    const title16 = new Uint8Array(Buffer.from(`${PRODUCT_NAME}\0`, "utf-16le"));
     const hwnd = user32.symbols.FindWindowW(0n, BigInt(ptr(title16)));
     if (hwnd && hwnd !== 0n) {
       // ── Icon ──
