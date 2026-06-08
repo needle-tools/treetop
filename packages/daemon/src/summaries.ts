@@ -49,6 +49,11 @@ export interface SummaryFrontmatter {
   source: string;
   agent: "claude" | "codex" | "ollama";
   sessionId?: string;
+  /** Short AI-generated label for the session, produced alongside the
+   *  summary. Optional — older summaries predate it. The UI shows it as
+   *  the session's name when the user hasn't set one, and as the rename
+   *  placeholder. */
+  title?: string;
   model: string;
   sourceMtimeMs: number;
   generatedAt: string;
@@ -109,6 +114,7 @@ export class SummariesStore {
       source: sourcePath,
       agent: input.agent,
       sessionId: input.sessionId,
+      title: input.title,
       model: input.model,
       sourceMtimeMs: input.sourceMtimeMs,
       generatedAt: input.generatedAt,
@@ -394,6 +400,7 @@ export function renderFile(fm: SummaryFrontmatter, body: string): string {
   lines.push(`source: ${quoteYaml(fm.source)}`);
   lines.push(`agent: ${fm.agent}`);
   if (fm.sessionId) lines.push(`sessionId: ${quoteYaml(fm.sessionId)}`);
+  if (fm.title) lines.push(`title: ${quoteYaml(fm.title)}`);
   lines.push(`model: ${quoteYaml(fm.model)}`);
   lines.push(`sourceMtimeMs: ${fm.sourceMtimeMs}`);
   lines.push(`generatedAt: ${quoteYaml(fm.generatedAt)}`);
@@ -468,6 +475,7 @@ function parseFrontmatter(text: string): SummaryFrontmatter | null {
     source: String(out.source),
     agent,
     sessionId: typeof out.sessionId === "string" ? out.sessionId : undefined,
+    title: typeof out.title === "string" ? out.title : undefined,
     model: String(out.model),
     sourceMtimeMs: Number(out.sourceMtimeMs),
     generatedAt: String(out.generatedAt),

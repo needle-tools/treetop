@@ -209,6 +209,7 @@
     title?: string;
     lastUserMessage?: string;
     manualTitle?: string;
+    aiTitle?: string;
     firstUserMessage?: string;
     lastUserMessages?: string[];
     userMessageCount?: number;
@@ -2584,6 +2585,7 @@
       agent = found.agent;
       label =
         found.manualTitle?.trim() ||
+        found.aiTitle?.trim() ||
         found.title?.trim() ||
         found.firstUserMessage?.trim() ||
         (found.sessionId ? `session ${found.sessionId.slice(0, 8)}` : label);
@@ -5560,6 +5562,7 @@
     branch?: string;
     title?: string;
     manualTitle?: string;
+    aiTitle?: string;
     lastUserMessage?: string;
     lastActive?: string;
     lastMessageTs?: string;
@@ -5651,6 +5654,7 @@
               meta?.manualTitle ??
               newSessionTitles[titleSource] ??
               newSessionTitles[s.source],
+            aiTitle: meta?.aiTitle,
             lastUserMessage: meta?.lastUserMessage,
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
@@ -5801,7 +5805,7 @@
             : e.finishedAt !== undefined
               ? ("unread" as const)
               : ("idle" as const),
-        name: (e.manualTitle || e.title || e.branch || "").trim(),
+        name: (e.manualTitle || e.aiTitle || e.title || e.branch || "").trim(),
         agent: e.agent,
       })),
   );
@@ -7978,7 +7982,7 @@
                         class:active={isOpenInWt(wt.path, a.source, openSessionsByWt)}
                         title={activeTuis.length > 1
                           ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
-                          : `${a.manualTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
+                          : `${a.manualTitle ?? a.aiTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
                         on:click|stopPropagation={() => {
                           // With several live TUIs, the badge becomes a
                           // jumper popover — listing only sessions whose
@@ -8009,6 +8013,13 @@
                       >
                         {#if a.manualTitle}
                           <span class="agent-manual-title">{a.manualTitle}</span
+                          >
+                          <span class="muted small"
+                            >{relTime(a.lastActive)}</span
+                          >
+                        {:else if a.aiTitle}
+                          <span class="agent-manual-title ai-title"
+                            >{a.aiTitle}</span
                           >
                           <span class="muted small"
                             >{relTime(a.lastActive)}</span
@@ -9196,6 +9207,7 @@
                                   manualTitle={newAgentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
                                     newSessionTitles[s.source]}
+                                  aiTitle={newAgentMeta?.aiTitle}
                                   awaiting={!!transientAwaiting[s.source]}
                                   working={!!transientWorking[s.source]}
                                   totalMessageCount={newAgentMeta?.messageCount}
@@ -9568,6 +9580,7 @@
                                     {/if}
                                     <span class="session-col-extra-title">
                                       {extra.manualTitle ??
+                                        extra.aiTitle ??
                                         extra.title ??
                                         "(no title)"}
                                     </span>

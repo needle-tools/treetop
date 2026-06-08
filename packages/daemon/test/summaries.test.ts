@@ -83,6 +83,50 @@ describe("SummariesStore", () => {
     );
   });
 
+  test("write → read round-trip preserves an optional title", async () => {
+    const ws = await tempWorkspace();
+    const store = await SummariesStore.open(ws);
+    const source = "/x/session.jsonl";
+    await store.write(source, {
+      agent: "claude",
+      model: "llama3.2:3b",
+      title: "Wire up the websocket bridge",
+      sourceMtimeMs: 1,
+      generatedAt: "2026-05-21T00:00:00.000Z",
+      includedMessages: 10,
+      totalMessages: 10,
+      truncatedMessages: 0,
+      estimatedTokens: 100,
+      elapsedMs: 1000,
+      body: "first",
+    });
+    const got = await store.read(source);
+    expect(got!.frontmatter.title).toBe("Wire up the websocket bridge");
+  });
+
+  test("title is optional — summaries without one read back undefined", async () => {
+    // Back-compat: existing on-disk summaries predate the title field
+    // and must still parse.
+    const ws = await tempWorkspace();
+    const store = await SummariesStore.open(ws);
+    const source = "/x/session.jsonl";
+    await store.write(source, {
+      agent: "claude",
+      model: "llama3.2:3b",
+      sourceMtimeMs: 1,
+      generatedAt: "2026-05-21T00:00:00.000Z",
+      includedMessages: 10,
+      totalMessages: 10,
+      truncatedMessages: 0,
+      estimatedTokens: 100,
+      elapsedMs: 1000,
+      body: "first",
+    });
+    const got = await store.read(source);
+    expect(got).not.toBeNull();
+    expect(got!.frontmatter.title).toBeUndefined();
+  });
+
   test("read returns null when no summary has been written", async () => {
     const ws = await tempWorkspace();
     const store = await SummariesStore.open(ws);

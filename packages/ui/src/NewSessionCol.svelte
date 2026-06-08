@@ -56,6 +56,10 @@
    *  `newSessionTitles` map, persisted server-side via `/api/session/title`).
    *  Empty / undefined → render the "Name this session…" placeholder. */
   export let manualTitle: string | undefined = undefined;
+  /** AI-generated title for this session (from the cached Ollama
+   *  summary, surfaced on the detected agent via `/api/repos`). Shown as
+   *  the rename input's placeholder when there's no manual title. */
+  export let aiTitle: string | undefined = undefined;
   /** Whether the inline TUI is currently paused waiting for user input.
    *  Drives the amber pulse border + "needs input" pill in the header.
    *  Lives in App.svelte (it's also read for poll-cadence tuning), so
@@ -254,6 +258,7 @@
     {agentSettings}
     {source}
     manualTitle={manualTitle ?? ""}
+    aiTitle={aiTitle ?? ""}
     mode="terminal"
     canResume={false}
     canEnd

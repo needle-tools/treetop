@@ -23,6 +23,7 @@ export interface AgentSession {
   sessionId?: string;
   title?: string;
   manualTitle?: string;
+  aiTitle?: string;
   lastUserMessage?: string;
   firstUserMessage?: string;
   lastUserMessages?: string[];
@@ -67,6 +68,7 @@ export function scoreSession(s: AgentSession, rawQuery: string): number {
   const titleHit = Math.max(
     fieldScore(s.title, q),
     fieldScore(s.manualTitle, q),
+    fieldScore(s.aiTitle, q),
   );
   score += titleHit * W_TITLE;
   score += fieldScore(s.firstUserMessage, q) * W_FIRST;
@@ -92,6 +94,11 @@ export function scoreSession(s: AgentSession, rawQuery: string): number {
 export function sessionDisplayTitle(s: AgentSession): string {
   const manual = (s.manualTitle ?? "").trim();
   if (manual) return manual;
+  // No user-set name, but a cached Ollama summary produced a title —
+  // prefer it over message/auto-summary fallbacks (mirrors the row
+  // render order in SessionSearchList.svelte).
+  const ai = (s.aiTitle ?? "").trim();
+  if (ai) return ai;
   // Shell sessions don't get an agent-side title; the captured
   // command is the natural "what is this" stand-in.
   if (s.agent === "shell") {

@@ -51,6 +51,7 @@ export interface SearchScope {
     sessionId?: string;
     title?: string;
     manualTitle?: string;
+    aiTitle?: string;
     lastUserMessage?: string;
     firstUserMessage?: string;
     lastUserMessages?: string[];

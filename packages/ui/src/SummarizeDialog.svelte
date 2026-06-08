@@ -40,6 +40,7 @@
     source: string;
     agent: string;
     sessionId?: string;
+    title?: string;
     model: string;
     sourceMtimeMs: number;
     generatedAt: string;
@@ -81,6 +82,9 @@
     elapsedMs?: number;
   } | null = null;
   let chosenModel = "";
+  /** AI-generated title for this session — shown above the summary body.
+   *  Set from the cached frontmatter or the stream's `done` event. */
+  let generatedTitle = "";
   let errorMsg = "";
   let pullLines: string[] = [];
   let copyFlash = false;
@@ -125,6 +129,7 @@
     errorMsg = "";
     pullLines = [];
     chosenModel = "";
+    generatedTitle = "";
 
     const qs = new URLSearchParams({ source: src });
     const [cachedRes, modelsRes] = await Promise.allSettled([
@@ -145,6 +150,7 @@
       cached = cachedBody.summary;
       stale = cachedBody.stale === true;
       body = cached.body;
+      generatedTitle = cached.frontmatter.title ?? "";
       meta = {
         model: cached.frontmatter.model,
         totalMessages: cached.frontmatter.totalMessages,
@@ -209,6 +215,7 @@
     state = "running";
     body = "";
     errorMsg = "";
+    generatedTitle = "";
     localStorage.setItem("supergit:summarize:lastModel", chosenModel);
     aborter = new AbortController();
     try {
@@ -233,6 +240,7 @@
       if (refresh?.summary) {
         cached = refresh.summary;
         stale = refresh.stale === true;
+        generatedTitle = refresh.summary.frontmatter.title ?? generatedTitle;
       }
       // `state` may have been mutated to "error" by handleSseFrame's
       // closure during the stream — cast widens the narrowed type
@@ -281,8 +289,9 @@
     } else if (event === "chunk") {
       body += (payload as { delta?: string }).delta ?? "";
     } else if (event === "done") {
-      const p = payload as { elapsedMs?: number };
+      const p = payload as { elapsedMs?: number; title?: string };
       meta = { ...(meta ?? {}), elapsedMs: p.elapsedMs };
+      if (p.title) generatedTitle = p.title;
     } else if (event === "error") {
       errorMsg = (payload as { message?: string }).message ?? "Ollama error";
       state = "error";
@@ -456,6 +465,9 @@
           {/if}
         </div>
         <div class="body summary">
+          {#if generatedTitle && state !== "error"}
+            <p class="ai-title" title="AI-generated title">{generatedTitle}</p>
+          {/if}
           {#if state === "error"}
             <p class="error">{errorMsg}</p>
           {:else if body}
@@ -643,6 +655,12 @@
   }
   .body .error {
     color: #e74c3c;
+  }
+  .body .ai-title {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-1, inherit);
   }
   .body code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

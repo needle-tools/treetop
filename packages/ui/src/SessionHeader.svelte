@@ -65,6 +65,10 @@
   export let settingsPlaceholder: string | undefined = undefined;
   export let source: string;
   export let manualTitle: string = "";
+  /** AI-generated title (from the cached Ollama summary). When the user
+   *  hasn't set a manual title, it's shown as the rename input's
+   *  placeholder instead of the generic "Name this session…". */
+  export let aiTitle: string = "";
   /** "read" hides Stop Session / fullscreen; "terminal" shows them. */
   export let mode: "read" | "terminal" = "terminal";
   /** Whether the column should expose a Resume button (only meaningful
@@ -450,6 +454,7 @@
     <ManualTitle
       {source}
       value={manualTitle}
+      placeholder={aiTitle?.trim() ? aiTitle : "Name this session…"}
       extraTooltip={titleTooltipExtra}
       on:saved={(e) => onTitleSaved(e.detail.title)}
       onEditingChange={onTitleEditingChange}

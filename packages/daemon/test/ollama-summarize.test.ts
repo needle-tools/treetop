@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { sampleSessionForSummary } from "../src/ollama-summarize";
+import { sampleSessionForSummary, cleanAiTitle } from "../src/ollama-summarize";
 import type { NormalizedMessage } from "../src/sessions";
 
 /** Build a user/assistant text message. */
@@ -16,6 +16,64 @@ function stretch(n: number): NormalizedMessage[] {
   }
   return out;
 }
+
+describe("cleanAiTitle", () => {
+  test("passes a clean short title through untouched", () => {
+    expect(cleanAiTitle("Fix the login redirect loop")).toBe(
+      "Fix the login redirect loop",
+    );
+  });
+
+  test("strips surrounding double and single quotes", () => {
+    expect(cleanAiTitle('"Refactor the parser"')).toBe("Refactor the parser");
+    expect(cleanAiTitle("'Refactor the parser'")).toBe("Refactor the parser");
+  });
+
+  test("strips wrapping backticks", () => {
+    expect(cleanAiTitle("`build pipeline cleanup`")).toBe(
+      "build pipeline cleanup",
+    );
+  });
+
+  test("strips a leading `Title:` label (any case)", () => {
+    expect(cleanAiTitle("Title: Add dark mode")).toBe("Add dark mode");
+    expect(cleanAiTitle("title - Add dark mode")).toBe("Add dark mode");
+  });
+
+  test("drops trailing punctuation", () => {
+    expect(cleanAiTitle("Wire up the websocket.")).toBe(
+      "Wire up the websocket",
+    );
+    expect(cleanAiTitle("Is the cache stale?")).toBe("Is the cache stale");
+  });
+
+  test("takes only the first non-empty line of multi-line output", () => {
+    expect(cleanAiTitle("Session summary title\n\nThen some rambling.")).toBe(
+      "Session summary title",
+    );
+  });
+
+  test("collapses internal whitespace and trims", () => {
+    expect(cleanAiTitle("  Add   retry   logic  ")).toBe("Add retry logic");
+  });
+
+  test("clamps overly long output to a reasonable length", () => {
+    const long = "word ".repeat(40).trim();
+    const out = cleanAiTitle(long);
+    expect(out.length).toBeLessThanOrEqual(60);
+    // Doesn't cut mid-word.
+    expect(out.endsWith(" ")).toBe(false);
+  });
+
+  test("returns empty string for empty / whitespace-only input", () => {
+    expect(cleanAiTitle("")).toBe("");
+    expect(cleanAiTitle("   \n  ")).toBe("");
+  });
+
+  test("strips markdown emphasis around the whole title", () => {
+    expect(cleanAiTitle("**Migrate to Bun**")).toBe("Migrate to Bun");
+  });
+});
 
 describe("sampleSessionForSummary", () => {
   test("returns empty diagnostics for an empty session", () => {

@@ -50,6 +50,7 @@
     branch?: string;
     title?: string;
     manualTitle?: string;
+    aiTitle?: string;
     lastUserMessage?: string;
     /** ISO timestamp of the session's most recent activity. Drives
      *  the "5 minutes ago" segment in the hover label. */
@@ -613,7 +614,7 @@
   function tooltipFor(e: DockEntry): string {
     const lines: string[] = [];
     lines.push(`${e.repoName}${e.branch ? ` · ${e.branch}` : ""}`);
-    const t = e.manualTitle ?? e.title;
+    const t = e.manualTitle ?? e.aiTitle ?? e.title;
     if (t) lines.push(t);
     if (e.lastUserMessage) {
       const cap =
@@ -633,7 +634,7 @@
    *  segment hides; if no title is known, the branch (or nothing) is
    *  shown after the colon. */
   function sessionNameFor(e: DockEntry): string {
-    const t = e.manualTitle ?? e.title;
+    const t = e.manualTitle ?? e.aiTitle ?? e.title;
     if (t) return t;
     return e.branch ?? "";
   }

@@ -354,6 +354,10 @@
    *  snippet pill that mirrors the TUI's last-user-message pin. */
   let summarySnippet: string = "";
   let summaryModel: string = "";
+  /** AI-generated title from the cached summary. Fed to SessionHeader as
+   *  the rename input's placeholder when the user hasn't named the
+   *  session. Empty when there's no summary or it predates titles. */
+  let summaryTitle: string = "";
   let summarySource: string = "";
   /** Total user+assistant text turns at the moment the cached
    *  summary was generated. The Refresh chip is hidden when the
@@ -391,6 +395,7 @@
     if (!source) {
       summarySnippet = "";
       summaryModel = "";
+      summaryTitle = "";
       summaryTotalMessages = 0;
       summarySource = "";
       return;
@@ -404,6 +409,7 @@
         if (targetSource === source) {
           summarySnippet = "";
           summaryModel = "";
+          summaryTitle = "";
           summaryTotalMessages = 0;
         }
         return;
@@ -411,18 +417,24 @@
       const body = (await res.json()) as {
         summary?: {
           body?: string;
-          frontmatter?: { model?: string; totalMessages?: number };
+          frontmatter?: {
+            model?: string;
+            totalMessages?: number;
+            title?: string;
+          };
         } | null;
       };
       if (targetSource !== source) return;
       summarySnippet = body.summary?.body?.trim() ?? "";
       summaryModel = body.summary?.frontmatter?.model ?? "";
+      summaryTitle = body.summary?.frontmatter?.title ?? "";
       summaryTotalMessages = body.summary?.frontmatter?.totalMessages ?? 0;
       summarySource = targetSource;
     } catch {
       if (targetSource === source) {
         summarySnippet = "";
         summaryModel = "";
+        summaryTitle = "";
         summaryTotalMessages = 0;
       }
     }
@@ -1535,6 +1547,7 @@
       {agentSettings}
       {source}
       {manualTitle}
+      aiTitle={summaryTitle}
       {mode}
       canResume={!!onCustomResume ||
         (!!session?.sessionId && (agent === "claude" || agent === "codex"))}

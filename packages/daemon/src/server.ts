@@ -117,7 +117,7 @@ import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
 import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
 import { SummariesStore, RepoSummariesStore } from "./summaries";
-import { sampleSessionForSummary } from "./ollama-summarize";
+import { sampleSessionForSummary, cleanAiTitle } from "./ollama-summarize";
 import {
   collectRepoActivity,
   formatActivityPrompt,
@@ -325,6 +325,29 @@ const externalProcessRows = throttleAsync(async () => {
 const ollamaChatAborts = new Map<string, AbortController>();
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
 const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
+/** In-memory `source.toLowerCase()` → AI title map, mirroring the
+ *  `title` field of the on-disk summaries. Seeded once at startup and
+ *  kept warm by the summarize POST/DELETE handlers, so the hot
+ *  `/api/repos` enrichment path can attach `aiTitle` to agents without
+ *  touching disk. */
+const aiTitles = new Map<string, string>();
+for (const rec of await summaries.listAll()) {
+  if (rec.frontmatter.title) {
+    aiTitles.set(rec.frontmatter.source.toLowerCase(), rec.frontmatter.title);
+  }
+}
+/** Attach the workspace's manual title and the cached AI title to a
+ *  detected agent. Shared by every place that lists agents so the two
+ *  title sources never drift apart. */
+function withSessionTitles<T extends { source: string }>(
+  s: T,
+  titles: Record<string, string>,
+): T {
+  const manualTitle = titles[s.source];
+  const aiTitle = aiTitles.get(s.source.toLowerCase());
+  if (!manualTitle && !aiTitle) return s;
+  return { ...s, ...(manualTitle ? { manualTitle } : {}), ...(aiTitle ? { aiTitle } : {}) };
+}
 /** Single-flight per `repoId` for /api/repos/:id/summarize. Joins
  *  concurrent triggers (the dashboard paints rows in parallel) so
  *  one Ollama call covers the whole burst. */
@@ -1351,9 +1374,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
                 `supergit daemon: agents=${agentsMs.toFixed(0)}ms (${agents.length} sessions)`,
               );
             }
-            return agents.map((s) =>
-              titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-            );
+            return agents.map((s) => withSessionTitles(s, titles));
           });
 
           const enriched: EnrichedRepo[] = [];
@@ -2698,11 +2719,7 @@ const server = Bun.serve<TermWsData, never>({
           sharedDetectAgents(),
           workspace.listSessionTitles(),
         ]);
-        return json(
-          agents.map((s) =>
-            titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-          ),
-        );
+        return json(agents.map((s) => withSessionTitles(s, titles)));
       }
 
       // GET /api/agent-usage — sessions + messages per detected coding
@@ -2758,9 +2775,7 @@ const server = Bun.serve<TermWsData, never>({
           sharedDetectAgents(),
           workspace.listSessionTitles(),
         ]);
-        const enriched = agents.map((s) =>
-          titles[s.source] ? { ...s, manualTitle: titles[s.source] } : s,
-        );
+        const enriched = agents.map((s) => withSessionTitles(s, titles));
         const top = await topClaudeSessionsByTokens(enriched, now, 5);
         claudeTopSessionsCache = { at: now, value: top };
         return json({ claudeTopSessions: top });
@@ -4106,6 +4121,7 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         const removed = await summaries.delete(source);
+        aiTitles.delete(source.toLowerCase());
         if (!removed) {
           return new Response(null, { status: 404, headers: CORS });
         }
@@ -4299,11 +4315,55 @@ const server = Bun.serve<TermWsData, never>({
             }
 
             const elapsedMs = Date.now() - startedAt;
+            const summaryBody = stripThinkingArtifacts(fullBody.collected);
+
+            // Second, tiny Ollama call: turn the finished summary into a
+            // short title. Non-streaming, thinking off. Best-effort — a
+            // failure here leaves the title undefined and never blocks the
+            // (already-streamed, about-to-be-saved) summary.
+            let aiTitle: string | undefined;
+            if (summaryBody.trim()) {
+              try {
+                const titleRes = await fetch(`${OLLAMA_HOST}/api/chat`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    model,
+                    stream: false,
+                    think: false,
+                    messages: [
+                      {
+                        role: "system",
+                        content:
+                          "You name developer chat sessions. Given a summary, reply with a single concise title of 3 to 6 words. " +
+                          "Plain text only: no quotes, no markdown, no trailing punctuation, no preamble like \"Title:\". Reply with the title and nothing else.",
+                      },
+                      {
+                        role: "user",
+                        content: `Summary:\n${summaryBody}\n\nTitle:`,
+                      },
+                    ],
+                    options: { num_ctx: 4096 },
+                  }),
+                  signal: abort.signal,
+                });
+                if (titleRes.ok) {
+                  const tj = (await titleRes.json()) as {
+                    message?: { content?: string };
+                  };
+                  const cleaned = cleanAiTitle(tj.message?.content ?? "");
+                  if (cleaned) aiTitle = cleaned;
+                }
+              } catch {
+                // Title is a nicety; never fail the summary over it.
+              }
+            }
 
             try {
               await summaries.write(source, {
                 agent: resolved.agent,
                 sessionId: parsed.sessionId || undefined,
+                title: aiTitle,
                 model,
                 sourceMtimeMs,
                 generatedAt: new Date(startedAt).toISOString(),
@@ -4312,8 +4372,13 @@ const server = Bun.serve<TermWsData, never>({
                 truncatedMessages: sampled.truncatedMessages,
                 estimatedTokens: sampled.estimatedTokens,
                 elapsedMs,
-                body: stripThinkingArtifacts(fullBody.collected),
+                body: summaryBody,
               });
+              // Keep the in-memory enrichment map in sync so the new title
+              // shows up on the next /api/repos poll without a disk read.
+              const key = source.toLowerCase();
+              if (aiTitle) aiTitles.set(key, aiTitle);
+              else aiTitles.delete(key);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               send("error", { kind: "write_failed", message: msg });
@@ -4372,7 +4437,7 @@ const server = Bun.serve<TermWsData, never>({
               // Debug logging is best-effort; never block the summary.
             }
 
-            send("done", { elapsedMs });
+            send("done", { elapsedMs, title: aiTitle });
             setTimeout(() => {
               try {
                 controller.close();

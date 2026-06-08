@@ -44,6 +44,10 @@ export interface AgentSession {
   /** User-provided title for this session (stored in the workspace,
    *  keyed by `source`). When set, the UI prefers it over `title`. */
   manualTitle?: string;
+  /** Short AI-generated label produced alongside the Ollama summary
+   *  (stored in `<workspace>/summaries/<key>.md`). Shown as the session
+   *  name when there's no `manualTitle`, and as the rename placeholder. */
+  aiTitle?: string;
   /** First user prompt, cleaned. Surfaced in the session popover so the
    *  reader can recall what kicked the session off, independently of
    *  `title` (which may have come from a `summary` line). */

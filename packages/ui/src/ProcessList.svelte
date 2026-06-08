@@ -34,6 +34,7 @@
     sessionId?: string;
     source?: string;
     manualTitle?: string;
+    aiTitle?: string;
     title?: string;
     firstUserMessage?: string;
     lastUserMessage?: string;
@@ -442,6 +443,7 @@
             if (a.sessionId === p.ownerId) {
               title =
                 a.manualTitle ??
+                a.aiTitle ??
                 a.title ??
                 a.firstUserMessage ??
                 a.lastUserMessage ??

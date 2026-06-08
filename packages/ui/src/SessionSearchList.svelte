@@ -59,7 +59,7 @@
   export let isOpen: (s: AgentSession) => boolean = () => false;
   /** Tooltip text per row — caller knows the worktree context. */
   export let tooltipFor: (s: AgentSession) => string = (s) =>
-    s.manualTitle ?? s.title ?? "(no title)";
+    s.manualTitle ?? s.aiTitle ?? s.title ?? "(no title)";
   /** Placeholder string for the search input. */
   export let placeholder = "Search by title or message…";
 
@@ -420,6 +420,13 @@
             {/if}
             {#if sess.manualTitle && sess.manualTitle.trim().length > 0}
               <span class="agent-title manual">{sess.manualTitle}</span>
+            {:else if sess.aiTitle && sess.aiTitle.trim().length > 0}
+              <!-- No user-set title, but a cached Ollama summary produced
+                 one. Show it (styled distinctly from a manual title) so
+                 the row reads as something meaningful. -->
+              <span class="agent-title ai" title={sess.aiTitle}
+                >{sess.aiTitle}</span
+              >
             {:else if sess.agent === "shell" && sess.lastUserMessage && sess.lastUserMessage.trim().length > 0}
               <!-- Shell rows don't carry an agent-side title, so the
                  1fr title cell stays empty by default. Surface the
@@ -889,6 +896,13 @@
      rule above keeps it from running wide. */
   :global(.agent-row .agent-title.agent-last-user-msg) {
     font-weight: 400;
+  }
+  /* AI-generated title (no user-set name yet). Lighter + italic so it
+     reads as a suggestion rather than a name the user committed to. */
+  :global(.agent-row .agent-title.ai) {
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text-2, var(--text-muted));
   }
   .orphan-tag {
     font-size: 0.65rem;

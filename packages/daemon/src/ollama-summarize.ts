@@ -164,6 +164,51 @@ function renderSequence(seq: SeqEntry[]): string {
   return lines.join("\n\n");
 }
 
+/** Longest AI title we keep. A title is a glance-able label, not a
+ *  sentence — anything past this is clamped at a word boundary. */
+const TITLE_MAX = 60;
+
+/**
+ * Normalise a small model's title output into a single clean label.
+ *
+ * Small models wrap titles in quotes, prefix them with "Title:", add a
+ * trailing period, or emit a whole extra paragraph after the title.
+ * This strips all of that down to one tidy line. Pure — unit-tested in
+ * `ollama-summarize.test.ts`. Returns "" when there's nothing usable so
+ * the caller can simply skip persisting a title.
+ */
+export function cleanAiTitle(raw: string): string {
+  if (!raw) return "";
+  // Keep only the first non-empty line — the title proper.
+  let s =
+    raw
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "";
+  if (!s) return "";
+  // Drop a leading "Title:" / "Title -" label the model sometimes adds.
+  s = s.replace(/^title\s*[:\-]\s*/i, "").trim();
+  // Peel matching wrappers (quotes, backticks, **bold**, *italic*, _under_)
+  // until nothing changes.
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/^\*\*([\s\S]*)\*\*$/, "$1").trim();
+    s = s.replace(/^(["'`*_])([\s\S]*)\1$/, "$2").trim();
+  } while (s !== prev);
+  // Collapse internal whitespace and drop trailing sentence punctuation.
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/[.?!,;:]+$/, "").trim();
+  // Clamp at a word boundary so we never cut mid-word.
+  if (s.length > TITLE_MAX) {
+    s = s.slice(0, TITLE_MAX);
+    const sp = s.lastIndexOf(" ");
+    if (sp > 0) s = s.slice(0, sp);
+    s = s.trim();
+  }
+  return s;
+}
+
 export function sampleSessionForSummary(
   messages: NormalizedMessage[],
   opts: SampleOptions = {},

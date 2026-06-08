@@ -328,7 +328,7 @@ export function clampSubject(s: string): string {
  *  message" shape when the daemon hasn't filled the richer fields
  *  yet (e.g. for codex, which doesn't expose them). */
 export function sessionTooltip(sess: AgentSession): string {
-  const headline = sess.manualTitle ?? sess.title ?? "(no title)";
+  const headline = sess.manualTitle ?? sess.aiTitle ?? sess.title ?? "(no title)";
   const first = sess.firstUserMessage;
   const last = sess.lastUserMessages ?? [];
   const count = sess.userMessageCount ?? 0;

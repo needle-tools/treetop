@@ -20,6 +20,7 @@ export interface AgentSession {
   title?: string;
   lastUserMessage?: string;
   manualTitle?: string;
+  aiTitle?: string;
   firstUserMessage?: string;
   lastUserMessages?: string[];
   userMessageCount?: number;
