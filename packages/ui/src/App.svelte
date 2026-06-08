@@ -167,6 +167,7 @@
     clampSubject,
     sessionTooltip,
     pushCount,
+    duplicateRepoNotice,
   } from "./display-helpers";
   import { parseNDJSONLines } from "./ndjson-client";
 
@@ -306,6 +307,7 @@
      *  strip. */
     customLinks?: CustomLink[];
   }
+  type AddRepoResponse = Repo & { alreadyRegistered?: boolean };
   interface EditorDescriptor {
     name: string;
     cmd: string;
@@ -3591,6 +3593,18 @@
     }, 150);
   }
 
+  async function noteAndFocusExistingRepo(repo: AddRepoResponse) {
+    const notice = duplicateRepoNotice(repo);
+    addToast({
+      kind: "info",
+      title: notice.title,
+      message: notice.message,
+      onClick: () => void focusRepoRow(repo.id),
+    });
+    await load();
+    await focusRepoRow(repo.id);
+  }
+
   let addFolderBusy = false;
 
   async function pickAndAdd() {
@@ -3612,6 +3626,11 @@
       if (!add.ok) {
         const body = await add.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${add.status}`);
+      }
+      const added = (await add.json()) as AddRepoResponse;
+      if (added.alreadyRegistered) {
+        await noteAndFocusExistingRepo(added);
+        return;
       }
       play(repos.length === 0 ? "folder-add-first" : "folder-add");
       newlyAddedRepoPaths.add(path);
@@ -3641,6 +3660,11 @@
     if (!add.ok) {
       const body = (await add.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${add.status}`);
+    }
+    const added = (await add.json()) as AddRepoResponse;
+    if (added.alreadyRegistered) {
+      await noteAndFocusExistingRepo(added);
+      return;
     }
     play(repos.length === 0 ? "folder-add-first" : "folder-add");
     newlyAddedRepoPaths.add(payload.path);
@@ -3918,6 +3942,13 @@
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${r.status}`);
+      }
+      const added = (await r.json()) as AddRepoResponse;
+      if (added.alreadyRegistered) {
+        importSuggestions = importSuggestions.filter((s) => s.path !== path);
+        if (importSuggestions.length === 0) importSessionsOpen = false;
+        await noteAndFocusExistingRepo(added);
+        return;
       }
       // Drop the just-added entry from the suggestions list so the
       // popover reflects the new state without a refetch round-trip,

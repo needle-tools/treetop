@@ -21,6 +21,7 @@ import {
   notesListDisplay,
   sortBranches,
   formatRelativeTime,
+  duplicateRepoNotice,
   relTime,
   clampSubject,
   COMMIT_SUBJECT_MAX,
@@ -253,6 +254,28 @@ describe("anchorLabel", () => {
 
   test("empty repos snapshot → worktree falls back to basename", () => {
     expect(anchorLabel("worktree:/a/b/c", [])).toBe("c");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// duplicateRepoNotice  (Add-folder duplicate toast)
+// ---------------------------------------------------------------------------
+
+describe("duplicateRepoNotice", () => {
+  test("uses the repo name when available", () => {
+    expect(
+      duplicateRepoNotice({ name: "supergit", path: "/Users/herbst/git/supergit" }),
+    ).toEqual({
+      title: "Folder already added",
+      message: "supergit is already in the dashboard.",
+    });
+  });
+
+  test("falls back to the path when the repo name is blank", () => {
+    expect(duplicateRepoNotice({ name: "  ", path: "/tmp/project" })).toEqual({
+      title: "Folder already added",
+      message: "/tmp/project is already in the dashboard.",
+    });
   });
 });
 

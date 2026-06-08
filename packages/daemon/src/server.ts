@@ -14,7 +14,7 @@ import {
   mkdir as fsMkdir,
 } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
-import { Workspace } from "./workspace";
+import { DuplicateRepoError, Workspace } from "./workspace";
 import { initDaemonLog } from "./daemon-log";
 import { installCrashGuard } from "./process-safety-net";
 import { repairAllClaudeJson, repairClaudeJsonFile } from "./claude-json-repair";
@@ -5535,6 +5535,12 @@ const server = Bun.serve<TermWsData, never>({
           void reconcileWorktreeWatchers();
           return json(repo, { status: 201 });
         } catch (e) {
+          if (e instanceof DuplicateRepoError) {
+            return json(
+              { ...e.repo, alreadyRegistered: true },
+              { status: 200 },
+            );
+          }
           return json(
             { error: String(e instanceof Error ? e.message : e) },
             {

@@ -70,6 +70,21 @@ export function formatRelativeTime(iso: string, now = Date.now()): string {
 }
 
 // ---------------------------------------------------------------------------
+// duplicateRepoNotice  (Add-folder duplicate toast)
+// ---------------------------------------------------------------------------
+
+export function duplicateRepoNotice(repo: {
+  name?: string;
+  path: string;
+}): { title: string; message: string } {
+  const label = repo.name?.trim() || repo.path;
+  return {
+    title: "Folder already added",
+    message: `${label} is already in the dashboard.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // repoChipFg  (was App.svelte ~line 4145)
 // ---------------------------------------------------------------------------
 

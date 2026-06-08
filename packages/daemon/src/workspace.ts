@@ -186,6 +186,16 @@ export interface Repo {
   customLinks?: CustomLink[];
 }
 
+export class DuplicateRepoError extends Error {
+  constructor(
+    public readonly repo: Repo,
+    public readonly attemptedPath: string,
+  ) {
+    super(`Repo already registered: ${repo.path}`);
+    this.name = "DuplicateRepoError";
+  }
+}
+
 interface ReposFile {
   repos: Repo[];
 }
@@ -400,8 +410,9 @@ export class Workspace {
   async addRepo(repoPath: string): Promise<Repo> {
     const resolved = await resolveGitToplevel(repoPath);
     const repos = await this.listRepos();
-    if (repos.some((r) => r.path === resolved)) {
-      throw new Error(`Repo already registered: ${resolved}`);
+    const existing = repos.find((r) => r.path === resolved);
+    if (existing) {
+      throw new DuplicateRepoError(existing, resolved);
     }
     const name = basename(resolved) || resolved;
     const repo: Repo = {

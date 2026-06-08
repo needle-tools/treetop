@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { $ } from "bun";
-import { Workspace } from "../src/workspace";
+import { DuplicateRepoError, Workspace } from "../src/workspace";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-test-"));
@@ -50,6 +50,18 @@ describe("Workspace", () => {
     const ws = await Workspace.open(await tempDir());
     await ws.addRepo("/tmp/foo");
     await expect(ws.addRepo("/tmp/foo")).rejects.toThrow(/already registered/);
+  });
+
+  test("duplicate repo error carries the existing repo", async () => {
+    const ws = await Workspace.open(await tempDir());
+    const existing = await ws.addRepo("/tmp/foo");
+    try {
+      await ws.addRepo("/tmp/foo");
+      throw new Error("expected duplicate add to reject");
+    } catch (e) {
+      expect(e).toBeInstanceOf(DuplicateRepoError);
+      expect((e as DuplicateRepoError).repo).toEqual(existing);
+    }
   });
 
   test("addRepo resolves a subdirectory to the git toplevel", async () => {
