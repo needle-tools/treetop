@@ -2524,6 +2524,8 @@
   display: inline-flex;
 }
 .emoji-picker-popover {
-  min-width: 390px;
-  max-width: 410px;
+  width: min(410px, calc(100vw - 24px));
+  min-width: min(410px, calc(100vw - 24px));
+  max-width: min(410px, calc(100vw - 24px));
+  overflow: hidden;
 }

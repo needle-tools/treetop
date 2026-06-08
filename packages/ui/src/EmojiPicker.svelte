@@ -1,16 +1,13 @@
 <script lang="ts">
   import { onMount, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
-  import {
-    APP_ICONS,
-    APP_ICON_TOKEN_PREFIX,
-    appIconUrl,
-  } from "./app-icons";
+  import { APP_ICONS, APP_ICON_TOKEN_PREFIX, appIconUrl } from "./app-icons";
   import {
     STICKER_PACKS,
     STICKER_TOKEN_PREFIX,
     stickerFromToken,
     stickerPreviewStyle,
+    type StickerPack,
   } from "./sticker-packs";
 
   const dispatch = createEventDispatcher<{ pick: string; cancel: void }>();
@@ -963,7 +960,6 @@
     love: ["😍", "🥰", "😘", "❤️", "💕", "💖", "💗", "💝", "💘"],
     kiss: ["😘", "😗"],
     yum: ["😋"],
-    tongue: ["😛", "😜", "🤪", "😝"],
     money: ["🤑", "💰", "💵", "💸", "💳", "🪙"],
     hug: ["🤗", "🫶"],
     shush: ["🤫"],
@@ -1327,10 +1323,24 @@
     flag: ["🏁", "🚩"],
   };
 
-  const searchIndex: { emoji: string; terms: string }[] = [];
+  type PickerTab = "all" | "apps" | "emojis" | "stickers";
+  type PickerContentKind = Exclude<PickerTab, "all">;
+
+  const PICKER_TABS: { id: PickerTab; label: string }[] = [
+    { id: "all", label: "All" },
+    { id: "apps", label: "Apps" },
+    { id: "emojis", label: "Emojis" },
+    { id: "stickers", label: "Stickers" },
+  ];
+
+  const searchIndex: {
+    token: string;
+    terms: string;
+    kind: PickerContentKind;
+  }[] = [];
   for (const [term, emojis] of Object.entries(KEYWORDS)) {
     for (const e of emojis) {
-      searchIndex.push({ emoji: e, terms: term });
+      searchIndex.push({ token: e, terms: term, kind: "emojis" });
     }
   }
   // App icons searchable by name, label, and keywords.
@@ -1339,7 +1349,7 @@
     const terms = [icon.name, icon.label, ...(icon.keywords ?? [])]
       .join(" ")
       .toLowerCase();
-    searchIndex.push({ emoji: token, terms });
+    searchIndex.push({ token, terms, kind: "apps" });
   }
   for (const pack of STICKER_PACKS) {
     for (const sticker of pack.stickers) {
@@ -1354,24 +1364,45 @@
       ]
         .join(" ")
         .toLowerCase();
-      searchIndex.push({ emoji: sticker.token, terms });
+      searchIndex.push({
+        token: sticker.token,
+        terms,
+        kind: "stickers",
+      });
     }
   }
 
   let query = "";
+  let activeTab: PickerTab = "all";
   let inputEl: HTMLInputElement;
 
+  $: smileyEmojiGroup = EMOJIS.find(([category]) => category === "Smileys");
+  $: otherEmojiGroups = EMOJIS.filter(([category]) => category !== "Smileys");
+  $: jungleStickerPacks = STICKER_PACKS.filter(isJunglePack);
+  $: otherStickerPacks = STICKER_PACKS.filter((pack) => !isJunglePack(pack));
   $: lowerQuery = query.trim().toLowerCase();
   $: searchResults =
-    lowerQuery.length > 0 ? getSearchResults(lowerQuery) : null;
+    lowerQuery.length > 0 ? getSearchResults(lowerQuery, activeTab) : null;
 
-  function getSearchResults(q: string): string[] {
+  function isJunglePack(pack: StickerPack): boolean {
+    return pack.id.toLowerCase() === "jungle";
+  }
+
+  function tabMatchesKind(tab: PickerTab, kind: PickerContentKind): boolean {
+    return tab === "all" || tab === kind;
+  }
+
+  function getSearchResults(q: string, tab: PickerTab): string[] {
     const seen = new Set<string>();
     const results: string[] = [];
     for (const entry of searchIndex) {
-      if (entry.terms.includes(q) && !seen.has(entry.emoji)) {
-        seen.add(entry.emoji);
-        results.push(entry.emoji);
+      if (
+        tabMatchesKind(tab, entry.kind) &&
+        entry.terms.includes(q) &&
+        !seen.has(entry.token)
+      ) {
+        seen.add(entry.token);
+        results.push(entry.token);
       }
     }
     return results;
@@ -1397,6 +1428,68 @@
   });
 </script>
 
+{#snippet appGroup()}
+  {#if APP_ICONS.length > 0}
+    <div class="emoji-category">
+      <span class="emoji-category-label">Apps</span>
+      <div class="emoji-grid">
+        {#each APP_ICONS as icon (icon.name)}
+          <button
+            class="emoji-cell emoji-cell-app"
+            type="button"
+            on:click={() => onPick(`${APP_ICON_TOKEN_PREFIX}${icon.name}`)}
+            title={icon.label}
+          >
+            <img
+              class="emoji-app-icon"
+              src={appIconUrl(icon.name)}
+              alt={icon.label}
+            />
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet emojiGroup(category: string, emojis: string[])}
+  <div class="emoji-category">
+    <span class="emoji-category-label">{category}</span>
+    <div class="emoji-grid">
+      {#each emojis as emoji}
+        <button
+          class="emoji-cell"
+          type="button"
+          on:click={() => onPick(emoji)}
+          title={emoji}>{emoji}</button
+        >
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet stickerPackGroup(pack: StickerPack)}
+  <div class="emoji-category">
+    <span class="emoji-category-label">{pack.label}</span>
+    <div class="emoji-grid">
+      {#each pack.stickers as sticker (sticker.token)}
+        <button
+          class="emoji-cell emoji-cell-sticker"
+          type="button"
+          on:click={() => onPick(sticker.token)}
+          title={sticker.label}
+        >
+          <span
+            class="emoji-sticker-preview"
+            aria-label={sticker.label}
+            style={stickerPreviewStyle(sticker)}
+          ></span>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
 <Popover variant="agents" extraClass="emoji-picker-popover">
   <span slot="head">
     <input
@@ -1415,6 +1508,19 @@
     {/if}
   </span>
   <div class="emoji-picker-body">
+    <div class="emoji-picker-tabs" aria-label="Sticker categories">
+      {#each PICKER_TABS as tab (tab.id)}
+        <button
+          class="emoji-picker-tab"
+          class:emoji-picker-tab-active={activeTab === tab.id}
+          type="button"
+          aria-pressed={activeTab === tab.id}
+          on:click={() => (activeTab = tab.id)}
+        >
+          {tab.label}
+        </button>
+      {/each}
+    </div>
     {#if searchResults}
       {#if searchResults.length > 0}
         <div class="emoji-grid">
@@ -1455,63 +1561,31 @@
         <div class="emoji-no-results">No matches</div>
       {/if}
     {:else}
-      {#if APP_ICONS.length > 0}
-        <div class="emoji-category">
-          <span class="emoji-category-label">Apps</span>
-          <div class="emoji-grid">
-            {#each APP_ICONS as icon (icon.name)}
-              <button
-                class="emoji-cell emoji-cell-app"
-                type="button"
-                on:click={() => onPick(`${APP_ICON_TOKEN_PREFIX}${icon.name}`)}
-                title={icon.label}
-              >
-                <img
-                  class="emoji-app-icon"
-                  src={appIconUrl(icon.name)}
-                  alt={icon.label}
-                />
-              </button>
-            {/each}
-          </div>
-        </div>
+      {#if activeTab === "all"}
+        {@render appGroup()}
+        {#if smileyEmojiGroup}
+          {@render emojiGroup(smileyEmojiGroup[0], smileyEmojiGroup[1])}
+        {/if}
+        {#each jungleStickerPacks as pack (pack.id)}
+          {@render stickerPackGroup(pack)}
+        {/each}
+        {#each otherEmojiGroups as [category, emojis]}
+          {@render emojiGroup(category, emojis)}
+        {/each}
+        {#each otherStickerPacks as pack (pack.id)}
+          {@render stickerPackGroup(pack)}
+        {/each}
+      {:else if activeTab === "apps"}
+        {@render appGroup()}
+      {:else if activeTab === "emojis"}
+        {#each EMOJIS as [category, emojis]}
+          {@render emojiGroup(category, emojis)}
+        {/each}
+      {:else if activeTab === "stickers"}
+        {#each STICKER_PACKS as pack (pack.id)}
+          {@render stickerPackGroup(pack)}
+        {/each}
       {/if}
-      {#each STICKER_PACKS as pack (pack.id)}
-        <div class="emoji-category">
-          <span class="emoji-category-label">{pack.label}</span>
-          <div class="emoji-grid">
-            {#each pack.stickers as sticker (sticker.token)}
-              <button
-                class="emoji-cell emoji-cell-sticker"
-                type="button"
-                on:click={() => onPick(sticker.token)}
-                title={sticker.label}
-              >
-                <span
-                  class="emoji-sticker-preview"
-                  aria-label={sticker.label}
-                  style={stickerPreviewStyle(sticker)}
-                ></span>
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/each}
-      {#each EMOJIS as [category, emojis]}
-        <div class="emoji-category">
-          <span class="emoji-category-label">{category}</span>
-          <div class="emoji-grid">
-            {#each emojis as emoji}
-              <button
-                class="emoji-cell"
-                type="button"
-                on:click={() => onPick(emoji)}
-                title={emoji}>{emoji}</button
-              >
-            {/each}
-          </div>
-        </div>
-      {/each}
     {/if}
   </div>
 </Popover>
@@ -1537,9 +1611,47 @@
     margin-left: 6px;
   }
   .emoji-picker-body {
-    padding: 4px 8px 8px;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0 12px 10px;
     max-height: 420px;
-    overflow-y: auto;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    scrollbar-gutter: stable both-edges;
+  }
+  .emoji-picker-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    gap: 4px;
+    padding: 8px 0 9px;
+    background: var(--popover-bg, #191919);
+  }
+  .emoji-picker-tab {
+    all: unset;
+    box-sizing: border-box;
+    flex: 1 1 0;
+    min-width: 0;
+    height: 23px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    color: var(--text-muted, #888);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+  }
+  .emoji-picker-tab:hover {
+    color: var(--text, #eee);
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .emoji-picker-tab-active {
+    color: var(--text, #eee);
+    background: rgba(255, 255, 255, 0.13);
   }
   .emoji-category {
     margin-bottom: 6px;
@@ -1564,8 +1676,11 @@
     align-items: center;
     justify-content: center;
     font-size: 22px;
-    width: 36px;
-    height: 36px;
+    justify-self: center;
+    width: 100%;
+    max-width: 36px;
+    aspect-ratio: 1;
+    height: auto;
     border-radius: 6px;
     cursor: pointer;
     transition: background 0.1s;
