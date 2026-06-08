@@ -936,22 +936,29 @@ button.branch-button:hover {
   }
 }
 
-/* Pause the badge animations on rows scrolled out of the viewport.
+/* De-promote the badge animations on rows scrolled out of the viewport.
    App.svelte's rowVisibilityObserver (already tracking per-row
    visibility to gate git fetches) toggles `.row-offscreen`. The
    edge-flow streaks are GPU `transform` animations and the pulsate
    blink is a `background` paint — both keep ticking even fully
    off-screen, multiplied by every ahead/behind badge in the workspace.
-   Pausing them while invisible costs nothing visually (they resume from
-   their frozen position the instant the row scrolls back in) and, with
-   the idle pause in base.css, bounds decorative animation cost to
-   "visible rows, user present." Deliberately NOT content-visibility:
-   that would collapse the row's box and corrupt StickyNotesLayer's
-   row-geometry measurements — here the layout box is untouched. */
+   Each streak pseudo-element (::before + ::after) is its own compositor
+   layer, and `Layerize` walks the WHOLE tree every frame, so off-screen
+   badges add 0 paint but bloat that walk — an under-load trace showed
+   240 layers/pass and Layerize back at ~24%.
+
+   Use `animation: none`, NOT `animation-play-state: paused`: `paused`
+   keeps the element composited (the layer survives, the walk doesn't
+   shrink); `none` removes the auto-promotion so the layer leaves the
+   tree. Same lesson as `.col-offscreen` in base.css (round 3). Resuming
+   from rest when the row scrolls back in is invisible. Deliberately NOT
+   content-visibility: that would collapse the row's box and corrupt
+   StickyNotesLayer's row-geometry measurements — here the layout box is
+   untouched. */
 .row-offscreen .status-badge::before,
 .row-offscreen .status-badge::after,
 .row-offscreen .status-badge.pulsate {
-  animation-play-state: paused;
+  animation: none !important;
 }
 
 /* `?badgeanim=1` preview wrapper — small gap between the two debug

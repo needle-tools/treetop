@@ -247,14 +247,24 @@ function ensureBaseImage(onReady?: () => void): void {
   baseImage = img;
 }
 
+// The favicon <link> is created once and lives in <head> forever. The
+// animation timer calls this ~20×/s, so a fresh
+// `document.querySelector('link[rel~="icon"]')` each tick re-scans the
+// (large) dashboard DOM 20 times a second — a profiling trace showed it
+// as the single hottest JS site (~0.5s of querySelector over a 6s
+// capture). Cache the node and only re-query if it's somehow detached.
+let cachedFaviconLink: HTMLLinkElement | null = null;
+
 function getFaviconLink(): HTMLLinkElement | null {
   if (typeof document === "undefined") return null;
+  if (cachedFaviconLink?.isConnected) return cachedFaviconLink;
   let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
   if (!link) {
     link = document.createElement("link");
     link.rel = "icon";
     document.head.appendChild(link);
   }
+  cachedFaviconLink = link;
   return link;
 }
 
