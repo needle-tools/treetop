@@ -1,0 +1,133 @@
+name: release
+
+# Build Treetop on self-hosted macOS + Windows runners and publish the
+# installers to a GitHub Release.
+#
+# Trigger: push to the `release` branch (or run manually from the Actions
+# tab). Each run produces ONE release tagged v<version>-<run#>, where
+# <version> comes from electrobun.config.ts. Both platforms' assets land
+# on the same release.
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+# Cancel an in-flight release build if a newer commit is pushed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # create the release + its tag
+
+jobs:
+  # ── Build each platform on its own self-hosted runner ────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos
+            runner: ["self-hosted", "macOS", "ARM64"]
+          - os: windows
+            runner: ["self-hosted", "Windows", "X64", "playwright", "general"]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      # The build script otherwise pops Finder/Explorer at the end.
+      SUPERGIT_BUILD_OPEN_OUTPUT: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      # Go builds the PTY helper (pty-helper[.exe]); version pinned by go.mod.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/daemon/src/terminals/helper-go/go.mod
+          cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Treetop
+        run: bun run build
+
+      # ── Stage the shareable installers into release-staging/ ──────────
+      - name: Stage artifacts (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-staging
+          # DMG and/or electrobun's prebuilt zip, whichever the build emitted.
+          cp artifacts/stable-macos-arm64-*.dmg release-staging/ 2>/dev/null || true
+          cp artifacts/stable-macos-arm64-*.zip release-staging/ 2>/dev/null || true
+          # Always ship the .app as a zip so there's a guaranteed asset.
+          if [ -d build/stable-macos-arm64/Treetop.app ]; then
+            (cd build/stable-macos-arm64 && zip -qry ../../release-staging/Treetop-macos-arm64.app.zip Treetop.app)
+          fi
+          echo "Staged:"; ls -la release-staging
+          test -n "$(ls -A release-staging)" || { echo "::error::no macOS artifacts produced"; exit 1; }
+
+      - name: Stage artifacts (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-staging | Out-Null
+          $copied = $false
+          if (Test-Path build/stable-win-x64/Treetop-Setup.exe) {
+            Copy-Item build/stable-win-x64/Treetop-Setup.exe release-staging/; $copied = $true
+          }
+          if (Test-Path artifacts/stable-win-x64-Treetop-Setup.zip) {
+            Copy-Item artifacts/stable-win-x64-Treetop-Setup.zip release-staging/; $copied = $true
+          }
+          Get-ChildItem release-staging | Format-Table -AutoSize
+          if (-not $copied) { Write-Error "no Windows artifacts produced"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: release-staging/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Gather both platforms' assets into a single GitHub Release ───────
+  release:
+    needs: build
+    runs-on: ["self-hosted", "Windows", "X64", "playwright", "general"]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Compute tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 -E 'version:' electrobun.config.ts | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          [ -n "$version" ] || { echo "::error::could not read version from electrobun.config.ts"; exit 1; }
+          tag="v${version}-${{ github.run_number }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+          echo "Assets:"; ls -la release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Treetop ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: release-assets/*
