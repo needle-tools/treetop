@@ -75,7 +75,10 @@ jobs:
 
       - name: Stage artifacts (Windows)
         if: matrix.os == 'windows'
-        shell: pwsh
+        # Self-hosted Windows runner ships Windows PowerShell 5.1 (`powershell`)
+        # only — `pwsh` (PowerShell Core) isn't installed. The cmdlets below all
+        # exist in 5.1 and the script is pure ASCII, so 5.1 runs it as-is.
+        shell: powershell
         run: |
           New-Item -ItemType Directory -Force release-staging | Out-Null
           $copied = $false
