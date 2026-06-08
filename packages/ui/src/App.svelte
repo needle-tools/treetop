@@ -30,6 +30,7 @@
   import { singleFlight } from "./single-flight";
   import { time, timeAsync } from "./timings";
   import {
+    changeKindRequiresDaemonsReload,
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
   } from "./sse-change-kinds";
@@ -5084,6 +5085,14 @@
       // Refresh /api/repos so worktree-row counters reflect the change.
       // Gated to skip kinds that don't affect repo enrichment.
       if (changeKindRequiresReposReload(payload.kind)) {
+        void load();
+      }
+      // A remote daemon was added/removed (registry edit, provision, or
+      // uninstall success). load() re-reads /api/daemons and re-fans-out,
+      // so the Daemons list + that daemon's repo rows update reactively —
+      // independent of the add/uninstall dialog's lifecycle. These are rare
+      // user-driven events, so the load() cost is a non-issue.
+      else if (changeKindRequiresDaemonsReload(payload.kind)) {
         void load();
       }
 

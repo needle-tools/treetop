@@ -80,9 +80,28 @@ export const CHANGE_KINDS_REQUIRING_EVENTS_RELOAD: ReadonlySet<string> =
     "custom_link_update",
   ]);
 
+/** Kinds that edit the remote-daemon registry (`GET /api/daemons`) without
+ *  touching `/api/repos` enrichment. The local daemon broadcasts these when
+ *  a remote daemon is added or removed — a registry edit, a successful
+ *  provision, or a successful uninstall. The dashboard reacts so the Daemons
+ *  list (and that daemon's repo rows) update reactively without depending on
+ *  the add/uninstall dialog still being open, or on the edit having
+ *  originated in this browser tab at all. Kept separate from the repos set
+ *  on purpose: it's a distinct, intentional refresh, and a remote box's own
+ *  registry edits (seen on its proxied stream) shouldn't drag the local
+ *  dashboard through a reload. */
+export const CHANGE_KINDS_REQUIRING_DAEMONS_RELOAD: ReadonlySet<string> =
+  new Set(["remote_daemon_add", "remote_daemon_remove"]);
+
 export function changeKindRequiresReposReload(kind: unknown): boolean {
   return (
     typeof kind === "string" && CHANGE_KINDS_REQUIRING_REPOS_RELOAD.has(kind)
+  );
+}
+
+export function changeKindRequiresDaemonsReload(kind: unknown): boolean {
+  return (
+    typeof kind === "string" && CHANGE_KINDS_REQUIRING_DAEMONS_RELOAD.has(kind)
   );
 }
 

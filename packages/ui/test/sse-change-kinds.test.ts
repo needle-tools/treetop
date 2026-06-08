@@ -7,6 +7,7 @@
 
 import { test, expect, describe } from "bun:test";
 import {
+  changeKindRequiresDaemonsReload,
   changeKindRequiresEventsReload,
   changeKindRequiresReposReload,
 } from "../src/sse-change-kinds";
@@ -120,5 +121,39 @@ describe("change-kind UI gating", () => {
     expect(changeKindRequiresReposReload(42)).toBe(false);
     expect(changeKindRequiresEventsReload(undefined)).toBe(false);
     expect(changeKindRequiresEventsReload(null)).toBe(false);
+  });
+
+  test("remote-daemon registry edits trigger /api/daemons reload", () => {
+    for (const kind of ["remote_daemon_add", "remote_daemon_remove"]) {
+      expect(changeKindRequiresDaemonsReload(kind)).toBe(true);
+    }
+  });
+
+  test("registry edits are NOT routed through the repos/events reloads", () => {
+    // A registry edit isn't repo enrichment, so it must stay out of the
+    // expensive /api/repos and /api/events gates — it has its own cheap path.
+    for (const kind of ["remote_daemon_add", "remote_daemon_remove"]) {
+      expect(changeKindRequiresReposReload(kind)).toBe(false);
+      expect(changeKindRequiresEventsReload(kind)).toBe(false);
+    }
+  });
+
+  test("unrelated kinds do NOT trigger /api/daemons reload", () => {
+    for (const kind of [
+      "fs_change",
+      "add_repo",
+      "remove_repo",
+      "note_create",
+      "sound_play",
+      "session_title",
+    ]) {
+      expect(changeKindRequiresDaemonsReload(kind)).toBe(false);
+    }
+  });
+
+  test("non-string daemon kinds are ignored", () => {
+    expect(changeKindRequiresDaemonsReload(undefined)).toBe(false);
+    expect(changeKindRequiresDaemonsReload(null)).toBe(false);
+    expect(changeKindRequiresDaemonsReload(42)).toBe(false);
   });
 });
