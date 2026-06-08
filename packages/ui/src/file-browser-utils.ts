@@ -407,7 +407,18 @@ export async function fetchRemoteDir(
   const res = await fetch(
     apiUrl(`/api/ssh/files?term=${encodeURIComponent(termId)}&path=${encodeURIComponent(path)}`),
   );
-  if (!res.ok) throw new Error(`Failed to list remote ${path}`);
+  if (!res.ok) {
+    // Surface whatever the daemon told us — without this the user
+    // sees a generic "Failed to list remote ..." and has no idea
+    // whether it's a permission issue, a dead session, or a typo.
+    let body: { error?: string; hint?: string } = {};
+    try { body = await res.json(); } catch {}
+    const parts: string[] = [];
+    if (body.error) parts.push(body.error);
+    if (body.hint) parts.push(body.hint);
+    const detail = parts.length > 0 ? parts.join(" — ") : `HTTP ${res.status}`;
+    throw new Error(`Failed to list remote ${path}: ${detail}`);
+  }
   const data = await res.json();
   return data.entries ?? [];
 }

@@ -26,6 +26,54 @@ export function cachePathFor(
   return join(workspacePath, ".remote-cache", safeHost, safeRemote);
 }
 
+/** Directories below `/Users/<name>/` that macOS protects under TCC
+ *  (Transparency, Consent, and Control). Reading these via sshd's
+ *  SFTP subsystem fails with "permission denied" unless the user
+ *  granted Full Disk Access to `sshd-keygen-wrapper` (macOS ≤13) or
+ *  `sshd` (macOS 14+) in System Settings → Privacy & Security. */
+const MACOS_TCC_PROTECTED = new Set([
+  "Desktop",
+  "Documents",
+  "Downloads",
+  "Pictures",
+  "Movies",
+  "Music",
+  "Library",
+]);
+
+/** Returns true if `remotePath` looks like a macOS user folder that
+ *  TCC restricts (e.g. `/Users/foo/Desktop` or `/Users/foo/Desktop/sub`).
+ *  Pure for testability — the caller passes the path and we don't try
+ *  to probe sshd or the OS. */
+export function isMacOSTCCProtectedPath(remotePath: string): boolean {
+  const m = remotePath.match(/^\/Users\/[^/]+\/([^/]+)(?:\/|$)/);
+  if (!m) return false;
+  return MACOS_TCC_PROTECTED.has(m[1]!);
+}
+
+/** Wrap a raw SFTP error message with an actionable hint when the
+ *  failed path is a macOS TCC-restricted user folder. Returns a
+ *  structured object the route handler can pass straight through to
+ *  the client. Pure: the path-shape decides whether to add the hint;
+ *  we don't sniff the remote OS. */
+export function describeRemoteListError(
+  remotePath: string,
+  rawMessage: string,
+): { error: string; hint?: string } {
+  const looksLikePermissionIssue = /permission denied|EACCES/i.test(rawMessage);
+  if (looksLikePermissionIssue && isMacOSTCCProtectedPath(remotePath)) {
+    return {
+      error: rawMessage,
+      hint:
+        `macOS protects ${remotePath} under Full Disk Access. ` +
+        `Grant FDA to sshd: System Settings → Privacy & Security → ` +
+        `Full Disk Access → add /usr/libexec/sshd-keygen-wrapper ` +
+        `(or /usr/sbin/sshd on macOS 14+). Reconnect after enabling.`,
+    };
+  }
+  return { error: rawMessage };
+}
+
 export async function listRemoteDir(
   sftp: SFTPWrapper,
   path: string,

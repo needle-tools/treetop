@@ -4,6 +4,8 @@ import {
   listRemoteDir,
   downloadFile,
   uploadFile,
+  isMacOSTCCProtectedPath,
+  describeRemoteListError,
 } from "../src/ssh-files";
 import { SshPool } from "../src/ssh-pool";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -49,6 +51,88 @@ describe("cachePathFor", () => {
     expect(
       normalize(cachePathFor("/ws", "alice@host", "/home/alice/file")),
     ).toBe("/ws/.remote-cache/alice@host/home/alice/file");
+  });
+});
+
+describe("isMacOSTCCProtectedPath", () => {
+  test("flags Desktop under a user home", () => {
+    expect(isMacOSTCCProtectedPath("/Users/needle/Desktop")).toBe(true);
+  });
+
+  test("flags subpaths inside a protected dir", () => {
+    expect(isMacOSTCCProtectedPath("/Users/needle/Desktop/projects")).toBe(true);
+    expect(
+      isMacOSTCCProtectedPath("/Users/needle/Documents/work/file.txt"),
+    ).toBe(true);
+  });
+
+  test("flags Downloads, Documents, Pictures, Movies, Music, Library", () => {
+    for (const d of ["Downloads", "Documents", "Pictures", "Movies", "Music", "Library"]) {
+      expect(isMacOSTCCProtectedPath(`/Users/u/${d}`)).toBe(true);
+    }
+  });
+
+  test("does NOT flag arbitrary folders below the user home", () => {
+    expect(isMacOSTCCProtectedPath("/Users/needle/code")).toBe(false);
+    expect(isMacOSTCCProtectedPath("/Users/needle/projects/repo")).toBe(false);
+  });
+
+  test("does NOT flag the user home itself", () => {
+    expect(isMacOSTCCProtectedPath("/Users/needle")).toBe(false);
+    expect(isMacOSTCCProtectedPath("/Users/needle/")).toBe(false);
+  });
+
+  test("does NOT flag /Users root or non-Users prefixes", () => {
+    expect(isMacOSTCCProtectedPath("/Users")).toBe(false);
+    expect(isMacOSTCCProtectedPath("/home/needle/Desktop")).toBe(false);
+    expect(isMacOSTCCProtectedPath("/var/log")).toBe(false);
+  });
+
+  test("Desktop literally named but not at TCC depth is not flagged", () => {
+    expect(isMacOSTCCProtectedPath("/srv/Desktop")).toBe(false);
+    expect(isMacOSTCCProtectedPath("/Users/me/code/Desktop")).toBe(false);
+  });
+});
+
+describe("describeRemoteListError", () => {
+  test("adds a FDA hint for permission denied on a TCC-protected path", () => {
+    const out = describeRemoteListError(
+      "/Users/needle/Desktop",
+      "Permission denied",
+    );
+    expect(out.error).toBe("Permission denied");
+    expect(out.hint).toMatch(/Full Disk Access/);
+    expect(out.hint).toMatch(/sshd/);
+  });
+
+  test("matches the EACCES error code variant too", () => {
+    const out = describeRemoteListError(
+      "/Users/u/Documents",
+      "ENOENT: no such file (EACCES)",
+    );
+    expect(out.hint).toBeDefined();
+  });
+
+  test("no hint when the path is protected but the error is unrelated", () => {
+    const out = describeRemoteListError(
+      "/Users/needle/Desktop",
+      "Connection reset by peer",
+    );
+    expect(out.error).toBe("Connection reset by peer");
+    expect(out.hint).toBeUndefined();
+  });
+
+  test("no hint when the error looks like permission but path is unprotected", () => {
+    const out = describeRemoteListError(
+      "/var/log",
+      "Permission denied",
+    );
+    expect(out.hint).toBeUndefined();
+  });
+
+  test("passes the raw message through verbatim in .error", () => {
+    const out = describeRemoteListError("/whatever", "SFTP boom 42");
+    expect(out.error).toBe("SFTP boom 42");
   });
 });
 

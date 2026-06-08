@@ -94,6 +94,7 @@ import {
   downloadFile,
   uploadFile,
   cachePathFor,
+  describeRemoteListError,
 } from "./ssh-files";
 import { SyncTracker } from "./ssh-sync";
 import { TunnelManager } from "./tunnel-manager";
@@ -8093,7 +8094,11 @@ const server = Bun.serve<TermWsData, never>({
           console.log(
             `supergit daemon: /api/ssh/files error for path=${dirPath}: ${msg}`,
           );
-          return json({ error: msg }, { status: 500 });
+          const described = describeRemoteListError(dirPath, msg);
+          // Use 403 when we detected a known permission case so the
+          // client can distinguish "you can't see this" from "the
+          // server crashed".
+          return json(described, { status: described.hint ? 403 : 500 });
         }
       }
 
