@@ -1985,7 +1985,9 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
    lives here (global) rather than in App.svelte's scoped <style>, which
    Svelte would prune as an unused selector. */
 .row-focus-flash {
-  animation: row-focus-flash 1.6s ease-out;
+  /* 2x faster than before (0.8s), delayed 1s so the flash fires once
+     the smooth-scroll has settled rather than mid-scroll. */
+  animation: row-focus-flash 0.8s ease-out 1s;
 }
 @keyframes row-focus-flash {
   0%,

@@ -441,6 +441,25 @@
   let actionsOpen = false;
   let eventsOpen = false;
   let daemonsMenuOpen = false;
+  let projectsMenuOpen = false;
+  /** Hover-intent close timer for the Projects dropdown. A short delay
+   *  bridges the 0.4rem gap between the button and the popover so moving
+   *  the cursor from one to the other doesn't dismiss it. */
+  let projectsCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  function openProjectsMenu() {
+    if (projectsCloseTimer) {
+      clearTimeout(projectsCloseTimer);
+      projectsCloseTimer = null;
+    }
+    projectsMenuOpen = true;
+  }
+  function scheduleCloseProjectsMenu() {
+    if (projectsCloseTimer) clearTimeout(projectsCloseTimer);
+    projectsCloseTimer = setTimeout(() => {
+      projectsMenuOpen = false;
+      projectsCloseTimer = null;
+    }, 140);
+  }
   /** Which daemon's "manage" dialog is open (its id), or null. */
   let daemonDialogId: string | null = null;
   /** Daemon ids with an in-flight DELETE — drives the per-row spinner +
@@ -4724,7 +4743,8 @@
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.classList.add("row-focus-flash");
-    setTimeout(() => el.classList.remove("row-focus-flash"), 1600);
+    // Cover the 1s animation-delay + 0.8s animation before removing.
+    setTimeout(() => el.classList.remove("row-focus-flash"), 2000);
   }
 
   /** Remove a worktree (the directory + git's per-worktree state slot).
@@ -5839,6 +5859,9 @@
     if (daemonsMenuOpen && !target?.closest(".daemons-anchor")) {
       daemonsMenuOpen = false;
     }
+    if (projectsMenuOpen && !target?.closest(".projects-anchor")) {
+      projectsMenuOpen = false;
+    }
     if (!target?.closest(".tuis-anchor")) {
       processListRef?.closeIfOpen();
     }
@@ -6534,6 +6557,52 @@
          /api/oauth/usage bars; others fall back to local JSONL
          counts. AgentUsageChip iterates and emits the buttons here. -->
     <AgentUsageChip />
+
+    <!-- Projects dropdown: jump to an added repo's row. Lists `repos`
+         directly so the order matches the on-page row order (both are
+         driven by the same `savedRepoOrder` sort). -->
+    <div
+      class="actions-anchor projects-anchor"
+      on:mouseenter={openProjectsMenu}
+      on:mouseleave={scheduleCloseProjectsMenu}
+    >
+      <button
+        class="actions-btn projects-btn"
+        class:open={projectsMenuOpen}
+        on:click={() => (projectsMenuOpen = !projectsMenuOpen)}
+        title="Jump to a project"
+      >
+        Projects<span class="count">{repos.length}</span>
+      </button>
+      {#if projectsMenuOpen}
+        <Popover variant="actions" extraClass="projects-popover" unclamped>
+          <svelte:fragment slot="head"><span>Projects</span></svelte:fragment>
+          {#if repos.length === 0}
+            <p class="muted small nopad">No projects yet.</p>
+          {:else}
+            <ul class="projects-list">
+              {#each repos as repo (daemonRepoKey(repo))}
+                <li>
+                  <button
+                    class="projects-row"
+                    on:click={() => {
+                      projectsMenuOpen = false;
+                      void focusRepoRow(repo.id);
+                    }}
+                  >
+                    <span
+                      class="projects-dot"
+                      style="background: {repo.color || 'var(--text-muted)'};"
+                    ></span>
+                    <span class="projects-name">{repo.name}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
 
     <ProcessList
       bind:this={processListRef}

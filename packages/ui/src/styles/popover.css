@@ -167,6 +167,19 @@
   z-index: 1;
 }
 
+/* Projects popover — sized to the repo names, not the wide actions
+   default. Centres on its trigger via the `.menubar .actions-popover`
+   rule above. */
+.projects-popover {
+  width: max-content;
+  min-width: 200px;
+  max-width: min(28rem, 90vw);
+  /* Grow tall for long repo lists; scrolls past this. Overrides the
+     520px .actions-popover ceiling. */
+  max-height: calc(100vh - 200px);
+  padding: 0.35rem;
+}
+
 /* Events popover ("diagnostics"): wider than the actions default; the
    head becomes a flex row so the "Clear" button sits at the far right. */
 .events-popover {

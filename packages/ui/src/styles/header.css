@@ -462,6 +462,48 @@ main > header {
   color: #f88;
 }
 
+/* Projects popover — one row per added repo; click scrolls to its row.
+   Order mirrors the on-page repo order (both sort by savedRepoOrder). */
+.projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.projects-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+}
+.projects-row:hover,
+.projects-row:focus-visible {
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  outline: none;
+}
+.projects-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.projects-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Remote daemons popover list */
 .daemons-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .daemons-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.4rem; border-radius: 4px; }
