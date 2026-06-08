@@ -6525,7 +6525,7 @@
       <h1 class="menubar-brand">
         <a href="https://needle.tools" target="_blank" rel="noopener noreferrer">
           <img src="/needle-logo.svg" alt="" class="brand-mark" />
-          jungle
+          treetop
         </a>
       </h1>
     <!-- Per-agent usage buttons live leftmost — one icon-only button

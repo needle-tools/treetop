@@ -11,11 +11,11 @@
  * filename and the macOS data dirs (`~/.config/...`), so renaming them is
  * a migration, not a label change — kept separate on purpose.
  */
-export const PRODUCT_NAME = "Jungle";
+export const PRODUCT_NAME = "Treetop";
 
 /**
  * Tab / window title. Dev builds get a suffix so two bookmarks
- * ("Jungle" / "Jungle · dev") stay visually distinct.
+ * ("Treetop" / "Treetop · dev") stay visually distinct.
  */
 export const windowTitle = (dev: boolean): string =>
   dev ? `${PRODUCT_NAME} · dev` : PRODUCT_NAME;

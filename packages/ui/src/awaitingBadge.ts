@@ -17,7 +17,7 @@
  */
 
 const BASE_TITLE_FALLBACK = "supergit";
-const BASE_FAVICON_HREF = "/needle-logo.svg";
+const BASE_FAVICON_HREF = "/favicon.svg";
 
 let baseTitle: string | null = null;
 let baseImage: HTMLImageElement | null = null;
@@ -308,8 +308,8 @@ function drawBadge(count: number): void {
 function clearBadge(): void {
   const link = getFaviconLink();
   if (!link) return;
-  link.type = "image/x-icon";
-  link.href = "/favicon.ico";
+  link.type = "image/svg+xml";
+  link.href = "/favicon.svg";
   lastFaviconHref = null;
 }
 

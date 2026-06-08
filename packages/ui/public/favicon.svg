@@ -1,28 +1,17 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg width="100%" height="100%" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;">
-    <!-- Treetop product mark: a savanna acacia (umbrella-thorn) silhouette.
-         One vertical brand gradient (lime → mint → teal) runs the full
-         height, so the flat canopy reads lime up top and the trunk falls
-         into teal below. A thick flared, rounded root keeps it legible at
-         favicon sizes. Regenerate icon.ico + icon.iconset with
-         `bun run icons`. -->
-
-    <!-- Candelabra branches fanning from the trunk up into the canopy.
-         Drawn first so the canopy fill tucks their tips underneath. -->
+    <!-- Treetop favicon: savanna acacia silhouette. Kept in sync with the
+         root icon.svg (product/app icon). Light brand gradient (lime →
+         mint → soft mint) with a thick rounded root; the foot fades light
+         to keep contrast low at the bottom. -->
     <g fill="none" stroke="url(#_TreeGrad)" stroke-width="16">
         <path d="M256,268 C220,252 184,244 136,232"/>
         <path d="M256,268 C292,252 328,244 376,232"/>
         <path d="M256,268 C238,234 230,212 228,184"/>
         <path d="M256,268 C274,234 284,214 288,188"/>
     </g>
-
-    <!-- Trunk: thick flared root, tapering to the fork, with a softly
-         rounded foot (no sharp bottom corners). -->
     <path d="M253,246 C251,260 249,272 246,292 C240,340 230,392 220,424 C217,433 224,444 234,443 C248,442 264,442 278,443 C288,444 295,433 292,424 C282,392 272,340 266,292 C263,272 261,260 259,246 Z" style="fill:url(#_TreeGrad);"/>
-
-    <!-- Flat-bottomed umbrella canopy with a soft, lumpy top. -->
     <path d="M104,234 C56,230 52,178 98,167 C96,136 144,118 186,133 C216,102 298,102 330,133 C376,120 420,143 415,180 C455,191 438,237 398,234 Z" style="fill:url(#_TreeGrad);"/>
-
     <defs>
         <linearGradient id="_TreeGrad" x1="0" y1="100" x2="0" y2="455" gradientUnits="userSpaceOnUse">
             <stop offset="0" style="stop-color:rgb(189,214,49);stop-opacity:1"/>

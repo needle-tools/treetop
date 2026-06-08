@@ -10,7 +10,7 @@ const exe = isWin ? ".exe" : "";
 
 export default {
   app: {
-    name: "Supergit",
+    name: "Treetop",
     identifier: "tools.needle.supergit",
     version: "0.1.0",
   },
