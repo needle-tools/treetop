@@ -66,6 +66,11 @@
     appIconNameFromToken,
     appIconUrl,
   } from "./app-icons";
+  import {
+    isLikelyMissingStickerToken,
+    stickerFromToken,
+    stickerPreviewStyle,
+  } from "./sticker-packs";
   import DOMPurify from "dompurify";
   import AnchorPicker from "./AnchorPicker.svelte";
   import Popover from "./Popover.svelte";
@@ -100,6 +105,7 @@
     makeTextAttachmentRef,
     noteBodyToEditText,
     parseInlineAttachments,
+    removeInlineAttachmentRef,
     restoreEditTextAttachments,
     resolveLiveCommandLink,
     resolveSessionAgent,
@@ -499,6 +505,10 @@
     }
   }
 
+  function markAttachmentMissing(path: string): void {
+    failedAttachmentPaths = new Set([...failedAttachmentPaths, path]);
+  }
+
   /** While the user is choosing a new anchor, the editor flips into
    *  this mode and shows the AnchorPicker. `null` = picker closed. */
   let pickerMode: "move" | "duplicate" | null = null;
@@ -515,6 +525,8 @@
   let confirmingAttachmentDeleteRaw: string | null = null;
   let attachmentDeleteTimerId: ReturnType<typeof setTimeout> | null = null;
   let attachmentTextareaEl: HTMLTextAreaElement | null = null;
+  let showUnknownStickerDetails = false;
+  let failedAttachmentPaths = new Set<string>();
 
   // ── Secret notes ────────────────────────────────────────────────
   // A secret note hides its body until the reader hovers the secret
@@ -563,6 +575,12 @@
   $: isEmoji = note.kind === "emoji";
   $: isAppIconBody = isEmoji && isAppIconToken(note.body ?? "");
   $: appIconName = isAppIconBody ? appIconNameFromToken(note.body) : null;
+  $: bodySticker = isEmoji ? stickerFromToken(note.body ?? "") : null;
+  $: shouldRenderMissingSticker =
+    isEmoji &&
+    bodySticker === null &&
+    isLikelyMissingStickerToken(note.body ?? "");
+  $: if (!shouldRenderMissingSticker) showUnknownStickerDetails = false;
   $: isSessionLink =
     isLink &&
     note.target?.type === "session" &&
@@ -1089,7 +1107,10 @@
           ? new File([shrunk], opts.filename, { type: shrunk.type })
           : shrunk,
       );
-      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), {
+        method: "POST",
+        body: form,
+      });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
       const { path } = (await res.json()) as { path: string };
       const ref = makeImageAttachmentRef({
@@ -1120,7 +1141,10 @@
       const file = new File([blob], filename, { type: mimeType });
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), {
+        method: "POST",
+        body: form,
+      });
       if (!res.ok) throw new Error(`attach failed: ${res.status}`);
       const { path } = (await res.json()) as { path: string };
       insertAttachmentRef(
@@ -2608,21 +2632,43 @@
   {/if}
 {/snippet}
 
+{#snippet missingObjectPreview(
+  token: string,
+  kind: "sticker" | "attachment",
+  mode: "detached" | "stack" | "media" | "sticker",
+)}
+  <span
+    class="missing-object-preview"
+    class:missing-object-preview-stack={mode === "stack"}
+    class:missing-object-preview-media={mode === "media"}
+    class:missing-object-preview-sticker={mode === "sticker"}
+    title={`Missing ${kind}: ${token}`}
+    aria-label={`Missing ${kind}: ${token}`}
+  >
+    <span class="missing-object-mark" aria-hidden="true">?</span>
+  </span>
+{/snippet}
+
 {#snippet attachmentPreview(
   attachment: InlineAttachment,
   mode: "detached" | "stack" | "media",
 )}
   {#if attachment.kind === "image"}
-    <span
-      class="sticky-photo-frame"
-      class:sticky-photo-frame-media={mode === "media"}
-    >
-      <img
-        src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
-        alt={attachment.filename ?? "Attached image"}
-        draggable={mode === "media" ? "true" : "false"}
-      />
-    </span>
+    {#if failedAttachmentPaths.has(attachment.path)}
+      {@render missingObjectPreview(attachment.path, "attachment", mode)}
+    {:else}
+      <span
+        class="sticky-photo-frame"
+        class:sticky-photo-frame-media={mode === "media"}
+      >
+        <img
+          src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
+          alt={attachment.filename ?? "Attached image"}
+          draggable={mode === "media" ? "true" : "false"}
+          on:error={() => markAttachmentMissing(attachment.path)}
+        />
+      </span>
+    {/if}
   {:else if attachment.kind === "text"}
     <span
       class="sticky-snippet-card"
@@ -2633,11 +2679,23 @@
       <span class="sticky-snippet-meta">{pastedTextMeta(attachment)}</span>
     </span>
   {:else if attachment.kind === "emoji"}
-    <span
-      class={mode === "stack"
-        ? "sticky-trailing-emoji"
-        : "sticky-detached-emoji"}>{attachment.body}</span
-    >
+    {@const sticker = stickerFromToken(attachment.body)}
+    {#if sticker === null && isLikelyMissingStickerToken(attachment.body)}
+      {@render missingObjectPreview(attachment.body, "sticker", mode)}
+    {:else}
+      <span
+        class={mode === "stack"
+          ? "sticky-trailing-emoji"
+          : "sticky-detached-emoji"}
+        class:sticky-trailing-sticker={sticker !== null}
+        class:sticky-detached-sticker={sticker !== null}
+        >{#if sticker !== null}<span
+            class="sticky-inline-sticker-img"
+            style={stickerPreviewStyle(sticker)}
+            aria-label={sticker.label}
+          ></span>{:else}{attachment.body}{/if}</span
+      >
+    {/if}
   {:else if attachment.kind === "note"}
     <span
       class="sticky-mini-note-card"
@@ -2866,14 +2924,31 @@
 
   {#if isEmoji}
     <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <span
       class="sticky-emoji-glyph"
       class:sticky-emoji-glyph-app={isAppIconBody}
+      class:sticky-emoji-glyph-sticker={bodySticker !== null}
       style="font-size: calc({EMOJI_STICKER_BASE_PX}px * {emojiScale})"
       on:mousedown={onMouseDownHeader}
+      on:click|stopPropagation={() => {
+        if (shouldRenderMissingSticker) {
+          showUnknownStickerDetails = !showUnknownStickerDetails;
+        }
+      }}
       on:dblclick|stopPropagation={cycleEmojiScale}
-      title="Drag to move — double-click to resize"
-      >{#if isAppIconBody && appIconName}
+      title={shouldRenderMissingSticker
+        ? `Missing sticker: ${note.body}`
+        : "Drag to move — double-click to resize"}
+      >{#if bodySticker !== null}
+        <span
+          class="sticky-emoji-sticker-img"
+          style={stickerPreviewStyle(bodySticker)}
+          aria-label={bodySticker.label}
+        ></span>
+      {:else if shouldRenderMissingSticker}
+        {@render missingObjectPreview(note.body, "sticker", "sticker")}
+      {:else if isAppIconBody && appIconName}
         <img
           class="sticky-emoji-app-img"
           src={appIconUrl(appIconName)}
@@ -2882,6 +2957,12 @@
         />
       {:else}{note.body}{/if}</span
     >
+    {#if shouldRenderMissingSticker && showUnknownStickerDetails}
+      <div class="missing-object-details" role="status">
+        <span class="missing-object-details-title">Missing sticker</span>
+        <code>{note.body}</code>
+      </div>
+    {/if}
     <button
       class="sticky-emoji-delete sticky-btn danger"
       on:click={onDeleteClick}
@@ -3319,17 +3400,21 @@
                         type="button"
                         class="sticky-btn"
                         title={copied ? "Copied" : "Copy note"}
-                        on:click={() =>
-                          void copyNoteBody(openPart.attachment.body)}
-                        >{copied ? "✓" : "⧉"}</button
+                        on:click={() => {
+                          if (openPart.attachment.kind === "note") {
+                            void copyNoteBody(openPart.attachment.body);
+                          }
+                        }}>{copied ? "✓" : "⧉"}</button
                       >
                       <button
                         type="button"
                         class="sticky-btn"
                         title="Edit"
-                        on:click={() =>
-                          startOpenNoteAttachmentEdit(openPart.attachment)}
-                        >✎</button
+                        on:click={() => {
+                          if (openPart.attachment.kind === "note") {
+                            startOpenNoteAttachmentEdit(openPart.attachment);
+                          }
+                        }}>✎</button
                       >
                     </footer>
                   </div>

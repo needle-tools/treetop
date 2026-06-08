@@ -5,8 +5,13 @@
     APP_ICONS,
     APP_ICON_TOKEN_PREFIX,
     appIconUrl,
-    type AppIcon,
   } from "./app-icons";
+  import {
+    STICKER_PACKS,
+    STICKER_TOKEN_PREFIX,
+    stickerFromToken,
+    stickerPreviewStyle,
+  } from "./sticker-packs";
 
   const dispatch = createEventDispatcher<{ pick: string; cancel: void }>();
 
@@ -1336,6 +1341,22 @@
       .toLowerCase();
     searchIndex.push({ emoji: token, terms });
   }
+  for (const pack of STICKER_PACKS) {
+    for (const sticker of pack.stickers) {
+      const terms = [
+        pack.id,
+        pack.label,
+        sticker.sheet.id,
+        sticker.sheet.name,
+        sticker.sheet.label,
+        sticker.label,
+        "sticker",
+      ]
+        .join(" ")
+        .toLowerCase();
+      searchIndex.push({ emoji: sticker.token, terms });
+    }
+  }
 
   let query = "";
   let inputEl: HTMLInputElement;
@@ -1401,14 +1422,24 @@
             {@const appName = token.startsWith(APP_ICON_TOKEN_PREFIX)
               ? token.slice(APP_ICON_TOKEN_PREFIX.length)
               : null}
+            {@const sticker = token.startsWith(STICKER_TOKEN_PREFIX)
+              ? stickerFromToken(token)
+              : null}
             <button
               class="emoji-cell"
               class:emoji-cell-app={appName !== null}
+              class:emoji-cell-sticker={sticker !== null}
               type="button"
               on:click={() => onPick(token)}
-              title={appName ?? token}
+              title={sticker?.label ?? appName ?? token}
             >
-              {#if appName !== null}
+              {#if sticker !== null}
+                <span
+                  class="emoji-sticker-preview"
+                  aria-label={sticker.label}
+                  style={stickerPreviewStyle(sticker)}
+                ></span>
+              {:else if appName !== null}
                 <img
                   class="emoji-app-icon"
                   src={appIconUrl(appName)}
@@ -1445,6 +1476,27 @@
           </div>
         </div>
       {/if}
+      {#each STICKER_PACKS as pack (pack.id)}
+        <div class="emoji-category">
+          <span class="emoji-category-label">{pack.label}</span>
+          <div class="emoji-grid">
+            {#each pack.stickers as sticker (sticker.token)}
+              <button
+                class="emoji-cell emoji-cell-sticker"
+                type="button"
+                on:click={() => onPick(sticker.token)}
+                title={sticker.label}
+              >
+                <span
+                  class="emoji-sticker-preview"
+                  aria-label={sticker.label}
+                  style={stickerPreviewStyle(sticker)}
+                ></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/each}
       {#each EMOJIS as [category, emojis]}
         <div class="emoji-category">
           <span class="emoji-category-label">{category}</span>
@@ -1528,6 +1580,13 @@
     width: 26px;
     height: 26px;
     object-fit: contain;
+    pointer-events: none;
+  }
+  .emoji-sticker-preview {
+    width: 30px;
+    height: 30px;
+    display: block;
+    border-radius: 4px;
     pointer-events: none;
   }
   .emoji-no-results {

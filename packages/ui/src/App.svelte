@@ -8501,14 +8501,14 @@
                   >
                     <button
                       class="new-wt notes-add notes-add-emoji"
-                      title="Add an emoji sticker"
+                      title="Add sticker"
                       on:click|stopPropagation={() => {
                         emojiPickerOpen = {
                           ...emojiPickerOpen,
                           [row.key]: !emojiPickerOpen[row.key],
                         };
                       }}
-                      aria-label="Add emoji sticker"
+                      aria-label="Add sticker"
                     >
                       <svg
                         viewBox="0 0 24 24"

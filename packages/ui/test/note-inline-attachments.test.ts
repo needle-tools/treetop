@@ -205,6 +205,27 @@ describe("note inline attachments", () => {
     }
   });
 
+  test("labels stale sticker attachment references without expanding raw tokens", () => {
+    const stickerRef = makeEmojiAttachmentRef({
+      body: "sticker:Jungle/plants_blooms_4x4/2",
+    });
+    const legacyRef = makeEmojiAttachmentRef({
+      body: "/plants-decal/seedling",
+    });
+    const parts = parseInlineAttachments(`${stickerRef} ${legacyRef}`);
+
+    if (parts[0]?.kind !== "attachment" || parts[2]?.kind !== "attachment") {
+      throw new Error("expected attachment refs");
+    }
+
+    expect(inlineAttachmentLabel(parts[0].attachment)).toBe(
+      "Jungle / Plants Blooms #3",
+    );
+    expect(inlineAttachmentLabel(parts[2].attachment)).toBe(
+      "Missing sticker: /plants-decal/seedling",
+    );
+  });
+
   test("round-trips command link attachment references", () => {
     const ref = makeLinkAttachmentRef({
       target: {

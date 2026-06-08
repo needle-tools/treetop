@@ -1,4 +1,8 @@
 import { apiUrl } from "./api";
+import {
+  isLikelyMissingStickerToken,
+  stickerTokenLabel,
+} from "./sticker-packs-core";
 
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 export const INLINE_ATTACHMENT_DRAG_MIME =
@@ -608,7 +612,14 @@ export function inlineAttachmentLabel(attachment: InlineAttachment): string {
       "Image attachment"
     );
   }
-  if (attachment.kind === "emoji") return attachment.body || "Emoji";
+  if (attachment.kind === "emoji") {
+    return (
+      stickerTokenLabel(attachment.body) ??
+      (isLikelyMissingStickerToken(attachment.body)
+        ? `Missing sticker: ${attachment.body}`
+        : attachment.body || "Emoji")
+    );
+  }
   if (attachment.kind === "note") {
     const firstLine = attachment.body.trim().split(/\r?\n/)[0]?.trim();
     return firstLine ? `Note: ${firstLine.slice(0, 40)}` : "Note";

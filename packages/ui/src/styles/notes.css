@@ -1938,6 +1938,10 @@
   font-size: 5rem;
   line-height: 1;
 }
+.sticky-trailing-sticker {
+  min-width: 7rem;
+  min-height: 7rem;
+}
 .sticky-detached-emoji {
   display: block;
   width: 100%;
@@ -1945,6 +1949,87 @@
   font-family: "Apple Color Emoji", "Segoe UI Emoji", emoji, sans-serif;
   font-size: 7rem;
   line-height: 1;
+}
+.sticky-detached-sticker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sticky-inline-sticker-img {
+  display: block;
+  width: 1em;
+  height: 1em;
+  background-repeat: no-repeat;
+  background-color: transparent;
+}
+.missing-object-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: min(7rem, 100%);
+  aspect-ratio: 1;
+  border: 1px dashed rgba(64, 55, 28, 0.36);
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      circle at 50% 42%,
+      rgba(255, 255, 255, 0.9),
+      transparent 45%
+    ),
+    rgba(255, 248, 207, 0.92);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.16),
+    inset 0 0 0 8px rgba(255, 255, 255, 0.24);
+  color: rgba(67, 54, 19, 0.7);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.missing-object-preview-stack {
+  width: 6.4rem;
+}
+.missing-object-preview-media {
+  width: min(12rem, 45vw);
+  font-size: 4.5rem;
+}
+.missing-object-preview-sticker {
+  width: 1em;
+  height: 1em;
+  font-size: 1em;
+}
+.missing-object-mark {
+  transform: translateY(-0.03em);
+}
+.missing-object-details {
+  position: absolute;
+  left: calc(100% + 0.55rem);
+  top: 50%;
+  z-index: 6;
+  display: grid;
+  gap: 0.25rem;
+  width: max-content;
+  max-width: min(18rem, 70vw);
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(61, 48, 18, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 251, 231, 0.96);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+  color: rgba(44, 35, 15, 0.82);
+  font-size: 12px;
+  line-height: 1.25;
+  transform: translateY(-50%);
+}
+.missing-object-details-title {
+  font-weight: 800;
+}
+.missing-object-details code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: rgba(74, 57, 18, 0.1);
+  padding: 0.15rem 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 .sticky-meta {
@@ -2389,6 +2474,16 @@
   width: 1em;
   height: 1em;
   object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.sticky-emoji-sticker-img {
+  width: 1em;
+  height: 1em;
+  display: block;
+  background-repeat: no-repeat;
+  background-color: transparent;
   pointer-events: none;
   -webkit-user-drag: none;
   user-select: none;
