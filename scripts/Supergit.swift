@@ -12,7 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !gitAvailable() {
             let alert = NSAlert()
             alert.messageText = "git is not installed"
-            alert.informativeText = "Supergit requires git. Install Xcode Command Line Tools by running:\n\nxcode-select --install"
+            alert.informativeText = "Treetop requires git. Install Xcode Command Line Tools by running:\n\nxcode-select --install"
             alert.addButton(withTitle: "Install…")
             alert.addButton(withTitle: "Quit")
             let response = alert.runModal()

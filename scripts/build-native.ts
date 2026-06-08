@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Build supergit as a macOS .app bundle with a native window.
+ * Build Treetop as a macOS .app bundle with a native window.
  *
  * Output:
- *   build/Supergit.app/Contents/
+ *   build/Treetop.app/Contents/
  *   ├── MacOS/Supergit           Swift launcher (WKWebView + daemon lifecycle)
  *   ├── Resources/
  *   │   ├── supergit             compiled Bun daemon binary
@@ -25,7 +25,9 @@ import { installPayloadPathspec } from "../packages/daemon/src/provision";
 const ROOT = resolve(import.meta.dir, "..");
 const BUILD = resolve(ROOT, "build");
 const FLAT = join(BUILD, "supergit-native");
-const APP = join(BUILD, "Supergit.app");
+const APP_NAME = "Treetop";
+const APP = join(BUILD, `${APP_NAME}.app`);
+const LEGACY_APP = join(BUILD, "Supergit.app");
 const CONTENTS = join(APP, "Contents");
 const MACOS = join(CONTENTS, "MacOS");
 const RESOURCES = join(CONTENTS, "Resources");
@@ -50,6 +52,7 @@ console.log("     ✓ UI built");
 console.log("2/6  Compiling daemon…");
 await rm(FLAT, { recursive: true, force: true });
 await rm(APP, { recursive: true, force: true });
+await rm(LEGACY_APP, { recursive: true, force: true });
 await mkdir(FLAT, { recursive: true });
 // On Windows `bun build --compile` auto-appends `.exe`; on mac/linux it doesn't.
 const binaryPath = join(FLAT, `supergit${exe}`);
@@ -162,9 +165,9 @@ if (isMac) {
   <key>CFBundleIdentifier</key>
   <string>tools.needle.supergit</string>
   <key>CFBundleName</key>
-  <string>Supergit</string>
+  <string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key>
-  <string>Supergit</string>
+  <string>${APP_NAME}</string>
   <key>CFBundleVersion</key>
   <string>0.1.0</string>
   <key>CFBundleShortVersionString</key>
@@ -209,7 +212,7 @@ if (isWin) {
   if (existsSync(rcedit) && existsSync(ico) && targets.length > 0) {
     console.log("5b/6 Stamping icon + metadata onto electrobun binaries…");
     for (const exe of targets) {
-      await $`${rcedit} ${exe} --set-icon ${ico} --set-version-string ProductName Supergit --set-version-string FileDescription Supergit --set-file-version 0.1.0 --set-product-version 0.1.0`.quiet();
+      await $`${rcedit} ${exe} --set-icon ${ico} --set-version-string ProductName ${APP_NAME} --set-version-string FileDescription ${APP_NAME} --set-file-version 0.1.0 --set-product-version 0.1.0`.quiet();
     }
     console.log("     ✓ Icon + version info stamped");
   }

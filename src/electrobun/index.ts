@@ -401,7 +401,7 @@ if (!(await gitAvailable())) {
 if (!isWin) {
   ApplicationMenu.setApplicationMenu([
     {
-      label: "Supergit",
+      label: PRODUCT_NAME,
       submenu: [
         { role: "about" },
         { type: "separator" },

@@ -1,22 +1,29 @@
 import { resolve } from "node:path";
 
+export const DEFAULT_APP_BUNDLE_ID = "tools.needle.supergit";
+export const DEFAULT_APP_NAME = "Treetop";
+
 const port = process.env.SUPERGIT_PORT ?? "27787";
 const delayMs = Number(process.env.SUPERGIT_RELAUNCH_DELAY_MS ?? "2000");
 const waitForShutdownMs = Number(process.env.SUPERGIT_RELAUNCH_WAIT_MS ?? "15000");
 const logPath = process.env.SUPERGIT_RELAUNCH_LOG ?? "/tmp/supergit-build-launch.log";
 const buildScript = process.env.SUPERGIT_RELAUNCH_BUILD_SCRIPT ?? "build";
-const appBundleId = process.env.SUPERGIT_APP_BUNDLE_ID ?? "tools.needle.supergit";
+const appBundleId = process.env.SUPERGIT_APP_BUNDLE_ID ?? DEFAULT_APP_BUNDLE_ID;
 const appPath = process.env.SUPERGIT_APP_PATH ?? defaultAppPath();
 
+export function defaultAppPathFor(platform: NodeJS.Platform, arch: NodeJS.Architecture): string {
+  if (platform === "darwin") {
+    const macArch = arch === "arm64" ? "macos-arm64" : "macos-x64";
+    return resolve(`build/stable-${macArch}/${DEFAULT_APP_NAME}.app`);
+  }
+  if (platform === "win32") {
+    return resolve(`build/stable-win-x64/${DEFAULT_APP_NAME}.exe`);
+  }
+  return resolve(`build/stable-linux-x64/${DEFAULT_APP_NAME}`);
+}
+
 function defaultAppPath(): string {
-  if (process.platform === "darwin") {
-    const macArch = process.arch === "arm64" ? "macos-arm64" : "macos-x64";
-    return resolve(`build/stable-${macArch}/Supergit.app`);
-  }
-  if (process.platform === "win32") {
-    return resolve("build/stable-win-x64/Supergit.exe");
-  }
-  return resolve("build/stable-linux-x64/Supergit");
+  return defaultAppPathFor(process.platform, process.arch);
 }
 
 async function runBuild(): Promise<void> {
@@ -49,7 +56,7 @@ function scheduleLaunch(): void {
       const port = process.env.SUPERGIT_PORT ?? "27787";
       const url = "http://localhost:" + port;
       const appPath = process.env.SUPERGIT_APP_PATH;
-      const appBundleId = process.env.SUPERGIT_APP_BUNDLE_ID ?? "tools.needle.supergit";
+      const appBundleId = process.env.SUPERGIT_APP_BUNDLE_ID ?? "${DEFAULT_APP_BUNDLE_ID}";
 
       function log(message) {
         appendFileSync(logPath, new Date().toISOString() + " " + message + "\\n");
@@ -119,7 +126,7 @@ function scheduleLaunch(): void {
           log("app is not running");
           return;
         }
-        log("quitting Supergit app");
+        log("quitting ${DEFAULT_APP_NAME} app");
         await runLogged("osascript", [
           "-e",
           "ignoring application responses",
@@ -182,10 +189,10 @@ function scheduleLaunch(): void {
       await quitApp();
       await shutdownDaemon();
       if (!(await waitForPortClosed())) {
-        log("port " + port + " is still in use; not starting a second Supergit");
+        log("port " + port + " is still in use; not starting a second ${DEFAULT_APP_NAME}");
         process.exit(1);
       }
-      log("launching Supergit app");
+      log("launching ${DEFAULT_APP_NAME} app");
       await launchApp();
     `,
   ], {
@@ -205,10 +212,12 @@ function scheduleLaunch(): void {
   relauncher.unref();
 }
 
-await runBuild();
-scheduleLaunch();
-console.log(`supergit: scheduled app relaunch in ${delayMs}ms`);
-console.log(`supergit: app path ${appPath}`);
-console.log(`supergit: relaunch log ${logPath}`);
+if (import.meta.main) {
+  await runBuild();
+  scheduleLaunch();
+  console.log(`supergit: scheduled app relaunch in ${delayMs}ms`);
+  console.log(`supergit: app path ${appPath}`);
+  console.log(`supergit: relaunch log ${logPath}`);
+}
 
 export {};

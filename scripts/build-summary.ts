@@ -1,23 +1,24 @@
 #!/usr/bin/env bun
-import { resolve, join, basename } from "node:path";
+import { resolve, join } from "node:path";
 import { existsSync, statSync, readdirSync, rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { $ } from "bun";
 
 const ROOT = resolve(import.meta.dir, "..");
-const platform = `${process.platform}-${process.arch}`;
 const isWin = process.platform === "win32";
+const APP_NAME = "Treetop";
 
 const paths: Record<string, string> = {
   flat: resolve(ROOT, "build/supergit-native"),
 };
 if (process.platform === "darwin") {
-  paths.app = resolve(ROOT, `build/stable-${platform === "darwin-arm64" ? "macos-arm64" : platform}/Supergit.app`);
-  paths.dmg = resolve(ROOT, "artifacts", `stable-macos-arm64-Supergit.dmg`);
+  const macArch = process.arch === "arm64" ? "macos-arm64" : "macos-x64";
+  paths.app = resolve(ROOT, `build/stable-${macArch}/${APP_NAME}.app`);
+  paths.dmg = resolve(ROOT, "artifacts", `stable-${macArch}-${APP_NAME}.dmg`);
 }
 if (isWin) {
-  paths.setup = resolve(ROOT, "build/stable-win-x64/Supergit-Setup.exe");
-  paths.archive = resolve(ROOT, "build/stable-win-x64/Supergit-Setup.tar.zst");
+  paths.setup = resolve(ROOT, `build/stable-win-x64/${APP_NAME}-Setup.exe`);
+  paths.archive = resolve(ROOT, `build/stable-win-x64/${APP_NAME}-Setup.tar.zst`);
 }
 
 // Electrobun stable builds produce a self-extracting .app that decompresses on
@@ -30,7 +31,7 @@ if (process.platform === "darwin" && paths.app && existsSync(paths.app)) {
     console.log(`  Pre-extracting self-extracting bundle...`);
     const buildDir = resolve(paths.app, "..");
     const zstPath = join(resources, zstFile);
-    const tarPath = join(buildDir, "Supergit.app.tar");
+    const tarPath = join(buildDir, `${APP_NAME}.app.tar`);
 
     // zig-zstd lives in electrobun's dist, not inside the self-extracting wrapper
     const zigZstd = resolve(ROOT, "node_modules/electrobun/dist-macos-arm64/zig-zstd");
@@ -78,7 +79,7 @@ if (isWin) {
   const ico = resolve(ROOT, "icon.ico");
   if (existsSync(rcedit) && existsSync(ico) && paths.setup && existsSync(paths.setup)) {
     try {
-      await $`${rcedit} ${paths.setup} --set-icon ${ico} --set-version-string ProductName Supergit --set-version-string FileDescription Supergit --set-file-version 0.1.0 --set-product-version 0.1.0`.quiet();
+      await $`${rcedit} ${paths.setup} --set-icon ${ico} --set-version-string ProductName ${APP_NAME} --set-version-string FileDescription ${APP_NAME} --set-file-version 0.1.0 --set-product-version 0.1.0`.quiet();
       console.log(`  icon+meta → ${paths.setup}`);
     } catch (e) {
       console.warn(`  ⚠ rcedit failed for Setup.exe: ${e}`);
