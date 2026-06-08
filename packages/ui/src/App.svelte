@@ -4697,7 +4697,21 @@
       error?: string;
     } | null;
     if (res.ok && j?.ok) {
-      void load(); // refresh online state / rows
+      // The tunnel is back up, so flip this daemon's badge online NOW —
+      // don't wait on load()'s fan-out. singleFlight() can coalesce our
+      // refresh into a load() that started while the daemon was still
+      // offline (its probe recorded online=false), which would otherwise
+      // clobber the badge straight back to offline. Reassign a new Map so
+      // Svelte sees the change, and re-assert after the refresh settles to
+      // win against any such stale run. A genuinely-still-down tunnel is
+      // corrected by the next organic load().
+      const flipOnline = () => {
+        const next = new Map(daemonsOnline);
+        next.set(daemonId, true);
+        daemonsOnline = next;
+      };
+      flipOnline();
+      void load().then(flipOnline, flipOnline); // refresh rows; keep badge online
       return { ok: true };
     }
     return { ok: false, error: j?.error || `reconnect failed (HTTP ${res.status})` };
