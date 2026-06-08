@@ -80,13 +80,17 @@ describe("peerModeEnabled LAN access gate", () => {
   });
 
   test("peer gate is evaluated before reaching any route handler", () => {
-    // The peerModeEnabled check must come before the first route (e.g.
-    // /api/health) inside the fetch handler body.
-    const peerGateLine = lineOf(/peerModeEnabled/);
-    const healthLine = lineOf(/\/api\/health/);
-    expect(peerGateLine).toBeGreaterThan(0);
-    expect(healthLine).toBeGreaterThan(0);
-    expect(peerGateLine).toBeLessThan(healthLine);
+    // The peerModeEnabled 403 gate must run before the first route dispatch
+    // inside the fetch handler. Anchor on the unambiguous gate string and the
+    // real route check (`url.pathname === "/api/health"`), NOT the first
+    // textual occurrence of `peerModeEnabled` (a module-level `let`) or
+    // `/api/health` (a doc comment far above the handler) — those don't
+    // reflect runtime order and made this test flip on unrelated line shifts.
+    const gateLine = lineOf(/"peer mode is off"/);
+    const firstRouteLine = lineOf(/url\.pathname === "\/api\/health"/);
+    expect(gateLine).toBeGreaterThan(0);
+    expect(firstRouteLine).toBeGreaterThan(0);
+    expect(gateLine).toBeLessThan(firstRouteLine);
   });
 });
 
