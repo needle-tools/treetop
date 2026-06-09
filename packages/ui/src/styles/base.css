@@ -262,3 +262,25 @@ body.ui-idle .new-session-col.awaiting-input {
 .col-offscreen *::after {
   animation: none !important;
 }
+
+/* While the user is actively typing (body.is-typing — toggled from a
+   debounced keydown in any editable field by ui-idle.ts's typing tracker),
+   DE-PROMOTE the always-on decorative animations app-wide, on- AND
+   off-screen. A 2026-06-09 trace showed every keystroke forcing a ~29ms
+   Layerize over a ~376-layer compositor tree; the status-badge edge sweeps
+   + pulsate blink are the dominant contributors (the same set .row-offscreen
+   names — ~240 layers/pass). Like the offscreen gates we use `animation:
+   none`, NOT `paused`: `paused` keeps the element composited so the Layerize
+   walk doesn't shrink; `none` removes the auto-promotion so the layers leave
+   the tree, making each keystroke's Layerize cheap. They resume the moment
+   typing pauses (body.is-typing clears TYPING_IDLE_MS after the last key).
+   AMBIENT effects only — functional push/sync/kill/loading spinners, which
+   live in their own component scopes, keep moving. */
+body.is-typing .status-badge::before,
+body.is-typing .status-badge::after,
+body.is-typing .status-badge.pulsate,
+body.is-typing .walkthrough-highlight,
+body.is-typing .walkthrough-emoji-heartbeat,
+body.is-typing .new-session-col.awaiting-input {
+  animation: none !important;
+}

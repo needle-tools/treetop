@@ -134,12 +134,14 @@ In commit order. Each links to the rationale in the diff.
 
 ### Low-impact (won't move the needle alone, do alongside)
 
-- [ ] **Favicon spinner — cache encoded frames.** The reused-canvas
-      change kills the alloc churn but `toDataURL('image/png')` is
-      still the per-tick cost (5-15ms on a 32×32 canvas). The
-      animation has a finite set of useful frames (≤60 for a
-      one-revolution spinner); pre-encode them at startup and cycle
-      through cached data URLs. Steady-state JS cost → 0.
+- [x] **Favicon spinner — REMOVED entirely (2026-06-09).** Rather than
+      cache encoded frames, the whole canvas/`toDataURL`/DOMParser favicon
+      subsystem was deleted from `awaitingBadge.ts` (~520 lines). A trace
+      showed it as a steady `toDataURL` (220ms) + `parseFromString` (85ms)
+      renderer cost for a signal the `(N)` title prefix + native dock badge
+      (`navigator.setAppBadge`) already provide. The favicon is now the
+      static `/favicon.svg`; `awaitingBadge.ts` keeps only the cheap
+      title/meta/dock surfaces. See "Layerize storm during typing" below.
 - [ ] **SessionView polling.** Every open SessionView fetches
       `/api/session` + `/api/inflight` every 2s and rebuilds the full
       transcript reactive tree. With many open sessions this adds up
@@ -316,6 +318,109 @@ changes need a native rebuild to reach prod.
       an external scan still spawns `powershell.exe` twice (perf counters +
       `Win32_Process`). A single PS invocation returning both would halve the
       remaining startup cost.
+
+## Layerize storm during typing (2026-06-09)
+
+Trace `Trace-20260609T104714.json` (10.5s, prod build), recorded because the
+dashboard felt slow **while typing** (in a session terminal). Main-thread
+breakdown:
+
+| Phase | %wall | Detail |
+|---|---|---|
+| **Layerize** | **54%** (197×, ~29ms each) | full compositor layer-tree rebuild — **once per frame** |
+| serviceScriptedAnimations / RAF | 19% | always-on CSS animations + overlay reposition |
+| `querySelector` (native, self) | 1806ms | overlay/badge position queries |
+| `getBoundingClientRect` | 200ms | forced reflow in the same reads |
+
+Paint was only 3% — the round-1/2 paint fixes held. The new bottleneck is
+**Layerize**, exactly as predicted.
+
+### Root cause
+
+Measured **376 composited layers** (max UpdateLayer-per-commit). Two things
+compound into a ~56ms/frame (~18fps) typing experience:
+
+1. **376 layers → each Layerize costs ~29ms.** The compositor walks every
+   layer on every rebuild. The layers come from the pile of always-on
+   `infinite` CSS animations (status-badge spin/edge-flow/blink, dock
+   halos/pulses, agent working glow + idle "zZZ" trail, hot/warm buttons),
+   each auto-promoting its element. The status-badge pseudos alone were
+   ~240 of them (see `.row-offscreen` comment in `worktree-row.css`).
+2. **Every keystroke dirties the tree.** 97/100 input events were followed
+   by a Layerize within 60ms; the keystroke's Svelte reactive fan-out (the
+   effect runner ran 1673×) mutates the DOM and forces a rebuild over all
+   376 layers. `body.ui-idle` doesn't help — typing counts as *active*.
+
+### Fixes applied (2026-06-09)
+
+| Change | Where | Effect |
+|---|---|---|
+| **`body.is-typing` de-promotes the ambient global animations** during keystroke bursts (`animation: none`, so the layers leave the tree). Toggled by a debounced (`TYPING_IDLE_MS=600`) keydown tracker on editable targets, incl. xterm's hidden textarea. | `ui-idle.ts` (`installTypingTracker`/`isEditableTarget`), `styles/base.css`, `App.svelte` | shrinks the Layerize walk *while typing*, then resumes on pause |
+| **Favicon spinner removed** (see Low-impact TODO above) | `awaitingBadge.ts` | kills `toDataURL`+`parseFromString` (~3%) |
+
+Note the existing IntersectionObserver gating (`col-visibility.ts` →
+`.col-offscreen`, `App.svelte` `rowVisibilityObserver` → `.row-offscreen`)
+already de-promotes **off-screen** rows/columns. The 376 layers in this
+trace were therefore mostly **on-screen** — which is the gap `body.is-typing`
+fills. The two are complementary: offscreen → IO gating; on-screen-while-
+typing → `body.is-typing`.
+
+### Lever 1 — the trigger is xterm's DOM renderer (and `contain` scopes it)
+
+A second trace **with `invalidationTracking` enabled** (`Trace-20260609T112325`)
+named the per-keystroke culprit unambiguously: **952 `LayoutInvalidationTracking`
+events, dominated by `Added/Removed from layout :: #text` (472) and `:: SPAN`
+(407)**, with `xterm-bold` / `xterm-cursor-blink` classes. That's xterm.js's
+**DOM renderer** (only `addon-fit` + `addon-web-links` are loaded — no
+WebGL/canvas addon) **adding and removing the row `<span>`+`#text` nodes on
+every keystroke**. Nodes in/out → paint-artifact structure changes → compositing
+re-runs → Layerize. (To capture this yourself: `chrome://tracing` → Edit
+categories → enable `disabled-by-default-devtools.timeline.invalidationTracking`,
+or just click a Layout event in the Performance panel and read its
+"Invalidations".)
+
+**`contain: layout paint` on `.xterm-host`** (TerminalView.svelte) was tried as
+a cheap CSS-only experiment. Re-trace (`Trace-20260609T160402`) vs the baseline:
+
+| Metric | Baseline | + `contain` |
+|---|---|---|
+| Typing frame rate | ~18 fps (53ms/frame) | **~37 fps (27ms/frame)** |
+| Layerize %wall | 54% | **22%** |
+| Layerize **per rebuild** | 28.9ms | **5.8ms** (5×) |
+| Layers/commit | 376 | 354 (≈ same) |
+
+The win is **not** fewer layers — it's containment **scoping the compositing
+work**. xterm emits hundreds of per-cell `<span>`s; without containment each
+per-keystroke layerization weighs them all against the rest of the page.
+`contain: paint` collapses the terminal into one isolated paint/stacking
+subtree, so those spans stop participating in the global layer-assignment walk.
+Correction to the earlier note: Layerize is `O(layer count)` **and**
+`O(paint-chunk complexity)`; `contain` cut the latter. The trigger still fires
+every keystroke (25/25) — it's just ~5× cheaper now.
+
+**Next (optional, additive):** the canvas renderer (`@xterm/addon-canvas`,
+loaded after `xterm.open()`, DOM as the safety net) would remove the trigger
+*entirely* — typing becomes a contained canvas re-raster, no structural churn,
+no per-keystroke Layerize — taking the remaining 22% toward ~0. Canvas was
+chosen over WebGL because supergit runs many concurrent terminals and browsers
+cap WebGL contexts at ~16/page.
+
+### Open TODOs — Layerize
+
+- [x] **Re-record after the fix (done 2026-06-09).** `contain: layout paint`
+      on `.xterm-host`: Layerize 54%→22%, per-rebuild 28.9ms→5.8ms, typing
+      ~18→~37fps. See table above.
+- [ ] **(Optional) swap xterm to the canvas renderer** to remove the
+      per-keystroke Layerize trigger entirely (remaining ~22%). Additive on top
+      of `contain`. The Svelte-scoped `pill-sweep` / `sleep-z-conveyor` (per
+      visible session column) also still promote — extend `body.is-typing` with
+      `:global()` hooks if they dominate on-screen after canvas lands.
+- [ ] **Shrink the baseline layer count even when not typing.** 376 is high
+      at rest. Audit which always-on `infinite` animations genuinely need to
+      composite vs. could be paint-cheap or capped by row count.
+- [ ] **The 1806ms `querySelector`.** Overlay/awaiting-badge reposition does
+      `querySelectorAll('.session-col')` + `getBoundingClientRect` on a hot
+      path; cache nodes / batch reads to avoid forced reflow.
 
 ## How to record + analyse a trace
 

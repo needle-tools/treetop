@@ -34,7 +34,12 @@
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
   } from "./sse-change-kinds";
-  import { installIdleTracker, isUiIdle, onResume } from "./ui-idle";
+  import {
+    installIdleTracker,
+    installTypingTracker,
+    isUiIdle,
+    onResume,
+  } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
   import AddRemoteDaemonDialog, {
     type ProvisionApi,
@@ -6386,6 +6391,10 @@
     // the 15-20% daemon CPU pulse from background git fetches when
     // nobody's looking. SSE-driven refreshes still flow.
     const uninstallIdle = installIdleTracker();
+    // Pause always-on decorative animations during keystroke bursts so each
+    // keystroke's Layerize walks a smaller compositor tree (perf.md: Layerize
+    // storm during typing). Toggles `body.is-typing`.
+    const uninstallTyping = installTypingTracker();
     const unsubResume = onResume(() => {
       // User came back; refresh once so the stale-while-idle window
       // doesn't show outdated data.
@@ -6445,6 +6454,7 @@
       unsubFocus();
       unsubResume();
       uninstallIdle();
+      uninstallTyping();
       clearInterval(nowTimer);
       clearInterval(chimeTimer);
       document.removeEventListener("visibilitychange", maybeChime);

@@ -1377,6 +1377,18 @@
     flex: 1;
     padding: 0.4rem 0.5rem;
     overflow: hidden;
+    /* EXPERIMENT (perf.md "Layerize storm during typing"): xterm's DOM
+       renderer adds/removes <span>+#text nodes every keystroke, which
+       invalidates layout and dirties compositing → a ~29ms Layerize over the
+       whole layer tree per keystroke. `contain` makes this subtree an
+       independent layout + paint/stacking root so that churn can't ripple
+       outward. NOTE: this scopes LAYOUT; it is not expected to remove the
+       Layerize itself (the paint-artifact structure still changes as spans
+       come and go, and layerization is a document-global O(layers) pass) —
+       re-record a typing trace to confirm. If it doesn't move Layerize, the
+       real fix is swapping xterm to the canvas renderer. `size` deliberately
+       omitted (the box is flex-sized, but size-containment risks collapse). */
+    contain: layout paint;
   }
   /* Error callout — same anchor as the LoadingOverlay (centred,
      nudged up one line) but with its own background so the warning

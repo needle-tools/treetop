@@ -1,46 +1,26 @@
 /**
- * Browser-tab activity indicator. Two surfaces:
- *   - The favicon: a red dot (pulsing) when any open session is
- *     waiting for the user, or a rotating arc when at least one is
- *     mid-turn. Lets the user notice "an agent needs me" / "an agent
- *     is busy" from a different tab without having to click back.
- *   - The document title + <meta name="description"> /
- *     <meta property="og:description">: a compact breakdown of how
- *     many TUIs are waiting / working / idle. The tab strip itself
- *     truncates the title, but the hover tooltip (and any link
- *     unfurl) shows the full string.
+ * Browser-tab activity indicator. Surfaces (all cheap, text-only):
+ *   - The document title: a `(N)` prefix when sessions are waiting plus a
+ *     compact "N waiting, N working, …" breakdown. The tab strip truncates
+ *     it, but the hover tooltip shows the full string.
+ *   - <meta name="description"> / <meta property="og:description">: a
+ *     per-session breakdown for link unfurls.
+ *   - The native dock badge (macOS / WKWebView) via `navigator.setAppBadge`.
  *
- * Idempotent: re-calling with the same state is cheap (it short-
- * circuits before touching the DOM). The first call lazily loads the
- * base favicon as an HTMLImageElement so subsequent updates just
- * redraw without another network fetch.
+ * NOTE: this module used to ALSO paint an animated favicon (a canvas drawn
+ * + `toDataURL("image/png")` ~20×/s). A perf trace (2026-06-09) showed that
+ * loop's `toDataURL` + DOMParser work as a steady renderer cost for zero
+ * benefit the title/dock badge don't already provide, so it was removed
+ * entirely — the favicon is now the static `/favicon.svg` and nothing here
+ * touches it. See plans/performance.md ("favicon spinner removed").
+ *
+ * Idempotent: re-calling with the same state short-circuits before touching
+ * the DOM.
  */
 
 const BASE_TITLE_FALLBACK = "supergit";
-const BASE_FAVICON_HREF = "/favicon.svg";
 
 let baseTitle: string | null = null;
-let baseImage: HTMLImageElement | null = null;
-let baseImageReady = false;
-let lastCount = -1;
-// One canvas + 2D context reused for every favicon redraw. Allocating
-// a fresh 32×32 canvas per frame (we're at 20 fps whenever something
-// is working/awaiting) churns GC and forces the browser to re-acquire
-// a GPU-backed canvas each tick.
-let sharedCanvas: HTMLCanvasElement | null = null;
-let sharedCtx: CanvasRenderingContext2D | null = null;
-function getCanvas(size: number): CanvasRenderingContext2D | null {
-  if (typeof document === "undefined") return null;
-  if (!sharedCanvas) {
-    sharedCanvas = document.createElement("canvas");
-    sharedCanvas.width = size;
-    sharedCanvas.height = size;
-  }
-  if (!sharedCtx) sharedCtx = sharedCanvas.getContext("2d");
-  if (!sharedCtx) return null;
-  sharedCtx.clearRect(0, 0, size, size);
-  return sharedCtx;
-}
 
 export interface TabState {
   awaiting: number;
@@ -70,13 +50,10 @@ let currentState: TabState = { awaiting: 0, working: 0, unread: 0, idle: 0 };
  *  the sessions it's called with and uses these instead. Set via the
  *  `window.__supergitFavicon` helper exposed below. */
 let forcedSessions: TabSession[] | null = null;
-let animationTimer: ReturnType<typeof setInterval> | null = null;
-let animationStart = 0;
 
-/** When on, every state change, image load, and draw routes through
- *  `console.log` so you can watch the indicator's decisions in the
- *  browser devtools. Opt in by visiting the page with
- *  `?favicon-debug=1`. */
+/** When on, every state change routes through `console.log` so you can
+ *  watch the indicator's decisions in devtools. Opt in by visiting the
+ *  page with `?favicon-debug=1`. */
 const debugEnabled =
   typeof window !== "undefined" &&
   !!window.location?.search?.includes("favicon-debug=1");
@@ -216,474 +193,6 @@ function ensureBaseTitle(): string {
   return baseTitle;
 }
 
-function ensureBaseImage(onReady?: () => void): void {
-  if (baseImage !== null) {
-    if (baseImageReady && onReady) onReady();
-    return;
-  }
-  if (typeof Image === "undefined") return;
-  const img = new Image();
-  // Don't set crossOrigin: we always load /needle-logo.svg from the
-  // same origin that serves this page, so CORS doesn't apply — and
-  // setting it would actually break things, because the dev server
-  // doesn't send an Access-Control-Allow-Origin header, which would
-  // taint the canvas and make toDataURL throw SecurityError silently
-  // (the favicon would simply never update).
-  img.onload = () => {
-    baseImageReady = true;
-    dbg("baseImage loaded", BASE_FAVICON_HREF, {
-      naturalWidth: img.naturalWidth,
-      naturalHeight: img.naturalHeight,
-    });
-    if (onReady) onReady();
-    if (lastCount > 0) drawBadge(lastCount);
-    else if (lastCount === 0) clearBadge();
-  };
-  img.onerror = (e) => {
-    dbg("baseImage failed to load", BASE_FAVICON_HREF, e);
-    baseImage = null;
-  };
-  img.src = BASE_FAVICON_HREF;
-  baseImage = img;
-}
-
-// The favicon <link> is created once and lives in <head> forever. The
-// animation timer calls this ~20×/s, so a fresh
-// `document.querySelector('link[rel~="icon"]')` each tick re-scans the
-// (large) dashboard DOM 20 times a second — a profiling trace showed it
-// as the single hottest JS site (~0.5s of querySelector over a 6s
-// capture). Cache the node and only re-query if it's somehow detached.
-let cachedFaviconLink: HTMLLinkElement | null = null;
-
-function getFaviconLink(): HTMLLinkElement | null {
-  if (typeof document === "undefined") return null;
-  if (cachedFaviconLink?.isConnected) return cachedFaviconLink;
-  let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
-  if (!link) {
-    link = document.createElement("link");
-    link.rel = "icon";
-    document.head.appendChild(link);
-  }
-  cachedFaviconLink = link;
-  return link;
-}
-
-function drawBadge(count: number): void {
-  if (!baseImage || !baseImageReady) return;
-  const size = 32;
-  const ctx = getCanvas(size);
-  if (!ctx) return;
-  try {
-    ctx.drawImage(baseImage, 0, 0, size, size);
-  } catch {
-    return;
-  }
-  const r = 11;
-  const cx = size - r - 0.5;
-  const cy = r + 0.5;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = "#e34c3c";
-  ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-  ctx.stroke();
-  if (count >= 1 && count <= 9) {
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 14px system-ui, -apple-system, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(count), cx, cy + 0.5);
-  }
-  const link = getFaviconLink();
-  if (!link || !sharedCanvas) return;
-  try {
-    link.type = "image/png";
-    link.href = sharedCanvas.toDataURL("image/png");
-  } catch {
-    // Tainted canvas (CORS) — leave the favicon alone, title still updates.
-  }
-}
-
-function clearBadge(): void {
-  const link = getFaviconLink();
-  if (!link) return;
-  link.type = "image/svg+xml";
-  link.href = "/favicon.svg";
-  lastFaviconHref = null;
-}
-
-/** Active-frame cache. Each animation cycle has a finite number of
- *  meaningful frames (awaiting/unread = 2s periods, working = 2.5s
- *  period); at 20 fps that's ≤50 frames per state. `toDataURL("image/png")`
- *  is the dominant per-tick cost (PNG encoder runs on the JS thread,
- *  ~5–15 ms per call even at 32×32). Pre-encoding once per state key
- *  and cycling through cached data URLs drops the steady-state per-tick
- *  cost to a single `link.href = …` assignment.
- *
- *  Keyed by the state branch + the integer that affects what's drawn
- *  (the digit). Working has no count dependency, so a single entry. */
-const SIZE = 32;
-const AWAITING_PERIOD_MS = 2000;
-const AWAITING_FRAMES = 40;
-const UNREAD_PERIOD_MS = 2000;
-const UNREAD_FRAMES = 2; // discrete color-swap every 1s — only 2 distinct frames
-const WORKING_PERIOD_MS = 2500;
-const WORKING_FRAMES = 50;
-
-interface FrameSet {
-  frames: string[];
-  durationMs: number;
-}
-const frameCache = new Map<string, FrameSet>();
-
-/** The state branch that drives drawing, plus the digit (or 0 for
- *  no-digit). Returns null when no indicator should be drawn. */
-function frameKeyFor(state: TabState): string | null {
-  // Awaiting > unread > working — matches drawIndicator's priority below.
-  if (state.awaiting > 0) {
-    // 1..9 are distinct (different digits drawn); 10+ all render the
-    // same frames (no digit), so collapse to one cache entry.
-    return `awaiting:${state.awaiting >= 10 ? 10 : state.awaiting}`;
-  }
-  if (state.unread > 0) {
-    // 1..9 distinct; 10+ all render "9+" — same cache entry.
-    return `unread:${state.unread >= 10 ? 10 : state.unread}`;
-  }
-  if (state.working > 0) return "working";
-  return null;
-}
-
-function renderAwaitingFrame(count: number, tMs: number): boolean {
-  if (!baseImage || !baseImageReady) return false;
-  const ctx = getCanvas(SIZE);
-  if (!ctx) return false;
-  const t = tMs / 1000;
-  try {
-    ctx.drawImage(baseImage, 0, 0, SIZE, SIZE);
-  } catch {
-    return false;
-  }
-  const pulse = (Math.sin(t * Math.PI) + 1) / 2;
-  const alpha = 0.75 + 0.25 * pulse;
-  const r = 13;
-  const cx = SIZE - r - 0.5;
-  const cy = r + 0.5;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = "#e34c3c";
-  ctx.fill();
-  ctx.restore();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-  ctx.stroke();
-  if (count >= 1 && count <= 9) {
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(count), cx, cy + 0.5);
-  }
-  return true;
-}
-
-function renderUnreadFrame(count: number, tMs: number): boolean {
-  if (!baseImage || !baseImageReady) return false;
-  const ctx = getCanvas(SIZE);
-  if (!ctx) return false;
-  const t = tMs / 1000;
-  try {
-    ctx.drawImage(baseImage, 0, 0, SIZE, SIZE);
-  } catch {
-    return false;
-  }
-  const r = 15;
-  const fill = Math.floor(t) % 2 === 0 ? "#a4d843" : "#ffff00";
-  const cx = SIZE / 2;
-  const cy = SIZE / 2;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#333333";
-  ctx.stroke();
-  ctx.fillStyle = "#000000";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  if (count >= 1 && count <= 9) {
-    ctx.font = "bold 20px system-ui, -apple-system, sans-serif";
-    ctx.fillText(String(count), cx, cy + 0.5);
-  } else if (count >= 10) {
-    ctx.font = "bold 15px system-ui, -apple-system, sans-serif";
-    ctx.fillText("9+", cx, cy + 0.5);
-  }
-  return true;
-}
-
-function renderWorkingFrame(tMs: number): boolean {
-  if (!baseImage || !baseImageReady) return false;
-  const ctx = getCanvas(SIZE);
-  if (!ctx) return false;
-  const t = tMs / 1000;
-  const inset = 3;
-  ctx.save();
-  ctx.globalAlpha = 0.78;
-  try {
-    ctx.drawImage(baseImage, inset, inset, SIZE - inset * 2, SIZE - inset * 2);
-  } catch {
-    ctx.restore();
-    return false;
-  }
-  ctx.restore();
-  const cx = SIZE / 2;
-  const cy = SIZE / 2;
-  const r = (SIZE - 2) / 2;
-  const angle = t * 0.8 * Math.PI;
-  const segments = 8;
-  const arcPer = (Math.PI * 2) / segments;
-  const dashSweep = arcPer * 0.45;
-  ctx.lineWidth = 2.25;
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "#60b74c";
-  for (let i = 0; i < segments; i++) {
-    const a0 = angle + i * arcPer;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, a0, a0 + dashSweep);
-    ctx.stroke();
-  }
-  return true;
-}
-
-/** Build (and cache) the data-URL frame array for `key`. Returns null
- *  on encoding failure (base image not loaded, canvas tainted). */
-function encodeFrames(key: string): FrameSet | null {
-  if (!baseImageReady || !sharedCanvas) return null;
-  const [kind, countStr] = key.split(":") as [string, string | undefined];
-  const count = countStr ? parseInt(countStr, 10) : 0;
-  let durationMs: number;
-  let nFrames: number;
-  let render: (tMs: number) => boolean;
-  if (kind === "awaiting") {
-    durationMs = AWAITING_PERIOD_MS;
-    nFrames = AWAITING_FRAMES;
-    render = (tMs) => renderAwaitingFrame(count, tMs);
-  } else if (kind === "unread") {
-    durationMs = UNREAD_PERIOD_MS;
-    nFrames = UNREAD_FRAMES;
-    render = (tMs) => renderUnreadFrame(count, tMs);
-  } else {
-    durationMs = WORKING_PERIOD_MS;
-    nFrames = WORKING_FRAMES;
-    render = (tMs) => renderWorkingFrame(tMs);
-  }
-  const frames: string[] = [];
-  for (let i = 0; i < nFrames; i++) {
-    const tMs = (i / nFrames) * durationMs;
-    if (!render(tMs)) return null;
-    try {
-      frames.push(sharedCanvas.toDataURL("image/png"));
-    } catch {
-      return null;
-    }
-  }
-  return { frames, durationMs };
-}
-
-function pickFrame(key: string, tMs: number): string | null {
-  let set = frameCache.get(key);
-  if (!set) {
-    const encoded = encodeFrames(key);
-    if (!encoded) return null;
-    frameCache.set(key, encoded);
-    set = encoded;
-  }
-  const phase = (tMs % set.durationMs) / set.durationMs;
-  const idx = Math.floor(phase * set.frames.length) % set.frames.length;
-  return set.frames[idx];
-}
-
-/** Last `link.href` we wrote, so the animation tick can skip the DOM
- *  write when the cached frame hasn't changed (cheap but not free). */
-let lastFaviconHref: string | null = null;
-
-function drawIndicator(state: TabState, tMs: number): void {
-  const size = 32;
-  const ctx = getCanvas(size);
-  if (!ctx) return;
-  // Everything below is driven by wall-clock time (seconds) so the
-  // visible speed is independent of the redraw fps.
-  const t = tMs / 1000;
-
-  if (state.awaiting > 0) {
-    // Base logo + pulsing red dot in the corner. Awaiting always
-    // wins over working since "needs you" beats "busy".
-    if (!baseImage || !baseImageReady) return;
-    try {
-      ctx.drawImage(baseImage, 0, 0, size, size);
-    } catch {
-      return;
-    }
-    // ~0.5 Hz pulse: alpha drifts 0.75 → 1.0.
-    const pulse = (Math.sin(t * Math.PI) + 1) / 2;
-    const alpha = 0.75 + 0.25 * pulse;
-    const r = 13;
-    const cx = size - r - 0.5;
-    const cy = r + 0.5;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#e34c3c";
-    ctx.fill();
-    ctx.restore();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-    ctx.stroke();
-    if (state.awaiting >= 1 && state.awaiting <= 9) {
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 17px system-ui, -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(state.awaiting), cx, cy + 0.5);
-    }
-  } else if (state.unread > 0) {
-    // Idle but with unread sessions ("done, waiting for review" —
-    // matches the dock's pulsating dot). Logo always visible. The
-    // red badge stays on the whole time and "pulsates": 0.5 Hz scale
-    // toggle between two sizes — a subtle heartbeat that pulls the
-    // eye from another tab without the harshness of a full on/off
-    // blink. The badge is anchored at a fixed center so the digit
-    // inside doesn't jiggle.
-    //
-    // Priority intentionally beats the "working" branch below: when
-    // an agent is done and waiting for review *and* another is mid-
-    // turn, the "review me" signal is more important than the
-    // "still working" one, so show the badge instead of the ring.
-    if (!baseImage || !baseImageReady) return;
-    try {
-      ctx.drawImage(baseImage, 0, 0, size, size);
-    } catch {
-      return;
-    }
-    // Same size on both beats — the "pulse" is pure colour swap now,
-    // alternating between Needle's brand green/yellow and a bright
-    // logo-yellow at 0.5 Hz. Both fills are saturated enough that the
-    // black digit stays legible.
-    const r = 15; // 1px breathing room each side for the 2px outline
-    const fill =
-      Math.floor(t) % 2 === 0
-        ? "#a4d843" // --brand-hover (green-yellow)
-        : "#ffff00"; // pure bright yellow — max attention at tab-strip size
-    const cx = size / 2;
-    const cy = size / 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "#333333"; // dark grey outline carries the eye
-    ctx.stroke();
-    ctx.fillStyle = "#000000";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    if (state.unread >= 1 && state.unread <= 9) {
-      ctx.font = "bold 20px system-ui, -apple-system, sans-serif";
-      ctx.fillText(String(state.unread), cx, cy + 0.5);
-    } else if (state.unread > 9) {
-      ctx.font = "bold 15px system-ui, -apple-system, sans-serif";
-      ctx.fillText("9+", cx, cy + 0.5);
-    }
-  } else if (state.working > 0) {
-    // Working only: needle logo dimmed slightly with a brand-green
-    // "stitching" ring rotating around it. Dashes (rather than a
-    // continuous arc) read as sewing stitches → on-brand for Needle
-    // and visually distinct from a generic page-loading spinner.
-    if (!baseImage || !baseImageReady) return;
-    // Inset the logo a touch so the stitch ring has room without
-    // overlapping the needles themselves.
-    const inset = 3;
-    ctx.save();
-    ctx.globalAlpha = 0.78;
-    try {
-      ctx.drawImage(
-        baseImage,
-        inset,
-        inset,
-        size - inset * 2,
-        size - inset * 2,
-      );
-    } catch {
-      ctx.restore();
-      return;
-    }
-    ctx.restore();
-    // Brand-green stitch ring: 8 evenly-spaced dashes rotating around
-    // the logo perimeter at ~0.4 turns/sec.
-    const cx = size / 2;
-    const cy = size / 2;
-    const r = (size - 2) / 2; // 15px → sits just inside the favicon edge
-    const angle = t * 0.8 * Math.PI; // 0.4 turns/sec
-    const segments = 8;
-    const arcPer = (Math.PI * 2) / segments;
-    const dashSweep = arcPer * 0.45; // 45% stitch, 55% gap
-    ctx.lineWidth = 2.25;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "#60b74c"; // --brand
-    for (let i = 0; i < segments; i++) {
-      const a0 = angle + i * arcPer;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, a0, a0 + dashSweep);
-      ctx.stroke();
-    }
-  }
-
-  const link = getFaviconLink();
-  if (!link || !sharedCanvas) return;
-  try {
-    link.type = "image/png";
-    link.href = sharedCanvas.toDataURL("image/png");
-    lastFaviconHref = link.href;
-  } catch (e) {
-    dbg("toDataURL failed (canvas tainted?)", e);
-  }
-}
-
-function stopAnimation(): void {
-  if (animationTimer !== null) {
-    clearInterval(animationTimer);
-    animationTimer = null;
-  }
-}
-
-function startAnimation(): void {
-  if (animationTimer !== null) return;
-  if (typeof setInterval === "undefined") return;
-  // 20 fps is smooth enough that the arc rotation reads as continuous
-  // motion (the previous 6 fps was visibly steppy). Per-tick cost is
-  // now just `frameCache lookup → link.href = …` because frames are
-  // pre-encoded once per state (see {@link encodeFrames}); the PNG
-  // encoder used to dominate this loop's CPU. Browsers throttle the
-  // interval to ~1 Hz when the tab is hidden, and the body.tab-hidden
-  // class pauses CSS animations app-wide — the indicator still moves
-  // where the user can see it.
-  animationStart = performance.now();
-  animationTimer = setInterval(() => {
-    const key = frameKeyFor(currentState);
-    if (!key) return;
-    const url = pickFrame(key, performance.now() - animationStart);
-    if (!url) return;
-    if (url === lastFaviconHref) return;
-    const link = getFaviconLink();
-    if (!link) return;
-    link.type = "image/png";
-    link.href = url;
-    lastFaviconHref = url;
-  }, 1000 / 20);
-}
-
 function setMeta(name: string, content: string, useProperty = false): void {
   if (typeof document === "undefined") return;
   const selector = useProperty
@@ -699,36 +208,21 @@ function setMeta(name: string, content: string, useProperty = false): void {
   if (meta.content !== content) meta.content = content;
 }
 
-/** Apply the awaiting badge for `count` waiting sessions. Updates the
- *  document title prefix and the favicon. Safe to call repeatedly.
+/** Apply the awaiting badge for `count` waiting sessions — updates the
+ *  document title prefix. Safe to call repeatedly.
  *
- *  Kept for back-compat with callers that only track the awaiting
- *  count; prefer {@link updateTabIndicator} for the full state. */
+ *  Kept for back-compat with callers that only track the awaiting count;
+ *  prefer {@link updateTabIndicator} for the full state. */
 export function updateAwaitingBadge(count: number): void {
-  if (count === lastCount) return;
-  lastCount = count;
-  if (typeof document !== "undefined") {
-    const base = ensureBaseTitle();
-    document.title = titleForCount(base, count);
-  }
-  ensureBaseImage();
-  if (count <= 0) {
-    clearBadge();
-    return;
-  }
-  if (baseImageReady) drawBadge(count);
+  if (typeof document === "undefined") return;
+  document.title = titleForCount(ensureBaseTitle(), count);
 }
 
-/** Apply the full tab indicator for the given live sessions. Updates:
- *  - the document title (awaiting prefix + per-session breakdown with
- *    names and agents, since the tab hover tooltip shows the full
- *    title),
- *  - the meta description / og:description (for link unfurls),
- *  - the favicon (pulsing red dot when awaiting, rotating arc when
- *    only working, base icon otherwise).
- *
- *  Safe to call on every reactive tick — short-circuits when nothing
- *  has changed since the last call. */
+/** Apply the full tab indicator for the given live sessions. Updates the
+ *  document title (awaiting prefix + per-session breakdown), the meta
+ *  description / og:description (for link unfurls), and the native dock
+ *  badge. Safe to call on every reactive tick — short-circuits when
+ *  nothing has changed since the last call. */
 export function updateTabIndicator(sessions: TabSession[]): void {
   if (forcedSessions !== null) sessions = forcedSessions;
   const safe = sessions.filter(
@@ -775,31 +269,16 @@ export function updateTabIndicator(sessions: TabSession[]): void {
     if (badgeCount > 0) (navigator as any).setAppBadge?.(badgeCount);
     else (navigator as any).clearAppBadge?.();
   } catch {}
-
-  const needsAnimation =
-    counts.awaiting > 0 || counts.working > 0 || counts.unread > 0;
-  if (!needsAnimation) {
-    stopAnimation();
-    clearBadge();
-    return;
-  }
-  ensureBaseImage(() =>
-    drawIndicator(currentState, performance.now() - animationStart),
-  );
-  if (baseImageReady)
-    drawIndicator(currentState, performance.now() - animationStart);
-  startAnimation();
 }
 
 /** Dev-only console helper. From the page console:
- *    __supergitFavicon.force({ unread: 2 })       // red blinking dot, "2"
- *    __supergitFavicon.force({ working: 1 })      // stitching ring
- *    __supergitFavicon.force({ awaiting: 3 })     // red pulsing dot, "3"
- *    __supergitFavicon.force({ unread: 1, working: 2 }) // priority demo
+ *    __supergitFavicon.force({ unread: 2 })       // "(0)…" title + dock badge
+ *    __supergitFavicon.force({ working: 1 })      // "… working" title
+ *    __supergitFavicon.force({ awaiting: 3 })     // "(3) …" title + dock badge
  *    __supergitFavicon.clear()                    // resume real session state
  *    __supergitFavicon.peek()                     // see what the indicator is using
- *  Lets you eyeball each favicon state without having to wait for a
- *  matching real session. */
+ *  Drives the title / meta / dock badge (the favicon itself is static now).
+ *  Lets you eyeball each state without waiting for a matching real session. */
 if (typeof window !== "undefined") {
   const w = window as unknown as Record<string, unknown>;
   w.__supergitFavicon = {

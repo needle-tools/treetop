@@ -227,3 +227,67 @@ export function installIdleTracker(): () => void {
 export function createIdleStateForTest(clock: Clock): IdleState {
   return createState(clock);
 }
+
+// ---------------------------------------------------------------------------
+// Typing gate (`body.is-typing`)
+//
+// Separate from the idle gate above. A 2026-06-09 trace showed that while
+// the user types into a field (composer, sticky note, or a terminal's hidden
+// textarea), every keystroke forced a ~29ms `Layerize` over a ~376-layer
+// compositor tree — the always-on decorative animations (status-badge edge
+// sweeps / pulses) each auto-promote their element to a layer and bloat that
+// walk. base.css uses `body.is-typing` to DE-PROMOTE that ambient set
+// (`animation: none`, so the layers leave the tree) for the duration of a
+// keystroke burst, making each keystroke's Layerize cheap. The class clears
+// `TYPING_IDLE_MS` after the last keystroke, so the animations resume the
+// moment you pause. See plans/performance.md ("Layerize storm during typing").
+// ---------------------------------------------------------------------------
+
+/** How long after the last keystroke we keep `body.is-typing` on. Long
+ *  enough to span the gap between keystrokes in a normal typing burst,
+ *  short enough that the decorative animations resume promptly on pause. */
+export const TYPING_IDLE_MS = 600;
+
+/** Is this event target a field the user types into? Covers `<input>`,
+ *  `<textarea>` (incl. xterm.js's hidden `.xterm-helper-textarea`), and
+ *  contenteditable surfaces (sticky notes). Pure — exported for testing. */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tag = target.tagName;
+  return tag === "TEXTAREA" || tag === "INPUT" || target.isContentEditable;
+}
+
+/** Install the `body.is-typing` tracker. Returns a teardown function.
+ *  SSR-safe (no-op when `document` isn't defined). */
+export function installTypingTracker(): () => void {
+  if (typeof document === "undefined") return () => {};
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const stop = (): void => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    document.body.classList.remove("is-typing");
+  };
+  const onKeydown = (e: KeyboardEvent): void => {
+    if (!isEditableTarget(e.target)) return;
+    document.body.classList.add("is-typing");
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      document.body.classList.remove("is-typing");
+    }, TYPING_IDLE_MS);
+  };
+  // Capture so we still see the keystroke even if a handler stops
+  // propagation (xterm.js, CodeMirror-style editors, etc.).
+  document.addEventListener("keydown", onKeydown, {
+    capture: true,
+    passive: true,
+  });
+  return () => {
+    document.removeEventListener("keydown", onKeydown, { capture: true });
+    stop();
+  };
+}
