@@ -109,6 +109,14 @@
     return liveSlider[def.key] ?? (getSetting(def.key) as number);
   }
 
+  // Fill fraction (0–100) for the track gradient. Driven off the live
+  // value so the green fill tracks the thumb during a drag — and is
+  // exactly 100% at max (the native accent-color fill left a gap there).
+  function sliderPct(def: SliderSettingDef): number {
+    const span = def.max - def.min || 1;
+    return ((sliderValue(def) - def.min) / span) * 100;
+  }
+
   function onNumberChange(def: NumberSettingDef, ev: Event) {
     const input = ev.currentTarget as HTMLInputElement;
     let n = input.valueAsNumber;
@@ -225,6 +233,7 @@
                         <input
                           class="setting-slider"
                           type="range"
+                          style="--pct: {sliderPct(def)}%"
                           value={getSetting(def.key)}
                           min={def.min}
                           max={def.max}
@@ -373,8 +382,9 @@
     background: color-mix(in srgb, var(--surface-2) 50%, transparent);
   }
   .setting-row.modified {
-    /* VS Code's "this differs from the default" gutter bar. */
-    border-left-color: #4a87c5;
+    /* "This differs from the default" gutter bar (VS Code's pattern),
+       in the brand accent rather than a generic blue. */
+    border-left-color: var(--brand);
   }
   .setting-text {
     display: flex;
@@ -410,9 +420,52 @@
   .setting-control input[type="number"] {
     width: 5.5rem;
   }
+  /* Custom-painted so the fill is brand-green and lands flush at 100%
+     (the native accent-color track left a gap at max). --pct is set
+     inline from the live value; both WebKit and Firefox tracks read it. */
   .setting-slider {
     width: 9rem;
-    accent-color: #4a87c5;
+    height: 1.1rem;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+  .setting-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+      to right,
+      var(--brand) var(--pct, 0%),
+      var(--surface-3, #333) var(--pct, 0%)
+    );
+  }
+  .setting-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface-3, #333);
+  }
+  .setting-slider::-moz-range-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--brand);
+  }
+  .setting-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 13px;
+    height: 13px;
+    margin-top: -4.5px; /* centre the 13px thumb on the 4px track */
+    border-radius: 50%;
+    background: var(--brand);
+    border: 2px solid var(--surface-1);
+  }
+  .setting-slider::-moz-range-thumb {
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--surface-1);
+    border-radius: 50%;
+    background: var(--brand);
   }
   .setting-slider-val {
     font-size: 0.76rem;

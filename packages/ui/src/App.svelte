@@ -473,8 +473,9 @@
     settings: [
       {
         // Enum (named sizes) rather than a raw number — values are the
-        // pixel sizes as strings; "12" (Small) keeps the prior default
-        // so existing terminals don't resize on upgrade.
+        // pixel sizes as strings. "Normal" is 12px, the size terminals
+        // already render at, and is the default so nothing resizes on
+        // upgrade.
         key: "terminal.fontSize",
         label: "Font size",
         description: "Text size in terminal sessions.",
@@ -482,9 +483,9 @@
         default: "12",
         options: [
           { value: "10", label: "Tiny" },
-          { value: "12", label: "Small" },
-          { value: "14", label: "Normal" },
-          { value: "16", label: "Large" },
+          { value: "11", label: "Small" },
+          { value: "12", label: "Normal" },
+          { value: "14", label: "Large" },
         ],
       },
     ],
