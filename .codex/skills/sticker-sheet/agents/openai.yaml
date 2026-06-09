@@ -1,0 +1,8 @@
+interface:
+  display_name: "Sticker Sheet"
+  short_description: "Generate NxN black-background sticker sheets"
+  brand_color: "#111111"
+  default_prompt: "Use $sticker-sheet to generate a 4x4 sticker sheet; I will provide all 16 cell topics."
+
+policy:
+  allow_implicit_invocation: true
