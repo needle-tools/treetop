@@ -6550,7 +6550,7 @@
   <header>
     {#if daemonVersion || daemonBuildTime}
       <p class="menubar-build">
-        Welcome to the treetop –
+        Welcome to the jungle –
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
         {#if daemonVersion && daemonBuildTime}
           ·
