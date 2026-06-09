@@ -4,7 +4,7 @@ import {
   hashSeed,
   rng,
   adjacentPairs,
-  grownLength,
+  growthForAge,
   reconcile,
   stemPath,
   stemHeight,
@@ -13,8 +13,8 @@ import {
   type Vine,
 } from "../src/vines/vine-core";
 
-function panel(source: string, cx: number): Panel {
-  return { source, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
+function panel(source: string, cx: number, group?: string): Panel {
+  return { source, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
 }
 
 describe("pairKey", () => {
@@ -58,20 +58,33 @@ describe("adjacentPairs", () => {
     expect(adjacentPairs([])).toEqual([]);
     expect(adjacentPairs([panel("a", 1)])).toEqual([]);
   });
+  test("never pairs panels from different row groups", () => {
+    // two rows, two cols each; only same-group neighbours pair
+    const pairs = adjacentPairs([
+      panel("r1a", 100, "row1"),
+      panel("r1b", 200, "row1"),
+      panel("r2a", 120, "row2"),
+      panel("r2b", 220, "row2"),
+    ]);
+    expect(pairs.map(([p, q]) => pairKey(p.source, q.source)).sort()).toEqual(
+      [pairKey("r1a", "r1b"), pairKey("r2a", "r2b")].sort(),
+    );
+  });
 });
 
-describe("grownLength", () => {
-  test("advances proportionally to elapsed/full", () => {
-    expect(grownLength(0, 300, 600)).toBeCloseTo(0.5, 5);
+describe("growthForAge", () => {
+  test("is proportional to age over fullMs", () => {
+    expect(growthForAge(0, 300, 600)).toBeCloseTo(0.5, 5);
   });
-  test("clamps at 1 and never goes below 0", () => {
-    expect(grownLength(0.9, 10_000, 1000)).toBe(1);
-    expect(grownLength(0, -5, 1000)).toBe(0);
+  test("clamps at 1 once older than fullMs, and 0 before birth", () => {
+    expect(growthForAge(0, 10_000, 1000)).toBe(1);
+    expect(growthForAge(1000, 500, 1000)).toBe(0); // now before bornAt
   });
-  test("is monotonic non-decreasing", () => {
-    const a = grownLength(0.2, 50, 1000);
-    const b = grownLength(a, 50, 1000);
-    expect(b).toBeGreaterThanOrEqual(a);
+  test("a vine born days ago comes back already grown (survives reloads)", () => {
+    const week = 7 * 24 * 3600 * 1000;
+    const now = 1_000_000_000_000;
+    const bornThreeDaysAgo = now - 3 * 24 * 3600 * 1000;
+    expect(growthForAge(bornThreeDaysAgo, now, week)).toBeCloseTo(3 / 7, 5);
   });
 });
 

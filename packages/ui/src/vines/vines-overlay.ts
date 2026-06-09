@@ -17,7 +17,7 @@
 
 import {
   reconcile,
-  grownLength,
+  growthForAge,
   stemPath,
   leaves,
   type Panel,
@@ -27,7 +27,49 @@ import {
 const STORE_KEY = "vines:v1";
 const TICK_MS = 2000; // growth + reconcile cadence
 const SAVE_EVERY_MS = 15_000; // persistence throttle
-const FULL_MS = 15 * 60 * 1000; // a vine reaches full length over ~15 min
+const DEFAULT_FULL_MS = 7 * 24 * 60 * 60 * 1000; // ~1 week to full
+
+const QUERY = (() => {
+  try {
+    return new URLSearchParams(location.search);
+  } catch {
+    return new URLSearchParams();
+  }
+})();
+
+/** Time for a vine to reach full length. `?vinesspeed=N` divides it by N
+ *  (e.g. 1000 → a few seconds) for demos; clamped so it can't be instant. */
+function resolveFullMs(): number {
+  const n = Number(QUERY.get("vinesspeed"));
+  if (Number.isFinite(n) && n > 0) return Math.max(2000, DEFAULT_FULL_MS / n);
+  return DEFAULT_FULL_MS;
+}
+const FULL_MS = resolveFullMs();
+
+/** `?vinesgrow=0..1` pre-ages freshly-born vines so they're already partly
+ *  grown — simulates prior usage/growth so you can see vines immediately
+ *  instead of waiting. 0 = off (normal slow growth from scratch). */
+const PRESEED = (() => {
+  const n = Number(QUERY.get("vinesgrow"));
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+})();
+
+// Stable per-row-strip group id, so vines only connect columns in the
+// same worktree row (see adjacentPairs). Keyed on the strip element.
+let stripSeq = 0;
+const stripIds = new WeakMap<Element, string>();
+function groupOf(el: HTMLElement): string {
+  const strip = el.closest("[data-wt-strip]");
+  if (!strip) return "";
+  const attr = strip.getAttribute("data-wt-strip");
+  if (attr) return attr;
+  let id = stripIds.get(strip);
+  if (!id) {
+    id = `strip-${stripSeq++}`;
+    stripIds.set(strip, id);
+  }
+  return id;
+}
 const COL_SELECTOR = ".session-col[data-session-source]";
 const SVGNS = "http://www.w3.org/2000/svg";
 const LEAF_D = "M0 0 C -4.5 -4 -4.5 -11 0 -15 C 4.5 -11 4.5 -4 0 0 Z";
@@ -38,6 +80,7 @@ interface VineNodes {
   stem: SVGPathElement;
   leafLayer: SVGGElement;
   renderedLeaves: number;
+  lastD: string;
 }
 
 interface Persisted {
@@ -67,6 +110,7 @@ function scanPanels(): Panel[] {
     if (r.width === 0 && r.height === 0) continue; // hidden/unmounted
     out.push({
       source,
+      group: groupOf(el),
       cx: r.left + r.width / 2,
       left: r.left,
       right: r.right,
@@ -114,47 +158,44 @@ export function createVinesOverlay(): { destroy: () => void } {
 
   let vines: Vine[] = load();
   const nodes = new Map<string, VineNodes>();
-  let lastGrow = Date.now();
+  // Keys we've already seen, so PRESEED only pre-ages genuinely NEW vines
+  // (loaded vines keep their real, persisted bornAt).
+  const knownKeys = new Set(vines.map((v) => v.key));
   let lastSave = Date.now();
   let destroyed = false;
 
-  // ── geometry sync (cheap; just re-reads rects + repositions groups) ──
+  /** Reconcile against the current panels, pre-age any brand-new vines
+   *  (demo only), then derive every vine's length from its wall-clock age
+   *  and repaint. The single place layout + growth meet. */
+  function reconcileAndGrow(now: number) {
+    vines = reconcile(vines, scanPanels(), now);
+    for (const v of vines) {
+      if (!knownKeys.has(v.key)) {
+        if (PRESEED > 0) v.bornAt = now - PRESEED * FULL_MS;
+        knownKeys.add(v.key);
+      }
+      v.length = growthForAge(v.bornAt, now, FULL_MS);
+    }
+    render();
+  }
+
+  // ── geometry sync (cheap; re-reads rects, repositions, regrows) ──────
   let syncQueued = false;
   function queueSync() {
     if (syncQueued || destroyed) return;
     syncQueued = true;
     requestAnimationFrame(() => {
       syncQueued = false;
-      syncLayout();
+      if (!destroyed) reconcileAndGrow(Date.now());
     });
   }
-  function syncLayout() {
-    if (destroyed) return;
-    const panels = scanPanels();
-    vines = reconcile(vines, panels, Date.now());
-    render();
-  }
 
-  // ── growth tick (seconds apart) ──────────────────────────────────────
+  // ── growth tick (seconds apart; growth is age-based so hidden/closed
+  //    time still counts — that's how vines survive across days) ─────────
   const tick = setInterval(() => {
     if (destroyed) return;
     const now = Date.now();
-    const dt = now - lastGrow;
-    lastGrow = now;
-    if (document.visibilityState === "visible") {
-      let changed = false;
-      for (const v of vines) {
-        const next = grownLength(v.length, dt, FULL_MS);
-        if (next !== v.length) {
-          v.length = next;
-          changed = true;
-        }
-      }
-      // Reconcile too, so panels that appeared/disappeared between
-      // observer events are still picked up.
-      vines = reconcile(vines, scanPanels(), now);
-      if (changed || true) render();
-    }
+    reconcileAndGrow(now);
     if (now - lastSave > SAVE_EVERY_MS) {
       save(vines);
       lastSave = now;
@@ -178,7 +219,10 @@ export function createVinesOverlay(): { destroy: () => void } {
       n.posG.setAttribute("transform", `translate(${cx.toFixed(1)} ${v.baseY.toFixed(1)})`);
       const maxH = vineMaxHeight(v);
       const d = stemPath(v, maxH);
-      n.stem.setAttribute("d", d);
+      if (d !== n.lastD) {
+        n.stem.setAttribute("d", d);
+        n.lastD = d;
+      }
       patchLeaves(v, n, maxH);
     }
   }
@@ -196,7 +240,7 @@ export function createVinesOverlay(): { destroy: () => void } {
     windG.appendChild(leafLayer);
     posG.appendChild(windG);
     svg.appendChild(posG);
-    const n: VineNodes = { posG, windG, stem, leafLayer, renderedLeaves: 0 };
+    const n: VineNodes = { posG, windG, stem, leafLayer, renderedLeaves: 0, lastD: "" };
     nodes.set(v.key, n);
     return n;
   }
@@ -257,13 +301,14 @@ export function createVinesOverlay(): { destroy: () => void } {
   }
   const onHide = () => save(vines);
   window.addEventListener("pagehide", onHide);
-  document.addEventListener("visibilitychange", () => {
+  const onVisibility = () => {
     if (document.visibilityState === "hidden") save(vines);
-    else lastGrow = Date.now(); // don't credit hidden time as growth
-  });
+    else queueSync(); // catch up growth on return (age-based)
+  };
+  document.addEventListener("visibilitychange", onVisibility);
 
   // first paint
-  syncLayout();
+  reconcileAndGrow(Date.now());
 
   return {
     destroy() {
@@ -275,6 +320,7 @@ export function createVinesOverlay(): { destroy: () => void } {
       window.removeEventListener("resize", queueSync as any);
       window.removeEventListener("pointermove", onPointerMove as any);
       window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
       save(vines);
       root.remove();
       nodes.clear();

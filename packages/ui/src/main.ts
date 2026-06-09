@@ -100,9 +100,12 @@ startPeerWatcher();
 const app = mount(App, { target });
 
 // ── Vines overlay (opt-in jungle decoration, self-contained in ./vines)
-// Enable with ?vines=1 (persisted), disable with ?vines=0. The whole
-// feature is one lazy import — off = zero cost. Delete this block + the
-// ./vines folder to remove it entirely.
+// Enable with ?vines=1 (persisted), disable with ?vines=0. Vines grow over
+// ~1 week of wall-clock time and persist across days. Demo helpers:
+//   ?vinesgrow=0..1  pre-age new vines (1 = instantly lush) to see them now
+//   ?vinesspeed=N    grow N× faster (e.g. 1000 ≈ seconds to full)
+// The whole feature is one lazy import — off = zero cost. Delete this block
+// + the ./vines folder to remove it entirely.
 {
   const q = new URLSearchParams(location.search);
   if (q.has("vines")) {
