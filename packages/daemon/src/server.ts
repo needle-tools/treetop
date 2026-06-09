@@ -4736,6 +4736,9 @@ const server = Bun.serve<TermWsData, never>({
           from: { id: peerIdentity.id, label: peerIdentity.label },
           body: text,
           sentAt: new Date().toISOString(),
+          // Stable delivery id so a retry (after a dropped ACK) is
+          // deduped by the receiver instead of duplicated.
+          id: crypto.randomUUID(),
         };
         const peerUrl = `http://${peerHost}:${peerPort}/api/messages/receive`;
         let peerRes: Response;
@@ -4796,7 +4799,9 @@ const server = Bun.serve<TermWsData, never>({
           from?: { id?: unknown; label?: unknown };
           body?: unknown;
           sentAt?: unknown;
+          id?: unknown;
         } | null;
+        const deliveryId = typeof body?.id === "string" ? body.id : undefined;
         const fromId =
           body?.from && typeof body.from.id === "string" ? body.from.id : "";
         const fromLabel =
@@ -4821,6 +4826,7 @@ const server = Bun.serve<TermWsData, never>({
           from: { id: fromId, label: fromLabel },
           body: text,
           sentAt,
+          id: deliveryId,
         });
         const muted = await isPeerMuted(workspace.path, fromId);
         // A short single-line preview so the toast can show the gist

@@ -319,8 +319,12 @@ export class TunnelManager {
     this.tunnels.delete(id);
     try {
       tunnel.proc.kill();
-    } catch {
-      // already dead — nothing to do
+    } catch (e) {
+      // Usually "already dead" — benign, but leave a breadcrumb on the
+      // existing log channel so an unexpected kill failure isn't silent.
+      this.log(
+        `[tunnel] kill ${id} threw (likely already dead): ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     this.log(`[tunnel] closed ${id}`);
     return true;

@@ -29,7 +29,7 @@ import {
   access,
   rename,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import {
   rewritePaths,
   type SessionShareManifest,
@@ -46,6 +46,22 @@ const INVITES_DIR = "session-invites";
 const IMPORTED_DIR = "imported-sessions";
 
 const HTML_TAG_RE = /<\/?[a-z][^>]*>/gi;
+
+/**
+ * Defense-in-depth: assert a path built from manifest fields stays
+ * inside the workspace before we write to it. `validateManifest` already
+ * rejects `..`/separators in the path-safe fields, but a write that
+ * bypasses validation (a future caller, a refactor) must never escape
+ * the workspace silently. Throws if `target` resolves outside `base`.
+ */
+function assertWithin(base: string, target: string): string {
+  const root = resolve(base);
+  const full = resolve(target);
+  if (full !== root && !full.startsWith(root + sep)) {
+    throw new Error(`refusing to write outside workspace: ${target}`);
+  }
+  return full;
+}
 
 /** Strip HTML tags from text fields inside JSONL content blocks.
  *  Prevents stored XSS when shared sessions are rendered with {@html}. */
@@ -155,7 +171,7 @@ export async function storePendingOffer(
 ): Promise<string> {
   const dir = join(workspaceDir, INVITES_DIR);
   await mkdir(dir, { recursive: true });
-  const path = join(dir, `${manifest.offerId}.json`);
+  const path = assertWithin(dir, join(dir, `${manifest.offerId}.json`));
   const body: PendingOffer = {
     manifest,
     jsonl: sanitizeJsonl(jsonl),
@@ -298,8 +314,15 @@ export async function acceptOffer(
     manifest.originMachine,
     manifest.agent,
   );
+  // sidecarDir embeds manifest.originMachine; both it and the sidecar
+  // filename embed validated fields, but assert containment anyway so a
+  // validation bypass can never write outside the imported-sessions tree.
+  assertWithin(join(workspaceDir, IMPORTED_DIR), sidecarDir);
   await mkdir(sidecarDir, { recursive: true });
-  const sidecarPath = join(sidecarDir, `${manifest.sid}.manifest.json`);
+  const sidecarPath = assertWithin(
+    sidecarDir,
+    join(sidecarDir, `${manifest.sid}.manifest.json`),
+  );
 
   let jsonlDir: string;
   if (manifest.agent === "claude") {
@@ -311,7 +334,10 @@ export async function acceptOffer(
     jsonlDir = sidecarDir;
   }
   await mkdir(jsonlDir, { recursive: true });
-  const defaultPath = join(jsonlDir, `${manifest.sid}.jsonl`);
+  const defaultPath = assertWithin(
+    jsonlDir,
+    join(jsonlDir, `${manifest.sid}.jsonl`),
+  );
 
   // Check collision + compute divergence so the caller can decide.
   let existingPath: string | null = null;

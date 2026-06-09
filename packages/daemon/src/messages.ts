@@ -75,6 +75,11 @@ export interface IncomingMessage {
   from: { id: string; label: string };
   body: string;
   sentAt: string;
+  /** Optional sender-assigned delivery id. When present, a second
+   *  receive with the same id (a sender retry after a dropped ACK) is
+   *  ignored instead of duplicated. Absent on older senders, in which
+   *  case every receive is stored. */
+  id?: string;
 }
 
 export type MessageDirection = "in" | "out";
@@ -158,13 +163,22 @@ export async function addIncomingMessage(
   workspaceDir: string,
   msg: IncomingMessage,
 ): Promise<void> {
-  await pushMessage(workspaceDir, msg.from.id, msg.from.label, {
-    id: crypto.randomUUID(),
-    body: msg.body,
-    sentAt: msg.sentAt,
-    receivedAt: new Date().toISOString(),
-    direction: "in",
-  });
+  await pushMessage(
+    workspaceDir,
+    msg.from.id,
+    msg.from.label,
+    {
+      // Reuse the sender's delivery id as the stored id when provided so
+      // dedupe is by the same key the sender retries with; otherwise mint
+      // a local one (which can never collide, so it's never deduped).
+      id: msg.id ?? crypto.randomUUID(),
+      body: msg.body,
+      sentAt: msg.sentAt,
+      receivedAt: new Date().toISOString(),
+      direction: "in",
+    },
+    { dedupe: msg.id !== undefined },
+  );
 }
 
 /** Stamp a message WE just sent into the same per-peer buffer so the
@@ -193,6 +207,7 @@ async function pushMessage(
   peerId: string,
   peerLabel: string,
   msg: StoredMessage,
+  opts: { dedupe?: boolean } = {},
 ): Promise<void> {
   const store = await loadStore(workspaceDir);
   let entry = store.byPeer[peerId];
@@ -201,6 +216,13 @@ async function pushMessage(
     store.byPeer[peerId] = entry;
   }
   entry.label = peerLabel; // refresh the human label
+  // Idempotent receive: a sender that retried after a dropped ACK sends
+  // the same delivery id, so drop it rather than duplicate the message.
+  if (opts.dedupe && entry.messages.some((m) => m.id === msg.id)) {
+    // Still persist the refreshed label.
+    await saveStore(workspaceDir, store);
+    return;
+  }
   entry.messages.unshift(msg);
   // Per-direction cap so a chatty sender can't push the received
   // history off the end, and a chatty receiver can't push out the

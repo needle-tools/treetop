@@ -574,4 +574,49 @@ describe("validateManifest", () => {
     const r = validateManifest(m);
     expect(r.ok).toBe(false);
   });
+
+  // These three fields are interpolated into filesystem paths
+  // (`storePendingOffer` / `acceptOffer`), so a `..` or separator
+  // would escape the intended directory and let a LAN peer write a
+  // file anywhere the daemon can. Reject anything outside a strict
+  // identifier charset.
+  for (const field of ["offerId", "sid", "originMachine"] as const) {
+    test(`rejects path traversal in ${field}`, () => {
+      const m = valid();
+      m[field] = "../../../../tmp/evil";
+      const r = validateManifest(m);
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.error).toMatch(new RegExp(field));
+    });
+
+    test(`rejects path separators in ${field}`, () => {
+      const m = valid();
+      m[field] = "a/b";
+      const r = validateManifest(m);
+      expect(r.ok).toBe(false);
+    });
+
+    test(`rejects backslash separators in ${field}`, () => {
+      const m = valid();
+      m[field] = "a\\b";
+      const r = validateManifest(m);
+      expect(r.ok).toBe(false);
+    });
+
+    test(`rejects literal "${field}" with a bare ".."`, () => {
+      const m = valid();
+      m[field] = "..";
+      const r = validateManifest(m);
+      expect(r.ok).toBe(false);
+    });
+  }
+
+  test("accepts safe identifier characters in path fields", () => {
+    const m = valid();
+    m.offerId = "offer_2026-05-21.abc";
+    m.sid = "a1b2c3-d4e5.f6";
+    m.originMachine = "Mac-Studio_01";
+    const r = validateManifest(m);
+    expect(r.ok).toBe(true);
+  });
 });

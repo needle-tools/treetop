@@ -484,6 +484,17 @@ const REQUIRED_STRINGS: Array<keyof SessionShareManifest> = [
   "toolOutputs",
 ];
 
+// Fields that get interpolated into filesystem paths downstream and so
+// must be safe identifiers (no separators, no `..`). See validateManifest.
+const PATH_SAFE_FIELDS: Array<keyof SessionShareManifest> = [
+  "offerId",
+  "sid",
+  "originMachine",
+];
+// Allows letters, digits, `_`, `-`, `.` — but `..`/`.` are rejected
+// separately so the only dots that survive are inside a longer name.
+const SAFE_ID = /^[A-Za-z0-9_.-]+$/;
+
 const VALID_AGENTS: ShareAgent[] = ["claude", "codex", "ollama"];
 const VALID_PLATFORMS: SharePlatform[] = ["darwin", "linux", "win32"];
 const VALID_TOOL_OUTPUTS: ToolOutputMode[] = ["stripped", "included"];
@@ -498,6 +509,22 @@ export function validateManifest(m: unknown): ValidateResult {
     const v = obj[key];
     if (typeof v !== "string" || v.length === 0) {
       return { ok: false, error: `missing or non-string field: ${key}` };
+    }
+  }
+
+  // These three fields are interpolated into filesystem paths by
+  // `storePendingOffer` (`<invites>/<offerId>.json`) and `acceptOffer`
+  // (`<imported>/<originMachine>/<agent>/<sid>.jsonl`). A `..` or path
+  // separator would let an unauthenticated LAN peer escape the
+  // workspace and write a file anywhere the daemon can. Constrain them
+  // to a strict identifier charset and reject `..` explicitly.
+  for (const key of PATH_SAFE_FIELDS) {
+    const v = obj[key] as string;
+    if (!SAFE_ID.test(v) || v === "." || v === "..") {
+      return {
+        ok: false,
+        error: `${key} contains unsafe characters (path-safe identifier required)`,
+      };
     }
   }
 

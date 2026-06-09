@@ -78,11 +78,24 @@ export class RemoteWsBridge {
       const e = ev as { code?: number; reason?: string };
       this.browser.close(e.code, e.reason);
     });
-    this.remote.addEventListener("error", () => {
+    this.remote.addEventListener("error", (ev) => {
       // A connect failure or transport error: tear the browser side down.
       if (this.closed) return;
       this.closed = true;
-      this.browser.close(1011, "remote ws error");
+      // Surface the real cause instead of a flat "remote ws error" — the
+      // browser-side WS error event carries a `message`/`error` on most
+      // runtimes, which is the difference between "tunnel down" and
+      // "remote refused the upgrade" when debugging a dead terminal (B3).
+      const detail =
+        (ev as { message?: string; error?: { message?: string } })?.message ??
+        (ev as { error?: { message?: string } })?.error?.message ??
+        "";
+      console.error(
+        `supergit daemon: remote terminal WS error${detail ? ` — ${detail}` : ""}`,
+      );
+      // Close reason is capped at 123 bytes by the WS spec; keep it short.
+      const reason = detail ? `remote ws error: ${detail}`.slice(0, 120) : "remote ws error";
+      this.browser.close(1011, reason);
     });
   }
 

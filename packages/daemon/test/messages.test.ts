@@ -51,6 +51,34 @@ describe("addIncomingMessage + getMessages", () => {
     expect(got[0]?.messages[0]?.sentAt).toBe("2026-05-22T10:00:00Z");
   });
 
+  test("duplicate delivery id is ignored (idempotent receive)", async () => {
+    const w = await ws();
+    const dup = {
+      from: { id: "peer-a", label: "Alice" },
+      body: "exactly once",
+      sentAt: "2026-05-22T10:00:00Z",
+      id: "delivery-1",
+    };
+    await addIncomingMessage(w, dup);
+    await addIncomingMessage(w, dup); // sender retried after a dropped ACK
+    const got = await getMessages(w);
+    expect(got).toHaveLength(1);
+    expect(got[0]?.messages).toHaveLength(1);
+  });
+
+  test("messages without a delivery id are not deduped", async () => {
+    const w = await ws();
+    const base = {
+      from: { id: "peer-a", label: "Alice" },
+      body: "same body",
+      sentAt: "2026-05-22T10:00:00Z",
+    };
+    await addIncomingMessage(w, base);
+    await addIncomingMessage(w, base);
+    const got = await getMessages(w);
+    expect(got[0]?.messages).toHaveLength(2);
+  });
+
   test("rings cap at MAX_PER_PEER messages (newest first)", async () => {
     const w = await ws();
     for (let i = 0; i < MAX_PER_PEER + 3; i++) {

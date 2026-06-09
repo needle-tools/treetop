@@ -24,6 +24,23 @@ describe("PeerRegistry", () => {
     expect(r.peers()[0]?.label).toBe("alice");
   });
 
+  test("markProbe records liveness result on the peer", () => {
+    const r = new PeerRegistry({ selfId: "me" });
+    r.addPeer({ id: "p1", label: "alice", host: "10.0.0.5", port: 27787 });
+    r.markProbe("p1", 27787, true, "2026-06-09T00:00:00Z");
+    expect(r.peers()[0]?.lastProbeOk).toBe(true);
+    expect(r.peers()[0]?.lastProbeAt).toBe("2026-06-09T00:00:00Z");
+    r.markProbe("p1", 27787, false, "2026-06-09T00:00:30Z");
+    expect(r.peers()[0]?.lastProbeOk).toBe(false);
+    expect(r.peers()[0]?.lastProbeAt).toBe("2026-06-09T00:00:30Z");
+  });
+
+  test("markProbe is a no-op for an unknown peer", () => {
+    const r = new PeerRegistry({ selfId: "me" });
+    expect(() => r.markProbe("ghost", 1234, true, "now")).not.toThrow();
+    expect(r.peers()).toEqual([]);
+  });
+
   test("ignores our own advertisement (selfId match)", () => {
     const r = new PeerRegistry({ selfId: "me" });
     r.addPeer({ id: "me", label: "myself", host: "10.0.0.5", port: 27787 });

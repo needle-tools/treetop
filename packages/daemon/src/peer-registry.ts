@@ -37,6 +37,13 @@ export interface Peer {
    *  cares, but bonjour fires 'down' events reliably enough that we
    *  don't actively expire by time. */
   lastSeen: string;
+  /** Result of the most recent active HTTP liveness probe (see
+   *  PeerDiscovery.runHealthCheck). `undefined` until the first probe
+   *  runs. Surfaced via /api/peers?diag=1 so a flaky peer is
+   *  diagnosable without tailing logs. */
+  lastProbeOk?: boolean;
+  /** ISO timestamp of the most recent liveness probe attempt. */
+  lastProbeAt?: string;
 }
 
 export interface RegistryOpts {
@@ -145,6 +152,16 @@ export class PeerRegistry {
         this.removeTimers.delete(k);
       }, graceMs),
     );
+  }
+
+  /** Record the result of an active liveness probe against a peer.
+   *  No-op if the peer is no longer in the registry (it may have been
+   *  removed between snapshot and probe completion). */
+  markProbe(id: string, port: number, ok: boolean, at: string): void {
+    const peer = this.byKey.get(key(id, port));
+    if (!peer) return;
+    peer.lastProbeOk = ok;
+    peer.lastProbeAt = at;
   }
 
   /** Snapshot — caller may mutate without affecting the registry. */

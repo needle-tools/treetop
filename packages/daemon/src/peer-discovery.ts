@@ -30,6 +30,15 @@ import { PeerRegistry, type Peer } from "./peer-registry";
 
 const SERVICE_TYPE = "supergit";
 
+/** Active-liveness probe cadence. Default 30s catches a hard-dead
+ *  daemon within ~60s (two consecutive failures). Tunable for tests and
+ *  slow links via SUPERGIT_PEER_PROBE_MS; clamped to a sane floor so a
+ *  typo can't turn it into a tight loop. */
+const PROBE_INTERVAL_MS = (() => {
+  const raw = Number(process.env.SUPERGIT_PEER_PROBE_MS);
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 30_000;
+})();
+
 export interface DiscoveryOpts {
   port: number;
   id: string;
@@ -197,11 +206,12 @@ export class PeerDiscovery {
       this.browser.on("down", (svc: ServiceType) => this.onDown(svc));
       this.enabled = true;
       // Active liveness probe — see field comment above. 30s cadence
-      // catches "daemon died hard" within ~60s (two failures), which
-      // a missing bonjour 'down' event would never tell us about.
+      // (tunable via SUPERGIT_PEER_PROBE_MS) catches "daemon died hard"
+      // within ~2 intervals (two failures), which a missing bonjour
+      // 'down' event would never tell us about.
       this.healthCheck = setInterval(() => {
         void this.runHealthCheck();
-      }, 30_000);
+      }, PROBE_INTERVAL_MS);
     } catch (e) {
       this.initError = e instanceof Error ? e.message : String(e);
       console.error(
@@ -220,6 +230,7 @@ export class PeerDiscovery {
     await Promise.all(
       known.map(async (peer) => {
         const url = `http://${peer.host}:${peer.port}/api/identity`;
+        const at = new Date().toISOString();
         try {
           const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), 3000);
@@ -228,9 +239,18 @@ export class PeerDiscovery {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           // Reachable — clear any pending failure count.
           this.failedHealthChecks.delete(peer.id);
-        } catch {
+          this.registry.markProbe(peer.id, peer.port, true, at);
+        } catch (e) {
+          this.registry.markProbe(peer.id, peer.port, false, at);
           const fails = (this.failedHealthChecks.get(peer.id) ?? 0) + 1;
+          const reason = e instanceof Error ? e.message : String(e);
           if (fails >= 2) {
+            // Two strikes — drop it. Log the reason so a peer that
+            // vanishes isn't a silent mystery (B3): "TimeoutError" vs
+            // "ECONNREFUSED" vs "HTTP 503" point at different causes.
+            console.error(
+              `supergit daemon: peer ${peer.label} (${peer.host}:${peer.port}) removed after 2 failed probes — ${reason}`,
+            );
             this.registry.removePeer(peer.id, peer.port);
             this.failedHealthChecks.delete(peer.id);
           } else {

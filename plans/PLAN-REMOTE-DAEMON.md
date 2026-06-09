@@ -949,3 +949,308 @@ reason, not the controller.)
 - Worktree-clone speed (the core thesis) holds on the remote box since
   worktrees are local to the daemon there — confirm nothing in the fast
   path assumes the *client* filesystem.
+
+---
+
+## Implementation status (2026-06-09)
+
+First wave landed (test-first, `bun test` green in isolation per touched
+file). The rest is deferred to scoped follow-ups — specs in the
+"Deferred — ready-to-implement" subsection below.
+
+**Shipped:**
+- **Security — both path-traversals.** `validateManifest`
+  (`session-share.ts`) now rejects `offerId`/`sid`/`originMachine` that
+  aren't `/^[A-Za-z0-9_.-]+$/` (and rejects bare `.`/`..`); `storePendingOffer`
+  / `acceptOffer` (`session-share-store.ts`) gained an `assertWithin()`
+  containment guard before every write. Tests in `session-share.test.ts`.
+- **B6 (idempotency half).** `/api/messages/send` mints a delivery `id`;
+  `/api/messages/receive` honors it; `addIncomingMessage` dedupes a retry
+  by id (`messages.ts`, `server.ts`). Tests in `messages.test.ts`.
+- **A2/B4.** `SUPERGIT_PEER_PROBE_MS` knob (floor 1s) for the liveness
+  probe; `PeerRegistry.markProbe()` records `lastProbeOk`/`lastProbeAt`
+  on each peer, surfaced via `/api/peers?diag=1`
+  (`peer-discovery.ts`, `peer-registry.ts`). Tests in `peer-registry.test.ts`.
+- **B3.** Probe-removal now logs the failure reason; `RemoteWsBridge`
+  passes the real error through instead of a flat "remote ws error";
+  `TunnelManager.close()` leaves a breadcrumb on kill failure
+  (`peer-discovery.ts`, `daemon-ws-proxy.ts`, `tunnel-manager.ts`).
+
+**Deferred (documented, not yet built):** A1, A3, A4/A5, A6/A7/A9, B1,
+B2, and the B6 badge-hysteresis half. These touch the TUI / tunnel / mDNS
+hot paths the CLAUDE.md warns hardest about and want live-app
+verification (`/verify` or `/run`) rather than a blind commit. Specs
+below.
+
+### Deferred — ready-to-implement specs
+
+- **A4/A5 — terminal WS auto-reconnect + resumable replay (P0).**
+  Client (`TerminalView.svelte`): on `ws.onclose` with a non-1000 code
+  while `phase==="live"`, set `phase="reconnecting"` and re-run the
+  attach flow with capped exp backoff (500ms→1s→2s→4s, cap 8s, ±20%
+  jitter, give up ~30s → `phase="error"`). Reuse the reattach-fallback
+  logic near `TerminalView.svelte:601`. Backend
+  (`node-pty-backend.ts:605-615`): tag each outgoing frame with a
+  monotonic byte offset; accept `?since=<offset>` on the `/io` upgrade
+  (`server.ts:1967`, threaded through `daemon-ws-proxy.ts`) and replay
+  only the tail past it instead of the whole ≤256KB ring. Verify live:
+  open a terminal, kill+restore the socket, confirm seamless resume with
+  no duplicated scrollback.
+- **A3 — decouple online badge.** Drive `daemonsOnline` off an
+  independent short-timer poll of `GET /api/daemons/<id>/connection`
+  (`server.ts:7819`) instead of the 5s `load()` fan-out side-effect
+  (`App.svelte:3412-3493`); reconnect becomes "mark online, next ping
+  confirms" — delete the `flipOnline()`/`load().then(flipOnline,…)`
+  race-hack at `App.svelte:4713`.
+- **B6 (badge hysteresis half).** Require 2 consecutive failed fan-outs
+  before flipping a daemon offline (mirrors the daemon-side 2-strike
+  peer probe). Pairs with A3.
+- **A1 — mDNS network-change rebind.** Poll `findLocalIp()` every 30-60s;
+  on change call the existing `restartPeerDiscovery()` (`server.ts:855`).
+  Optional periodic re-publish (~120s).
+- **A6/B5 — silence watchdogs.** Proxied SSE in `daemon-proxy.ts:108`:
+  swap the first-byte exemption for a *silence* watchdog (~60s no bytes →
+  abort so `forwardWithReconnect` reopens; remote emits `: ping` every
+  20s). `RemoteWsBridge`: idle reaper (~90s). **Precondition:** confirm
+  the PTY WS actually carries a periodic keepalive/state frame, else an
+  idle watchdog kills live-but-idle terminals — do NOT ship without that.
+- **A7/A9 — tunnel circuit-breaker + staggered fan-out.** Per-daemon
+  reopen cooldown (after 2 failed reopens in 30s, fast-fail 502 for 15s
+  in `daemon-proxy.ts:184-223` rather than respawning ssh per request);
+  gate the remote fan-out (`App.svelte:3449`) behind the A3 online-ping
+  and add a per-daemon single-flight + jittered stagger.
+- **B1 — authenticated peer protocol.** Per-workspace shared secret or
+  TOFU peer-key: advertise a pubkey fingerprint in the mDNS TXT record,
+  sign offers/messages, verify on receipt. Minimum interim: verify the
+  source IP resolves to the discovered peer's host for the claimed
+  `from.id` (note: peers are keyed by mDNS hostname, so this needs a
+  resolve step — brittle, hence the TOFU design is preferred). The
+  path-traversal fix already removed the dangerous write primitive, so
+  the residual here is identity-spoofing of chat/offers.
+- **B2 — version negotiation.** Stamp `schemaVersion` on offer/message
+  payloads; reject with a clear "peer too new/old"; consume the already
+  advertised peer `version` in the UI so mismatches are visible.
+
+## Connection-stability + design-gap review (2026-06-09)
+
+Read-only audit of the whole remote/peer machinery: `peer-discovery.ts`,
+`peer-registry.ts`, `peer-identity.ts`, `daemon-proxy.ts`,
+`daemon-ws-proxy.ts`, `tunnel-manager.ts`, `sse-heartbeat.ts`, the
+WS/SSE/peer routes in `server.ts`, and the UI clients `TerminalView.svelte`,
+`peer-watcher.ts`, and the SSE/online-badge logic in `App.svelte`.
+
+There are **two physically distinct "remote" layers** and they fail
+differently — review them separately:
+- **LAN peer layer** — mDNS discovery + session-share/messages over plain
+  HTTP to `peer.host:port`. Lightweight, **unauthenticated**, fire-and-forget.
+- **Remote-daemon layer** — a remote box shown as a folder row, reached via
+  `ssh -L` tunnel + HTTP/WS reverse proxy. Heavier, stateful, ssh-key authed.
+
+### Security findings (HIGH/MEDIUM, both verified at confidence 8/10)
+
+Two real path-traversal bugs share one root cause: **`validateManifest`
+(`session-share.ts:491-576`) checks that `offerId`, `sid`, and
+`originMachine` are non-empty strings but never constrains their charset**,
+and the store/accept code feeds them straight into `path.join`, which
+normalizes `..` out of the intended directory.
+
+1. **Unauthenticated arbitrary `.json` write at offer-receive time** —
+   `POST /api/sessions/offer` is in `LAN_ALLOWED_ROUTES`
+   (`server.ts:896-901`); the network gate (`server.ts:1947-1961`) lets any
+   non-loopback LAN host call it once peer mode is on, with **no caller
+   auth**. `storePendingOffer` writes
+   `join(workspaceDir, "session-invites", `${manifest.offerId}.json`)`
+   (`session-share-store.ts:158`). `offerId =
+   "../../../../Users/<u>/git/supergit/.supergit-workspace/repos"` clobbers
+   `repos.json`/`prefs.json` or plants an attacker-named `.json` anywhere
+   the daemon user can write. **No click required.** Severity High.
+2. **Arbitrary file write on offer-accept** — `acceptOffer` builds
+   `join(workspaceDir, "imported-sessions", manifest.originMachine,
+   manifest.agent)` and `…/${manifest.sid}.jsonl`
+   (`session-share-store.ts:295-314`). `..` in `sid`/`originMachine`
+   escapes the tree and writes the attacker-controlled transcript bytes
+   anywhere. Gated on the victim clicking Accept → Medium.
+
+   **Fix (both):** in `validateManifest`, reject any `offerId`/`sid`/
+   `originMachine` not matching `/^[A-Za-z0-9._-]+$/` (and explicitly reject
+   `..`); defense-in-depth, `resolve()` the final path in
+   `storePendingOffer`/`acceptOffer` and assert it still starts with the
+   intended dir + `sep` before writing. Add a regression test feeding a `..`
+   manifest to both paths.
+
+### A. Connection stability
+
+Each item: current mechanism (file:line) → gap/risk → fix → priority.
+
+- **A4 (P0) — Terminal WebSocket has NO mid-session reconnect.**
+  `TerminalView.svelte:583` `ws.onclose`: clean 1000 → `exited`, anything
+  else → `error` + manual **Retry** button (`:1326`). The backoff machinery
+  at `:329-446` only covers *initial spawn* (`MAX_SPAWN_ATTEMPTS=3`,
+  `SPAWN_RETRY_BACKOFF_MS=750`), not a live drop. So "laptop slept / Wi-Fi
+  blipped / ssh tunnel reset" kicks a live Claude/Codex column to an error
+  state **even though the daemon-side PTY is still alive and buffering up to
+  256KB of scrollback** (`node-pty-backend.ts:30,609`) ready to replay.
+  *Fix:* on abnormal `onclose` while `phase==="live"`, go to a
+  `reconnecting` state and re-run the attach flow with capped exp backoff
+  (500ms→1s→2s→4s, cap 8s, ±20% jitter, give up ~30s → `error`). Mostly
+  client work; the daemon already replays on reattach. This is the headline
+  reliability fix.
+
+- **A5 (P2) — PTY replay is a full 256KB blob, not resumable.**
+  `node-pty-backend.ts:605-615` dumps the entire ring on subscribe with no
+  seq/offset. Once A4 exists, every reconnect re-dumps → duplicated/torn
+  output over what xterm already rendered. *Fix:* attach a monotonic byte
+  offset to outgoing frames; reattach passes `?since=<offset>` (carried
+  through the `/io` upgrade at `server.ts:1967` and `daemon-ws-proxy.ts`) so
+  the backend replays only the tail. This is what makes A4 *seamless*.
+
+- **A3 (P1) — Remote-daemon online badge is poll-driven and the
+  reconnect flip is a race-hack.** `App.svelte:3412-3493` recomputes
+  `daemonsOnline` only as a side-effect of the 5s `load()` repo fan-out;
+  `reconnectDaemon()` (`:4713`) has to `flipOnline()` then
+  `load().then(flipOnline, flipOnline)` "to win against any stale run" — the
+  comment is the tell that source-of-truth and desired-state conflict.
+  *Fix:* drive the badge off an independent short-timer poll of the existing
+  `GET /api/daemons/<id>/connection` (`server.ts:7819`), decoupled from
+  `load()`; reconnect becomes "mark online, next ping confirms" with no race.
+
+- **A1 (P1) — mDNS has no periodic self re-announce / no
+  network-change re-bind.** `peer-discovery.ts:178` publishes once at
+  `start()`; `interfaceAddress` is pinned once at boot via `findLocalIp()`
+  (`server.ts:856`). Nothing listens for interface deltas or sleep/wake, so
+  after a network switch we advertise/bind a stale IP until restart.
+  *Fix:* periodic re-publish (~120s); poll `findLocalIp()` every 30-60s and
+  call the existing `restartPeerDiscovery()` (`server.ts:855`) when it
+  changes.
+
+- **A9 (P1) — Reconnect thundering-herd in the remote fan-out.** Every
+  `load()` fans `fetchReposNDJSON` + `/agents/installed` + `/shell-default`
+  + `/shells/available` (`App.svelte:3449`) to *every* registered daemon,
+  each over its own tunnel, on the 5s poll, with no stagger and no
+  per-daemon in-flight guard. On wake all remote daemons + tunnel reopens
+  (A7) hit at once — compounds the cold-start enrich storm (see
+  `performance.md`). *Fix:* gate the fan-out behind the A3 online-ping so
+  offline daemons aren't probed every 5s; add a per-daemon single-flight;
+  stagger reopens with jitter.
+
+- **A6 (P2) — Proxied SSE has no silence watchdog.** `daemon-proxy.ts:89-115`
+  has a sound 15s time-to-headers cap (`SUPERGIT_PROXY_TIMEOUT_MS`) cleared
+  on first byte, but **SSE is fully exempt** (`:108`). On a half-open tunnel
+  after sleep a proxied SSE stream connects and waits forever; the local
+  `sse-heartbeat.ts` (20s) only protects browser↔local, not local↔remote.
+  *Fix:* for proxied `text/event-stream`, apply a *silence* watchdog (not a
+  first-byte cap) — abort after ~60s with no bytes (remote emits `: ping`
+  every 20s, so 60s silence is unambiguous death) so `forwardWithReconnect`
+  reopens.
+
+- **A7 (P2) — `forwardWithReconnect` self-heals only idempotent
+  requests; no reopen cooldown.** `daemon-proxy.ts:184-223`: a 502 reopens +
+  retries inline for GET/HEAD, returns 502 for POST (body already consumed).
+  So a POST onto a stale tunnel always fails once after wake, and a
+  black-holed box reopens ssh on *every* request under the 5s poll. *Fix:*
+  per-daemon circuit-breaker (after 2 failed reopens in 30s, fast-fail 502
+  for 15s instead of respawning ssh each request); surface "reconnecting…"
+  rather than a hard error on the first post-wake POST.
+
+- **A2 (P2) — Peer liveness probe cadence + tunables.**
+  `peer-discovery.ts:202` probes `/api/identity` every 30s (3s timeout, 2
+  fails = remove → 30-60s detection); `onDown` (`:328`) defers removal 60s.
+  Reasonable, but interval is hard-coded (rest of system uses env knobs) and
+  there's no `lastProbeOk/At` recorded, so the UI can't show staleness.
+  *Fix:* `SUPERGIT_PEER_PROBE_MS` knob; record `lastProbeOk`/`lastProbeAt`
+  on `Peer`, expose via `/api/peers?diag=1`.
+
+- **A8 (P2) — `waitForPort` can hand back a dead tunnel.**
+  `tunnel-manager.ts:88` polls `Bun.connect` every 150ms; ssh's local
+  listener accepts even when the remote side is black-holed, so it returns
+  "ready" and `forwardToRemote`'s 15s header cap only catches it later. ssh
+  keepalive is well-tuned (`ServerAliveInterval=15`/`CountMax=3` ≈45s). The
+  45s keepalive window (A7) is the real exposure; A8 is a residual note.
+
+### B. Design gaps
+
+- **B1 (P1) — Zero authentication on the LAN peer protocol.** The 4
+  allowed routes have no caller auth: `POST /api/messages/receive`
+  (`server.ts:4788`) and `/api/sessions/offer` (`:4967`) read
+  `from.id`/`from.label` straight from the body (`:4800`), never
+  cross-checked against the mDNS-advertised id or any key. Any LAN host can
+  spoof another peer's identity, flood the inbox/offer queue, or trigger
+  toasts/sounds. (The remote-*daemon* layer is fine — ssh-key authed.)
+  *Fix:* per-workspace shared secret or TOFU peer-key exchange (advertise a
+  pubkey fingerprint in the TXT record, sign offers/messages). Minimum:
+  verify source IP matches the discovered peer's host for the claimed
+  `from.id`, and rate-limit per source IP. (Coordinate with the security
+  fixes above — same trust boundary.)
+
+- **B2 (P1) — No protocol/version negotiation.** `version` is advertised
+  in mDNS TXT (`peer-discovery.ts:185`) and on `Peer.version` but **nothing
+  consumes it** for compatibility. Offer/message payloads carry no
+  `schemaVersion`; cross-version back-compat is hand-rolled per field
+  (`session-share.ts:513`). A route added/removed across versions surfaces
+  as a raw 404 (the UI special-cases only `/reconnect`,
+  `App.svelte:4696`). *Fix:* stamp `schemaVersion` on payloads; receiver
+  rejects with a clear "peer too new/old"; show peer version in the UI.
+
+- **B3 (P2) — Swallowed errors in the connection path.**
+  `peer-discovery.ts:231` `catch {}` bumps a fail counter but logs nothing;
+  `daemon-ws-proxy.ts:81` closes the browser with generic
+  `1011 "remote ws error"`, discarding the real cause;
+  `tunnel-manager.ts:322` swallows kill errors; `App.svelte:3475` silently
+  drops offline-daemon fetch errors. The HTTP proxy path is the good example
+  (captures ssh stderr, `tunnel-manager.ts:289`). *Fix:* route these through
+  `daemon-log`/`broadcast("error", …)` so they land in the Events popover;
+  pass real ssh/remote close reasons through the bridge.
+
+- **B4 (P2) — Observability is good for mDNS, thin for tunnels.**
+  `/api/peers?diag=1` (`server.ts:4661`) and `/api/daemons/<id>/connection`
+  (`:7819`) are useful, but there's no per-peer last-probe timestamp, no
+  tunnel uptime/reopen-count, no exposed "why the tunnel last died." A user
+  debugging a flaky remote can't see "this tunnel reopened 14× in 5 min."
+  *Fix:* per-tunnel counters in `TunnelManager` (openedAt, reopenCount,
+  lastExitCode) surfaced via `/connection`; `lastProbeAt/Ok` on peers.
+
+- **B5 (P2) — WS-bridge / SSE leak on half-open tunnels.**
+  `RemoteWsBridge` (`daemon-ws-proxy.ts`) has no idle timeout — a remote
+  that stops sending but never sends a close frame (half-open after wake)
+  holds the browser WS open indefinitely. *Fix:* idle/silence watchdog on
+  `RemoteWsBridge` (~90s no bytes/ping → close); count live bridges in
+  diagnostics. Pairs with A6.
+
+- **B6 (P2) — Best-effort delivery with no reconciliation.** Messages are
+  a per-sender ring (`messages.ts:205`) with no delivery ack and no
+  idempotency key — a dropped `POST /messages/receive` is silently lost, and
+  a sender retry **duplicates**. `daemonsOnline` is rebuilt from scratch
+  each `load()` so the badge flips offline on any single failed fan-out.
+  *Fix:* idempotency/message-id on `/messages/receive` (dedupe in the ring);
+  make the badge hysteretic — require 2 consecutive failed fan-outs before
+  flipping offline (mirrors the daemon-side 2-strike peer probe).
+
+### Quick wins vs larger efforts
+
+**Quick wins (small, high-value):**
+- Security: charset-validate `offerId`/`sid`/`originMachine` in
+  `validateManifest` + containment assert — closes both path-traversals.
+- B6 badge hysteresis: require 2 consecutive failed fan-outs before
+  `daemonsOnline=false` — kills most badge flapping.
+- A2/B4: `lastProbeAt/Ok` on `Peer` + `SUPERGIT_PEER_PROBE_MS`, surface in
+  `?diag=1`.
+- B3: log the `peer-discovery.ts:231` catch; pass real close reason through
+  `daemon-ws-proxy.ts:81`.
+- A6/B5: silence watchdog on proxied SSE and `RemoteWsBridge` (~60-90s).
+- B2 (cheap half): consume the already-advertised peer `version` in the UI
+  so mismatches are visible.
+
+**Larger efforts (design/multi-file):**
+- **A4 + A5:** terminal WS auto-reconnect with resumable `?since=<offset>`
+  replay — the headline reliability fix.
+- **A1:** network-change / wake-aware mDNS re-announcement.
+- **A3:** decouple the online badge from `load()` onto an independent
+  `/connection` ping — removes the reconnect race-hack.
+- **A7 + A9:** tunnel reopen circuit-breaker + staggered/guarded remote
+  fan-out — kills the post-wake thundering herd.
+- **B1 + B2:** authenticated, versioned peer protocol (TOFU keys / shared
+  secret + signed, schema-versioned payloads).
+
+> Note: per the flaky-full-suite memory, `forwardToRemote` Tier 2, mDNS, and
+> `watchWorktree` tests are timing-flaky in the full `bun test` run — run any
+> test added for these fixes in isolation to confirm green.
