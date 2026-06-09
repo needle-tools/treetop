@@ -12,6 +12,7 @@
   import { joinSelectionRows, type SelectionRow } from "./clean-selection";
   import { TerminalWriteBuffer } from "./terminal-write-buffer";
   import { createResizeCoalescer, type ResizeCoalescer } from "./terminal-resize";
+  import { openUrl } from "./open-url";
   import {
     expandNoteBodyForTerminalPasteChunks,
     extractNoteClipboardPayloadFromHtml,
@@ -730,14 +731,10 @@
     // Open URLs via the daemon so it works in both browser and native
     // app (WKWebView doesn't route window.open to the OS browser).
     xterm.loadAddon(
-      new WebLinksAddon((_event, uri) => {
-        fetch(apiUrl("/api/open-default"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: uri }),
-        }).catch(() => {
-          window.open(uri, "_blank");
-        });
+      new WebLinksAddon((event, uri) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openUrl(uri);
       }),
     );
     xterm.open(containerEl);

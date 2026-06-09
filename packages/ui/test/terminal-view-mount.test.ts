@@ -292,3 +292,16 @@ describe("TerminalView clipboard copy + paste", () => {
     expect(insertIdx).toBeLessThan(modOnlyIdx);
   });
 });
+
+describe("TerminalView web links", () => {
+  test("routes WebLinksAddon activation through the shared openUrl helper", () => {
+    expect(SOURCE).toContain('import { openUrl } from "./open-url"');
+    const addonIdx = SOURCE.indexOf("new WebLinksAddon");
+    expect(addonIdx).toBeGreaterThan(-1);
+    const block = SOURCE.slice(addonIdx, addonIdx + 500);
+    expect(block).toContain("event.preventDefault()");
+    expect(block).toContain("event.stopPropagation()");
+    expect(block).toContain("openUrl(uri)");
+    expect(block).not.toContain('fetch(apiUrl("/api/open-default")');
+  });
+});
