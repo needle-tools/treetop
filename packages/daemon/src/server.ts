@@ -43,7 +43,7 @@ import {
   type FileDiffKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
-import { $ } from "bun";
+import { $, type ServerWebSocket } from "bun";
 import {
   detectAgents,
   agentsForWorktree,
@@ -1138,17 +1138,33 @@ let claudeTopSessionsCache: {
   value: Awaited<ReturnType<typeof topClaudeSessionsByTokens>> | null;
 } = { at: 0, value: null };
 
-// detectAgents() walks ~/.claude + ~/.codex + workspaceStorage. Share only
-// the in-flight scan so startup bursts coalesce, but do not cache the finished
-// result: newly-created Claude/Codex sessions should appear on the next fetch.
+// detectAgents() walks ~/.claude + ~/.codex + workspaceStorage and is often
+// the slowest part of /api/repos in a long-lived dashboard. We still want new
+// agent sessions to appear quickly, so this is not a long-lived semantic cache:
+// it is a short "burst absorber" for the pattern visible in prod logs where
+// visible-fetch, fs_change, and UI refreshes trigger several repo enriches in a
+// few seconds. In-flight coalescing handles true concurrency; this TTL handles
+// near-concurrency without making a newly-created session stale for more than a
+// heartbeat.
 import type { AgentSession } from "./agents";
+const AGENTS_CACHE_MS = Number(process.env.SUPERGIT_AGENTS_CACHE_MS ?? 10_000);
 let agentsInflight: Promise<AgentSession[]> | null = null;
+let agentsCache: { at: number; value: AgentSession[] } | null = null;
 
 async function sharedDetectAgents(): Promise<AgentSession[]> {
+  const now = Date.now();
+  if (agentsCache && now - agentsCache.at < AGENTS_CACHE_MS) {
+    return agentsCache.value;
+  }
   if (agentsInflight) return agentsInflight;
-  agentsInflight = detectAgents(WORKSPACE_PATH).finally(() => {
-    agentsInflight = null;
-  });
+  agentsInflight = detectAgents(WORKSPACE_PATH)
+    .then((value) => {
+      agentsCache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      agentsInflight = null;
+    });
   return agentsInflight;
 }
 
@@ -1840,7 +1856,15 @@ function startGraceIfIdle(termId: string) {
 //                (Phase 4b). The bridge is created in open() once we have
 //                the ServerWebSocket to use as the browser-facing peer.
 type TermWsData =
-  | { kind: "terminal"; termId: string; unsubscribe: (() => void) | null }
+  | {
+      kind: "terminal";
+      termId: string;
+      unsubscribe: (() => void) | null;
+      pendingOutput: Uint8Array[];
+      pendingOutputBytes: number;
+      skippedOutputBytes: number;
+      outputBackpressured: boolean;
+    }
   // Proxy WS to a remote daemon. We can't resolve the tunnel before
   // upgrading — Bun requires srv.upgrade() to run SYNCHRONOUSLY in the
   // fetch handler, before any await (an await detaches the request context
@@ -1854,6 +1878,141 @@ type TermWsData =
       search: string;
       bridge: RemoteWsBridge | null;
     };
+
+const TERMINAL_WS_BACKPRESSURE_CAP_BYTES = Number(
+  process.env.SUPERGIT_TERMINAL_WS_BACKPRESSURE_CAP_BYTES ?? 512 * 1024,
+);
+// If WebKit stops draining a terminal websocket, Bun will report
+// backpressure from ws.send(). Before this guard we kept sending every PTY
+// chunk anyway, so macOS showed multi-megabyte supergit->WebKit TCP send
+// queues and later UI actions looked like they arrived minutes late.
+//
+// The daemon already keeps a bounded replay buffer per terminal. This layer is
+// a second, browser-connection-local buffer whose job is narrower: never let a
+// single slow WebKit view turn live PTY output into an unbounded OS/socket
+// backlog. We preserve byte order while the backlog is under the cap. If the
+// browser remains slower than the PTY past that cap, we drop the oldest
+// connection-local bytes and keep the newest output plus an explicit in-terminal
+// notice. That can lose historical scrollback for that view, but it keeps the
+// dashboard interactive and the PTY itself alive; a reconnect still receives
+// the terminal backend's recent replay buffer.
+const TERMINAL_WS_SKIP_NOTICE = new TextEncoder().encode(
+  "\r\n[supergit: skipped terminal output while the browser was catching up]\r\n",
+);
+
+function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
+  if (ws.data.kind !== "terminal") return;
+  ws.data.pendingOutput.push(chunk);
+  ws.data.pendingOutputBytes += chunk.byteLength;
+  while (
+    ws.data.pendingOutputBytes > TERMINAL_WS_BACKPRESSURE_CAP_BYTES &&
+    ws.data.pendingOutput.length > 1
+  ) {
+    const dropped = ws.data.pendingOutput.shift();
+    const bytes = dropped?.byteLength ?? 0;
+    ws.data.pendingOutputBytes -= bytes;
+    ws.data.skippedOutputBytes += bytes;
+  }
+  if (
+    ws.data.pendingOutputBytes > TERMINAL_WS_BACKPRESSURE_CAP_BYTES &&
+    ws.data.pendingOutput.length === 1
+  ) {
+    const only = ws.data.pendingOutput[0]!;
+    const keepBytes = Math.max(
+      0,
+      TERMINAL_WS_BACKPRESSURE_CAP_BYTES - TERMINAL_WS_SKIP_NOTICE.byteLength,
+    );
+    ws.data.pendingOutput[0] = only.subarray(
+      Math.max(0, only.byteLength - keepBytes),
+    );
+    ws.data.skippedOutputBytes +=
+      only.byteLength - ws.data.pendingOutput[0]!.byteLength;
+    ws.data.pendingOutputBytes = ws.data.pendingOutput[0]!.byteLength;
+  }
+}
+
+function takeTerminalOutputBacklog(
+  ws: ServerWebSocket<TermWsData>,
+): Uint8Array | null {
+  if (ws.data.kind !== "terminal") return null;
+  if (ws.data.pendingOutput.length === 0 && ws.data.skippedOutputBytes === 0) {
+    return null;
+  }
+  const noticeBytes =
+    ws.data.skippedOutputBytes > 0 ? TERMINAL_WS_SKIP_NOTICE.byteLength : 0;
+  const out = new Uint8Array(noticeBytes + ws.data.pendingOutputBytes);
+  let offset = 0;
+  if (noticeBytes > 0) {
+    out.set(TERMINAL_WS_SKIP_NOTICE, offset);
+    offset += TERMINAL_WS_SKIP_NOTICE.byteLength;
+    console.log(
+      `supergit daemon: terminal websocket skipped ${ws.data.skippedOutputBytes}B for ${ws.data.termId} under browser backpressure`,
+    );
+  }
+  for (const chunk of ws.data.pendingOutput) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  ws.data.pendingOutput = [];
+  ws.data.pendingOutputBytes = 0;
+  ws.data.skippedOutputBytes = 0;
+  return out;
+}
+
+function flushTerminalOutput(ws: ServerWebSocket<TermWsData>): void {
+  const backlog = takeTerminalOutputBacklog(ws);
+  if (!backlog || backlog.byteLength === 0) {
+    if (ws.data.kind === "terminal") ws.data.outputBackpressured = false;
+    return;
+  }
+  const status = ws.send(backlog);
+  // -1 means Bun accepted the frame but the socket is still under
+  // backpressure. New PTY chunks will accumulate in pendingOutput until the
+  // next drain; don't requeue this frame or it would duplicate output. 0 means
+  // Bun dropped the frame (typically a closing/dead socket), so there is no
+  // reliable future drain to wait for.
+  if (ws.data.kind === "terminal") {
+    ws.data.outputBackpressured = status === -1;
+    if (status === 0) {
+      ws.data.pendingOutput = [];
+      ws.data.pendingOutputBytes = 0;
+      ws.data.skippedOutputBytes = 0;
+      try {
+        ws.close(1013, "terminal websocket dropped output");
+      } catch {
+        // Already closing.
+      }
+    }
+  }
+}
+
+function sendTerminalOutput(
+  ws: ServerWebSocket<TermWsData>,
+  chunk: Uint8Array,
+): void {
+  if (ws.data.kind !== "terminal") return;
+  if (ws.data.outputBackpressured || ws.data.pendingOutput.length > 0) {
+    queueTerminalOutput(ws, chunk);
+    return;
+  }
+  const status = ws.send(chunk);
+  if (status === -1) {
+    // The current frame is already queued inside Bun. Buffer subsequent PTY
+    // frames ourselves so OS/WebKit queues cannot grow without bound.
+    ws.data.outputBackpressured = true;
+    return;
+  }
+  if (status === 0) {
+    // No backpressure callback is guaranteed after a dropped frame. Close this
+    // browser socket and let the terminal grace/replay path handle reattach
+    // instead of holding bytes that may never flush.
+    try {
+      ws.close(1013, "terminal websocket dropped output");
+    } catch {
+      // Already closing.
+    }
+  }
+}
 
 const server = Bun.serve<TermWsData, never>({
   port: PORT,
@@ -1972,7 +2131,15 @@ const server = Bun.serve<TermWsData, never>({
           }
           if (
             srv.upgrade(req, {
-              data: { kind: "terminal", termId, unsubscribe: null },
+              data: {
+                kind: "terminal",
+                termId,
+                unsubscribe: null,
+                pendingOutput: [],
+                pendingOutputBytes: 0,
+                skippedOutputBytes: 0,
+                outputBackpressured: false,
+              },
             })
           ) {
             return undefined as unknown as Response;
@@ -8375,7 +8542,7 @@ const server = Bun.serve<TermWsData, never>({
           for (const tag of tags) {
             broadcast("change", { kind: "sound_play", tag, termId });
           }
-          if (output.length > 0) ws.send(output);
+          if (output.length > 0) sendTerminalOutput(ws, output);
         },
         onState(state) {
           // Text frame carrying daemon-detected terminal state (e.g.
@@ -8397,6 +8564,10 @@ const server = Bun.serve<TermWsData, never>({
         },
       };
       ws.data.unsubscribe = handle.subscribe(sub);
+    },
+
+    drain(ws) {
+      if (ws.data.kind === "terminal") flushTerminalOutput(ws);
     },
 
     /** Client messages: binary = bytes to write to the PTY (keystrokes).

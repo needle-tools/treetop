@@ -159,6 +159,28 @@ In commit order. Each links to the rationale in the diff.
       no transitions are active), but watch for accidental always-on
       loops.
 
+### Backend responsiveness after long-running Treetop sessions (2026-06-10)
+
+Runtime probes on the native app after ~2h showed the daemon itself was still
+answering tiny routes quickly (`/api/debug/mem` ~1-2ms, `/api/shell-default`
+~1ms), with modest RSS (~200MB) and single-digit CPU. The suspicious evidence
+was instead TCP backpressure: several `supergit:27787 -> WebKit` localhost
+connections had multi-MB send queues, with matching WebKit receive queues.
+That means PTY/SSE data had reached the browser process but WebKit was not
+draining it promptly, which can make later UI work appear to arrive minutes
+late.
+
+Fixes landed in source:
+
+- Add a short completed-result cache around `sharedDetectAgents()` (`10s`,
+  configurable with `SUPERGIT_AGENTS_CACHE_MS`) so frequent `/api/repos`
+  rebuilds do not re-walk hundreds of agent JSONLs every few seconds.
+- Add terminal WebSocket backpressure handling: when Bun reports a terminal
+  socket is backpressured, subsequent PTY output is held in a bounded
+  per-socket backlog and flushed on WebSocket `drain`; if the browser stays
+  behind beyond the cap, old backlog is dropped with a visible terminal notice
+  instead of letting OS/WebKit queues grow without bound.
+
 ## Daemon-side: the cold-start enrich storm
 
 Everything above is the renderer (Chrome/WebKit) process. This section is

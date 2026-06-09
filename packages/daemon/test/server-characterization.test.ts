@@ -131,10 +131,17 @@ describe("activity tail startup", () => {
     );
   });
 
-  test("agent detection shares only in-flight scans, not completed results", () => {
+  test("agent detection shares in-flight scans and a short completed-result cache", () => {
     expect(SERVER_TS).toContain("let agentsInflight");
-    expect(SERVER_TS).not.toContain("AGENTS_CACHE_MS");
-    expect(SERVER_TS).not.toContain("let agentsCache");
+    expect(SERVER_TS).toContain("const AGENTS_CACHE_MS");
+    expect(SERVER_TS).toContain("let agentsCache");
+    const fnBody = SERVER_TS.match(
+      /async function sharedDetectAgents[\s\S]*?\n\}/,
+    )?.[0];
+    expect(fnBody, "sharedDetectAgents not found").toBeTruthy();
+    expect(fnBody).toContain("const now = Date.now()");
+    expect(fnBody).toContain("now - agentsCache.at < AGENTS_CACHE_MS");
+    expect(fnBody).toContain("agentsCache = { at: Date.now(), value }");
   });
 });
 
@@ -422,5 +429,32 @@ describe("/api/repos agent enrichment", () => {
     expect(detailsAt).toBeGreaterThan(-1);
     expect(agentsForWtAt).toBeGreaterThan(-1);
     expect(agentsAt).toBeLessThan(detailsAt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 22. Terminal WS backpressure — do not flood WebKit when it falls behind
+// ---------------------------------------------------------------------------
+describe("terminal WebSocket backpressure", () => {
+  test("terminal WS data carries a bounded output backlog", () => {
+    expect(SERVER_TS).toContain("TERMINAL_WS_BACKPRESSURE_CAP_BYTES");
+    expect(SERVER_TS).toContain("pendingOutput: Uint8Array[]");
+    expect(SERVER_TS).toContain("pendingOutputBytes: number");
+  });
+
+  test("terminal output goes through backpressure-aware sender", () => {
+    const openStart = SERVER_TS.indexOf("open(ws)");
+    const msgStart = SERVER_TS.indexOf("message(ws, msg)", openStart);
+    const openBody =
+      openStart >= 0 && msgStart > openStart
+        ? SERVER_TS.slice(openStart, msgStart)
+        : "";
+    expect(openBody).toContain("sendTerminalOutput(ws, output)");
+    expect(openBody).not.toContain("ws.send(output)");
+  });
+
+  test("websocket drain flushes buffered terminal output", () => {
+    expect(SERVER_TS).toContain("drain(ws)");
+    expect(SERVER_TS).toContain("flushTerminalOutput(ws)");
   });
 });
