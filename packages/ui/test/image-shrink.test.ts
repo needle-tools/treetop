@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   targetDimensions,
   pngPixelDensityDpi,
+  imageBytesHaveAlpha,
   DEFAULT_MAX_SIDE,
   HI_DPI_MAX_SIDE,
   HI_DPI_THRESHOLD_DPI,
@@ -96,6 +97,14 @@ function pHYsChunk(xPpu: number, yPpu: number, unit: 0 | 1): number[] {
   return chunk("pHYs", data);
 }
 
+function ihdrChunk(colorType: number): number[] {
+  const data: number[] = [];
+  writeUint32BE(data, 1);
+  writeUint32BE(data, 1);
+  data.push(8, colorType, 0, 0, 0);
+  return chunk("IHDR", data);
+}
+
 function buildPng(chunks: number[][]): Uint8Array {
   const all: number[] = [];
   all.push(...PNG_SIG);
@@ -154,5 +163,44 @@ describe("pngPixelDensityDpi", () => {
     const full = buildPng([pHYsChunk(5669, 5669, 1)]);
     const truncated = full.slice(0, full.length - 4);
     expect(pngPixelDensityDpi(truncated)).toBeNull();
+  });
+});
+
+describe("imageBytesHaveAlpha", () => {
+  test("detects PNG color types and tRNS chunks that carry alpha", () => {
+    expect(
+      imageBytesHaveAlpha(
+        buildPng([ihdrChunk(6), chunk("IDAT", [0])]),
+        "image/png",
+      ),
+    ).toBe(true);
+    expect(
+      imageBytesHaveAlpha(
+        buildPng([ihdrChunk(2), chunk("IDAT", [0])]),
+        "image/png",
+      ),
+    ).toBe(false);
+    expect(
+      imageBytesHaveAlpha(
+        buildPng([ihdrChunk(2), chunk("tRNS", [0, 0, 0, 0, 0, 0])]),
+        "image/png",
+      ),
+    ).toBe(true);
+  });
+
+  test("detects extended WebP alpha flags", () => {
+    const webp = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x12, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42,
+      0x50, 0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00, 0x10, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(imageBytesHaveAlpha(webp, "image/webp")).toBe(true);
+  });
+
+  test("treats SVG images as transparent-capable", () => {
+    const svg = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>',
+    );
+    expect(imageBytesHaveAlpha(svg, "image/svg+xml")).toBe(true);
   });
 });

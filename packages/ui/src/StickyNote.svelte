@@ -78,7 +78,7 @@
   import AttachmentIcon from "./AttachmentIcon.svelte";
   import InlineAttachmentChip from "./InlineAttachmentChip.svelte";
   import ChatPreview from "./ChatPreview.svelte";
-  import { shrinkImageBlob } from "./image-shrink";
+  import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -90,6 +90,7 @@
     INLINE_ATTACHMENT_DRAG_MIME,
     commandCopyText,
     commandPowerLabel,
+    commandUrlSatellite,
     extractNoteClipboardPayloadFromHtml,
     expandNoteBodyForCopyAsync,
     fetchTextAttachment,
@@ -1100,6 +1101,7 @@
   ): Promise<void> {
     try {
       const shrunk = await shrinkImageBlob(blob);
+      const hasAlpha = await imageBlobHasAlpha(shrunk);
       const form = new FormData();
       form.append(
         "file",
@@ -1118,6 +1120,7 @@
         filename: opts.filename,
         mimeType: shrunk.type || blob.type || undefined,
         size: shrunk.size,
+        ...(hasAlpha ? { hasAlpha } : {}),
         source: {
           ...opts.source,
           ...(opts.filename ? { filename: opts.filename } : {}),
@@ -2399,15 +2402,6 @@
     return commandUrls[liveId] ?? commandUrls[target.value] ?? [];
   }
 
-  function commandUrlLabel(url: string): string {
-    try {
-      const parsed = new URL(url);
-      return parsed.port || parsed.hostname.replace(/^www\./, "");
-    } catch {
-      return "url";
-    }
-  }
-
   function editCommandTarget(target: LinkTarget): void {
     if (target.type !== "command") return;
     const live = commandLinkForTarget(target);
@@ -2660,6 +2654,7 @@
       <span
         class="sticky-photo-frame"
         class:sticky-photo-frame-media={mode === "media"}
+        class:sticky-photo-frame-transparent={attachment.hasAlpha}
       >
         <img
           src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
@@ -2762,9 +2757,11 @@
     {#if mode === "detached" && urls.length > 0}
       <span class="command-url-satellites" aria-label="Command URLs">
         {#each urls.slice(0, 4) as url, i}
+          {@const satellite = commandUrlSatellite(url)}
           <span
             class="command-url-satellite"
             class:main={i === 0}
+            class:localhost={satellite.isLocalhost}
             role="link"
             tabindex="-1"
             title={`Open ${url}`}
@@ -2774,7 +2771,8 @@
               if (e.key === "Enter") openUrl(url);
             }}
           >
-            {commandUrlLabel(url)}
+            <span class="command-url-host">{satellite.host}</span>
+            <span class="command-url-port">{satellite.port || "url"}</span>
           </span>
         {/each}
       </span>

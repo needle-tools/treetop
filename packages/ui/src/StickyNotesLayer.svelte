@@ -145,7 +145,7 @@
   } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
-  import { shrinkImageBlob } from "./image-shrink";
+  import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
     INLINE_ATTACHMENT_DRAG_MIME,
     LINK_TARGET_DRAG_MIME,
@@ -1266,6 +1266,7 @@
   ): Promise<string | null> {
     try {
       const shrunk = await shrinkImageBlob(file);
+      const hasAlpha = await imageBlobHasAlpha(shrunk);
       const filename =
         file.name && file.name !== "blob" ? file.name : undefined;
       const form = new FormData();
@@ -1281,6 +1282,7 @@
         ...(filename ? { filename } : {}),
         mimeType: shrunk.type || file.type || undefined,
         size: shrunk.size,
+        ...(hasAlpha ? { hasAlpha } : {}),
         source: {
           ...source,
           ...(filename ? { filename } : {}),

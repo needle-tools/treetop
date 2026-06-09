@@ -41,6 +41,7 @@ export interface ImageInlineAttachment {
   filename?: string;
   mimeType?: string;
   size?: number;
+  hasAlpha?: boolean;
   source?: AttachmentSource;
 }
 
@@ -226,6 +227,49 @@ export function commandCopyText(
   return `cd ${shellQuote(cwd)} && ${command}`;
 }
 
+export interface CommandUrlSatellite {
+  host: string;
+  port: string;
+  isLocalhost: boolean;
+}
+
+function normalizeCommandUrlHost(host: string): string {
+  const withoutWww = host.replace(/^www\./, "");
+  if (withoutWww.startsWith("[") && withoutWww.endsWith("]")) {
+    return withoutWww.slice(1, -1);
+  }
+  return withoutWww;
+}
+
+function isLocalCommandUrlHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+export function commandUrlSatellite(url: string): CommandUrlSatellite {
+  try {
+    const parsed = new URL(url);
+    const host = normalizeCommandUrlHost(parsed.hostname);
+    return {
+      host,
+      port: parsed.port,
+      isLocalhost: isLocalCommandUrlHost(host),
+    };
+  } catch {
+    const fallback = url
+      .trim()
+      .match(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/(\[[^\]]+\]|[^/?#:]+)(?::(\d+))?/);
+    if (fallback?.[1]) {
+      const host = normalizeCommandUrlHost(fallback[1]);
+      return {
+        host,
+        port: fallback[2] ?? "",
+        isLocalhost: isLocalCommandUrlHost(host),
+      };
+    }
+    return { host: "url", port: "", isLocalhost: false };
+  }
+}
+
 export function resolveLiveCommandLink(
   target: InlineLinkTarget | undefined,
   repos: readonly CommandLinkRepo[],
@@ -317,6 +361,7 @@ export function makeImageAttachmentRef(input: {
   filename?: string;
   mimeType?: string;
   size?: number;
+  hasAlpha?: boolean;
   source?: AttachmentSource;
 }): string {
   return makeAttachmentRef({
@@ -325,6 +370,7 @@ export function makeImageAttachmentRef(input: {
     ...(input.filename ? { filename: input.filename } : {}),
     ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     ...(typeof input.size === "number" ? { size: input.size } : {}),
+    ...(input.hasAlpha ? { hasAlpha: true } : {}),
     ...(input.source ? { source: input.source } : {}),
   });
 }
@@ -784,6 +830,7 @@ function parseAttachmentPayload(payload: string): InlineAttachment | null {
           ? { mimeType: obj.mimeType }
           : {}),
         ...(typeof obj.size === "number" ? { size: obj.size } : {}),
+        ...(obj.hasAlpha === true ? { hasAlpha: true } : {}),
         ...(source ? { source } : {}),
       };
     }

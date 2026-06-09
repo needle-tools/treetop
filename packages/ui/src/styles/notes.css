@@ -577,7 +577,7 @@
 .command-url-satellites {
   position: absolute;
   left: 50%;
-  bottom: -0.55rem;
+  bottom: -0.9rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -586,54 +586,82 @@
 }
 .command-url-satellite {
   display: inline-flex;
-  max-width: 3.2rem;
-  height: 1.2rem;
+  width: 3.45rem;
+  height: 1.75rem;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--command-accent) 50%, #272b28);
+  border: 1px solid color-mix(in srgb, #8f978f 36%, #272b28);
   border-radius: 999px;
-  padding: 0 0.36rem;
+  padding: 0.18rem 0.34rem 0.2rem;
   background:
     radial-gradient(
       circle at 50% 30%,
-      rgba(255, 255, 255, 0.22),
+      rgba(255, 255, 255, 0.12),
       transparent 34%
     ),
     linear-gradient(160deg, #252a27, #121513);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 4px 12px -8px rgba(0, 0, 0, 0.9);
-  color: #f6f1dc;
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 4px 11px -9px rgba(0, 0, 0, 0.9);
+  color: rgba(246, 241, 220, 0.68);
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 0.52rem;
   font-weight: 800;
-  line-height: 1;
   overflow: hidden;
   pointer-events: auto;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .command-url-satellite.main {
-  max-width: 4.4rem;
-  height: 1.55rem;
-  padding: 0 0.5rem;
+  width: 3.9rem;
+  height: 1.95rem;
+}
+.command-url-satellite.localhost {
   color: #101211;
+  border-color: color-mix(in srgb, #8fe3a1 68%, #24362a);
   background:
     radial-gradient(
       circle at 50% 28%,
-      rgba(255, 255, 255, 0.55),
+      rgba(255, 255, 255, 0.5),
       transparent 35%
     ),
     linear-gradient(
       160deg,
-      color-mix(in srgb, var(--command-accent) 86%, #f6f1dc),
-      var(--command-accent)
+      color-mix(in srgb, #8fe3a1 82%, #f6f1dc),
+      #8fe3a1
     );
-  font-size: 0.62rem;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 15px -9px color-mix(in srgb, #8fe3a1 90%, transparent),
+    0 5px 12px -9px rgba(0, 0, 0, 0.9);
+}
+.command-url-host,
+.command-url-port {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-url-host {
+  color: currentColor;
+  font-size: 0.44rem;
+  font-weight: 700;
+  opacity: 0.74;
+}
+.command-url-port {
+  margin-top: 0.12rem;
+  color: #f6f1dc;
+  font-size: 0.68rem;
+}
+.command-url-satellite.localhost .command-url-port {
+  color: #0f2116;
 }
 .command-url-satellite:hover {
-  border-color: color-mix(in srgb, var(--command-accent) 78%, #f6f1dc);
+  border-color: color-mix(in srgb, #8f978f 68%, #f6f1dc);
   filter: brightness(1.12);
+}
+.command-url-satellite.localhost:hover {
+  border-color: color-mix(in srgb, #8fe3a1 84%, #f6f1dc);
 }
 /* Hover preview anchored to the right of a session-link sticky.
    Portalled to <body>, positioned at fixed viewport coordinates
@@ -1746,6 +1774,16 @@
 .sticky-detached-image .sticky-photo-frame img {
   height: min(14rem, 48vw);
   max-height: none;
+}
+.sticky-photo-frame-transparent,
+.sticky-detached-image .sticky-photo-frame-transparent {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.sticky-photo-frame-transparent img {
+  background: transparent;
 }
 .sticky-photo-frame-media {
   width: fit-content;

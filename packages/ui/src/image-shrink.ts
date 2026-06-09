@@ -58,6 +58,31 @@ function readUint32BE(b: Uint8Array, o: number): number {
   return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
 }
 
+function readUint32LE(b: Uint8Array, o: number): number {
+  return ((b[o + 3] << 24) | (b[o + 2] << 16) | (b[o + 1] << 8) | b[o]) >>> 0;
+}
+
+function chunkTypeEquals(
+  bytes: Uint8Array,
+  offset: number,
+  type: string,
+): boolean {
+  return (
+    bytes[offset] === type.charCodeAt(0) &&
+    bytes[offset + 1] === type.charCodeAt(1) &&
+    bytes[offset + 2] === type.charCodeAt(2) &&
+    bytes[offset + 3] === type.charCodeAt(3)
+  );
+}
+
+function isPng(bytes: Uint8Array): boolean {
+  if (bytes.length < 8) return false;
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) return false;
+  }
+  return true;
+}
+
 /**
  * Pure: read the PNG `pHYs` chunk and return the X pixel density in
  * DPI, or `null` if the bytes aren't a PNG, the chunk is missing, the
@@ -66,10 +91,7 @@ function readUint32BE(b: Uint8Array, o: number): number {
  * 5669 px/m on each axis (≈144 dpi).
  */
 export function pngPixelDensityDpi(bytes: Uint8Array): number | null {
-  if (bytes.length < 8) return null;
-  for (let i = 0; i < 8; i++) {
-    if (bytes[i] !== PNG_SIGNATURE[i]) return null;
-  }
+  if (!isPng(bytes)) return null;
   let p = 8;
   // Chunks: 4-byte length + 4-byte type + N data + 4-byte CRC.
   while (p + 12 <= bytes.length) {
@@ -94,6 +116,87 @@ export function pngPixelDensityDpi(bytes: Uint8Array): number | null {
     p = dataEnd + 4;
   }
   return null;
+}
+
+function pngHasAlpha(bytes: Uint8Array): boolean {
+  if (!isPng(bytes)) return false;
+  let p = 8;
+  while (p + 12 <= bytes.length) {
+    const len = readUint32BE(bytes, p);
+    const dataStart = p + 8;
+    const dataEnd = dataStart + len;
+    if (dataEnd + 4 > bytes.length) return false;
+    if (chunkTypeEquals(bytes, p + 4, "IHDR") && len >= 10) {
+      const colorType = bytes[dataStart + 9];
+      if (colorType === 4 || colorType === 6) return true;
+    }
+    if (chunkTypeEquals(bytes, p + 4, "tRNS")) return true;
+    if (chunkTypeEquals(bytes, p + 4, "IDAT")) return false;
+    p = dataEnd + 4;
+  }
+  return false;
+}
+
+function isWebp(bytes: Uint8Array): boolean {
+  return (
+    bytes.length >= 12 &&
+    chunkTypeEquals(bytes, 0, "RIFF") &&
+    chunkTypeEquals(bytes, 8, "WEBP")
+  );
+}
+
+function webpHasAlpha(bytes: Uint8Array): boolean {
+  if (!isWebp(bytes)) return false;
+  let p = 12;
+  while (p + 8 <= bytes.length) {
+    const len = readUint32LE(bytes, p + 4);
+    const dataStart = p + 8;
+    const dataEnd = dataStart + len;
+    if (dataEnd > bytes.length) return false;
+    if (chunkTypeEquals(bytes, p, "VP8X") && len >= 1) {
+      return (bytes[dataStart] & 0x10) !== 0;
+    }
+    if (chunkTypeEquals(bytes, p, "ALPH")) return true;
+    if (chunkTypeEquals(bytes, p, "VP8L") && len >= 5) {
+      return ((readUint32LE(bytes, dataStart + 1) >>> 28) & 1) === 1;
+    }
+    p = dataEnd + (len % 2);
+  }
+  return false;
+}
+
+function looksLikeSvg(bytes: Uint8Array): boolean {
+  const head = new TextDecoder()
+    .decode(bytes.slice(0, 512))
+    .replace(/^\uFEFF/, "")
+    .trimStart()
+    .toLowerCase();
+  return (
+    head.startsWith("<svg") ||
+    (head.startsWith("<?xml") && head.includes("<svg"))
+  );
+}
+
+export function imageBytesHaveAlpha(
+  bytes: Uint8Array,
+  mimeType: string = "",
+): boolean {
+  const mime = mimeType.toLowerCase();
+  if (mime.includes("svg") || looksLikeSvg(bytes)) return true;
+  if (mime.includes("png") || isPng(bytes)) return pngHasAlpha(bytes);
+  if (mime.includes("webp") || isWebp(bytes)) return webpHasAlpha(bytes);
+  return false;
+}
+
+export async function imageBlobHasAlpha(blob: Blob): Promise<boolean> {
+  try {
+    return imageBytesHaveAlpha(
+      new Uint8Array(await blob.arrayBuffer()),
+      blob.type,
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** MIME types we'll process. SVG is vector, GIF may be animated. */

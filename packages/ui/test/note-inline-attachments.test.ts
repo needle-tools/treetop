@@ -4,6 +4,7 @@ import {
   appendInlineAttachmentRef,
   commandCopyText,
   commandPowerLabel,
+  commandUrlSatellite,
   commandRunText,
   countTextLines,
   expandNoteBodyForTerminalPasteChunks,
@@ -134,6 +135,7 @@ describe("note inline attachments", () => {
       filename: "shot.png",
       mimeType: "image/png",
       size: 123,
+      hasAlpha: true,
       source: { kind: "drop", types: ["Files"] },
     });
     const parts = parseInlineAttachments(ref);
@@ -149,6 +151,7 @@ describe("note inline attachments", () => {
       expect(parts[0].attachment.filename).toBe("shot.png");
       expect(parts[0].attachment.mimeType).toBe("image/png");
       expect(parts[0].attachment.size).toBe(123);
+      expect(parts[0].attachment.hasAlpha).toBe(true);
     }
   });
 
@@ -323,6 +326,24 @@ describe("note inline attachments", () => {
         },
       ),
     ).toBe("cd /Users/herbst/git/supergit && npm run build:launch");
+  });
+
+  test("splits command URL satellites into host and port lines", () => {
+    expect(commandUrlSatellite("http://localhost:7779")).toEqual({
+      host: "localhost",
+      port: "7779",
+      isLocalhost: true,
+    });
+    expect(commandUrlSatellite("https://133.4324.324.:5173/path")).toEqual({
+      host: "133.4324.324.",
+      port: "5173",
+      isLocalhost: false,
+    });
+    expect(commandUrlSatellite("not a url")).toEqual({
+      host: "url",
+      port: "",
+      isLocalhost: false,
+    });
   });
 
   test("resolves pinned command references against live toolbar commands", () => {
