@@ -50,11 +50,16 @@ const QUERY = (() => {
   }
 })();
 
-/** `?vinesspeed=N` accrues growth N× faster (demos). */
+/** `?vinesspeed=N` (or `?vinespeed=N`) accrues growth N× faster (demos). */
 const SPEED = (() => {
-  const n = Number(QUERY.get("vinesspeed"));
+  const n = Number(QUERY.get("vinesspeed") ?? QUERY.get("vinespeed"));
   return Number.isFinite(n) && n > 0 ? n : 1;
 })();
+
+/** `?vinesdebug` logs panel/vine counts each sync — helps diagnose
+ *  "I don't see any vines" (0 panels = selector miss; panels but 0 vines
+ *  = fewer than 2 windows in a row). */
+const DEBUG = QUERY.has("vinesdebug");
 
 /** Active-time budget to reach full growth. */
 const FULL_ACTIVE_MS = DEFAULT_FULL_ACTIVE_MS;
@@ -189,6 +194,11 @@ export function createVinesOverlay(): { destroy: () => void } {
       store = accrue(store, intensities, accrueDt * SPEED);
     }
     vines = buildVines(panels, store, FULL_ACTIVE_MS);
+    if (DEBUG) {
+      console.info(
+        `[vines] panels=${panels.length} vines=${vines.length} repos=${[...intensities.keys()].join(",") || "—"}`,
+      );
+    }
     render();
   }
 

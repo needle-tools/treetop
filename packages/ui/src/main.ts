@@ -110,8 +110,15 @@ const app = mount(App, { target });
 // + the ./vines folder to remove it entirely.
 {
   const q = new URLSearchParams(location.search);
+  // Any ?vines* param enables it (so ?vinesgrow=1 alone works); explicit
+  // ?vines=0 disables. The choice is persisted.
+  const anyVinesParam = [...q.keys()].some((k) =>
+    k.toLowerCase().startsWith("vines"),
+  );
   if (q.has("vines")) {
     localStorage.setItem("vines", q.get("vines") === "0" ? "0" : "1");
+  } else if (anyVinesParam) {
+    localStorage.setItem("vines", "1");
   }
   if (localStorage.getItem("vines") === "1") {
     void import("./vines").then((m) => m.initVines()).catch(() => {});

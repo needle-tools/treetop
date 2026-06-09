@@ -16,6 +16,9 @@ let handle: { destroy: () => void } | null = null;
 export function initVines(): void {
   if (handle) return;
   handle = createVinesOverlay();
+  // One line so "I don't see vines" can be diagnosed from the console:
+  // if this is absent, the module never loaded (wrong dev server / flag).
+  console.info("[vines] overlay mounted — add ?vinesdebug for counts");
 }
 
 /** Tear the overlay down and remove its DOM. */
