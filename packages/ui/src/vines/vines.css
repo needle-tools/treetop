@@ -1,0 +1,86 @@
+/*
+ * Vines overlay styles. Self-contained — imported only by vines/index.ts,
+ * which is only loaded when the feature is enabled (see main.ts).
+ *
+ * Perf: the only animated properties are `transform` (leaf sway + the
+ * global cursor "wind") and they're composited. No filters, blurs, or
+ * shadows. The overlay is pointer-events:none so it never blocks the
+ * terminals it floats over.
+ */
+
+.vines-overlay {
+  position: fixed;
+  inset: 0;
+  /* Above the session board so leaves can spill a little over the window
+     edges, but well below the menubar (2550) and popovers. */
+  z-index: 40;
+  pointer-events: none;
+  isolation: isolate;
+  --wind: 0deg;
+}
+
+.vines-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* Per-vine rotation driven by the cursor — one shared `--wind` for the
+   whole canopy (a gust), so it's a single inherited value, not per-leaf
+   JS. Origin is the vine base (windG sits at the translated base). */
+.vine-wind {
+  transform: rotate(var(--wind));
+  transform-origin: 0 0;
+  transition: transform 0.6s ease-out;
+}
+
+.vine-stem {
+  fill: none;
+  stroke: color-mix(in srgb, var(--needle-green-dark, #74af52) 80%, #3b2c1a);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.82;
+}
+
+.vine-leaf {
+  fill: var(--needle-green, #99cc33);
+  opacity: 0.8;
+  transform-box: fill-box;
+  transform-origin: 50% 100%; /* sway around the leaf's base */
+  animation: vine-sway 4s ease-in-out infinite;
+}
+/* A little colour variety so the canopy isn't a flat green wall. */
+.vine-leaves g:nth-child(3n) .vine-leaf {
+  fill: var(--needle-green-light, #d7db0a);
+  opacity: 0.7;
+}
+.vine-leaves g:nth-child(3n + 1) .vine-leaf {
+  fill: var(--needle-green-dark, #74af52);
+}
+
+@keyframes vine-sway {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+/* Respect reduced-motion: vines still grow, but nothing sways. */
+.vines-reduced .vine-leaf,
+.vines-reduced .vine-wind {
+  animation: none;
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vine-leaf {
+    animation: none;
+  }
+  .vine-wind {
+    transition: none;
+  }
+}

@@ -99,4 +99,18 @@ startPeerWatcher();
 
 const app = mount(App, { target });
 
+// ── Vines overlay (opt-in jungle decoration, self-contained in ./vines)
+// Enable with ?vines=1 (persisted), disable with ?vines=0. The whole
+// feature is one lazy import — off = zero cost. Delete this block + the
+// ./vines folder to remove it entirely.
+{
+  const q = new URLSearchParams(location.search);
+  if (q.has("vines")) {
+    localStorage.setItem("vines", q.get("vines") === "0" ? "0" : "1");
+  }
+  if (localStorage.getItem("vines") === "1") {
+    void import("./vines").then((m) => m.initVines()).catch(() => {});
+  }
+}
+
 export default app;
