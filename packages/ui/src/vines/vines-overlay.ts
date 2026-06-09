@@ -12,8 +12,8 @@
  * Perf rules:
  *  - pointer-events:none — never intercepts terminal input.
  *  - Growth is a slow interval tick (seconds), NOT a rAF loop.
- *  - The only high-frequency input (pointermove) is rAF-throttled and
- *    writes ONE CSS var (`--wind`); sway is a composited CSS transform.
+ *  - Leaf sway is a composited CSS transform (no JS per frame). The vines
+ *    do NOT react to the cursor — no pointer listeners at all.
  *  - We read the DOM (column rects) but never mutate the app's DOM.
  */
 
@@ -73,7 +73,6 @@ const PRESEED = (() => {
 
 interface VineNodes {
   posG: SVGGElement;
-  windG: SVGGElement;
   stem: SVGPathElement;
   leafLayer: SVGGElement;
   renderedLeaves: number;
@@ -257,17 +256,14 @@ export function createVinesOverlay(): { destroy: () => void } {
   function createVineNodes(v: RenderVine): VineNodes {
     const posG = document.createElementNS(SVGNS, "g");
     posG.setAttribute("class", "vine");
-    const windG = document.createElementNS(SVGNS, "g");
-    windG.setAttribute("class", "vine-wind");
     const stem = document.createElementNS(SVGNS, "path");
     stem.setAttribute("class", "vine-stem");
     const leafLayer = document.createElementNS(SVGNS, "g");
     leafLayer.setAttribute("class", "vine-leaves");
-    windG.appendChild(stem);
-    windG.appendChild(leafLayer);
-    posG.appendChild(windG);
+    posG.appendChild(stem);
+    posG.appendChild(leafLayer);
     svg.appendChild(posG);
-    const n: VineNodes = { posG, windG, stem, leafLayer, renderedLeaves: 0, lastD: "" };
+    const n: VineNodes = { posG, stem, leafLayer, renderedLeaves: 0, lastD: "" };
     nodes.set(v.key, n);
     return n;
   }
@@ -294,20 +290,6 @@ export function createVinesOverlay(): { destroy: () => void } {
     n.renderedLeaves = ls.length;
   }
 
-  // ── cursor "wind": one CSS var, rAF-throttled ────────────────────────
-  let windQueued = false;
-  let lastClientX = 0;
-  function onPointerMove(e: PointerEvent) {
-    lastClientX = e.clientX;
-    if (windQueued) return;
-    windQueued = true;
-    requestAnimationFrame(() => {
-      windQueued = false;
-      const f = (lastClientX / Math.max(1, window.innerWidth)) * 2 - 1;
-      root.style.setProperty("--wind", `${(f * 4).toFixed(2)}deg`);
-    });
-  }
-
   // ── observers + listeners ────────────────────────────────────────────
   const ro = new ResizeObserver(queueSync);
   ro.observe(document.body);
@@ -316,9 +298,6 @@ export function createVinesOverlay(): { destroy: () => void } {
   const onScroll = () => queueSync();
   window.addEventListener("scroll", onScroll, { capture: true, passive: true });
   window.addEventListener("resize", queueSync, { passive: true });
-  if (!reduceMotion) {
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
-  }
   const onHide = () => save(store);
   window.addEventListener("pagehide", onHide);
   const onVisibility = () => {
@@ -338,7 +317,6 @@ export function createVinesOverlay(): { destroy: () => void } {
       mo.disconnect();
       window.removeEventListener("scroll", onScroll, { capture: true } as any);
       window.removeEventListener("resize", queueSync as any);
-      window.removeEventListener("pointermove", onPointerMove as any);
       window.removeEventListener("pagehide", onHide);
       document.removeEventListener("visibilitychange", onVisibility);
       save(store);
@@ -350,5 +328,5 @@ export function createVinesOverlay(): { destroy: () => void } {
 
 function vineMaxHeight(v: RenderVine): number {
   const colH = Math.max(0, v.baseY - v.topY);
-  return Math.max(70, Math.min(240, colH * 0.5));
+  return Math.max(80, Math.min(420, colH * 0.62));
 }

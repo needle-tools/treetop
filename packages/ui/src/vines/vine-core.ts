@@ -194,58 +194,92 @@ export function stemHeight(v: VineShape, maxHeight: number): number {
   return maxHeight * v.length;
 }
 
+/** Per-vine stem character, fully derived from the seed so every vine is
+ *  unique: a sinusoidal sway with its own amplitude, phase, frequency and
+ *  a slight constant lean. Shared by stemPath + leaves so leaves sit on
+ *  the stem. */
+interface StemParams {
+  amp: number;
+  phase: number;
+  freq: number;
+  lean: number;
+}
+function stemParams(seed: number): StemParams {
+  const r = rng(seed);
+  return {
+    amp: 7 + r() * 16,
+    phase: r() * Math.PI * 2,
+    freq: 1.2 + r() * 1.9,
+    lean: (r() * 2 - 1) * 0.22,
+  };
+}
+/** Stem x-offset at height fraction t (0 base → 1 tip). Anchored at x=0. */
+function stemXAt(p: StemParams, t: number): number {
+  return (Math.sin(p.phase + p.freq * Math.PI * t) * p.amp + p.lean * p.amp * 2 * t) * t;
+}
+
+/** Leaf slots per stem of a given pixel height, so density (leaves/px)
+ *  stays constant — taller vines get more leaves instead of stretching. */
+export function leafCountFor(maxHeight: number, spacingPx = 26): number {
+  return Math.max(2, Math.round(maxHeight / spacingPx));
+}
+
 /**
  * SVG path `d` for a vine's climbing stem, in the vine's local space
- * (x≈0 at the gap centre, y=0 at the base, up to -stemHeight). A gentle
- * seeded S-curve; a handful of béziers so it stays cheap.
+ * (x≈0 at the base, y=0 at the base, up to -stemHeight). The wiggle is a
+ * seeded sinusoid sampled at a fixed pixel cadence (so it doesn't stretch
+ * on tall stems) and smoothed with quadratic segments.
  */
-export function stemPath(v: VineShape, maxHeight: number, segments = 4): string {
+export function stemPath(v: VineShape, maxHeight: number): string {
   const h = stemHeight(v, maxHeight);
   if (h <= 0.5) return "";
-  const rand = rng(v.seed);
-  const sway = 6 + rand() * 10;
-  let d = `M 0 0`;
-  let prevX = 0;
-  let prevY = 0;
-  for (let i = 1; i <= segments; i++) {
-    const t = i / segments;
-    const y = -h * t;
-    const dir = i % 2 === 0 ? 1 : -1;
-    const x = dir * sway * (0.4 + rand() * 0.6) * t;
-    const midY = (prevY + y) / 2;
-    const cx1 = prevX + (x - prevX) * 0.2;
-    const cx2 = x - (x - prevX) * 0.2;
-    d += ` C ${cx1.toFixed(1)} ${midY.toFixed(1)} ${cx2.toFixed(1)} ${midY.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    prevX = x;
-    prevY = y;
+  const p = stemParams(v.seed);
+  const n = Math.max(2, Math.round(h / 22)); // sample every ~22px
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    pts.push([stemXAt(p, t), -h * t]);
   }
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+    const my = (pts[i][1] + pts[i + 1][1]) / 2;
+    d += ` Q ${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L ${last[0].toFixed(1)} ${last[1].toFixed(1)}`;
   return d;
 }
 
 /**
- * Leaves along the stem. Each of `maxLeaves` slots sits at a FIXED height
- * fraction up the full stem and is revealed once growth passes it — so
- * existing leaves never shift as the vine grows; new ones just appear
- * above. Deterministic (seeded) and capped.
+ * Leaves along the stem. `maxLeaves` slots (default scales with height for
+ * constant density) sit at FIXED height fractions and are revealed once
+ * growth passes them — so existing leaves never shift; new ones appear
+ * above. Side, angle and scale are all seeded, so no two vines share a
+ * leaf pattern. Leaves attach to the actual stem curve.
  */
-export function leaves(v: VineShape, maxHeight: number, maxLeaves = 8): Leaf[] {
-  const rand = rng(v.seed ^ 0x9e3779b9);
-  const sway = 6 + rng(v.seed)() * 10;
+export function leaves(
+  v: VineShape,
+  maxHeight: number,
+  maxLeaves = leafCountFor(maxHeight),
+): Leaf[] {
+  const p = stemParams(v.seed);
+  const r = rng((v.seed ^ 0x9e3779b9) >>> 0);
   const out: Leaf[] = [];
   for (let i = 0; i < maxLeaves; i++) {
     const t = (i + 0.5) / maxLeaves;
-    const jitterRot = rand();
-    const jitterScale = rand();
+    // Pull jitter every iteration so a slot's look is stable regardless
+    // of how many are currently revealed.
+    const side = r() < 0.5 ? -1 : 1;
+    const jitterRot = r();
+    const jitterScale = r();
     if (t > v.length) continue;
-    const y = -maxHeight * t;
-    const dir = i % 2 === 0 ? -1 : 1;
-    const stemX = dir * sway * (0.4 + 0.6 * t);
     out.push({
-      x: stemX,
-      y,
-      rot: dir * (25 + jitterRot * 35),
-      scale: 0.6 + jitterScale * 0.5,
-      side: dir,
+      x: stemXAt(p, t) + side * 2, // sit on the stem, leaning outward
+      y: -maxHeight * t,
+      rot: side * (20 + jitterRot * 45),
+      scale: 0.55 + jitterScale * 0.55,
+      side,
     });
   }
   return out;

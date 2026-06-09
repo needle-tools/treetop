@@ -11,6 +11,7 @@ import {
   stemPath,
   stemHeight,
   leaves,
+  leafCountFor,
   type Panel,
   type GrowthStore,
 } from "../src/vines/vine-core";
@@ -181,7 +182,7 @@ describe("geometry", () => {
 
   test("stemPath is empty for a sprout and present once grown", () => {
     expect(stemPath(shape(7, 0), 200)).toBe("");
-    expect(stemPath(shape(7, 1), 200)).toStartWith("M 0 0");
+    expect(stemPath(shape(7, 1), 200)).toMatch(/^M /);
   });
 
   test("stemPath is deterministic per seed and differs across seeds", () => {
@@ -197,5 +198,17 @@ describe("geometry", () => {
 
   test("leaves are deterministic for a seed", () => {
     expect(leaves(shape(7, 1), 200)).toEqual(leaves(shape(7, 1), 200));
+  });
+
+  test("taller stems get more leaves (consistent density, no stretch)", () => {
+    const short = leaves(shape(7, 1), 100).length;
+    const tall = leaves(shape(7, 1), 320).length;
+    expect(tall).toBeGreaterThan(short);
+    expect(leafCountFor(100)).toBeLessThan(leafCountFor(320));
+  });
+
+  test("different seeds → different stem AND different leaf arrangement", () => {
+    expect(stemPath(shape(1, 1), 200)).not.toBe(stemPath(shape(2, 1), 200));
+    expect(leaves(shape(1, 1), 200)).not.toEqual(leaves(shape(2, 1), 200));
   });
 });
