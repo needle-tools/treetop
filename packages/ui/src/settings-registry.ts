@@ -58,6 +58,17 @@ export interface NumberSettingDef extends CommonDef {
   max?: number;
   step?: number;
 }
+/** A numeric value shown as a drag slider (range input) with a live
+ *  read-out. min/max are required — a slider needs a track. */
+export interface SliderSettingDef extends CommonDef {
+  type: "slider";
+  default: number;
+  min: number;
+  max: number;
+  step?: number;
+  /** Suffix on the live value read-out, e.g. "%". */
+  unit?: string;
+}
 export interface EnumSettingDef extends CommonDef {
   type: "enum";
   default: string;
@@ -79,6 +90,7 @@ export type ValueSettingDef =
   | BooleanSettingDef
   | StringSettingDef
   | NumberSettingDef
+  | SliderSettingDef
   | EnumSettingDef;
 export type SettingDef = ValueSettingDef | ActionSettingDef;
 
@@ -187,6 +199,14 @@ export function resetSetting(key: string): void {
     persist(next);
     return next;
   });
+}
+
+/** Drop every override at once — all settings revert to the defaults
+ *  declared in their contributions. Backs the "Reset all" action. */
+export function resetAllSettings(): void {
+  ensureLoaded();
+  overrides.set({});
+  persist({});
 }
 
 /** True when the user has overridden the declared default. */

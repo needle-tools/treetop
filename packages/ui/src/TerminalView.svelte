@@ -674,16 +674,19 @@
     sendResize();
   }
 
+  // terminal.fontSize is an enum whose values are pixel sizes as
+  // strings ("12" etc.); parse to a number, fall back to 12.
+  function fontSizePx(value: unknown): number {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 12;
+  }
+
   // Live font-size: when the user changes terminal.fontSize in Settings,
   // apply it to this running terminal and refit (applyResize gates on a
   // real dimension change, so a no-op store tick costs nothing).
   const termFontSize = settingValue("terminal.fontSize");
-  $: if (
-    xterm &&
-    typeof $termFontSize === "number" &&
-    xterm.options.fontSize !== $termFontSize
-  ) {
-    xterm.options.fontSize = $termFontSize;
+  $: if (xterm && xterm.options.fontSize !== fontSizePx($termFontSize)) {
+    xterm.options.fontSize = fontSizePx($termFontSize);
     applyResize();
   }
 
@@ -692,10 +695,7 @@
     xterm = new Terminal({
       fontFamily:
         '"SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize:
-        typeof getSetting("terminal.fontSize") === "number"
-          ? (getSetting("terminal.fontSize") as number)
-          : 12,
+      fontSize: fontSizePx(getSetting("terminal.fontSize")),
       lineHeight: 1.15,
       cursorBlink: true,
       // Mid-dark theme that matches our surface tokens.

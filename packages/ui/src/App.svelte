@@ -472,14 +472,20 @@
     order: 10,
     settings: [
       {
+        // Enum (named sizes) rather than a raw number — values are the
+        // pixel sizes as strings; "12" (Small) keeps the prior default
+        // so existing terminals don't resize on upgrade.
         key: "terminal.fontSize",
         label: "Font size",
-        description: "Point size of text in terminal sessions.",
-        type: "number",
-        default: 12,
-        min: 8,
-        max: 24,
-        step: 1,
+        description: "Text size in terminal sessions.",
+        type: "enum",
+        default: "12",
+        options: [
+          { value: "10", label: "Tiny" },
+          { value: "12", label: "Small" },
+          { value: "14", label: "Normal" },
+          { value: "16", label: "Large" },
+        ],
       },
     ],
   });
@@ -498,12 +504,13 @@
       {
         key: "sound.volume",
         label: "Volume",
-        description: "Master volume for all sound effects (0–100%).",
-        type: "number",
+        description: "Master volume for all sound effects.",
+        type: "slider",
         default: 100,
         min: 0,
         max: 100,
         step: 5,
+        unit: "%",
       },
     ],
   });

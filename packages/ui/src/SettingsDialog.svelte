@@ -14,12 +14,15 @@
     getSetting,
     setSetting,
     resetSetting,
+    resetAllSettings,
     isModified,
     isActionSetting,
     type ValueSettingDef,
     type NumberSettingDef,
+    type SliderSettingDef,
     type ActionSettingDef,
   } from "./settings-registry";
+  import { confirmDialog } from "./confirm-dialog";
 
   export let open = false;
 
@@ -28,12 +31,38 @@
   // the template on plain getSetting()/isModified() calls instead of
   // one derived store per setting.
   let version = 0;
+  // Live slider read-outs while dragging. We can't bump `version` on
+  // every `input` event — the {#key version} rebuild would destroy the
+  // range input mid-drag — so the label reads from here until the drag
+  // commits (`change`), at which point getSetting() is authoritative.
+  let liveSlider: Record<string, number> = {};
 
   $: visible = filterSections($settingsSections, query);
+  // Re-evaluates on each write (version dep) — drives the Reset-all
+  // button's enabled state.
+  $: anyModified =
+    version >= 0 &&
+    $settingsSections.some((s) =>
+      s.settings.some((d) => !isActionSetting(d) && isModified(d.key)),
+    );
 
   function close() {
     open = false;
     query = "";
+    liveSlider = {};
+  }
+
+  async function resetAll() {
+    const ok = await confirmDialog({
+      title: "Reset all settings?",
+      message: "Every setting returns to its default. This can't be undone.",
+      confirmLabel: "Reset all",
+      danger: true,
+    });
+    if (!ok) return;
+    resetAllSettings();
+    liveSlider = {};
+    version += 1;
   }
 
   function onKeydown(ev: KeyboardEvent) {
@@ -58,6 +87,26 @@
     await def.onInvoke();
     // Reflect any value the action reset (e.g. it cleared an override).
     version += 1;
+  }
+
+  // While dragging: persist live (so e.g. audio volume follows the
+  // thumb) and update the read-out, but DON'T bump version.
+  function onSliderInput(def: SliderSettingDef, ev: Event) {
+    const v = (ev.currentTarget as HTMLInputElement).valueAsNumber;
+    setSetting(def.key, v);
+    liveSlider = { ...liveSlider, [def.key]: v };
+  }
+
+  // On release: rebuild once so the modified bar + reset affordance
+  // catch up, and drop the live read-out (getSetting is now truth).
+  function onSliderCommit(def: SliderSettingDef) {
+    const { [def.key]: _drop, ...rest } = liveSlider;
+    liveSlider = rest;
+    version += 1;
+  }
+
+  function sliderValue(def: SliderSettingDef): number {
+    return liveSlider[def.key] ?? (getSetting(def.key) as number);
   }
 
   function onNumberChange(def: NumberSettingDef, ev: Event) {
@@ -97,6 +146,12 @@
           autofocus
           bind:value={query}
         />
+        <button
+          class="settings-reset-all"
+          title="Reset every setting to its default"
+          disabled={!anyModified}
+          on:click={resetAll}>Reset all</button
+        >
         <button class="settings-close" title="Close" on:click={close}
           >✕</button
         >
@@ -163,6 +218,20 @@
                             >
                           {/each}
                         </select>
+                      {:else if def.type === "slider"}
+                        <span class="setting-slider-val"
+                          >{sliderValue(def)}{def.unit ?? ""}</span
+                        >
+                        <input
+                          class="setting-slider"
+                          type="range"
+                          value={getSetting(def.key)}
+                          min={def.min}
+                          max={def.max}
+                          step={def.step}
+                          on:input={(ev) => onSliderInput(def, ev)}
+                          on:change={() => onSliderCommit(def)}
+                        />
                       {:else if def.type === "number"}
                         <input
                           type="number"
@@ -241,6 +310,25 @@
   }
   .settings-search:focus {
     border-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  }
+  .settings-reset-all {
+    font: inherit;
+    font-size: 0.74rem;
+    padding: 0.25rem 0.55rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .settings-reset-all:hover:not(:disabled) {
+    color: inherit;
+    background: var(--surface-2);
+  }
+  .settings-reset-all:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .settings-close {
     font: inherit;
@@ -321,6 +409,17 @@
   }
   .setting-control input[type="number"] {
     width: 5.5rem;
+  }
+  .setting-slider {
+    width: 9rem;
+    accent-color: #4a87c5;
+  }
+  .setting-slider-val {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    min-width: 2.8rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
   .setting-control input[type="text"] {
     width: 12rem;

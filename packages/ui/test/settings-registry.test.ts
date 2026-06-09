@@ -14,6 +14,7 @@ import {
   getSetting,
   setSetting,
   resetSetting,
+  resetAllSettings,
   isModified,
   settingValue,
   filterSections,
@@ -223,6 +224,84 @@ describe("action settings", () => {
     expect(filterSections(all, "walkthrough").length).toBe(1);
     expect(filterSections(all, "onboarding").length).toBe(1);
     expect(filterSections(all, "no-such-thing")).toEqual([]);
+  });
+});
+
+describe("slider settings", () => {
+  const audio = {
+    id: "sound",
+    title: "Sound",
+    settings: [
+      {
+        key: "sound.volume",
+        label: "Volume",
+        type: "slider" as const,
+        default: 100,
+        min: 0,
+        max: 100,
+        step: 5,
+        unit: "%",
+      },
+    ],
+  };
+
+  test("a slider behaves as a numeric value setting (not an action)", () => {
+    registerSettings(audio);
+    expect(isActionSetting(audio.settings[0])).toBe(false);
+    expect(getSetting("sound.volume")).toBe(100);
+    setSetting("sound.volume", 60);
+    expect(getSetting("sound.volume")).toBe(60);
+    expect(isModified("sound.volume")).toBe(true);
+  });
+
+  test("setting a slider back to its default clears the override", () => {
+    registerSettings(audio);
+    setSetting("sound.volume", 60);
+    setSetting("sound.volume", 100);
+    expect(isModified("sound.volume")).toBe(false);
+    expect(JSON.parse(kv.data["supergit:settings"] ?? "{}")).toEqual({});
+  });
+
+  test("settingValue tracks a slider reactively", () => {
+    registerSettings(audio);
+    const store = settingValue("sound.volume");
+    expect(get(store)).toBe(100);
+    setSetting("sound.volume", 25);
+    expect(get(store)).toBe(25);
+  });
+});
+
+describe("resetAllSettings", () => {
+  test("clears every override and falls back to declared defaults", () => {
+    registerSettings(appearance);
+    setSetting("appearance.showGreeting", false);
+    setSetting("appearance.density", "compact");
+    expect(isModified("appearance.showGreeting")).toBe(true);
+
+    resetAllSettings();
+
+    expect(getSetting("appearance.showGreeting")).toBe(true);
+    expect(getSetting("appearance.density")).toBe("comfortable");
+    expect(isModified("appearance.showGreeting")).toBe(false);
+    expect(isModified("appearance.density")).toBe(false);
+  });
+
+  test("persists an empty blob so the reset survives a reload", () => {
+    registerSettings(appearance);
+    setSetting("appearance.density", "compact");
+    resetAllSettings();
+    expect(JSON.parse(kv.data["supergit:settings"])).toEqual({});
+
+    _resetSettingsForTests();
+    setSettingsKV(kv);
+    registerSettings(appearance);
+    expect(getSetting("appearance.density")).toBe("comfortable");
+  });
+
+  test("is a no-op when nothing has been overridden", () => {
+    registerSettings(appearance);
+    resetAllSettings();
+    expect(isModified("appearance.showGreeting")).toBe(false);
   });
 });
 
