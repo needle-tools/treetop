@@ -9,6 +9,7 @@
     stickerPreviewStyle,
     type StickerPack,
   } from "./sticker-packs";
+  import { STICKER_DRAG_MIME } from "./note-inline-attachments";
 
   const dispatch = createEventDispatcher<{ pick: string; cancel: void }>();
 
@@ -1372,8 +1373,29 @@
     }
   }
 
+  // Remember the last-selected category across opens (per-device, so
+  // localStorage is the right store — like "last used model").
+  const LAST_CATEGORY_KEY = "supergit:emojiPicker:lastCategory";
+  function loadLastCategory(): PickerTab {
+    try {
+      const v = localStorage.getItem(LAST_CATEGORY_KEY);
+      if (PICKER_TABS.some((t) => t.id === v)) return v as PickerTab;
+    } catch {
+      /* ignore */
+    }
+    return "all";
+  }
+  function selectTab(tab: PickerTab): void {
+    activeTab = tab;
+    try {
+      localStorage.setItem(LAST_CATEGORY_KEY, tab);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   let query = "";
-  let activeTab: PickerTab = "all";
+  let activeTab: PickerTab = loadLastCategory();
   let inputEl: HTMLInputElement;
 
   $: smileyEmojiGroup = EMOJIS.find(([category]) => category === "Smileys");
@@ -1412,6 +1434,14 @@
     dispatch("pick", emoji);
   }
 
+  /** Drag an emoji/sticker out of the picker — the notes layer drops it
+   *  as a sticky at the cursor. Click still works for the quick-add path. */
+  function onCellDragStart(e: DragEvent, token: string) {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.setData(STICKER_DRAG_MIME, token);
+    e.dataTransfer.effectAllowed = "copy";
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       if (query) {
@@ -1437,6 +1467,9 @@
           <button
             class="emoji-cell emoji-cell-app"
             type="button"
+            draggable="true"
+            on:dragstart={(e) =>
+              onCellDragStart(e, `${APP_ICON_TOKEN_PREFIX}${icon.name}`)}
             on:click={() => onPick(`${APP_ICON_TOKEN_PREFIX}${icon.name}`)}
             title={icon.label}
           >
@@ -1460,6 +1493,8 @@
         <button
           class="emoji-cell"
           type="button"
+          draggable="true"
+          on:dragstart={(e) => onCellDragStart(e, emoji)}
           on:click={() => onPick(emoji)}
           title={emoji}>{emoji}</button
         >
@@ -1476,6 +1511,8 @@
         <button
           class="emoji-cell emoji-cell-sticker"
           type="button"
+          draggable="true"
+          on:dragstart={(e) => onCellDragStart(e, sticker.token)}
           on:click={() => onPick(sticker.token)}
           title={sticker.label}
         >
@@ -1515,7 +1552,7 @@
           class:emoji-picker-tab-active={activeTab === tab.id}
           type="button"
           aria-pressed={activeTab === tab.id}
-          on:click={() => (activeTab = tab.id)}
+          on:click={() => selectTab(tab.id)}
         >
           {tab.label}
         </button>
@@ -1536,6 +1573,8 @@
               class:emoji-cell-app={appName !== null}
               class:emoji-cell-sticker={sticker !== null}
               type="button"
+              draggable="true"
+              on:dragstart={(e) => onCellDragStart(e, token)}
               on:click={() => onPick(token)}
               title={sticker?.label ?? appName ?? token}
             >
@@ -1617,6 +1656,9 @@
     max-height: 420px;
     overflow-y: scroll;
     overflow-x: hidden;
+    /* Don't let scroll momentum at the top/bottom bleed into the page
+       behind the picker. */
+    overscroll-behavior: contain;
     scrollbar-gutter: stable both-edges;
   }
   .emoji-picker-tabs {

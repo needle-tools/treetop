@@ -10,6 +10,9 @@ export const INLINE_ATTACHMENT_DRAG_MIME =
 export const LINK_TARGET_DRAG_MIME = "application/x-supergit-link-target+json";
 export const SESSION_LINK_DRAG_MIME =
   "application/x-supergit-session-link+json";
+/** Dragging an emoji/sticker out of the picker carries its token here so
+ *  the notes layer can drop it as a sticky at the cursor. Plain token. */
+export const STICKER_DRAG_MIME = "application/x-supergit-sticker+plain";
 export const STAGE_PROMPT_EVENT = "supergit:stage-prompt";
 
 const ATTACHMENT_LINK_RE =

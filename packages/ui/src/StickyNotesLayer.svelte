@@ -150,6 +150,7 @@
     INLINE_ATTACHMENT_DRAG_MIME,
     LINK_TARGET_DRAG_MIME,
     SESSION_LINK_DRAG_MIME,
+    STICKER_DRAG_MIME,
     STAGE_PROMPT_EVENT,
     appendInlineAttachmentRef,
     expandNoteBodyForTerminalPasteChunks,
@@ -1426,6 +1427,11 @@
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
       return;
     }
+    if (hasStickerDrag(e) && dropTargetAt(e.clientX, e.clientY)) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      return;
+    }
     if (
       hasLinkTargetDrag(e) &&
       (attachmentZoneNoteAtPoint(e.clientX, e.clientY) ||
@@ -1473,6 +1479,15 @@
       isTerminalEventTarget(e.target) ||
       isAttachmentModalEventTarget(e.target)
     ) {
+      return;
+    }
+    if (hasStickerDrag(e)) {
+      const token = e.dataTransfer?.getData(STICKER_DRAG_MIME);
+      const rowTarget = dropTargetAt(e.clientX, e.clientY);
+      if (token && rowTarget) {
+        e.preventDefault();
+        await createStickerNoteAtPoint(token, rowTarget, e.clientX, e.clientY);
+      }
       return;
     }
     const hasInline = hasInlineAttachmentDrag(e);
@@ -2293,6 +2308,46 @@
       const created = (await res.json()) as NoteShape;
       created.daemonId = createDaemonId;
       setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
+      notes = [created, ...notes];
+      bringToFront(created.id);
+      tick++;
+    } catch {}
+  }
+
+  function hasStickerDrag(e: DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes(STICKER_DRAG_MIME);
+  }
+
+  /** Create an emoji/sticker note at the drop point (dragged out of the
+   *  picker). Mirrors createLinkTargetNote but seeds the glyph as the
+   *  body with kind "emoji" and the same playful random scale the
+   *  click-to-add path uses. */
+  async function createStickerNoteAtPoint(
+    token: string,
+    rowTarget: { anchor: string; li: HTMLElement },
+    clientX: number,
+    clientY: number,
+  ): Promise<void> {
+    const createDaemonId = daemonIdForAnchors([rowTarget.anchor]);
+    try {
+      const res = await fetch(apiUrl("/api/notes", createDaemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: token,
+          kind: "emoji",
+          anchors: [rowTarget.anchor],
+          tags: [],
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as NoteShape;
+      created.daemonId = createDaemonId;
+      setDroppedOffset(created.id, rowTarget.li, clientX, clientY);
+      const scale = 0.85 + Math.random() * 0.3;
+      const prev = offsets[created.id] ?? {};
+      offsets = { ...offsets, [created.id]: { ...prev, emojiScale: scale } };
+      saveOffsets();
       notes = [created, ...notes];
       bringToFront(created.id);
       tick++;
