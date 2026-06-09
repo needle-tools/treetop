@@ -26,6 +26,7 @@
     type ConfigActionState,
   } from "./config-error-action";
   import { describeWsClose } from "./errors";
+  import { settingValue, getSetting } from "./settings-registry";
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -673,12 +674,28 @@
     sendResize();
   }
 
+  // Live font-size: when the user changes terminal.fontSize in Settings,
+  // apply it to this running terminal and refit (applyResize gates on a
+  // real dimension change, so a no-op store tick costs nothing).
+  const termFontSize = settingValue("terminal.fontSize");
+  $: if (
+    xterm &&
+    typeof $termFontSize === "number" &&
+    xterm.options.fontSize !== $termFontSize
+  ) {
+    xterm.options.fontSize = $termFontSize;
+    applyResize();
+  }
+
   onMount(() => {
     if (!containerEl) return;
     xterm = new Terminal({
       fontFamily:
         '"SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: 12,
+      fontSize:
+        typeof getSetting("terminal.fontSize") === "number"
+          ? (getSetting("terminal.fontSize") as number)
+          : 12,
       lineHeight: 1.15,
       cursorBlink: true,
       // Mid-dark theme that matches our surface tokens.

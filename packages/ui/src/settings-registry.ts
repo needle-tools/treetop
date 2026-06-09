@@ -35,21 +35,56 @@ import { getDaemonKV } from "./daemon-kv";
 
 export type SettingValue = boolean | string | number;
 
-export interface SettingDef {
+interface CommonDef {
   /** Dotted, VS Code style: "appearance.showGreeting". Globally unique. */
   key: string;
   label: string;
   description?: string;
-  type: "boolean" | "string" | "number" | "enum";
-  default: SettingValue;
-  /** enum only. `label` falls back to `value`. */
-  options?: Array<{ value: string; label?: string }>;
-  /** number only. */
+}
+
+export interface BooleanSettingDef extends CommonDef {
+  type: "boolean";
+  default: boolean;
+}
+export interface StringSettingDef extends CommonDef {
+  type: "string";
+  default: string;
+  placeholder?: string;
+}
+export interface NumberSettingDef extends CommonDef {
+  type: "number";
+  default: number;
   min?: number;
   max?: number;
   step?: number;
-  /** string only. */
-  placeholder?: string;
+}
+export interface EnumSettingDef extends CommonDef {
+  type: "enum";
+  default: string;
+  /** `label` falls back to `value`. */
+  options: Array<{ value: string; label?: string }>;
+}
+/** A button, not a value — no default, nothing persisted. Use for
+ *  "Reset walkthrough", "Clear caches", and the like. */
+export interface ActionSettingDef extends CommonDef {
+  type: "action";
+  /** Text on the button. */
+  buttonLabel: string;
+  onInvoke: () => void | Promise<void>;
+  /** Render the button as a destructive (red) action. */
+  danger?: boolean;
+}
+
+export type ValueSettingDef =
+  | BooleanSettingDef
+  | StringSettingDef
+  | NumberSettingDef
+  | EnumSettingDef;
+export type SettingDef = ValueSettingDef | ActionSettingDef;
+
+/** Narrow an action def from a value def. */
+export function isActionSetting(def: SettingDef): def is ActionSettingDef {
+  return def.type === "action";
 }
 
 export interface SettingsSection {
@@ -115,18 +150,23 @@ export const settingsSections: Readable<SettingsSection[]> = {
   subscribe: sections.subscribe,
 };
 
-/** Effective value: override if set, else the declared default. */
+/** Effective value: override if set, else the declared default. Actions
+ *  have no value, so this returns undefined for them. */
 export function getSetting(key: string): SettingValue | undefined {
   ensureLoaded();
   const stored = get(overrides);
   if (key in stored) return stored[key];
-  return findDef(get(sections), key)?.default;
+  const def = findDef(get(sections), key);
+  if (!def || def.type === "action") return undefined;
+  return def.default;
 }
 
 export function setSetting(key: string, value: SettingValue): void {
   ensureLoaded();
+  const def = findDef(get(sections), key);
+  // Actions carry no value — ignore writes so they never pollute the blob.
+  if (def?.type === "action") return;
   overrides.update((values) => {
-    const def = findDef(get(sections), key);
     const next = { ...values };
     // Storing the default is the same as not storing it — keeps the
     // blob minimal and lets future default changes reach this user.
@@ -159,9 +199,11 @@ export function isModified(key: string): boolean {
  *  when the owning section registers (late registration is fine). */
 export function settingValue(key: string): Readable<SettingValue | undefined> {
   ensureLoaded();
-  return derived([sections, overrides], ([all, values]) =>
-    key in values ? values[key] : findDef(all, key)?.default,
-  );
+  return derived([sections, overrides], ([all, values]) => {
+    if (key in values) return values[key];
+    const def = findDef(all, key);
+    return !def || def.type === "action" ? undefined : def.default;
+  });
 }
 
 /** Search filter for the dialog: matches setting label / description /

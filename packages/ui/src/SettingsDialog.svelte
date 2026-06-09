@@ -15,7 +15,10 @@
     setSetting,
     resetSetting,
     isModified,
-    type SettingDef,
+    isActionSetting,
+    type ValueSettingDef,
+    type NumberSettingDef,
+    type ActionSettingDef,
   } from "./settings-registry";
 
   export let open = false;
@@ -41,20 +44,26 @@
     }
   }
 
-  function write(def: SettingDef, value: boolean | string | number) {
+  function write(def: ValueSettingDef, value: boolean | string | number) {
     setSetting(def.key, value);
     version += 1;
   }
 
-  function reset(def: SettingDef) {
+  function reset(def: ValueSettingDef) {
     resetSetting(def.key);
     version += 1;
   }
 
-  function onNumberChange(def: SettingDef, ev: Event) {
+  async function invoke(def: ActionSettingDef) {
+    await def.onInvoke();
+    // Reflect any value the action reset (e.g. it cleared an override).
+    version += 1;
+  }
+
+  function onNumberChange(def: NumberSettingDef, ev: Event) {
     const input = ev.currentTarget as HTMLInputElement;
     let n = input.valueAsNumber;
-    if (Number.isNaN(n)) n = def.default as number;
+    if (Number.isNaN(n)) n = def.default;
     if (def.min !== undefined) n = Math.max(def.min, n);
     if (def.max !== undefined) n = Math.min(def.max, n);
     input.valueAsNumber = n;
@@ -110,7 +119,10 @@
             <section class="settings-section">
               <h3>{section.title}</h3>
               {#each section.settings as def (def.key)}
-                <div class="setting-row" class:modified={isModified(def.key)}>
+                <div
+                  class="setting-row"
+                  class:modified={!isActionSetting(def) && isModified(def.key)}
+                >
                   <div class="setting-text">
                     <span class="setting-label">{def.label}</span>
                     {#if def.description}
@@ -118,47 +130,57 @@
                     {/if}
                   </div>
                   <div class="setting-control">
-                    {#if isModified(def.key)}
+                    {#if isActionSetting(def)}
                       <button
-                        class="setting-reset"
-                        title="Reset to default"
-                        on:click={() => reset(def)}>↺</button
+                        class="setting-action"
+                        class:danger={def.danger}
+                        on:click={() => invoke(def)}>{def.buttonLabel}</button
                       >
-                    {/if}
-                    {#if def.type === "boolean"}
-                      <input
-                        type="checkbox"
-                        checked={getSetting(def.key) === true}
-                        on:change={(ev) =>
-                          write(def, ev.currentTarget.checked)}
-                      />
-                    {:else if def.type === "enum"}
-                      <select
-                        value={getSetting(def.key)}
-                        on:change={(ev) => write(def, ev.currentTarget.value)}
-                      >
-                        {#each def.options ?? [] as opt (opt.value)}
-                          <option value={opt.value}
-                            >{opt.label ?? opt.value}</option
-                          >
-                        {/each}
-                      </select>
-                    {:else if def.type === "number"}
-                      <input
-                        type="number"
-                        value={getSetting(def.key)}
-                        min={def.min}
-                        max={def.max}
-                        step={def.step}
-                        on:change={(ev) => onNumberChange(def, ev)}
-                      />
                     {:else}
-                      <input
-                        type="text"
-                        value={getSetting(def.key) ?? ""}
-                        placeholder={def.placeholder}
-                        on:change={(ev) => write(def, ev.currentTarget.value)}
-                      />
+                      {#if isModified(def.key)}
+                        <button
+                          class="setting-reset"
+                          title="Reset to default"
+                          on:click={() => reset(def)}>↺</button
+                        >
+                      {/if}
+                      {#if def.type === "boolean"}
+                        <input
+                          type="checkbox"
+                          checked={getSetting(def.key) === true}
+                          on:change={(ev) =>
+                            write(def, ev.currentTarget.checked)}
+                        />
+                      {:else if def.type === "enum"}
+                        <select
+                          value={getSetting(def.key)}
+                          on:change={(ev) =>
+                            write(def, ev.currentTarget.value)}
+                        >
+                          {#each def.options as opt (opt.value)}
+                            <option value={opt.value}
+                              >{opt.label ?? opt.value}</option
+                            >
+                          {/each}
+                        </select>
+                      {:else if def.type === "number"}
+                        <input
+                          type="number"
+                          value={getSetting(def.key)}
+                          min={def.min}
+                          max={def.max}
+                          step={def.step}
+                          on:change={(ev) => onNumberChange(def, ev)}
+                        />
+                      {:else}
+                        <input
+                          type="text"
+                          value={getSetting(def.key) ?? ""}
+                          placeholder={def.placeholder}
+                          on:change={(ev) =>
+                            write(def, ev.currentTarget.value)}
+                        />
+                      {/if}
                     {/if}
                   </div>
                 </div>
@@ -315,5 +337,26 @@
   .setting-reset:hover {
     color: inherit;
     background: var(--surface-2);
+  }
+  .setting-action {
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.7rem;
+    background: var(--surface-2);
+    color: inherit;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .setting-action:hover {
+    background: var(--surface-3, #333);
+  }
+  .setting-action.danger {
+    border-color: color-mix(in srgb, #c0392b 70%, transparent);
+    color: #ff8b7d;
+  }
+  .setting-action.danger:hover {
+    background: color-mix(in srgb, #c0392b 60%, transparent);
+    color: #fff;
   }
 </style>

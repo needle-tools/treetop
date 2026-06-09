@@ -108,6 +108,7 @@
     walkthroughSeen,
     markWalkthroughSeen,
     clearWalkthroughSeen,
+    clearAllWalkthroughSeen,
   } from "./onboarding-walkthrough";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
@@ -159,7 +160,7 @@
     eventLabel,
     type Event,
   } from "./event-format";
-  import { play } from "./sound";
+  import { play, setEnabled, setMasterVolume } from "./sound";
   import { createToastManager, type Toast } from "./toast-manager";
   import { subscribeToasts } from "./toast-bus";
   import {
@@ -439,6 +440,9 @@
   // registerSettings() — see settings-registry.ts; the dialog renders
   // whatever any subsystem registers, no per-setting UI needed.
   let settingsDialogOpen = false;
+  // The settings catalog. Each subsystem's tunables are declared here
+  // once; SettingsDialog renders them — no per-setting UI. Reads are
+  // reactive via settingValue(); see settings-registry.ts.
   registerSettings({
     id: "appearance",
     title: "Appearance",
@@ -454,7 +458,76 @@
       },
     ],
   });
+  registerSettings({
+    id: "terminal",
+    title: "Terminal",
+    order: 10,
+    settings: [
+      {
+        key: "terminal.fontSize",
+        label: "Font size",
+        description: "Point size of text in terminal sessions.",
+        type: "number",
+        default: 12,
+        min: 8,
+        max: 24,
+        step: 1,
+      },
+    ],
+  });
+  registerSettings({
+    id: "sound",
+    title: "Sound",
+    order: 20,
+    settings: [
+      {
+        key: "sound.enabled",
+        label: "Sound effects",
+        description: "Play chimes for sessions, messages, pushes, and alerts.",
+        type: "boolean",
+        default: true,
+      },
+      {
+        key: "sound.volume",
+        label: "Volume",
+        description: "Master volume for all sound effects (0–100%).",
+        type: "number",
+        default: 100,
+        min: 0,
+        max: 100,
+        step: 5,
+      },
+    ],
+  });
+  registerSettings({
+    id: "maintenance",
+    title: "Maintenance",
+    order: 100,
+    settings: [
+      {
+        key: "maintenance.resetWalkthrough",
+        label: "Onboarding walkthrough",
+        description: "Replay the guided tour on every worktree.",
+        type: "action",
+        buttonLabel: "Reset walkthrough",
+        onInvoke: () => {
+          clearAllWalkthroughSeen();
+          addToast({ kind: "success", message: "Walkthrough reset." });
+        },
+      },
+    ],
+  });
   const showGreeting = settingValue("appearance.showGreeting");
+
+  // Bridge the sound settings into the sound engine's module state.
+  // Reactive so changes in the dialog take effect immediately; runs
+  // once on mount with the persisted values.
+  const soundEnabled = settingValue("sound.enabled");
+  const soundVolume = settingValue("sound.volume");
+  $: setEnabled($soundEnabled !== false);
+  $: setMasterVolume(
+    typeof $soundVolume === "number" ? $soundVolume / 100 : 1,
+  );
   /** When set, the Add-daemon dialog opens in attach mode (live-log only) for
    *  an already-started job — currently used for "Uninstall on box". */
   let provisionAttachJob: { jobId: string; title: string } | null = null;
@@ -8676,10 +8749,8 @@
                     {#if emojiPickerOpen[row.key]}
                       <EmojiPicker
                         on:pick={(e) => {
-                          emojiPickerOpen = {
-                            ...emojiPickerOpen,
-                            [row.key]: false,
-                          };
+                          // Keep the picker open so several stickers can be
+                          // added in a row; close via cancel / click-outside.
                           if (zenRowKey === row.key) {
                             notesShownInZen = true;
                           } else if (notesHiddenByRow[row.key]) {

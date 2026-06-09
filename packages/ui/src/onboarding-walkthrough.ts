@@ -134,3 +134,10 @@ export function clearWalkthroughSeen(wtPath: string): void {
     getDaemonKV().setItem(KV_KEY, JSON.stringify(map));
   } catch {}
 }
+
+/** Forget the walkthrough for every worktree — the tour replays
+ *  everywhere on next visit. Wired to the "Reset walkthrough" settings
+ *  action. */
+export function clearAllWalkthroughSeen(): void {
+  getDaemonKV().setItem(KV_KEY, "{}");
+}

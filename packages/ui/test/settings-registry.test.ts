@@ -5,7 +5,7 @@
  * per-setting UI work. Persistence goes through an injected KVStore
  * (daemon prefs in the app, an in-memory store here).
  */
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, mock } from "bun:test";
 import { get } from "svelte/store";
 import type { KVStore } from "../src/storage";
 import {
@@ -17,6 +17,7 @@ import {
   isModified,
   settingValue,
   filterSections,
+  isActionSetting,
   setSettingsKV,
   _resetSettingsForTests,
 } from "../src/settings-registry";
@@ -154,6 +155,74 @@ describe("settingValue store", () => {
     expect(get(store)).toBeUndefined();
     registerSettings(appearance);
     expect(get(store)).toBe("comfortable");
+  });
+});
+
+describe("action settings", () => {
+  function actionSection(onInvoke: () => void) {
+    return {
+      id: "maintenance",
+      title: "Maintenance",
+      settings: [
+        {
+          key: "maintenance.resetWalkthrough",
+          label: "Reset walkthrough",
+          description: "Show the onboarding tour again",
+          type: "action" as const,
+          buttonLabel: "Reset",
+          onInvoke,
+        },
+      ],
+    };
+  }
+
+  test("an action def registers and renders in its section", () => {
+    registerSettings(actionSection(() => {}));
+    const sections = get(settingsSections);
+    expect(sections[0].settings[0].key).toBe("maintenance.resetWalkthrough");
+  });
+
+  test("isActionSetting narrows action vs value defs", () => {
+    registerSettings(appearance);
+    registerSettings(actionSection(() => {}));
+    const all = get(settingsSections);
+    const action = all
+      .flatMap((s) => s.settings)
+      .find((d) => d.key === "maintenance.resetWalkthrough")!;
+    const value = all
+      .flatMap((s) => s.settings)
+      .find((d) => d.key === "appearance.showGreeting")!;
+    expect(isActionSetting(action)).toBe(true);
+    expect(isActionSetting(value)).toBe(false);
+  });
+
+  test("actions carry no value — getSetting is undefined, never modified", () => {
+    registerSettings(actionSection(() => {}));
+    expect(getSetting("maintenance.resetWalkthrough")).toBeUndefined();
+    expect(isModified("maintenance.resetWalkthrough")).toBe(false);
+  });
+
+  test("setSetting on an action key is a no-op (nothing persisted)", () => {
+    registerSettings(actionSection(() => {}));
+    setSetting("maintenance.resetWalkthrough", true);
+    expect(isModified("maintenance.resetWalkthrough")).toBe(false);
+    // The settings blob is never written for an action.
+    expect(kv.data["supergit:settings"]).toBeUndefined();
+  });
+
+  test("the onInvoke callback is preserved and callable", () => {
+    const spy = mock(() => {});
+    registerSettings(actionSection(spy));
+    const def = get(settingsSections)[0].settings[0];
+    if (isActionSetting(def)) def.onInvoke();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("filterSections matches an action by label and description", () => {
+    const all = [actionSection(() => {})];
+    expect(filterSections(all, "walkthrough").length).toBe(1);
+    expect(filterSections(all, "onboarding").length).toBe(1);
+    expect(filterSections(all, "no-such-thing")).toEqual([]);
   });
 });
 
