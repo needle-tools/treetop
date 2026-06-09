@@ -1,12 +1,14 @@
 /*
- * Vines overlay styles. Self-contained — imported only by vines/index.ts,
- * which is only loaded when the feature is enabled (see main.ts).
+ * Vines overlay styles. Self-contained — imported only by vines/index.ts.
  *
  * Each `.vines-svg` is injected INTO a `.sessions-strip` and positioned in
  * the strip's content box, so it scrolls natively with the panels (no
- * float). pointer-events:none so it never blocks the terminals it floats
- * over. Perf: the only animated property is `transform` (composited leaf
- * sway); no filters/blurs/shadows, no cursor interaction.
+ * float). pointer-events:none so it never blocks the terminals. Perf: the
+ * only animated property is `transform` (composited leaf sway).
+ *
+ * Depth shading: the trunk gradient and each leaf's colour go from nearly
+ * the background at the root to a muted green near the top (leaves carry a
+ * per-element `--leaf-light` 0..1).
  */
 
 .vines-svg {
@@ -15,37 +17,56 @@
   top: 0;
   width: 100%;
   height: 100%;
-  /* Children are placed in strip-content coordinates and may extend past
-     this box (tall vines, leaves over column edges) — show them. */
   overflow: visible;
   pointer-events: none;
-  /* Sit above the column content (the SVG is transparent except for the
-     vine pixels), within the strip's own stacking context. */
   z-index: 5;
+
+  /* Palette — darker + muted. The "dark" end sits almost on the page
+     background so the roots melt into it. */
+  --leaf-dark: color-mix(in srgb, var(--needle-green-dark, #74af52) 16%, var(--surface-0, #23261d));
+  --leaf-bright: color-mix(in srgb, var(--needle-green, #99cc33) 68%, #6a7a4a);
 }
 
+/* Hidden host for the shared stem gradient def. */
+.vines-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Trunk: dark (≈ background) at the root → muted green at the top, via the
+   shared objectBoundingBox gradient. */
 .vine-stem {
   fill: none;
-  stroke: color-mix(in srgb, var(--needle-green-dark, #74af52) 80%, #3b2c1a);
-  stroke-width: 2;
+  stroke: url(#vine-stem-grad);
+  stroke-width: 2.4;
   stroke-linecap: round;
-  opacity: 0.82;
+  stroke-linejoin: round;
+}
+.vine-grad-base {
+  stop-color: color-mix(in srgb, var(--needle-green-dark, #74af52) 9%, var(--surface-0, #23261d));
+}
+.vine-grad-mid {
+  stop-color: color-mix(in srgb, var(--needle-green-dark, #74af52) 42%, #2a2114);
+}
+.vine-grad-top {
+  stop-color: color-mix(in srgb, var(--needle-green-dark, #74af52) 70%, #3a4a28);
 }
 
 .vine-leaf {
-  fill: var(--needle-green, #99cc33);
-  opacity: 0.8;
+  --leaf-light: 0.5;
+  /* dark (root) → bright (top); the per-leaf light drives the mix. */
+  fill: color-mix(
+    in oklab,
+    var(--leaf-bright) calc(var(--leaf-light) * 100%),
+    var(--leaf-dark)
+  );
+  opacity: 0.92;
   transform-box: fill-box;
   transform-origin: 50% 100%; /* sway around the leaf's base */
   animation: vine-sway 4s ease-in-out infinite;
-}
-/* A little colour variety so the canopy isn't a flat green wall. */
-.vine-leaves g:nth-child(3n) .vine-leaf {
-  fill: var(--needle-green-light, #d7db0a);
-  opacity: 0.7;
-}
-.vine-leaves g:nth-child(3n + 1) .vine-leaf {
-  fill: var(--needle-green-dark, #74af52);
 }
 
 @keyframes vine-sway {
@@ -58,7 +79,7 @@
   }
 }
 
-/* Respect reduced-motion: vines still grow, but leaves don't sway. */
+/* Reduced-motion: vines still grow, but leaves don't sway. */
 .vines-reduced .vine-leaf {
   animation: none;
 }

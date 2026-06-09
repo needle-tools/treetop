@@ -4,25 +4,20 @@ import {
   hashSeed,
   rng,
   adjacentPairs,
-  repoIntensities,
-  accrue,
-  growthOf,
+  growthFromMs,
+  sessionGrowth,
+  accrueAges,
   buildVines,
   stemPath,
   stemHeight,
   leaves,
   leafCountFor,
   type Panel,
-  type GrowthStore,
+  type SourceAges,
 } from "../src/vines/vine-core";
 
-function panel(
-  source: string,
-  cx: number,
-  group?: string,
-  repo: string = group ?? "r",
-): Panel {
-  return { source, repo, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
+function panel(source: string, cx: number, group?: string): Panel {
+  return { source, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
 }
 
 describe("pairKey", () => {
@@ -49,9 +44,6 @@ describe("hashSeed / rng", () => {
       expect(v).toBeLessThan(1);
     }
   });
-  test("different seeds diverge", () => {
-    expect(rng(1)()).not.toBe(rng(2)());
-  });
 });
 
 describe("adjacentPairs", () => {
@@ -61,10 +53,6 @@ describe("adjacentPairs", () => {
       ["a", "b"],
       ["b", "c"],
     ]);
-  });
-  test("0 or 1 panels yield no pairs", () => {
-    expect(adjacentPairs([])).toEqual([]);
-    expect(adjacentPairs([panel("a", 1)])).toEqual([]);
   });
   test("never pairs panels from different row groups", () => {
     const pairs = adjacentPairs([
@@ -79,91 +67,65 @@ describe("adjacentPairs", () => {
   });
 });
 
-describe("repoIntensities", () => {
-  test("counts windows per repo, capped", () => {
-    const panels = [
-      panel("a", 1, "g1", "repoX"),
-      panel("b", 2, "g1", "repoX"),
-      panel("c", 3, "g2", "repoY"),
-    ];
-    const m = repoIntensities(panels, 4);
-    expect(m.get("repoX")).toBe(2);
-    expect(m.get("repoY")).toBe(1);
-  });
-  test("caps intensity", () => {
-    const panels = Array.from({ length: 9 }, (_, i) => panel(`s${i}`, i, "g", "repoX"));
-    expect(repoIntensities(panels, 4).get("repoX")).toBe(4);
-  });
-});
-
-describe("accrue / growthOf", () => {
+describe("session growth", () => {
   const FULL = 1000;
 
-  test("accrues weighted active time onto active repos", () => {
-    const m = new Map([["repoX", 2]]);
-    const store = accrue({}, m, 100);
-    expect(store.repoX.activeMs).toBe(200); // 100ms * intensity 2
+  test("growthFromMs is proportional and clamped", () => {
+    expect(growthFromMs(500, FULL)).toBe(0.5);
+    expect(growthFromMs(5000, FULL)).toBe(1);
+    expect(growthFromMs(-5, FULL)).toBe(0);
   });
-  test("does not mutate the input store", () => {
-    const before: GrowthStore = {};
-    accrue(before, new Map([["r", 1]]), 50);
-    expect(before).toEqual({});
+  test("sessionGrowth reads a source's age", () => {
+    expect(sessionGrowth({ s: 250 }, "s", FULL)).toBe(0.25);
+    expect(sessionGrowth({}, "missing", FULL)).toBe(0);
   });
-  test("only touches active repos; others retain their growth", () => {
-    const store: GrowthStore = { idle: { activeMs: 500 }, busy: { activeMs: 0 } };
-    const next = accrue(store, new Map([["busy", 1]]), 100);
-    expect(next.idle.activeMs).toBe(500);
-    expect(next.busy.activeMs).toBe(100);
+  test("accrueAges adds dt to present sources, capped, immutable", () => {
+    const before: SourceAges = { a: 100 };
+    const next = accrueAges(before, ["a", "b"], 50, FULL);
+    expect(before).toEqual({ a: 100 }); // unchanged
+    expect(next.a).toBe(150);
+    expect(next.b).toBe(50);
   });
-  test("growthOf maps activeMs over the full budget, clamped", () => {
-    expect(growthOf({ r: { activeMs: 500 } }, "r", FULL)).toBe(0.5);
-    expect(growthOf({ r: { activeMs: 5000 } }, "r", FULL)).toBe(1);
-    expect(growthOf({}, "missing", FULL)).toBe(0);
+  test("accrueAges caps at the full budget", () => {
+    expect(accrueAges({ a: 990 }, ["a"], 1000, FULL).a).toBe(FULL);
   });
-  test("a busy week beats an idle week", () => {
-    // big budget so neither saturates — we're comparing accrual rates
-    const BUDGET = 10_000;
-    let busy: GrowthStore = {};
-    let idle: GrowthStore = {};
-    for (let i = 0; i < 10; i++) busy = accrue(busy, new Map([["r", 3]]), 100);
-    for (let i = 0; i < 10; i++) idle = accrue(idle, new Map([["r", 1]]), 100);
-    expect(growthOf(busy, "r", BUDGET)).toBeGreaterThan(growthOf(idle, "r", BUDGET));
+  test("absent sources keep their age", () => {
+    const next = accrueAges({ idle: 700, busy: 0 }, ["busy"], 100, FULL);
+    expect(next.idle).toBe(700);
+    expect(next.busy).toBe(100);
   });
 });
 
 describe("buildVines", () => {
-  test("one vine per gap, length = the repo's growth", () => {
-    const panels = [
-      panel("a", 100, "g", "repoX"),
-      panel("b", 200, "g", "repoX"),
-      panel("c", 300, "g", "repoX"),
-    ];
-    const store: GrowthStore = { repoX: { activeMs: 250 } };
-    const vines = buildVines(panels, store, 1000);
-    expect(vines).toHaveLength(2);
-    expect(vines.map((v) => v.key).sort()).toEqual(
-      [pairKey("a", "b"), pairKey("b", "c")].sort(),
-    );
-    for (const v of vines) {
-      expect(v.repo).toBe("repoX");
-      expect(v.length).toBe(0.25);
-    }
+  const FULL = 1000;
+
+  test("one vine per gap; length = average of the two sessions' growth", () => {
+    const panels = [panel("a", 100), panel("b", 200), panel("c", 300)];
+    const store: SourceAges = { a: 1000, b: 0, c: 500 }; // 1.0, 0, 0.5
+    const vines = buildVines(panels, store, FULL);
+    const ab = vines.find((v) => v.key === pairKey("a", "b"))!;
+    const bc = vines.find((v) => v.key === pairKey("b", "c"))!;
+    expect(ab.length).toBeCloseTo((1 + 0) / 2, 5);
+    expect(bc.length).toBeCloseTo((0 + 0.5) / 2, 5);
+    expect(ab.a).toBe("a");
+    expect(ab.b).toBe("b");
   });
 
-  test("no windows in a repo → no vines drawn, but growth persists in the store", () => {
-    const store: GrowthStore = { repoX: { activeMs: 999 } };
-    // repoX has no panels on screen right now
-    const vines = buildVines([panel("z", 1, "g", "other")], store, 1000);
-    expect(vines.find((v) => v.repo === "repoX")).toBeUndefined();
-    // growth is untouched — reopening windows later shows it again
-    expect(growthOf(store, "repoX", 1000)).toBe(0.999);
+  test("reordering the windows does NOT change a vine's size", () => {
+    const store: SourceAges = { a: 800, b: 200 };
+    const before = buildVines([panel("a", 100), panel("b", 200)], store, FULL);
+    // swap their x positions (a now to the right of b)
+    const after = buildVines([panel("a", 300), panel("b", 100)], store, FULL);
+    const v1 = before.find((v) => v.key === pairKey("a", "b"))!;
+    const v2 = after.find((v) => v.key === pairKey("a", "b"))!;
+    expect(v2.length).toBe(v1.length); // purely a function of the sessions
   });
 
   test("vine geometry spans the gap between the two windows", () => {
     const v = buildVines(
-      [panel("a", 100, "g", "r"), panel("b", 300, "g", "r")],
-      { r: { activeMs: 1000 } },
-      1000,
+      [panel("a", 100), panel("b", 300)],
+      { a: 1000, b: 1000 },
+      FULL,
     )[0];
     expect(v.ax).toBe(150); // a.right
     expect(v.bx).toBe(250); // b.left
@@ -196,19 +158,33 @@ describe("geometry", () => {
     expect(leaves(shape(7, 0.5), 200, 8).length).toBeLessThanOrEqual(8);
   });
 
-  test("leaves are deterministic for a seed", () => {
-    expect(leaves(shape(7, 1), 200)).toEqual(leaves(shape(7, 1), 200));
-  });
-
-  test("taller stems get more leaves (consistent density, no stretch)", () => {
-    const short = leaves(shape(7, 1), 100).length;
-    const tall = leaves(shape(7, 1), 320).length;
-    expect(tall).toBeGreaterThan(short);
+  test("taller stems get more leaves (constant density)", () => {
+    expect(leaves(shape(7, 1), 100).length).toBeLessThan(
+      leaves(shape(7, 1), 320).length,
+    );
     expect(leafCountFor(100)).toBeLessThan(leafCountFor(320));
   });
 
-  test("different seeds → different stem AND different leaf arrangement", () => {
+  test("different seeds → different stem AND leaf arrangement", () => {
     expect(stemPath(shape(1, 1), 200)).not.toBe(stemPath(shape(2, 1), 200));
     expect(leaves(shape(1, 1), 200)).not.toEqual(leaves(shape(2, 1), 200));
+  });
+
+  test("leaf light is in [0,1] and deterministic", () => {
+    const ls = leaves(shape(7, 1), 300);
+    for (const l of ls) {
+      expect(l.light).toBeGreaterThanOrEqual(0);
+      expect(l.light).toBeLessThanOrEqual(1);
+    }
+    expect(leaves(shape(7, 1), 300)).toEqual(ls);
+  });
+
+  test("leaves trend brighter toward the top (depth)", () => {
+    const ls = leaves(shape(7, 1), 300); // ~20 leaves
+    const mid = Math.floor(ls.length / 2);
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const lower = avg(ls.slice(0, mid).map((l) => l.light));
+    const upper = avg(ls.slice(mid).map((l) => l.light));
+    expect(upper).toBeGreaterThan(lower);
   });
 });

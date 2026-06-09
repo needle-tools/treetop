@@ -1,46 +1,44 @@
 /**
  * Imperative vines overlay — DOM, observing the session columns, the
- * activity tick, and persistence. The pure model lives in vine-core.ts.
+ * lifetime tick, and persistence. The pure model lives in vine-core.ts.
  *
- * STICKING: each vine SVG is injected INTO its `.sessions-strip` (the
- * horizontally-scrolling row of session windows) and positioned in the
- * strip's CONTENT coordinates. So the vines are part of the scrollable
- * content and move natively with the panels — both when the row scrolls
- * horizontally and when the page scrolls vertically. No scroll listener,
- * no JS chasing, no lag/"float". We only re-measure on layout changes
- * (resize / columns added or removed) and on the slow growth tick.
+ * MODEL: each session has a "length" = how long we've observed it alive
+ * (while the tab is visible), persisted per source. A vine between two
+ * windows is sized by the AVERAGE growth of those two sessions, so it
+ * adapts slowly as the sessions age and never jumps when windows are
+ * reordered (it's a pure function of stable session ages).
  *
- * Growth (see vine-core.ts) is per-REPO and accrues from real work
- * (active-session time weighted by window count); persisted across days.
+ * STICKING: each vine SVG is injected INTO its `.sessions-strip` and
+ * positioned in the strip's CONTENT coordinates, so it scrolls natively
+ * with the panels (no float). We only re-measure on layout changes and on
+ * the tick — never on scroll.
  *
- * Perf rules: pointer-events:none (never intercepts terminal input);
- * growth is a seconds-apart interval, not a rAF loop; leaf sway is a
- * composited CSS transform; no cursor interaction; we never mutate the
- * app's own DOM except setting `position: relative` on a strip that's
- * static (restored on teardown) so our absolute SVG can anchor to it.
+ * Perf: pointer-events:none; seconds-apart tick (no rAF loop); composited
+ * CSS leaf sway; no cursor interaction; the only app-DOM touch is setting
+ * `position: relative` on a static strip (restored on teardown).
  */
 
 import {
   buildVines,
-  accrue,
-  repoIntensities,
+  accrueAges,
   stemPath,
   leaves,
   type Panel,
-  type GrowthStore,
+  type SourceAges,
   type RenderVine,
 } from "./vine-core";
 
-const STORE_KEY = "vines:v2"; // per-repo activity growth
+const STORE_KEY = "vines:v3"; // per-session lifetimes
 const TICK_MS = 2000;
 const SAVE_EVERY_MS = 15_000;
 const DT_CLAMP_MS = 4 * TICK_MS;
-const DEFAULT_FULL_ACTIVE_MS = 24 * 60 * 60 * 1000; // ~24h active → full
+const DEFAULT_FULL_MS = 4 * 60 * 60 * 1000; // ~4h of session lifetime → full
 
 const STRIP_SELECTOR = ".sessions-strip";
 const COL_SELECTOR = ".session-col[data-session-source]";
 const SVGNS = "http://www.w3.org/2000/svg";
 const LEAF_D = "M0 0 C -4.5 -4 -4.5 -11 0 -15 C 4.5 -11 4.5 -4 0 0 Z";
+const STEM_GRAD_ID = "vine-stem-grad";
 
 const QUERY = (() => {
   try {
@@ -53,7 +51,7 @@ const SPEED = (() => {
   const n = Number(QUERY.get("vinesspeed") ?? QUERY.get("vinespeed"));
   return Number.isFinite(n) && n > 0 ? n : 1;
 })();
-const FULL_ACTIVE_MS = DEFAULT_FULL_ACTIVE_MS;
+const FULL_MS = DEFAULT_FULL_MS;
 const PRESEED = (() => {
   const n = Number(QUERY.get("vinesgrow"));
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
@@ -71,30 +69,25 @@ interface VineNodes {
 interface StripState {
   svg: SVGSVGElement;
   nodes: Map<string, VineNodes>;
-  /** True if we set inline position:relative (so we can restore it). */
   setPosition: boolean;
 }
 
-function repoOf(el: HTMLElement): string {
-  return el.closest("[data-repo-id]")?.getAttribute("data-repo-id") ?? "";
-}
-
+/** Grow to (nearly) the full panel height — a little headroom so the top
+ *  leaves aren't clipped by the strip's overflow. */
 function vineMaxHeight(v: RenderVine): number {
   const colH = Math.max(0, v.baseY - v.topY);
-  return Math.max(80, Math.min(420, colH * 0.62));
+  return Math.max(100, colH - 18);
 }
 
-function load(): GrowthStore {
+function load(): SourceAges {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return {};
-    const obj = JSON.parse(raw) as GrowthStore;
+    const obj = JSON.parse(raw) as SourceAges;
     if (!obj || typeof obj !== "object") return {};
-    const clean: GrowthStore = {};
-    for (const [repo, g] of Object.entries(obj)) {
-      if (g && typeof (g as { activeMs?: unknown }).activeMs === "number") {
-        clean[repo] = { activeMs: (g as { activeMs: number }).activeMs };
-      }
+    const clean: SourceAges = {};
+    for (const [src, ms] of Object.entries(obj)) {
+      if (typeof ms === "number" && ms >= 0) clean[src] = ms;
     }
     return clean;
   } catch {
@@ -102,7 +95,7 @@ function load(): GrowthStore {
   }
 }
 
-function save(store: GrowthStore) {
+function save(store: SourceAges) {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(store));
   } catch {
@@ -110,17 +103,49 @@ function save(store: GrowthStore) {
   }
 }
 
+/** Inject the shared stem gradient once (dark at the root → green at the
+ *  top). objectBoundingBox so it maps to each stem's own bounds. */
+function makeDefs(): SVGSVGElement {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "vines-defs");
+  svg.setAttribute("aria-hidden", "true");
+  const defs = document.createElementNS(SVGNS, "defs");
+  const grad = document.createElementNS(SVGNS, "linearGradient");
+  grad.setAttribute("id", STEM_GRAD_ID);
+  grad.setAttribute("gradientUnits", "objectBoundingBox");
+  grad.setAttribute("x1", "0");
+  grad.setAttribute("y1", "1"); // base
+  grad.setAttribute("x2", "0");
+  grad.setAttribute("y2", "0"); // tip
+  for (const [offset, cls] of [
+    ["0", "vine-grad-base"],
+    ["0.45", "vine-grad-mid"],
+    ["1", "vine-grad-top"],
+  ] as const) {
+    const stop = document.createElementNS(SVGNS, "stop");
+    stop.setAttribute("offset", offset);
+    stop.setAttribute("class", cls);
+    grad.appendChild(stop);
+  }
+  defs.appendChild(grad);
+  svg.appendChild(defs);
+  return svg;
+}
+
 export function createVinesOverlay(): { destroy: () => void } {
   const reduceMotion = window.matchMedia(
     "(prefers-reduced-motion: reduce)",
   ).matches;
 
-  let store: GrowthStore = load();
+  let store: SourceAges = load();
   const strips = new Map<HTMLElement, StripState>();
-  const seededRepos = new Set<string>();
+  const seeded = new Set<string>();
   let lastTick = Date.now();
   let lastSave = Date.now();
   let destroyed = false;
+
+  const defs = makeDefs();
+  document.body.appendChild(defs);
 
   // ── measure one strip's columns in STRIP-LOCAL content coordinates ───
   function panelsForStrip(strip: HTMLElement): Panel[] {
@@ -131,13 +156,10 @@ export function createVinesOverlay(): { destroy: () => void } {
       if (!source) continue;
       const cr = col.getBoundingClientRect();
       if (cr.width === 0 && cr.height === 0) continue;
-      // viewport delta + scroll offset = position in scroll content,
-      // stable regardless of the current scroll position.
       const left = cr.left - sr.left + strip.scrollLeft;
       const top = cr.top - sr.top + strip.scrollTop;
       out.push({
         source,
-        repo: repoOf(col),
         cx: left + cr.width / 2,
         left,
         right: left + cr.width,
@@ -170,52 +192,46 @@ export function createVinesOverlay(): { destroy: () => void } {
     strips.delete(strip);
   }
 
-  /** Measure every strip, accrue activity for active repos, rebuild and
-   *  repaint each strip's vines. `accrueDt` is 0 for pure layout syncs. */
   function syncAndGrow(accrueDt: number) {
     const liveStrips = new Set<HTMLElement>();
-    const allPanels: Panel[] = [];
+    const presentSources: string[] = [];
     const perStrip: { strip: HTMLElement; panels: Panel[] }[] = [];
 
     for (const strip of document.querySelectorAll<HTMLElement>(STRIP_SELECTOR)) {
       const panels = panelsForStrip(strip);
       liveStrips.add(strip);
       perStrip.push({ strip, panels });
-      allPanels.push(...panels);
+      for (const p of panels) presentSources.push(p.source);
     }
 
-    // Pre-seed (demo): make repos look already-worked the first time seen.
-    const intensities = repoIntensities(allPanels);
+    // Demo pre-seed: make a session look already-aged the first time seen.
     if (PRESEED > 0) {
-      for (const repo of intensities.keys()) {
-        if (repo && !seededRepos.has(repo)) {
-          seededRepos.add(repo);
-          const want = PRESEED * FULL_ACTIVE_MS;
-          if ((store[repo]?.activeMs ?? 0) < want) {
-            store = { ...store, [repo]: { activeMs: want } };
-          }
+      for (const s of presentSources) {
+        if (!seeded.has(s)) {
+          seeded.add(s);
+          const want = PRESEED * FULL_MS;
+          if ((store[s] ?? 0) < want) store = { ...store, [s]: want };
         }
       }
     }
-    if (accrueDt > 0) store = accrue(store, intensities, accrueDt * SPEED);
+    if (accrueDt > 0) {
+      store = accrueAges(store, presentSources, accrueDt * SPEED, FULL_MS);
+    }
 
     let totalVines = 0;
     for (const { strip, panels } of perStrip) {
-      const vines = buildVines(panels, store, FULL_ACTIVE_MS);
+      const vines = buildVines(panels, store, FULL_MS);
       totalVines += vines.length;
-      // Don't inject into strips that never have vines, to stay tidy.
       if (vines.length === 0 && !strips.has(strip)) continue;
       renderStrip(ensureStrip(strip), vines);
     }
-
-    // Drop overlays for strips that vanished from the DOM.
     for (const [strip, st] of strips) {
       if (!liveStrips.has(strip)) removeStrip(strip, st);
     }
 
     if (DEBUG) {
       console.info(
-        `[vines] strips=${perStrip.length} panels=${allPanels.length} vines=${totalVines}`,
+        `[vines] strips=${perStrip.length} sources=${presentSources.length} vines=${totalVines}`,
       );
     }
   }
@@ -270,6 +286,8 @@ export function createVinesOverlay(): { destroy: () => void } {
       const path = document.createElementNS(SVGNS, "path");
       path.setAttribute("class", "vine-leaf");
       path.setAttribute("d", LEAF_D);
+      // depth shading: 0 = dark (root) → 1 = bright (top)
+      path.style.setProperty("--leaf-light", leaf.light.toFixed(2));
       path.style.animationDelay = `${((i * 0.7 + (leaf.side > 0 ? 0.35 : 0)) % 4).toFixed(2)}s`;
       anchor.appendChild(path);
       n.leafLayer.appendChild(anchor);
@@ -291,7 +309,6 @@ export function createVinesOverlay(): { destroy: () => void } {
     });
   }
 
-  // ── growth tick ──────────────────────────────────────────────────────
   const tick = setInterval(() => {
     if (destroyed) return;
     const now = Date.now();
@@ -307,7 +324,6 @@ export function createVinesOverlay(): { destroy: () => void } {
     }
   }, TICK_MS);
 
-  // ── observers (NO scroll listener — sticking is native) ──────────────
   const ro = new ResizeObserver(queueSync);
   ro.observe(document.body);
   const mo = new MutationObserver(queueSync);
@@ -334,6 +350,7 @@ export function createVinesOverlay(): { destroy: () => void } {
       document.removeEventListener("visibilitychange", onVisibility);
       save(store);
       for (const [strip, st] of strips) removeStrip(strip, st);
+      defs.remove();
     },
   };
 }
