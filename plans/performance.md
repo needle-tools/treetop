@@ -398,29 +398,69 @@ Correction to the earlier note: Layerize is `O(layer count)` **and**
 `O(paint-chunk complexity)`; `contain` cut the latter. The trigger still fires
 every keystroke (25/25) — it's just ~5× cheaper now.
 
-**Next (optional, additive):** the canvas renderer (`@xterm/addon-canvas`,
-loaded after `xterm.open()`, DOM as the safety net) would remove the trigger
-*entirely* — typing becomes a contained canvas re-raster, no structural churn,
-no per-keystroke Layerize — taking the remaining 22% toward ~0. Canvas was
-chosen over WebGL because supergit runs many concurrent terminals and browsers
-cap WebGL contexts at ~16/page.
+### Lever 2 — GPU renderer for visible terminals (shipped 2026-06-09)
+
+A non-DOM renderer removes the trigger *entirely* — typing becomes a contained
+canvas re-raster, no structural churn, no per-keystroke Layerize — taking the
+remaining 22% toward ~0. The earlier note here picked `@xterm/addon-canvas`
+over WebGL because of the ~16-WebGL-contexts-per-page browser cap; that addon
+turned out to be **dead for xterm 6** (deprecated upstream in the 5.x line,
+peer-dep pinned to `@xterm/xterm ^5.0.0`, never released for 6). The xterm.js
+README lists exactly one maintained GPU renderer: `@xterm/addon-webgl` (the
+0.19.0 release pairs with xterm 6.0.0; it's what VS Code's terminal uses).
+
+So: **WebGL, with the context cap managed by a slot pool** instead of avoided.
+
+- `terminal-webgl.ts` — `createWebglPool(max, createAddon)`:
+  `MAX_WEBGL_TERMINALS = 12` slots (headroom under the ~16 cap). A slot is a
+  *count*, not a shared object — each visible terminal creates its own addon/
+  canvas/context; disposing frees the budget for the next terminal.
+- `TerminalView.svelte` — the existing visibility IntersectionObserver (the
+  one that buffers PTY writes off-screen) owns the slot: on-screen → acquire,
+  scrolled out / unmounted → release. So a wall of mounted TUIs is fine; only
+  on-screen ones hold contexts, and re-acquiring on reveal piggybacks on the
+  reveal path's existing flush + refit.
+- **Every failure degrades to the DOM renderer** (which keeps the `contain`
+  mitigation): no WebGL2 → addon load throws, caught; >12 visible → extras
+  stay DOM; browser evicts a context under GPU pressure (other tabs etc.) →
+  `onContextLoss` → addon disposed, slot freed, content re-renders from
+  xterm's buffer. Pool + wiring pinned by `test/terminal-webgl.test.ts`.
+
+Still to do: re-record a typing trace against a build with the addon to
+confirm the per-keystroke Layerize trigger is gone (expect ~22% → ~0).
 
 ### Open TODOs — Layerize
 
 - [x] **Re-record after the fix (done 2026-06-09).** `contain: layout paint`
       on `.xterm-host`: Layerize 54%→22%, per-rebuild 28.9ms→5.8ms, typing
       ~18→~37fps. See table above.
-- [ ] **(Optional) swap xterm to the canvas renderer** to remove the
-      per-keystroke Layerize trigger entirely (remaining ~22%). Additive on top
-      of `contain`. The Svelte-scoped `pill-sweep` / `sleep-z-conveyor` (per
-      visible session column) also still promote — extend `body.is-typing` with
-      `:global()` hooks if they dominate on-screen after canvas lands.
+- [x] **Swap xterm to a GPU renderer (done 2026-06-09, WebGL not canvas —
+      see Lever 2 above).** Removes the per-keystroke Layerize trigger for
+      visible terminals (remaining ~22% → expected ~0; re-trace pending).
+      The Svelte-scoped `pill-sweep` / `sleep-z-conveyor` (per visible
+      session column) also still promote — extend `body.is-typing` with
+      `:global()` hooks if they dominate on-screen after this lands.
 - [ ] **Shrink the baseline layer count even when not typing.** 376 is high
       at rest. Audit which always-on `infinite` animations genuinely need to
       composite vs. could be paint-cheap or capped by row count.
-- [ ] **The 1806ms `querySelector`.** Overlay/awaiting-badge reposition does
-      `querySelectorAll('.session-col')` + `getBoundingClientRect` on a hot
-      path; cache nodes / batch reads to avoid forced reflow.
+- [x] **The 1806ms `querySelector` (fixed 2026-06-09).** The hot path wasn't
+      the `.session-col` one-shots — it was **StickyNotesLayer**: its
+      MutationObserver watches all of `<main>` (`subtree: true`), so xterm's
+      per-keystroke/per-chunk DOM churn scheduled a reposition tick every
+      frame while any visible TUI streamed, and each tick ran a
+      document-wide `querySelector` *per note*, twice (`screenPosFor` +
+      `afterUpdate → applyRowMargins`), with interleaved rect reads/writes.
+      Three-part fix (`sticky-notes-dom.ts`, pinned by
+      `test/sticky-notes-dom.test.ts`):
+      1. observer batches entirely inside `.xterm-host` are dropped before
+         scheduling (it's `contain: layout` — terminal churn can't move a
+         row); with the WebGL renderer those batches mostly vanish anyway,
+         this covers DOM-fallback terminals;
+      2. one scoped `querySelectorAll` per pass builds a row map
+         (`buildAnchorRowMap`/`anchorRowFor`) instead of a document query
+         per note; chips likewise resolve via one scoped query;
+      3. row rects are read once per row and all reads happen before the
+         margin writes, so a pass forces at most one reflow.
 
 ## How to record + analyse a trace
 

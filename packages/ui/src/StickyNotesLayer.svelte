@@ -138,6 +138,11 @@
    *  persisted) so every mutation can route to the owning daemon. */
   type NoteShape = NoteShapeBase & { daemonId?: string };
   import { notesCountByAnchor, notesAll } from "./notes-counts";
+  import {
+    anchorRowFor,
+    buildAnchorRowMap,
+    mutationsAllInsideTerminal,
+  } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
   import { shrinkImageBlob } from "./image-shrink";
@@ -405,16 +410,10 @@
    *  The note re-appears the moment the row is expanded / toggled
    *  back on (MutationObserver kicks a tick on the class change). */
   function findAnchorLi(note: NoteShape): HTMLElement | null {
-    for (const a of note.anchors) {
-      if (a.startsWith("worktree:")) {
-        const path = a.slice("worktree:".length);
-        const el = document.querySelector<HTMLElement>(
-          `[data-wt-row="${cssEscape(path)}"]:not(.row-folded):not(.row-notes-hidden)`,
-        );
-        if (el) return el;
-      }
-    }
-    return null;
+    return anchorRowFor(
+      buildAnchorRowMap<HTMLElement>(document),
+      note.anchors,
+    );
   }
 
   function visibleWorktreeRows(): HTMLElement[] {
@@ -848,7 +847,10 @@
    *  not a phantom line above a padded space. Anchoring on the `<li>`
    *  is what makes the note's tape tuck under the *visible* bottom
    *  edge instead of floating somewhere inside the row. */
-  function screenPosFor(note: NoteShape): { x: number; y: number } | null {
+  function screenPosFor(
+    note: NoteShape,
+    rows: Map<string, HTMLElement>,
+  ): { x: number; y: number } | null {
     // Staged notes float beneath the "+" button until the user commits
     // text (or discards via Esc / click-outside). docX/docY were
     // captured at spawn so the note scrolls naturally with the page.
@@ -875,7 +877,7 @@
         y: fly.fromY + (fly.toY - fly.fromY) * e,
       };
     }
-    const li = findAnchorLi(note);
+    const li = anchorRowFor(rows, note.anchors);
     if (!li) return null;
     const r = li.getBoundingClientRect();
     const off = offsets[note.id];
@@ -934,7 +936,11 @@
     void staging;
     void flyingNotes;
     const next: Record<string, { x: number; y: number } | null> = {};
-    for (const n of notes) next[n.id] = screenPosFor(n);
+    // One row-snapshot query for the whole pass — this block re-runs on
+    // every tick (scroll/resize/mutation), so a per-note document-wide
+    // querySelector here was a measurable chunk of the reposition cost.
+    const rows = buildAnchorRowMap<HTMLElement>(document);
+    for (const n of notes) next[n.id] = screenPosFor(n, rows);
     positionsByNoteId = next;
   }
 
@@ -2570,16 +2576,29 @@
     if (!layerEl) return;
     const need = new Map<HTMLElement, number>();
     const nowObserved = new Set<Element>();
+    // This runs from afterUpdate — i.e. on every reactive render — so
+    // anchor rows and note chips are resolved through one scoped query
+    // each per pass (instead of a document-wide querySelector per
+    // note), and each row's rect is read once even when several notes
+    // share it. All reads happen in this loop, all margin writes after
+    // it, so the pass forces at most one reflow.
+    const rows = buildAnchorRowMap<HTMLElement>(document);
+    const stickiesById = new Map<string, HTMLElement>();
+    for (const el of layerEl.querySelectorAll<HTMLElement>(
+      ".sticky[data-note-id]",
+    )) {
+      const id = el.dataset.noteId;
+      if (id !== undefined && !stickiesById.has(id)) stickiesById.set(id, el);
+    }
+    const liRects = new Map<HTMLElement, DOMRect>();
     for (const note of notes) {
       // Don't reserve row space for staged notes — they're floating
       // over the button area, not yet pinned. The row only expands
       // once the user commits text and the note flies into a slot.
       if (staging[note.id]) continue;
-      const li = findAnchorLi(note);
+      const li = anchorRowFor(rows, note.anchors);
       if (!li) continue;
-      const stickyEl = layerEl.querySelector<HTMLElement>(
-        `.sticky[data-note-id="${cssEscape(note.id)}"]`,
-      );
+      const stickyEl = stickiesById.get(note.id);
       if (!stickyEl) continue;
       // Track this element for size changes (textarea grow on edit).
       if (!observedNoteEls.has(stickyEl)) {
@@ -2588,7 +2607,11 @@
       }
       nowObserved.add(stickyEl);
       const stickyRect = stickyEl.getBoundingClientRect();
-      const liRect = li.getBoundingClientRect();
+      let liRect = liRects.get(li);
+      if (!liRect) {
+        liRect = li.getBoundingClientRect();
+        liRects.set(li, liRect);
+      }
       // Margin so the next row's top sits at `note.bottom + safety`.
       // Extra-safety = max(0, offsetY): the further the user has
       // dragged a note *down* from its baseline, the bigger the gap
@@ -2744,7 +2767,17 @@
     // open (which changes the row's layout). We deliberately exclude
     // `style` from the attribute filter so our own padding-bottom
     // writes on `<li>` don't loop back through the observer.
-    mutationObs = new MutationObserver(scheduleTick);
+    //
+    // Batches that are entirely terminal-internal are dropped before
+    // they schedule a tick: xterm's DOM renderer rewrites row
+    // <span>/#text nodes on every keystroke / output chunk, and
+    // `.xterm-host` is `contain: layout`, so none of that can move a
+    // worktree row. Without the filter, any visible streaming TUI
+    // forced a full reposition pass per frame — the 1806ms-of-
+    // querySelector hot path in the 2026-06-09 typing trace.
+    mutationObs = new MutationObserver((records) => {
+      if (!mutationsAllInsideTerminal(records)) scheduleTick();
+    });
     const main = document.querySelector("main");
     if (main) {
       mutationObs.observe(main, {

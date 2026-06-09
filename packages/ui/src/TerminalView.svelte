@@ -5,6 +5,7 @@
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
+  import { webglPool, type WebglHandle } from "./terminal-webgl";
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
@@ -283,6 +284,19 @@
   // the observer's first callback.
   let isTerminalVisible = true;
   let visibilityObs: IntersectionObserver | null = null;
+  // WebGL renderer slot (terminal-webgl.ts). Owned by the visibility
+  // observer: on-screen columns hold one of the pooled contexts (typing
+  // re-rasters a canvas — no DOM churn, no per-keystroke Layerize),
+  // off-screen columns give theirs back. Null/inactive = DOM renderer.
+  let webgl: WebglHandle | null = null;
+  function attachWebgl() {
+    if (webgl?.active || !xterm) return;
+    webgl = webglPool.tryAttach(xterm);
+  }
+  function detachWebgl() {
+    webgl?.dispose();
+    webgl = null;
+  }
   const writeBuffer = new TerminalWriteBuffer();
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
@@ -909,6 +923,13 @@
     visibilityObs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
+        // WebGL slot follows visibility. Runs BEFORE the no-change
+        // early-return because the observer's initial callback for an
+        // on-screen column reports visible === isTerminalVisible (both
+        // true) — that first callback is where the slot is acquired.
+        // Both helpers are no-ops when already in the right state.
+        if (visible) attachWebgl();
+        else detachWebgl();
         if (visible === isTerminalVisible) return;
         isTerminalVisible = visible;
         if (visible && xterm) {
@@ -1007,6 +1028,7 @@
         ws.close(1000, "unmount");
       } catch {}
     }
+    detachWebgl();
     xterm?.dispose();
     xterm = null;
   });
