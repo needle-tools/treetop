@@ -4,17 +4,24 @@ import {
   hashSeed,
   rng,
   adjacentPairs,
-  growthForAge,
-  reconcile,
+  repoIntensities,
+  accrue,
+  growthOf,
+  buildVines,
   stemPath,
   stemHeight,
   leaves,
   type Panel,
-  type Vine,
+  type GrowthStore,
 } from "../src/vines/vine-core";
 
-function panel(source: string, cx: number, group?: string): Panel {
-  return { source, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
+function panel(
+  source: string,
+  cx: number,
+  group?: string,
+  repo: string = group ?? "r",
+): Panel {
+  return { source, repo, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
 }
 
 describe("pairKey", () => {
@@ -59,7 +66,6 @@ describe("adjacentPairs", () => {
     expect(adjacentPairs([panel("a", 1)])).toEqual([]);
   });
   test("never pairs panels from different row groups", () => {
-    // two rows, two cols each; only same-group neighbours pair
     const pairs = adjacentPairs([
       panel("r1a", 100, "row1"),
       panel("r1b", 200, "row1"),
@@ -72,122 +78,124 @@ describe("adjacentPairs", () => {
   });
 });
 
-describe("growthForAge", () => {
-  test("is proportional to age over fullMs", () => {
-    expect(growthForAge(0, 300, 600)).toBeCloseTo(0.5, 5);
+describe("repoIntensities", () => {
+  test("counts windows per repo, capped", () => {
+    const panels = [
+      panel("a", 1, "g1", "repoX"),
+      panel("b", 2, "g1", "repoX"),
+      panel("c", 3, "g2", "repoY"),
+    ];
+    const m = repoIntensities(panels, 4);
+    expect(m.get("repoX")).toBe(2);
+    expect(m.get("repoY")).toBe(1);
   });
-  test("clamps at 1 once older than fullMs, and 0 before birth", () => {
-    expect(growthForAge(0, 10_000, 1000)).toBe(1);
-    expect(growthForAge(1000, 500, 1000)).toBe(0); // now before bornAt
-  });
-  test("a vine born days ago comes back already grown (survives reloads)", () => {
-    const week = 7 * 24 * 3600 * 1000;
-    const now = 1_000_000_000_000;
-    const bornThreeDaysAgo = now - 3 * 24 * 3600 * 1000;
-    expect(growthForAge(bornThreeDaysAgo, now, week)).toBeCloseTo(3 / 7, 5);
+  test("caps intensity", () => {
+    const panels = Array.from({ length: 9 }, (_, i) => panel(`s${i}`, i, "g", "repoX"));
+    expect(repoIntensities(panels, 4).get("repoX")).toBe(4);
   });
 });
 
-describe("reconcile", () => {
-  const now = 1000;
+describe("accrue / growthOf", () => {
+  const FULL = 1000;
 
-  test("sprouts a vine between two adjacent panels", () => {
-    const vines = reconcile([], [panel("a", 100), panel("b", 200)], now);
-    expect(vines).toHaveLength(1);
-    expect(vines[0].key).toBe(pairKey("a", "b"));
-    expect(vines[0].length).toBe(0);
-    expect(vines[0].bornAt).toBe(now);
+  test("accrues weighted active time onto active repos", () => {
+    const m = new Map([["repoX", 2]]);
+    const store = accrue({}, m, 100);
+    expect(store.repoX.activeMs).toBe(200); // 100ms * intensity 2
   });
+  test("does not mutate the input store", () => {
+    const before: GrowthStore = {};
+    accrue(before, new Map([["r", 1]]), 50);
+    expect(before).toEqual({});
+  });
+  test("only touches active repos; others retain their growth", () => {
+    const store: GrowthStore = { idle: { activeMs: 500 }, busy: { activeMs: 0 } };
+    const next = accrue(store, new Map([["busy", 1]]), 100);
+    expect(next.idle.activeMs).toBe(500);
+    expect(next.busy.activeMs).toBe(100);
+  });
+  test("growthOf maps activeMs over the full budget, clamped", () => {
+    expect(growthOf({ r: { activeMs: 500 } }, "r", FULL)).toBe(0.5);
+    expect(growthOf({ r: { activeMs: 5000 } }, "r", FULL)).toBe(1);
+    expect(growthOf({}, "missing", FULL)).toBe(0);
+  });
+  test("a busy week beats an idle week", () => {
+    // big budget so neither saturates — we're comparing accrual rates
+    const BUDGET = 10_000;
+    let busy: GrowthStore = {};
+    let idle: GrowthStore = {};
+    for (let i = 0; i < 10; i++) busy = accrue(busy, new Map([["r", 3]]), 100);
+    for (let i = 0; i < 10; i++) idle = accrue(idle, new Map([["r", 1]]), 100);
+    expect(growthOf(busy, "r", BUDGET)).toBeGreaterThan(growthOf(idle, "r", BUDGET));
+  });
+});
 
-  test("three panels → two vines", () => {
-    const vines = reconcile([], [panel("a", 100), panel("b", 200), panel("c", 300)], now);
+describe("buildVines", () => {
+  test("one vine per gap, length = the repo's growth", () => {
+    const panels = [
+      panel("a", 100, "g", "repoX"),
+      panel("b", 200, "g", "repoX"),
+      panel("c", 300, "g", "repoX"),
+    ];
+    const store: GrowthStore = { repoX: { activeMs: 250 } };
+    const vines = buildVines(panels, store, 1000);
+    expect(vines).toHaveLength(2);
     expect(vines.map((v) => v.key).sort()).toEqual(
       [pairKey("a", "b"), pairKey("b", "c")].sort(),
     );
+    for (const v of vines) {
+      expect(v.repo).toBe("repoX");
+      expect(v.length).toBe(0.25);
+    }
   });
 
-  test("does not duplicate an existing vine", () => {
-    const panels = [panel("a", 100), panel("b", 200)];
-    const first = reconcile([], panels, now);
-    const second = reconcile(first, panels, now + 5000);
-    expect(second).toHaveLength(1);
-    // identity + bornAt preserved across reconciles
-    expect(second[0].bornAt).toBe(now);
+  test("no windows in a repo → no vines drawn, but growth persists in the store", () => {
+    const store: GrowthStore = { repoX: { activeMs: 999 } };
+    // repoX has no panels on screen right now
+    const vines = buildVines([panel("z", 1, "g", "other")], store, 1000);
+    expect(vines.find((v) => v.repo === "repoX")).toBeUndefined();
+    // growth is untouched — reopening windows later shows it again
+    expect(growthOf(store, "repoX", 1000)).toBe(0.999);
   });
 
-  test("keeps a vine when ONE side's panel is removed (dangling)", () => {
-    const born = reconcile([], [panel("a", 100), panel("b", 200)], now);
-    const after = reconcile(born, [panel("a", 100)], now + 1000);
-    expect(after).toHaveLength(1);
-    expect(after[0].key).toBe(pairKey("a", "b"));
-    // present side updates, absent side freezes its last-known x
-    expect(after[0].ax).toBe(150); // a.right
-    expect(after[0].bx).toBe(150); // frozen b.left from birth
-  });
-
-  test("removes a vine ONLY when BOTH sides are gone", () => {
-    const born = reconcile([], [panel("a", 100), panel("b", 200)], now);
-    const after = reconcile(born, [], now + 1000);
-    expect(after).toHaveLength(0);
-  });
-
-  test("removing a middle panel sprouts a new vine between its neighbours, keeping the danglers", () => {
-    const start = reconcile(
-      [],
-      [panel("a", 100), panel("b", 200), panel("c", 300)],
-      now,
-    );
-    // remove b; a and c are now adjacent
-    const after = reconcile(start, [panel("a", 100), panel("c", 300)], now + 1000);
-    const keys = after.map((v) => v.key).sort();
-    expect(keys).toEqual(
-      [pairKey("a", "b"), pairKey("a", "c"), pairKey("b", "c")].sort(),
-    );
-    // the brand-new a|c vine starts at length 0, born now+1000
-    const ac = after.find((v) => v.key === pairKey("a", "c"))!;
-    expect(ac.length).toBe(0);
-    expect(ac.bornAt).toBe(now + 1000);
+  test("vine geometry spans the gap between the two windows", () => {
+    const v = buildVines(
+      [panel("a", 100, "g", "r"), panel("b", 300, "g", "r")],
+      { r: { activeMs: 1000 } },
+      1000,
+    )[0];
+    expect(v.ax).toBe(150); // a.right
+    expect(v.bx).toBe(250); // b.left
+    expect(v.baseY).toBe(300);
   });
 });
 
 describe("geometry", () => {
-  const vine = (over: Partial<Vine> = {}): Vine => ({
-    key: "a b",
-    a: "a",
-    b: "b",
-    seed: hashSeed("a b"),
-    bornAt: 0,
-    length: 1,
-    ax: 150,
-    bx: 250,
-    baseY: 300,
-    topY: 0,
-    ...over,
-  });
+  const shape = (seed: number, length: number) => ({ seed, length });
 
   test("stemHeight scales with length", () => {
-    expect(stemHeight(vine({ length: 0 }), 200)).toBe(0);
-    expect(stemHeight(vine({ length: 0.5 }), 200)).toBe(100);
-    expect(stemHeight(vine({ length: 1 }), 200)).toBe(200);
+    expect(stemHeight(shape(1, 0), 200)).toBe(0);
+    expect(stemHeight(shape(1, 0.5), 200)).toBe(100);
+    expect(stemHeight(shape(1, 1), 200)).toBe(200);
   });
 
   test("stemPath is empty for a sprout and present once grown", () => {
-    expect(stemPath(vine({ length: 0 }), 200)).toBe("");
-    expect(stemPath(vine({ length: 1 }), 200)).toStartWith("M 0 0");
+    expect(stemPath(shape(7, 0), 200)).toBe("");
+    expect(stemPath(shape(7, 1), 200)).toStartWith("M 0 0");
   });
 
   test("stemPath is deterministic per seed and differs across seeds", () => {
-    expect(stemPath(vine(), 200)).toBe(stemPath(vine(), 200));
-    expect(stemPath(vine(), 200)).not.toBe(stemPath(vine({ seed: 42 }), 200));
+    expect(stemPath(shape(7, 1), 200)).toBe(stemPath(shape(7, 1), 200));
+    expect(stemPath(shape(7, 1), 200)).not.toBe(stemPath(shape(42, 1), 200));
   });
 
   test("leaf count scales with growth and is capped", () => {
-    expect(leaves(vine({ length: 0 }), 200, 8)).toHaveLength(0);
-    expect(leaves(vine({ length: 1 }), 200, 8)).toHaveLength(8);
-    expect(leaves(vine({ length: 0.5 }), 200, 8).length).toBeLessThanOrEqual(8);
+    expect(leaves(shape(7, 0), 200, 8)).toHaveLength(0);
+    expect(leaves(shape(7, 1), 200, 8)).toHaveLength(8);
+    expect(leaves(shape(7, 0.5), 200, 8).length).toBeLessThanOrEqual(8);
   });
 
   test("leaves are deterministic for a seed", () => {
-    expect(leaves(vine(), 200)).toEqual(leaves(vine(), 200));
+    expect(leaves(shape(7, 1), 200)).toEqual(leaves(shape(7, 1), 200));
   });
 });
