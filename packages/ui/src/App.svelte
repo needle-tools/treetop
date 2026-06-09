@@ -456,6 +456,14 @@
         type: "boolean",
         default: true,
       },
+      {
+        key: "appearance.showVines",
+        label: "Show vines",
+        description:
+          "Decorative vines that grow between session windows, sized by how long the sessions have been open.",
+        type: "boolean",
+        default: true,
+      },
     ],
   });
   registerSettings({
@@ -518,6 +526,22 @@
     ],
   });
   const showGreeting = settingValue("appearance.showGreeting");
+
+  // Vines overlay (decorative; self-contained in ./vines). The "Show
+  // vines" setting is the single source of truth — mount/unmount react to
+  // it. Lazy import so it's zero-cost when off. Demo URL params
+  // (?vinesgrow/?vinesspeed/?vinesdebug) are read inside the module.
+  const showVines = settingValue("appearance.showVines");
+  let vinesModule: typeof import("./vines") | null = null;
+  $: void applyVines($showVines !== false);
+  async function applyVines(on: boolean) {
+    if (on) {
+      vinesModule = vinesModule ?? (await import("./vines"));
+      vinesModule.initVines();
+    } else {
+      vinesModule?.destroyVines();
+    }
+  }
 
   // Bridge the sound settings into the sound engine's module state.
   // Reactive so changes in the dialog take effect immediately; runs

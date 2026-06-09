@@ -99,23 +99,8 @@ startPeerWatcher();
 
 const app = mount(App, { target });
 
-// ── Vines overlay (self-contained jungle decoration in ./vines)
-// ON BY DEFAULT (this branch). Disable with ?vines=0 (persisted),
-// re-enable with ?vines=1. A vine grows between two session windows,
-// sized by those sessions' length; persists across restarts. Demo helpers:
-//   ?vinesgrow=0..1  pre-seed session age (1 = lush) to see it now
-//   ?vinesspeed=N    grow N× faster (e.g. 1000 ≈ seconds to full)
-// The whole feature is one lazy import — off = zero cost. Delete this block
-// + the ./vines folder to remove it entirely.
-{
-  const q = new URLSearchParams(location.search);
-  if (q.has("vines")) {
-    localStorage.setItem("vines", q.get("vines") === "0" ? "0" : "1");
-  }
-  // Default ON: only an explicit stored "0" turns it off.
-  if (localStorage.getItem("vines") !== "0") {
-    void import("./vines").then((m) => m.initVines()).catch(() => {});
-  }
-}
+// The vines overlay (./vines) is mounted by App.svelte, driven by the
+// "Show vines" setting (Appearance). Demo URL params ?vinesgrow /
+// ?vinesspeed / ?vinesdebug are read inside the module.
 
 export default app;
