@@ -1544,6 +1544,8 @@
   ): void {
     if (!e.dataTransfer) return;
     e.stopPropagation();
+    suppressNextClick = true;
+    setTimeout(() => (suppressNextClick = false), 0);
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData(
       INLINE_ATTACHMENT_DRAG_MIME,
@@ -2414,6 +2416,7 @@
   }
 
   function activateAttachment(raw: string, attachment: InlineAttachment): void {
+    if (suppressNextClick) return;
     // Command and session link chips act on click — run the command /
     // focus the session — rather than opening the read-only preview
     // modal the other attachment kinds use.
