@@ -1,0 +1,227 @@
+/**
+ * Tests for the VS Code-style settings contribution registry
+ * (src/settings-registry.ts). Any subsystem registers declarative
+ * setting definitions; the generic SettingsDialog renders them without
+ * per-setting UI work. Persistence goes through an injected KVStore
+ * (daemon prefs in the app, an in-memory store here).
+ */
+import { describe, test, expect, beforeEach } from "bun:test";
+import { get } from "svelte/store";
+import type { KVStore } from "../src/storage";
+import {
+  registerSettings,
+  settingsSections,
+  getSetting,
+  setSetting,
+  resetSetting,
+  isModified,
+  settingValue,
+  filterSections,
+  setSettingsKV,
+  _resetSettingsForTests,
+} from "../src/settings-registry";
+
+function memKV(): KVStore & { data: Record<string, string> } {
+  const data: Record<string, string> = {};
+  return {
+    data,
+    getItem: (k) => data[k] ?? null,
+    setItem: (k, v) => {
+      data[k] = v;
+    },
+  };
+}
+
+let kv: ReturnType<typeof memKV>;
+
+beforeEach(() => {
+  _resetSettingsForTests();
+  kv = memKV();
+  setSettingsKV(kv);
+});
+
+const appearance = {
+  id: "appearance",
+  title: "Appearance",
+  settings: [
+    {
+      key: "appearance.showGreeting",
+      label: "Show build greeting",
+      type: "boolean" as const,
+      default: true,
+    },
+    {
+      key: "appearance.density",
+      label: "Row density",
+      type: "enum" as const,
+      default: "comfortable",
+      options: [{ value: "comfortable" }, { value: "compact" }],
+    },
+  ],
+};
+
+describe("registerSettings", () => {
+  test("registered sections appear in the settingsSections store", () => {
+    registerSettings(appearance);
+    const sections = get(settingsSections);
+    expect(sections.length).toBe(1);
+    expect(sections[0].id).toBe("appearance");
+    expect(sections[0].settings.map((s) => s.key)).toEqual([
+      "appearance.showGreeting",
+      "appearance.density",
+    ]);
+  });
+
+  test("re-registering the same section id replaces it (HMR-safe)", () => {
+    registerSettings(appearance);
+    registerSettings({
+      ...appearance,
+      settings: [appearance.settings[0]],
+    });
+    const sections = get(settingsSections);
+    expect(sections.length).toBe(1);
+    expect(sections[0].settings.length).toBe(1);
+  });
+
+  test("sections sort by order, then title", () => {
+    registerSettings({ id: "z", title: "Zulu", settings: [] });
+    registerSettings({ id: "a", title: "Alpha", settings: [] });
+    registerSettings({ id: "first", title: "Pinned", order: 0, settings: [] });
+    expect(get(settingsSections).map((s) => s.id)).toEqual(["first", "a", "z"]);
+  });
+});
+
+describe("get/set/reset", () => {
+  test("getSetting returns the default when nothing is stored", () => {
+    registerSettings(appearance);
+    expect(getSetting("appearance.showGreeting")).toBe(true);
+    expect(getSetting("appearance.density")).toBe("comfortable");
+  });
+
+  test("setSetting overrides and getSetting reflects it", () => {
+    registerSettings(appearance);
+    setSetting("appearance.showGreeting", false);
+    expect(getSetting("appearance.showGreeting")).toBe(false);
+  });
+
+  test("setSetting persists to the injected KV under one JSON blob", () => {
+    registerSettings(appearance);
+    setSetting("appearance.density", "compact");
+    const blob = JSON.parse(kv.data["supergit:settings"]);
+    expect(blob["appearance.density"]).toBe("compact");
+  });
+
+  test("values survive a reload (fresh registry, same KV)", () => {
+    registerSettings(appearance);
+    setSetting("appearance.showGreeting", false);
+    _resetSettingsForTests();
+    setSettingsKV(kv);
+    registerSettings(appearance);
+    expect(getSetting("appearance.showGreeting")).toBe(false);
+  });
+
+  test("isModified is true only for overridden values", () => {
+    registerSettings(appearance);
+    expect(isModified("appearance.showGreeting")).toBe(false);
+    setSetting("appearance.showGreeting", false);
+    expect(isModified("appearance.showGreeting")).toBe(true);
+    // Setting back to the default still counts as not modified.
+    setSetting("appearance.showGreeting", true);
+    expect(isModified("appearance.showGreeting")).toBe(false);
+  });
+
+  test("resetSetting removes the override and persists the removal", () => {
+    registerSettings(appearance);
+    setSetting("appearance.density", "compact");
+    resetSetting("appearance.density");
+    expect(getSetting("appearance.density")).toBe("comfortable");
+    const blob = JSON.parse(kv.data["supergit:settings"]);
+    expect("appearance.density" in blob).toBe(false);
+  });
+});
+
+describe("settingValue store", () => {
+  test("emits the effective value and reacts to setSetting", () => {
+    registerSettings(appearance);
+    const store = settingValue("appearance.showGreeting");
+    expect(get(store)).toBe(true);
+    setSetting("appearance.showGreeting", false);
+    expect(get(store)).toBe(false);
+  });
+
+  test("picks up the default once the section registers later", () => {
+    const store = settingValue("appearance.density");
+    expect(get(store)).toBeUndefined();
+    registerSettings(appearance);
+    expect(get(store)).toBe("comfortable");
+  });
+});
+
+describe("filterSections", () => {
+  const sections = [
+    {
+      id: "appearance",
+      title: "Appearance",
+      settings: [
+        {
+          key: "appearance.showGreeting",
+          label: "Show build greeting",
+          description: "Version line above the menubar",
+          type: "boolean" as const,
+          default: true,
+        },
+        {
+          key: "appearance.density",
+          label: "Row density",
+          type: "enum" as const,
+          default: "comfortable",
+          options: [{ value: "comfortable" }, { value: "compact" }],
+        },
+      ],
+    },
+    {
+      id: "terminal",
+      title: "Terminal",
+      settings: [
+        {
+          key: "terminal.fontSize",
+          label: "Font size",
+          type: "number" as const,
+          default: 13,
+        },
+      ],
+    },
+  ];
+
+  test("empty query returns everything", () => {
+    expect(filterSections(sections, "")).toEqual(sections);
+    expect(filterSections(sections, "   ")).toEqual(sections);
+  });
+
+  test("matches on setting label, description, and key", () => {
+    expect(
+      filterSections(sections, "greeting")[0].settings.map((s) => s.key),
+    ).toEqual(["appearance.showGreeting"]);
+    expect(
+      filterSections(sections, "menubar")[0].settings.map((s) => s.key),
+    ).toEqual(["appearance.showGreeting"]);
+    expect(filterSections(sections, "fontSize").map((s) => s.id)).toEqual([
+      "terminal",
+    ]);
+  });
+
+  test("a section-title match keeps all of that section's settings", () => {
+    const hit = filterSections(sections, "terminal");
+    expect(hit.length).toBe(1);
+    expect(hit[0].settings.length).toBe(1);
+    const appearanceHit = filterSections(sections, "appearance");
+    expect(appearanceHit[0].settings.length).toBe(2);
+  });
+
+  test("sections with no matching settings are dropped", () => {
+    expect(filterSections(sections, "density").map((s) => s.id)).toEqual([
+      "appearance",
+    ]);
+    expect(filterSections(sections, "zzz-no-match")).toEqual([]);
+  });
+});

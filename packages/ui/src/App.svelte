@@ -94,6 +94,8 @@
   import CopySessionDialog from "./CopySessionDialog.svelte";
   import RepoReorderDialog from "./RepoReorderDialog.svelte";
   import RepairSessionDialog from "./RepairSessionDialog.svelte";
+  import SettingsDialog from "./SettingsDialog.svelte";
+  import { registerSettings, settingValue } from "./settings-registry";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
@@ -433,6 +435,26 @@
   // repo-edit popover). Global — reorders the whole repo list.
   let reorderDialogOpen = false;
   let addDaemonOpen = false;
+  // Settings dialog (menubar gear). Settings are contributed via
+  // registerSettings() — see settings-registry.ts; the dialog renders
+  // whatever any subsystem registers, no per-setting UI needed.
+  let settingsDialogOpen = false;
+  registerSettings({
+    id: "appearance",
+    title: "Appearance",
+    order: 0,
+    settings: [
+      {
+        key: "appearance.showGreeting",
+        label: "Show build greeting",
+        description:
+          "The “Welcome to the jungle” version line above the menubar.",
+        type: "boolean",
+        default: true,
+      },
+    ],
+  });
+  const showGreeting = settingValue("appearance.showGreeting");
   /** When set, the Add-daemon dialog opens in attach mode (live-log only) for
    *  an already-started job — currently used for "Uninstall on box". */
   let provisionAttachJob: { jobId: string; title: string } | null = null;
@@ -6548,7 +6570,7 @@
 
 <main class:zen-row={zenRowKey !== null}>
   <header>
-    {#if daemonVersion || daemonBuildTime}
+    {#if $showGreeting !== false && (daemonVersion || daemonBuildTime)}
       <p class="menubar-build">
         Welcome to the jungle –
         {#if daemonVersion}<code>v{daemonVersion}</code>{/if}
@@ -7117,6 +7139,28 @@
         </Popover>
       {/if}
     </div>
+
+    <button
+      class="actions-btn settings-menu-btn"
+      class:open={settingsDialogOpen}
+      on:click={() => (settingsDialogOpen = true)}
+      title="Settings"
+      aria-label="Settings"
+      ><svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+        ><circle cx="12" cy="12" r="3" /><path
+          d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+        /></svg
+      ></button
+    >
 
     <button
       class="actions-btn tutorial-btn"
@@ -9923,6 +9967,7 @@
 <DebugPanel />
 
 <ConfirmDialog />
+<SettingsDialog bind:open={settingsDialogOpen} />
 <SummarizeDialog />
 <ShareSessionDialog />
 <ReceiveInviteDialog />
