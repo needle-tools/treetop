@@ -243,14 +243,18 @@ export function leafCountFor(maxHeight: number, spacingPx = 15): number {
  * doesn't stretch on tall stems) and smoothed with quadratic segments.
  */
 export function stemPath(v: VineShape, maxHeight: number): string {
-  const h = stemHeight(v, maxHeight);
+  const len = Math.max(0, Math.min(1, v.length));
+  const h = maxHeight * len;
   if (h <= 0.5) return "";
   const p = stemParams(v.seed);
   const n = Math.max(3, Math.round(h / 14)); // sample every ~14px for curl
   const pts: [number, number][] = [];
   for (let i = 0; i <= n; i++) {
-    const t = i / n;
-    pts.push([stemXAt(p, t), -h * t]);
+    // Sample along the FULL-height curve up to the grown fraction, the
+    // SAME mapping leaves use (stemXAt(u), -maxHeight·u) — so leaves
+    // always sit on the trunk and growth reveals upward (no stretch).
+    const u = (i / n) * len;
+    pts.push([stemXAt(p, u), -maxHeight * u]);
   }
   let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
   for (let i = 1; i < pts.length - 1; i++) {

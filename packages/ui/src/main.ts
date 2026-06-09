@@ -99,28 +99,21 @@ startPeerWatcher();
 
 const app = mount(App, { target });
 
-// ── Vines overlay (opt-in jungle decoration, self-contained in ./vines)
-// Enable with ?vines=1 (persisted), disable with ?vines=0. Growth is
-// per-repo and accrues from real work (active-session time, weighted by
-// how many windows); it persists across days and is drawn between that
-// repo's session windows. Demo helpers:
-//   ?vinesgrow=0..1  pre-seed a repo's growth (1 = lush) to see it now
-//   ?vinesspeed=N    accrue N× faster (e.g. 1000 ≈ seconds to full)
+// ── Vines overlay (self-contained jungle decoration in ./vines)
+// ON BY DEFAULT (this branch). Disable with ?vines=0 (persisted),
+// re-enable with ?vines=1. A vine grows between two session windows,
+// sized by those sessions' length; persists across restarts. Demo helpers:
+//   ?vinesgrow=0..1  pre-seed session age (1 = lush) to see it now
+//   ?vinesspeed=N    grow N× faster (e.g. 1000 ≈ seconds to full)
 // The whole feature is one lazy import — off = zero cost. Delete this block
 // + the ./vines folder to remove it entirely.
 {
   const q = new URLSearchParams(location.search);
-  // Any ?vines* param enables it (so ?vinesgrow=1 alone works); explicit
-  // ?vines=0 disables. The choice is persisted.
-  const anyVinesParam = [...q.keys()].some((k) =>
-    k.toLowerCase().startsWith("vines"),
-  );
   if (q.has("vines")) {
     localStorage.setItem("vines", q.get("vines") === "0" ? "0" : "1");
-  } else if (anyVinesParam) {
-    localStorage.setItem("vines", "1");
   }
-  if (localStorage.getItem("vines") === "1") {
+  // Default ON: only an explicit stored "0" turns it off.
+  if (localStorage.getItem("vines") !== "0") {
     void import("./vines").then((m) => m.initVines()).catch(() => {});
   }
 }

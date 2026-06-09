@@ -329,8 +329,11 @@ export function createVinesOverlay(): { destroy: () => void } {
   const mo = new MutationObserver(queueSync);
   mo.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", queueSync, { passive: true });
+  // Persist on every exit path so startup restores the exact last size
+  // (vines snap to their saved size immediately — no grow-in animation).
   const onHide = () => save(store);
   window.addEventListener("pagehide", onHide);
+  window.addEventListener("beforeunload", onHide);
   const onVisibility = () => {
     if (document.visibilityState === "hidden") save(store);
     else lastTick = Date.now();
@@ -347,6 +350,7 @@ export function createVinesOverlay(): { destroy: () => void } {
       mo.disconnect();
       window.removeEventListener("resize", queueSync as EventListener);
       window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("beforeunload", onHide);
       document.removeEventListener("visibilitychange", onVisibility);
       save(store);
       for (const [strip, st] of strips) removeStrip(strip, st);
