@@ -2,28 +2,26 @@
  * Vines overlay styles. Self-contained — imported only by vines/index.ts,
  * which is only loaded when the feature is enabled (see main.ts).
  *
- * Perf: the only animated property is `transform` (the idle leaf sway),
- * and it's composited. No filters, blurs, or shadows, and no cursor
- * interaction. The overlay is pointer-events:none so it never blocks the
- * terminals it floats over.
+ * Each `.vines-svg` is injected INTO a `.sessions-strip` and positioned in
+ * the strip's content box, so it scrolls natively with the panels (no
+ * float). pointer-events:none so it never blocks the terminals it floats
+ * over. Perf: the only animated property is `transform` (composited leaf
+ * sway); no filters/blurs/shadows, no cursor interaction.
  */
-
-.vines-overlay {
-  position: fixed;
-  inset: 0;
-  /* Above the session board so leaves can spill a little over the window
-     edges, but well below the menubar (2550) and popovers. */
-  z-index: 40;
-  pointer-events: none;
-  isolation: isolate;
-}
 
 .vines-svg {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
   width: 100%;
   height: 100%;
+  /* Children are placed in strip-content coordinates and may extend past
+     this box (tall vines, leaves over column edges) — show them. */
   overflow: visible;
+  pointer-events: none;
+  /* Sit above the column content (the SVG is transparent except for the
+     vine pixels), within the strip's own stacking context. */
+  z-index: 5;
 }
 
 .vine-stem {
