@@ -1770,6 +1770,16 @@
   .dock-dot.dot-working .dock-dot-spinner {
     opacity: 1;
     animation: dock-spin 0.9s linear infinite;
+    /* EXPERIMENT (perf.md "Layerize storm"): dock-spin is `transform: rotate`
+       on an SVG element, which repaints the SVG on the main thread every
+       frame — one per WORKING session. After the vines fix a 2026-06-10 trace
+       showed the dock dots as the residual per-frame paint/Layerize. Promote
+       the spinner so the rotate composites on the GPU (no per-frame repaint)
+       instead. Bounded: only `.dot-working` dots get this — idle dots stay
+       de-promoted (see the note above). Verify with a typing/idle trace; if
+       SVG transforms still won't composite, swap to a CSS (HTML <span>)
+       spinner, which composites reliably. */
+    will-change: transform;
   }
   .dock-dot-spinner circle {
     fill: none;
