@@ -89,6 +89,14 @@ export interface ShipCommand {
  * need to build the daemon. Shared by the packaged build (build-native.ts)
  * and the dev ship (buildShipCommand) so they can't drift. Appended after
  * `git archive … HEAD --`.
+ *
+ * packages/ui is excluded: the daemon serves API only on a remote box —
+ * the operator's local UI talks to it through the SSH tunnel. Shipping the
+ * UI tree added ~30–60s of `bun install` + Vite build on every remote
+ * install and, more concretely, broke the Windows installer when a sticker
+ * asset path crossed the 100-char ustar limit and triggered a GNU LongLink
+ * header that electrobun's extractor.exe can't parse. The "daemon doesn't
+ * import packages/ui" rule is enforced by no-ui-imports.test.ts.
  */
 export function installPayloadPathspec(): string[] {
   return [
@@ -98,6 +106,7 @@ export function installPayloadPathspec(): string[] {
     ":!plans", // internal design docs
     ":!demos", // sample content
     ":!artifacts", // scratch / build artifacts
+    ":!packages/ui", // UI lives on operator's laptop; remote serves API only
   ];
 }
 

@@ -184,18 +184,17 @@ if ($NoPull) {
   git clone --depth 1 --branch $REPO_REF $REPO_URL $APP_DIR
 }
 
-# ---- 3. bun install + UI build --------------------------------------------
+# ---- 3. bun install (server-only - UI runs on operator's laptop) ----------
+# A remote daemon serves API only over the SSH tunnel; the operator's local
+# Treetop renders the UI. So we DON'T build packages/ui here. The bundled
+# install-payload omits the UI tree entirely (installPayloadPathspec() in
+# provision.ts), so packages/ui is absent on freshly-provisioned boxes -
+# any attempt to `cd packages/ui` here would fail. bun install still runs
+# for the daemon's own runtime deps.
 Err "running bun install in $APP_DIR..."
 Push-Location $APP_DIR
 try {
   & $BUN_BIN install
-  Err "building UI (packages/ui)..."
-  Push-Location (Join-Path $APP_DIR 'packages\ui')
-  try {
-    & $BUN_BIN run build
-  } finally {
-    Pop-Location
-  }
 } finally {
   Pop-Location
 }
@@ -302,7 +301,6 @@ $TASK_USER = 'SYSTEM'   # runs at boot, no login required, no stored password
 # persists across restarts without editing the XML directly. cmd /c is the
 # standard workaround. The command is intentionally simple (no PS here) so
 # it works on Windows Server Core where PS profiles may be minimal.
-$UI_DIR  = Join-Path $APP_DIR 'packages\ui\dist'
 $DAEMON_ENTRY = Join-Path $APP_DIR 'packages\daemon\src\server.ts'
 
 # Scheduled Task action: the program is cmd.exe; arguments carry the rest.
@@ -313,11 +311,14 @@ $DAEMON_ENTRY = Join-Path $APP_DIR 'packages\daemon\src\server.ts'
 # broke SUPERGIT_BIND="127.0.0.1 " -> Bun.serve({hostname}) fails -> the
 # daemon never serves -> the tunnel just gets "socket closed". `value&& next`
 # keeps the value clean.
+#
+# No SUPERGIT_UI_DIR: this is a remote daemon (API only). The UI tree isn't
+# even shipped (see install-payload exclusions). server.ts's UI_DIR
+# resolution will land on null and the daemon serves no static files.
 $Action  = New-ScheduledTaskAction `
   -Execute 'cmd.exe' `
   -Argument ("/c `"set SUPERGIT_BIND=127.0.0.1&& " +
               "set SUPERGIT_PORT=$PORT&& " +
-              "set SUPERGIT_UI_DIR=$UI_DIR&& " +
               "set SUPERGIT_WORKSPACE=$WORKSPACE&& " +
               "`"$BUN_BIN`" run `"$DAEMON_ENTRY`"`"") `
   -WorkingDirectory $APP_DIR

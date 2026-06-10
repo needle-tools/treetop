@@ -61,6 +61,17 @@ describe("installPayloadPathspec", () => {
     expect(ps).toContain(":!CLAUDE.md"); // AI-agent rules, internal
     expect(ps).toContain(":!plans"); // internal design docs
   });
+
+  test("excludes packages/ui — UI runs on operator's laptop, not the remote box", () => {
+    // The daemon serves API only on a remote box; the operator's local
+    // Treetop renders the UI and proxies through the SSH tunnel. Shipping
+    // the UI tree once broke the Windows installer (a sticker path crossed
+    // the ustar 100-char limit and electrobun's extractor.exe rejected the
+    // resulting GNU LongLink header). The no-ui-imports.test.ts boundary
+    // ensures the daemon can never grow a dependency on UI source that
+    // would force re-bundling it.
+    expect(installPayloadPathspec()).toContain(":!packages/ui");
+  });
 });
 
 describe("buildShipCommand", () => {

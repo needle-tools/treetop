@@ -102,9 +102,12 @@ if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
-# ---- 3. code (prebuilt-on-Linux: clone + build the SPA here) ------------
-# The macOS artifact pipeline can't produce a server bundle, so we build
-# the SPA on the box. node-pty etc. compile against this Linux.
+# ---- 3. code (server-only on remote — UI runs on operator's laptop) -----
+# Remote daemons serve API only over the SSH tunnel; the operator's local
+# Treetop renders the UI and talks to this daemon over /api/*. So we DON'T
+# need packages/ui here — the bundled install-payload omits it (see
+# installPayloadPathspec()), and we skip `cd packages/ui && bun run build`.
+# bun install is still needed for the daemon's own runtime deps.
 if [ "${NO_PULL}" -eq 1 ]; then
   # Use whatever's already in APP_DIR (rsync'd / scp'd from the laptop).
   # No GitHub needed — the quick-test path for a private, unpushed repo.
@@ -124,7 +127,10 @@ else
   git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${APP_DIR}"
 fi
 ( cd "${APP_DIR}" && "${BUN_BIN}" install )
-( cd "${APP_DIR}/packages/ui" && "${BUN_BIN}" run build )
+# No UI build: see comment above. If packages/ui is somehow present
+# (e.g. a hand-rsync'd repo), we still skip the build — the daemon won't
+# serve static files (UI_DIR resolution lands on null) and the local
+# Treetop hits /api/* directly.
 
 # ---- 3b. PTY helper (Go) — REQUIRED for working terminals -------------
 # The daemon spawns PTYs via a prebuilt Go `pty-helper` (no Node, no native
