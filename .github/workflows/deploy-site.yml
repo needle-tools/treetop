@@ -1,0 +1,49 @@
+name: deploy site
+
+# Builds the Treetop marketing site (packages/site) and publishes it to
+# Needle Cloud. Runs on pushes to main that touch the site (or its lockfile),
+# and can be kicked off by hand from the Actions tab.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/site/**"
+      - "product.ts"
+      - "bun.lock"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+# One in-flight deploy per branch; a newer push supersedes an older run.
+concurrency:
+  group: deploy-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build site
+        run: bun run build:site
+
+      - name: Deploy to Needle Cloud
+        id: deploy
+        uses: needle-tools/deploy-to-needle-cloud-action@v1
+        with:
+          token: ${{ secrets.NEEDLE_CLOUD_TOKEN }}
+          name: treetop
+          dir: ./packages/site/dist
+
+      - name: Summary
+        run: |
+          echo "## 🌳 Treetop deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "[${{ steps.deploy.outputs.url }}](${{ steps.deploy.outputs.url }})" >> "$GITHUB_STEP_SUMMARY"

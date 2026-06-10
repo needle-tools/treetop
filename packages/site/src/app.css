@@ -1,0 +1,120 @@
+/*
+ * Treetop marketing site — design tokens + base.
+ *
+ * The palette is the warm-cream / forest-green world from the hero
+ * artwork. Greens are anchored to the dashboard brand tokens
+ * (packages/ui/src/styles/tokens.css: --brand #60b74c, --needle-green
+ * #99cc33) so the site and the app read as one family, then darkened
+ * into the foliage range the landing page wants.
+ */
+:root {
+  /* cream canvas + paper */
+  --cream: #f5f1e6;
+  --cream-deep: #ece5d4;
+  --paper: #fbf8f0;
+
+  /* foliage greens */
+  --forest-900: #1d2c1a; /* darkest ink-green, near-black text */
+  --forest-700: #2f4a2b;
+  --forest-600: #3a5c33; /* primary CTA fill */
+  --forest-500: #4d7340;
+  --brand: #60b74c; /* shared with the dashboard */
+  --leaf: #99cc33; /* needle-green accent */
+  --leaf-soft: #c7e08a;
+
+  /* warm glow used behind the canopy + star */
+  --glow: #ffe9a8;
+  --glow-strong: #ffd24a;
+
+  /* text on cream */
+  --ink-1: var(--forest-900);
+  --ink-2: #4a5240;
+  --ink-3: #6f7563;
+
+  /* dark dashboard-preview section (matches the app canvas) */
+  --app-bg: #1a1a1b;
+  --app-surface: #23261d;
+
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Nunito Sans", -apple-system, BlinkMacSystemFont, system-ui,
+    sans-serif;
+
+  --radius-pill: 999px;
+  --radius-lg: 16px;
+  --radius-xl: 28px;
+
+  --maxw: 1180px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink-1);
+  background: var(--cream);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.shell {
+  width: 100%;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 clamp(1.25rem, 4vw, 2.5rem);
+}
+
+/* shared pill buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.85rem 1.4rem;
+  transition:
+    transform 0.12s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  background: var(--forest-600);
+  color: var(--paper);
+  box-shadow: 0 8px 22px -10px rgba(29, 44, 26, 0.7);
+}
+.btn-primary:hover {
+  background: var(--forest-700);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-1);
+  border: 1px solid color-mix(in srgb, var(--forest-700) 28%, transparent);
+}
+.btn-ghost:hover {
+  background: color-mix(in srgb, var(--forest-700) 8%, transparent);
+}

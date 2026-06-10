@@ -9,6 +9,8 @@
   "scripts": {
     "start": "bun run build:bun && bun run start.ts",
     "dev": "bun run dev.ts",
+    "dev:site": "cd packages/site && bun run dev",
+    "build:site": "cd packages/site && bun run build",
     "stop-dev": "bun run stop-dev.ts",
     "test": "bun test packages/",
     "test:watch": "bun test --watch packages/",

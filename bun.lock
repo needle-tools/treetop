@@ -22,6 +22,18 @@
         "ssh2": "^1.16.0",
       },
     },
+    "packages/site": {
+      "name": "@supergit/site",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^7.1.2",
+        "@tsconfig/svelte": "^5.0.8",
+        "svelte": "^5.55.5",
+        "svelte-check": "^4.0.0",
+        "typescript": "^5",
+        "vite": "^8.0.12",
+      },
+    },
     "packages/ui": {
       "name": "@supergit/ui",
       "version": "0.0.0",
@@ -154,6 +166,8 @@
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0", "", {}, "sha512-aKs/3GSWyV0mrhNmt/96/Z3yczC3yvrzYATCiCXQebBsGyYzjNdUphRVLeJQ67ySKVXRfMxt2lm12pmXvbPFQQ=="],
 
     "@supergit/daemon": ["@supergit/daemon@workspace:packages/daemon"],
+
+    "@supergit/site": ["@supergit/site@workspace:packages/site"],
 
     "@supergit/ui": ["@supergit/ui@workspace:packages/ui"],
 
