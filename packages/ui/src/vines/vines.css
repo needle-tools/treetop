@@ -3,8 +3,12 @@
  *
  * Each `.vines-svg` is injected INTO a `.sessions-strip` and positioned in
  * the strip's content box, so it scrolls natively with the panels (no
- * float). pointer-events:none so it never blocks the terminals. Perf: the
- * only animated property is `transform` (composited leaf sway).
+ * float). pointer-events:none so it never blocks the terminals. Perf: leaves
+ * are STATIC — nothing animates per frame. The SVG only repaints when a vine
+ * grows (the seconds-apart tick). A `transform: rotate` leaf "sway" used to
+ * run here; on a large workspace it forced a full `.vines-svg` repaint
+ * ~4x/frame (a 2026-06-10 trace showed it dominating renderer paint), so it
+ * was removed — the user only wants vines to grow, not sway.
  *
  * Depth shading: the trunk gradient and each leaf's colour go from nearly
  * the background at the root to a muted green near the top (leaves carry a
@@ -64,27 +68,8 @@
     var(--leaf-dark)
   );
   opacity: 0.92;
+  /* Kept for the static per-leaf transform the overlay sets (translate/rotate
+     to fan the leaves out). Leaves no longer sway — see the header note. */
   transform-box: fill-box;
-  transform-origin: 50% 100%; /* sway around the leaf's base */
-  animation: vine-sway 4s ease-in-out infinite;
-}
-
-@keyframes vine-sway {
-  0%,
-  100% {
-    transform: rotate(-4deg);
-  }
-  50% {
-    transform: rotate(4deg);
-  }
-}
-
-/* Reduced-motion: vines still grow, but leaves don't sway. */
-.vines-reduced .vine-leaf {
-  animation: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .vine-leaf {
-    animation: none;
-  }
+  transform-origin: 50% 100%;
 }
