@@ -23,11 +23,89 @@ import {
   readdirSync,
   unlinkSync,
   openSync,
+  appendFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
+
+// ── Startup logger + stall watchdog ──────────────────────────────────
+// Background: we've had two recurrences where the window opens but the
+// SPA never mounts ("white window, no title"). When that happens there's
+// no Console, no DevTools, no stderr (Bun Worker output goes nowhere on
+// Windows), so we never know WHICH startup step actually stalled. This
+// writes a tagged line per phase to ~/.config/supergit/launcher-<date>.log
+// and a watchdog flags any phase that takes >5s. After a hang, read this
+// log and the stalled step is the last "BEGIN" without a matching "END".
+const LAUNCHER_LOG_DIR = join(homedir(), ".config", "supergit");
+const LAUNCHER_LOG_PATH = join(
+  LAUNCHER_LOG_DIR,
+  `launcher-${new Date().toISOString().slice(0, 10)}.log`,
+);
+try {
+  mkdirSync(LAUNCHER_LOG_DIR, { recursive: true });
+} catch {}
+const LAUNCHER_START = Date.now();
+function llog(msg: string): void {
+  const elapsed = ((Date.now() - LAUNCHER_START) / 1000).toFixed(3);
+  const line = `[${new Date().toISOString()}] +${elapsed}s ${msg}\n`;
+  try {
+    appendFileSync(LAUNCHER_LOG_PATH, line);
+  } catch {}
+}
+llog(`=== launcher boot pid=${process.pid} ===`);
+llog(`execPath=${process.execPath}`);
+
+let currentPhase: string | null = null;
+let phaseStartedAt = 0;
+function beginPhase(name: string): void {
+  currentPhase = name;
+  phaseStartedAt = Date.now();
+  llog(`BEGIN ${name}`);
+}
+function endPhase(name: string): void {
+  const ms = Date.now() - phaseStartedAt;
+  llog(`END   ${name} (${ms}ms)`);
+  if (currentPhase === name) currentPhase = null;
+}
+async function phase<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+  beginPhase(name);
+  try {
+    const r = await fn();
+    endPhase(name);
+    return r;
+  } catch (e) {
+    llog(`ERROR ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    endPhase(name);
+    throw e;
+  }
+}
+
+// Watchdog: every 1s, if a phase has been running for >5s, log a STALL
+// line. Doesn't kill anything — just leaves a trail so we can see what
+// hung. Cleared once boot finishes (see "boot complete" marker).
+const STALL_THRESHOLD_MS = 5_000;
+const stallSeen = new Set<string>();
+const stallTimer = setInterval(() => {
+  if (!currentPhase) return;
+  const elapsed = Date.now() - phaseStartedAt;
+  if (elapsed < STALL_THRESHOLD_MS) return;
+  // Log once per "stall epoch" so we don't spam — every full 5s past the
+  // threshold gets one line.
+  const bucket = `${currentPhase}@${Math.floor(elapsed / STALL_THRESHOLD_MS)}`;
+  if (stallSeen.has(bucket)) return;
+  stallSeen.add(bucket);
+  llog(`STALL phase=${currentPhase} elapsed=${elapsed}ms`);
+}, 1_000);
+// Don't keep the event loop alive solely for this watchdog. The native
+// shell + BrowserWindow already hold the loop open during normal
+// operation; once boot completes the watchdog has nothing useful to say.
+if (typeof stallTimer.unref === "function") stallTimer.unref();
+
+process.on("exit", (code) => {
+  llog(`process exit code=${code}`);
+});
 
 // Why no bunSpawnSync: this whole file runs inside a Bun Worker that
 // electrobun spawns from its native launcher. The native side keeps a
@@ -384,7 +462,7 @@ function saveBounds(bounds: WindowBounds): void {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-if (!(await gitAvailable())) {
+if (!(await phase("gitAvailable", () => gitAvailable()))) {
   if (isWin) {
     console.error("git is not installed. Install from https://git-scm.com/download/win");
   } else {
@@ -442,8 +520,9 @@ if (!isWin) {
 // for hours after the process dies, blocking any new bind), use the
 // next free port. UI uses relative URLs so it follows whatever port
 // BrowserWindow opens at.
-PORT = await chooseDaemonPort();
+PORT = await phase("chooseDaemonPort", () => chooseDaemonPort());
 DAEMON_URL = `http://localhost:${PORT}`;
+llog(`port=${PORT} url=${DAEMON_URL}`);
 
 // Don't let an ensureDaemon failure bubble up as an unhandled
 // rejection — in a Bun Worker that takes down the launcher's parent
@@ -451,14 +530,14 @@ DAEMON_URL = `http://localhost:${PORT}`;
 // once after force-killing whatever's holding the port, then bail
 // loudly if it still fails.
 try {
-  await ensureDaemon();
+  await phase("ensureDaemon", () => ensureDaemon());
 } catch (e) {
   console.error("supergit: ensureDaemon failed:", e instanceof Error ? e.message : e);
   // One last-ditch attempt: kill anything on the port and retry.
-  await killPortHolder(PORT);
+  await phase("killPortHolder", () => killPortHolder(PORT));
   await new Promise((r) => setTimeout(r, 500));
   try {
-    await ensureDaemon();
+    await phase("ensureDaemon retry", () => ensureDaemon());
   } catch (e2) {
     console.error("supergit: ensureDaemon retry failed:", e2 instanceof Error ? e2.message : e2);
     // Continue anyway — BrowserWindow will load with a connection error
@@ -468,7 +547,9 @@ try {
 }
 
 const bounds = loadBounds();
+llog(`window bounds x=${bounds.x} y=${bounds.y} w=${bounds.width} h=${bounds.height}`);
 
+beginPhase("new BrowserWindow");
 const win = new BrowserWindow({
   // Pre-load title; the page's <title>/document.title (same source) takes
   // over once the UI loads. Name from the shared product module.
@@ -476,11 +557,13 @@ const win = new BrowserWindow({
   url: DAEMON_URL,
   frame: bounds,
 });
+endPhase("new BrowserWindow");
 
 // Windows: set taskbar icon + dark title bar via Win32 API.
 // Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,
 // so we do it ourselves via bun:ffi after the window is created.
 if (isWin) {
+  beginPhase("win32 FFI (icon + dark caption)");
   try {
     // Win32 ABI on x64: HWND/HINSTANCE/HICON are 64-bit handles, WPARAM/LPARAM
     // are uintptr_t. Bun's `ptr` maps to u64 on x64; `u64` is the safe choice
@@ -530,8 +613,12 @@ if (isWin) {
     }
   } catch (e) {
     console.warn("Failed to set window icon/style:", e);
+    llog(`WIN32 ERROR: ${e instanceof Error ? e.message : String(e)}`);
   }
+  endPhase("win32 FFI (icon + dark caption)");
 }
+
+llog(`boot complete (total ${Date.now() - LAUNCHER_START}ms)`);
 
 win.on("resize", (event: any) => {
   const frame = win.getFrame();
@@ -542,3 +629,13 @@ win.on("move", (event: any) => {
   const frame = win.getFrame();
   saveBounds(frame);
 });
+
+// Window lifecycle events. "close" fires when the user clicks X / Alt+F4 /
+// menu Quit — useful to confirm in the log whether a hang is "process
+// died before close" or "close fired but process never exited". The
+// "closed" event arrives after destruction completes.
+try {
+  win.on("close", () => llog("window close event"));
+} catch {
+  /* electrobun's BrowserWindow may not expose all events; ignore. */
+}
