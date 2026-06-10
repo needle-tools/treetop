@@ -37,13 +37,26 @@ const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
 // main.js by Bun's bundler) — bare require() is not a global in Bun's
 // ESM runtime, so any earlier use of `require()` here silently threw
 // and the cleanup never ran.
+//
+// CRITICAL — the partition path is NOT under the install dir.
+// Electrobun's WebView2 host plants its profile at
+//   %LOCALAPPDATA%\Electrobun\default\WebView2\Partitions\default\EBWebView
+// regardless of where launcher.exe lives. Earlier we resolved against
+// process.execPath (..\..\WebView2\Partitions\default\EBWebView), which
+// pointed at a directory that DOES NOT EXIST in the installed app. So
+// the lockfile cleanup ran against an empty path and a stale lockfile
+// in the real partition kept blocking WebView2 init — symptom: window
+// opens but never paints, no msedgewebview2 children even spawn,
+// app.log shows "Custom class failed, falling back to STATIC class"
+// because the message pump can't bind the WebView2 surface.
 const PARTITION_RESOLVE = `
     const _path = __require("node:path");
     const _fs = __require("node:fs");
     const { spawnSync: _spawnSync } = __require("bun");
-    const _partition = _path.resolve(
-      _path.dirname(process.execPath),
-      "..", "..", "WebView2", "Partitions", "default", "EBWebView",
+    const _appdata = process.env.LOCALAPPDATA
+      || _path.join(process.env.USERPROFILE || "", "AppData", "Local");
+    const _partition = _path.join(
+      _appdata, "Electrobun", "default", "WebView2", "Partitions", "default", "EBWebView",
     );`;
 
 // Kill ALL msedgewebview2.exe processes via Get-Process | Stop-Process.
