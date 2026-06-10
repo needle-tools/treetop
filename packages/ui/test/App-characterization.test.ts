@@ -11,6 +11,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   repoChipFg,
   noteExcerpt,
@@ -26,6 +28,11 @@ import {
   clampSubject,
   COMMIT_SUBJECT_MAX,
 } from "../src/display-helpers";
+
+const APP_SOURCE = readFileSync(
+  join(import.meta.dir, "../src/App.svelte"),
+  "utf-8",
+);
 
 // ---------------------------------------------------------------------------
 // repoChipFg  (extracted to display-helpers.ts)
@@ -276,6 +283,21 @@ describe("duplicateRepoNotice", () => {
       title: "Folder already added",
       message: "/tmp/project is already in the dashboard.",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Projects menu virtual entries
+// ---------------------------------------------------------------------------
+
+describe("Projects menu", () => {
+  test("renders a bottom Add Folder entry that scrolls to the footer CTA section", () => {
+    expect(APP_SOURCE).toContain("function focusAddFolderFooter");
+    expect(APP_SOURCE).toContain("projects-add-folder-row");
+    expect(APP_SOURCE).toContain("<span class=\"projects-plus\"");
+    expect(APP_SOURCE).toContain("<span class=\"projects-name\">Add Folder</span>");
+    expect(APP_SOURCE).toContain("void focusAddFolderFooter()");
+    expect(APP_SOURCE).toContain(".add-folder-footer");
   });
 });
 

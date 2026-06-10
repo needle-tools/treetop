@@ -498,6 +498,29 @@ main > header {
   border-radius: 50%;
   flex: 0 0 auto;
 }
+.projects-virtual-item {
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+}
+.projects-plus {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 36%, transparent);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.projects-add-folder-row:hover .projects-plus,
+.projects-add-folder-row:focus-visible .projects-plus {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--accent, #4f7cff) 55%, transparent);
+}
 .projects-name {
   overflow: hidden;
   text-overflow: ellipsis;

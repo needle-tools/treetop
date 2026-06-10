@@ -4894,6 +4894,15 @@
     setTimeout(() => el.classList.remove("row-focus-flash"), 2000);
   }
 
+  async function focusAddFolderFooter(): Promise<void> {
+    projectsMenuOpen = false;
+    await tick();
+    await tick();
+    const el = document.querySelector(".add-folder-footer") as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   /** Remove a worktree (the directory + git's per-worktree state slot).
    *  Defaults to refusing on dirty state — the daemon returns
    *  {dirty: true} in that case so we can offer a forced retry behind
@@ -6739,8 +6748,9 @@
           <svelte:fragment slot="head"><span>Projects</span></svelte:fragment>
           {#if repos.length === 0}
             <p class="muted small nopad">No projects yet.</p>
-          {:else}
-            <ul class="projects-list">
+          {/if}
+          <ul class="projects-list">
+            {#if repos.length > 0}
               {#each repos as repo (daemonRepoKey(repo))}
                 <li>
                   <button
@@ -6758,8 +6768,19 @@
                   </button>
                 </li>
               {/each}
-            </ul>
-          {/if}
+            {/if}
+            <li class="projects-virtual-item">
+              <button
+                class="projects-row projects-add-folder-row"
+                on:click={() => {
+                  void focusAddFolderFooter();
+                }}
+              >
+                <span class="projects-plus" aria-hidden="true">+</span>
+                <span class="projects-name">Add Folder</span>
+              </button>
+            </li>
+          </ul>
         </Popover>
       {/if}
     </div>
