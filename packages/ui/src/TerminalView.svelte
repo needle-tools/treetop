@@ -1041,6 +1041,18 @@
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (ws && ws.readyState <= WebSocket.OPEN) {
+      // Drop the socket's handlers BEFORE closing. This is a deliberate
+      // unmount, not a PTY exit — the PTY stays alive on the daemon
+      // (grace-reaped, or reattached by the instance that replaces us).
+      // Without detaching, ws.onclose fires with code 1000 and its
+      // code-1000 branch calls onExit(), which makes the parent flip the
+      // column from terminal mode back to read mode. When the column is
+      // merely remounting (a {#key} bump from a model/effort switch, a
+      // settings-store tick, or a poll re-render), that phantom exit
+      // tears down the freshly-mounted replacement → the TUI "opens and
+      // closes immediately," orphaning a live PTY each time. Same guard
+      // the retry / attach-fallback paths already use.
+      detachSocket(ws);
       try {
         ws.close(1000, "unmount");
       } catch {}

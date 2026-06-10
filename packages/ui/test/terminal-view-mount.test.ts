@@ -84,6 +84,53 @@ describe("TerminalView ws.onopen post-mount fixups", () => {
   });
 });
 
+describe("TerminalView onDestroy socket teardown", () => {
+  /** Slice of SOURCE covering the onDestroy callback body, ending at the
+   *  next top-level function declaration. */
+  function onDestroyBlock(): string {
+    const idx = SOURCE.indexOf("onDestroy(");
+    expect(idx, "onDestroy not found in TerminalView").toBeGreaterThan(-1);
+    const endIdx = SOURCE.indexOf("function focusTerminal", idx);
+    expect(
+      endIdx,
+      "focusTerminal not found after onDestroy",
+    ).toBeGreaterThan(idx);
+    return SOURCE.slice(idx, endIdx);
+  }
+
+  /** Regression guard for the "TUI opens and closes immediately" bug.
+   *
+   *  onDestroy closes the terminal WS so the daemon can grace-reap the
+   *  orphaned PTY. But ws.onclose treats ANY clean code-1000 close as a
+   *  PTY exit and calls onExit() — which makes the parent (SessionView)
+   *  flip the column from terminal mode back to read mode. On a plain
+   *  unmount that's wrong: the PTY is still alive on the daemon. The
+   *  damage shows when the column merely REMOUNTS (Svelte {#key} bump on
+   *  a model/effort switch, a settings-store tick, or a poll re-render):
+   *  the dying instance's delayed onclose fires onExit and tears down the
+   *  freshly-mounted replacement → the TUI appears to open and close
+   *  immediately, leaving a live orphaned PTY behind each time.
+   *
+   *  The fix mirrors the retry / attach-fallback paths: detachSocket(ws)
+   *  (which nulls onopen/onmessage/onerror/onclose) BEFORE ws.close, so a
+   *  deliberate unmount never reports a phantom exit. */
+  test("detaches socket handlers before closing on unmount", () => {
+    const block = onDestroyBlock();
+    const detachIdx = block.indexOf("detachSocket(ws)");
+    const closeIdx = block.indexOf('ws.close(1000, "unmount")');
+    expect(
+      detachIdx,
+      "onDestroy must call detachSocket(ws) before closing the socket",
+    ).toBeGreaterThan(-1);
+    expect(closeIdx, "onDestroy must close the socket on unmount").toBeGreaterThan(
+      -1,
+    );
+    // detach must precede close, else onclose's code-1000 branch fires
+    // onExit() and the unmount is misreported as a PTY exit.
+    expect(detachIdx).toBeLessThan(closeIdx);
+  });
+});
+
 describe("TerminalView clipboard copy + paste", () => {
   /** xterm.js's default keydown for Ctrl+V (Win/Linux) sends a literal
    *  0x16 SYN byte AND calls preventDefault on the keydown, which kills
