@@ -31,6 +31,7 @@ import {
   resolveLiveCommandLink,
   sessionIdFromValue,
   shouldAttachPastedText,
+  standaloneAttachmentKind,
   textAttachmentMeta,
   trailingImageAttachmentIndexes,
   trailingVisualAttachmentIndexes,
@@ -761,6 +762,19 @@ describe("note inline attachments", () => {
     );
 
     expect([...visualAttachmentIndexes(parts)]).toEqual([1, 3, 5, 7, 9]);
+  });
+
+  test("classifies standalone attachment notes without making images special", () => {
+    const image = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+    });
+    const note = makeNoteAttachmentRef({ body: "nested note" });
+
+    expect(standaloneAttachmentKind(image)).toBe("image");
+    expect(standaloneAttachmentKind(note)).toBe("note");
+    expect(standaloneAttachmentKind(`${image}\n${note}`)).toBeNull();
+    expect(standaloneAttachmentKind(`caption\n${image}`)).toBeNull();
   });
 });
 

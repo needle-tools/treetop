@@ -164,6 +164,7 @@
     parseInlineAttachments,
     removeInlineAttachmentRef,
     sessionLinkTargetMatchesSource,
+    standaloneAttachmentKind,
     type InlineAttachment,
   } from "./note-inline-attachments";
 
@@ -620,10 +621,9 @@
     return note.kind !== "link" && note.kind !== "emoji";
   }
 
-  function noteIsDetachedAttachment(note: NoteShape): boolean {
+  function noteIsStandaloneNoteAttachment(note: NoteShape): boolean {
     if (note.kind === "link" || note.kind === "emoji") return false;
-    const parts = parseInlineAttachments(note.body);
-    return parts.length === 1 && parts[0]?.kind === "attachment";
+    return standaloneAttachmentKind(note.body) === "note";
   }
 
   function attachmentCandidateNoteAtPoint(
@@ -641,7 +641,7 @@
       if (
         !note ||
         !noteCanReceiveAttachments(note) ||
-        noteIsDetachedAttachment(note)
+        noteIsStandaloneNoteAttachment(note)
       )
         continue;
       const r = sticky.getBoundingClientRect();
@@ -2243,7 +2243,7 @@
 
   function noteShowsAttachmentDropZone(note: NoteShape): boolean {
     if (!noteCanReceiveAttachments(note)) return false;
-    if (noteIsDetachedAttachment(note)) return false;
+    if (noteIsStandaloneNoteAttachment(note)) return false;
     if (attachmentDropCandidateNoteId !== note.id) return false;
     if (draggingPinnedNoteId) {
       const source = notes.find((n) => n.id === draggingPinnedNoteId);

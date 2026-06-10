@@ -450,6 +450,14 @@ export function visualAttachmentIndexes(
   return new Set(indexes);
 }
 
+export function standaloneAttachmentKind(
+  body: string,
+): InlineAttachment["kind"] | null {
+  const parts = parseInlineAttachments(body);
+  const part = parts.length === 1 ? parts[0] : null;
+  return part?.kind === "attachment" ? part.attachment.kind : null;
+}
+
 export function removeInlineAttachmentRef(body: string, raw: string): string {
   if (!raw) return body;
   const parts = parseInlineAttachments(body);
