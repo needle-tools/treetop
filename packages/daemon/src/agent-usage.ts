@@ -213,7 +213,19 @@ export async function scanClaudeDailyBuckets(
   }
   stats.bytesRead = content.length;
   const buckets = new Map<string, DailyBucket>();
-  for (const line of content.split("\n")) {
+  // Yield to the event loop every N parsed objects. 233 sessions running
+  // this loop in parallel (Promise.all in buildClaudeDailyTotals) used to
+  // freeze the daemon for 90+ seconds on cold start — each callback body
+  // ran a synchronous JSON.parse loop over a 20K-line file, queuing every
+  // HTTP request behind it. The SPA's initial fetches timed out, the
+  // window opened but never mounted, and Edge/WebView2 showed "Not
+  // responding." Awaiting setImmediate (Bun.sleep(0) is also fine) lets
+  // queued requests interleave between batches. 500 picked so the per-
+  // yield overhead stays << one batch's work (~1ms parse).
+  const YIELD_EVERY = 500;
+  let sinceYield = 0;
+  const lines = content.split("\n");
+  for (const line of lines) {
     if (!line) continue;
     stats.linesScanned++;
     // Cheap prefilter — most lines are tool-call deltas and content
@@ -230,6 +242,10 @@ export async function scanClaudeDailyBuckets(
       stats.linesParsed++;
     } catch {
       continue;
+    }
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+      await new Promise<void>((r) => setImmediate(r));
     }
     const type = obj.type;
     if (type !== "user" && type !== "assistant") continue;
@@ -351,6 +367,12 @@ export async function scanClaudeSessionTokenTotals(
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
+  // Same event-loop yield as scanClaudeDailyBuckets — see that function's
+  // comment for the cold-start "Not responding" backstory. Both scanners
+  // run from buildClaudeDailyTotals / topClaudeSessionsByTokens under
+  // Promise.all over 200+ sessions, so either one can starve the loop.
+  const YIELD_EVERY = 500;
+  let sinceYield = 0;
   for (const line of content.split("\n")) {
     if (!line) continue;
     stats.linesScanned++;
@@ -362,6 +384,10 @@ export async function scanClaudeSessionTokenTotals(
       stats.linesParsed++;
     } catch {
       continue;
+    }
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+      await new Promise<void>((r) => setImmediate(r));
     }
     if (obj.type !== "assistant") continue;
     const ts =
