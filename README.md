@@ -2,6 +2,9 @@
 
 ### You were built for this jungle.
 
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/01a3ce2f-1c09-44b1-acab-d478a6a4226e" />
+
+
 Mission control for your AI coding agents — across every repo, branch, and worktree. Stay on top.
 
 A multi-repo, multi-agent, worktree-first git dashboard. One pane of glass for every repo you're juggling, every worktree you've spun up, and every agent you've let loose — without losing your mind to terminal tab soup.
