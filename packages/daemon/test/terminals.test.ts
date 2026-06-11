@@ -217,6 +217,46 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     await handle.kill();
   }, 15_000);
 
+  test("broadcasts working on the onState channel: true on output, false after idle", async () => {
+    // The dock reads `working` off onState (same channel as awaitingInput) so a
+    // hidden, output-muted terminal still shows activity. Pin both edges.
+    const handle = await backend.spawn({
+      cmd: [
+        "bash",
+        "-lc",
+        `while IFS= read -r line; do [ "$line" = go ] && printf 'tick\\n'; done`,
+      ],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    const working: boolean[] = [];
+    handle.subscribe({
+      onData() {},
+      onExit() {},
+      onState(s) {
+        if (typeof s.working === "boolean") working.push(s.working);
+      },
+    });
+    // Initial snapshot is idle.
+    expect(working[0]).toBe(false);
+
+    // Produce output → working flips true.
+    handle.write("go\n");
+    const tTrue = Date.now() + 3000;
+    while (!working.includes(true) && Date.now() < tTrue) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(working).toContain(true);
+
+    // Go quiet → working flips back to false after WORKING_IDLE_MS.
+    const tFalse = Date.now() + 4000;
+    while (working[working.length - 1] !== false && Date.now() < tFalse) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(working[working.length - 1]).toBe(false);
+    await handle.kill();
+  }, 12_000);
+
   test("kill() actually terminates a long-running process — no zombies", async () => {
     const handle = await backend.spawn({
       // 60s sleep that ignores SIGTERM until SIGKILL falls back. We

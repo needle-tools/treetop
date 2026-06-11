@@ -1884,14 +1884,34 @@ type TermWsData =
 // chunk anyway, so macOS showed multi-megabyte supergit->WebKit TCP send
 // queues and later UI actions looked like they arrived minutes late.
 //
-// This queue is intentionally lossless. If the browser remains slower than the
-// PTY, upstream visibility pausing should reduce production; the daemon should
-// not silently prune the terminal byte stream.
+// This queue is intentionally lossless for a VISIBLE socket: if the browser
+// remains slower than the PTY, the backlog holds the bytes until it drains; we
+// never silently prune a watched terminal's stream.
+//
+// It doubles as the hidden-socket buffer: output for a hidden terminal is
+// queued here (not sent) and flushed on un-hide — delivery-level muting that
+// keeps the daemon seeing every byte (so working/awaiting stay live) without
+// flooding WebKit. To bound memory, the HIDDEN path caps the backlog.
+const TERMINAL_HIDDEN_BACKLOG_CAP_BYTES = 1024 * 1024; // 1 MB
 
 function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
+  // Hidden (muted) socket: bound the buffered backlog so a noisy off-screen
+  // terminal can't grow daemon memory without limit. Drop the oldest bytes
+  // past the cap; on un-hide the socket still gets the recent tail (same
+  // guarantee a reconnect's replay gives). The visible-backpressure path
+  // above is left uncapped — it self-corrects when the socket drains.
+  if (!ws.data.outputVisible) {
+    while (
+      ws.data.pendingOutputBytes > TERMINAL_HIDDEN_BACKLOG_CAP_BYTES &&
+      ws.data.pendingOutput.length > 1
+    ) {
+      const dropped = ws.data.pendingOutput.shift();
+      ws.data.pendingOutputBytes -= dropped?.byteLength ?? 0;
+    }
+  }
 }
 
 function takeTerminalOutputBacklog(
@@ -1980,9 +2000,15 @@ function removeVisibleTerminalSocket(termId: string): void {
 }
 
 function updateTerminalOutputMute(termId: string): void {
-  const handle = terminalBackend.get(termId);
-  if (!handle?.setOutputMuted) return;
-  handle.setOutputMuted((visibleTerminalSockets.get(termId) ?? 0) === 0);
+  // No-op: muting is now done at DELIVERY (skip forwarding to a hidden socket
+  // + buffer for catch-up; see sendTerminalOutput/queueTerminalOutput and the
+  // flush in setTerminalOutputVisible), NOT by pausing the PTY at the helper.
+  // Keeping the daemon sighted on every byte is what lets `working`/`awaiting`
+  // stay live on the onState channel for a hidden terminal. `setOutputMuted`
+  // is intentionally no longer called here (it still works for direct callers
+  // / tests). The visibleTerminalSockets bookkeeping is retained for /api
+  // diagnostics.
+  void termId;
 }
 
 function setTerminalOutputVisible(
@@ -1992,8 +2018,13 @@ function setTerminalOutputVisible(
   if (ws.data.kind !== "terminal") return;
   if (ws.data.outputVisible === visible) return;
   ws.data.outputVisible = visible;
-  if (visible) addVisibleTerminalSocket(ws.data.termId);
-  else removeVisibleTerminalSocket(ws.data.termId);
+  if (visible) {
+    addVisibleTerminalSocket(ws.data.termId);
+    // Drain whatever buffered while this socket was hidden — same bytes, in
+    // order, just delayed. No clear/repaint, so no risk of duplicated or
+    // corrupted scrollback.
+    flushTerminalOutput(ws);
+  } else removeVisibleTerminalSocket(ws.data.termId);
   updateTerminalOutputMute(ws.data.termId);
 }
 
@@ -8527,7 +8558,14 @@ const server = Bun.serve<TermWsData, never>({
           for (const tag of tags) {
             broadcast("change", { kind: "sound_play", tag, termId });
           }
-          if (output.length > 0) sendTerminalOutput(ws, output);
+          if (output.length > 0) {
+            // Delivery-level mute: forward to a visible socket; for a hidden
+            // one, buffer (flushed on un-hide) instead of flooding WebKit. The
+            // daemon still saw the bytes, so working/awaiting on onState stay
+            // live for the dock.
+            if (ws.data.outputVisible) sendTerminalOutput(ws, output);
+            else queueTerminalOutput(ws, output);
+          }
         },
         onState(state) {
           // Text frame carrying daemon-detected terminal state (e.g.

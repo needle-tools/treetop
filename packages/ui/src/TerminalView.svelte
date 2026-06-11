@@ -627,6 +627,15 @@
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
+              // `working` now rides the onState channel (daemon-computed), the
+              // same channel as awaiting — so the dock shows activity even
+              // while this terminal is hidden and its output is muted. The
+              // local byte-silence ticker only LOWERS the flag while visible;
+              // hidden, this is the sole authority for both edges.
+              if (typeof obj.working === "boolean") {
+                currentWorking = obj.working;
+                onWorkingChange(obj.working);
+              }
               configError = obj.configError ?? null;
               // Error gone (or replaced) → drop any stale action feedback.
               if (!configError) configAction = null;
@@ -1072,7 +1081,14 @@
     // on every chunk; this ticker is the only thing that lowers it,
     // after WORKING_IDLE_MS of silence.
     workingTicker = setInterval(() => {
-      if (currentWorking && Date.now() - lastActivityTs > WORKING_IDLE_MS) {
+      // Only lower from local byte-silence while VISIBLE. When hidden, output
+      // is muted (no bytes arrive by design), so the daemon's `working` on the
+      // onState channel owns the working↔idle edges — see the WS state handler.
+      if (
+        isTerminalVisible &&
+        currentWorking &&
+        Date.now() - lastActivityTs > WORKING_IDLE_MS
+      ) {
         currentWorking = false;
         onWorkingChange(false);
       }

@@ -28,6 +28,10 @@ import {
 } from "./sgr-remap";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
+// A PTY is "working" while it has emitted a byte within this window. Matches
+// the UI's old client-side threshold so the working→idle edge feels the same
+// now that it's computed daemon-side and broadcast on the onState channel.
+const WORKING_IDLE_MS = 1500;
 
 interface InternalTerm {
   id: string;
@@ -49,6 +53,12 @@ interface InternalTerm {
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
   configError: { file: string } | null;
+  /** True while the PTY is actively emitting output (within WORKING_IDLE_MS).
+   *  Broadcast on the onState channel so the dock reflects activity even when
+   *  output delivery to the (hidden) browser socket is muted. */
+  working: boolean;
+  /** Timer that lowers `working` after WORKING_IDLE_MS of output silence. */
+  workingIdleTimer?: ReturnType<typeof setTimeout>;
   /** When this PTY runs an agent TUI whose user-message box we recolour
    *  (currently Claude), the stateful byte-stream filter that rewrites
    *  the box's truecolour SGR sequences. Undefined for shells and other
@@ -388,6 +398,17 @@ export class NodePtyBackend implements PtyBackend {
         t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
+        // "Working" = produced output recently. Raise the flag on every
+        // chunk; a timer lowers it after WORKING_IDLE_MS of silence. Both
+        // edges go out on the onState channel (below) so the dock tracks
+        // activity even for a hidden terminal whose bytes are muted.
+        const workingFlipped = !t.working;
+        t.working = true;
+        if (t.workingIdleTimer) clearTimeout(t.workingIdleTimer);
+        t.workingIdleTimer = setTimeout(() => {
+          t.working = false;
+          this.notifyState(t);
+        }, WORKING_IDLE_MS);
         // Recompute awaiting-input state after each output chunk. If
         // the flag flips, notify subscribers so the UI can outline.
         const nextAwaiting = isAwaitingInput(t.buffer, t.bufferBytes);
@@ -400,15 +421,11 @@ export class NodePtyBackend implements PtyBackend {
         const configFlipped =
           (nextConfigErr === null) !== (t.configError === null) ||
           nextConfigErr?.file !== t.configError?.file;
-        if (nextAwaiting !== t.awaitingInput || configFlipped) {
-          t.awaitingInput = nextAwaiting;
-          t.configError = nextConfigErr;
-          for (const s of t.subs)
-            s.onState?.({
-              awaitingInput: nextAwaiting,
-              configError: nextConfigErr,
-            });
-        }
+        const awaitingFlipped = nextAwaiting !== t.awaitingInput;
+        t.awaitingInput = nextAwaiting;
+        t.configError = nextConfigErr;
+        if (awaitingFlipped || configFlipped || workingFlipped)
+          this.notifyState(t);
         return;
       }
       case "exit": {
@@ -417,6 +434,11 @@ export class NodePtyBackend implements PtyBackend {
         t.exitedAt = new Date().toISOString();
         t.exitCode = (evt.code as number) ?? 0;
         t.exitSignal = evt.signal as string | undefined;
+        if (t.workingIdleTimer) {
+          clearTimeout(t.workingIdleTimer);
+          t.workingIdleTimer = undefined;
+        }
+        t.working = false;
         for (const s of t.subs)
           s.onExit({ code: t.exitCode!, signal: t.exitSignal });
         if (t.zdotdir) {
@@ -438,6 +460,19 @@ export class NodePtyBackend implements PtyBackend {
         return;
       }
     }
+  }
+
+  /** Broadcast the current daemon-detected state (awaiting / config-error /
+   *  working) to every subscriber. The single place the onState shape is
+   *  built, so the live-flip path, the working-idle timer, and the
+   *  subscribe-time snapshot can't drift. */
+  private notifyState(t: InternalTerm) {
+    for (const s of t.subs)
+      s.onState?.({
+        awaitingInput: t.awaitingInput,
+        configError: t.configError,
+        working: t.working,
+      });
   }
 
   private appendBuffer(t: InternalTerm, chunk: Uint8Array) {
@@ -480,6 +515,7 @@ export class NodePtyBackend implements PtyBackend {
       subs: new Set(),
       awaitingInput: false,
       configError: null,
+      working: false,
     };
     // Claude paints its user-message box with truecolour SGR the xterm
     // theme can't reach (see sgr-remap.ts) — attach a stream filter that
@@ -620,6 +656,7 @@ export class NodePtyBackend implements PtyBackend {
         sub.onState?.({
           awaitingInput: t.awaitingInput,
           configError: t.configError,
+          working: t.working,
         });
         if (t.exitedAt)
           sub.onExit({ code: t.exitCode ?? 0, signal: t.exitSignal });
