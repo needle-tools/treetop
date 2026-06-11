@@ -21,6 +21,9 @@ type term struct {
 	cmd       *pty.Cmd
 	pty       pty.Pty
 	closeOnce sync.Once
+	muted     bool
+	unmuteCh  chan struct{}
+	done      chan struct{}
 }
 
 // close tears down the PTY exactly once. Both the soft-kill path (Windows)
@@ -29,7 +32,10 @@ type term struct {
 // to the attached child — the graceful "you're about to die, flush now"
 // signal that lets Claude finish writing .claude.json.
 func (t *term) close() {
-	t.closeOnce.Do(func() { _ = t.pty.Close() })
+	t.closeOnce.Do(func() {
+		_ = t.pty.Close()
+		close(t.done)
+	})
 }
 
 var (
@@ -210,7 +216,12 @@ func handleSpawn(msg map[string]any) {
 		return
 	}
 
-	t := &term{cmd: cmd, pty: p}
+	t := &term{
+		cmd:      cmd,
+		pty:      p,
+		unmuteCh: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
 	termsMu.Lock()
 	terms[id] = t
 	termsMu.Unlock()
@@ -232,12 +243,19 @@ func handleSpawn(msg map[string]any) {
 	go func() {
 		buf := make([]byte, 16384)
 		for {
+			if !waitUntilUnmuted(t) {
+				break
+			}
 			n, err := p.Read(buf)
 			if n > 0 {
+				chunk := append([]byte(nil), buf[:n]...)
+				if !waitUntilUnmuted(t) {
+					break
+				}
 				emit(map[string]any{
 					"ev":      "data",
 					"id":      id,
-					"dataB64": base64.StdEncoding.EncodeToString(buf[:n]),
+					"dataB64": base64.StdEncoding.EncodeToString(chunk),
 				})
 			}
 			if err != nil {
@@ -260,6 +278,24 @@ func handleSpawn(msg map[string]any) {
 		}
 		emit(ev)
 	}()
+}
+
+func waitUntilUnmuted(t *term) bool {
+	for {
+		termsMu.Lock()
+		if !t.muted {
+			termsMu.Unlock()
+			return true
+		}
+		unmuteCh := t.unmuteCh
+		done := t.done
+		termsMu.Unlock()
+		select {
+		case <-unmuteCh:
+		case <-done:
+			return false
+		}
+	}
 }
 
 func handleWrite(msg map[string]any) {
@@ -302,6 +338,24 @@ func handleKill(msg map[string]any) {
 		return
 	}
 	killTerm(t, msg["signal"])
+}
+
+func handleSetMuted(msg map[string]any) {
+	id, _ := msg["id"].(string)
+	muted, _ := msg["muted"].(bool)
+	termsMu.Lock()
+	t := terms[id]
+	if t == nil || t.muted == muted {
+		termsMu.Unlock()
+		return
+	}
+	t.muted = muted
+	if !muted {
+		unmuteCh := t.unmuteCh
+		t.unmuteCh = make(chan struct{})
+		close(unmuteCh)
+	}
+	termsMu.Unlock()
 }
 
 func killAll() {
@@ -359,7 +413,7 @@ func main() {
 	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -381,6 +435,8 @@ func main() {
 			handleResize(msg)
 		case "kill":
 			handleKill(msg)
+		case "set-muted":
+			handleSetMuted(msg)
 		default:
 			fail("unknown op: "+fmt.Sprint(msg["op"]), "")
 		}

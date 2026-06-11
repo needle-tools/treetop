@@ -172,6 +172,51 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     expect(combined).toContain("COLOR=unset");
   }, 10_000);
 
+  test("muted output is paused at the helper and delivered after unmute", async () => {
+    const noisyBytes = 120_000;
+    const noisyScript = `import sys; sys.stdout.write("A" * ${noisyBytes}); sys.stdout.write("DONE\\n"); sys.stdout.flush()`;
+    const handle = await backend.spawn({
+      cmd: [
+        "bash",
+        "-lc",
+        `while IFS= read -r line; do [ "$line" = go ] && python3 -c ${shQuote(noisyScript)}; done`,
+      ],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+    });
+    expect(handle.setOutputMuted).toBeTypeOf("function");
+
+    const chunks: Uint8Array[] = [];
+    handle.subscribe({
+      onData(chunk) {
+        chunks.push(chunk);
+      },
+      onExit() {},
+    });
+
+    handle.setOutputMuted?.(true);
+    handle.write("go\n");
+    await new Promise((r) => setTimeout(r, 300));
+    const mutedBytes = chunks.reduce((n, c) => n + c.byteLength, 0);
+    expect(mutedBytes).toBeLessThan(1024);
+
+    handle.setOutputMuted?.(false);
+    const deadline = Date.now() + 5000;
+    const decoder = new TextDecoder();
+    while (
+      !chunks.some((c) => decoder.decode(c).includes("DONE")) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const combined = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    const text = combined.toString("utf-8");
+    expect(text).toContain("DONE");
+    expect(text).not.toContain("skipped hidden terminal output");
+    expect((text.match(/A/g) ?? []).length).toBeGreaterThanOrEqual(noisyBytes);
+    await handle.kill();
+  }, 15_000);
+
   test("kill() actually terminates a long-running process — no zombies", async () => {
     const handle = await backend.spawn({
       // 60s sleep that ignores SIGTERM until SIGKILL falls back. We

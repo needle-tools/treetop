@@ -176,10 +176,28 @@ Fixes landed in source:
   configurable with `SUPERGIT_AGENTS_CACHE_MS`) so frequent `/api/repos`
   rebuilds do not re-walk hundreds of agent JSONLs every few seconds.
 - Add terminal WebSocket backpressure handling: when Bun reports a terminal
-  socket is backpressured, subsequent PTY output is held in a bounded
-  per-socket backlog and flushed on WebSocket `drain`; if the browser stays
-  behind beyond the cap, old backlog is dropped with a visible terminal notice
-  instead of letting OS/WebKit queues grow without bound.
+  socket is backpressured, subsequent PTY output is held in a per-socket
+  backlog and flushed on WebSocket `drain`; later fixes made this queue
+  lossless and shifted pressure relief upstream to terminal visibility
+  pausing.
+
+Follow-up terminal backpressure fix (2026-06-10):
+
+- Hidden terminal columns no longer drop off-screen output. The browser-side
+  `TerminalWriteBuffer` preserves byte order and asks the caller to flush when
+  its cap is reached; the daemon-side visibility pause is what prevents
+  far-off-screen terminals from continuously forcing hidden parse/render work.
+- Repro showed the renderer fix was not the whole root cause: with 10 hidden
+  terminals streaming, the browser sent a 1MB paste immediately but the target
+  PTY did not echo it within 20s. Hidden TerminalViews now send visibility
+  control frames to the daemon; when a PTY has no visible subscribers, the
+  Node/Go helper pauses PTY output delivery instead of draining/dropping it.
+  The same repro now delivers the 1MB paste to the target PTY in ~25ms while
+  hidden terminals avoid helper/stdout flood. No terminal bytes are discarded;
+  a very chatty far-hidden process may block on its PTY until revealed.
+- "Visible" is intentionally generous: the TerminalView observer uses an
+  expanded root margin so nearby off-screen columns keep output flowing before
+  they are literally on-screen. Only far-off-screen noisy columns are muted.
 
 ## Daemon-side: the cold-start enrich storm
 

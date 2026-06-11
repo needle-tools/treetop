@@ -590,6 +590,9 @@ export class NodePtyBackend implements PtyBackend {
         t.size = size;
         this.send({ op: "resize", id: t.id, cols: size.cols, rows: size.rows });
       },
+      setOutputMuted: (muted) => {
+        this.send({ op: "set-muted", id: t.id, muted });
+      },
       kill: async () => {
         this.send({ op: "kill", id: t.id, signal: "SIGTERM" });
         setTimeout(() => {

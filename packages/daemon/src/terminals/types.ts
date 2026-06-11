@@ -71,6 +71,10 @@ export interface TerminalHandle {
   readonly pid: number;
   write(data: Uint8Array | string): void;
   resize(size: TerminalSize): void;
+  /** Pause helper-side output delivery while no visible client needs it.
+   *  Input and PTY state continue; output resumes on unmute without dropping
+   *  terminal bytes. */
+  setOutputMuted?(muted: boolean): void;
   /** SIGTERM, then SIGKILL after 500ms if still alive. */
   kill(): Promise<void>;
   /** Subscribe to live output + exit. On subscribe, the current

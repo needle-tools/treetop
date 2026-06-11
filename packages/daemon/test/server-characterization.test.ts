@@ -436,10 +436,11 @@ describe("/api/repos agent enrichment", () => {
 // 22. Terminal WS backpressure — do not flood WebKit when it falls behind
 // ---------------------------------------------------------------------------
 describe("terminal WebSocket backpressure", () => {
-  test("terminal WS data carries a bounded output backlog", () => {
-    expect(SERVER_TS).toContain("TERMINAL_WS_BACKPRESSURE_CAP_BYTES");
+  test("terminal WS data carries a lossless output backlog", () => {
     expect(SERVER_TS).toContain("pendingOutput: Uint8Array[]");
     expect(SERVER_TS).toContain("pendingOutputBytes: number");
+    expect(SERVER_TS).not.toContain("TERMINAL_WS_BACKPRESSURE_CAP_BYTES");
+    expect(SERVER_TS).not.toContain("skippedOutputBytes");
   });
 
   test("terminal output goes through backpressure-aware sender", () => {

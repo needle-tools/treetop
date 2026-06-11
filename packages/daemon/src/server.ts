@@ -1860,9 +1860,9 @@ type TermWsData =
       kind: "terminal";
       termId: string;
       unsubscribe: (() => void) | null;
+      outputVisible: boolean;
       pendingOutput: Uint8Array[];
       pendingOutputBytes: number;
-      skippedOutputBytes: number;
       outputBackpressured: boolean;
     }
   // Proxy WS to a remote daemon. We can't resolve the tunnel before
@@ -1879,83 +1879,34 @@ type TermWsData =
       bridge: RemoteWsBridge | null;
     };
 
-const TERMINAL_WS_BACKPRESSURE_CAP_BYTES = Number(
-  process.env.SUPERGIT_TERMINAL_WS_BACKPRESSURE_CAP_BYTES ?? 512 * 1024,
-);
 // If WebKit stops draining a terminal websocket, Bun will report
 // backpressure from ws.send(). Before this guard we kept sending every PTY
 // chunk anyway, so macOS showed multi-megabyte supergit->WebKit TCP send
 // queues and later UI actions looked like they arrived minutes late.
 //
-// The daemon already keeps a bounded replay buffer per terminal. This layer is
-// a second, browser-connection-local buffer whose job is narrower: never let a
-// single slow WebKit view turn live PTY output into an unbounded OS/socket
-// backlog. We preserve byte order while the backlog is under the cap. If the
-// browser remains slower than the PTY past that cap, we drop the oldest
-// connection-local bytes and keep the newest output plus an explicit in-terminal
-// notice. That can lose historical scrollback for that view, but it keeps the
-// dashboard interactive and the PTY itself alive; a reconnect still receives
-// the terminal backend's recent replay buffer.
-const TERMINAL_WS_SKIP_NOTICE = new TextEncoder().encode(
-  "\r\n[supergit: skipped terminal output while the browser was catching up]\r\n",
-);
+// This queue is intentionally lossless. If the browser remains slower than the
+// PTY, upstream visibility pausing should reduce production; the daemon should
+// not silently prune the terminal byte stream.
 
 function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
-  while (
-    ws.data.pendingOutputBytes > TERMINAL_WS_BACKPRESSURE_CAP_BYTES &&
-    ws.data.pendingOutput.length > 1
-  ) {
-    const dropped = ws.data.pendingOutput.shift();
-    const bytes = dropped?.byteLength ?? 0;
-    ws.data.pendingOutputBytes -= bytes;
-    ws.data.skippedOutputBytes += bytes;
-  }
-  if (
-    ws.data.pendingOutputBytes > TERMINAL_WS_BACKPRESSURE_CAP_BYTES &&
-    ws.data.pendingOutput.length === 1
-  ) {
-    const only = ws.data.pendingOutput[0]!;
-    const keepBytes = Math.max(
-      0,
-      TERMINAL_WS_BACKPRESSURE_CAP_BYTES - TERMINAL_WS_SKIP_NOTICE.byteLength,
-    );
-    ws.data.pendingOutput[0] = only.subarray(
-      Math.max(0, only.byteLength - keepBytes),
-    );
-    ws.data.skippedOutputBytes +=
-      only.byteLength - ws.data.pendingOutput[0]!.byteLength;
-    ws.data.pendingOutputBytes = ws.data.pendingOutput[0]!.byteLength;
-  }
 }
 
 function takeTerminalOutputBacklog(
   ws: ServerWebSocket<TermWsData>,
 ): Uint8Array | null {
   if (ws.data.kind !== "terminal") return null;
-  if (ws.data.pendingOutput.length === 0 && ws.data.skippedOutputBytes === 0) {
-    return null;
-  }
-  const noticeBytes =
-    ws.data.skippedOutputBytes > 0 ? TERMINAL_WS_SKIP_NOTICE.byteLength : 0;
-  const out = new Uint8Array(noticeBytes + ws.data.pendingOutputBytes);
+  if (ws.data.pendingOutput.length === 0) return null;
+  const out = new Uint8Array(ws.data.pendingOutputBytes);
   let offset = 0;
-  if (noticeBytes > 0) {
-    out.set(TERMINAL_WS_SKIP_NOTICE, offset);
-    offset += TERMINAL_WS_SKIP_NOTICE.byteLength;
-    console.log(
-      `supergit daemon: terminal websocket skipped ${ws.data.skippedOutputBytes}B for ${ws.data.termId} under browser backpressure`,
-    );
-  }
   for (const chunk of ws.data.pendingOutput) {
     out.set(chunk, offset);
     offset += chunk.byteLength;
   }
   ws.data.pendingOutput = [];
   ws.data.pendingOutputBytes = 0;
-  ws.data.skippedOutputBytes = 0;
   return out;
 }
 
@@ -1969,16 +1920,15 @@ function flushTerminalOutput(ws: ServerWebSocket<TermWsData>): void {
   // -1 means Bun accepted the frame but the socket is still under
   // backpressure. New PTY chunks will accumulate in pendingOutput until the
   // next drain; don't requeue this frame or it would duplicate output. 0 means
-  // Bun dropped the frame (typically a closing/dead socket), so there is no
-  // reliable future drain to wait for.
+  // Bun could not accept the frame (typically a closing/dead socket), so there
+  // is no reliable future drain to wait for.
   if (ws.data.kind === "terminal") {
     ws.data.outputBackpressured = status === -1;
     if (status === 0) {
       ws.data.pendingOutput = [];
       ws.data.pendingOutputBytes = 0;
-      ws.data.skippedOutputBytes = 0;
       try {
-        ws.close(1013, "terminal websocket dropped output");
+        ws.close(1013, "terminal websocket unavailable");
       } catch {
         // Already closing.
       }
@@ -2003,15 +1953,48 @@ function sendTerminalOutput(
     return;
   }
   if (status === 0) {
-    // No backpressure callback is guaranteed after a dropped frame. Close this
-    // browser socket and let the terminal grace/replay path handle reattach
-    // instead of holding bytes that may never flush.
+    // No backpressure callback is guaranteed after an unaccepted frame. Close
+    // this browser socket and let the terminal grace/replay path handle
+    // reattach instead of holding bytes that may never flush.
     try {
-      ws.close(1013, "terminal websocket dropped output");
+      ws.close(1013, "terminal websocket unavailable");
     } catch {
       // Already closing.
     }
   }
+}
+
+const visibleTerminalSockets = new Map<string, number>();
+
+function addVisibleTerminalSocket(termId: string): void {
+  visibleTerminalSockets.set(
+    termId,
+    (visibleTerminalSockets.get(termId) ?? 0) + 1,
+  );
+}
+
+function removeVisibleTerminalSocket(termId: string): void {
+  const next = (visibleTerminalSockets.get(termId) ?? 0) - 1;
+  if (next > 0) visibleTerminalSockets.set(termId, next);
+  else visibleTerminalSockets.delete(termId);
+}
+
+function updateTerminalOutputMute(termId: string): void {
+  const handle = terminalBackend.get(termId);
+  if (!handle?.setOutputMuted) return;
+  handle.setOutputMuted((visibleTerminalSockets.get(termId) ?? 0) === 0);
+}
+
+function setTerminalOutputVisible(
+  ws: ServerWebSocket<TermWsData>,
+  visible: boolean,
+): void {
+  if (ws.data.kind !== "terminal") return;
+  if (ws.data.outputVisible === visible) return;
+  ws.data.outputVisible = visible;
+  if (visible) addVisibleTerminalSocket(ws.data.termId);
+  else removeVisibleTerminalSocket(ws.data.termId);
+  updateTerminalOutputMute(ws.data.termId);
 }
 
 const server = Bun.serve<TermWsData, never>({
@@ -2135,9 +2118,9 @@ const server = Bun.serve<TermWsData, never>({
                 kind: "terminal",
                 termId,
                 unsubscribe: null,
+                outputVisible: true,
                 pendingOutput: [],
                 pendingOutputBytes: 0,
-                skippedOutputBytes: 0,
                 outputBackpressured: false,
               },
             })
@@ -8535,6 +8518,8 @@ const server = Bun.serve<TermWsData, never>({
       }
       cancelGrace(termId);
       orphanCleaner.onFrontendConnected();
+      addVisibleTerminalSocket(termId);
+      updateTerminalOutputMute(termId);
       const soundScanner = new SoundMarkerScanner();
       const sub: TerminalSubscriber = {
         onData(chunk) {
@@ -8588,6 +8573,8 @@ const server = Bun.serve<TermWsData, never>({
               cols: clampCols(Number(parsed.cols)),
               rows: clampRows(Number(parsed.rows)),
             });
+          } else if (parsed?.type === "visibility") {
+            setTerminalOutputVisible(ws, parsed.visible === true);
           }
         } catch {
           // ignore garbage control frames
@@ -8628,6 +8615,10 @@ const server = Bun.serve<TermWsData, never>({
         return;
       }
       const termId = ws.data.termId;
+      if (ws.data.outputVisible) {
+        removeVisibleTerminalSocket(termId);
+        updateTerminalOutputMute(termId);
+      }
       try {
         ws.data.unsubscribe?.();
       } catch {}

@@ -29,7 +29,7 @@
 import { spawn as ptySpawn } from "node-pty";
 import readline from "node:readline";
 
-const terms = new Map(); // id → IPty
+const terms = new Map(); // id → { term, muted }
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -115,7 +115,8 @@ rl.on("line", (line) => {
           cwd: cwd || process.cwd(),
           env: { ...cleaned, ...(env || {}) },
         });
-        terms.set(id, term);
+        const entry = { term, muted: false };
+        terms.set(id, entry);
         emit({ ev: "spawned", id, pid: term.pid });
         // Debug-only snapshot of the env we actually handed to the
         // PTY. Surfaces what gets through after the scrub + injection
@@ -167,10 +168,12 @@ rl.on("line", (line) => {
     }
 
     case "write": {
-      const term = terms.get(msg.id);
-      if (!term) return;
+      const entry = terms.get(msg.id);
+      if (!entry) return;
       try {
-        term.write(Buffer.from(msg.dataB64 || "", "base64").toString("utf-8"));
+        entry.term.write(
+          Buffer.from(msg.dataB64 || "", "base64").toString("utf-8"),
+        );
       } catch (e) {
         fail("write failed: " + e.message, msg.id);
       }
@@ -178,10 +181,10 @@ rl.on("line", (line) => {
     }
 
     case "resize": {
-      const term = terms.get(msg.id);
-      if (!term) return;
+      const entry = terms.get(msg.id);
+      if (!entry) return;
       try {
-        term.resize(msg.cols ?? 80, msg.rows ?? 24);
+        entry.term.resize(msg.cols ?? 80, msg.rows ?? 24);
       } catch (e) {
         fail("resize failed: " + e.message, msg.id);
       }
@@ -189,12 +192,27 @@ rl.on("line", (line) => {
     }
 
     case "kill": {
-      const term = terms.get(msg.id);
-      if (!term) return;
+      const entry = terms.get(msg.id);
+      if (!entry) return;
       try {
-        term.kill(msg.signal || "SIGTERM");
+        entry.term.kill(msg.signal || "SIGTERM");
       } catch (e) {
         fail("kill failed: " + e.message, msg.id);
+      }
+      return;
+    }
+
+    case "set-muted": {
+      const entry = terms.get(msg.id);
+      if (!entry) return;
+      const muted = msg.muted === true;
+      if (entry.muted === muted) return;
+      entry.muted = muted;
+      try {
+        if (muted) entry.term.pause();
+        else entry.term.resume();
+      } catch (e) {
+        fail("set-muted failed: " + (e?.message ?? e), msg.id);
       }
       return;
     }
@@ -205,15 +223,15 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
-  for (const term of terms.values()) {
-    try { term.kill("SIGTERM"); } catch {}
+  for (const entry of terms.values()) {
+    try { entry.term.kill("SIGTERM"); } catch {}
   }
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  for (const term of terms.values()) {
-    try { term.kill("SIGTERM"); } catch {}
+  for (const entry of terms.values()) {
+    try { entry.term.kill("SIGTERM"); } catch {}
   }
   process.exit(0);
 });
