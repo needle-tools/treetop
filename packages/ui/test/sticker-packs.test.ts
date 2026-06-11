@@ -24,9 +24,10 @@ describe("sticker packs", () => {
     const packs = buildStickerPacksFromModules({
       "./assets/stickers/Jungle/animals_4x4.png": "/assets/animals.png",
       "./assets/stickers/Jungle/leaf.png": "/assets/leaf.png",
+      "./assets/stickers/Stargaze/glow_4x4.avif": "/assets/glow.avif",
     });
 
-    expect(packs).toHaveLength(1);
+    expect(packs).toHaveLength(2);
     expect(packs[0]?.id).toBe("Jungle");
     expect(packs[0]?.label).toBe("Jungle");
     expect(packs[0]?.stickers).toHaveLength(17);
@@ -35,6 +36,9 @@ describe("sticker packs", () => {
     );
     expect(packs[0]?.stickers[0]?.sheet.grid).toEqual({ cols: 4, rows: 4 });
     expect(packs[0]?.stickers[16]?.sheet.grid).toEqual({ cols: 1, rows: 1 });
+    expect(packs[1]?.id).toBe("Stargaze");
+    expect(packs[1]?.stickers).toHaveLength(16);
+    expect(packs[1]?.stickers[0]?.sheet.url).toBe("/assets/glow.avif");
   });
 
   test("creates CSS background crop math for sprite cells", () => {

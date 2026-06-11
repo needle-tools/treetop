@@ -60,7 +60,7 @@ export function buildStickerPacksFromModules(
 ): StickerPack[] {
   const packs = new Map<string, StickerPack>();
   const sheetPathRe =
-    /^\.\/assets\/stickers\/([^/]+)\/([^/]+\.(?:png|webp|svg))$/i;
+    /^\.\/assets\/stickers\/([^/]+)\/([^/]+\.(?:png|webp|svg|avif))$/i;
   const entries = Object.entries(modules).sort(([a], [b]) =>
     a.localeCompare(b),
   );

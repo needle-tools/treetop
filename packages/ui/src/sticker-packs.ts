@@ -25,7 +25,7 @@ declare global {
  * syntax into concrete asset imports; aliasing import.meta leaves packs empty.
  */
 const STICKER_MODULES = import.meta.glob(
-  "./assets/stickers/**/*.{png,webp,svg}",
+  "./assets/stickers/**/*.{png,webp,svg,avif}",
   {
     eager: true,
     query: "?url",
