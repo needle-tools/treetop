@@ -488,6 +488,14 @@
           { value: "14", label: "Large" },
         ],
       },
+      {
+        key: "terminal.showIoDebug",
+        label: "Show I/O debug",
+        description:
+          "Show tiny per-terminal input and output throughput counters.",
+        type: "boolean",
+        default: false,
+      },
     ],
   });
   registerSettings({

@@ -23,6 +23,7 @@
     type ActionSettingDef,
   } from "./settings-registry";
   import { confirmDialog } from "./confirm-dialog";
+  import { terminalIoStats } from "./terminal-write-buffer";
 
   export let open = false;
 
@@ -125,6 +126,12 @@
     if (def.max !== undefined) n = Math.min(def.max, n);
     input.valueAsNumber = n;
     write(def, n);
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}K`;
+    return String(bytes);
   }
 </script>
 
@@ -262,6 +269,31 @@
                     {/if}
                   </div>
                 </div>
+                {#if def.key === "terminal.showIoDebug" && getSetting(def.key) === true}
+                  <div class="setting-extra terminal-io-stats">
+                    {#if $terminalIoStats.terminals === 0}
+                      <span>No mounted terminals.</span>
+                    {:else}
+                      <span
+                        >terminals {$terminalIoStats.terminals} · visible
+                        {$terminalIoStats.visible} · paused {$terminalIoStats.paused}</span
+                      >
+                      <span
+                        >rate in {formatBytes($terminalIoStats.rxBytesPerSec)}/s · out
+                        {formatBytes($terminalIoStats.txBytesPerSec)}/s</span
+                      >
+                      <span
+                        >total in {formatBytes($terminalIoStats.rxBytesTotal)} · out
+                        {formatBytes($terminalIoStats.txBytesTotal)}</span
+                      >
+                      <span
+                        >hidden buffered
+                        {formatBytes($terminalIoStats.hiddenBufferedBytes)} · flushes
+                        {$terminalIoStats.hiddenFlushes}</span
+                      >
+                    {/if}
+                  </div>
+                {/if}
               {/each}
             </section>
           {/each}
@@ -510,5 +542,23 @@
   .setting-action.danger:hover {
     background: color-mix(in srgb, #c0392b 60%, transparent);
     color: #fff;
+  }
+  .setting-extra {
+    margin: -0.2rem 0 0.35rem 1.25rem;
+    padding: 0.3rem 0.55rem;
+    border-left: 1px solid color-mix(in srgb, var(--text-muted) 28%, transparent);
+    color: var(--text-muted);
+    font:
+      0.72rem/1.45 "SF Mono",
+      "JetBrains Mono",
+      Menlo,
+      Consolas,
+      "Liberation Mono",
+      monospace;
+  }
+  .terminal-io-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.75rem;
   }
 </style>

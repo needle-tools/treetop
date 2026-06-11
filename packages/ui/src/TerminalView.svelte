@@ -10,8 +10,15 @@
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
   import { joinSelectionRows, type SelectionRow } from "./clean-selection";
-  import { TerminalWriteBuffer } from "./terminal-write-buffer";
-  import { createResizeCoalescer, type ResizeCoalescer } from "./terminal-resize";
+  import {
+    TerminalWriteBuffer,
+    setTerminalIoStats,
+    removeTerminalIoStats,
+  } from "./terminal-write-buffer";
+  import {
+    createResizeCoalescer,
+    type ResizeCoalescer,
+  } from "./terminal-resize";
   import { openUrl } from "./open-url";
   import {
     expandNoteBodyForTerminalPasteChunks,
@@ -150,6 +157,10 @@
    *  enough that "done" feels responsive, long enough that a typical
    *  Claude/Codex pause for a tool call doesn't flicker the border. */
   const WORKING_IDLE_MS = 1500;
+  /** Treat nearby off-screen terminal columns as visible so output keeps
+   *  flowing before the user scrolls them into view. Far-off-screen noisy
+   *  columns are the ones we pause to protect paste and app actions. */
+  const OUTPUT_VISIBILITY_ROOT_MARGIN = "600px 1600px 600px 1600px";
   /** When set, skip spawning a new PTY and attach to this existing one
    *  via WS. Used to reattach to live shells after a page reload (the
    *  daemon's GET /api/shells returns the live termIds + their worktrees).
@@ -184,6 +195,41 @@
   let lastParsedCwd = "";
   let cwdParseBuffer = "";
   const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
+  const showTerminalIoDebug = settingValue("terminal.showIoDebug");
+  const ioStatsId = `terminal-view-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  let ioTicker: ReturnType<typeof setInterval> | null = null;
+  let rxWindowBytes = 0;
+  let txWindowBytes = 0;
+  let rxBytesPerSec = 0;
+  let txBytesPerSec = 0;
+  let rxBytesTotal = 0;
+  let txBytesTotal = 0;
+
+  function recordRx(bytes: number): void {
+    rxWindowBytes += bytes;
+    rxBytesTotal += bytes;
+  }
+
+  function recordTx(bytes: number): void {
+    txWindowBytes += bytes;
+    txBytesTotal += bytes;
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}K`;
+    return String(bytes);
+  }
+
+  function sendTerminalInput(data: Uint8Array | string): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const bytes = typeof data === "string" ? textEncoder.encode(data) : data;
+    recordTx(bytes.byteLength);
+    ws.send(bytes);
+  }
 
   // Windows cmd:  needle@HOST C:\Users\needle\Music>
   //          or:  C:\Users\needle\Music>
@@ -282,8 +328,10 @@
   // ANSI + mutates the DOM every chunk), then flush once on reveal. The
   // WS stays open and noteActivity() still fires, so the dock activity
   // pulse and working-ring keep reflecting the agent — we only skip the
-  // paint nobody can see. Starts true so output is never withheld before
-  // the observer's first callback.
+  // paint nobody can see. If the hidden buffer reaches its cap we flush the
+  // complete backlog to xterm to preserve bytes; daemon-side visibility
+  // pausing should make that rare for distant columns. Starts true so output
+  // is never withheld before the observer's first callback.
   let isTerminalVisible = true;
   let visibilityObs: IntersectionObserver | null = null;
   // WebGL renderer slot (terminal-webgl.ts). Owned by the visibility
@@ -300,6 +348,7 @@
     webgl = null;
   }
   const writeBuffer = new TerminalWriteBuffer();
+  let hiddenFlushes = 0;
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
@@ -375,6 +424,32 @@
    *  `ws.onopen` being the real open handler below.) */
   function detachSocket(s: WebSocket): void {
     s.onopen = s.onmessage = s.onerror = s.onclose = null;
+  }
+
+  function sendVisibilityState(): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "visibility", visible: isTerminalVisible }));
+  }
+
+  function publishTerminalIoStats(): void {
+    setTerminalIoStats(ioStatsId, {
+      visible: isTerminalVisible,
+      rxBytesPerSec,
+      txBytesPerSec,
+      rxBytesTotal,
+      txBytesTotal,
+      hiddenBufferedBytes: writeBuffer.pendingBytes,
+      hiddenFlushes,
+    });
+  }
+
+  function flushBufferedTerminalOutput(): Uint8Array | null {
+    const batch = writeBuffer.flush();
+    if (batch) {
+      hiddenFlushes += 1;
+      publishTerminalIoStats();
+    }
+    return batch;
   }
 
   function clearStartupGuard() {
@@ -503,6 +578,7 @@
       ws.onopen = () => {
         phase = "live";
         clearStartupGuard();
+        sendVisibilityState();
         // Resume + autofocus contract: when a Terminal column mounts
         // (either fresh or via Resume) we want two things, both keyed
         // off the WS opening:
@@ -562,13 +638,11 @@
         }
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
+        recordRx(bytes.byteLength);
         if (isTerminalVisible) {
           xterm?.write(bytes);
         } else if (writeBuffer.push(bytes)) {
-          // Hidden but chatty enough to hit the buffer cap — flush the
-          // batch through so memory stays bounded (one coarse write is
-          // still far cheaper than a parse+paint per chunk).
-          const batch = writeBuffer.flush();
+          const batch = flushBufferedTerminalOutput();
           if (batch) xterm?.write(batch);
         }
         noteActivity();
@@ -778,7 +852,9 @@
         ) {
           ev.preventDefault();
           ev.stopPropagation();
-          const sessionEl = containerEl?.closest(".session") as HTMLElement | null;
+          const sessionEl = containerEl?.closest(
+            ".session",
+          ) as HTMLElement | null;
           if (sessionEl) {
             if (document.fullscreenElement === sessionEl) {
               void document.exitFullscreen().catch(() => {});
@@ -793,13 +869,13 @@
           if (ev.code === "KeyC" && !xterm?.hasSelection()) {
             ev.preventDefault();
             ev.stopPropagation();
-            ws?.send(new Uint8Array([0x03]));
+            sendTerminalInput(new Uint8Array([0x03]));
             return;
           }
           if (ev.code === "KeyA") {
             ev.preventDefault();
             ev.stopPropagation();
-            ws?.send(new Uint8Array([0x01]));
+            sendTerminalInput(new Uint8Array([0x01]));
             return;
           }
         }
@@ -909,9 +985,7 @@
     });
 
     xterm.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data));
-      }
+      sendTerminalInput(data);
     });
 
     // Resize gate: only `fit.fit()` when dimensions *actually* changed.
@@ -928,12 +1002,12 @@
     resizeObs = new ResizeObserver(() => resizeCoalescer?.trigger());
     resizeObs.observe(containerEl);
 
-    // Skip rendering while this column is off-screen (scrolled out of the
-    // horizontal session strip, or inside a display:none panel). The
-    // viewport is the implicit root; when the container stops
-    // intersecting it, ws.onmessage buffers writes instead of painting.
-    // On reveal we flush the backlog in one write and re-fit, since the
-    // size may have changed while we weren't laying out.
+    // Skip rendering while this column is far off-screen (scrolled well out
+    // of the horizontal session strip, or inside a display:none panel). The
+    // expanded viewport margin keeps nearby columns hot before the user
+    // scrolls them into view; only distant hidden columns get paused.
+    // On reveal we flush the backlog in one write and re-fit, since the size
+    // may have changed while we weren't laying out.
     visibilityObs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
@@ -946,8 +1020,10 @@
         else detachWebgl();
         if (visible === isTerminalVisible) return;
         isTerminalVisible = visible;
+        sendVisibilityState();
+        publishTerminalIoStats();
         if (visible && xterm) {
-          const batch = writeBuffer.flush();
+          const batch = flushBufferedTerminalOutput();
           if (batch) xterm.write(batch);
           // Size may have changed while we weren't laying out; coalesce the
           // refit (same path as the observers) so a reveal that coincides
@@ -955,7 +1031,7 @@
           resizeCoalescer?.trigger();
         }
       },
-      { threshold: 0 },
+      { rootMargin: OUTPUT_VISIBILITY_ROOT_MARGIN, threshold: 0 },
     );
     visibilityObs.observe(containerEl);
 
@@ -982,6 +1058,15 @@
     containerEl.addEventListener("pointerdown", armSuppress);
 
     void spawnPtyAndConnect();
+    publishTerminalIoStats();
+
+    ioTicker = setInterval(() => {
+      rxBytesPerSec = rxWindowBytes;
+      txBytesPerSec = txWindowBytes;
+      rxWindowBytes = 0;
+      txWindowBytes = 0;
+      publishTerminalIoStats();
+    }, 1000);
 
     // Drive the working → idle edge. The frame handler raises the flag
     // on every chunk; this ticker is the only thing that lowers it,
@@ -1027,6 +1112,11 @@
       clearInterval(workingTicker);
       workingTicker = null;
     }
+    if (ioTicker !== null) {
+      clearInterval(ioTicker);
+      ioTicker = null;
+    }
+    removeTerminalIoStats(ioStatsId);
     if (sshPollTimer) {
       clearInterval(sshPollTimer);
       sshPollTimer = null;
@@ -1087,7 +1177,7 @@
       xterm?.paste(chunk);
       return;
     }
-    ws.send(new TextEncoder().encode(`\x1b[200~${chunk}\x1b[201~`));
+    sendTerminalInput(`\x1b[200~${chunk}\x1b[201~`);
   }
 
   /** Upload a Blob/File to /api/attach and write the returned absolute
@@ -1111,10 +1201,13 @@
         "file",
         filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
-      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), {
+        method: "POST",
+        body: form,
+      });
       if (!res.ok) return;
       const { path } = (await res.json()) as { path: string };
-      ws.send(new TextEncoder().encode(path + " "));
+      sendTerminalInput(path + " ");
     } catch {
       // Silent — paste failures shouldn't surface a noisy error in the
       // terminal panel; the user will notice nothing was inserted and
@@ -1258,7 +1351,7 @@
     if (!terminalId) return;
     const handle = ws;
     if (handle && handle.readyState === WebSocket.OPEN) {
-      handle.send(new TextEncoder().encode("1\r"));
+      sendTerminalInput("1\r");
     }
   }
 
@@ -1271,7 +1364,9 @@
       body: JSON.stringify({ path: configError.file }),
     }).catch(() => null);
     const ok = !!res && res.ok;
-    const via = ok ? ((await res!.json().catch(() => null))?.via ?? null) : null;
+    const via = ok
+      ? ((await res!.json().catch(() => null))?.via ?? null)
+      : null;
     configAction = settleConfigAction(
       configAction,
       ok,
@@ -1352,6 +1447,18 @@
       <button type="button" class="retry-btn" on:click={retry}>Retry</button>
     </div>
   {/if}
+  {#if $showTerminalIoDebug}
+    <div
+      class="term-io-debug"
+      title="Terminal payload throughput: inbound, outbound, total inbound, total outbound, visibility state"
+    >
+      in {formatBytes(rxBytesPerSec)}/s <span aria-hidden="true">·</span> out
+      {formatBytes(txBytesPerSec)}/s <span aria-hidden="true">·</span> total in
+      {formatBytes(rxBytesTotal)} <span aria-hidden="true">·</span> total out
+      {formatBytes(txBytesTotal)} <span aria-hidden="true">·</span>
+      {isTerminalVisible ? "visible" : "paused"}
+    </div>
+  {/if}
 
   <div
     class="xterm-host"
@@ -1381,8 +1488,9 @@
           disabled={v.disabled}
           on:click={b.handler}
         >
-          {#if v.spinner}<span class="pill-spinner" aria-hidden="true"></span
-            >{:else if v.phase === "done"}<span class="pill-glyph">✓</span
+          {#if v.spinner}<span class="pill-spinner" aria-hidden="true"
+            ></span>{:else if v.phase === "done"}<span class="pill-glyph"
+              >✓</span
             >{:else if v.phase === "error"}<span class="pill-glyph">✕</span
             >{/if}{v.active && configAction ? configAction.message : b.label}
         </button>
@@ -1437,6 +1545,27 @@
        real fix is swapping xterm to the canvas renderer. `size` deliberately
        omitted (the box is flex-sized, but size-containment risks collapse). */
     contain: layout paint;
+  }
+  .term-io-debug {
+    position: absolute;
+    top: 0.2rem;
+    right: 0.35rem;
+    z-index: 3;
+    max-width: calc(100% - 0.7rem);
+    padding: 0.08rem 0.25rem;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.72);
+    font:
+      10px/1.25 "SF Mono",
+      "JetBrains Mono",
+      Menlo,
+      Consolas,
+      "Liberation Mono",
+      monospace;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
   }
   /* Error callout — same anchor as the LoadingOverlay (centred,
      nudged up one line) but with its own background so the warning

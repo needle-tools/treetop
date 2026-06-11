@@ -23,6 +23,10 @@ import {
   _resetSettingsForTests,
 } from "../src/settings-registry";
 
+const SETTINGS_DIALOG = await Bun.file(
+  new URL("../src/SettingsDialog.svelte", import.meta.url),
+).text();
+
 function memKV(): KVStore & { data: Record<string, string> } {
   const data: Record<string, string> = {};
   return {
@@ -156,6 +160,15 @@ describe("settingValue store", () => {
     expect(get(store)).toBeUndefined();
     registerSettings(appearance);
     expect(get(store)).toBe("comfortable");
+  });
+});
+
+describe("SettingsDialog terminal diagnostics", () => {
+  test("renders aggregate terminal I/O stats under the debug setting", () => {
+    expect(SETTINGS_DIALOG).toContain("terminalIoStats");
+    expect(SETTINGS_DIALOG).toContain('def.key === "terminal.showIoDebug"');
+    expect(SETTINGS_DIALOG).toContain("terminal-io-stats");
+    expect(SETTINGS_DIALOG).toContain("hidden buffered");
   });
 });
 

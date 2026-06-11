@@ -91,10 +91,9 @@ describe("TerminalView onDestroy socket teardown", () => {
     const idx = SOURCE.indexOf("onDestroy(");
     expect(idx, "onDestroy not found in TerminalView").toBeGreaterThan(-1);
     const endIdx = SOURCE.indexOf("function focusTerminal", idx);
-    expect(
-      endIdx,
-      "focusTerminal not found after onDestroy",
-    ).toBeGreaterThan(idx);
+    expect(endIdx, "focusTerminal not found after onDestroy").toBeGreaterThan(
+      idx,
+    );
     return SOURCE.slice(idx, endIdx);
   }
 
@@ -122,9 +121,10 @@ describe("TerminalView onDestroy socket teardown", () => {
       detachIdx,
       "onDestroy must call detachSocket(ws) before closing the socket",
     ).toBeGreaterThan(-1);
-    expect(closeIdx, "onDestroy must close the socket on unmount").toBeGreaterThan(
-      -1,
-    );
+    expect(
+      closeIdx,
+      "onDestroy must close the socket on unmount",
+    ).toBeGreaterThan(-1);
     // detach must precede close, else onclose's code-1000 branch fires
     // onExit() and the unmount is misreported as a PTY exit.
     expect(detachIdx).toBeLessThan(closeIdx);
@@ -290,6 +290,69 @@ describe("TerminalView clipboard copy + paste", () => {
     expect(insertIdx).toBeGreaterThan(-1);
     expect(modOnlyIdx).toBeGreaterThan(-1);
     expect(insertIdx).toBeLessThan(modOnlyIdx);
+  });
+});
+
+describe("TerminalView hidden terminal output", () => {
+  test("preserves hidden output when the buffer cap is hit", () => {
+    const binaryIdx = SOURCE.indexOf("// Binary frame = raw PTY output.");
+    expect(binaryIdx).toBeGreaterThan(-1);
+    const noteIdx = SOURCE.indexOf("noteActivity();", binaryIdx);
+    expect(noteIdx).toBeGreaterThan(binaryIdx);
+    const block = SOURCE.slice(binaryIdx, noteIdx);
+    expect(block).toContain("writeBuffer.push(bytes)");
+    expect(block).toContain("flushBufferedTerminalOutput()");
+    expect(block).toContain("xterm?.write(batch)");
+    expect(block).not.toContain("console.warn");
+    expect(block).not.toContain("skipped hidden terminal output");
+    const helperIdx = SOURCE.indexOf("function flushBufferedTerminalOutput()");
+    expect(helperIdx).toBeGreaterThan(-1);
+    const helperEnd = SOURCE.indexOf("function clearStartupGuard", helperIdx);
+    const helper = SOURCE.slice(helperIdx, helperEnd);
+    expect(helper).toContain("writeBuffer.flush()");
+    expect(helper).toContain("hiddenFlushes += 1");
+  });
+
+  test("flushes the retained hidden-output tail only on reveal", () => {
+    const observerIdx = SOURCE.indexOf("new IntersectionObserver");
+    expect(observerIdx).toBeGreaterThan(-1);
+    const resizeIdx = SOURCE.indexOf("resizeCoalescer?.trigger()", observerIdx);
+    expect(resizeIdx).toBeGreaterThan(observerIdx);
+    const block = SOURCE.slice(observerIdx, resizeIdx);
+    expect(block).toContain("if (visible && xterm)");
+    expect(block).toContain("flushBufferedTerminalOutput()");
+    expect(block).toContain("xterm.write(batch)");
+  });
+
+  test("reports visibility to the daemon so hidden PTY output can be muted", () => {
+    expect(SOURCE).toContain("function sendVisibilityState()");
+    expect(SOURCE).toContain(
+      'JSON.stringify({ type: "visibility", visible: isTerminalVisible })',
+    );
+    const openIdx = SOURCE.indexOf("ws.onopen = () =>");
+    expect(openIdx).toBeGreaterThan(-1);
+    const messageIdx = SOURCE.indexOf("ws.onmessage", openIdx);
+    expect(SOURCE.slice(openIdx, messageIdx)).toContain(
+      "sendVisibilityState()",
+    );
+    const observerIdx = SOURCE.indexOf("new IntersectionObserver");
+    const resizeIdx = SOURCE.indexOf("resizeCoalescer?.trigger()", observerIdx);
+    const block = SOURCE.slice(observerIdx, resizeIdx);
+    expect(block).toContain("isTerminalVisible = visible");
+    expect(block).toContain("sendVisibilityState()");
+    expect(SOURCE).toContain("OUTPUT_VISIBILITY_ROOT_MARGIN");
+    expect(SOURCE).toContain(
+      "{ rootMargin: OUTPUT_VISIBILITY_ROOT_MARGIN, threshold: 0 }",
+    );
+  });
+
+  test("has an opt-in terminal I/O debug readout", () => {
+    expect(SOURCE).toContain('settingValue("terminal.showIoDebug")');
+    expect(SOURCE).toContain("rxBytesPerSec");
+    expect(SOURCE).toContain("txBytesPerSec");
+    expect(SOURCE).toContain("class=\"term-io-debug\"");
+    expect(SOURCE).toContain(' <span aria-hidden="true">·</span> ');
+    expect(SOURCE).toContain("sendTerminalInput(data)");
   });
 });
 
