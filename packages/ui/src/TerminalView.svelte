@@ -35,6 +35,7 @@
   } from "./config-error-action";
   import { describeWsClose } from "./errors";
   import { settingValue, getSetting } from "./settings-registry";
+  import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -346,6 +347,31 @@
   function detachWebgl() {
     webgl?.dispose();
     webgl = null;
+  }
+  // A WebGL attach/detach is a renderer SWITCH — xterm re-measures (forced
+  // reflow) and re-renders every row (~200ms on the DOM fallback). Doing it
+  // per column-crossing during a scroll (e.g. a dock click that scrolls the
+  // strip) is a renderRows storm. So we defer the reconcile until the page has
+  // been scroll-quiet for SCROLL_QUIET_MS: during a scroll terminals keep their
+  // current renderer; once it lands we switch once, to the latest visibility.
+  // Output muting (sendVisibilityState) is NOT deferred — only the renderer.
+  let webglReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let webglReconcileTarget = false;
+  function scheduleWebglReconcile(visible: boolean) {
+    webglReconcileTarget = visible;
+    if (webglReconcileTimer) clearTimeout(webglReconcileTimer);
+    const tick = () => {
+      const wait = SCROLL_QUIET_MS - msSinceScroll();
+      if (wait > 0) {
+        // Still scrolling — re-check after the remaining quiet window.
+        webglReconcileTimer = setTimeout(tick, wait + 20);
+        return;
+      }
+      webglReconcileTimer = null;
+      if (webglReconcileTarget) attachWebgl();
+      else detachWebgl();
+    };
+    webglReconcileTimer = setTimeout(tick, SCROLL_QUIET_MS);
   }
   const writeBuffer = new TerminalWriteBuffer();
   let hiddenFlushes = 0;
@@ -1020,13 +1046,15 @@
     visibilityObs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
-        // WebGL slot follows visibility. Runs BEFORE the no-change
-        // early-return because the observer's initial callback for an
-        // on-screen column reports visible === isTerminalVisible (both
-        // true) — that first callback is where the slot is acquired.
-        // Both helpers are no-ops when already in the right state.
-        if (visible) attachWebgl();
-        else detachWebgl();
+        // WebGL slot follows visibility, but the renderer SWITCH is deferred
+        // until scrolling settles (see scheduleWebglReconcile) — otherwise a
+        // scroll that drags columns across the viewport (a dock click scrolls
+        // the strip) thrashes attach→detach→attach, each a renderRows storm.
+        // Runs BEFORE the no-change early-return so the initial on-screen
+        // callback (visible === isTerminalVisible, both true) still schedules
+        // the slot acquisition. Idempotent: the timer reconciles to the latest
+        // visibility, and attach/detach are no-ops when already correct.
+        scheduleWebglReconcile(visible);
         if (visible === isTerminalVisible) return;
         isTerminalVisible = visible;
         sendVisibilityState();
@@ -1138,6 +1166,7 @@
       sshPollTimer = null;
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
+    if (webglReconcileTimer) clearTimeout(webglReconcileTimer);
     resizeObs?.disconnect();
     resizeCoalescer?.cancel();
     visibilityObs?.disconnect();

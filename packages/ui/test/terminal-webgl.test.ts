@@ -134,10 +134,11 @@ describe("TerminalView wires the pool to visibility", () => {
     expect(SOURCE).toContain('from "./terminal-webgl"');
   });
 
-  /** The IntersectionObserver callback is the single owner of
-   *  attach/detach: visible → acquire a WebGL slot, hidden → release it
-   *  (so off-screen columns never hold one of the ~16 browser contexts).
-   *  Slice from the observer construction to its observe() call. */
+  /** The IntersectionObserver follows visibility, but the renderer SWITCH is
+   *  deferred to a scroll-gated reconcile so a scroll that drags columns across
+   *  the viewport (a dock click scrolls the strip) doesn't thrash
+   *  attach→detach→attach, each a renderRows storm. Slice from the observer
+   *  construction to its observe() call. */
   function observerBlock(): string {
     const start = SOURCE.indexOf("visibilityObs = new IntersectionObserver");
     expect(start, "visibility observer not found").toBeGreaterThan(-1);
@@ -146,10 +147,25 @@ describe("TerminalView wires the pool to visibility", () => {
     return SOURCE.slice(start, end);
   }
 
-  test("visible → attach, hidden → detach inside the observer callback", () => {
+  test("observer defers the renderer switch to scheduleWebglReconcile (not inline)", () => {
     const block = observerBlock();
-    expect(block).toContain("attachWebgl()");
-    expect(block).toContain("detachWebgl()");
+    expect(block).toContain("scheduleWebglReconcile(visible)");
+    // The expensive switch must NOT happen inline in the observer anymore —
+    // that's what regressed scrolling (200ms+ renderRows per column-crossing).
+    expect(block).not.toContain("attachWebgl()");
+    expect(block).not.toContain("detachWebgl()");
+  });
+
+  test("the reconcile owns attach/detach, gated on scroll-quiescence", () => {
+    const start = SOURCE.indexOf("function scheduleWebglReconcile");
+    expect(start, "scheduleWebglReconcile not found").toBeGreaterThan(-1);
+    const next = SOURCE.indexOf("\n  function ", start + 1);
+    const body = SOURCE.slice(start, next > start ? next : start + 1400);
+    expect(body).toContain("attachWebgl()");
+    expect(body).toContain("detachWebgl()");
+    // Deferral is keyed off the shared scroll signal, not a blind timer.
+    expect(body).toContain("msSinceScroll()");
+    expect(body).toContain("SCROLL_QUIET_MS");
   });
 
   test("onDestroy releases the WebGL slot", () => {
