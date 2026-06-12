@@ -401,30 +401,49 @@
     webgl?.dispose();
     webgl = null;
   }
-  // A WebGL attach/detach is a renderer SWITCH — xterm re-measures (forced
-  // reflow) and re-renders every row (~200ms on the DOM fallback). Doing it
-  // per column-crossing during a scroll (e.g. a dock click that scrolls the
-  // strip) is a renderRows storm. So we defer the reconcile until the page has
-  // been scroll-quiet for SCROLL_QUIET_MS: during a scroll terminals keep their
-  // current renderer; once it lands we switch once, to the latest visibility.
-  // Output muting (sendVisibilityState) is NOT deferred — only the renderer.
-  let webglReconcileTimer: ReturnType<typeof setTimeout> | null = null;
-  let webglReconcileTarget = false;
-  function scheduleWebglReconcile(visible: boolean) {
-    webglReconcileTarget = visible;
-    if (webglReconcileTimer) clearTimeout(webglReconcileTimer);
+  // Revealing/hiding a terminal column triggers EXPENSIVE work: a WebGL
+  // renderer switch (attach/detach re-measures + re-renders every row), and on
+  // reveal a backlog flush + refit whose size-check reads `offsetWidth` — a
+  // forced synchronous reflow — even when the size is unchanged and the fit
+  // no-ops. Doing this per column-crossing during a scroll (e.g. a dock click
+  // that scrolls the strip) is a reflow/renderRows storm: a 2026-06-12 trace
+  // showed ~1.3s of `get offsetWidth` during a scroll. So we defer the whole
+  // reveal reconcile until the page has been scroll-quiet for SCROLL_QUIET_MS —
+  // during a scroll the terminal keeps its renderer and skips flush/refit; once
+  // the strip lands, the column it settled on reconciles ONCE. When the page is
+  // NOT scrolling we reconcile immediately, so a normal reveal stays snappy.
+  // Output muting (sendVisibilityState) is never deferred.
+  let revealReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let revealReconcileTarget = false;
+  function scheduleRevealReconcile(visible: boolean) {
+    revealReconcileTarget = visible;
+    if (revealReconcileTimer) clearTimeout(revealReconcileTimer);
+    const reconcile = () => {
+      revealReconcileTimer = null;
+      if (!revealReconcileTarget) {
+        detachWebgl();
+        return;
+      }
+      attachWebgl();
+      if (xterm) {
+        const batch = flushBufferedTerminalOutput();
+        if (batch) xterm.write(batch);
+        // Size may have changed while we weren't laying out; coalesce the
+        // refit so a reveal that coincides with a resize doesn't double-fit.
+        resizeCoalescer?.trigger();
+      }
+    };
     const tick = () => {
       const wait = SCROLL_QUIET_MS - msSinceScroll();
       if (wait > 0) {
         // Still scrolling — re-check after the remaining quiet window.
-        webglReconcileTimer = setTimeout(tick, wait + 20);
+        revealReconcileTimer = setTimeout(tick, wait + 20);
         return;
       }
-      webglReconcileTimer = null;
-      if (webglReconcileTarget) attachWebgl();
-      else detachWebgl();
+      reconcile();
     };
-    webglReconcileTimer = setTimeout(tick, SCROLL_QUIET_MS);
+    if (msSinceScroll() >= SCROLL_QUIET_MS) reconcile();
+    else revealReconcileTimer = setTimeout(tick, SCROLL_QUIET_MS - msSinceScroll() + 20);
   }
   const writeBuffer = new TerminalWriteBuffer();
   let hiddenFlushes = 0;
@@ -1099,27 +1118,19 @@
     visibilityObs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
-        // WebGL slot follows visibility, but the renderer SWITCH is deferred
-        // until scrolling settles (see scheduleWebglReconcile) — otherwise a
-        // scroll that drags columns across the viewport (a dock click scrolls
-        // the strip) thrashes attach→detach→attach, each a renderRows storm.
-        // Runs BEFORE the no-change early-return so the initial on-screen
-        // callback (visible === isTerminalVisible, both true) still schedules
-        // the slot acquisition. Idempotent: the timer reconciles to the latest
-        // visibility, and attach/detach are no-ops when already correct.
-        scheduleWebglReconcile(visible);
+        // The expensive reveal/hide work — the WebGL renderer switch AND (on
+        // reveal) the backlog flush + refit whose size-check forces a reflow —
+        // is deferred until scrolling settles (see scheduleRevealReconcile), so
+        // a scroll that drags columns across the viewport doesn't storm. Output
+        // muting (sendVisibilityState) below stays immediate. Scheduled before
+        // the no-change early-return so the initial on-screen callback (visible
+        // === isTerminalVisible, both true) still acquires the slot; the
+        // reconcile is idempotent and tracks the latest visibility.
+        scheduleRevealReconcile(visible);
         if (visible === isTerminalVisible) return;
         isTerminalVisible = visible;
         sendVisibilityState();
         publishTerminalIoStats();
-        if (visible && xterm) {
-          const batch = flushBufferedTerminalOutput();
-          if (batch) xterm.write(batch);
-          // Size may have changed while we weren't laying out; coalesce the
-          // refit (same path as the observers) so a reveal that coincides
-          // with a resize doesn't double-fit.
-          resizeCoalescer?.trigger();
-        }
       },
       { rootMargin: OUTPUT_VISIBILITY_ROOT_MARGIN, threshold: 0 },
     );
@@ -1219,7 +1230,7 @@
       sshPollTimer = null;
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
-    if (webglReconcileTimer) clearTimeout(webglReconcileTimer);
+    if (revealReconcileTimer) clearTimeout(revealReconcileTimer);
     resizeObs?.disconnect();
     resizeCoalescer?.cancel();
     visibilityObs?.disconnect();

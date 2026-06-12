@@ -147,22 +147,28 @@ describe("TerminalView wires the pool to visibility", () => {
     return SOURCE.slice(start, end);
   }
 
-  test("observer defers the renderer switch to scheduleWebglReconcile (not inline)", () => {
+  test("observer defers the reveal work to scheduleRevealReconcile (not inline)", () => {
     const block = observerBlock();
-    expect(block).toContain("scheduleWebglReconcile(visible)");
-    // The expensive switch must NOT happen inline in the observer anymore —
-    // that's what regressed scrolling (200ms+ renderRows per column-crossing).
+    expect(block).toContain("scheduleRevealReconcile(visible)");
+    // The expensive reveal work must NOT happen inline in the observer anymore —
+    // that's what stormed during scroll (renderer switch + offsetWidth reflow
+    // per column-crossing).
     expect(block).not.toContain("attachWebgl()");
     expect(block).not.toContain("detachWebgl()");
+    expect(block).not.toContain("flushBufferedTerminalOutput()");
+    expect(block).not.toContain("resizeCoalescer?.trigger()");
   });
 
-  test("the reconcile owns attach/detach, gated on scroll-quiescence", () => {
-    const start = SOURCE.indexOf("function scheduleWebglReconcile");
-    expect(start, "scheduleWebglReconcile not found").toBeGreaterThan(-1);
-    const next = SOURCE.indexOf("\n  function ", start + 1);
-    const body = SOURCE.slice(start, next > start ? next : start + 1400);
+  test("the reconcile owns the reveal work, gated on scroll-quiescence", () => {
+    const start = SOURCE.indexOf("function scheduleRevealReconcile");
+    expect(start, "scheduleRevealReconcile not found").toBeGreaterThan(-1);
+    const next = SOURCE.indexOf("\n  const writeBuffer", start + 1);
+    const body = SOURCE.slice(start, next > start ? next : start + 1800);
+    // WebGL switch + the reveal flush + refit all live here now.
     expect(body).toContain("attachWebgl()");
     expect(body).toContain("detachWebgl()");
+    expect(body).toContain("flushBufferedTerminalOutput()");
+    expect(body).toContain("resizeCoalescer?.trigger()");
     // Deferral is keyed off the shared scroll signal, not a blind timer.
     expect(body).toContain("msSinceScroll()");
     expect(body).toContain("SCROLL_QUIET_MS");

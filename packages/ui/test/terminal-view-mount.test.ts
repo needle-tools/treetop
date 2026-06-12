@@ -313,15 +313,19 @@ describe("TerminalView hidden terminal output", () => {
     expect(helper).toContain("hiddenFlushes += 1");
   });
 
-  test("flushes the retained hidden-output tail only on reveal", () => {
-    const observerIdx = SOURCE.indexOf("new IntersectionObserver");
-    expect(observerIdx).toBeGreaterThan(-1);
-    const resizeIdx = SOURCE.indexOf("resizeCoalescer?.trigger()", observerIdx);
-    expect(resizeIdx).toBeGreaterThan(observerIdx);
-    const block = SOURCE.slice(observerIdx, resizeIdx);
-    expect(block).toContain("if (visible && xterm)");
+  test("flushes the retained hidden-output tail only on a (deferred) reveal", () => {
+    // The flush moved from the observer into the scroll-gated reveal reconcile
+    // (so a scroll doesn't fire it per column-crossing), but it still only runs
+    // when this terminal is the reconcile's *visible* target.
+    const idx = SOURCE.indexOf("function scheduleRevealReconcile");
+    expect(idx).toBeGreaterThan(-1);
+    const end = SOURCE.indexOf("\n  const writeBuffer", idx);
+    const block = SOURCE.slice(idx, end > idx ? end : idx + 1800);
+    // Hidden branch returns early; flush is in the visible branch.
+    expect(block).toContain("if (!revealReconcileTarget)");
     expect(block).toContain("flushBufferedTerminalOutput()");
     expect(block).toContain("xterm.write(batch)");
+    expect(block).toContain("resizeCoalescer?.trigger()");
   });
 
   test("reports visibility to the daemon so hidden PTY output can be muted", () => {
