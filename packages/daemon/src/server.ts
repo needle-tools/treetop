@@ -112,6 +112,8 @@ import {
   resolveAgentBinary,
   discoverRepoProcesses,
   throttleAsync,
+  withTimeout,
+  type ProcUsage,
 } from "./procs";
 import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
@@ -288,37 +290,141 @@ const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
  *  EXTERNAL_SCAN_TTL_MS rather than instantly — an acceptable trade for
  *  not re-enumerating every process on the box twice a poll. */
 const EXTERNAL_SCAN_TTL_MS = 8_000;
+const EXTERNAL_SCAN_TIMEOUT_MS = 3_000;
+const PROCESS_REPO_LIST_TIMEOUT_MS = 1_500;
+const PROCESS_SAMPLE_TIMEOUT_MS = 1_500;
+const PROCESS_SAMPLE_TTL_MS = 750;
+const PROCESS_WORKTREE_TIMEOUT_MS = 1_000;
+const PROCESS_EXTERNAL_ROWS_TIMEOUT_MS =
+  EXTERNAL_SCAN_TIMEOUT_MS + PROCESS_WORKTREE_TIMEOUT_MS;
+const PROCESS_ROUTE_SLOW_MS = 1_000;
+const PROCESS_EXTERNAL_SLOW_MS = 1_000;
+let lastProcessSamples = new Map<number, ProcUsage>();
+const processSamples = throttleAsync(async () => {
+  const records = terminalBackend.list().filter((r) => !r.exitedAt);
+  try {
+    lastProcessSamples = await withTimeout(
+      sampleProcs(records.map((r) => r.pid)),
+      PROCESS_SAMPLE_TIMEOUT_MS,
+      "process sample",
+    );
+  } catch (err) {
+    console.warn(
+      `supergit daemon: /api/processes process sample skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return lastProcessSamples;
+}, PROCESS_SAMPLE_TTL_MS);
+
+let lastExternalProcessRows: Array<{
+  id: string;
+  pid: number;
+  agent: undefined;
+  cmd: string[];
+  cwd: string;
+  ownerId: undefined;
+  createdAt: undefined;
+  lastOutputAt: undefined;
+  cpuPercent: number;
+  memBytes: number;
+  kind: "external";
+  comm: string;
+}> = [];
 const externalProcessRows = throttleAsync(async () => {
+  const scanStarted = Date.now();
+  let repoCount = 0;
+  let pathCount = 0;
+  let worktreeMs = 0;
+  let discoverMs = 0;
+  let skippedWorktrees = 0;
+  let slowestWorktree: { repo: string; ms: number } | null = null;
   const records = terminalBackend.list().filter((r) => !r.exitedAt);
   const excludePids = new Set<number>([
     process.pid,
     ...records.map((r) => r.pid),
   ]);
-  const repos = await workspace.listRepos();
+  const repos = await withTimeout(
+    workspace.listRepos(),
+    PROCESS_REPO_LIST_TIMEOUT_MS,
+    "process repo list",
+  ).catch((err) => {
+    console.warn(
+      `supergit daemon: /api/processes repo list skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  });
+  if (!repos) return lastExternalProcessRows;
+  repoCount = repos.length;
   const allPaths = new Set(repos.map((r) => r.path));
   for (const repo of repos) {
+    const wtStarted = Date.now();
     try {
-      const wts = await listWorktrees(repo.path);
+      const wts = await withTimeout(
+        listWorktrees(repo.path),
+        PROCESS_WORKTREE_TIMEOUT_MS,
+        `worktree list ${repo.path}`,
+      );
       for (const wt of wts) allPaths.add(wt.path);
-    } catch {
-      /* repo might be gone */
+    } catch (err) {
+      skippedWorktrees += 1;
+      console.warn(
+        `supergit daemon: /api/processes worktree list skipped repo=${repo.id} path=${repo.path} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      const elapsed = Date.now() - wtStarted;
+      worktreeMs += elapsed;
+      if (!slowestWorktree || elapsed > slowestWorktree.ms) {
+        slowestWorktree = { repo: repo.id || basename(repo.path), ms: elapsed };
+      }
     }
   }
-  const external = await discoverRepoProcesses([...allPaths], excludePids);
-  return external.map((ep) => ({
-    id: `ext-${ep.pid}`,
-    pid: ep.pid,
-    agent: undefined,
-    cmd: [ep.args],
-    cwd: ep.cwd,
-    ownerId: undefined,
-    createdAt: undefined,
-    lastOutputAt: undefined,
-    cpuPercent: ep.cpuPercent,
-    memBytes: ep.memBytes,
-    kind: "external" as const,
-    comm: ep.comm,
-  }));
+  pathCount = allPaths.size;
+  try {
+    const discoverStarted = Date.now();
+    const external = await withTimeout(
+      discoverRepoProcesses([...allPaths], excludePids),
+      EXTERNAL_SCAN_TIMEOUT_MS,
+      "external process scan",
+    );
+    discoverMs = Date.now() - discoverStarted;
+    lastExternalProcessRows = external.map((ep) => ({
+      id: `ext-${ep.pid}`,
+      pid: ep.pid,
+      agent: undefined,
+      cmd: [ep.args],
+      cwd: ep.cwd,
+      ownerId: undefined,
+      createdAt: undefined,
+      lastOutputAt: undefined,
+      cpuPercent: ep.cpuPercent,
+      memBytes: ep.memBytes,
+      kind: "external" as const,
+      comm: ep.comm,
+    }));
+  } catch (err) {
+    console.warn(
+      `supergit daemon: /api/processes external scan skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  const totalMs = Date.now() - scanStarted;
+  if (totalMs > PROCESS_EXTERNAL_SLOW_MS || skippedWorktrees > 0) {
+    console.log(
+      `supergit daemon: /api/processes external scan total=${totalMs}ms repos=${repoCount} paths=${pathCount} worktrees=${worktreeMs}ms skippedWorktrees=${skippedWorktrees} slowestWorktree=${
+        slowestWorktree
+          ? `${slowestWorktree.repo}:${slowestWorktree.ms}ms`
+          : "none"
+      } discover=${discoverMs}ms rows=${lastExternalProcessRows.length}`,
+    );
+  }
+  return lastExternalProcessRows;
 }, EXTERNAL_SCAN_TTL_MS);
 
 /** Active /api/ollama/chat streams keyed by termId. Lets a second
@@ -3679,8 +3785,13 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/processes" && req.method === "GET") {
+        const routeStarted = Date.now();
         const records = terminalBackend.list().filter((r) => !r.exitedAt);
-        const samples = await sampleProcs(records.map((r) => r.pid));
+        let sampleMs = 0;
+        let externalMs = 0;
+        const sampleStarted = Date.now();
+        const samples = await processSamples();
+        sampleMs = Date.now() - sampleStarted;
         const tuis = records.map((r) => {
           const s = samples.get(r.pid);
           return {
@@ -3700,8 +3811,31 @@ const server = Bun.serve<TermWsData, never>({
         // External rows come from a throttled full-machine scan (see
         // externalProcessRows) so a fast poll doesn't re-enumerate every
         // process twice. TUI rows above are always fresh.
-        const externalRows = await externalProcessRows();
-        return json([...tuis, ...externalRows]);
+        let externalRows = lastExternalProcessRows;
+        const externalStarted = Date.now();
+        try {
+          externalRows = await withTimeout(
+            externalProcessRows(),
+            PROCESS_EXTERNAL_ROWS_TIMEOUT_MS,
+            "external process rows",
+          );
+        } catch (err) {
+          console.warn(
+            `supergit daemon: /api/processes external rows skipped — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        } finally {
+          externalMs = Date.now() - externalStarted;
+        }
+        const rows = [...tuis, ...externalRows];
+        const totalMs = Date.now() - routeStarted;
+        if (totalMs > PROCESS_ROUTE_SLOW_MS) {
+          console.log(
+            `supergit daemon: /api/processes slow total=${totalMs}ms tuiRows=${tuis.length} externalRows=${externalRows.length} sample=${sampleMs}ms external=${externalMs}ms`,
+          );
+        }
+        return json(rows);
       }
 
       if (

@@ -235,7 +235,7 @@
 
   function sendPasteDebug(
     id: string,
-    phase: "insert-attempt" | "insert-sent",
+    phase: string,
     extra: Record<string, string | number | boolean | null> = {},
   ): boolean {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -252,6 +252,36 @@
       return true;
     } catch {
       return false;
+    }
+  }
+
+  function terminalImagePasteBehavior(): "direct" | "attachment" {
+    return getSetting("terminal.imagePasteBehavior") === "attachment"
+      ? "attachment"
+      : "direct";
+  }
+
+  function shouldUseNativeImagePaste(): boolean {
+    return terminalImagePasteBehavior() === "direct";
+  }
+
+  function sendNativeImagePaste(source: string): void {
+    const pasteDebugId = `p_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    const sent = sendTerminalInput(new Uint8Array([0x16]));
+    sendPasteDebug(
+      pasteDebugId,
+      sent ? "native-paste-sent" : "native-paste-closed",
+      {
+        mode: "direct",
+        source,
+      },
+    );
+    if (!sent) {
+      console.warn(
+        "supergit: native image paste ignored; websocket is not open",
+      );
     }
   }
 
@@ -1253,9 +1283,7 @@
    *  paste-image extensions do (save → insert path) — the difference is
    *  the upload goes through the daemon instead of an extension host.
    *  We append a trailing space so consecutive drops/pastes don't
-   *  concatenate into one unreadable line, and so an agent's prompt
-   *  ends up with `prompt @path1 @path2 ` shape if the user pastes
-   *  several in a row. */
+   *  concatenate into one unreadable line. */
   async function uploadAndInsert(blob: Blob, filename?: string): Promise<void> {
     const pasteDebugId = `p_${Date.now().toString(36)}_${Math.random()
       .toString(36)
@@ -1319,9 +1347,11 @@
   }
 
   /** Read the clipboard via the async Clipboard API and paste into the
-   *  PTY. Images route through /api/attach + path insertion (the same
-   *  shape as drag-drop); plain text goes through `xterm.paste()` which
-   *  picks up bracketed-paste mode + line-ending normalization. Driven
+   *  PTY. Images use the native/direct paste path by default so terminal
+   *  apps that understand image clipboard paste can read the bytes
+   *  themselves. The attachment setting keeps the old resize/save/path
+   *  flow. Plain text goes through `xterm.paste()` which picks up
+   *  bracketed-paste mode + line-ending normalization. Driven
    *  by the custom keydown handler so paste reliably fires on Windows,
    *  where xterm.js's default Ctrl+V keydown calls preventDefault and
    *  the browser then never dispatches a `paste` event for our capture-
@@ -1338,6 +1368,10 @@
         for (const item of items) {
           for (const type of item.types) {
             if (type.startsWith("image/")) {
+              if (shouldUseNativeImagePaste()) {
+                sendNativeImagePaste("clipboard-read");
+                return;
+              }
               const blob = await item.getType(type);
               await uploadAndInsert(blob);
               return;
@@ -1399,8 +1433,9 @@
   // handler we registered here never ran), and on Windows it also
   // appears to drop normal text pastes when focus isn't where xterm
   // expects. So we own paste end-to-end:
-  //   - image clipboard item → upload to /api/attach and write the
-  //     absolute path into the PTY (same dance as drag-and-drop).
+  //   - image clipboard item → ask the terminal app to read the native
+  //     image clipboard directly (default) or upload to /api/attach and write
+  //     the absolute path into the PTY when the attachment mode is set.
   //   - text/plain → hand off to xterm.paste(), the public API that
   //     applies bracketed-paste wrapping and triggers the onData event
   //     we already pipe to the daemon via ws.send. This bypasses
@@ -1429,10 +1464,14 @@
     }
     for (const it of cd.items) {
       if (it.kind === "file" && it.type.startsWith("image/")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (shouldUseNativeImagePaste()) {
+          sendNativeImagePaste("paste-event");
+          return;
+        }
         const blob = it.getAsFile();
         if (blob) {
-          e.preventDefault();
-          e.stopPropagation();
           void uploadAndInsert(blob);
           // Only handle the first image item; otherwise multiple PNGs
           // in the same clipboard event would race to land in the PTY.

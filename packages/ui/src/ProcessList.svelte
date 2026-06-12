@@ -91,6 +91,8 @@
   let open = false;
   export let procs: TuiProc[] = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let refreshInFlight = false;
+  let refreshAbort: AbortController | null = null;
   let everLoaded = false;
   let loading = false;
   let collapsed: Record<string, boolean> = {};
@@ -286,10 +288,22 @@
     collapsed = { ...collapsed, [name]: !collapsed[name] };
   }
 
+  const PROCESS_POLL_TIMEOUT_MS = 4_000;
+
   async function refresh() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     loading = true;
+    const controller = new AbortController();
+    refreshAbort = controller;
+    const timeout = setTimeout(
+      () => controller.abort(),
+      PROCESS_POLL_TIMEOUT_MS,
+    );
     try {
-      const res = await fetch(apiUrl("/api/processes"));
+      const res = await fetch(apiUrl("/api/processes"), {
+        signal: controller.signal,
+      });
       if (!res.ok) return;
       procs = (await res.json()) as TuiProc[];
       processStore.set(procs);
@@ -306,6 +320,9 @@
       closing = closing;
     } catch {
     } finally {
+      clearTimeout(timeout);
+      if (refreshAbort === controller) refreshAbort = null;
+      refreshInFlight = false;
       loading = false;
     }
   }
@@ -326,6 +343,7 @@
       clearInterval(pollTimer);
       pollTimer = null;
     }
+    refreshAbort?.abort();
   }
   function toggle() {
     open = !open;

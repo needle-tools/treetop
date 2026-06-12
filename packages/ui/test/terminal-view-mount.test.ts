@@ -146,14 +146,14 @@ describe("TerminalView clipboard copy + paste", () => {
     // The handler must look at KeyV specifically, not the broader keydown
     // stream (otherwise we'd swallow unrelated shortcuts).
     expect(SOURCE).toMatch(/code\s*===\s*["']KeyV["']/);
-    // And it must route to our own clipboard reader rather than letting
-    // xterm send the 0x16 SYN byte.
+    // And it must route text paste to our own clipboard reader; image
+    // paste may intentionally forward a native paste key to the PTY.
     expect(SOURCE).toContain("doClipboardPaste");
   });
 
   test("doClipboardPaste reads images + text via async Clipboard API", () => {
-    // Images route through the same /api/attach + path-insertion as
-    // drag-drop (uploadAndInsert); text routes through xterm.paste()
+    // Images can still route through the same /api/attach + path-insertion
+    // as drag-drop (uploadAndInsert); text routes through xterm.paste()
     // so bracketed-paste mode keeps working.
     expect(SOURCE).toContain("navigator.clipboard.read");
     expect(SOURCE).toMatch(/uploadAndInsert\(blob\)/);

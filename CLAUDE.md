@@ -98,6 +98,9 @@ changed; never batch-commit unrelated changes from other sessions.
 
 - Mocking the thing under test, or mocking the database.
 - Tests that pass without asserting.
+- String assertions over source files. Tests should exercise useful behavior
+  through functions, stores, routes, or components; if behavior is hard to
+  reach, refactor toward a testable unit instead of reading source text.
 - Silent error handling (`unwrap_or_default()` style in hot paths).
 - `it.skip` / `xfail` without a tracking issue.
 - Refactor + new behavior in one PR.

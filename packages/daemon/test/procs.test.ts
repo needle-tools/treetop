@@ -5,6 +5,7 @@ import {
   sampleProcs,
   normalizeCpuPercent,
   throttleAsync,
+  withTimeout,
 } from "../src/procs";
 
 const isWin = process.platform === "win32";
@@ -104,6 +105,23 @@ describe("throttleAsync", () => {
     // same TTL window, but the failure cleared inflight and never cached
     expect(await get()).toBe(42);
     expect(calls).toBe(2);
+  });
+});
+
+describe("withTimeout", () => {
+  test("resolves when the wrapped promise wins the race", async () => {
+    await expect(withTimeout(Promise.resolve(7), 50, "fast")).resolves.toBe(7);
+  });
+
+  test("rejects when the timeout wins the race", async () => {
+    let release!: (value: number) => void;
+    const slow = new Promise<number>((resolve) => {
+      release = resolve;
+    });
+    await expect(withTimeout(slow, 1, "slow scan")).rejects.toThrow(
+      "slow scan timed out after 1ms",
+    );
+    release(1);
   });
 });
 

@@ -496,6 +496,18 @@
         type: "boolean",
         default: false,
       },
+      {
+        key: "terminal.imagePasteBehavior",
+        label: "Image paste",
+        description:
+          "Direct lets terminal apps read image bytes from the native clipboard. Attachment resizes the image, saves it, and pastes the file path.",
+        type: "enum",
+        default: "direct",
+        options: [
+          { value: "direct", label: "Direct" },
+          { value: "attachment", label: "Attachment path" },
+        ],
+      },
     ],
   });
   registerSettings({
