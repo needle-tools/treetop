@@ -135,6 +135,47 @@ describe("detectSshFromCmd", () => {
   test("returns null for empty cmd", () => {
     expect(detectSshFromCmd([])).toBeNull();
   });
+
+  test("detects ssh split across separate argv tokens (cmd.exe /c)", () => {
+    // Windows command-link runs spawn `cmd.exe /c ssh user@host`, where ssh
+    // and its host are SEPARATE tokens after the wrapper — the form the
+    // idle reaper must recognise to reap a backgrounded ssh login.
+    const result = detectSshFromCmd([
+      "cmd.exe",
+      "/c",
+      "ssh",
+      "needle@100.127.5.67",
+    ]);
+    expect(result).toBeTruthy();
+    expect(result!.user).toBe("needle");
+    expect(result!.host).toBe("100.127.5.67");
+    expect(result!.port).toBe(22);
+  });
+
+  test("detects ssh.exe with separate host token", () => {
+    const result = detectSshFromCmd(["cmd.exe", "/c", "ssh.exe", "box"]);
+    expect(result).toBeTruthy();
+    expect(result!.host).toBe("box");
+  });
+
+  test("detects ssh split tokens with port flag", () => {
+    const result = detectSshFromCmd([
+      "cmd.exe",
+      "/c",
+      "ssh",
+      "-p",
+      "2222",
+      "deploy@staging",
+    ]);
+    expect(result).toBeTruthy();
+    expect(result!.port).toBe(2222);
+    expect(result!.host).toBe("staging");
+  });
+
+  test("does not false-positive on ssh-like substrings", () => {
+    expect(detectSshFromCmd(["cmd.exe", "/c", "npm", "run", "ssh-deploy"])).toBeNull();
+    expect(detectSshFromCmd(["git", "push", "ssh://git@host/repo"])).toBeNull();
+  });
 });
 
 describe("detectSshChildren", () => {

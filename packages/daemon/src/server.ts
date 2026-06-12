@@ -87,6 +87,7 @@ import {
   type SshSession,
 } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
+import { IdleReaper } from "./idle-reaper";
 import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
 import {
@@ -8867,6 +8868,7 @@ const shutdown = async (signal: string) => {
     // then force-kill stragglers — before we tear anything else down.
     await terminalBackend.gracefulShutdown(PTY_DRAIN_MS);
     orphanCleaner.dispose();
+    idleReaper.dispose();
     sshSyncTracker.dispose();
     sshPool.disconnectAll();
     await tunnelManager.closeAll().catch(() => {});
@@ -8998,6 +9000,41 @@ setInterval(() => {
   void sampleShellCwds();
   void sampleSshSessions();
 }, SHELL_CWD_INTERVAL_MS);
+
+// Reap backgrounded, idle ssh logins. "Closing" a terminal panel only
+// backgrounds it (a hidden muted subscriber keeps the grace timer from
+// firing), so an interactive `ssh` session can stay authenticated and
+// re-attachable for hours. Kill ssh PTYs that no on-screen socket is
+// watching once they've been silent for SUPERGIT_TERMINAL_IDLE_REAP_MS
+// (default 10m). 0 disables. See idle-reaper.ts for why this is ssh-only.
+const IDLE_REAP_MS = Number(
+  process.env.SUPERGIT_TERMINAL_IDLE_REAP_MS ?? 10 * 60 * 1000,
+);
+const idleReaper = new IdleReaper({
+  idleMs: IDLE_REAP_MS,
+  getCandidates: () =>
+    terminalBackend.list().map((r) => ({
+      id: r.id,
+      pid: r.pid,
+      isAlive: !r.exitedAt,
+      isSsh: !!detectSshFromCmd(r.cmd),
+      visibleCount: visibleTerminalSockets.get(r.id) ?? 0,
+      lastOutputAt: r.lastOutputAt,
+    })),
+  killTerminal: async (id) => {
+    cancelGrace(id);
+    const h = terminalBackend.get(id);
+    if (h?.isAlive()) await h.kill();
+  },
+  log: (msg) => console.log(`supergit daemon: ${msg}`),
+});
+if (IDLE_REAP_MS > 0) {
+  idleReaper.start();
+} else {
+  console.log(
+    "supergit daemon: idle ssh reaper disabled (SUPERGIT_TERMINAL_IDLE_REAP_MS=0)",
+  );
+}
 
 async function sampleSshSessions(): Promise<void> {
   if (sseSubscribers.size === 0) return;

@@ -107,6 +107,20 @@ export function detectSshFromCmd(cmd: string[]): SshSession | null {
     const p = parseSshArgs(arg);
     if (p) return { sshPid: 0, user: p.user, host: p.host, port: p.port };
   }
+  // Wrapped form where the ssh invocation is split across separate argv
+  // tokens after a shell prefix — e.g. ["cmd.exe","/c","ssh","user@host"]
+  // (the Windows command-link spawn shape). Neither the joined parse (first
+  // token is the wrapper) nor the per-arg parse (host is a separate token)
+  // catches it, so scan for the ssh executable token and re-parse from there,
+  // normalising the basename so `ssh.exe` / full paths still match.
+  const flat = joined.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < flat.length; i++) {
+    const base = (flat[i]!.split(/[\\/]/).pop() || flat[i]!).toLowerCase();
+    if (base === "ssh" || base === "ssh.exe") {
+      const p = parseSshArgs(["ssh", ...flat.slice(i + 1)].join(" "));
+      if (p) return { sshPid: 0, user: p.user, host: p.host, port: p.port };
+    }
+  }
   return null;
 }
 
