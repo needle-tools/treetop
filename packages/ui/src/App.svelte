@@ -685,10 +685,39 @@
    *  `false` on every zen entry/exit so the next zen session starts
    *  clean. */
   let notesShownInZen = false;
+  /** Zen menu-pill reveal. In zen the top menubar pill is retracted
+   *  above the viewport; this flag slides it back in. It's armed by a
+   *  non-blocking pointermove listener (no overlay → nothing near the
+   *  top edge is click-blocked) when the cursor reaches the top edge,
+   *  and disarms ~2s after the cursor last touched that edge. CSS
+   *  :hover/:focus-within keep it open while you actually interact, so
+   *  the timer expiring mid-use can't snap it shut. */
+  let zenMenuArmed = false;
+  let zenMenuDisarmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cursor must be within this many px of the top to reveal the pill. */
+  const ZEN_MENU_REVEAL_PX = 6;
+  /** Linger after the cursor last touched the top edge before retracting. */
+  const ZEN_MENU_LINGER_MS = 2000;
+  function armZenMenu() {
+    zenMenuArmed = true;
+    if (zenMenuDisarmTimer) clearTimeout(zenMenuDisarmTimer);
+    zenMenuDisarmTimer = setTimeout(() => {
+      zenMenuArmed = false;
+      zenMenuDisarmTimer = null;
+    }, ZEN_MENU_LINGER_MS);
+  }
+  function resetZenMenu() {
+    zenMenuArmed = false;
+    if (zenMenuDisarmTimer) {
+      clearTimeout(zenMenuDisarmTimer);
+      zenMenuDisarmTimer = null;
+    }
+  }
   function toggleZenRow(key: string) {
     const exiting = zenRowKey === key;
     zenRowKey = exiting ? null : key;
     notesShownInZen = false;
+    resetZenMenu();
     if (exiting) {
       const wtPath = key.split("|").slice(1).join("|");
       if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
@@ -6488,6 +6517,7 @@
         const wtPath = zenRowKey.split("|").slice(1).join("|");
         zenRowKey = null;
         notesShownInZen = false;
+        resetZenMenu();
         if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
       }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
@@ -6519,6 +6549,15 @@
     // can stopPropagation the keydown — which used to happen when a
     // popover swallowed Cmd+Z on its way to the document listener.
     window.addEventListener("keydown", handleKey, { capture: true });
+    // Zen menu-pill reveal: arm when the cursor reaches the very top of
+    // the viewport. No overlay/hot-zone element — we just read clientY —
+    // so nothing near the top edge is ever click-blocked. Only active in
+    // zen; otherwise the pill is always visible and this is a no-op.
+    const handleZenPointer = (e: PointerEvent) => {
+      if (zenRowKey === null) return;
+      if (e.clientY <= ZEN_MENU_REVEAL_PX) armZenMenu();
+    };
+    window.addEventListener("pointermove", handleZenPointer, { passive: true });
     // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
     // when the user has open sessions (claude/codex chats, terminals).
     // No prompt on an empty dashboard so a fresh reload stays silent.
@@ -6602,6 +6641,8 @@
       cancelScrollRestore?.();
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
+      window.removeEventListener("pointermove", handleZenPointer);
+      resetZenMenu();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unsubStream();
       closeRemoteStreams();
@@ -6732,7 +6773,7 @@
        transform would become the containing block for the
        JS-positioned fixed tooltips anchored inside). Per-button
        popovers still anchor to their own `.actions-anchor`. -->
-  <div class="menubar-stack">
+  <div class="menubar-stack" class:zen-menu-armed={zenMenuArmed}>
     <nav class="menubar" aria-label="Workspace actions">
       <h1 class="menubar-brand">
         <a href="https://needle.tools" target="_blank" rel="noopener noreferrer">
