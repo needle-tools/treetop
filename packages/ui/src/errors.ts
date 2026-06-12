@@ -58,6 +58,12 @@ export function describeWsClose(code: number, reason?: string): string {
   return `WebSocket closed (code ${code || "unknown"}).`;
 }
 
+export function terminalWsCloseRepresentsExit(opts: {
+  sawExitFrame: boolean;
+}): boolean {
+  return opts.sawExitFrame;
+}
+
 export interface FrontendErrorEntry {
   id: string;
   timestamp: string;

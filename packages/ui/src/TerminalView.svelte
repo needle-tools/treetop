@@ -33,7 +33,7 @@
     type ConfigActionKind,
     type ConfigActionState,
   } from "./config-error-action";
-  import { describeWsClose } from "./errors";
+  import { describeWsClose, terminalWsCloseRepresentsExit } from "./errors";
   import { settingValue, getSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
 
@@ -461,6 +461,7 @@
    *  vanishing on click. Reset whenever the underlying error clears. */
   let configAction: ConfigActionState | null = null;
   let exitInfo: { code: number; signal?: string } | null = null;
+  let sawExitFrame = false;
   let focused = false;
   /** Hard ceiling on how long we sit in `phase === "starting"`. POST
    *  /api/terminals + WS handshake should take well under a second in
@@ -597,6 +598,7 @@
   async function spawnPtyAndConnect() {
     spawnAttempts++;
     attachedThisAttempt = false;
+    sawExitFrame = false;
     startupAbort = new AbortController();
     startupTimer = setTimeout(() => {
       if (phase !== "starting") return;
@@ -723,6 +725,7 @@
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.type === "exit") {
+              sawExitFrame = true;
               exitInfo = { code: obj.code, signal: obj.signal };
               phase = "exited";
               // The config dialog is gone once the PTY exits (the user
@@ -774,10 +777,11 @@
       ws.onclose = (ev) => {
         if (phase === "exited" || phase === "error") return;
         clearStartupGuard();
-        // A clean close with no preceding error = the daemon tore the PTY
-        // down (grace timer fired, or a normal exit we didn't get an
-        // explicit frame for). Flip back to "exited" so the UI recovers.
-        if (ev.code === 1000 && !wsErrored) {
+        if (
+          ev.code === 1000 &&
+          !wsErrored &&
+          terminalWsCloseRepresentsExit({ sawExitFrame })
+        ) {
           phase = "exited";
           if (!exitInfo) exitInfo = { code: 0 };
           onExit(exitInfo);
@@ -799,6 +803,12 @@
           ws = null;
           spawnAttempts = 0;
           void spawnPtyAndConnect();
+          return;
+        }
+        if (ev.code === 1000 && !wsErrored) {
+          error =
+            "Terminal connection closed before the daemon reported a process exit. Close and reopen the session, or press Retry to reconnect.";
+          phase = "error";
           return;
         }
         // Abnormal close (or onerror fired first): surface *why* from the

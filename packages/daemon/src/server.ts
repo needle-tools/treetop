@@ -1953,11 +1953,19 @@ function startGraceIfIdle(termId: string) {
   if (!handle) return;
   if (handle.subscriberCount() > 0) return;
   if (graceTimers.has(termId)) return;
+  console.log(
+    `supergit daemon: terminal grace scheduled id=${termId} pid=${handle.pid} delay=${GRACE_MS}ms`,
+  );
   const timer = setTimeout(() => {
     graceTimers.delete(termId);
     const h = terminalBackend.get(termId);
     if (!h) return;
-    if (h.subscriberCount() === 0 && h.isAlive()) void h.kill();
+    if (h.subscriberCount() === 0 && h.isAlive()) {
+      console.log(
+        `supergit daemon: terminal grace reap id=${termId} pid=${h.pid}`,
+      );
+      void h.kill();
+    }
   }, GRACE_MS);
   graceTimers.set(termId, timer);
 }
@@ -3602,6 +3610,9 @@ const server = Bun.serve<TermWsData, never>({
             size: { cols: clampCols(body.cols), rows: clampRows(body.rows) },
             historyPreload,
           });
+          console.log(
+            `supergit daemon: terminal spawn id=${handle.id} owner=${body.ownerId ?? "-"} agent=${agentHint ?? "unknown"} pid=${handle.pid} cwd=${body.cwd}`,
+          );
           // For shell PTYs, persist a header into <workspace>/shells/<id>.jsonl
           // so the workspace (not the browser's localStorage) is the source
           // of truth for "which Terminal columns are open." On reload the UI
@@ -3678,6 +3689,11 @@ const server = Bun.serve<TermWsData, never>({
           }
           return json({ id: handle.id, pid: handle.pid });
         } catch (e) {
+          console.warn(
+            `supergit daemon: terminal spawn failed owner=${body.ownerId ?? "-"} agent=${agentHint ?? "unknown"} cwd=${body.cwd}: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
           return json(
             { error: e instanceof Error ? e.message : String(e) },
             { status: 500 },
@@ -3842,6 +3858,9 @@ const server = Bun.serve<TermWsData, never>({
         const handle = terminalBackend.get(termId);
         if (!handle) return json({ error: "not found" }, { status: 404 });
         cancelGrace(termId);
+        console.log(
+          `supergit daemon: terminal delete id=${termId} pid=${handle.pid}`,
+        );
         void handle.kill();
         return json({ ok: true });
       }
@@ -8691,6 +8710,9 @@ const server = Bun.serve<TermWsData, never>({
       }
       cancelGrace(termId);
       orphanCleaner.onFrontendConnected();
+      console.log(
+        `supergit daemon: terminal ws open id=${termId} pid=${handle.pid}`,
+      );
       addVisibleTerminalSocket(termId);
       updateTerminalOutputMute(termId);
       const soundScanner = new SoundMarkerScanner();
@@ -8719,6 +8741,10 @@ const server = Bun.serve<TermWsData, never>({
           }
         },
         onExit(info) {
+          console.log(
+            `supergit daemon: terminal exit id=${termId} pid=${handle.pid} code=${info.code}` +
+              `${info.signal ? ` signal=${info.signal}` : ""}`,
+          );
           ws.send(JSON.stringify({ type: "exit", ...info }));
           // Give the client a beat to render the exit notice, then close.
           setTimeout(() => {
@@ -8814,6 +8840,7 @@ const server = Bun.serve<TermWsData, never>({
         return;
       }
       const termId = ws.data.termId;
+      console.log(`supergit daemon: terminal ws close id=${termId}`);
       if (ws.data.outputVisible) {
         removeVisibleTerminalSocket(termId);
         updateTerminalOutputMute(termId);

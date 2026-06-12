@@ -9,6 +9,7 @@ import {
   getErrors,
   __resetFetchTrackingForTests,
   describeWsClose,
+  terminalWsCloseRepresentsExit,
   type FrontendErrorEntry,
 } from "../src/errors";
 
@@ -73,6 +74,16 @@ describe("describeWsClose", () => {
   test("falls back to the bare code when nothing else is known", () => {
     expect(describeWsClose(1005)).toBe("WebSocket closed (code 1005).");
     expect(describeWsClose(0)).toContain("unknown");
+  });
+});
+
+describe("terminal websocket close lifecycle", () => {
+  test("clean transport close is not a terminal exit without an exit frame", () => {
+    expect(terminalWsCloseRepresentsExit({ sawExitFrame: false })).toBe(false);
+  });
+
+  test("daemon exit frame is the terminal-exit authority", () => {
+    expect(terminalWsCloseRepresentsExit({ sawExitFrame: true })).toBe(true);
   });
 });
 
