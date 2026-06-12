@@ -225,11 +225,34 @@
     return String(bytes);
   }
 
-  function sendTerminalInput(data: Uint8Array | string): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  function sendTerminalInput(data: Uint8Array | string): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     const bytes = typeof data === "string" ? textEncoder.encode(data) : data;
     recordTx(bytes.byteLength);
     ws.send(bytes);
+    return true;
+  }
+
+  function sendPasteDebug(
+    id: string,
+    phase: "insert-attempt" | "insert-sent",
+    extra: Record<string, string | number | boolean | null> = {},
+  ): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "paste-debug",
+          id,
+          phase,
+          termId: terminalId || null,
+          ...extra,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Windows cmd:  needle@HOST C:\Users\needle\Music>
@@ -1234,7 +1257,16 @@
    *  ends up with `prompt @path1 @path2 ` shape if the user pastes
    *  several in a row. */
   async function uploadAndInsert(blob: Blob, filename?: string): Promise<void> {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const pasteDebugId = `p_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn(
+        "supergit: terminal image paste ignored; websocket is not open",
+      );
+      return;
+    }
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       // Downscale oversized screenshots before upload so the receiving
       // agent doesn't waste vision tokens on pixels Claude would have
@@ -1246,17 +1278,43 @@
         "file",
         filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
-      const res = await fetch(apiUrl("/api/attach"), {
+      form.append("pasteDebugId", pasteDebugId);
+      if (terminalId) form.append("termId", terminalId);
+      form.append("source", "terminal-image-paste");
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), 30_000);
+      const res = await fetch(apiUrl("/api/attach", daemonId), {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn(
+          `supergit: terminal image paste attach failed: ${res.status}`,
+        );
+        return;
+      }
       const { path } = (await res.json()) as { path: string };
-      sendTerminalInput(path + " ");
-    } catch {
-      // Silent — paste failures shouldn't surface a noisy error in the
-      // terminal panel; the user will notice nothing was inserted and
-      // can try again.
+      const basename = path.split(/[\\/]/).pop() ?? "";
+      sendPasteDebug(pasteDebugId, "insert-attempt", {
+        file: basename,
+        bytes: shrunk.size,
+      });
+      if (!sendTerminalInput(path + " ")) {
+        console.warn(
+          "supergit: terminal image paste saved but terminal websocket closed before insert",
+        );
+        return;
+      }
+      sendPasteDebug(pasteDebugId, "insert-sent", {
+        file: basename,
+        bytes: shrunk.size,
+        chars: path.length + 1,
+      });
+    } catch (err) {
+      console.warn("supergit: terminal image paste failed", err);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 

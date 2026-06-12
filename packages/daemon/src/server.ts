@@ -1,4 +1,4 @@
-import { join, resolve, normalize, sep, dirname } from "node:path";
+import { join, resolve, normalize, sep, dirname, basename } from "node:path";
 import {
   homedir,
   totalmem,
@@ -196,6 +196,10 @@ const WORKSPACE_PATH =
 // startup banners survive headless runs. Best-effort; failures here
 // are non-fatal — the daemon keeps logging to stderr regardless.
 const daemonLogPath = await initDaemonLog(WORKSPACE_PATH);
+
+function stringFormValue(value: FormDataEntryValue | null): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
 
 // Last-resort crash guard: a stray unhandledRejection / uncaughtException
 // must NOT exit the daemon — every hosted TUI is a child of our PTY helper,
@@ -2375,11 +2379,19 @@ const server = Bun.serve<TermWsData, never>({
         const filename =
           file.name && file.name !== "blob" ? file.name : undefined;
         const mimeType = file.type || undefined;
+        const pasteDebugId = stringFormValue(form.get("pasteDebugId"));
+        const pasteTermId = stringFormValue(form.get("termId"));
+        const pasteSource = stringFormValue(form.get("source"));
         const result = await saveAttachment(
           join(WORKSPACE_PATH, "attachments"),
           bytes,
           { filename, mimeType },
         );
+        if (pasteDebugId || pasteSource === "terminal-image-paste") {
+          console.log(
+            `supergit daemon: paste-debug id=${pasteDebugId ?? "unknown"} phase=attach-saved term=${pasteTermId ?? "unknown"} size=${bytes.byteLength} mime=${mimeType ?? "unknown"} file=${basename(result.path)}`,
+          );
+        }
         return json(result, { status: 201 });
       }
 
@@ -8613,6 +8625,25 @@ const server = Bun.serve<TermWsData, never>({
             });
           } else if (parsed?.type === "visibility") {
             setTerminalOutputVisible(ws, parsed.visible === true);
+          } else if (parsed?.type === "paste-debug") {
+            const id = typeof parsed.id === "string" ? parsed.id : "unknown";
+            const phase =
+              typeof parsed.phase === "string" ? parsed.phase : "unknown";
+            const file = typeof parsed.file === "string" ? parsed.file : "";
+            const bytes =
+              typeof parsed.bytes === "number" && Number.isFinite(parsed.bytes)
+                ? parsed.bytes
+                : null;
+            const chars =
+              typeof parsed.chars === "number" && Number.isFinite(parsed.chars)
+                ? parsed.chars
+                : null;
+            console.log(
+              `supergit daemon: paste-debug id=${id} phase=${phase} term=${ws.data.termId}` +
+                `${file ? ` file=${basename(file)}` : ""}` +
+                `${bytes === null ? "" : ` bytes=${bytes}`}` +
+                `${chars === null ? "" : ` chars=${chars}`}`,
+            );
           }
         } catch {
           // ignore garbage control frames
