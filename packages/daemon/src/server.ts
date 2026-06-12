@@ -88,6 +88,7 @@ import {
 } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
 import { IdleReaper } from "./idle-reaper";
+import { trimTerminalBacklog } from "./terminal-backlog";
 import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
 import {
@@ -1995,34 +1996,28 @@ type TermWsData =
 // chunk anyway, so macOS showed multi-megabyte supergit->WebKit TCP send
 // queues and later UI actions looked like they arrived minutes late.
 //
-// This queue is intentionally lossless for a VISIBLE socket: if the browser
-// remains slower than the PTY, the backlog holds the bytes until it drains; we
-// never silently prune a watched terminal's stream.
+// The backlog doubles as the hidden-socket buffer: output for a hidden
+// terminal is queued here (not sent) and flushed on un-hide — delivery-level
+// muting that keeps the daemon seeing every byte (so working/awaiting stay
+// live) without flooding WebKit.
 //
-// It doubles as the hidden-socket buffer: output for a hidden terminal is
-// queued here (not sent) and flushed on un-hide — delivery-level muting that
-// keeps the daemon seeing every byte (so working/awaiting stay live) without
-// flooding WebKit. To bound memory, the HIDDEN path caps the backlog.
-const TERMINAL_HIDDEN_BACKLOG_CAP_BYTES = 1024 * 1024; // 1 MB
+// Both paths are bounded (see terminal-backlog.ts). The HIDDEN cap is tight;
+// the VISIBLE cap is a generous hard ceiling — a VISIBLE socket whose renderer
+// stopped draining entirely (an occluded Treetop window, where the
+// IntersectionObserver never fires `false`) must not buffer without bound, or
+// the daemon grows to GBs and OOMs the machine.
 
 function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
-  // Hidden (muted) socket: bound the buffered backlog so a noisy off-screen
-  // terminal can't grow daemon memory without limit. Drop the oldest bytes
-  // past the cap; on un-hide the socket still gets the recent tail (same
-  // guarantee a reconnect's replay gives). The visible-backpressure path
-  // above is left uncapped — it self-corrects when the socket drains.
-  if (!ws.data.outputVisible) {
-    while (
-      ws.data.pendingOutputBytes > TERMINAL_HIDDEN_BACKLOG_CAP_BYTES &&
-      ws.data.pendingOutput.length > 1
-    ) {
-      const dropped = ws.data.pendingOutput.shift();
-      ws.data.pendingOutputBytes -= dropped?.byteLength ?? 0;
-    }
-  }
+  // Drop the oldest bytes past the (visibility-dependent) cap; the socket still
+  // gets the recent tail, the same guarantee a reconnect's replay gives.
+  ws.data.pendingOutputBytes = trimTerminalBacklog(
+    ws.data.pendingOutput,
+    ws.data.pendingOutputBytes,
+    ws.data.outputVisible,
+  );
 }
 
 function takeTerminalOutputBacklog(

@@ -330,8 +330,17 @@ describe("TerminalView hidden terminal output", () => {
 
   test("reports visibility to the daemon so hidden PTY output can be muted", () => {
     expect(SOURCE).toContain("function sendVisibilityState()");
+    // Visibility reported to the daemon gates on BOTH the IntersectionObserver
+    // (in-viewport geometry) AND document visibility: a backgrounded / occluded
+    // window's socket stops draining, so it must report hidden or the daemon
+    // buffers its output without bound. See the OOM regression note in
+    // terminal-backlog.ts.
+    expect(SOURCE).toContain("isTerminalVisible && !document.hidden");
     expect(SOURCE).toContain(
-      'JSON.stringify({ type: "visibility", visible: isTerminalVisible })',
+      'JSON.stringify({ type: "visibility", visible })',
+    );
+    expect(SOURCE).toContain(
+      'document.addEventListener("visibilitychange"',
     );
     const openIdx = SOURCE.indexOf("ws.onopen = () =>");
     expect(openIdx).toBeGreaterThan(-1);

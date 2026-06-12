@@ -371,6 +371,7 @@
   let ws: WebSocket | null = null;
   let resizeObs: ResizeObserver | null = null;
   let onWindowResize: (() => void) | null = null;
+  let onDocVisibility: (() => void) | null = null;
   let resizeCoalescer: ResizeCoalescer | null = null;
   // Wait this long after the last resize trigger before refitting the PTY.
   // Long enough to outlast a zen/fullscreen animation's per-frame resize
@@ -526,7 +527,14 @@
 
   function sendVisibilityState(): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "visibility", visible: isTerminalVisible }));
+    // Gate on document visibility too, not just the IntersectionObserver. When
+    // the Treetop window is backgrounded / occluded, WebKit suspends the
+    // renderer and stops draining this socket, but the IntersectionObserver
+    // never fires `false` (the element is still geometrically in the viewport).
+    // Reporting hidden here lets the daemon mute delivery and cap its buffer,
+    // instead of growing it without bound until the machine OOMs.
+    const visible = isTerminalVisible && !document.hidden;
+    ws.send(JSON.stringify({ type: "visibility", visible }));
   }
 
   function publishTerminalIoStats(): void {
@@ -1145,6 +1153,13 @@
     window.addEventListener("resize", onWindowResize);
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
 
+    // Re-report visibility when the window is backgrounded / restored. The
+    // IntersectionObserver only tracks in-viewport geometry, so without this a
+    // backgrounded (undrained) socket stays "visible" to the daemon and its
+    // output buffer grows unbounded — see sendVisibilityState.
+    onDocVisibility = () => sendVisibilityState();
+    document.addEventListener("visibilitychange", onDocVisibility);
+
     // Focus/blur on the xterm container (the inner textarea bubbles
     // focusin/focusout up) arms the activity suppressor so the
     // resulting status-bar redraw burst from a focus-reporting TUI
@@ -1235,6 +1250,8 @@
     resizeCoalescer?.cancel();
     visibilityObs?.disconnect();
     if (onWindowResize) window.removeEventListener("resize", onWindowResize);
+    if (onDocVisibility)
+      document.removeEventListener("visibilitychange", onDocVisibility);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (ws && ws.readyState <= WebSocket.OPEN) {
       // Drop the socket's handlers BEFORE closing. This is a deliberate
