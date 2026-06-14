@@ -4929,7 +4929,47 @@
   /** Close the manage-daemon dialog and scroll the dashboard to a repo's
    *  row (rows carry data-repo-id). Two ticks so the dialog has unmounted
    *  and layout settled before scrollIntoView reads geometry. */
+  /** Switch the zen-focused row to another repo while staying in zen.
+   *  Used by the Projects menu and the dock's git-status arrow row:
+   *  both normally scroll the page to a repo, which is a no-op in zen
+   *  (every other row is hidden), so instead we re-point zen at that
+   *  repo's primary worktree row. Restores the target worktree's
+   *  visibility first (mirrors onDockPick) so its row element exists.
+   *  No-op — returns false — when not in zen or the repo is unknown. */
+  function switchZenToRepo(repoId: string): boolean {
+    if (zenRowKey === null) return false;
+    const repo = repos.find((r) => r.id === repoId);
+    const wts = repo?.worktrees ?? [];
+    if (!repo || wts.length === 0) return false;
+    const diskPaths = wts.map((w) => w.path);
+    const visible = effectiveVisibleWorktrees(
+      repoPrefsKey(repo),
+      diskPaths,
+      visibleWorktreesByRepo,
+    );
+    // Prefer an already-visible worktree so its row is in the DOM; fall
+    // back to the primary (first) worktree and restore its visibility.
+    const targetPath =
+      wts.find((w) => visible.includes(w.path))?.path ?? wts[0].path;
+    if (!visible.includes(targetPath)) {
+      visibleWorktreesByRepo = {
+        ...visibleWorktreesByRepo,
+        [repoPrefsKey(repo)]: [...visible, targetPath],
+      };
+    }
+    const targetKey = `${repo.id}|${targetPath}`;
+    if (zenRowKey !== targetKey) {
+      zenRowKey = targetKey;
+      notesShownInZen = false;
+      resetZenMenu();
+    }
+    return true;
+  }
+
   async function focusRepoRow(repoId: string): Promise<void> {
+    // In zen, jump zen to the chosen project instead of scrolling — the
+    // page scroll below is pointless when every other row is hidden.
+    if (switchZenToRepo(repoId)) return;
     daemonDialogId = null;
     await tick();
     await tick();
@@ -10118,6 +10158,8 @@
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
   on:scrollToRepo={(e) => {
+    // In zen, switch zen to this repo instead of scrolling the page.
+    if (switchZenToRepo(e.detail.repoId)) return;
     const el = document.querySelector(
       `.row[data-repo-id="${CSS.escape(e.detail.repoId)}"]`,
     ) as HTMLElement | null;
