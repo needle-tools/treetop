@@ -1223,6 +1223,15 @@
   }
   .dock-backdrop.visible {
     opacity: 1;
+    /* Bridge the dead gaps between dots. The backdrop covers the exact
+       bounding box of the dot column (gaps + repo-group margins
+       included), so capturing pointer events here keeps the cursor
+       "inside" the dock while sliding between dots — without it,
+       crossing a gap reports a relatedTarget outside the dock and the
+       100ms dismiss timer closes it mid-hover. It sits at z-index 0
+       under the dots (z-index 1), so it never steals a dot click, and
+       it's display:none at rest, so click-through stays intact. */
+    pointer-events: auto;
   }
   /* While a click is being acted on (smooth-scroll to the picked
      session), suppress the label reveal even if hover/focus is still
