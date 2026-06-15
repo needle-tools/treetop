@@ -11,15 +11,39 @@
  * plans/PLAN.md → "App.svelte refactor (componentization)".
  */
 
-/* Hide the top bar, menubar, and non-focused rows in zen.
-   The activity dock stays visible; the row's extra left padding
-   (2.2rem) keeps content clear of the dot strip. */
-main.zen-row > header,
-main.zen-row > .menubar-stack {
+/* Hide the top bar and non-focused rows in zen. The activity dock
+   stays visible; the row's extra left padding (2.2rem) keeps content
+   clear of the dot strip. The menu pill is NOT hidden — it retracts
+   above the top edge and reveals on demand (see below). */
+main.zen-row > header {
   display: none;
 }
 main.zen-row .row:not(.row-zen) {
   display: none;
+}
+
+/* Menu pill in zen: don't delete it — retract it just above the top
+   edge and slide it back in when the cursor reaches the top edge
+   (`.zen-menu-armed`, driven by a non-blocking pointermove listener in
+   App.svelte — NO overlay element, so nothing near the top edge is ever
+   click-blocked), hovers the pill, or while any popover inside it is
+   open. The armed flag lingers ~2s after the cursor last touched the
+   top edge, and :hover/:focus-within keep it open while you interact —
+   so it never snaps shut mid-click. Revealed, it rests at its natural
+   top:0.55rem — its margin from the edge. Retracted, it sits fully
+   above the viewport (pointer-events stay off the empty stack), so it
+   can't intercept anything. */
+main.zen-row > .menubar-stack {
+  display: flex; /* override the old display:none path */
+  transform: translateY(calc(-100% - 1rem));
+  transition: transform 220ms ease;
+}
+main.zen-row > .menubar-stack.zen-menu-armed,
+main.zen-row > .menubar-stack:hover,
+main.zen-row > .menubar-stack:focus-within,
+main.zen-row > .menubar-stack:has(.actions-popover),
+main.zen-row > .menubar-stack:has(.agents-popover) {
+  transform: translateY(0);
 }
 .row.row-zen .fold-toggle {
   display: none;

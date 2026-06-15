@@ -685,10 +685,39 @@
    *  `false` on every zen entry/exit so the next zen session starts
    *  clean. */
   let notesShownInZen = false;
+  /** Zen menu-pill reveal. In zen the top menubar pill is retracted
+   *  above the viewport; this flag slides it back in. It's armed by a
+   *  non-blocking pointermove listener (no overlay → nothing near the
+   *  top edge is click-blocked) when the cursor reaches the top edge,
+   *  and disarms ~2s after the cursor last touched that edge. CSS
+   *  :hover/:focus-within keep it open while you actually interact, so
+   *  the timer expiring mid-use can't snap it shut. */
+  let zenMenuArmed = false;
+  let zenMenuDisarmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cursor must be within this many px of the top to reveal the pill. */
+  const ZEN_MENU_REVEAL_PX = 6;
+  /** Linger after the cursor last touched the top edge before retracting. */
+  const ZEN_MENU_LINGER_MS = 2000;
+  function armZenMenu() {
+    zenMenuArmed = true;
+    if (zenMenuDisarmTimer) clearTimeout(zenMenuDisarmTimer);
+    zenMenuDisarmTimer = setTimeout(() => {
+      zenMenuArmed = false;
+      zenMenuDisarmTimer = null;
+    }, ZEN_MENU_LINGER_MS);
+  }
+  function resetZenMenu() {
+    zenMenuArmed = false;
+    if (zenMenuDisarmTimer) {
+      clearTimeout(zenMenuDisarmTimer);
+      zenMenuDisarmTimer = null;
+    }
+  }
   function toggleZenRow(key: string) {
     const exiting = zenRowKey === key;
     zenRowKey = exiting ? null : key;
     notesShownInZen = false;
+    resetZenMenu();
     if (exiting) {
       const wtPath = key.split("|").slice(1).join("|");
       if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
@@ -4900,7 +4929,47 @@
   /** Close the manage-daemon dialog and scroll the dashboard to a repo's
    *  row (rows carry data-repo-id). Two ticks so the dialog has unmounted
    *  and layout settled before scrollIntoView reads geometry. */
+  /** Switch the zen-focused row to another repo while staying in zen.
+   *  Used by the Projects menu and the dock's git-status arrow row:
+   *  both normally scroll the page to a repo, which is a no-op in zen
+   *  (every other row is hidden), so instead we re-point zen at that
+   *  repo's primary worktree row. Restores the target worktree's
+   *  visibility first (mirrors onDockPick) so its row element exists.
+   *  No-op — returns false — when not in zen or the repo is unknown. */
+  function switchZenToRepo(repoId: string): boolean {
+    if (zenRowKey === null) return false;
+    const repo = repos.find((r) => r.id === repoId);
+    const wts = repo?.worktrees ?? [];
+    if (!repo || wts.length === 0) return false;
+    const diskPaths = wts.map((w) => w.path);
+    const visible = effectiveVisibleWorktrees(
+      repoPrefsKey(repo),
+      diskPaths,
+      visibleWorktreesByRepo,
+    );
+    // Prefer an already-visible worktree so its row is in the DOM; fall
+    // back to the primary (first) worktree and restore its visibility.
+    const targetPath =
+      wts.find((w) => visible.includes(w.path))?.path ?? wts[0].path;
+    if (!visible.includes(targetPath)) {
+      visibleWorktreesByRepo = {
+        ...visibleWorktreesByRepo,
+        [repoPrefsKey(repo)]: [...visible, targetPath],
+      };
+    }
+    const targetKey = `${repo.id}|${targetPath}`;
+    if (zenRowKey !== targetKey) {
+      zenRowKey = targetKey;
+      notesShownInZen = false;
+      resetZenMenu();
+    }
+    return true;
+  }
+
   async function focusRepoRow(repoId: string): Promise<void> {
+    // In zen, jump zen to the chosen project instead of scrolling — the
+    // page scroll below is pointless when every other row is hidden.
+    if (switchZenToRepo(repoId)) return;
     daemonDialogId = null;
     await tick();
     await tick();
@@ -6488,6 +6557,7 @@
         const wtPath = zenRowKey.split("|").slice(1).join("|");
         zenRowKey = null;
         notesShownInZen = false;
+        resetZenMenu();
         if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
       }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
@@ -6519,6 +6589,15 @@
     // can stopPropagation the keydown — which used to happen when a
     // popover swallowed Cmd+Z on its way to the document listener.
     window.addEventListener("keydown", handleKey, { capture: true });
+    // Zen menu-pill reveal: arm when the cursor reaches the very top of
+    // the viewport. No overlay/hot-zone element — we just read clientY —
+    // so nothing near the top edge is ever click-blocked. Only active in
+    // zen; otherwise the pill is always visible and this is a no-op.
+    const handleZenPointer = (e: PointerEvent) => {
+      if (zenRowKey === null) return;
+      if (e.clientY <= ZEN_MENU_REVEAL_PX) armZenMenu();
+    };
+    window.addEventListener("pointermove", handleZenPointer, { passive: true });
     // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
     // when the user has open sessions (claude/codex chats, terminals).
     // No prompt on an empty dashboard so a fresh reload stays silent.
@@ -6602,6 +6681,8 @@
       cancelScrollRestore?.();
       document.removeEventListener("click", handleDocClick);
       window.removeEventListener("keydown", handleKey, { capture: true });
+      window.removeEventListener("pointermove", handleZenPointer);
+      resetZenMenu();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unsubStream();
       closeRemoteStreams();
@@ -6732,7 +6813,7 @@
        transform would become the containing block for the
        JS-positioned fixed tooltips anchored inside). Per-button
        popovers still anchor to their own `.actions-anchor`. -->
-  <div class="menubar-stack">
+  <div class="menubar-stack" class:zen-menu-armed={zenMenuArmed}>
     <nav class="menubar" aria-label="Workspace actions">
       <h1 class="menubar-brand">
         <a href="https://needle.tools" target="_blank" rel="noopener noreferrer">
@@ -10077,6 +10158,8 @@
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
   on:scrollToRepo={(e) => {
+    // In zen, switch zen to this repo instead of scrolling the page.
+    if (switchZenToRepo(e.detail.repoId)) return;
     const el = document.querySelector(
       `.row[data-repo-id="${CSS.escape(e.detail.repoId)}"]`,
     ) as HTMLElement | null;
