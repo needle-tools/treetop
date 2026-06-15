@@ -113,4 +113,40 @@ describe("splitDockEntries", () => {
     expect(result.top).toEqual([]);
     expect(result.bottom).toEqual([]);
   });
+
+  // The dock template keys `{#each split.top/bottom as e (e.source)}`, so a
+  // duplicate `source` value crashes Svelte with `each_key_duplicate`.
+  // Upstream can leak dupes (same real session source listed under two
+  // worktrees in openSessionsByWt before isForeignToWorktree converges,
+  // pickerSessionsByWt merging an agent and a same-source shell, etc.) —
+  // splitter is the last spot between data and render, so it dedupes
+  // defensively, keeping the first occurrence to preserve manual order.
+  test("dedupes entries with duplicate sources, keeping the first", () => {
+    const a = entry("r1", "dup");
+    const b = entry("r1", "unique");
+    const c = entry("r2", "dup"); // collides with a
+    const result = splitDockEntries([a, b, c], true);
+    const allSources = [...result.top, ...result.bottom].map((e) => e.source);
+    expect(allSources).toEqual(["dup", "unique"]);
+    expect(allSources).toEqual([...new Set(allSources)]);
+  });
+
+  test("dedupe applies before exited filtering and split", () => {
+    const a = entry("r1", "s1", false);
+    const b = entry("r2", "s1", true); // dup source, exited
+    const c = entry("r2", "s2", false);
+    // Without dedupe, even showInactive=false would still let the second
+    // `s1` slip through to splitting if it weren't exited — pin both
+    // orders.
+    const r1 = splitDockEntries([a, b, c], true);
+    expect([...r1.top, ...r1.bottom].map((e) => e.source)).toEqual([
+      "s1",
+      "s2",
+    ]);
+    const r2 = splitDockEntries([a, b, c], false);
+    expect([...r2.top, ...r2.bottom].map((e) => e.source)).toEqual([
+      "s1",
+      "s2",
+    ]);
+  });
 });

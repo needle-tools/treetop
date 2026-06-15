@@ -22,7 +22,21 @@ export function splitDockEntries<T extends SplittableDockEntry>(
   entries: T[],
   showInactive: boolean,
 ): { top: T[]; bottom: T[] } {
-  const visible = showInactive ? entries : entries.filter((e) => !e.exited);
+  // Drop dupes by source before anything else — the dock template keys
+  // `{#each split.top/bottom as e (e.source)}`, and Svelte's keyed each
+  // throws `each_key_duplicate` if it ever sees the same key twice.
+  // Upstream callers can leak dupes (the same real source filed under
+  // two worktrees in `openSessionsByWt`, agent+shell with a colliding
+  // source in pickerSessionsByWt, …); keeping the first occurrence
+  // preserves the user's manual ordering.
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const e of entries) {
+    if (seen.has(e.source)) continue;
+    seen.add(e.source);
+    deduped.push(e);
+  }
+  const visible = showInactive ? deduped : deduped.filter((e) => !e.exited);
 
   if (visible.length === 0) return { top: [], bottom: [] };
 
