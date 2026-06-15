@@ -18,6 +18,7 @@
     effortIcon,
   } from "./claude-session-menu";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
+  import { shouldAutoSummarizeTui } from "./tui-auto-summary";
   import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
@@ -674,16 +675,32 @@
    *  exits or the component unmounts. */
   const TUI_SUMMARY_INTERVAL_MS = 5 * 60_000;
   let tuiSummaryTimer: ReturnType<typeof setInterval> | null = null;
+  /** `currentSampledCount` at the last auto-summary attempt (-1 = never).
+   *  Gates the first-summary seed so a TUI with no installed model (or a
+   *  failing generation) doesn't retry every interval on unchanged
+   *  content. See tui-auto-summary.ts. */
+  let lastAutoSummaryAttemptCount = -1;
   $: {
     if (mode === "terminal") {
       if (!tuiSummaryTimer) {
         tuiSummaryTimer = setInterval(() => {
-          // Only re-summarise when there's an EXISTING summary that has
-          // drifted (≥2 new messages) — `shouldShowRefresh`. Firing Ollama
-          // every 5 min on idle or never-summarised TUIs is wasted load and
-          // is what made the summarise calls pile up. The user can still
-          // generate a first summary manually via the chip.
-          if (!summaryRefreshing && shouldShowRefresh) void summarizeFromChip();
+          // Fire when a never-summarised TUI has enough conversation to
+          // seed a first summary, OR when an existing summary has drifted
+          // (`shouldShowRefresh`). The seed path is guarded on the turn
+          // count growing since the last attempt so idle / model-less TUIs
+          // don't pile up Ollama calls.
+          if (
+            shouldAutoSummarizeTui({
+              refreshing: summaryRefreshing,
+              hasSummary: !!summarySnippet,
+              sampledCount: currentSampledCount,
+              lastAttemptCount: lastAutoSummaryAttemptCount,
+              summaryDrifted: shouldShowRefresh,
+            })
+          ) {
+            lastAutoSummaryAttemptCount = currentSampledCount;
+            void summarizeFromChip();
+          }
         }, TUI_SUMMARY_INTERVAL_MS);
       }
     } else {
