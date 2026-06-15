@@ -500,10 +500,11 @@
         key: "terminal.imagePasteBehavior",
         label: "Image paste",
         description:
-          "Direct lets terminal apps read image bytes from the native clipboard. Attachment resizes the image, saves it, and pastes the file path.",
+          "Auto picks per agent: Codex reads image bytes from the OS clipboard (Direct), Claude and the rest get the saved file path (Attachment). Attachment always resizes, saves, and pastes the path. Direct forwards a native paste keystroke — only apps that read clipboard image bytes (Codex) handle it; Claude's TUI ignores it.",
         type: "enum",
-        default: "direct",
+        default: "auto",
         options: [
+          { value: "auto", label: "Auto (per agent)" },
           { value: "direct", label: "Direct" },
           { value: "attachment", label: "Attachment path" },
         ],

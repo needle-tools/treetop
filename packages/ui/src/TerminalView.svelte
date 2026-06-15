@@ -9,6 +9,7 @@
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
+  import { resolveImagePasteBehavior } from "./terminal-image-paste";
   import { joinSelectionRows, type SelectionRow } from "./clean-selection";
   import {
     TerminalWriteBuffer,
@@ -188,6 +189,12 @@
   /** When set, terminal spawn and io WS are routed to this remote daemon
    *  instead of the local one. Undefined keeps local behavior unchanged. */
   export let daemonId: string | undefined = undefined;
+  /** The session's agent kind ("claude" | "codex" | "copilot" | "ollama" |
+   *  "shell"). Authoritative — set when the column is created, not parsed
+   *  from `cmd`. Drives the "auto" image-paste behavior: codex reads image
+   *  bytes off the OS clipboard on a paste keystroke, so it gets "direct";
+   *  everything else gets the save-and-insert-path "attachment" flow. */
+  export let agent: string | undefined = undefined;
 
   let containerEl: HTMLDivElement | null = null;
   let xterm: Terminal | null = null;
@@ -255,14 +262,13 @@
     }
   }
 
-  function terminalImagePasteBehavior(): "direct" | "attachment" {
-    return getSetting("terminal.imagePasteBehavior") === "attachment"
-      ? "attachment"
-      : "direct";
-  }
-
   function shouldUseNativeImagePaste(): boolean {
-    return terminalImagePasteBehavior() === "direct";
+    return (
+      resolveImagePasteBehavior(
+        getSetting("terminal.imagePasteBehavior"),
+        agent,
+      ) === "direct"
+    );
   }
 
   function sendNativeImagePaste(source: string): void {

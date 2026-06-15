@@ -300,6 +300,7 @@
   <TerminalView
     {cmd}
     {cwd}
+    {agent}
     {procName}
     {attachTermId}
     {resumeFromTermId}

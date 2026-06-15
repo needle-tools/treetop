@@ -1836,6 +1836,7 @@
           ]}
       cwd={session.cwd}
       ownerId={session.sessionId}
+      {agent}
       sessionSource={source}
       {attachTermId}
       procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
