@@ -2005,22 +2005,23 @@ type TermWsData =
 // queues and later UI actions looked like they arrived minutes late.
 //
 // The backlog doubles as the hidden-socket buffer: output for a hidden
-// terminal is queued here (not sent) and flushed on un-hide — delivery-level
-// muting that keeps the daemon seeing every byte (so working/awaiting stay
-// live) without flooding WebKit.
+// terminal is queued here (not sent) and flushed on un-hide. When every socket
+// for a terminal is hidden, helper-side pause is the pressure-relief valve; it
+// blocks fresh output upstream instead of letting this queue grow forever.
 //
-// Both paths are bounded (see terminal-backlog.ts). The HIDDEN cap is tight;
-// the VISIBLE cap is a generous hard ceiling — a VISIBLE socket whose renderer
-// stopped draining entirely (an occluded Treetop window, where the
-// IntersectionObserver never fires `false`) must not buffer without bound, or
-// the daemon grows to GBs and OOMs the machine.
+// Hidden backlogs are byte-exact because terminal streams are stateful: cutting
+// out older cursor / SGR sequences and later replaying the tail corrupts the
+// xterm screen. The memory bound for the normal hidden case comes from
+// helper-side output pause when no visible socket needs bytes. The visible path
+// still has a hard cap as an OOM guard for sockets the browser reports visible
+// but stops draining (for example an occluded WebKit window).
 
 function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
-  // Drop the oldest bytes past the (visibility-dependent) cap; the socket still
-  // gets the recent tail, the same guarantee a reconnect's replay gives.
+  // Visible-only OOM guard: hidden sockets keep every queued byte, while
+  // helper-side pause prevents that hidden queue from growing indefinitely.
   ws.data.pendingOutputBytes = trimTerminalBacklog(
     ws.data.pendingOutput,
     ws.data.pendingOutputBytes,
@@ -2114,15 +2115,8 @@ function removeVisibleTerminalSocket(termId: string): void {
 }
 
 function updateTerminalOutputMute(termId: string): void {
-  // No-op: muting is now done at DELIVERY (skip forwarding to a hidden socket
-  // + buffer for catch-up; see sendTerminalOutput/queueTerminalOutput and the
-  // flush in setTerminalOutputVisible), NOT by pausing the PTY at the helper.
-  // Keeping the daemon sighted on every byte is what lets `working`/`awaiting`
-  // stay live on the onState channel for a hidden terminal. `setOutputMuted`
-  // is intentionally no longer called here (it still works for direct callers
-  // / tests). The visibleTerminalSockets bookkeeping is retained for /api
-  // diagnostics.
-  void termId;
+  const handle = terminalBackend.get(termId);
+  handle?.setOutputMuted?.((visibleTerminalSockets.get(termId) ?? 0) === 0);
 }
 
 function setTerminalOutputVisible(
@@ -8724,9 +8718,9 @@ const server = Bun.serve<TermWsData, never>({
           }
           if (output.length > 0) {
             // Delivery-level mute: forward to a visible socket; for a hidden
-            // one, buffer (flushed on un-hide) instead of flooding WebKit. The
-            // daemon still saw the bytes, so working/awaiting on onState stay
-            // live for the dock.
+            // one, buffer the already-delivered bytes and flush them on
+            // un-hide. If every socket is hidden, helper-side pause prevents
+            // more bytes from reaching this subscriber until a viewer returns.
             if (ws.data.outputVisible) sendTerminalOutput(ws, output);
             else queueTerminalOutput(ws, output);
           }

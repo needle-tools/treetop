@@ -20,9 +20,10 @@
  * security-relevant case, so that's the only thing we touch.
  *
  * The on-screen signal is `visibleTerminalSockets` and the idle signal is
- * the PTY's `lastOutputAt`; the daemon stays sighted on every byte even
- * while output delivery is muted, so `lastOutputAt` is accurate for hidden
- * terminals too.
+ * the PTY's `lastOutputAt`. When all viewers are hidden, helper-side output
+ * pause may stop `lastOutputAt` from advancing; that is acceptable for this
+ * ssh-only cleanup because nobody is looking at the session, and active agent
+ * TUIs are deliberately out of scope.
  */
 
 export interface IdleCandidate {

@@ -8,16 +8,19 @@
 // buffering PTY bytes without bound, so the daemon (inside Treetop.app) grew
 // to multiple GB until the machine OOM'd.
 //
-// The fix: cap BOTH paths. Hidden keeps the tight 1 MB delivery buffer;
-// visible gets a generous hard ceiling so an undrainable socket can never grow
-// daemon memory without limit.
+// The fix: cap the VISIBLE path and pause PTY output upstream when there are
+// no visible sockets. Hidden output must stay byte-exact while it is buffered:
+// trimming a terminal stream can split cursor / SGR control sequences from the
+// text they apply to, leaving xterm to render an orphaned tail in the wrong
+// state when the column is revealed.
 
 import { test, expect, describe } from "bun:test";
 import {
   trimTerminalBacklog,
-  TERMINAL_HIDDEN_BACKLOG_CAP_BYTES,
   TERMINAL_VISIBLE_BACKLOG_CAP_BYTES,
 } from "../src/terminal-backlog";
+
+const OLD_HIDDEN_CAP_BYTES = 1024 * 1024;
 
 // Simulate the server's per-socket backlog: push a chunk, then trim.
 function feed(
@@ -36,10 +39,8 @@ function sumBytes(chunks: Uint8Array[]): number {
 }
 
 describe("trimTerminalBacklog", () => {
-  test("the visible cap is larger than the hidden cap", () => {
-    expect(TERMINAL_VISIBLE_BACKLOG_CAP_BYTES).toBeGreaterThan(
-      TERMINAL_HIDDEN_BACKLOG_CAP_BYTES,
-    );
+  test("keeps the visible OOM guard finite", () => {
+    expect(TERMINAL_VISIBLE_BACKLOG_CAP_BYTES).toBeGreaterThan(0);
   });
 
   test("under the hidden cap, nothing is dropped", () => {
@@ -53,18 +54,20 @@ describe("trimTerminalBacklog", () => {
     expect(bytes).toBe(sumBytes(chunks));
   });
 
-  test("a HIDDEN socket is bounded to ~the hidden cap, dropping oldest", () => {
+  test("a HIDDEN socket preserves every byte instead of trimming to a tail", () => {
     const chunks: Uint8Array[] = [];
     let bytes = 0;
-    const chunk = 128 * 1024; // 128 KB
-    // Push 10 MB through a 1 MB-capped hidden socket.
-    for (let i = 0; i < 80; i++) {
-      bytes = feed(chunks, bytes, new Uint8Array(chunk), false);
-      expect(bytes).toBeLessThanOrEqual(
-        TERMINAL_HIDDEN_BACKLOG_CAP_BYTES + chunk,
-      );
-    }
+    const prefix = new TextEncoder().encode("\x1b[2K\x1b[31m");
+    bytes = feed(chunks, bytes, prefix, false);
+    bytes = feed(
+      chunks,
+      bytes,
+      new Uint8Array(OLD_HIDDEN_CAP_BYTES + 1),
+      false,
+    );
     expect(bytes).toBe(sumBytes(chunks));
+    expect(chunks[0]!.byteLength).toBe(prefix.byteLength);
+    expect(Array.from(chunks[0]!)).toEqual(Array.from(prefix));
   });
 
   // The actual OOM regression: a VISIBLE socket that never drains.
@@ -82,14 +85,14 @@ describe("trimTerminalBacklog", () => {
     expect(bytes).toBe(sumBytes(chunks));
   });
 
-  test("keeps the most recent chunk (drops from the front, in order)", () => {
+  test("VISIBLE trimming keeps the most recent chunk", () => {
     const chunks: Uint8Array[] = [];
     let bytes = 0;
     const chunk = 256 * 1024;
     for (let i = 0; i < 40; i++) {
       const c = new Uint8Array(chunk);
       c[0] = i & 0xff; // tag each chunk so we can identify it
-      bytes = feed(chunks, bytes, c, false);
+      bytes = feed(chunks, bytes, c, true);
     }
     // The newest chunk (tag 39) must still be present and last.
     expect(chunks[chunks.length - 1]![0]).toBe(39);
@@ -98,12 +101,12 @@ describe("trimTerminalBacklog", () => {
   test("never drops the only remaining chunk, even if it exceeds the cap", () => {
     const chunks: Uint8Array[] = [];
     let bytes = 0;
-    // A single chunk larger than the hidden cap.
+    // A single visible chunk larger than the cap.
     bytes = feed(
       chunks,
       bytes,
-      new Uint8Array(TERMINAL_HIDDEN_BACKLOG_CAP_BYTES + 512 * 1024),
-      false,
+      new Uint8Array(TERMINAL_VISIBLE_BACKLOG_CAP_BYTES + 512 * 1024),
+      true,
     );
     expect(chunks.length).toBe(1);
     expect(bytes).toBe(sumBytes(chunks));

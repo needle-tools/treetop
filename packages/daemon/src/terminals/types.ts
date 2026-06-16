@@ -65,9 +65,8 @@ export interface TerminalSubscriber {
     configError?: { file: string } | null;
     /** True while the PTY is actively producing output (it emitted a byte
      *  within the last WORKING_IDLE_MS). Rides the same control channel as
-     *  `awaitingInput`, so the dock can show a session's activity even when
-     *  its terminal is hidden and output delivery is muted — no byte stream
-     *  required. */
+     *  `awaitingInput`; when all viewers are hidden, helper-side output pause
+     *  can delay fresh working-state edges until the terminal is visible again. */
     working?: boolean;
   }): void;
 }
