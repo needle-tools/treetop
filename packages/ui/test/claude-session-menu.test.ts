@@ -2,6 +2,10 @@ import { test, expect, describe } from "bun:test";
 import {
   claudeSessionMenuItems,
   claudeAgentSettings,
+  codexAccessOptions,
+  codexAccessValue,
+  codexAgentSettings,
+  parseCodexAccessValue,
   effortIcon,
 } from "../src/claude-session-menu";
 import type { SessionMenuItem } from "../src/SessionMenu.svelte";
@@ -311,5 +315,136 @@ describe("claudeAgentSettings (pill popover model)", () => {
     const popSelected = popModel!.options.filter((o) => o.selected).map((o) => o.value);
     expect(popSelected).toEqual(menuSelected);
     expect(popSelected).toEqual(["sonnet"]);
+  });
+});
+
+describe("codexAgentSettings", () => {
+  function build(overrides: Partial<Parameters<typeof codexAgentSettings>[0]> = {}) {
+    return codexAgentSettings({
+      models: [
+        { id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true },
+        { id: "gpt-5-codex-mini", displayName: "GPT-5 Codex Mini" },
+      ],
+      detectedModel: undefined,
+      currentModel: "",
+      modelsLoading: false,
+      modelsError: "",
+      currentEffort: "",
+      currentSummary: "auto",
+      currentSandbox: "workspaceWrite",
+      currentApproval: "on-request",
+      onPickModel: () => {},
+      onPickEffort: () => {},
+      onPickSummary: () => {},
+      onPickSandbox: () => {},
+      onPickApproval: () => {},
+      ...overrides,
+    });
+  }
+
+  test("exposes model, reasoning, summary, sandbox, and approval groups", () => {
+    expect(build().map((g) => [g.key, g.label])).toEqual([
+      ["codex-model", "Model"],
+      ["codex-effort", "Reasoning"],
+      ["codex-summary", "Summary"],
+      ["codex-sandbox", "Sandbox"],
+      ["codex-approval", "Approvals"],
+    ]);
+  });
+
+  test("model options include Default plus app-server models and preserve the active model", () => {
+    const [model] = build({ currentModel: "gpt-5-codex-mini" });
+    expect(model!.options.map((o) => o.value)).toEqual([
+      "",
+      "gpt-5-codex",
+      "gpt-5-codex-mini",
+    ]);
+    expect(model!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "gpt-5-codex-mini",
+    ]);
+  });
+
+  test("current and detected models are kept even when the model endpoint omits them", () => {
+    const [model] = build({
+      models: [],
+      detectedModel: "gpt-detected",
+      currentModel: "gpt-picked",
+    });
+    expect(model!.options.map((o) => o.value)).toEqual([
+      "",
+      "gpt-detected",
+      "gpt-picked",
+    ]);
+    expect(model!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "gpt-picked",
+    ]);
+  });
+
+  test("reasoning budget options are default/minimal/low/medium/high", () => {
+    const [, effort] = build({ currentEffort: "medium" });
+    expect(effort!.options.map((o) => o.value)).toEqual([
+      "",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+    ]);
+    expect(effort!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "medium",
+    ]);
+  });
+
+  test("onPick callbacks route through the matching Codex group", () => {
+    const picked: string[] = [];
+    const groups = build({
+      onPickModel: (v) => picked.push(`model:${v}`),
+      onPickEffort: (v) => picked.push(`effort:${v}`),
+      onPickSummary: (v) => picked.push(`summary:${v}`),
+      onPickSandbox: (v) => picked.push(`sandbox:${v}`),
+      onPickApproval: (v) => picked.push(`approval:${v}`),
+    });
+    for (const group of groups) group.onPick(group.options.at(-1)!.value);
+    expect(picked).toEqual([
+      "model:gpt-5-codex-mini",
+      "effort:high",
+      "summary:none",
+      "sandbox:dangerFullAccess",
+      "approval:never",
+    ]);
+  });
+});
+
+describe("codexAccessOptions", () => {
+  test("combines sandbox and approval into one footer-friendly value", () => {
+    expect(codexAccessValue("workspaceWrite", "on-request")).toBe(
+      "workspaceWrite|on-request",
+    );
+    expect(parseCodexAccessValue("dangerFullAccess|never")).toEqual({
+      sandbox: "dangerFullAccess",
+      approval: "never",
+    });
+    expect(parseCodexAccessValue("bad")).toBeUndefined();
+  });
+
+  test("selects a known access preset", () => {
+    const options = codexAccessOptions({
+      currentSandbox: "workspaceWrite",
+      currentApproval: "on-request",
+    });
+    expect(options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "workspaceWrite|on-request",
+    ]);
+  });
+
+  test("keeps unusual existing combinations as a custom selected option", () => {
+    const options = codexAccessOptions({
+      currentSandbox: "readOnly",
+      currentApproval: "never",
+    });
+    expect(options[0]).toEqual({
+      value: "readOnly|never",
+      label: "Custom · readOnly / never",
+      selected: true,
+    });
   });
 });

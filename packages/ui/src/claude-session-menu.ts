@@ -151,6 +151,7 @@ export interface AgentSettingOption {
   label: string;
   selected: boolean;
   icon?: { trackPaths: string[]; paths: string[]; color: string };
+  title?: string;
 }
 /** A labelled group of mutually-exclusive options (e.g. Model, Effort). */
 export interface AgentSettingGroup {
@@ -194,6 +195,230 @@ export function claudeAgentSettings(opts: {
         label: e,
         selected: opts.currentEffort === e,
         icon: effortIcon(e),
+      })),
+    },
+  ];
+}
+
+export interface CodexModelInfo {
+  id: string;
+  model?: string;
+  displayName?: string;
+  description?: string;
+  isDefault?: boolean;
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+}
+
+export function codexModelValue(m: CodexModelInfo): string {
+  return m.id || m.model || "";
+}
+
+export function uniqueCodexModels(opts: {
+  models: readonly CodexModelInfo[];
+  detectedModel?: string;
+  currentModel?: string;
+}): CodexModelInfo[] {
+  const byValue = new Map<string, CodexModelInfo>();
+  for (const m of opts.models) byValue.set(codexModelValue(m), m);
+  if (opts.detectedModel && !byValue.has(opts.detectedModel)) {
+    byValue.set(opts.detectedModel, {
+      id: opts.detectedModel,
+      displayName: opts.detectedModel,
+    });
+  }
+  if (opts.currentModel && !byValue.has(opts.currentModel)) {
+    byValue.set(opts.currentModel, {
+      id: opts.currentModel,
+      displayName: opts.currentModel,
+    });
+  }
+  return [...byValue.values()].filter((m) => !!codexModelValue(m));
+}
+
+export const CODEX_EFFORT_LEVELS = [
+  "",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+] as const;
+
+export const CODEX_SUMMARY_LEVELS = [
+  "auto",
+  "concise",
+  "detailed",
+  "none",
+] as const;
+
+export const CODEX_SANDBOX_OPTIONS = [
+  { value: "readOnly", label: "Read-only" },
+  { value: "workspaceWrite", label: "Workspace" },
+  { value: "dangerFullAccess", label: "Full access" },
+] as const;
+
+export const CODEX_APPROVAL_OPTIONS = [
+  { value: "untrusted", label: "Strict" },
+  { value: "on-request", label: "Ask" },
+  { value: "on-failure", label: "On failure" },
+  { value: "never", label: "Never" },
+] as const;
+
+export const CODEX_ACCESS_PRESETS = [
+  {
+    value: "readOnly|on-request",
+    label: "Read-only · ask",
+    sandbox: "readOnly",
+    approval: "on-request",
+  },
+  {
+    value: "workspaceWrite|on-request",
+    label: "Workspace · ask",
+    sandbox: "workspaceWrite",
+    approval: "on-request",
+  },
+  {
+    value: "workspaceWrite|on-failure",
+    label: "Workspace · on failure",
+    sandbox: "workspaceWrite",
+    approval: "on-failure",
+  },
+  {
+    value: "workspaceWrite|never",
+    label: "Workspace · never ask",
+    sandbox: "workspaceWrite",
+    approval: "never",
+  },
+  {
+    value: "dangerFullAccess|on-request",
+    label: "Full access · ask",
+    sandbox: "dangerFullAccess",
+    approval: "on-request",
+  },
+  {
+    value: "dangerFullAccess|never",
+    label: "Full access · never ask",
+    sandbox: "dangerFullAccess",
+    approval: "never",
+  },
+] as const;
+
+export function codexAccessValue(sandbox: string, approval: string): string {
+  return `${sandbox}|${approval}`;
+}
+
+export function parseCodexAccessValue(
+  value: string,
+): { sandbox: string; approval: string } | undefined {
+  const [sandbox, approval, extra] = value.split("|");
+  if (!sandbox || !approval || extra !== undefined) return undefined;
+  return { sandbox, approval };
+}
+
+export function codexAccessOptions(opts: {
+  currentSandbox: string;
+  currentApproval: string;
+}): AgentSettingOption[] {
+  const current = codexAccessValue(opts.currentSandbox, opts.currentApproval);
+  const presets = CODEX_ACCESS_PRESETS.map((preset) => ({
+    value: preset.value,
+    label: preset.label,
+    selected: current === preset.value,
+  }));
+  if (presets.some((p) => p.selected)) return presets;
+  return [
+    {
+      value: current,
+      label: `Custom · ${opts.currentSandbox} / ${opts.currentApproval}`,
+      selected: true,
+    },
+    ...presets,
+  ];
+}
+
+export function codexAgentSettings(opts: {
+  models: readonly CodexModelInfo[];
+  detectedModel?: string;
+  currentModel: string;
+  modelsLoading: boolean;
+  modelsError: string;
+  currentEffort: string;
+  currentSummary: string;
+  currentSandbox: string;
+  currentApproval: string;
+  onPickModel: (model: string) => void;
+  onPickEffort: (effort: string) => void;
+  onPickSummary: (summary: string) => void;
+  onPickSandbox: (sandbox: string) => void;
+  onPickApproval: (approval: string) => void;
+}): AgentSettingGroup[] {
+  const modelOptions = uniqueCodexModels({
+    models: opts.models,
+    detectedModel: opts.detectedModel,
+    currentModel: opts.currentModel,
+  })
+    .sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+    .map((m) => {
+      const value = codexModelValue(m);
+      return {
+        value,
+        label: m.displayName || m.model || m.id,
+        selected:
+          opts.currentModel === value ||
+          (!opts.currentModel && (m.isDefault || value === opts.detectedModel)),
+        title: m.description,
+      };
+    });
+  return [
+    {
+      key: "codex-model",
+      label: opts.modelsLoading
+        ? "Model"
+        : opts.modelsError
+          ? "Model unavailable"
+          : "Model",
+      onPick: opts.onPickModel,
+      options: [
+        { value: "", label: "Default", selected: !opts.currentModel },
+        ...modelOptions,
+      ],
+    },
+    {
+      key: "codex-effort",
+      label: "Reasoning",
+      onPick: opts.onPickEffort,
+      options: CODEX_EFFORT_LEVELS.map((value) => ({
+        value,
+        label: value || "Default",
+        selected: opts.currentEffort === value,
+      })),
+    },
+    {
+      key: "codex-summary",
+      label: "Summary",
+      onPick: opts.onPickSummary,
+      options: CODEX_SUMMARY_LEVELS.map((value) => ({
+        value,
+        label: value,
+        selected: opts.currentSummary === value,
+      })),
+    },
+    {
+      key: "codex-sandbox",
+      label: "Sandbox",
+      onPick: opts.onPickSandbox,
+      options: CODEX_SANDBOX_OPTIONS.map((opt) => ({
+        ...opt,
+        selected: opts.currentSandbox === opt.value,
+      })),
+    },
+    {
+      key: "codex-approval",
+      label: "Approvals",
+      onPick: opts.onPickApproval,
+      options: CODEX_APPROVAL_OPTIONS.map((opt) => ({
+        ...opt,
+        selected: opts.currentApproval === opt.value,
       })),
     },
   ];

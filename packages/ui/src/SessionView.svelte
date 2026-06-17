@@ -19,8 +19,12 @@
   import {
     claudeSessionMenuItems,
     claudeAgentSettings,
+    codexAccessOptions,
+    codexAgentSettings,
+    parseCodexAccessValue,
     effortIcon,
     type AgentSettingGroup,
+    type CodexModelInfo,
   } from "./claude-session-menu";
   import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
@@ -250,15 +254,6 @@
     turnId?: string;
     receivedAt: string;
     seq?: number;
-  }
-  interface CodexModelInfo {
-    id: string;
-    model?: string;
-    displayName?: string;
-    description?: string;
-    isDefault?: boolean;
-    supportedReasoningEfforts?: string[];
-    defaultReasoningEffort?: string;
   }
   interface CodexUserInputOption {
     label: string;
@@ -1134,7 +1129,7 @@
           onPickEffort: (e) => onSetClaudeEffort(e),
         })
       : agent === "codex"
-        ? codexTurnSettings()
+        ? codexSettings
       : [];
 
   $: codexAgentLabel =
@@ -1413,91 +1408,44 @@
     persistCodexSettings();
   }
 
-  function uniqueCodexModels(): CodexModelInfo[] {
-    const byValue = new Map<string, CodexModelInfo>();
-    for (const m of codexModels) byValue.set(m.id || m.model || "", m);
-    if (model && !byValue.has(model)) {
-      byValue.set(model, { id: model, displayName: model });
-    }
-    if (codexModel && !byValue.has(codexModel)) {
-      byValue.set(codexModel, { id: codexModel, displayName: codexModel });
-    }
-    return [...byValue.values()].filter((m) => !!(m.id || m.model));
+  $: codexSettings = codexAgentSettings({
+    models: codexModels,
+    detectedModel: model,
+    currentModel: codexModel,
+    modelsLoading: codexModelsLoading,
+    modelsError: codexModelsError,
+    currentEffort: codexEffort,
+    currentSummary: codexSummary,
+    currentSandbox: codexSandbox,
+    currentApproval: codexApproval,
+    onPickModel: pickCodexModel,
+    onPickEffort: pickCodexEffort,
+    onPickSummary: pickCodexSummary,
+    onPickSandbox: pickCodexSandbox,
+    onPickApproval: pickCodexApproval,
+  });
+  $: codexModelGroup = codexSettings.find((g) => g.key === "codex-model");
+  $: codexEffortGroup = codexSettings.find((g) => g.key === "codex-effort");
+  $: codexAccessGroup = {
+    key: "codex-access",
+    label: "Permissions",
+    options: codexAccessOptions({
+      currentSandbox: codexSandbox,
+      currentApproval: codexApproval,
+    }),
+    onPick: pickCodexAccess,
+  } satisfies AgentSettingGroup;
+
+  function pickCodexAccess(value: string): void {
+    const parsed = parseCodexAccessValue(value);
+    if (!parsed) return;
+    codexSandbox = parsed.sandbox;
+    codexApproval = parsed.approval;
+    persistCodexSettings();
   }
 
-  function codexModelValue(m: CodexModelInfo): string {
-    return m.id || m.model || "";
-  }
-
-  function codexTurnSettings(): AgentSettingGroup[] {
-    const modelOptions = uniqueCodexModels()
-      .sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
-      .map((m) => {
-        const value = codexModelValue(m);
-        return {
-          value,
-          label: m.displayName || m.model || m.id,
-          selected:
-            codexModel === value ||
-            (!codexModel && (m.isDefault || value === model)),
-        };
-      });
-    return [
-      {
-        key: "codex-model",
-        label: codexModelsLoading
-          ? "Model"
-          : codexModelsError
-            ? "Model unavailable"
-            : "Model",
-        onPick: pickCodexModel,
-        options: [
-          { value: "", label: "Default", selected: !codexModel },
-          ...modelOptions,
-        ],
-      },
-      {
-        key: "codex-effort",
-        label: "Effort",
-        onPick: pickCodexEffort,
-        options: ["", "minimal", "low", "medium", "high"].map((value) => ({
-          value,
-          label: value || "Default",
-          selected: codexEffort === value,
-        })),
-      },
-      {
-        key: "codex-summary",
-        label: "Reasoning",
-        onPick: pickCodexSummary,
-        options: ["auto", "concise", "detailed", "none"].map((value) => ({
-          value,
-          label: value,
-          selected: codexSummary === value,
-        })),
-      },
-      {
-        key: "codex-sandbox",
-        label: "Sandbox",
-        onPick: pickCodexSandbox,
-        options: [
-          { value: "readOnly", label: "Read-only" },
-          { value: "workspaceWrite", label: "Workspace" },
-          { value: "dangerFullAccess", label: "Full access" },
-        ].map((opt) => ({ ...opt, selected: codexSandbox === opt.value })),
-      },
-      {
-        key: "codex-approval",
-        label: "Approvals",
-        onPick: pickCodexApproval,
-        options: [
-          { value: "untrusted", label: "Strict" },
-          { value: "on-request", label: "Ask" },
-          { value: "on-failure", label: "On failure" },
-          { value: "never", label: "Never" },
-        ].map((opt) => ({ ...opt, selected: codexApproval === opt.value })),
-      },
-    ];
+  function selectedSettingValue(group: AgentSettingGroup | undefined): string {
+    return group?.options.find((o) => o.selected)?.value ?? "";
   }
 
   async function loadCodexModels(cwd: string): Promise<void> {
@@ -2873,40 +2821,99 @@
           on:keydown={onComposerKey}
           disabled={sending && agent !== "codex" && !ollamaAbort}
         ></textarea>
-        {#if sending && agent === "ollama"}
-          <button
-            type="button"
-            class="composer-send is-sending"
-            on:click={stopOllamaStream}
-            title="Stop generating"
-            aria-label="Stop"
-          >
-            ◼
-          </button>
-        {:else if sending && agent === "codex"}
-          <button
-            type="button"
-            class="composer-send is-sending"
-            on:click={() => void stopCodexTurn()}
-            title="Stop Codex"
-            aria-label="Stop Codex"
-          >
-            ◼
-          </button>
+      </div>
+      <div class="composer-footer">
+        {#if agent === "codex"}
+          <div class="composer-footer-left">
+            <label class="composer-select-wrap composer-access">
+              <span>{codexAccessGroup.label}</span>
+              <select
+                value={selectedSettingValue(codexAccessGroup)}
+                on:change={(e) =>
+                  codexAccessGroup.onPick(
+                    (e.currentTarget as HTMLSelectElement).value,
+                  )}
+              >
+                {#each codexAccessGroup.options as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
+            </label>
+          </div>
+          <div class="composer-footer-right">
+            {#if codexEffortGroup}
+              <label class="composer-select-wrap composer-reasoning">
+                <span>{codexEffortGroup.label}</span>
+                <select
+                  value={selectedSettingValue(codexEffortGroup)}
+                  on:change={(e) =>
+                    codexEffortGroup?.onPick(
+                      (e.currentTarget as HTMLSelectElement).value,
+                    )}
+                >
+                  {#each codexEffortGroup.options as opt (opt.value)}
+                    <option value={opt.value}>{opt.label}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+            {#if codexModelGroup}
+              <label class="composer-select-wrap composer-model">
+                <span>{codexModelGroup.label}</span>
+                <select
+                  value={selectedSettingValue(codexModelGroup)}
+                  on:change={(e) =>
+                    codexModelGroup?.onPick(
+                      (e.currentTarget as HTMLSelectElement).value,
+                    )}
+                  title={codexModelsError || undefined}
+                >
+                  {#each codexModelGroup.options as opt (opt.value)}
+                    <option value={opt.value} title={opt.title}>{opt.label}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+          </div>
         {:else}
-          <button
-            type="button"
-            class="composer-send"
-            on:click={() => void sendMessage()}
-            disabled={!inputText.trim() || (sending && agent !== "codex")}
-            title={agent === "codex" && codexActiveTurnId
-              ? "Steer the running Codex turn"
-              : "Send (Enter). Shift+Enter for newline."}
-            aria-label="Send"
-          >
-            {sending ? "…" : "↑"}
-          </button>
+          <span></span>
         {/if}
+        <div class="composer-send-wrap">
+          {#if sending && agent === "ollama"}
+            <button
+              type="button"
+              class="composer-send is-sending"
+              on:click={stopOllamaStream}
+              title="Stop generating"
+              aria-label="Stop"
+            >
+              ◼
+            </button>
+          {:else if sending && agent === "codex"}
+            <button
+              type="button"
+              class="composer-send is-sending"
+              on:click={() => void stopCodexTurn()}
+              title="Stop Codex"
+              aria-label="Stop Codex"
+            >
+              ◼
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="composer-send"
+              on:click={() => void sendMessage()}
+              disabled={!inputText.trim() || (sending && agent !== "codex")}
+              title={agent === "codex" && codexActiveTurnId
+                ? "Steer the running Codex turn"
+                : "Send (Enter). Shift+Enter for newline."}
+              aria-label="Send"
+            >
+              {sending ? "…" : "↑"}
+            </button>
+          {/if}
+        </div>
       </div>
       {#if sendError}
         <div class="composer-error" title={sendError}>{sendError}</div>
@@ -3135,13 +3142,7 @@
     padding: 0.5rem 0.6rem;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-  }
-  /* The textarea hosts the Send button absolutely-positioned in its
-     bottom-right corner. Padding-right on the input keeps typed text
-     from sliding under the button. */
-  .composer-box {
-    position: relative;
+    gap: 0.35rem;
   }
   .codex-requests {
     display: flex;
@@ -3235,7 +3236,7 @@
     color: var(--text-1);
     border: 1px solid var(--surface-3);
     border-radius: var(--radius-sm);
-    padding: 0.5rem 2.6rem 0.5rem 0.6rem;
+    padding: 0.5rem 0.6rem;
     font: inherit;
     font-size: 0.85rem;
     line-height: 1.35;
@@ -3266,24 +3267,87 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .composer-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: end;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .composer-footer-left,
+  .composer-footer-right {
+    display: flex;
+    align-items: end;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+  .composer-footer-right {
+    justify-content: flex-end;
+  }
+  .composer-select-wrap {
+    display: inline-grid;
+    gap: 0.12rem;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 0.64rem;
+    line-height: 1.1;
+  }
+  .composer-select-wrap span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-select-wrap select {
+    height: 1.75rem;
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.74rem;
+    line-height: 1;
+    padding: 0 1.45rem 0 0.45rem;
+  }
+  .composer-select-wrap select:focus {
+    outline: none;
+    border-color: var(--text-faint);
+  }
+  .composer-access {
+    width: min(13.5rem, 100%);
+  }
+  .composer-reasoning {
+    width: 7.5rem;
+  }
+  .composer-model {
+    width: min(13rem, 38vw);
+  }
+  .composer-send-wrap {
+    display: flex;
+    align-items: end;
+    justify-content: flex-end;
+  }
   .composer-send {
-    position: absolute;
-    right: 0.4rem;
-    bottom: 0.4rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.8rem;
-    height: 1.8rem;
-    background: transparent;
-    color: var(--text-muted);
-    border: 0;
+    width: 2rem;
+    height: 1.75rem;
+    background: var(--text-1);
+    color: var(--surface-0);
+    border: 1px solid var(--text-1);
     border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: color 0.1s ease;
+    transition:
+      background 0.1s ease,
+      border-color 0.1s ease,
+      color 0.1s ease;
+    font-weight: 700;
   }
   .composer-send:hover:not(:disabled) {
-    color: var(--text-1);
+    background: var(--text-2);
+    border-color: var(--text-2);
   }
   .composer-send:disabled {
     cursor: not-allowed;
@@ -3291,10 +3355,33 @@
   /* In-flight send: keep the spinner readable (slightly muted text)
      instead of fading the button to near-invisible. */
   .composer-send.is-sending:disabled {
-    color: var(--text-4);
+    color: var(--surface-0);
   }
   .composer-send:disabled:not(.is-sending) {
     color: var(--text-faint);
+    background: var(--surface-1);
+    border-color: var(--surface-3);
+  }
+  @media (max-width: 720px) {
+    .composer-footer {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .composer-footer-right {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      justify-content: stretch;
+    }
+    .composer-footer-right .composer-select-wrap {
+      flex: 1 1 0;
+      width: auto;
+    }
+    .composer-send-wrap {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .composer-model {
+      max-width: none;
+    }
   }
   /* `.loading-overlay` + `.spinner` retired — the shared
      LoadingOverlay component now renders both the chat read-mode
