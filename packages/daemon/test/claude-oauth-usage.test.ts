@@ -139,22 +139,20 @@ describe("fetchClaudeOAuthUsage — injected fetcher", () => {
         headers: { "Content-Type": "application/json" },
       });
     };
-    // Skip if no real credentials on this host — the readAccessToken
-    // step bails before we ever call fetcher. This test is shape-only
-    // and only runs when a credentials file exists.
-    const result = await fetchClaudeOAuthUsage({ fetcher });
-    if (result.error?.kind === "no-credentials") {
-      // Not a failure — this CI host doesn't have ~/.claude.
-      return;
-    }
+    const result = await fetchClaudeOAuthUsage({
+      fetcher,
+      accessToken: "test-token",
+    });
     expect(result.usage?.fiveHour?.utilization).toBe(0.41);
     expect(result.usage?.sevenDay?.utilization).toBe(0.16);
   });
 
   test("401 returns kind=unauthorized", async () => {
     const fetcher = async () => new Response("nope", { status: 401 });
-    const result = await fetchClaudeOAuthUsage({ fetcher });
-    if (result.error?.kind === "no-credentials") return;
+    const result = await fetchClaudeOAuthUsage({
+      fetcher,
+      accessToken: "test-token",
+    });
     expect(result.usage).toBeNull();
     expect(result.error?.kind).toBe("unauthorized");
   });
@@ -163,15 +161,19 @@ describe("fetchClaudeOAuthUsage — injected fetcher", () => {
     const fetcher = async () => {
       throw new Error("ECONNREFUSED");
     };
-    const result = await fetchClaudeOAuthUsage({ fetcher });
-    if (result.error?.kind === "no-credentials") return;
+    const result = await fetchClaudeOAuthUsage({
+      fetcher,
+      accessToken: "test-token",
+    });
     expect(result.error?.kind).toBe("network");
   });
 
   test("non-200/401 status surfaces as kind=server with body excerpt", async () => {
     const fetcher = async () => new Response("boom", { status: 503 });
-    const result = await fetchClaudeOAuthUsage({ fetcher });
-    if (result.error?.kind === "no-credentials") return;
+    const result = await fetchClaudeOAuthUsage({
+      fetcher,
+      accessToken: "test-token",
+    });
     expect(result.error?.kind).toBe("server");
     if (result.error?.kind === "server") {
       expect(result.error.status).toBe(503);

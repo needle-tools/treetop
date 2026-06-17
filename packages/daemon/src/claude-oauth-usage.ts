@@ -458,6 +458,8 @@ function decodeUsage(json: unknown): ClaudeOAuthUsage | null {
 export interface FetchOptions {
   /** Override the fetcher in tests so we don't hit Anthropic. */
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
+  /** Override OAuth token lookup in tests. */
+  accessToken?: string;
   /** Override the version reported in the User-Agent. */
   versionString?: string;
 }
@@ -465,7 +467,8 @@ export interface FetchOptions {
 export async function fetchClaudeOAuthUsage(
   opts: FetchOptions = {},
 ): Promise<OAuthUsageResult> {
-  const auth = await readAccessToken();
+  const token = opts.accessToken ?? null;
+  const auth = token ? { token } : await readAccessToken();
   if ("error" in auth) return { usage: null, error: auth.error };
 
   const fetchFn = opts.fetcher ?? fetch;
