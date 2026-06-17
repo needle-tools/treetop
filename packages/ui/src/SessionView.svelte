@@ -944,6 +944,28 @@
     }
   }
 
+  function canResumeInTerminalSurface(): boolean {
+    return (
+      !!onCustomResume ||
+      (!!session?.sessionId && (agent === "claude" || agent === "codex"))
+    );
+  }
+
+  function resumeTitleForAgent(): string {
+    return agent === "codex"
+      ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
+      : "Spawn a live `claude --resume <id>` PTY in this session's cwd";
+  }
+
+  function showVisualSurface(): void {
+    mode = "read";
+  }
+
+  function resumeInTerminalSurface(): void {
+    if (onCustomResume) onCustomResume();
+    else mode = "terminal";
+  }
+
   /** Open the on-disk directory that holds this session's transcript
    *  (`~/.claude/projects/<encoded>/…` or codex's session store) in the
    *  OS file manager (Explorer / Finder / xdg). `sessionFileSource` is the
@@ -984,6 +1006,43 @@
         : [];
     const base: SessionMenuItem[] = [
       ...claudeItems,
+      ...(canResumeInTerminalSurface()
+        ? [
+            {
+              kind: "submenu" as const,
+              label: "View as…",
+              iconSvg: [
+                "M4 6h16",
+                "M4 12h16",
+                "M4 18h16",
+              ],
+              title: "Change between visual and terminal session views",
+              children: [
+                {
+                  kind: "action" as const,
+                  label: "Visual",
+                  iconSvg: [
+                    "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+                    "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+                  ],
+                  selected: mode === "read",
+                  disabled: mode === "read",
+                  title: "Show the visual session view",
+                  onSelect: showVisualSurface,
+                },
+                {
+                  kind: "action" as const,
+                  label: "Terminal",
+                  iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
+                  selected: mode === "terminal",
+                  disabled: mode === "terminal",
+                  title: resumeTitleForAgent(),
+                  onSelect: resumeInTerminalSurface,
+                },
+              ],
+            },
+          ]
+        : []),
       {
         kind: "action",
         label: "Resume in external terminal",
@@ -2462,8 +2521,7 @@
       {manualTitle}
       aiTitle={summaryTitle}
       {mode}
-      canResume={!!onCustomResume ||
-        (!!session?.sessionId && (agent === "claude" || agent === "codex"))}
+      canResume={canResumeInTerminalSurface()}
       canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
       {disposing}
       {awaitingInput}
@@ -2484,20 +2542,12 @@
       {starred}
       {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
-      onResume={() => {
-        if (onCustomResume) onCustomResume();
-        else mode = "terminal";
-      }}
-      onViewModeChange={(nextMode) => {
-        mode = nextMode;
-      }}
+      onResume={resumeInTerminalSurface}
       onEndSession={disposeTerminal}
       onCancelInflight={cancelAllInflight}
       {onClose}
       {onDragStart}
-      resumeTitle={agent === "codex"
-        ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
-        : "Spawn a live `claude --resume <id>` PTY in this session's cwd"}
+      resumeTitle={resumeTitleForAgent()}
     />
     {#if mode === "terminal" && (session && session.messages.length > 0 || (lastUserMessage && lastUserMessage.trim().length > 0))}
       <div class="pinned-last-msg-wrap tui-overlay-stack" class:revealed={pinnedRevealed}>

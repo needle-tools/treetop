@@ -129,7 +129,6 @@
   export let onTitleSaved: (next: string) => void = () => {};
   export let onTitleEditingChange: (editing: boolean) => void = () => {};
   export let onResume: () => void = () => {};
-  export let onViewModeChange: (mode: "read" | "terminal") => void = () => {};
   export let onEndSession: () => void = () => {};
   export let onSshBrowse: (() => void) | undefined = undefined;
   $: if (sshConnected)
@@ -624,32 +623,10 @@
     {/if}
   </div>
   <div class="hdr-col col-actions">
-    {#if canResume}
-      <div
-        class="surface-switch"
-        role="group"
-        aria-label="Session surface"
-        title={mode === "read"
-          ? "Visual session view is active"
-          : "Terminal session view is active"}
+    {#if canResume && mode === "read"}
+      <button class="resume-btn" on:click={onResume} title={resumeTitle}
+        >Resume</button
       >
-        <button
-          type="button"
-          class:active={mode === "read"}
-          aria-pressed={mode === "read"}
-          on:click={() => onViewModeChange("read")}
-          title="Show the visual session view"
-          disabled={mode === "read"}>Visual</button
-        >
-        <button
-          type="button"
-          class:active={mode === "terminal"}
-          aria-pressed={mode === "terminal"}
-          on:click={onResume}
-          title={resumeTitle}
-          disabled={mode === "terminal"}>Terminal</button
-        >
-      </div>
     {/if}
     {#if mode === "terminal"}
       {#if awaitingInput}
@@ -778,39 +755,6 @@
     align-items: center;
     justify-content: flex-end;
     gap: 0.35rem;
-  }
-  .surface-switch {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-1) 80%, transparent);
-    overflow: hidden;
-  }
-  .surface-switch button {
-    border: 0;
-    border-right: 1px solid var(--surface-3);
-    background: transparent;
-    color: var(--text-muted);
-    padding: 0.25rem 0.5rem;
-    font-size: 0.7rem;
-    line-height: 1.1;
-    cursor: pointer;
-  }
-  .surface-switch button:last-child {
-    border-right: 0;
-  }
-  .surface-switch button:hover:not(:disabled) {
-    color: var(--text-1);
-    background: color-mix(in srgb, var(--surface-3) 45%, transparent);
-  }
-  .surface-switch button.active {
-    color: var(--text-1);
-    background: var(--surface-3);
-  }
-  .surface-switch button:disabled {
-    cursor: default;
   }
   .resume-btn {
     flex: 0 0 auto;
