@@ -922,8 +922,8 @@
    *  window. The /api/open extension is honoured only for app=terminal;
    *  other apps ignore `command`. */
   async function resumeInExternalTerminal(): Promise<void> {
-    const sid = session?.sessionId;
-    const cwd = session?.cwd;
+    const sid = effectiveSessionId;
+    const cwd = effectiveSessionCwd;
     if (!sid || !cwd) return;
     try {
       const res = await fetch(apiUrl("/api/open"), {
@@ -947,7 +947,7 @@
   function canResumeInTerminalSurface(): boolean {
     return (
       !!onCustomResume ||
-      (!!session?.sessionId && (agent === "claude" || agent === "codex"))
+      (!!effectiveSessionId && (agent === "claude" || agent === "codex"))
     );
   }
 
@@ -993,7 +993,7 @@
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
   $: menuItems = ((): SessionMenuItem[] => {
-    const sid = session?.sessionId;
+    const sid = effectiveSessionId;
     const claudeItems: SessionMenuItem[] =
       agent === "claude"
         ? claudeSessionMenuItems({
@@ -1385,6 +1385,8 @@
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
+  $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
+  $: effectiveSessionCwd = session?.cwd || wtPath;
 
   let reportedWorking: boolean | undefined;
   let reportedAwaiting: boolean | undefined;
@@ -2533,7 +2535,7 @@
       aiTitle={summaryTitle}
       {mode}
       canResume={canResumeInTerminalSurface()}
-      canEnd={!!session?.sessionId && (agent === "claude" || agent === "codex")}
+      canEnd={!!effectiveSessionId && (agent === "claude" || agent === "codex")}
       {disposing}
       {awaitingInput}
       working={mode === "terminal" && working}
@@ -2780,7 +2782,7 @@
     {/if}
   </div>
 
-  {#if mode === "terminal" && session?.sessionId && session.cwd}
+  {#if mode === "terminal" && effectiveSessionId && effectiveSessionCwd}
     <TerminalView
       cmd={agent === "codex"
         ? [
@@ -2793,12 +2795,12 @@
             // approval policy to the user's codex config.
             "codex",
             "resume",
-            session.sessionId,
+            effectiveSessionId,
           ]
         : [
             "claude",
             "--resume",
-            session.sessionId,
+            effectiveSessionId,
             // Unlocks the in-TUI option to switch to dangerously-skip-permissions
             // (without enabling it by default). This is the flag from
             // `claude --help` whose description is exactly "Enable bypassing all
@@ -2811,12 +2813,12 @@
             ...(claudeModel ? ["--model", claudeModel] : []),
             ...(claudeEffort ? ["--effort", claudeEffort] : []),
           ]}
-      cwd={session.cwd}
-      ownerId={session.sessionId}
+      cwd={effectiveSessionCwd}
+      ownerId={effectiveSessionId}
       {agent}
       sessionSource={source}
       {attachTermId}
-      procName={`supergit-tui-${session.sessionId.slice(0, 8)}-${agent}`}
+      procName={`supergit-tui-${effectiveSessionId.slice(0, 8)}-${agent}`}
       {daemonId}
       onSpawn={(id) => {
         terminalId = id;

@@ -8631,6 +8631,7 @@
                           revealSession(row.key, wt.path, {
                             agent: a.agent,
                             source: a.source,
+                            resumeSessionId: a.sessionId,
                           });
                         }}
                       >
@@ -8673,12 +8674,14 @@
                             revealSession(row.key, wt.path, {
                               agent: e.detail.agent,
                               source: e.detail.source,
+                              resumeSessionId: e.detail.sessionId,
                             });
                           }}
                           on:close={(e) => {
                             toggleOpenSessionInWt(wt.path, {
                               agent: e.detail.agent,
                               source: e.detail.source,
+                              resumeSessionId: e.detail.sessionId,
                             });
                           }}
                           on:dismiss={(e) => dismissSession(e.detail.source)}
@@ -8754,6 +8757,7 @@
                                 revealSession(row.key, wt.path, {
                                   agent: top.agent,
                                   source: top.source,
+                                  resumeSessionId: top.sessionId,
                                 });
                               }
                             }
@@ -8785,12 +8789,14 @@
                             revealSession(row.key, wt.path, {
                               agent: e.detail.agent,
                               source: e.detail.source,
+                              resumeSessionId: e.detail.sessionId,
                             });
                           }}
                           on:close={(e) => {
                             toggleOpenSessionInWt(wt.path, {
                               agent: e.detail.agent,
                               source: e.detail.source,
+                              resumeSessionId: e.detail.sessionId,
                             });
                           }}
                           on:dismiss={(e) => dismissSession(e.detail.source)}
@@ -10077,7 +10083,8 @@
                                     | "codex"
                                     | "copilot"}
                                   source={s.source}
-                                  resumeSessionId={s.resumeSessionId}
+                                  resumeSessionId={s.resumeSessionId ??
+                                    agentMeta?.sessionId}
                                   transcriptSource={s.transcriptSource}
                                   wtPath={wt.path}
                                   daemonId={daemonIdForWorktreePath(repos, wt.path)}
@@ -10238,6 +10245,7 @@
                                       revealSession(row.key, wt.path, {
                                         agent: extra.agent,
                                         source: extra.source,
+                                        resumeSessionId: extra.sessionId,
                                       });
                                     }}
                                   >

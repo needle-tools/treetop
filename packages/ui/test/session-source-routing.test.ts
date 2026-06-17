@@ -419,9 +419,64 @@ describe("normalizeSessionForOpen", () => {
 
   // ---- Pass-through cases ----
 
-  test("non-ollama agent → returned unchanged", () => {
+  test("non-ollama agent with no matching session id → returned unchanged", () => {
     const s: OpenSession = { agent: "claude", source: "/ws/.claude/sessions/x.jsonl" };
     expect(normalizeSessionForOpen(wtPath, s, repos)).toBe(s);
+  });
+
+  test("claude JSONL source → stamps resumeSessionId from the worktree session index", () => {
+    const localRepos: Repo[] = [
+      {
+        worktrees: [
+          {
+            path: wtPath,
+            agents: [
+              {
+                agent: "claude",
+                cwd: wtPath,
+                lastActive: "2026-06-17T10:00:00Z",
+                source: "/ws/.claude/sessions/x.jsonl",
+                sessionId: "claude-sid-123",
+              } as AgentSession,
+            ],
+          },
+        ],
+      },
+    ];
+    const s: OpenSession = { agent: "claude", source: "/ws/.claude/sessions/x.jsonl" };
+    const result = normalizeSessionForOpen(wtPath, s, localRepos);
+    expect(result).toEqual({
+      agent: "claude",
+      source: "/ws/.claude/sessions/x.jsonl",
+      resumeSessionId: "claude-sid-123",
+    });
+  });
+
+  test("codex JSONL source keeps an existing resumeSessionId", () => {
+    const localRepos: Repo[] = [
+      {
+        worktrees: [
+          {
+            path: wtPath,
+            agents: [
+              {
+                agent: "codex",
+                cwd: wtPath,
+                lastActive: "2026-06-17T10:00:00Z",
+                source: "/ws/.codex/sessions/x.jsonl",
+                sessionId: "newer-codex-sid",
+              } as AgentSession,
+            ],
+          },
+        ],
+      },
+    ];
+    const s: OpenSession = {
+      agent: "codex",
+      source: "/ws/.codex/sessions/x.jsonl",
+      resumeSessionId: "persisted-codex-sid",
+    };
+    expect(normalizeSessionForOpen(wtPath, s, localRepos)).toBe(s);
   });
 
   test("ollama but source starts with __transcript__: → returned unchanged", () => {

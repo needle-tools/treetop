@@ -233,6 +233,19 @@ export function normalizeSessionForOpen(
   s: OpenSession,
   repos: Repo[],
 ): OpenSession {
+  const wt = repos
+    .flatMap((r) => r.worktrees ?? [])
+    .find((w) => w.path === wtPath);
+  const agents = wt?.agents ?? [];
+  if (
+    !s.resumeSessionId &&
+    (s.agent === "claude" || s.agent === "codex")
+  ) {
+    const match = agents.find(
+      (a) => a.agent === s.agent && a.source === s.source && a.sessionId,
+    );
+    if (match?.sessionId) return { ...s, resumeSessionId: match.sessionId };
+  }
   if (
     s.agent !== "ollama" ||
     s.source.startsWith("__transcript__:") ||
@@ -248,10 +261,6 @@ export function normalizeSessionForOpen(
     ? base.slice(0, -".jsonl".length)
     : base;
   if (!termId) return s;
-  const wt = repos
-    .flatMap((r) => r.worktrees ?? [])
-    .find((w) => w.path === wtPath);
-  const agents = wt?.agents ?? [];
   const match = agents.find(
     (a) =>
       a.agent === "ollama" &&
