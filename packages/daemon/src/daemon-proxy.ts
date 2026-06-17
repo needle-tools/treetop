@@ -87,6 +87,7 @@ export function buildProxyWsUrl(
  *  for a reply that never comes — hanging the request for minutes and piling
  *  up until the daemon wedges. Override with SUPERGIT_PROXY_TIMEOUT_MS. */
 const DEFAULT_TIME_TO_HEADERS_MS = 15_000;
+const nativeFetch = Bun.fetch.bind(Bun) as typeof fetch;
 
 export async function forwardToRemote(
   localPort: number,
@@ -114,7 +115,7 @@ export async function forwardToRemote(
     ? setTimeout(() => ac.abort(), timeToHeadersMs)
     : null;
   try {
-    const upstream = await fetch(target, {
+    const upstream = await nativeFetch(target, {
       method: req.method,
       headers: fwdHeaders,
       body:

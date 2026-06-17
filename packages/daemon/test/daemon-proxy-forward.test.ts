@@ -215,6 +215,21 @@ describe("forwardToRemote (Tier 2: real in-process remote)", () => {
     );
   });
 
+  test("uses daemon transport even if a UI test has patched global fetch", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("leaked test fetch", { status: 404 })) as typeof fetch;
+    try {
+      const proxied = parseDaemonProxyPath("/api/daemons/d1/health")!;
+      const req = new Request("http://local/api/daemons/d1/health");
+      const res = await forwardToRemote(remotePort, proxied, req, "", NO_CORS);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("returns 502 when the remote is unreachable", async () => {
     // Nothing is listening on this port — the tunnel/remote is down.
     const deadPort = 1; // privileged + nothing there → connection fails fast
