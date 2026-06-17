@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
+  codexAppInputFromComposer,
   commandCopyText,
   commandPowerLabel,
   commandUrlSatellite,
@@ -154,6 +155,52 @@ describe("note inline attachments", () => {
       expect(parts[0].attachment.size).toBe(123);
       expect(parts[0].attachment.hasAlpha).toBe(true);
     }
+  });
+
+  test("builds Codex App input from text and image attachments", () => {
+    const first = makeImageAttachmentRef({
+      path: "/tmp/supergit/attachments/shot.png",
+      filename: "shot.png",
+      mimeType: "image/png",
+    });
+    const second = makeImageAttachmentRef({
+      path: "/tmp/supergit/attachments/detail.webp",
+      filename: "detail.webp",
+      mimeType: "image/webp",
+    });
+    const parts = parseInlineAttachments(`${first}\n${second}`);
+    const attachments = parts
+      .filter((part) => part.kind === "attachment")
+      .map((part) => part.attachment);
+
+    expect(codexAppInputFromComposer("Compare these", attachments)).toEqual([
+      { type: "text", text: "Compare these", text_elements: [] },
+      { type: "localImage", path: "/tmp/supergit/attachments/shot.png" },
+      { type: "localImage", path: "/tmp/supergit/attachments/detail.webp" },
+    ]);
+  });
+
+  test("deduplicates legacy Codex image markers and composer attachments", () => {
+    const ref = makeImageAttachmentRef({
+      path: "/tmp/supergit/attachments/shot.png",
+      filename: "shot.png",
+    });
+    const part = parseInlineAttachments(ref)[0];
+    const attachments = part?.kind === "attachment" ? [part.attachment] : [];
+
+    expect(
+      codexAppInputFromComposer(
+        "See [Image: source: /tmp/supergit/attachments/shot.png]",
+        attachments,
+      ),
+    ).toEqual([
+      {
+        type: "text",
+        text: "See [Image: source: /tmp/supergit/attachments/shot.png]",
+        text_elements: [],
+      },
+      { type: "localImage", path: "/tmp/supergit/attachments/shot.png" },
+    ]);
   });
 
   test("uses image filenames instead of absolute paths for attachment labels", () => {

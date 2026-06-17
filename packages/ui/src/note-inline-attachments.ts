@@ -509,6 +509,33 @@ export function appendInlineAttachmentRef(body: string, raw: string): string {
   return `${body}${sep}${raw}`;
 }
 
+export function codexAppInputFromComposer(
+  text: string,
+  attachments: readonly InlineAttachment[] = [],
+): Record<string, unknown>[] {
+  const input: Record<string, unknown>[] = [
+    { type: "text", text, text_elements: [] },
+  ];
+  const seen = new Set<string>();
+  const appendImage = (path: string) => {
+    const trimmed = path.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    input.push({ type: "localImage", path: trimmed });
+  };
+
+  const imageRe =
+    /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi;
+  let match: RegExpExecArray | null;
+  while ((match = imageRe.exec(text)) !== null) {
+    appendImage(match[1] ?? "");
+  }
+  for (const attachment of attachments) {
+    if (attachment.kind === "image") appendImage(attachment.path);
+  }
+  return input;
+}
+
 export function expandNoteBodyForCopy(body: string): string {
   return parseInlineAttachments(body)
     .map((part) => {

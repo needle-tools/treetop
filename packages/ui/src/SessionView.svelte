@@ -39,6 +39,12 @@
   } from "./last-user-message";
   import { registerSessionPoll } from "./session-poll";
   import { splitParent } from "./file-browser-utils";
+  import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
+  import {
+    codexAppInputFromComposer,
+    inlineAttachmentLabel,
+    type ImageInlineAttachment,
+  } from "./note-inline-attachments";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -1186,6 +1192,16 @@
    *  answer (crashed, hung, no API key, ...), we surface an error
    *  instead of leaving the spinner up indefinitely. */
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  let composerAttachments: ImageInlineAttachment[] = [];
+  let composerUploadingImages = 0;
+  let composerAttachmentError = "";
+  let openComposerAttachmentIndex: number | null = null;
+  $: openComposerAttachment =
+    openComposerAttachmentIndex === null
+      ? null
+      : (composerAttachments[openComposerAttachmentIndex] ?? null);
+  $: composerCanSend =
+    !!inputText.trim() || (agent === "codex" && composerAttachments.length > 0);
   // Track whether we've already shown a session at least once. First render
   // = scroll to bottom. Subsequent renders = only auto-scroll if the user
   // was already near the bottom (so polling can't snatch them away when
@@ -1795,30 +1811,200 @@
     };
   }
 
-  function codexInputFromText(text: string): Record<string, unknown>[] {
-    const input: Record<string, unknown>[] = [
-      { type: "text", text, text_elements: [] },
-    ];
-    const imageRe =
-      /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|bmp))\s*\]/gi;
-    let match: RegExpExecArray | null;
-    while ((match = imageRe.exec(text)) !== null) {
-      input.push({ type: "localImage", path: match[1]!.trim() });
+  function codexOptimisticText(
+    text: string,
+    attachments: readonly ImageInlineAttachment[],
+  ): string {
+    const imageMarkers = attachments.map(
+      (attachment) => `[Image: source: ${attachment.path}]`,
+    );
+    return [text, ...imageMarkers].filter(Boolean).join("\n");
+  }
+
+  function composerImageUrl(attachment: ImageInlineAttachment): string {
+    return apiUrl(
+      `/api/image?path=${encodeURIComponent(attachment.path)}`,
+      daemonId,
+    );
+  }
+
+  function composerTransferImages(dt: DataTransfer | null): File[] {
+    if (!dt) return [];
+    const byFile = Array.from(dt.files ?? []).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (byFile.length) return byFile;
+    return Array.from(dt.items ?? [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => !!file);
+  }
+
+  function composerHasImageTransfer(dt: DataTransfer | null): boolean {
+    if (!dt) return false;
+    return (
+      Array.from(dt.files ?? []).some((file) =>
+        file.type.startsWith("image/"),
+      ) ||
+      Array.from(dt.items ?? []).some(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      )
+    );
+  }
+
+  async function addComposerImageAttachment(
+    blob: Blob,
+    opts: { filename?: string; source: "clipboard" | "drop"; types: string[] },
+  ): Promise<void> {
+    composerUploadingImages += 1;
+    composerAttachmentError = "";
+    try {
+      const shrunk = await shrinkImageBlob(blob);
+      const hasAlpha = await imageBlobHasAlpha(shrunk);
+      const filename =
+        opts.filename && opts.filename !== "blob" ? opts.filename : undefined;
+      const form = new FormData();
+      form.append(
+        "file",
+        filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
+      );
+      form.append("source", "codex-visual-image-paste");
+      const res = await fetch(apiUrl("/api/attach", daemonId), {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) throw new Error(`attach failed: ${res.status}`);
+      const { path } = (await res.json()) as { path: string };
+      composerAttachments = [
+        ...composerAttachments,
+        {
+          kind: "image",
+          path,
+          ...(filename ? { filename } : {}),
+          mimeType: shrunk.type || blob.type || undefined,
+          size: shrunk.size,
+          ...(hasAlpha ? { hasAlpha } : {}),
+          source: {
+            kind: opts.source,
+            types: opts.types,
+            ...(filename ? { filename } : {}),
+          },
+        },
+      ];
+    } catch (e) {
+      composerAttachmentError =
+        e instanceof Error ? e.message : "Could not attach image";
+    } finally {
+      composerUploadingImages = Math.max(0, composerUploadingImages - 1);
     }
-    return input;
+  }
+
+  function onComposerPaste(e: ClipboardEvent): void {
+    if (agent !== "codex") return;
+    const cd = e.clipboardData;
+    const images = composerTransferImages(cd);
+    if (!images.length) return;
+    if (!cd?.getData("text/plain")) e.preventDefault();
+    const types = Array.from(cd?.types ?? []);
+    for (const image of images) {
+      void addComposerImageAttachment(image, {
+        filename: image.name,
+        source: "clipboard",
+        types,
+      });
+    }
+  }
+
+  function onComposerDragOver(e: DragEvent): void {
+    if (agent !== "codex" || !composerHasImageTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+  }
+
+  function onComposerDrop(e: DragEvent): void {
+    if (agent !== "codex") return;
+    const images = composerTransferImages(e.dataTransfer);
+    if (!images.length) return;
+    e.preventDefault();
+    const types = Array.from(e.dataTransfer?.types ?? []);
+    for (const image of images) {
+      void addComposerImageAttachment(image, {
+        filename: image.name,
+        source: "drop",
+        types,
+      });
+    }
+  }
+
+  function removeComposerAttachment(index: number): void {
+    composerAttachments = composerAttachments.filter((_, i) => i !== index);
+    if (openComposerAttachmentIndex === null) return;
+    if (composerAttachments.length === 0) {
+      openComposerAttachmentIndex = null;
+    } else if (index < openComposerAttachmentIndex) {
+      openComposerAttachmentIndex -= 1;
+    } else if (index === openComposerAttachmentIndex) {
+      openComposerAttachmentIndex = Math.min(
+        openComposerAttachmentIndex,
+        composerAttachments.length - 1,
+      );
+    }
+  }
+
+  function removeOpenComposerAttachment(): void {
+    if (openComposerAttachmentIndex === null) return;
+    removeComposerAttachment(openComposerAttachmentIndex);
+  }
+
+  function openComposerAttachmentAt(index: number): void {
+    if (!composerAttachments[index]) return;
+    openComposerAttachmentIndex = index;
+  }
+
+  function closeComposerAttachment(): void {
+    openComposerAttachmentIndex = null;
+  }
+
+  function stepComposerAttachment(delta: number): void {
+    if (openComposerAttachmentIndex === null || composerAttachments.length < 2)
+      return;
+    openComposerAttachmentIndex =
+      (openComposerAttachmentIndex + delta + composerAttachments.length) %
+      composerAttachments.length;
+  }
+
+  function onComposerAttachmentKeydown(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeComposerAttachment();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stepComposerAttachment(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stepComposerAttachment(1);
+    }
   }
 
   async function sendCodexMessage(): Promise<void> {
     const text = inputText.trim();
-    if (!text || !session?.sessionId || !session.cwd) return;
+    const attachments = composerAttachments;
+    if (
+      (!text && attachments.length === 0) ||
+      !session?.sessionId ||
+      !session.cwd
+    )
+      return;
     sending = true;
     sendError = "";
-    optimisticCodexUser(text);
+    optimisticCodexUser(codexOptimisticText(text, attachments));
     inputText = "";
+    composerAttachments = [];
+    openComposerAttachmentIndex = null;
     if (pendingTimer) clearTimeout(pendingTimer);
     pendingTimer = setTimeout(() => {
       if (sending && agent === "codex") {
-        sendError = "Codex is still running; use Stop if you need to interrupt.";
+        sendError =
+          "Codex is still running; use Stop if you need to interrupt.";
       }
     }, 90_000);
     try {
@@ -1829,7 +2015,7 @@
           threadId: session.sessionId,
           cwd: session.cwd,
           text,
-          input: codexInputFromText(text),
+          input: codexAppInputFromComposer(text, attachments),
           steer: !!codexActiveTurnId,
           model: codexModel || undefined,
           effort: codexEffort || undefined,
@@ -1845,6 +2031,10 @@
       sendError = e instanceof Error ? e.message : String(e);
       sending = false;
       codexActiveTurnId = null;
+      if (!inputText.trim() && composerAttachments.length === 0) {
+        inputText = text;
+        composerAttachments = attachments;
+      }
       if (pendingTimer) {
         clearTimeout(pendingTimer);
         pendingTimer = null;
@@ -2819,9 +3009,63 @@
           placeholder={composerPlaceholder}
           rows="2"
           on:keydown={onComposerKey}
+          on:paste={onComposerPaste}
+          on:dragover={onComposerDragOver}
+          on:drop={onComposerDrop}
           disabled={sending && agent !== "codex" && !ollamaAbort}
         ></textarea>
       </div>
+      {#if agent === "codex" && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
+        <div class="composer-attachments" aria-label="Message attachments">
+          {#each composerAttachments as attachment, i (`${attachment.path}:${i}`)}
+            <div class="composer-attachment">
+              <button
+                type="button"
+                class="composer-attachment-open"
+                on:click={() => openComposerAttachmentAt(i)}
+                title={`Open ${inlineAttachmentLabel(attachment)}`}
+                aria-label={`Open ${inlineAttachmentLabel(attachment)}`}
+              >
+                <span
+                  class="sticky-photo-frame composer-photo-frame"
+                  class:sticky-photo-frame-transparent={attachment.hasAlpha}
+                >
+                  <img
+                    src={composerImageUrl(attachment)}
+                    alt={inlineAttachmentLabel(attachment)}
+                    draggable="false"
+                  />
+                </span>
+                <span class="composer-attachment-name">
+                  {inlineAttachmentLabel(attachment)}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="composer-attachment-remove"
+                on:click={() => removeComposerAttachment(i)}
+                title={`Remove ${inlineAttachmentLabel(attachment)}`}
+                aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
+              >
+                ×
+              </button>
+            </div>
+          {/each}
+          {#if composerUploadingImages}
+            <span class="composer-attachment-status">
+              attaching {composerUploadingImages}…
+            </span>
+          {/if}
+          {#if composerAttachmentError}
+            <span
+              class="composer-attachment-error"
+              title={composerAttachmentError}
+            >
+              {composerAttachmentError}
+            </span>
+          {/if}
+        </div>
+      {/if}
       <div class="composer-footer">
         {#if agent === "codex"}
           <div class="composer-footer-left">
@@ -2904,7 +3148,9 @@
               type="button"
               class="composer-send"
               on:click={() => void sendMessage()}
-              disabled={!inputText.trim() || (sending && agent !== "codex")}
+              disabled={!composerCanSend ||
+                composerUploadingImages > 0 ||
+                (sending && agent !== "codex")}
               title={agent === "codex" && codexActiveTurnId
                 ? "Steer the running Codex turn"
                 : "Send (Enter). Shift+Enter for newline."}
@@ -2918,6 +3164,87 @@
       {#if sendError}
         <div class="composer-error" title={sendError}>{sendError}</div>
       {/if}
+    </div>
+  {/if}
+  {#if openComposerAttachment && openComposerAttachmentIndex !== null}
+    <div
+      class="attachment-media-scrim composer-media-scrim"
+      role="presentation"
+      tabindex="-1"
+      on:click={closeComposerAttachment}
+      on:keydown={onComposerAttachmentKeydown}
+    >
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="attachment-media-modal attachment-media-modal-image"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Attachment"
+        tabindex="-1"
+        on:click|stopPropagation
+        on:dblclick|stopPropagation
+      >
+        <header class="attachment-media-head">
+          <span class="attachment-media-title">
+            {inlineAttachmentLabel(openComposerAttachment)}
+          </span>
+          <span
+            class="attachment-media-actions"
+            role="toolbar"
+            aria-label="Attachment actions"
+          >
+            <button
+              type="button"
+              class="composer-media-btn danger"
+              title="Remove attachment"
+              aria-label="Remove attachment"
+              on:click={removeOpenComposerAttachment}
+            >
+              ×
+            </button>
+          </span>
+          {#if composerAttachments.length > 1}
+            <button
+              type="button"
+              class="attachment-media-nav"
+              aria-label="Previous attachment"
+              title="Previous attachment"
+              on:click={() => stepComposerAttachment(-1)}>‹</button
+            >
+            <button
+              type="button"
+              class="attachment-media-nav"
+              aria-label="Next attachment"
+              title="Next attachment"
+              on:click={() => stepComposerAttachment(1)}>›</button
+            >
+          {/if}
+          <span class="attachment-media-count">
+            {openComposerAttachmentIndex + 1} / {composerAttachments.length}
+          </span>
+          <button
+            type="button"
+            class="composer-media-btn"
+            title="Close"
+            aria-label="Close attachment"
+            on:click={closeComposerAttachment}>×</button
+          >
+        </header>
+        <div class="attachment-media-shell attachment-media-shell-image">
+          <div class="attachment-media-body">
+            <span
+              class="sticky-photo-frame sticky-photo-frame-media"
+              class:sticky-photo-frame-transparent={openComposerAttachment.hasAlpha}
+            >
+              <img
+                src={composerImageUrl(openComposerAttachment)}
+                alt={inlineAttachmentLabel(openComposerAttachment)}
+                draggable="true"
+              />
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
@@ -3249,6 +3576,108 @@
   }
   .composer-input::placeholder {
     color: var(--text-muted);
+  }
+  .composer-attachments {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 0.05rem 0 0.1rem;
+  }
+  .composer-attachment {
+    position: relative;
+    flex: 0 0 auto;
+    width: 6.2rem;
+  }
+  .composer-attachment-open {
+    display: grid;
+    gap: 0.24rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .composer-attachment-open:hover .composer-photo-frame {
+    border-color: rgba(42, 37, 22, 0.3);
+  }
+  .composer-photo-frame {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 5px 5px 14px;
+  }
+  .composer-photo-frame img {
+    max-height: 3.7rem;
+  }
+  .composer-attachment-name {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-attachment-remove {
+    position: absolute;
+    top: -0.35rem;
+    right: -0.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.15rem;
+    height: 1.15rem;
+    border: 1px solid var(--surface-3);
+    border-radius: 999px;
+    background: var(--surface-0);
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 4px 12px -8px rgba(0, 0, 0, 0.65);
+  }
+  .composer-attachment-remove:hover,
+  .composer-media-btn:hover {
+    border-color: var(--text-faint);
+  }
+  .composer-attachment-status,
+  .composer-attachment-error {
+    flex: 0 0 auto;
+    align-self: center;
+    max-width: 12rem;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-attachment-error {
+    color: var(--error-text);
+  }
+  .composer-media-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.45rem;
+    height: 1.35rem;
+    padding: 0 0.35rem;
+    border: 1px solid rgba(42, 37, 22, 0.18);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.45);
+    color: #2a2516;
+    font: inherit;
+    font-size: 0.78rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .composer-media-btn.danger {
+    color: #9b2c2c;
   }
   /* Empty assistant bubble while waiting for the first SSE chunk.
      Muted color so the spinner reads as "thinking" rather than as
