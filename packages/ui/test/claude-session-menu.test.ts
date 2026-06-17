@@ -322,8 +322,17 @@ describe("codexAgentSettings", () => {
   function build(overrides: Partial<Parameters<typeof codexAgentSettings>[0]> = {}) {
     return codexAgentSettings({
       models: [
-        { id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true },
-        { id: "gpt-5-codex-mini", displayName: "GPT-5 Codex Mini" },
+        {
+          id: "gpt-5-codex",
+          displayName: "GPT-5 Codex",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+        },
+        {
+          id: "gpt-5-codex-mini",
+          displayName: "GPT-5 Codex Mini",
+          defaultReasoningEffort: "low",
+        },
       ],
       detectedModel: undefined,
       currentModel: "",
@@ -362,6 +371,7 @@ describe("codexAgentSettings", () => {
     expect(model!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
       "gpt-5-codex-mini",
     ]);
+    expect(model!.options[0]!.label).toBe("Default (GPT-5 Codex)");
   });
 
   test("current and detected models are kept even when the model endpoint omits them", () => {
@@ -380,7 +390,7 @@ describe("codexAgentSettings", () => {
     ]);
   });
 
-  test("reasoning budget options are default/minimal/low/medium/high", () => {
+  test("reasoning budget options show the resolved app-server default when known", () => {
     const [, effort] = build({ currentEffort: "medium" });
     expect(effort!.options.map((o) => o.value)).toEqual([
       "",
@@ -389,9 +399,15 @@ describe("codexAgentSettings", () => {
       "medium",
       "high",
     ]);
+    expect(effort!.options[0]!.label).toBe("Default (medium)");
     expect(effort!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
       "medium",
     ]);
+  });
+
+  test("reasoning default follows the explicitly selected model when app-server reports one", () => {
+    const [, effort] = build({ currentModel: "gpt-5-codex-mini" });
+    expect(effort!.options[0]!.label).toBe("Default (low)");
   });
 
   test("onPick callbacks route through the matching Codex group", () => {

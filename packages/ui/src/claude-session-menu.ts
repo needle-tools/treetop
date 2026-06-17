@@ -214,6 +214,16 @@ export function codexModelValue(m: CodexModelInfo): string {
   return m.id || m.model || "";
 }
 
+function codexModelLabel(m: CodexModelInfo): string {
+  return m.displayName || m.model || m.id;
+}
+
+function defaultCodexModel(
+  models: readonly CodexModelInfo[],
+): CodexModelInfo | undefined {
+  return models.find((m) => m.isDefault);
+}
+
 export function uniqueCodexModels(opts: {
   models: readonly CodexModelInfo[];
   detectedModel?: string;
@@ -352,6 +362,15 @@ export function codexAgentSettings(opts: {
   onPickSandbox: (sandbox: string) => void;
   onPickApproval: (approval: string) => void;
 }): AgentSettingGroup[] {
+  const defaultModel = defaultCodexModel(opts.models);
+  const defaultModelLabel = defaultModel ? codexModelLabel(defaultModel) : "";
+  const currentModelInfo =
+    opts.models.find((m) => codexModelValue(m) === opts.currentModel) ??
+    (!opts.currentModel ? defaultModel : undefined);
+  const defaultReasoningEffort =
+    currentModelInfo?.defaultReasoningEffort ??
+    defaultModel?.defaultReasoningEffort ??
+    "";
   const modelOptions = uniqueCodexModels({
     models: opts.models,
     detectedModel: opts.detectedModel,
@@ -362,7 +381,7 @@ export function codexAgentSettings(opts: {
       const value = codexModelValue(m);
       return {
         value,
-        label: m.displayName || m.model || m.id,
+        label: codexModelLabel(m),
         selected:
           opts.currentModel === value ||
           (!opts.currentModel && (m.isDefault || value === opts.detectedModel)),
@@ -379,7 +398,16 @@ export function codexAgentSettings(opts: {
           : "Model",
       onPick: opts.onPickModel,
       options: [
-        { value: "", label: "Default", selected: !opts.currentModel },
+        {
+          value: "",
+          label: defaultModelLabel
+            ? `Default (${defaultModelLabel})`
+            : "Default",
+          selected: !opts.currentModel,
+          title: defaultModelLabel
+            ? `Uses the app-server default model, currently ${defaultModelLabel}`
+            : "Uses the app-server default model",
+        },
         ...modelOptions,
       ],
     },
@@ -389,8 +417,16 @@ export function codexAgentSettings(opts: {
       onPick: opts.onPickEffort,
       options: CODEX_EFFORT_LEVELS.map((value) => ({
         value,
-        label: value || "Default",
+        label:
+          value || (defaultReasoningEffort
+            ? `Default (${defaultReasoningEffort})`
+            : "Default"),
         selected: opts.currentEffort === value,
+        title: value
+          ? undefined
+          : defaultReasoningEffort
+            ? `Uses the app-server default reasoning effort for this model, currently ${defaultReasoningEffort}`
+            : "Uses the app-server default reasoning effort for this model",
       })),
     },
     {
