@@ -12,6 +12,12 @@
 
   let confirmButton: HTMLButtonElement | undefined;
   let cancelButton: HTMLButtonElement | undefined;
+  let dialogEl: HTMLDivElement | undefined;
+  $: confirmDescriptionId =
+    $activeConfirm?.message ||
+    ($activeConfirm?.mode === "choice" && $activeConfirm.detail)
+      ? "confirm-description"
+      : undefined;
 
   // When a request arrives, focus the confirm button so Enter/Space
   // commits and Esc cancels — matches the native confirm dialog's
@@ -20,25 +26,44 @@
   $: void (async () => {
     if ($activeConfirm) {
       await tick();
-      if ($activeConfirm.danger) cancelButton?.focus();
+      if ($activeConfirm.mode === "choice") {
+        const choiceButton =
+          dialogEl?.querySelector<HTMLButtonElement>(
+            "[data-choice-recommended='true']",
+          ) ?? dialogEl?.querySelector<HTMLButtonElement>(".confirm-choice-btn");
+        choiceButton?.focus();
+      } else if ($activeConfirm.danger) cancelButton?.focus();
       else confirmButton?.focus();
     }
   })();
 
-  function resolve(ok: boolean) {
+  function resolveCancel() {
     const req = $activeConfirm;
     if (!req) return;
+    if (req.mode === "choice") req.resolve(null);
+    else req.resolve(false);
+  }
+
+  function resolveConfirm(ok: boolean) {
+    const req = $activeConfirm;
+    if (!req || req.mode !== "confirm") return;
     req.resolve(ok);
+  }
+
+  function resolveChoice(value: string) {
+    const req = $activeConfirm;
+    if (!req || req.mode !== "choice") return;
+    req.resolve(value);
   }
 
   function onKeydown(ev: KeyboardEvent) {
     if (!$activeConfirm) return;
     if (ev.key === "Escape") {
       ev.preventDefault();
-      resolve(false);
-    } else if (ev.key === "Enter") {
+      resolveCancel();
+    } else if (ev.key === "Enter" && $activeConfirm.mode === "confirm") {
       ev.preventDefault();
-      resolve(true);
+      resolveConfirm(true);
     }
   }
 </script>
@@ -48,41 +73,72 @@
 {#if $activeConfirm}
   <div
     class="confirm-overlay"
-    on:click={() => resolve(false)}
+    on:click={resolveCancel}
     on:keydown|stopPropagation
     role="presentation"
   >
     <div
       class="confirm-dialog"
+      class:confirm-dialog-choice={$activeConfirm.mode === "choice"}
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="confirm-title"
-      aria-describedby={$activeConfirm.message ? "confirm-message" : undefined}
+      aria-describedby={confirmDescriptionId}
+      bind:this={dialogEl}
       on:click|stopPropagation
     >
       <h2 id="confirm-title" class="confirm-title">{$activeConfirm.title}</h2>
       {#if $activeConfirm.message}
-        <p id="confirm-message" class="confirm-message">
+        <p id="confirm-description" class="confirm-message">
           {$activeConfirm.message}
         </p>
       {/if}
-      <div class="confirm-buttons">
-        <button
-          type="button"
-          class="confirm-btn confirm-cancel"
-          bind:this={cancelButton}
-          on:click={() => resolve(false)}
-          >{$activeConfirm.cancelLabel ?? "Cancel"}</button
-        >
-        <button
-          type="button"
-          class="confirm-btn confirm-ok"
-          class:danger={$activeConfirm.danger}
-          bind:this={confirmButton}
-          on:click={() => resolve(true)}
-          >{$activeConfirm.confirmLabel ?? "Confirm"}</button
-        >
-      </div>
+      {#if $activeConfirm.mode === "choice"}
+        {#if $activeConfirm.detail}
+          <p
+            id={$activeConfirm.message ? undefined : "confirm-description"}
+            class="confirm-detail"
+          >
+            {$activeConfirm.detail}
+          </p>
+        {/if}
+        <div class="confirm-choice-list">
+          {#each $activeConfirm.choices as choice (choice.value)}
+            <button
+              type="button"
+              class="confirm-choice-btn"
+              class:recommended={choice.recommended}
+              class:danger={choice.danger}
+              class:neutral={!choice.recommended && !choice.danger}
+              data-choice-recommended={choice.recommended ? "true" : undefined}
+              on:click={() => resolveChoice(choice.value)}
+            >
+              <span class="confirm-choice-label">{choice.label}</span>
+              {#if choice.hint}
+                <span class="confirm-choice-hint">{choice.hint}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="confirm-buttons">
+          <button
+            type="button"
+            class="confirm-btn confirm-cancel"
+            bind:this={cancelButton}
+            on:click={() => resolveConfirm(false)}
+            >{$activeConfirm.cancelLabel ?? "Cancel"}</button
+          >
+          <button
+            type="button"
+            class="confirm-btn confirm-ok"
+            class:danger={$activeConfirm.danger}
+            bind:this={confirmButton}
+            on:click={() => resolveConfirm(true)}
+            >{$activeConfirm.confirmLabel ?? "Confirm"}</button
+          >
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -111,6 +167,9 @@
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     padding: 1rem 1.1rem;
   }
+  .confirm-dialog-choice {
+    max-width: min(560px, 92vw);
+  }
   .confirm-title {
     margin: 0 0 0.4rem;
     font-size: 0.95rem;
@@ -123,6 +182,61 @@
     line-height: 1.4;
     color: var(--text-muted);
     word-break: break-all;
+  }
+  .confirm-detail {
+    margin: -0.25rem 0 0.9rem;
+    color: var(--text-muted);
+    font-family: ui-monospace, monospace;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+  .confirm-choice-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .confirm-choice-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--surface-3);
+    background: var(--surface-2);
+    color: var(--text-1);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+  .confirm-choice-btn:hover {
+    background: var(--surface-3);
+  }
+  .confirm-choice-btn.recommended {
+    border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-3));
+  }
+  .confirm-choice-btn.recommended:hover {
+    background: color-mix(in srgb, var(--brand) 12%, var(--surface-2));
+  }
+  .confirm-choice-btn.danger {
+    border-color: color-mix(in srgb, #efaaaa 35%, transparent);
+    color: #efcccc;
+  }
+  .confirm-choice-btn.danger:hover {
+    background: color-mix(in srgb, var(--error-bg) 60%, var(--surface-2));
+  }
+  .confirm-choice-btn.neutral {
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .confirm-choice-label {
+    font-weight: 600;
+  }
+  .confirm-choice-hint {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 400;
   }
   .confirm-buttons {
     display: flex;

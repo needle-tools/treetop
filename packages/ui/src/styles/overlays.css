@@ -1,102 +1,8 @@
 /*
- * Overlays: dirty-checkout modal + the bottom-right toast stack.
- * Both are app-level affordances rendered outside the normal row
- * layout, so they share this file. Lives in styles/ (global) so a
- * future Modal.svelte / Toast.svelte extraction can consume these
- * rules unchanged. See plans/PLAN.md → "App.svelte refactor
- * (componentization)".
+ * Overlays: bottom-right toast stack. Lives in styles/ (global) so a
+ * future Toast.svelte extraction can consume these rules unchanged.
+ * See plans/PLAN.md -> "App.svelte refactor (componentization)".
  */
-
-/* ------------------------------------------------------------------
- * Modal — currently only the "dirty checkout" confirmation, but the
- * shape is generic enough to share.
- * ------------------------------------------------------------------ */
-.modal-scrim {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-}
-.modal {
-  background: var(--surface-1);
-  border: 1px solid var(--surface-3);
-  border-radius: var(--radius-md);
-  padding: 1rem 1.1rem;
-  max-width: 520px;
-  width: 100%;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
-  color: var(--text-1);
-}
-.modal h3 {
-  margin: 0 0 0.6rem;
-  font-size: 1rem;
-}
-.modal-body {
-  margin: 0 0 0.4rem;
-  font-size: 0.88rem;
-  color: var(--text-2);
-}
-.modal-body code {
-  background: var(--surface-2);
-  padding: 0.05rem 0.3rem;
-  border-radius: 3px;
-}
-.modal-meta {
-  margin: 0 0 0.8rem;
-  font-family: ui-monospace, monospace;
-  word-break: break-word;
-}
-.modal-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.modal-action {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--surface-3);
-  background: var(--surface-2);
-  color: var(--text-1);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-.modal-action:hover {
-  background: var(--surface-3);
-}
-/* Recommended action: a subtle brand-tinted border all around,
-   background stays a dark surface so the title and hint are
-   legible. No accent stripe — just a quiet hint of brand. */
-.modal-action-recommended {
-  border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-3));
-}
-.modal-action-recommended:hover {
-  background: color-mix(in srgb, var(--brand) 12%, var(--surface-2));
-}
-.modal-action-danger {
-  border-color: color-mix(in srgb, #efaaaa 35%, transparent);
-  color: #efcccc;
-}
-.modal-action-danger:hover {
-  background: color-mix(in srgb, var(--error-bg) 60%, var(--surface-2));
-}
-.modal-action-neutral {
-  background: transparent;
-  color: var(--text-muted);
-}
-.modal-hint {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  font-weight: 400;
-}
 
 /* ------------------------------------------------------------------
  * Toast stack — bottom-right, errors + notices share the layout.
@@ -106,12 +12,9 @@
   position: fixed;
   right: 1rem;
   bottom: 1rem;
-  /* Must stack above every other surface in the dashboard. The
-     notes layer (StickyNotesLayer) climbs to z-index 2500 while
-     dragging, the active-note focus glow lives at 1500, popovers
-     at 1100, and modal overlays in this file are at 2000. 3000
-     clears all of them so a session-invite toast is never hidden
-     behind a sticky note. */
+  /* Must stack above every non-modal dashboard surface. The notes layer
+     climbs to z-index 2500 for mention popovers/previews; 3000 clears
+     those so session-invite toasts are never hidden behind a sticky note. */
   z-index: 3000;
   display: flex;
   flex-direction: column;

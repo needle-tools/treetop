@@ -11,7 +11,11 @@
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { get } from "svelte/store";
-import { activeConfirm, confirmDialog } from "../src/confirm-dialog";
+import {
+  activeConfirm,
+  choiceDialog,
+  confirmDialog,
+} from "../src/confirm-dialog";
 import { activeCopy, openCopy, closeCopy } from "../src/copy-session-dialog";
 import {
   activeShare,
@@ -90,6 +94,43 @@ describe("confirmDialog", () => {
     get(activeConfirm)!.resolve(true);
     await pB;
     expect(idB).toBeGreaterThan(idA);
+  });
+
+  test("choiceDialog publishes multiple explicit actions and resolves the selected value", async () => {
+    const p = choiceDialog({
+      title: "Worktree has uncommitted changes",
+      message: "Pick how to handle local changes.",
+      choices: [
+        { value: "stash", label: "Stash & switch", recommended: true },
+        { value: "force", label: "Force & switch", danger: true },
+        { value: "cancel", label: "Cancel" },
+      ],
+      cancelValue: "cancel",
+    });
+
+    const req = get(activeConfirm);
+    expect(req?.mode).toBe("choice");
+    expect(req?.choices?.map((choice) => choice.value)).toEqual([
+      "stash",
+      "force",
+      "cancel",
+    ]);
+
+    req!.resolve("force");
+    expect(await p).toBe("force");
+    expect(get(activeConfirm)).toBeNull();
+  });
+
+  test("choiceDialog overlay cancel resolves the configured cancel value", async () => {
+    const p = choiceDialog({
+      title: "Pull would clobber changes",
+      choices: [{ value: "stash", label: "Stash & pull" }],
+      cancelValue: "cancel",
+    });
+
+    get(activeConfirm)!.resolve(null);
+    expect(await p).toBe("cancel");
+    expect(get(activeConfirm)).toBeNull();
   });
 });
 

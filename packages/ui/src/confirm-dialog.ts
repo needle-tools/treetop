@@ -36,12 +36,42 @@ export interface ConfirmOptions {
   danger?: boolean;
 }
 
+export interface ChoiceOption<T extends string = string> {
+  value: T;
+  label: string;
+  hint?: string;
+  danger?: boolean;
+  recommended?: boolean;
+}
+
+export interface ChoiceDialogOptions<T extends string = string> {
+  /** Primary heading. Required. */
+  title: string;
+  /** Optional secondary line — supports plain text, no markdown. */
+  message?: string;
+  /** Smaller monospace detail line for paths or backend error text. */
+  detail?: string;
+  choices: ChoiceOption<T>[];
+  /** Value returned for Esc / overlay dismissal. Defaults to null. */
+  cancelValue?: T | null;
+}
+
 export interface ConfirmRequest extends ConfirmOptions {
+  mode: "confirm";
   id: number;
   resolve: (ok: boolean) => void;
 }
 
-export const activeConfirm: Writable<ConfirmRequest | null> = writable(null);
+export interface ChoiceRequest extends ChoiceDialogOptions {
+  mode: "choice";
+  id: number;
+  resolve: (value: string | null) => void;
+}
+
+export type ActiveConfirmRequest = ConfirmRequest | ChoiceRequest;
+
+export const activeConfirm: Writable<ActiveConfirmRequest | null> =
+  writable(null);
 
 let nextId = 1;
 let queue: Array<() => void> = [];
@@ -55,12 +85,39 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     const run = () => {
       busy = true;
       activeConfirm.set({
+        mode: "confirm",
         id: nextId++,
         ...opts,
         resolve: (ok) => {
           activeConfirm.set(null);
           busy = false;
           resolve(ok);
+          const next = queue.shift();
+          if (next) next();
+        },
+      });
+    };
+    if (busy) queue.push(run);
+    else run();
+  });
+}
+
+/** Open a shared dialog with explicit action choices. Resolves with the
+ *  selected value, or `cancelValue` (default null) for Esc / overlay click. */
+export function choiceDialog<T extends string>(
+  opts: ChoiceDialogOptions<T>,
+): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const run = () => {
+      busy = true;
+      activeConfirm.set({
+        mode: "choice",
+        id: nextId++,
+        ...opts,
+        resolve: (value) => {
+          activeConfirm.set(null);
+          busy = false;
+          resolve((value ?? opts.cancelValue ?? null) as T | null);
           const next = queue.shift();
           if (next) next();
         },
