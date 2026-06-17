@@ -2330,6 +2330,9 @@
         if (onCustomResume) onCustomResume();
         else mode = "terminal";
       }}
+      onViewModeChange={(nextMode) => {
+        mode = nextMode;
+      }}
       onEndSession={disposeTerminal}
       onCancelInflight={cancelAllInflight}
       {onClose}
