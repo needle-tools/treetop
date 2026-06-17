@@ -201,6 +201,14 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     const turnId = nestedString(turn, ["turn", "id"]);
     if (!turnId) throw new Error("codex app-server did not return turn.id");
     this.activeTurns.set(threadId, turnId);
+    this.emit({
+      kind: "notification",
+      method: "turn/started",
+      params: { threadId, turnId, turn: { id: turnId } },
+      threadId,
+      turnId,
+      receivedAt: new Date().toISOString(),
+    });
     const completed = rpc.waitForTurnCompleted(turnId).finally(() => {
       if (this.activeTurns.get(threadId) === turnId) {
         this.activeTurns.delete(threadId);

@@ -45,6 +45,7 @@
     inlineAttachmentLabel,
     type ImageInlineAttachment,
   } from "./note-inline-attachments";
+  import { randomUUID } from "./random-id";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -272,6 +273,12 @@
     isOther: boolean;
     isSecret: boolean;
     options: CodexUserInputOption[] | null;
+  }
+  interface CodexQueuedMessage {
+    id: string;
+    text: string;
+    attachments: ImageInlineAttachment[];
+    createdAt: string;
   }
 
   let session: NormalizedSession | null = null;
@@ -1366,14 +1373,21 @@
   let codexEvents: EventSource | null = null;
   let codexEventsThreadId: string | null = null;
   let codexActiveTurnId: string | null = null;
-  let codexStreamReconnecting = false;
   let codexRequests: CodexAppEvent[] = [];
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
+  let codexQueuedMessages: CodexQueuedMessage[] = [];
+  let codexQueueDraining = false;
+  let codexQueueBlocked = false;
+  let editingCodexQueueId: string | null = null;
+  let editingCodexQueueText = "";
+  let codexLiveLastActivityIso: string | undefined = undefined;
+  let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
   let codexModelsKey = "";
   let codexModelsLoading = false;
   let codexModelsError = "";
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
+  const CODEX_QUEUE_KEY_PREFIX = "supergit:codexApp:queue:";
   const codexSavedSettings = readCodexSettings();
   let codexModel = codexSavedSettings.model ?? "";
   let codexSandbox = codexSavedSettings.sandbox ?? "workspaceWrite";
@@ -1387,6 +1401,18 @@
   $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
+  $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
+  $: codexLastMessageActivityIso =
+    session?.messages
+      .map((m) => m.timestamp)
+      .filter((ts): ts is string => !!ts)
+      .at(-1);
+  $: effectiveLastActivityIso =
+    liveCodexApp
+      ? (codexLiveLastActivityIso ??
+        codexLastMessageActivityIso ??
+        session?.endedAt)
+      : session?.endedAt;
 
   let reportedWorking: boolean | undefined;
   let reportedAwaiting: boolean | undefined;
@@ -1395,7 +1421,7 @@
       mode === "terminal"
         ? working
         : liveCodexApp
-          ? sending || !!codexActiveTurnId
+          ? codexRunning
           : inflight.length > 0;
     const nextAwaiting = awaitingInput;
     if (reportedWorking !== nextWorking) {
@@ -1420,6 +1446,16 @@
       startedAt: new Date().toISOString(),
       messages: [],
     };
+  }
+
+  $: if (liveCodexApp) {
+    const key = codexQueueStorageKey();
+    if (key) restoreCodexQueue(key);
+  }
+
+  $: if (liveCodexApp && codexQueueHydratedKey) {
+    codexQueuedMessages;
+    persistCodexQueue();
   }
 
   function readCodexSettings(): {
@@ -1459,6 +1495,55 @@
         summary: codexSummary,
       }),
     );
+  }
+
+  function codexQueueStorageKey(): string | undefined {
+    const id = effectiveSessionId;
+    return id ? `${CODEX_QUEUE_KEY_PREFIX}${id}` : undefined;
+  }
+
+  function readCodexQueue(key: string): CodexQueuedMessage[] {
+    try {
+      const raw = getDaemonKV().getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item): CodexQueuedMessage | null => {
+          if (!item || typeof item !== "object") return null;
+          const obj = item as Record<string, unknown>;
+          if (typeof obj.id !== "string" || typeof obj.text !== "string")
+            return null;
+          return {
+            id: obj.id,
+            text: obj.text,
+            attachments: Array.isArray(obj.attachments)
+              ? (obj.attachments as ImageInlineAttachment[])
+              : [],
+            createdAt:
+              typeof obj.createdAt === "string"
+                ? obj.createdAt
+                : new Date().toISOString(),
+          };
+        })
+        .filter((item): item is CodexQueuedMessage => !!item);
+    } catch {
+      return [];
+    }
+  }
+
+  function restoreCodexQueue(key: string): void {
+    if (codexQueueHydratedKey === key) return;
+    codexQueueHydratedKey = key;
+    codexQueuedMessages = readCodexQueue(key);
+    codexQueueBlocked = false;
+    cancelEditCodexQueuedMessage();
+  }
+
+  function persistCodexQueue(): void {
+    const key = codexQueueStorageKey();
+    if (!key || codexQueueHydratedKey !== key) return;
+    getDaemonKV().setItem(key, JSON.stringify(codexQueuedMessages));
   }
 
   function pickCodexModel(value: string): void {
@@ -1678,21 +1763,17 @@
     const es = new EventSource(
       apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId),
     );
-    es.onopen = () => {
-      codexStreamReconnecting = false;
-    };
     es.addEventListener("codex", (msg) => {
       try {
-        codexStreamReconnecting = false;
         applyCodexEvent(JSON.parse((msg as MessageEvent).data) as CodexAppEvent);
       } catch {
         // Ignore malformed frames; the daemon stream stays alive.
       }
     });
     es.onerror = () => {
-      if (sending && agent === "codex") {
-        codexStreamReconnecting = true;
-      }
+      // EventSource reconnects on its own. The daemon owns the app-server
+      // turn, so a transient hidden-tab/offscreen transport hiccup should
+      // not surface as session state.
     };
     codexEvents = es;
   }
@@ -1701,10 +1782,10 @@
     codexEvents?.close();
     codexEvents = null;
     codexEventsThreadId = null;
-    codexStreamReconnecting = false;
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
+    codexLiveLastActivityIso = event.receivedAt || new Date().toISOString();
     const key = codexEventKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
@@ -1728,6 +1809,17 @@
       sendError = "";
       return;
     }
+    if (event.method === "turn/status") {
+      const active = event.params?.active === true;
+      codexActiveTurnId = active
+        ? (event.turnId ??
+          (typeof event.params?.turnId === "string"
+            ? event.params.turnId
+            : codexActiveTurnId))
+        : null;
+      sending = active;
+      return;
+    }
     if (event.method === "turn/completed") {
       codexActiveTurnId = null;
       sending = false;
@@ -1737,6 +1829,7 @@
         pendingTimer = null;
       }
       void load();
+      void drainCodexQueue();
       return;
     }
     if (event.method === "serverRequest/resolved") {
@@ -2048,29 +2141,62 @@
     }
   }
 
-  async function sendCodexMessage(): Promise<void> {
+  function currentCodexPayload(): {
+    text: string;
+    attachments: ImageInlineAttachment[];
+  } | null {
     const text = inputText.trim();
-    const attachments = composerAttachments;
+    const attachments = [...composerAttachments];
     if (
       (!text && attachments.length === 0) ||
       !session?.sessionId ||
       !session.cwd
     )
-      return;
-    if (sending && !codexActiveTurnId) return;
-    sending = true;
-    sendError = "";
-    optimisticCodexUser(codexOptimisticText(text, attachments));
+      return null;
+    return { text, attachments };
+  }
+
+  function clearCodexComposer(): void {
     inputText = "";
     composerAttachments = [];
     openComposerAttachmentIndex = null;
-    if (pendingTimer) clearTimeout(pendingTimer);
-    pendingTimer = setTimeout(() => {
-      if (sending && agent === "codex") {
-        sendError =
-          "Codex is still running; use Stop if you need to interrupt.";
-      }
-    }, 90_000);
+  }
+
+  function enqueueCodexPayload(payload: {
+    text: string;
+    attachments: ImageInlineAttachment[];
+  }): void {
+    codexQueuedMessages = [
+      ...codexQueuedMessages,
+      {
+        id: randomUUID(),
+        text: payload.text,
+        attachments: payload.attachments,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    codexLiveLastActivityIso = new Date().toISOString();
+    codexQueueBlocked = false;
+    sendError = "";
+  }
+
+  function queueCodexMessage(): void {
+    const payload = currentCodexPayload();
+    if (!payload) return;
+    enqueueCodexPayload(payload);
+    clearCodexComposer();
+  }
+
+  async function startCodexTurn(
+    payload: { text: string; attachments: ImageInlineAttachment[] },
+    opts: { steer: boolean; fromQueue?: CodexQueuedMessage } = { steer: false },
+  ): Promise<boolean> {
+    if (!session?.sessionId || !session.cwd) return false;
+    if (!opts.steer && sending) return false;
+    sending = true;
+    sendError = "";
+    codexLiveLastActivityIso = new Date().toISOString();
+    optimisticCodexUser(codexOptimisticText(payload.text, payload.attachments));
     try {
       const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
         method: "POST",
@@ -2078,9 +2204,9 @@
         body: JSON.stringify({
           threadId: session.sessionId,
           cwd: session.cwd,
-          text,
-          input: codexAppInputFromComposer(text, attachments),
-          steer: !!codexActiveTurnId,
+          text: payload.text,
+          input: codexAppInputFromComposer(payload.text, payload.attachments),
+          steer: opts.steer,
           model: codexModel || undefined,
           effort: codexEffort || undefined,
           summary: codexSummary || undefined,
@@ -2091,19 +2217,98 @@
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       if (typeof body?.turnId === "string") codexActiveTurnId = body.turnId;
+      return true;
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
-      sending = false;
-      codexActiveTurnId = null;
-      if (!inputText.trim() && composerAttachments.length === 0) {
-        inputText = text;
-        composerAttachments = attachments;
+      sending = opts.steer ? true : false;
+      if (opts.fromQueue) {
+        codexQueuedMessages = [opts.fromQueue, ...codexQueuedMessages];
+      } else if (!inputText.trim() && composerAttachments.length === 0) {
+        inputText = payload.text;
+        composerAttachments = payload.attachments;
       }
-      if (pendingTimer) {
-        clearTimeout(pendingTimer);
-        pendingTimer = null;
-      }
+      return false;
     }
+  }
+
+  async function sendCodexMessage(): Promise<void> {
+    const payload = currentCodexPayload();
+    if (!payload) return;
+    if (codexRunning) {
+      queueCodexMessage();
+      return;
+    }
+    clearCodexComposer();
+    await startCodexTurn(payload, { steer: false });
+  }
+
+  async function steerCodexMessage(): Promise<void> {
+    const payload = currentCodexPayload();
+    if (!payload || !codexActiveTurnId) return;
+    clearCodexComposer();
+    await startCodexTurn(payload, { steer: true });
+  }
+
+  async function drainCodexQueue(): Promise<void> {
+    if (codexQueueDraining || codexRunning || codexQueuedMessages.length === 0)
+      return;
+    const [next, ...rest] = codexQueuedMessages;
+    if (!next) return;
+    codexQueueDraining = true;
+    codexQueuedMessages = rest;
+    try {
+      const ok = await startCodexTurn(next, { steer: false, fromQueue: next });
+      if (!ok) codexQueueBlocked = true;
+    } finally {
+      codexQueueDraining = false;
+    }
+  }
+
+  function beginEditCodexQueuedMessage(item: CodexQueuedMessage): void {
+    editingCodexQueueId = item.id;
+    editingCodexQueueText = item.text;
+  }
+
+  function cancelEditCodexQueuedMessage(): void {
+    editingCodexQueueId = null;
+    editingCodexQueueText = "";
+  }
+
+  function saveCodexQueuedMessage(id: string): void {
+    const text = editingCodexQueueText.trim();
+    codexQueuedMessages = codexQueuedMessages.map((item) =>
+      item.id === id ? { ...item, text } : item,
+    );
+    codexQueueBlocked = false;
+    cancelEditCodexQueuedMessage();
+  }
+
+  function removeCodexQueuedMessage(id: string): void {
+    codexQueuedMessages = codexQueuedMessages.filter((item) => item.id !== id);
+    codexQueueBlocked = false;
+    if (editingCodexQueueId === id) cancelEditCodexQueuedMessage();
+  }
+
+  async function runCodexQueuedMessage(item: CodexQueuedMessage): Promise<void> {
+    if (codexRunning) return;
+    codexQueueBlocked = false;
+    codexQueuedMessages = codexQueuedMessages.filter((q) => q.id !== item.id);
+    if (editingCodexQueueId === item.id) cancelEditCodexQueuedMessage();
+    await startCodexTurn(
+      { text: item.text, attachments: item.attachments },
+      { steer: false, fromQueue: item },
+    );
+  }
+
+  async function steerCodexQueuedMessage(item: CodexQueuedMessage): Promise<void> {
+    if (!codexActiveTurnId) return;
+    codexQueueBlocked = false;
+    codexQueuedMessages = codexQueuedMessages.filter((q) => q.id !== item.id);
+    if (editingCodexQueueId === item.id) cancelEditCodexQueuedMessage();
+    await startCodexTurn(
+      { text: item.text, attachments: item.attachments },
+      { steer: true },
+    );
   }
 
   async function stopCodexTurn(): Promise<void> {
@@ -2350,11 +2555,13 @@
       : `Message ${model || "Ollama"}…`;
   $: codexComposerMode =
     agent === "codex"
-      ? codexActiveTurnId
-        ? "Send steers the running turn"
-        : sending
-          ? "Starting Codex turn"
-        : "Send starts a new turn"
+      ? codexRunning
+        ? codexQueuedMessages.length > 0
+          ? `${codexQueuedMessages.length} queued; Enter queues another`
+          : "Codex running; Enter queues, steer button steers"
+        : codexQueuedMessages.length > 0
+          ? `${codexQueuedMessages.length} queued; next starts automatically`
+          : "Enter starts a new turn"
       : "";
 
   function onComposerKey(e: KeyboardEvent) {
@@ -2435,6 +2642,16 @@
 
   $: if (agent === "codex" && session?.cwd) {
     void loadCodexModels(session.cwd);
+  }
+
+  $: if (
+    liveCodexApp &&
+    !codexRunning &&
+    codexQueuedMessages.length > 0 &&
+    !codexQueueDraining &&
+    !codexQueueBlocked
+  ) {
+    void drainCodexQueue();
   }
 
   // Scroll-to-bottom policy:
@@ -2545,7 +2762,7 @@
       {contextTokensExact}
       {contextWindow}
       {model}
-      lastActivityIso={session?.endedAt}
+      lastActivityIso={effectiveLastActivityIso}
       lastUserMessage={lastUserMessageWithContext}
       {pollCount}
       {lastLoadedAt}
@@ -3065,6 +3282,86 @@
           {/each}
         </div>
       {/if}
+      {#if agent === "codex" && codexQueuedMessages.length}
+        <div class="codex-queue" aria-label="Queued Codex messages">
+          {#each codexQueuedMessages as item, i (item.id)}
+            <div class="codex-queue-item">
+              <div class="codex-queue-main">
+                <span class="codex-queue-label">queued {i + 1}</span>
+                {#if editingCodexQueueId === item.id}
+                  <textarea
+                    class="codex-queue-edit"
+                    bind:value={editingCodexQueueText}
+                    rows="2"
+                  ></textarea>
+                {:else}
+                  <div class="codex-queue-preview" title={item.text}>
+                    {item.text || "(attachments only)"}
+                  </div>
+                {/if}
+                {#if item.attachments.length}
+                  <div class="codex-queue-attachments">
+                    {#each item.attachments as attachment (`${item.id}:${attachment.path}`)}
+                      <span
+                        class="sticky-photo-frame composer-photo-frame codex-queue-photo"
+                        class:sticky-photo-frame-transparent={attachment.hasAlpha}
+                        title={inlineAttachmentLabel(attachment)}
+                      >
+                        <img
+                          src={composerImageUrl(attachment)}
+                          alt={inlineAttachmentLabel(attachment)}
+                          draggable="false"
+                        />
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <div class="codex-queue-actions">
+                {#if editingCodexQueueId === item.id}
+                  <button
+                    type="button"
+                    on:click={() => saveCodexQueuedMessage(item.id)}
+                    disabled={!editingCodexQueueText.trim() &&
+                      item.attachments.length === 0}
+                    title="Save queued message">Save</button
+                  >
+                  <button
+                    type="button"
+                    on:click={cancelEditCodexQueuedMessage}
+                    title="Cancel edit">Cancel</button
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    on:click={() => beginEditCodexQueuedMessage(item)}
+                    title="Edit queued message">Edit</button
+                  >
+                  {#if codexActiveTurnId}
+                    <button
+                      type="button"
+                      on:click={() => void steerCodexQueuedMessage(item)}
+                      title="Send this queued message as steering now"
+                      >Steer</button
+                    >
+                  {:else}
+                    <button
+                      type="button"
+                      on:click={() => void runCodexQueuedMessage(item)}
+                      title="Run this queued message now">Run</button
+                    >
+                  {/if}
+                  <button
+                    type="button"
+                    on:click={() => removeCodexQueuedMessage(item.id)}
+                    title="Remove queued message">Remove</button
+                  >
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
       <div class="composer-box">
         <textarea
           class="composer-input"
@@ -3148,16 +3445,9 @@
             </label>
             <span
               class="composer-send-mode"
-              class:reconnecting={codexStreamReconnecting}
-              title={codexStreamReconnecting
-                ? "The app-server event stream is reconnecting; the turn can still complete."
-                : codexComposerMode}
+              title={codexComposerMode}
             >
-              {#if codexStreamReconnecting}
-                stream reconnecting
-              {:else}
-                {codexComposerMode}
-              {/if}
+              {codexComposerMode}
             </span>
           </div>
           <div class="composer-footer-right">
@@ -3209,12 +3499,12 @@
             >
               ◼
             </button>
-          {:else if sending && agent === "codex"}
+          {:else if codexRunning && agent === "codex"}
             {#if codexActiveTurnId && composerCanSend}
               <button
                 type="button"
                 class="composer-send composer-steer"
-                on:click={() => void sendMessage()}
+                on:click={() => void steerCodexMessage()}
                 disabled={composerUploadingImages > 0}
                 title="Steer the running Codex turn"
                 aria-label="Steer Codex"
@@ -3222,6 +3512,16 @@
                 ↩
               </button>
             {/if}
+            <button
+              type="button"
+              class="composer-send"
+              on:click={() => void sendMessage()}
+              disabled={!composerCanSend || composerUploadingImages > 0}
+              title="Queue for the next Codex turn"
+              aria-label="Queue Codex message"
+            >
+              ↑
+            </button>
             <button
               type="button"
               class="composer-send is-sending"
@@ -3613,6 +3913,90 @@
   }
   .codex-request-actions button:hover {
     border-color: var(--text-faint);
+  }
+  .codex-queue {
+    display: grid;
+    gap: 0.35rem;
+  }
+  .codex-queue-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.45rem;
+    align-items: start;
+    padding: 0.4rem 0.45rem;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  }
+  .codex-queue-main {
+    min-width: 0;
+    display: grid;
+    gap: 0.22rem;
+  }
+  .codex-queue-label {
+    color: var(--text-faint);
+    font-size: 0.64rem;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+  .codex-queue-preview {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-2);
+    font-size: 0.76rem;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .codex-queue-edit {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    min-height: 2.4rem;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-0);
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.76rem;
+    line-height: 1.3;
+    padding: 0.35rem 0.42rem;
+  }
+  .codex-queue-attachments {
+    display: flex;
+    gap: 0.3rem;
+    overflow-x: auto;
+  }
+  .codex-queue-photo {
+    width: 3.5rem;
+    padding: 4px 4px 10px;
+  }
+  .codex-queue-photo img {
+    max-height: 2rem;
+  }
+  .codex-queue-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.28rem;
+  }
+  .codex-queue-actions button {
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-0);
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0.26rem 0.38rem;
+    cursor: pointer;
+  }
+  .codex-queue-actions button:hover:not(:disabled) {
+    border-color: var(--text-faint);
+  }
+  .codex-queue-actions button:disabled {
+    color: var(--text-faint);
+    cursor: not-allowed;
   }
   .codex-request-questions {
     display: grid;

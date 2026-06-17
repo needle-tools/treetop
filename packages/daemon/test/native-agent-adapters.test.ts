@@ -360,7 +360,13 @@ describe("CodexAppServerAdapter", () => {
       () => (events.length > 0 ? events[0] : undefined),
       "approval request event",
     );
-    expect(events[0]).toMatchObject({
+    expect(
+      events.find(
+        (event) =>
+          (event as { method?: string }).method ===
+          "item/commandExecution/requestApproval",
+      ),
+    ).toMatchObject({
       kind: "request",
       id: 99,
       method: "item/commandExecution/requestApproval",
@@ -426,6 +432,35 @@ describe("CodexAppServerAdapter", () => {
     });
     fake.enqueue({ id: 4, result: {} });
     await interrupt;
+  });
+
+  test("emits a running-state event as soon as a Codex turn starts", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+    const events: unknown[] = [];
+    adapter.subscribe("thr_existing", (event) => events.push(event));
+
+    const turn = adapter.startTurn({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      text: "begin",
+    });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread resume request");
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
+    await waitFor(() => fake.writes[3], "turn start request");
+    fake.enqueue({ id: 2, result: { turn: { id: "turn_live" } } });
+    await turn;
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "notification",
+        method: "turn/started",
+        threadId: "thr_existing",
+        turnId: "turn_live",
+      }),
+    );
   });
 });
 

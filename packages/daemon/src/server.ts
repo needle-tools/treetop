@@ -3525,6 +3525,17 @@ const server = Bun.serve<TermWsData, never>({
               }
             };
             controller.enqueue(sseEncoder.encode(`: connected\n\n`));
+            if (threadId) {
+              const turnId = codexAgent.activeTurn(threadId);
+              send({
+                kind: "notification",
+                method: "turn/status",
+                params: { active: !!turnId, threadId, turnId },
+                threadId,
+                turnId,
+                receivedAt: new Date().toISOString(),
+              });
+            }
             unsubscribe = codexAgent.subscribe(threadId, send);
           },
           cancel() {
@@ -3582,7 +3593,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "cwd and text/input required" }, { status: 400 });
         }
         try {
-          if (threadId && (body?.steer || codexAgent.activeTurn(threadId))) {
+          if (threadId && body?.steer === true) {
             const steered = await codexAgent.steerTurn({
               threadId,
               text,
