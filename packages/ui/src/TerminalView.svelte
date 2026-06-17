@@ -463,18 +463,15 @@
     webgl?.dispose();
     webgl = null;
   }
-  // Revealing/hiding a terminal column triggers EXPENSIVE work: a WebGL
+  // Revealing/hiding a terminal column triggers EXPENSIVE layout work: a WebGL
   // renderer switch (attach/detach re-measures + re-renders every row), and on
-  // reveal a backlog flush + refit whose size-check reads `offsetWidth` — a
-  // forced synchronous reflow — even when the size is unchanged and the fit
-  // no-ops. Doing this per column-crossing during a scroll (e.g. a dock click
-  // that scrolls the strip) is a reflow/renderRows storm: a 2026-06-12 trace
-  // showed ~1.3s of `get offsetWidth` during a scroll. So we defer the whole
-  // reveal reconcile until the page has been scroll-quiet for SCROLL_QUIET_MS —
-  // during a scroll the terminal keeps its renderer and skips flush/refit; once
-  // the strip lands, the column it settled on reconciles ONCE. When the page is
-  // NOT scrolling we reconcile immediately, so a normal reveal stays snappy.
-  // Output muting (sendVisibilityState) is never deferred.
+  // reveal a refit whose size-check reads `offsetWidth` — a forced synchronous
+  // reflow — even when the size is unchanged and the fit no-ops. Doing this per
+  // column-crossing during a scroll is a reflow/renderRows storm, so we defer
+  // the layout reconcile until the page has been scroll-quiet for
+  // SCROLL_QUIET_MS. Output paint is deliberately not part of this gate: once a
+  // terminal is visible, buffered bytes must reach xterm immediately instead of
+  // waiting for the page to become "idle."
   let revealReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let revealReconcileTarget = false;
   function scheduleRevealReconcile(visible: boolean) {
@@ -488,8 +485,6 @@
       }
       attachWebgl();
       if (xterm) {
-        const batch = flushBufferedTerminalOutput();
-        if (batch) xterm.write(batch);
         // Size may have changed while we weren't laying out; coalesce the
         // refit so a reveal that coincides with a resize doesn't double-fit.
         resizeCoalescer?.trigger();
@@ -756,6 +751,12 @@
       publishTerminalIoStats();
     }
     return batch;
+  }
+
+  function paintBufferedTerminalOutput(): void {
+    if (!xterm) return;
+    const batch = flushBufferedTerminalOutput();
+    if (batch) xterm.write(batch);
   }
 
   function clearStartupGuard() {
@@ -1352,19 +1353,17 @@
     visibilityObs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
-        // The expensive reveal/hide work — the WebGL renderer switch AND (on
-        // reveal) the backlog flush + refit whose size-check forces a reflow —
-        // is deferred until scrolling settles (see scheduleRevealReconcile), so
-        // a scroll that drags columns across the viewport doesn't storm. Output
-        // muting (sendVisibilityState) below stays immediate. Scheduled before
-        // the no-change early-return so the initial on-screen callback (visible
-        // === isTerminalVisible, both true) still acquires the slot; the
-        // reconcile is idempotent and tracks the latest visibility.
+        // The expensive reveal/hide work — the WebGL renderer switch and refit
+        // whose size-check forces a reflow — is deferred until scrolling settles
+        // (see scheduleRevealReconcile), so a scroll that drags columns across
+        // the viewport doesn't storm. Output paint and daemon visibility below
+        // stay immediate.
         scheduleRevealReconcile(visible);
         if (visible === isTerminalVisible) return;
         isTerminalVisible = visible;
         sendVisibilityState();
         publishTerminalIoStats();
+        if (visible) paintBufferedTerminalOutput();
       },
       { rootMargin: OUTPUT_VISIBILITY_ROOT_MARGIN, threshold: 0 },
     );
@@ -1430,7 +1429,7 @@
     let pollCount = 0;
     const poll = async () => {
       try {
-        const sessions = await fetchSshSessions();
+        const sessions = await fetchSshSessions(daemonId);
         const s = sessions[id];
         if (s && !sshSession) {
           sshSession = s;
@@ -1441,13 +1440,14 @@
         }
       } catch {}
       pollCount++;
-      // After the fast initial burst, switch to slower polling
+      // After the fast initial burst, switch to slower polling.
       if (pollCount === 10 && sshPollTimer) {
         clearInterval(sshPollTimer);
         sshPollTimer = setInterval(poll, 5000);
       }
     };
-    // Poll fast for the first 10s (every 1s), then every 5s
+    // Poll fast for the first 10s (every 1s), then every 5s. The fetch helper
+    // is single-flight cached, so N terminals share one endpoint request.
     void poll();
     sshPollTimer = setInterval(poll, 1000);
   }

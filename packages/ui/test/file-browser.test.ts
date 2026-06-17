@@ -16,6 +16,7 @@ import {
   breadcrumbs,
   normalizePath,
   computeStarredList,
+  fetchSshSessions,
   splitParent,
   shouldDeferToNativeCopy,
   cleanCopiedPathSelection,
@@ -180,6 +181,37 @@ describe("files agent persistence", () => {
     expect(loaded["/wt"]).toHaveLength(3);
     const filesBrowsers = loaded["/wt"]!.filter((s) => s.agent === "files");
     expect(filesBrowsers).toHaveLength(2);
+  });
+});
+
+describe("fetchSshSessions", () => {
+  test("single-flights concurrent callers and serves the short cache", async () => {
+    const originalFetch = globalThis.fetch;
+    const daemonId = `ssh-cache-${Date.now()}`;
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(
+        JSON.stringify({ t1: { user: "u", host: "h", port: 22 } }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    try {
+      const [a, b] = await Promise.all([
+        fetchSshSessions(daemonId),
+        fetchSshSessions(daemonId),
+      ]);
+      const c = await fetchSshSessions(daemonId);
+
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toBe(`/api/daemons/${daemonId}/ssh/sessions`);
+      expect(a).toEqual({ t1: { user: "u", host: "h", port: 22 } });
+      expect(b).toEqual(a);
+      expect(c).toEqual(a);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

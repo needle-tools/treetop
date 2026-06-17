@@ -2104,6 +2104,10 @@ function sendTerminalOutput(
 
 const visibleTerminalSockets = new Map<string, number>();
 const drainableTerminalSockets = new Map<string, number>();
+const terminalSpawnPendingWs = new Map<string, number>();
+const terminalSpawnFinishedAt = new Map<string, number>();
+const terminalWsOpenedAt = new Map<string, number>();
+const TERMINAL_SPAWN_SLOW_MS = 1_000;
 
 function addCount(map: Map<string, number>, termId: string): void {
   map.set(termId, (map.get(termId) ?? 0) + 1);
@@ -3508,6 +3512,7 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/terminals" && req.method === "POST") {
+        const terminalSpawnRouteStarted = performance.now();
         const body = (await req.json().catch(() => null)) as {
           cmd?: string[];
           cwd?: string;
@@ -3596,6 +3601,7 @@ const server = Bun.serve<TermWsData, never>({
             ? await repoColorForCwd(body.cwd)
             : undefined;
         try {
+          const terminalSpawnBackendStarted = performance.now();
           const handle = await terminalBackend.spawn({
             cmd,
             cwd: body.cwd,
@@ -3616,9 +3622,20 @@ const server = Bun.serve<TermWsData, never>({
             size: { cols: clampCols(body.cols), rows: clampRows(body.rows) },
             historyPreload,
           });
+          const backendMs = performance.now() - terminalSpawnBackendStarted;
+          const totalMs = performance.now() - terminalSpawnRouteStarted;
+          record("terminal-spawn-backend", backendMs);
+          record("terminal-spawn-post", totalMs);
+          terminalSpawnPendingWs.set(handle.id, performance.now());
+          terminalSpawnFinishedAt.set(handle.id, performance.now());
           console.log(
-            `supergit daemon: terminal spawn id=${handle.id} owner=${body.ownerId ?? "-"} agent=${agentHint ?? "unknown"} pid=${handle.pid} cwd=${body.cwd}`,
+            `supergit daemon: terminal spawn id=${handle.id} owner=${body.ownerId ?? "-"} agent=${agentHint ?? "unknown"} pid=${handle.pid} totalMs=${Math.round(totalMs)} backendMs=${Math.round(backendMs)} cwd=${body.cwd}`,
           );
+          if (totalMs > TERMINAL_SPAWN_SLOW_MS) {
+            console.warn(
+              `supergit daemon: /api/terminals slow total=${Math.round(totalMs)}ms backend=${Math.round(backendMs)}ms owner=${body.ownerId ?? "-"} agent=${agentHint ?? "unknown"} cwd=${body.cwd}`,
+            );
+          }
           // For shell PTYs, persist a header into <workspace>/shells/<id>.jsonl
           // so the workspace (not the browser's localStorage) is the source
           // of truth for "which Terminal columns are open." On reload the UI
@@ -3666,6 +3683,9 @@ const server = Bun.serve<TermWsData, never>({
               onData() {},
               onExit(info) {
                 shellTermIds.delete(handle.id);
+                terminalSpawnPendingWs.delete(handle.id);
+                terminalSpawnFinishedAt.delete(handle.id);
+                terminalWsOpenedAt.delete(handle.id);
                 clearShellInputBuffer(handle.id);
                 shellCwds.delete(handle.id);
                 void terminalPersist.remove(handle.id).catch(() => {});
@@ -8716,8 +8736,20 @@ const server = Bun.serve<TermWsData, never>({
       }
       cancelGrace(termId);
       orphanCleaner.onFrontendConnected();
+      const pendingSpawnAt = terminalSpawnPendingWs.get(termId);
+      const openAfterSpawnMs =
+        pendingSpawnAt === undefined ? undefined : performance.now() - pendingSpawnAt;
+      if (openAfterSpawnMs !== undefined) {
+        terminalSpawnPendingWs.delete(termId);
+        record("terminal-ws-open-after-spawn", openAfterSpawnMs);
+      }
+      terminalWsOpenedAt.set(termId, performance.now());
       console.log(
-        `supergit daemon: terminal ws open id=${termId} pid=${handle.pid}`,
+        `supergit daemon: terminal ws open id=${termId} pid=${handle.pid}${
+          openAfterSpawnMs === undefined
+            ? ""
+            : ` openAfterSpawnMs=${Math.round(openAfterSpawnMs)}`
+        }`,
       );
       addCount(visibleTerminalSockets, termId);
       addCount(drainableTerminalSockets, termId);
@@ -8730,6 +8762,40 @@ const server = Bun.serve<TermWsData, never>({
             broadcast("change", { kind: "sound_play", tag, termId });
           }
           if (output.length > 0) {
+            const now = performance.now();
+            const spawnFinishedAt = terminalSpawnFinishedAt.get(termId);
+            const wsOpenedAt = terminalWsOpenedAt.get(termId);
+            if (spawnFinishedAt !== undefined || wsOpenedAt !== undefined) {
+              terminalSpawnFinishedAt.delete(termId);
+              terminalWsOpenedAt.delete(termId);
+              const firstOutputAfterSpawnMs =
+                spawnFinishedAt === undefined ? undefined : now - spawnFinishedAt;
+              const firstOutputAfterWsOpenMs =
+                wsOpenedAt === undefined ? undefined : now - wsOpenedAt;
+              if (firstOutputAfterSpawnMs !== undefined) {
+                record(
+                  "terminal-first-output-after-spawn",
+                  firstOutputAfterSpawnMs,
+                );
+              }
+              if (firstOutputAfterWsOpenMs !== undefined) {
+                record(
+                  "terminal-first-output-after-ws-open",
+                  firstOutputAfterWsOpenMs,
+                );
+              }
+              console.log(
+                `supergit daemon: terminal first output id=${termId} pid=${handle.pid} bytes=${output.byteLength}${
+                  firstOutputAfterSpawnMs === undefined
+                    ? ""
+                    : ` afterSpawnMs=${Math.round(firstOutputAfterSpawnMs)}`
+                }${
+                  firstOutputAfterWsOpenMs === undefined
+                    ? ""
+                    : ` afterWsOpenMs=${Math.round(firstOutputAfterWsOpenMs)}`
+                }`,
+              );
+            }
             // Golden path: if the browser can drain bytes, send them. The
             // client decides whether to paint immediately (visible) or buffer
             // locally (offscreen). Only non-drainable sockets queue here.

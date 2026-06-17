@@ -1,4 +1,5 @@
 import { apiUrl } from "./api";
+import { singleFlight } from "./single-flight";
 
 export interface FileEntry {
   name: string;
@@ -388,16 +389,48 @@ export interface SshSessionInfo {
   cwd?: string;
 }
 
-export async function fetchSshSessions(): Promise<
-  Record<string, SshSessionInfo>
-> {
+const SSH_SESSIONS_CACHE_MS = 900;
+const sshSessionsCache = new Map<
+  string,
+  { expiresAt: number; value: Record<string, SshSessionInfo> }
+>();
+const sshSessionsFlights = new Map<
+  string,
+  () => Promise<Record<string, SshSessionInfo>>
+>();
+
+async function fetchSshSessionsUncached(
+  daemonId?: string,
+): Promise<Record<string, SshSessionInfo>> {
   try {
-    const res = await fetch(apiUrl("/api/ssh/sessions"));
+    const res = await fetch(apiUrl("/api/ssh/sessions", daemonId));
     if (!res.ok) return {};
     return await res.json();
   } catch {
     return {};
   }
+}
+
+export async function fetchSshSessions(
+  daemonId?: string,
+): Promise<Record<string, SshSessionInfo>> {
+  const key = daemonId ?? "";
+  const now = Date.now();
+  const cached = sshSessionsCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.value;
+  let flight = sshSessionsFlights.get(key);
+  if (!flight) {
+    flight = singleFlight(async () => {
+      const value = await fetchSshSessionsUncached(daemonId);
+      sshSessionsCache.set(key, {
+        expiresAt: Date.now() + SSH_SESSIONS_CACHE_MS,
+        value,
+      });
+      return value;
+    });
+    sshSessionsFlights.set(key, flight);
+  }
+  return flight();
 }
 
 export async function fetchRemoteDir(
