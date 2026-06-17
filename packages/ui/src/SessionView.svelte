@@ -1319,6 +1319,26 @@
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
 
+  let reportedWorking: boolean | undefined;
+  let reportedAwaiting: boolean | undefined;
+  $: {
+    const nextWorking =
+      mode === "terminal"
+        ? working
+        : liveCodexApp
+          ? sending || !!codexActiveTurnId
+          : inflight.length > 0;
+    const nextAwaiting = awaitingInput;
+    if (reportedWorking !== nextWorking) {
+      reportedWorking = nextWorking;
+      onWorkingChange(nextWorking);
+    }
+    if (reportedAwaiting !== nextAwaiting) {
+      reportedAwaiting = nextAwaiting;
+      onAwaitingChange(nextAwaiting);
+    }
+  }
+
   $: if (
     liveCodexApp &&
     resumeSessionId &&
@@ -2618,6 +2638,7 @@
         terminalId = null;
         hasRenderedOnce = false;
         mode = "read";
+        onModeChange(mode);
         void load();
       }}
     />

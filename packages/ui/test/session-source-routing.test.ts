@@ -19,6 +19,7 @@ import {
   shellToSession,
   shellSourceToDismiss,
   moveSessionStateKey,
+  openSessionHasLiveTerminal,
   reconcileLiveAgentTerminals,
   type AgentSession,
   type ShellRecord,
@@ -277,6 +278,112 @@ describe("reconcileLiveAgentTerminals", () => {
         },
       ]),
     ).toBe(before);
+  });
+});
+
+describe("openSessionHasLiveTerminal", () => {
+  test("real JSONL terminal mode is not live without a live attachTermId", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          mode: "terminal",
+          attachTermId: "t_dead",
+        },
+        { liveTerminalIds: new Set(["t_other"]), newTermIds: {} },
+      ),
+    ).toBe(false);
+  });
+
+  test("real JSONL terminal mode is live when its attached PTY is live", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          mode: "terminal",
+          attachTermId: "t_live",
+        },
+        { liveTerminalIds: new Set(["t_live"]), newTermIds: {} },
+      ),
+    ).toBe(true);
+  });
+
+  test("read-mode JSONL is not a live terminal even if a stale attach id remains", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          attachTermId: "t_live",
+        },
+        { liveTerminalIds: new Set(["t_live"]), newTermIds: {} },
+      ),
+    ).toBe(false);
+  });
+
+  test("attached synthetic sessions require the referenced PTY to be live", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        { agent: "shell", source: "__attached__:shell:t_live" },
+        { liveTerminalIds: new Set(["t_live"]), newTermIds: {} },
+      ),
+    ).toBe(true);
+    expect(
+      openSessionHasLiveTerminal(
+        { agent: "shell", source: "__attached__:shell:t_dead" },
+        { liveTerminalIds: new Set(["t_live"]), newTermIds: {} },
+      ),
+    ).toBe(false);
+  });
+
+  test("__new__ sessions count as starting until a term id is known", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        { agent: "codex", source: "__new__:codex:abc" },
+        { liveTerminalIds: new Set(), newTermIds: {} },
+      ),
+    ).toBe(true);
+  });
+
+  test("__new__ sessions with a known term id follow the live terminal set", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        { agent: "codex", source: "__new__:codex:abc" },
+        {
+          liveTerminalIds: new Set(["t_live"]),
+          newTermIds: { "__new__:codex:abc": "t_live" },
+        },
+      ),
+    ).toBe(true);
+    expect(
+      openSessionHasLiveTerminal(
+        { agent: "codex", source: "__new__:codex:abc" },
+        {
+          liveTerminalIds: new Set(["t_other"]),
+          newTermIds: { "__new__:codex:abc": "t_dead" },
+        },
+      ),
+    ).toBe(false);
+  });
+
+  test("transient exited state wins over otherwise-live terminal evidence", () => {
+    expect(
+      openSessionHasLiveTerminal(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          mode: "terminal",
+          attachTermId: "t_live",
+        },
+        {
+          liveTerminalIds: new Set(["t_live"]),
+          newTermIds: {},
+          transientExited: { "/agents/codex.jsonl": true },
+        },
+      ),
+    ).toBe(false);
   });
 });
 

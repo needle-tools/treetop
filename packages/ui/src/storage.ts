@@ -348,6 +348,32 @@ export function applySessionSurfacePreference<
   return withResume as T;
 }
 
+export function reconcileOpenSessionsWithSurfacePreferences(
+  byWt: Record<string, PersistedSession[]>,
+  surfaces: Record<string, SessionSurface>,
+): Record<string, PersistedSession[]> {
+  let changed = false;
+  const nextByWt: Record<string, PersistedSession[]> = {};
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    nextByWt[wtPath] = sessions.map((session) => {
+      const reconciled = applySessionSurfacePreference(session, surfaces);
+      if (
+        session.mode === "terminal" &&
+        reconciled.mode !== "terminal" &&
+        reconciled.attachTermId
+      ) {
+        const next = { ...reconciled };
+        delete next.attachTermId;
+        changed = true;
+        return next;
+      }
+      if (reconciled !== session) changed = true;
+      return reconciled;
+    });
+  }
+  return changed ? nextByWt : byWt;
+}
+
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "claude",
   "codex",

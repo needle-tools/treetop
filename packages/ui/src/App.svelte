@@ -6,6 +6,7 @@
     shellToSession,
     shellSourceToDismiss,
     moveSessionStateKey,
+    openSessionHasLiveTerminal,
     reconcileLiveAgentTerminals,
   } from "./session-source-routing";
   import {
@@ -145,6 +146,7 @@
     effectiveVisibleWorktrees,
     filterToExistingSessions,
     isForeignToWorktree,
+    reconcileOpenSessionsWithSurfacePreferences,
     sessionSurfaceKeys,
     setSessionMode,
     setSessionAttachTermId,
@@ -914,6 +916,16 @@
    *  by NewSessionCol's on:workingChange (which TerminalView raises on
    *  PTY frames). Drives the rotating-gradient border on the agent pill. */
   let transientWorking: Record<string, boolean> = {};
+  let liveTerminalIds: ReadonlySet<string> = new Set();
+  function markTerminalLive(id: string): void {
+    liveTerminalIds = new Set([...liveTerminalIds, id]);
+  }
+  function markTerminalExited(id: string | undefined): void {
+    if (!id || !liveTerminalIds.has(id)) return;
+    const next = new Set(liveTerminalIds);
+    next.delete(id);
+    liveTerminalIds = next;
+  }
   /** Sources being promoted from `__new__:*` to a real JSONL path.
    *  Checked by `closeColumn` to skip the outro — the column isn't
    *  closing, it's upgrading to SessionView. */
@@ -3171,14 +3183,17 @@
   }
 
   function restoreOpenSessions() {
-    openSessionsByWt = openSessionsPersistence.load();
+    openSessionsByWt = reconcileOpenSessionsWithSurfacePreferences(
+      openSessionsPersistence.load(),
+      sessionSurfaces,
+    );
     let seeded = false;
     const nextSurfaces = { ...sessionSurfaces };
     for (const sessions of Object.values(openSessionsByWt)) {
       for (const s of sessions) {
         if (s.mode !== "terminal") continue;
         for (const key of sessionSurfaceKeys(s)) {
-          if (nextSurfaces[key] === "terminal") continue;
+          if (nextSurfaces[key]) continue;
           nextSurfaces[key] = "terminal";
           seeded = true;
         }
@@ -3752,6 +3767,11 @@
       if (liveTermsResp && liveTermsResp.ok) {
         const liveTerms = await liveTermsResp.json().catch(() => []);
         if (Array.isArray(liveTerms)) {
+          liveTerminalIds = new Set(
+            liveTerms
+              .filter((t) => !t?.exitedAt && typeof t?.id === "string")
+              .map((t) => t.id),
+          );
           openSessionsByWt = reconcileLiveAgentTerminals(
             openSessionsByWt,
             repos,
@@ -5967,16 +5987,21 @@
   })();
 
   /** Currently-active TUIs per worktree: the subset of
-   *  `pickerSessionsByWt` whose source is mounted as a column AND not
-   *  a `__transcript__:` read-only view (which has no live PTY).
-   *  Drives the agent-badge → "jump to TUI" popover so the user can
-   *  hop between multiple running TUIs from a single click. */
+   *  `pickerSessionsByWt` whose mounted column has live terminal evidence
+   *  from `/api/terminals`. Persisted `mode: "terminal"` only says which
+   *  surface to reopen; it is not a liveness signal. */
   $: activeTuisByWt = ((): Record<string, AgentSession[]> => {
     const m: Record<string, AgentSession[]> = {};
     for (const wtPath of Object.keys(pickerSessionsByWt)) {
       const openSources = new Set(
         (openSessionsByWt[wtPath] ?? [])
-          .filter((o) => !o.source.startsWith("__transcript__:"))
+          .filter((o) =>
+            openSessionHasLiveTerminal(o, {
+              liveTerminalIds,
+              newTermIds,
+              transientExited,
+            }),
+          )
           .map((o) => o.source),
       );
       if (openSources.size === 0) {
@@ -5990,20 +6015,14 @@
     return m;
   })();
 
-  /** Side-dock entries: one per currently-open session column that
-   *  hosts a live PTY (an "active TUI"), with the colors / metadata
-   *  SessionDock needs to render the dot + its hover tooltip. Pulls
-   *  `working`/`awaiting` from the per-source transient maps so dots
-   *  track the live PTY state.
+  /** Side-dock entries: one per currently-open session column, with the
+   *  colors / metadata SessionDock needs to render the dot + hover
+   *  tooltip. Pulls `working`/`awaiting` from per-source transient maps;
+   *  those may come from a terminal PTY or a visual/API-backed session.
    *
-   *  An "active TUI" is a column whose mounted tree contains a live
-   *  TerminalView. In practice that's:
-   *    - any `__new__:` source (NewSessionCol always renders a fresh
-   *      TerminalView while the column exists),
-   *    - any `__attached__:shell:<termId>` source (NewSessionCol
-   *      reattaches to a still-alive PTY).
-   *  Resumed SessionView columns in read-only chat mode are excluded
-   *  — those have no PTY. */
+   *  `exited` means "no live terminal transport" rather than "no activity";
+   *  visual sessions can still report working/awaiting without pretending
+   *  to own a PTY. */
   type DockAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
   $: dockEntries = time("dockEntries", (): Array<{
     source: string;
@@ -6057,21 +6076,15 @@
           // "supergit main"). The sessions-strip already drops these via
           // filterToExistingSessions; this is the same per-worktree gate.
           if (isForeignToWorktree(s.source, knownSources)) continue;
-          // Live TUI ⇔ the column currently hosts a running PTY:
-          //   - any `__new__:` source (NewSessionCol always spawns one),
-          //   - any `__attached__:shell:<termId>` source (reattach to
-          //     a still-alive shell PTY),
-          //   - a resumed SessionView in terminal mode (`s.mode ===
-          //     "terminal"` is persisted by SessionView's onModeChange).
-          // …but if the PTY has exited (transientExited), the column
-          // is no longer live even though its source still looks
-          // like a TUI source. Every other open session (read-mode
-          // chat columns) is non-live and gets the small dot.
-          const isTuiSource =
-            s.source.startsWith("__new__:") ||
-            s.source.startsWith("__attached__:") ||
-            s.mode === "terminal";
-          const isLiveTui = isTuiSource && !transientExited[s.source];
+          // Live TUI means the column can point at an actual live PTY
+          // from `/api/terminals`. Persisted terminal mode alone is only
+          // a surface preference, not proof that the agent is still
+          // running.
+          const isLiveTui = openSessionHasLiveTerminal(s, {
+            liveTerminalIds,
+            newTermIds,
+            transientExited,
+          });
           // Utility panels (file browser, git history) are browsing
           // views, not sessions — skip them in the activity dock.
           // Agent and shell sessions appear regardless of mode
@@ -9827,6 +9840,7 @@
                                       claudeEffort: e.detail.effort,
                                     })}
                                   on:spawn={(e) => {
+                                    markTerminalLive(e.detail.id);
                                     // Capture the daemon-assigned termId for
                                     // every `__new__:` source (any agent) so
                                     // disposeNewSessionColumn can DELETE
@@ -9963,6 +9977,10 @@
                                     }
                                   }}
                                   on:exit={() => {
+                                    markTerminalExited(
+                                      resolveTermId(s, newTermIds) ??
+                                        s.attachTermId,
+                                    );
                                     transientExited = {
                                       ...transientExited,
                                       [s.source]: true,
@@ -10056,6 +10074,7 @@
                                     })}
                                   attachTermId={s.attachTermId}
                                   onSpawn={(id) => {
+                                    markTerminalLive(id);
                                     // Keep this session's attachTermId on the
                                     // live PTY so a remount (model/effort
                                     // switch) or reopen reattaches to the

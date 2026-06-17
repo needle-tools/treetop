@@ -16,6 +16,7 @@ import {
   filterToExistingSessions,
   isLiveCodexAppSource,
   isForeignToWorktree,
+  reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
   sessionSurfaceKeys,
   setSessionMode,
@@ -1690,6 +1691,36 @@ describe("SessionSurfaceStore", () => {
       agent: "claude",
       source: "/agents/claude.jsonl",
       resumeSessionId: "sid-1",
+    });
+  });
+
+  test("reconcileOpenSessionsWithSurfacePreferences lets explicit read beat stale terminal mode", () => {
+    expect(
+      reconcileOpenSessionsWithSurfacePreferences(
+        {
+          "/wt": [
+            {
+              agent: "codex",
+              source: "/agents/codex.jsonl",
+              resumeSessionId: "sid-1",
+              mode: "terminal",
+              attachTermId: "t_dead",
+            },
+          ],
+        },
+        {
+          "/agents/codex.jsonl": "read",
+          "session:codex:sid-1": "read",
+        },
+      ),
+    ).toEqual({
+      "/wt": [
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          resumeSessionId: "sid-1",
+        },
+      ],
     });
   });
 });

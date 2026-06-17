@@ -138,6 +138,30 @@ export function moveSessionStateKey<T>(
   return next;
 }
 
+export function openSessionHasLiveTerminal(
+  session: Pick<OpenSession, "source" | "mode" | "attachTermId">,
+  options: {
+    liveTerminalIds: ReadonlySet<string>;
+    newTermIds: Record<string, string>;
+    transientExited?: Record<string, boolean>;
+  },
+): boolean {
+  if (options.transientExited?.[session.source]) return false;
+
+  if (session.source.startsWith("__new__:")) {
+    const termId = options.newTermIds[session.source];
+    return termId ? options.liveTerminalIds.has(termId) : true;
+  }
+
+  if (session.source.startsWith("__attached__:")) {
+    const termId = resolveTermId(session, options.newTermIds);
+    return !!termId && options.liveTerminalIds.has(termId);
+  }
+
+  if (session.mode !== "terminal") return false;
+  return !!session.attachTermId && options.liveTerminalIds.has(session.attachTermId);
+}
+
 export function reconcileLiveAgentTerminals(
   byWt: Record<string, OpenSession[]>,
   repos: readonly Repo[],
