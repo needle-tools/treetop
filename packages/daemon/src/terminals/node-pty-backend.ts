@@ -53,9 +53,9 @@ interface InternalTerm {
   spawnedAck?: { resolve: (pid: number) => void; reject: (e: Error) => void };
   awaitingInput: boolean;
   configError: { file: string } | null;
-  /** True while the PTY is actively emitting output (within WORKING_IDLE_MS).
-   *  Broadcast on the onState channel so the dock reflects activity even when
-   *  output delivery to the (hidden) browser socket is muted. */
+    /** True while the PTY is actively emitting output (within WORKING_IDLE_MS).
+     *  Broadcast on the onState channel so the dock reflects activity even when
+     *  terminal bytes are not painted by the browser. */
   working: boolean;
   /** Timer that lowers `working` after WORKING_IDLE_MS of output silence. */
   workingIdleTimer?: ReturnType<typeof setTimeout>;
@@ -401,7 +401,8 @@ export class NodePtyBackend implements PtyBackend {
         // "Working" = produced output recently. Raise the flag on every
         // chunk; a timer lowers it after WORKING_IDLE_MS of silence. Both
         // edges go out on the onState channel (below) so the dock tracks
-        // activity even for a hidden terminal whose bytes are muted.
+        // hidden agent activity without waiting for the browser column to
+        // become visible again.
         const workingFlipped = !t.working;
         t.working = true;
         if (t.workingIdleTimer) clearTimeout(t.workingIdleTimer);
@@ -627,6 +628,13 @@ export class NodePtyBackend implements PtyBackend {
         this.send({ op: "resize", id: t.id, cols: size.cols, rows: size.rows });
       },
       setOutputMuted: (muted) => {
+        // Do not pause agent TUIs. The activity dock's working/awaiting state
+        // is computed from PTY output in this daemon; pausing helper reads for
+        // a hidden Codex/Claude column makes the daemon blind until the user
+        // foregrounds it. Plain shells can still be paused to protect memory:
+        // their output is often unbounded logs/dev servers and the dock does
+        // not surface shell working/awaiting anyway.
+        if (t.agent && t.agent !== "shell") return;
         this.send({ op: "set-muted", id: t.id, muted });
       },
       kill: async () => {

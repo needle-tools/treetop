@@ -2,7 +2,12 @@
   import { apiUrl, apiWsUrl } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
-  import { Terminal } from "@xterm/xterm";
+  import {
+    Terminal,
+    type IBufferCell,
+    type IDisposable,
+    type IMarker,
+  } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { webglPool, type WebglHandle } from "./terminal-webgl";
@@ -12,9 +17,13 @@
   import { resolveImagePasteBehavior } from "./terminal-image-paste";
   import { joinSelectionRows, type SelectionRow } from "./clean-selection";
   import {
+    TerminalIoByteAccounting,
+    TerminalRepaintTracker,
     TerminalWriteBuffer,
     setTerminalIoStats,
     removeTerminalIoStats,
+    type TerminalRepaintCell,
+    type TerminalRepaintCellSnapshot,
   } from "./terminal-write-buffer";
   import {
     createResizeCoalescer,
@@ -35,8 +44,13 @@
     type ConfigActionState,
   } from "./config-error-action";
   import { describeWsClose, terminalWsCloseRepresentsExit } from "./errors";
-  import { settingValue, getSetting } from "./settings-registry";
+  import { settingValue, getSetting, setSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
+
+  const REPAINT_DEBUG_MAX_CELLS = 120;
+  const REPAINT_DEBUG_TTL_MS = 520;
+  const REPAINT_DEBUG_BACKGROUND = "#7ee787";
+  const REPAINT_DEBUG_FOREGROUND = "#07130a";
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -205,9 +219,27 @@
   const textDecoder = new TextDecoder();
   const textEncoder = new TextEncoder();
   const showTerminalIoDebug = settingValue("terminal.showIoDebug");
-  const ioStatsId = `terminal-view-${Date.now().toString(36)}-${Math.random()
+  const flashTermRepaints = settingValue("terminal.flashRepaints");
+  const scaleTermRepaints = settingValue("terminal.scaleRepaints");
+  let repaintFlashEnabled = false;
+  let repaintScaleEnabled = false;
+  $: repaintFlashEnabled =
+    $showTerminalIoDebug === true && $flashTermRepaints === true;
+  $: repaintScaleEnabled =
+    $showTerminalIoDebug === true && $scaleTermRepaints === true;
+  const fallbackIoStatsId = `terminal-view-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2)}`;
+  let currentIoStatsId = fallbackIoStatsId;
+  $: {
+    const nextIoStatsId = sessionSource ?? fallbackIoStatsId;
+    if (nextIoStatsId !== currentIoStatsId) {
+      removeTerminalIoStats(currentIoStatsId);
+      currentIoStatsId = nextIoStatsId;
+      publishTerminalIoStats();
+    }
+  }
+  const ioAccounting = new TerminalIoByteAccounting();
   let ioTicker: ReturnType<typeof setInterval> | null = null;
   let rxWindowBytes = 0;
   let txWindowBytes = 0;
@@ -221,6 +253,11 @@
     rxBytesTotal += bytes;
   }
 
+  function recordHiddenRx(bytes: number): void {
+    const observed = ioAccounting.observeHiddenBytes(bytes);
+    if (observed > 0) recordRx(observed);
+  }
+
   function recordTx(bytes: number): void {
     txWindowBytes += bytes;
     txBytesTotal += bytes;
@@ -230,6 +267,10 @@
     if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}K`;
     return String(bytes);
+  }
+
+  function writeDebugToggle(key: string, checked: boolean): void {
+    setSetting(key, checked);
   }
 
   function sendTerminalInput(data: Uint8Array | string): boolean {
@@ -263,9 +304,10 @@
   }
 
   function shouldUseNativeImagePaste(): boolean {
+    const behavior = getSetting("terminal.imagePasteBehavior");
     return (
       resolveImagePasteBehavior(
-        getSetting("terminal.imagePasteBehavior"),
+        typeof behavior === "string" ? behavior : undefined,
         agent,
       ) === "direct"
     );
@@ -400,6 +442,12 @@
   // re-rasters a canvas — no DOM churn, no per-keystroke Layerize),
   // off-screen columns give theirs back. Null/inactive = DOM renderer.
   let webgl: WebglHandle | null = null;
+  const repaintTracker = new TerminalRepaintTracker();
+  let repaintRenderDisposable: IDisposable | null = null;
+  let repaintCellProbe: IBufferCell | null = null;
+  let repaintDecorations: IMarker[] = [];
+  let repaintClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let repaintDebugWasEnabled = false;
   function attachWebgl() {
     if (webgl?.active || !xterm) return;
     webgl = webglPool.tryAttach(xterm);
@@ -545,7 +593,7 @@
   }
 
   function publishTerminalIoStats(): void {
-    setTerminalIoStats(ioStatsId, {
+    setTerminalIoStats(currentIoStatsId, {
       visible: isTerminalVisible,
       rxBytesPerSec,
       txBytesPerSec,
@@ -554,6 +602,117 @@
       hiddenBufferedBytes: writeBuffer.pendingBytes,
       hiddenFlushes,
     });
+  }
+
+  function readRepaintCell(
+    row: number,
+    col: number,
+  ): TerminalRepaintCellSnapshot | null {
+    if (!xterm) return null;
+    const buffer = xterm.buffer.active;
+    const line = buffer.getLine(buffer.viewportY + row);
+    if (!line) return null;
+    repaintCellProbe ??= buffer.getNullCell();
+    const cell = line.getCell(col, repaintCellProbe);
+    if (!cell) return null;
+    return {
+      chars: cell.getChars(),
+      width: cell.getWidth(),
+      code: cell.getCode(),
+      fgColorMode: cell.getFgColorMode(),
+      bgColorMode: cell.getBgColorMode(),
+      fgColor: cell.getFgColor(),
+      bgColor: cell.getBgColor(),
+      attrs:
+        (cell.isBold() ? 1 : 0) |
+        (cell.isItalic() ? 2 : 0) |
+        (cell.isDim() ? 4 : 0) |
+        (cell.isUnderline() ? 8 : 0) |
+        (cell.isBlink() ? 16 : 0) |
+        (cell.isInverse() ? 32 : 0) |
+        (cell.isInvisible() ? 64 : 0) |
+        (cell.isStrikethrough() ? 128 : 0) |
+        (cell.isOverline() ? 256 : 0),
+    };
+  }
+
+  function clearRepaintDecorations(): void {
+    if (repaintClearTimer !== null) {
+      clearTimeout(repaintClearTimer);
+      repaintClearTimer = null;
+    }
+    for (const marker of repaintDecorations.splice(0)) {
+      try {
+        marker.dispose();
+      } catch {
+        // Stale debug paint must not interfere with the terminal lifecycle.
+      }
+    }
+  }
+
+  function drawRepaintDecorations(cells: TerminalRepaintCell[]): void {
+    if (!xterm || cells.length === 0) return;
+    clearRepaintDecorations();
+    const buffer = xterm.buffer.active;
+    const cursorLine = buffer.baseY + buffer.cursorY;
+    for (const cell of cells) {
+      const absoluteLine = buffer.viewportY + cell.row;
+      const marker = xterm.registerMarker(absoluteLine - cursorLine);
+      if (!marker) continue;
+      const decoration = xterm.registerDecoration({
+        marker,
+        x: cell.col,
+        width: cell.width,
+        height: 1,
+        layer: "top",
+        backgroundColor: REPAINT_DEBUG_BACKGROUND,
+        foregroundColor: REPAINT_DEBUG_FOREGROUND,
+      });
+      if (!decoration) {
+        marker.dispose();
+        continue;
+      }
+      const classes = [
+        "term-repaint-decoration",
+        repaintFlashEnabled ? "flash" : "",
+        repaintScaleEnabled ? "scale" : "",
+      ].filter(Boolean);
+      const chars = cell.chars || "\u00a0";
+      decoration.onRender((element) => {
+        element.classList.add(...classes);
+        element.textContent = chars;
+        element.setAttribute("aria-hidden", "true");
+      });
+      repaintDecorations.push(marker);
+    }
+    if (repaintDecorations.length > 0) {
+      repaintClearTimer = setTimeout(
+        clearRepaintDecorations,
+        REPAINT_DEBUG_TTL_MS,
+      );
+    }
+  }
+
+  function handleTerminalRender(ev: { start: number; end: number }): void {
+    const enabled = repaintFlashEnabled || repaintScaleEnabled;
+    if (!enabled) {
+      if (repaintDebugWasEnabled) {
+        repaintTracker.reset();
+        clearRepaintDecorations();
+      }
+      repaintDebugWasEnabled = false;
+      return;
+    }
+    repaintDebugWasEnabled = true;
+    if (!xterm) return;
+    const cells = repaintTracker.captureRenderedRows({
+      start: ev.start,
+      end: ev.end,
+      cols: xterm.cols,
+      maxCells: REPAINT_DEBUG_MAX_CELLS,
+      readCell: readRepaintCell,
+    });
+    drawRepaintDecorations(cells);
   }
 
   function flushBufferedTerminalOutput(): Uint8Array | null {
@@ -727,7 +886,8 @@
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
-          // Control frame from the daemon. Currently: exit + state.
+          // Control frame from the daemon. Currently: exit, state, and hidden
+          // IO byte observations while raw terminal output is buffered.
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.type === "exit") {
@@ -754,6 +914,8 @@
               configError = obj.configError ?? null;
               // Error gone (or replaced) → drop any stale action feedback.
               if (!configError) configAction = null;
+            } else if (obj?.type === "io" && typeof obj.rxBytes === "number") {
+              recordHiddenRx(obj.rxBytes);
             }
           } catch {
             // ignore
@@ -762,7 +924,8 @@
         }
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
-        recordRx(bytes.byteLength);
+        const newlyObservedBytes = ioAccounting.countRawBytes(bytes.byteLength);
+        if (newlyObservedBytes > 0) recordRx(newlyObservedBytes);
         if (isTerminalVisible) {
           xterm?.write(bytes);
         } else if (writeBuffer.push(bytes)) {
@@ -805,7 +968,7 @@
           phase === "starting"
         ) {
           triedAttachFallback = true;
-          detachSocket(ws);
+          if (ws) detachSocket(ws);
           ws = null;
           spawnAttempts = 0;
           void spawnPtyAndConnect();
@@ -943,6 +1106,7 @@
       }),
     );
     xterm.open(containerEl);
+    repaintRenderDisposable = xterm.onRender(handleTerminalRender);
     // Defer the initial fit to rAF so the flex parent has settled its
     // layout. A synchronous fit.fit() here races the browser's layout
     // pass when the column is freshly mounted (e.g. after a source-key
@@ -1255,7 +1419,7 @@
       clearInterval(ioTicker);
       ioTicker = null;
     }
-    removeTerminalIoStats(ioStatsId);
+    removeTerminalIoStats(currentIoStatsId);
     if (sshPollTimer) {
       clearInterval(sshPollTimer);
       sshPollTimer = null;
@@ -1269,6 +1433,9 @@
     if (onDocVisibility)
       document.removeEventListener("visibilitychange", onDocVisibility);
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
+    repaintRenderDisposable?.dispose();
+    repaintRenderDisposable = null;
+    clearRepaintDecorations();
     if (ws && ws.readyState <= WebSocket.OPEN) {
       // Drop the socket's handlers BEFORE closing. This is a deliberate
       // unmount, not a PTY exit — the PTY stays alive on the daemon
@@ -1619,6 +1786,9 @@
 <div
   class="terminal-wrap"
   class:focused
+  class:repaint-debug-active={repaintFlashEnabled || repaintScaleEnabled}
+  class:repaint-debug-flash={repaintFlashEnabled}
+  class:repaint-debug-scale={repaintScaleEnabled}
   on:mouseenter={onTuiWrapEnter}
   on:mouseleave={onTuiWrapLeave}
   on:wheel|capture={onTuiWrapWheel}
@@ -1638,11 +1808,31 @@
       class="term-io-debug"
       title="Terminal payload throughput: inbound, outbound, total inbound, total outbound, visibility state"
     >
-      in {formatBytes(rxBytesPerSec)}/s <span aria-hidden="true">·</span> out
-      {formatBytes(txBytesPerSec)}/s <span aria-hidden="true">·</span> total in
-      {formatBytes(rxBytesTotal)} <span aria-hidden="true">·</span> total out
-      {formatBytes(txBytesTotal)} <span aria-hidden="true">·</span>
-      {isTerminalVisible ? "visible" : "paused"}
+      <span class="term-io-readout"
+        >in {formatBytes(rxBytesPerSec)}/s <span aria-hidden="true">·</span> out
+        {formatBytes(txBytesPerSec)}/s <span aria-hidden="true">·</span> total
+        in {formatBytes(rxBytesTotal)} <span aria-hidden="true">·</span> total
+        out {formatBytes(txBytesTotal)} <span aria-hidden="true">·</span>
+        {isTerminalVisible ? "visible" : "paused"}</span
+      >
+      <label class="term-debug-toggle" title="Flash cells as terminal content changes">
+        <input
+          type="checkbox"
+          checked={$flashTermRepaints === true}
+          on:change={(ev) =>
+            writeDebugToggle("terminal.flashRepaints", ev.currentTarget.checked)}
+        />
+        flash
+      </label>
+      <label class="term-debug-toggle" title="Pop cells as terminal content changes">
+        <input
+          type="checkbox"
+          checked={$scaleTermRepaints === true}
+          on:change={(ev) =>
+            writeDebugToggle("terminal.scaleRepaints", ev.currentTarget.checked)}
+        />
+        scale
+      </label>
     </div>
   {/if}
 
@@ -1749,9 +1939,124 @@
       Consolas,
       "Liberation Mono",
       monospace;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     white-space: nowrap;
-    pointer-events: none;
+    pointer-events: auto;
     user-select: none;
+  }
+  .term-io-readout {
+    pointer-events: none;
+  }
+  .term-debug-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.16rem;
+    color: rgba(255, 255, 255, 0.78);
+    cursor: pointer;
+  }
+  .term-debug-toggle input {
+    width: 10px;
+    height: 10px;
+    margin: 0;
+    accent-color: var(--brand);
+  }
+  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    box-sizing: border-box;
+    overflow: hidden;
+    color: #07130a;
+    background: #7ee787;
+    text-align: left;
+    white-space: pre;
+    pointer-events: none;
+    transform-origin: left center;
+    will-change: transform, background-color, opacity;
+  }
+  :global(
+      .terminal-wrap.repaint-debug-active
+        .xterm-rows
+        span.xterm-decoration-top
+    ) {
+    transform-origin: left center;
+    will-change: transform, background-color, opacity;
+  }
+  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.flash) {
+    animation: term-repaint-decoration-flash 520ms ease-out forwards;
+  }
+  :global(
+      .terminal-wrap.repaint-debug-flash
+        .xterm-rows
+        span.xterm-decoration-top
+    ) {
+    animation: term-repaint-decoration-flash 520ms ease-out forwards;
+  }
+  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.scale) {
+    animation: term-repaint-decoration-scale 520ms
+      cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
+  }
+  :global(
+      .terminal-wrap.repaint-debug-scale
+        .xterm-rows
+        span.xterm-decoration-top
+    ) {
+    animation: term-repaint-decoration-scale 520ms
+      cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
+  }
+  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.flash.scale) {
+    animation:
+      term-repaint-decoration-flash 520ms ease-out forwards,
+      term-repaint-decoration-scale 520ms cubic-bezier(0.18, 0.9, 0.18, 1)
+        forwards;
+  }
+  :global(
+      .terminal-wrap.repaint-debug-flash.repaint-debug-scale
+        .xterm-rows
+        span.xterm-decoration-top
+    ) {
+    animation:
+      term-repaint-decoration-flash 520ms ease-out forwards,
+      term-repaint-decoration-scale 520ms cubic-bezier(0.18, 0.9, 0.18, 1)
+        forwards;
+  }
+  @keyframes -global-term-repaint-decoration-flash {
+    0% {
+      background: #7ee787;
+      color: #07130a;
+      opacity: 1;
+    }
+    20% {
+      background: #ffd666;
+      color: #07130a;
+      opacity: 1;
+    }
+    62% {
+      background: rgba(126, 231, 135, 0.72);
+      color: #07130a;
+      opacity: 1;
+    }
+    100% {
+      background: rgba(126, 231, 135, 0);
+      color: inherit;
+      opacity: 0;
+    }
+  }
+  @keyframes -global-term-repaint-decoration-scale {
+    0% {
+      transform: scale(1);
+    }
+    12% {
+      transform: scale(1.32);
+    }
+    36% {
+      transform: scale(1.08);
+    }
+    100% {
+      transform: scale(1);
+    }
   }
   /* Error callout — same anchor as the LoadingOverlay (centred,
      nudged up one line) but with its own background so the warning

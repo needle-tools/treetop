@@ -367,6 +367,12 @@ describe("TerminalView hidden terminal output", () => {
     expect(SOURCE).toContain(' <span aria-hidden="true">·</span> ');
     expect(SOURCE).toContain("sendTerminalInput(data)");
   });
+
+  test("repaint debug uses xterm decorations, not a standalone text overlay", () => {
+    expect(SOURCE).toContain("registerDecoration");
+    expect(SOURCE).not.toContain("term-repaint-overlay");
+    expect(SOURCE).not.toContain("syncRepaintOverlayGeometry");
+  });
 });
 
 describe("TerminalView web links", () => {

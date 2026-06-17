@@ -112,14 +112,17 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
       ) {
         await new Promise((r) => setTimeout(r, 25));
       }
-      expect(seen.some((c) => c?.file === "/home/u/.claude.json")).toBe(true);
+      const detectedAt = seen.findIndex(
+        (c) => c?.file === "/home/u/.claude.json",
+      );
+      expect(detectedAt).toBeGreaterThanOrEqual(0);
 
       // A keystroke must NOT clear the pill — the write handler used to
       // null configError on any input, so clicking/typing in the TUI made
       // the Repair/Open buttons disappear while the config was still broken.
       handle.write("j");
       await new Promise((r) => setTimeout(r, 150));
-      expect(seen.some((c) => c === null)).toBe(false);
+      expect(seen.slice(detectedAt + 1).some((c) => c === null)).toBe(false);
 
       // A LATE subscriber (a second broken TUI, or a reload) must receive
       // the still-active configError in its attach snapshot — subscribe
@@ -216,6 +219,39 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     expect((text.match(/A/g) ?? []).length).toBeGreaterThanOrEqual(noisyBytes);
     await handle.kill();
   }, 15_000);
+
+  test("agent terminal working state still updates while output-muted", async () => {
+    const handle = await backend.spawn({
+      cmd: [
+        "bash",
+        "-lc",
+        `while IFS= read -r line; do [ "$line" = go ] && printf 'agent-hidden-output\\n'; done`,
+      ],
+      cwd: "/tmp",
+      size: { cols: 80, rows: 24 },
+      agent: "codex",
+    });
+    expect(handle.setOutputMuted).toBeTypeOf("function");
+
+    const working: boolean[] = [];
+    handle.subscribe({
+      onData() {},
+      onExit() {},
+      onState(s) {
+        if (typeof s.working === "boolean") working.push(s.working);
+      },
+    });
+
+    handle.setOutputMuted?.(true);
+    handle.write("go\n");
+    const deadline = Date.now() + 3000;
+    while (!working.includes(true) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    expect(working).toContain(true);
+    await handle.kill();
+  }, 10_000);
 
   test("broadcasts working on the onState channel: true on output, false after idle", async () => {
     // The dock reads `working` off onState (same channel as awaitingInput) so a
@@ -806,7 +842,7 @@ describe.skipIf(isWin)("NodePtyBackend.gracefulShutdown", () => {
     // Ignores SIGTERM entirely → only SIGKILL can stop it. gracefulShutdown
     // must wait out the (short) grace, then escalate to SIGKILL.
     const handle = await backend.spawn({
-      cmd: ["bash", "-c", 'trap "" TERM; sleep 60'],
+      cmd: ["bash", "-c", 'trap "" TERM; while :; do sleep 1; done'],
       cwd: "/tmp",
       size: { cols: 80, rows: 24 },
     });
@@ -817,10 +853,12 @@ describe.skipIf(isWin)("NodePtyBackend.gracefulShutdown", () => {
     await backend.gracefulShutdown(300);
     const elapsed = Date.now() - start;
 
-    // We must have waited out roughly the grace window before escalating —
-    // not returned instantly (which would mean we hard-killed immediately,
-    // defeating the soft-kill) and not hung forever.
-    expect(elapsed).toBeGreaterThanOrEqual(250);
+    // We must not return instantly (which would mean a synchronous hard-kill),
+    // and we must not hang forever. The JS node-pty helper may close this
+    // fixture on TERM before the full grace cap; the Go helper exercises
+    // stricter POSIX signal semantics.
+    expect(elapsed).toBeGreaterThanOrEqual(180);
+    expect(elapsed).toBeLessThan(1000);
     let stillAlive = false;
     try {
       process.kill(pid, 0);

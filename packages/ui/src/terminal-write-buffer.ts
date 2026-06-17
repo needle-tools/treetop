@@ -51,6 +51,12 @@ const emptyTerminalIoStats: TerminalIoStatsTotals = {
 
 const terminalIoStatsById = writable<Record<string, TerminalIoStatsSample>>({});
 
+export const terminalIoStatsByKey: Readable<
+  Record<string, TerminalIoStatsSample>
+> = {
+  subscribe: terminalIoStatsById.subscribe,
+};
+
 export const terminalIoStats: Readable<TerminalIoStatsTotals> = derived(
   terminalIoStatsById,
   ($byId) => {
@@ -88,6 +94,120 @@ export function removeTerminalIoStats(id: string): void {
 
 export function _resetTerminalIoStatsForTests(): void {
   terminalIoStatsById.set({});
+}
+
+export function formatTerminalIoRate(bytesPerSec: number): string {
+  if (bytesPerSec >= 1024 * 1024) {
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)}m/s`;
+  }
+  if (bytesPerSec >= 1024) {
+    return `${(bytesPerSec / 1024).toFixed(1)}k/s`;
+  }
+  return `${Math.max(0, Math.round(bytesPerSec))}/s`;
+}
+
+export class TerminalIoByteAccounting {
+  private hiddenBytesAlreadyObserved = 0;
+
+  get pendingHiddenBytes(): number {
+    return this.hiddenBytesAlreadyObserved;
+  }
+
+  observeHiddenBytes(bytes: number): number {
+    const normalized = Math.max(0, Math.floor(bytes));
+    this.hiddenBytesAlreadyObserved += normalized;
+    return normalized;
+  }
+
+  countRawBytes(bytes: number): number {
+    const normalized = Math.max(0, Math.floor(bytes));
+    const alreadyObserved = Math.min(
+      normalized,
+      this.hiddenBytesAlreadyObserved,
+    );
+    this.hiddenBytesAlreadyObserved -= alreadyObserved;
+    return normalized - alreadyObserved;
+  }
+}
+
+export interface TerminalRepaintCellSnapshot {
+  chars: string;
+  width: number;
+  code: number;
+  fgColorMode: number;
+  bgColorMode: number;
+  fgColor: number;
+  bgColor: number;
+  attrs: number;
+}
+
+export interface TerminalRepaintCell {
+  row: number;
+  col: number;
+  width: number;
+  chars: string;
+}
+
+function repaintSignature(cell: TerminalRepaintCellSnapshot): string {
+  return [
+    cell.chars,
+    cell.width,
+    cell.code,
+    cell.fgColorMode,
+    cell.bgColorMode,
+    cell.fgColor,
+    cell.bgColor,
+    cell.attrs,
+  ].join("\u0000");
+}
+
+/** Tracks the last visible xterm cell snapshot so debug paint effects can
+ *  highlight only cells that changed, instead of flashing the whole viewport
+ *  on first enable or during a row-level render event. */
+export class TerminalRepaintTracker {
+  private previous = new Map<string, string>();
+  private initialized = false;
+
+  reset(): void {
+    this.previous.clear();
+    this.initialized = false;
+  }
+
+  captureRenderedRows(args: {
+    start: number;
+    end: number;
+    cols: number;
+    maxCells?: number;
+    readCell: (
+      row: number,
+      col: number,
+    ) => TerminalRepaintCellSnapshot | null | undefined;
+  }): TerminalRepaintCell[] {
+    const changed: TerminalRepaintCell[] = [];
+    const next = new Map(this.previous);
+    const maxCells =
+      typeof args.maxCells === "number" && args.maxCells >= 0
+        ? args.maxCells
+        : Number.POSITIVE_INFINITY;
+    for (let row = args.start; row <= args.end; row++) {
+      for (let col = 0; col < args.cols; col++) {
+        const cell = args.readCell(row, col);
+        if (!cell) continue;
+        const key = `${row}:${col}`;
+        const signature = repaintSignature(cell);
+        if (this.initialized && this.previous.get(key) !== signature) {
+          const width = Math.max(1, cell.width);
+          if (cell.width !== 0 && changed.length < maxCells) {
+            changed.push({ row, col, width, chars: cell.chars });
+          }
+        }
+        next.set(key, signature);
+      }
+    }
+    this.previous = next;
+    this.initialized = true;
+    return changed;
+  }
 }
 
 export class TerminalWriteBuffer {
