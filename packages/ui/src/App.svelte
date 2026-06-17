@@ -510,22 +510,6 @@
         default: false,
       },
       {
-        key: "terminal.flashRepaints",
-        label: "Flash repainted cells",
-        description:
-          "When terminal I/O debug is visible, briefly flash cells whose rendered content changes.",
-        type: "boolean",
-        default: false,
-      },
-      {
-        key: "terminal.scaleRepaints",
-        label: "Scale repainted cells",
-        description:
-          "When terminal I/O debug is visible, briefly pop cells whose rendered content changes.",
-        type: "boolean",
-        default: false,
-      },
-      {
         key: "terminal.imagePasteBehavior",
         label: "Image paste",
         description:
