@@ -363,7 +363,7 @@ describe("TerminalView hidden terminal output", () => {
     expect(SOURCE).toContain('settingValue("terminal.showIoDebug")');
     expect(SOURCE).toContain("rxBytesPerSec");
     expect(SOURCE).toContain("txBytesPerSec");
-    expect(SOURCE).toContain("class=\"term-io-debug\"");
+    expect(SOURCE).toContain("term-io-debug");
     expect(SOURCE).toContain(' <span aria-hidden="true">·</span> ');
     expect(SOURCE).toContain("sendTerminalInput(data)");
   });
@@ -372,6 +372,29 @@ describe("TerminalView hidden terminal output", () => {
     expect(SOURCE).toContain("registerDecoration");
     expect(SOURCE).not.toContain("term-repaint-overlay");
     expect(SOURCE).not.toContain("syncRepaintOverlayGeometry");
+  });
+
+  test("repaint flash and scale controls stay independent", () => {
+    expect(SOURCE).toContain("...(repaintFlashEnabled");
+    expect(SOURCE).toContain(
+      'glyph.className = "term-repaint-glyph"',
+    );
+    expect(SOURCE).toContain("element.replaceChildren(glyph)");
+    expect(SOURCE).toContain(
+      "foregroundColor: repaintFlashEnabled\n                ? REPAINT_DEBUG_FOREGROUND\n                : TERMINAL_THEME_BACKGROUND",
+    );
+    expect(SOURCE).toContain(
+      ":global(.terminal-wrap .xterm-decoration.term-repaint-decoration) {\n    display: block;",
+    );
+    expect(SOURCE).toContain("line-height: 1.15;");
+    expect(SOURCE).toContain("82% {\n      transform: scale(1);");
+    expect(SOURCE).toContain(
+      ":global(.terminal-wrap .xterm-decoration.term-repaint-decoration.scale) {\n    overflow: visible;",
+    );
+    expect(SOURCE).toContain(".term-repaint-glyph");
+    expect(SOURCE).not.toContain(
+      ".terminal-wrap.repaint-debug-scale\n        .xterm-rows",
+    );
   });
 });
 

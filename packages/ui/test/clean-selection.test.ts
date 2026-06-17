@@ -1,5 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { joinSelectionRows, type SelectionRow } from "../src/clean-selection";
+import {
+  isTerminalMouseReport,
+  joinSelectionRows,
+  type SelectionRow,
+} from "../src/clean-selection";
 
 /** Terse row builder. `w` = isWrapped, `f` = fillsWidth. */
 function row(text: string, w = false, f = false): SelectionRow {
@@ -102,5 +106,28 @@ describe("joinSelectionRows", () => {
         "second real line\n" +
         "third line also wraps at the col boundary here",
     );
+  });
+});
+
+describe("isTerminalMouseReport", () => {
+  test("recognizes SGR mouse down/up reports", () => {
+    expect(isTerminalMouseReport("\x1b[<0;12;4M")).toBe(true);
+    expect(isTerminalMouseReport("\x1b[<0;12;4m")).toBe(true);
+  });
+
+  test("recognizes normal mouse reports", () => {
+    expect(isTerminalMouseReport("\x1b[0;12;4M")).toBe(true);
+    expect(isTerminalMouseReport("\x1b[0;12;4m")).toBe(true);
+  });
+
+  test("recognizes X10 mouse reports", () => {
+    expect(isTerminalMouseReport("\x1b[M !!")).toBe(true);
+  });
+
+  test("does not treat normal terminal input as mouse reports", () => {
+    expect(isTerminalMouseReport("a")).toBe(false);
+    expect(isTerminalMouseReport("\r")).toBe(false);
+    expect(isTerminalMouseReport("\x1b[I")).toBe(false);
+    expect(isTerminalMouseReport("\x1b[200~paste\x1b[201~")).toBe(false);
   });
 });

@@ -15,7 +15,11 @@
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
   import { resolveImagePasteBehavior } from "./terminal-image-paste";
-  import { joinSelectionRows, type SelectionRow } from "./clean-selection";
+  import {
+    isTerminalMouseReport,
+    joinSelectionRows,
+    type SelectionRow,
+  } from "./clean-selection";
   import {
     TerminalIoByteAccounting,
     TerminalRepaintTracker,
@@ -51,6 +55,8 @@
   const REPAINT_DEBUG_TTL_MS = 520;
   const REPAINT_DEBUG_BACKGROUND = "#7ee787";
   const REPAINT_DEBUG_FOREGROUND = "#07130a";
+  const TERMINAL_THEME_BACKGROUND = "#1a1a1b";
+  const TERMINAL_THEME_FOREGROUND = "#e8e8e8";
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -223,6 +229,7 @@
   const scaleTermRepaints = settingValue("terminal.scaleRepaints");
   let repaintFlashEnabled = false;
   let repaintScaleEnabled = false;
+  let hoveredTerminalLink = false;
   $: repaintFlashEnabled =
     $showTerminalIoDebug === true && $flashTermRepaints === true;
   $: repaintScaleEnabled =
@@ -665,8 +672,16 @@
         width: cell.width,
         height: 1,
         layer: "top",
-        backgroundColor: REPAINT_DEBUG_BACKGROUND,
-        foregroundColor: REPAINT_DEBUG_FOREGROUND,
+        ...(repaintFlashEnabled || repaintScaleEnabled
+          ? {
+              backgroundColor: repaintFlashEnabled
+                ? REPAINT_DEBUG_BACKGROUND
+                : TERMINAL_THEME_BACKGROUND,
+              foregroundColor: repaintFlashEnabled
+                ? REPAINT_DEBUG_FOREGROUND
+                : TERMINAL_THEME_BACKGROUND,
+            }
+          : {}),
       });
       if (!decoration) {
         marker.dispose();
@@ -680,7 +695,24 @@
       const chars = cell.chars || "\u00a0";
       decoration.onRender((element) => {
         element.classList.add(...classes);
-        element.textContent = chars;
+        if (repaintScaleEnabled) {
+          const glyph =
+            element.firstElementChild instanceof HTMLSpanElement
+              ? element.firstElementChild
+              : document.createElement("span");
+          glyph.className = "term-repaint-glyph";
+          glyph.textContent = chars;
+          element.replaceChildren(glyph);
+        } else {
+          element.replaceChildren();
+        }
+        if (repaintScaleEnabled && !repaintFlashEnabled) {
+          element.style.color = TERMINAL_THEME_FOREGROUND;
+          element.style.background = TERMINAL_THEME_BACKGROUND;
+        } else {
+          element.style.removeProperty("color");
+          element.style.removeProperty("background");
+        }
         element.setAttribute("aria-hidden", "true");
       });
       repaintDecorations.push(marker);
@@ -1099,11 +1131,21 @@
     // Open URLs via the daemon so it works in both browser and native
     // app (WKWebView doesn't route window.open to the OS browser).
     xterm.loadAddon(
-      new WebLinksAddon((event, uri) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openUrl(uri);
-      }),
+      new WebLinksAddon(
+        (event, uri) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openUrl(uri);
+        },
+        {
+          hover: () => {
+            hoveredTerminalLink = true;
+          },
+          leave: () => {
+            hoveredTerminalLink = false;
+          },
+        },
+      ),
     );
     xterm.open(containerEl);
     repaintRenderDisposable = xterm.onRender(handleTerminalRender);
@@ -1280,6 +1322,7 @@
     });
 
     xterm.onData((data) => {
+      if (hoveredTerminalLink && isTerminalMouseReport(data)) return;
       sendTerminalInput(data);
     });
 
@@ -1805,7 +1848,7 @@
   {/if}
   {#if $showTerminalIoDebug}
     <div
-      class="term-io-debug"
+      class="term-io-debug io-debug-chip"
       title="Terminal payload throughput: inbound, outbound, total inbound, total outbound, visibility state"
     >
       <span class="term-io-readout"
@@ -1928,19 +1971,6 @@
     right: 0.35rem;
     z-index: 3;
     max-width: calc(100% - 0.7rem);
-    padding: 0.08rem 0.25rem;
-    border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, 0.55);
-    color: rgba(255, 255, 255, 0.72);
-    font:
-      10px/1.25 "SF Mono",
-      "JetBrains Mono",
-      Menlo,
-      Consolas,
-      "Liberation Mono",
-      monospace;
-    display: inline-flex;
-    align-items: center;
     gap: 0.35rem;
     white-space: nowrap;
     pointer-events: auto;
@@ -1963,25 +1993,45 @@
     accent-color: var(--brand);
   }
   :global(.terminal-wrap .xterm-decoration.term-repaint-decoration) {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-start;
+    display: block;
     box-sizing: border-box;
     overflow: hidden;
-    color: #07130a;
-    background: #7ee787;
+    color: inherit;
+    background: transparent;
     text-align: left;
     white-space: pre;
+    font: inherit;
+    line-height: 1.15;
     pointer-events: none;
-    transform-origin: left center;
+    transform-origin: center center;
     will-change: transform, background-color, opacity;
+  }
+  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.scale) {
+    overflow: visible;
+  }
+  :global(
+      .terminal-wrap
+        .xterm-decoration.term-repaint-decoration.scale
+        .term-repaint-glyph
+    ) {
+    display: block;
+    width: 100%;
+    height: 100%;
+    font: inherit;
+    line-height: 1.15;
+    text-align: left;
+    white-space: pre;
+    transform-origin: center center;
+    will-change: transform;
+    animation: term-repaint-decoration-scale 520ms
+      cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
   }
   :global(
       .terminal-wrap.repaint-debug-active
         .xterm-rows
         span.xterm-decoration-top
     ) {
-    transform-origin: left center;
+    transform-origin: center center;
     will-change: transform, background-color, opacity;
   }
   :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.flash) {
@@ -1994,33 +2044,8 @@
     ) {
     animation: term-repaint-decoration-flash 520ms ease-out forwards;
   }
-  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.scale) {
-    animation: term-repaint-decoration-scale 520ms
-      cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
-  }
-  :global(
-      .terminal-wrap.repaint-debug-scale
-        .xterm-rows
-        span.xterm-decoration-top
-    ) {
-    animation: term-repaint-decoration-scale 520ms
-      cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
-  }
   :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.flash.scale) {
-    animation:
-      term-repaint-decoration-flash 520ms ease-out forwards,
-      term-repaint-decoration-scale 520ms cubic-bezier(0.18, 0.9, 0.18, 1)
-        forwards;
-  }
-  :global(
-      .terminal-wrap.repaint-debug-flash.repaint-debug-scale
-        .xterm-rows
-        span.xterm-decoration-top
-    ) {
-    animation:
-      term-repaint-decoration-flash 520ms ease-out forwards,
-      term-repaint-decoration-scale 520ms cubic-bezier(0.18, 0.9, 0.18, 1)
-        forwards;
+    animation: term-repaint-decoration-flash 520ms ease-out forwards;
   }
   @keyframes -global-term-repaint-decoration-flash {
     0% {
@@ -2053,6 +2078,9 @@
     }
     36% {
       transform: scale(1.08);
+    }
+    82% {
+      transform: scale(1);
     }
     100% {
       transform: scale(1);

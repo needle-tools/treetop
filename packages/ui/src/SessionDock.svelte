@@ -857,7 +857,7 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if e.ioDebugLabel}
-              <span class="dock-io-debug-label" title="Terminal inbound throughput">
+              <span class="dock-io-debug-label io-debug-chip" title="Terminal inbound throughput">
                 {e.ioDebugLabel}
               </span>
             {/if}
@@ -1015,7 +1015,7 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if e.ioDebugLabel}
-              <span class="dock-io-debug-label" title="Terminal inbound throughput">
+              <span class="dock-io-debug-label io-debug-chip" title="Terminal inbound throughput">
                 {e.ioDebugLabel}
               </span>
             {/if}
@@ -1633,6 +1633,10 @@
     margin-left: auto;
     padding-left: 1em;
   }
+  .dock-io-debug-label + .dock-label-time {
+    margin-left: 0;
+    padding-left: 0.45em;
+  }
   .dock-label-time svg {
     width: 1em;
     height: 1em;
@@ -1663,20 +1667,9 @@
     color: var(--text-1, #e8e8e8);
   }
   .dock-io-debug-label {
-    display: inline-flex;
-    align-items: center;
     align-self: center;
     flex: 0 0 auto;
-    font-size: 0.58rem;
-    font-variant-numeric: tabular-nums;
-    color: color-mix(in oklch, var(--accent, #7dd3fc) 82%, var(--text-1, #e8e8e8));
-    background: color-mix(in oklch, var(--accent, #7dd3fc) 14%, transparent);
-    border: 1px solid
-      color-mix(in oklch, var(--accent, #7dd3fc) 28%, transparent);
-    border-radius: var(--radius-sm, 4px);
-    padding: 0.1em 0.35em;
-    line-height: 1;
-    opacity: 0.9;
+    margin-left: auto;
   }
   /* Fixed-width cell that always reserves space so the time column
      doesn't shift when the badge appears/disappears on hover

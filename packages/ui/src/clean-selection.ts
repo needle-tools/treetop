@@ -71,3 +71,10 @@ export function joinSelectionRows(rows: SelectionRow[]): string {
   }
   return out;
 }
+
+export function isTerminalMouseReport(data: string): boolean {
+  return (
+    /^\x1b\[[<]?\d+(?:;\d+){2}[mM]$/.test(data) ||
+    /^\x1b\[M[\s\S]{3}$/.test(data)
+  );
+}

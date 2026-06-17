@@ -8,6 +8,25 @@
  * → "App.svelte refactor (componentization)".
  */
 
+/* Shared tiny developer-readout chip used by terminal and sidebar I/O debug.
+   Keep it visually utilitarian so it reads as diagnostics, not product UI. */
+.io-debug-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.25rem;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.72);
+  font:
+    10px/1.25 "SF Mono",
+    "JetBrains Mono",
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ------------------------------------------------------------------
  * Recent actions list (inside the .actions-popover).
  * ------------------------------------------------------------------ */
