@@ -127,6 +127,65 @@ export class DismissedSessionsStore {
   }
 }
 
+export type SessionSurface = "read" | "terminal";
+
+/**
+ * Persisted "last surface used for this session" map. This is separate
+ * from `OpenSessionsStore`: closing a column removes it from the open
+ * list, but should not forget whether the user prefers to restore that
+ * session visually or as a resumed TUI.
+ */
+export class SessionSurfaceStore {
+  constructor(
+    private readonly storage: KVStore,
+    private readonly key: string,
+  ) {}
+
+  load(): Record<string, SessionSurface> {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(this.key);
+    } catch {
+      return {};
+    }
+    if (raw === null) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return {};
+    }
+    const out: Record<string, SessionSurface> = {};
+    for (const [key, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
+      if (!key) continue;
+      if (value === "read" || value === "terminal") out[key] = value;
+    }
+    return out;
+  }
+
+  save(data: Record<string, SessionSurface>): void {
+    const clean: Record<string, SessionSurface> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (!key) continue;
+      if (value === "read" || value === "terminal") clean[key] = value;
+    }
+    try {
+      this.storage.setItem(this.key, JSON.stringify(clean));
+    } catch {
+      // ignore — persistence is best-effort
+    }
+  }
+}
+
 /**
  * Persisted map of "which sessions were open under which worktree". Survives
  * page reloads so the user lands back where they were. Same KVStore-injection
@@ -226,6 +285,67 @@ export interface PersistedSession {
    *  after a daemon restart now self-heals via TerminalView's spawn
    *  fallback. */
   attachTermId?: string;
+}
+
+export function sessionSurfaceKeys(session: {
+  agent: PersistedAgent | string;
+  source?: string;
+  transcriptSource?: string;
+  resumeSessionId?: string;
+  sessionId?: string;
+}): string[] {
+  const keys: string[] = [];
+  const add = (value: string | undefined) => {
+    if (!value || keys.includes(value)) return;
+    keys.push(value);
+  };
+  add(session.source);
+  add(session.transcriptSource);
+  const sid = session.resumeSessionId ?? session.sessionId;
+  if (sid) add(`session:${session.agent}:${sid}`);
+  return keys;
+}
+
+export function applySessionSurfacePreference<
+  T extends {
+    agent: PersistedAgent | string;
+    source: string;
+    mode?: "terminal";
+    resumeSessionId?: string;
+    sessionId?: string;
+    transcriptSource?: string;
+  },
+>(session: T, surfaces: Record<string, SessionSurface>): T {
+  const resumeSessionId =
+    session.resumeSessionId ??
+    ((session.agent === "claude" || session.agent === "codex") &&
+    session.sessionId
+      ? session.sessionId
+      : undefined);
+  const withResume =
+    resumeSessionId && resumeSessionId !== session.resumeSessionId
+      ? { ...session, resumeSessionId }
+      : session;
+  const supportsTerminalSurface =
+    (withResume.agent === "claude" || withResume.agent === "codex") &&
+    !!withResume.resumeSessionId;
+  let surface: SessionSurface = "read";
+  for (const key of sessionSurfaceKeys(withResume)) {
+    const remembered = surfaces[key];
+    if (remembered) {
+      surface = remembered;
+      break;
+    }
+  }
+  if (supportsTerminalSurface && surface === "terminal") {
+    return { ...withResume, mode: "terminal" } as T;
+  }
+  if (withResume.mode === "terminal") {
+    const next = { ...withResume };
+    delete next.mode;
+    return next as T;
+  }
+  return withResume as T;
 }
 
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([

@@ -5,8 +5,10 @@ import {
   DismissedSessionsStore,
   ExpandedStore,
   OpenSessionsStore,
+  SessionSurfaceStore,
   StarredSessionsStore,
   VisibleWorktreesStore,
+  applySessionSurfacePreference,
   claudeModelAlias,
   codexAppSource,
   cmdForOpenSession,
@@ -15,6 +17,7 @@ import {
   isLiveCodexAppSource,
   isForeignToWorktree,
   resolveTitleSource,
+  sessionSurfaceKeys,
   setSessionMode,
   setSessionAttachTermId,
   shouldPollSessionSource,
@@ -1552,6 +1555,141 @@ describe("OpenSessionsStore + mode round-trip", () => {
         { agent: "claude", source: "/c.jsonl" },
         { agent: "claude", source: "/d.jsonl" },
       ],
+    });
+  });
+});
+
+describe("SessionSurfaceStore", () => {
+  const KEY = "supergit:sessionSurfaces";
+
+  test("persists last visual/terminal surface by stable session key", () => {
+    const m = new MemStore();
+    const store = new SessionSurfaceStore(m, KEY);
+    store.save({
+      "/agents/claude.jsonl": "terminal",
+      "session:codex:thread-1": "read",
+    });
+
+    expect(new SessionSurfaceStore(m, KEY).load()).toEqual({
+      "/agents/claude.jsonl": "terminal",
+      "session:codex:thread-1": "read",
+    });
+  });
+
+  test("ignores malformed keys and surface values", () => {
+    const m = new MemStore();
+    m.setItem(
+      KEY,
+      JSON.stringify({
+        "/agents/ok.jsonl": "terminal",
+        "/agents/bad.jsonl": "weird",
+        "": "terminal",
+      }),
+    );
+
+    expect(new SessionSurfaceStore(m, KEY).load()).toEqual({
+      "/agents/ok.jsonl": "terminal",
+    });
+  });
+
+  test("tolerates missing, corrupt, and unavailable storage", () => {
+    expect(new SessionSurfaceStore(new MemStore(), KEY).load()).toEqual({});
+
+    const corrupt = new MemStore();
+    corrupt.setItem(KEY, "{nope");
+    expect(new SessionSurfaceStore(corrupt, KEY).load()).toEqual({});
+
+    const throwing = new SessionSurfaceStore(new ThrowingStore(), KEY);
+    expect(throwing.load()).toEqual({});
+    expect(() => throwing.save({ "/agents/x.jsonl": "terminal" })).not.toThrow();
+  });
+
+  test("sessionSurfaceKeys aliases transcript sources and provider session ids", () => {
+    expect(
+      sessionSurfaceKeys({
+        agent: "codex",
+        source: "__codex_app__:thread-1",
+        transcriptSource: "/agents/codex-thread-1.jsonl",
+        resumeSessionId: "thread-1",
+      }),
+    ).toEqual([
+      "__codex_app__:thread-1",
+      "/agents/codex-thread-1.jsonl",
+      "session:codex:thread-1",
+    ]);
+  });
+
+  test("sessionSurfaceKeys accepts picker sessionId as an alias", () => {
+    expect(
+      sessionSurfaceKeys({
+        agent: "claude",
+        source: "/agents/claude.jsonl",
+        sessionId: "sid-1",
+      }),
+    ).toEqual(["/agents/claude.jsonl", "session:claude:sid-1"]);
+  });
+
+  test("applySessionSurfacePreference restores terminal mode for resumable Claude/Codex", () => {
+    expect(
+      applySessionSurfacePreference(
+        {
+          agent: "claude",
+          source: "/agents/claude.jsonl",
+          sessionId: "sid-1",
+        },
+        { "session:claude:sid-1": "terminal" },
+      ),
+    ).toEqual({
+      agent: "claude",
+      source: "/agents/claude.jsonl",
+      sessionId: "sid-1",
+      resumeSessionId: "sid-1",
+      mode: "terminal",
+    });
+  });
+
+  test("applySessionSurfacePreference uses transcript aliases for Codex App sessions", () => {
+    expect(
+      applySessionSurfacePreference(
+        {
+          agent: "codex",
+          source: "__codex_app__:thread-1",
+          transcriptSource: "/agents/codex-thread-1.jsonl",
+          resumeSessionId: "thread-1",
+        },
+        { "/agents/codex-thread-1.jsonl": "terminal" },
+      ),
+    ).toEqual({
+      agent: "codex",
+      source: "__codex_app__:thread-1",
+      transcriptSource: "/agents/codex-thread-1.jsonl",
+      resumeSessionId: "thread-1",
+      mode: "terminal",
+    });
+  });
+
+  test("applySessionSurfacePreference does not force terminal for non-resumable or visual sessions", () => {
+    expect(
+      applySessionSurfacePreference(
+        { agent: "ollama", source: "/ollama/chat.jsonl", mode: "terminal" },
+        { "/ollama/chat.jsonl": "terminal" },
+      ),
+    ).toEqual({ agent: "ollama", source: "/ollama/chat.jsonl" });
+
+    expect(
+      applySessionSurfacePreference(
+        {
+          agent: "claude",
+          source: "/agents/claude.jsonl",
+          resumeSessionId: "sid-1",
+          mode: "terminal",
+        },
+        { "/agents/claude.jsonl": "read" },
+      ),
+    ).toEqual({
+      agent: "claude",
+      source: "/agents/claude.jsonl",
+      resumeSessionId: "sid-1",
     });
   });
 });

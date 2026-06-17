@@ -136,18 +136,22 @@
   import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
   import {
     OpenSessionsStore,
+    SessionSurfaceStore,
     VisibleWorktreesStore,
     SYNTHETIC_SOURCE_PREFIXES,
+    applySessionSurfacePreference,
     codexAppSource,
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
     isForeignToWorktree,
+    sessionSurfaceKeys,
     setSessionMode,
     setSessionAttachTermId,
     stampDiscoveredSessionIdWithDetail,
     resolveTitleSource,
     type PersistedSession,
+    type SessionSurface,
   } from "./storage";
   import {
     installFetchTracking,
@@ -2745,6 +2749,10 @@
      *  `OpenSessionsStore`. On remount, `cmdForOpenSession` uses it to
      *  spawn `claude --resume <sid>` instead of bare `claude`. */
     resumeSessionId?: string;
+    /** Provider id as reported by picker/search rows before the entry is
+     *  normalized into open-session state. Copied to resumeSessionId for
+     *  Claude/Codex so remembered terminal surfaces can actually resume. */
+    sessionId?: string;
     /** Optional. UUID generated when this column was opened via the
      *  "+ new session" button, passed as `claude --session-id <uuid>`
      *  on spawn to force a fresh conversation. Once `resumeSessionId`
@@ -2802,6 +2810,7 @@
    *  the pill and what to Resume into. */
   function toggleOpenSessionInWt(wtPath: string, s: OpenSession): void {
     s = normalizeSessionForOpen(wtPath, s, repos);
+    s = applySessionSurfacePreference(s, sessionSurfaces);
     const list = openSessionsByWt[wtPath] ?? [];
     const i = list.findIndex((x) => x.source === s.source);
     if (i >= 0) {
@@ -3092,6 +3101,23 @@
     getDaemonKV(),
     "supergit:openSessions",
   );
+  const sessionSurfaceStore = new SessionSurfaceStore(
+    getDaemonKV(),
+    "supergit:sessionSurfaces",
+  );
+  let sessionSurfaces: Record<string, SessionSurface> =
+    sessionSurfaceStore.load();
+  function rememberSessionSurface(
+    s: OpenSession,
+    surface: SessionSurface,
+  ): void {
+    const keys = sessionSurfaceKeys(s);
+    if (keys.length === 0) return;
+    const next = { ...sessionSurfaces };
+    for (const key of keys) next[key] = surface;
+    sessionSurfaces = next;
+    sessionSurfaceStore.save(next);
+  }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
     "supergit:visibleWorktrees",
@@ -3146,6 +3172,22 @@
 
   function restoreOpenSessions() {
     openSessionsByWt = openSessionsPersistence.load();
+    let seeded = false;
+    const nextSurfaces = { ...sessionSurfaces };
+    for (const sessions of Object.values(openSessionsByWt)) {
+      for (const s of sessions) {
+        if (s.mode !== "terminal") continue;
+        for (const key of sessionSurfaceKeys(s)) {
+          if (nextSurfaces[key] === "terminal") continue;
+          nextSurfaces[key] = "terminal";
+          seeded = true;
+        }
+      }
+    }
+    if (seeded) {
+      sessionSurfaces = nextSurfaces;
+      sessionSurfaceStore.save(nextSurfaces);
+    }
     sessionsHydrated = true;
   }
   $: if (sessionsHydrated) openSessionsPersistence.save(openSessionsByWt);
@@ -10032,6 +10074,18 @@
                                     ? "terminal"
                                     : "read"}
                                   onModeChange={(m) => {
+                                    rememberSessionSurface(
+                                      {
+                                        ...s,
+                                        resumeSessionId:
+                                          s.resumeSessionId ??
+                                          agentMeta?.sessionId,
+                                        transcriptSource:
+                                          s.transcriptSource ??
+                                          agentMeta?.source,
+                                      },
+                                      m,
+                                    );
                                     // Persist so a reload restores the same view —
                                     // otherwise a user who clicked "Resume in
                                     // terminal" before refreshing lands back in
