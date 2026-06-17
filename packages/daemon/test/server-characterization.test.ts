@@ -458,4 +458,12 @@ describe("terminal WebSocket backpressure", () => {
     expect(SERVER_TS).toContain("drain(ws)");
     expect(SERVER_TS).toContain("flushTerminalOutput(ws)");
   });
+
+  test("all hidden terminals stream to drainable browser sockets instead of daemon-queueing", () => {
+    expect(SERVER_TS).toContain("outputDrainable: boolean");
+    expect(SERVER_TS).not.toContain("streamHiddenOutput");
+    expect(SERVER_TS).toContain("if (ws.data.outputDrainable) sendTerminalOutput(ws, output)");
+    expect(SERVER_TS).toContain("queueTerminalOutput(ws, output)");
+    expect(SERVER_TS).toContain("drainableTerminalSockets");
+  });
 });

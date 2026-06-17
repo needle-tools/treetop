@@ -628,13 +628,6 @@ export class NodePtyBackend implements PtyBackend {
         this.send({ op: "resize", id: t.id, cols: size.cols, rows: size.rows });
       },
       setOutputMuted: (muted) => {
-        // Do not pause agent TUIs. The activity dock's working/awaiting state
-        // is computed from PTY output in this daemon; pausing helper reads for
-        // a hidden Codex/Claude column makes the daemon blind until the user
-        // foregrounds it. Plain shells can still be paused to protect memory:
-        // their output is often unbounded logs/dev servers and the dock does
-        // not surface shell working/awaiting anyway.
-        if (t.agent && t.agent !== "shell") return;
         this.send({ op: "set-muted", id: t.id, muted });
       },
       kill: async () => {

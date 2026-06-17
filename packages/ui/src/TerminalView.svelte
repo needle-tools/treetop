@@ -591,14 +591,14 @@
 
   function sendVisibilityState(): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Gate on document visibility too, not just the IntersectionObserver. When
-    // the Treetop window is backgrounded / occluded, WebKit suspends the
-    // renderer and stops draining this socket, but the IntersectionObserver
-    // never fires `false` (the element is still geometrically in the viewport).
-    // Reporting hidden here lets the daemon mute delivery and cap its buffer,
-    // instead of growing it without bound until the machine OOMs.
+    // `visible` means "paint directly"; `drain` means "the browser is awake
+    // enough to receive hidden bytes". Offscreen agent TUIs keep streaming to
+    // the client buffer (so output is not stranded in the daemon), while a
+    // backgrounded / occluded window still lets the daemon avoid flooding a
+    // suspended WebKit socket.
     const visible = isTerminalVisible && !document.hidden;
-    ws.send(JSON.stringify({ type: "visibility", visible }));
+    const drain = !document.hidden;
+    ws.send(JSON.stringify({ type: "visibility", visible, drain }));
   }
 
   function publishTerminalIoStats(): void {

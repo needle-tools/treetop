@@ -1981,6 +1981,7 @@ type TermWsData =
       termId: string;
       unsubscribe: (() => void) | null;
       outputVisible: boolean;
+      outputDrainable: boolean;
       pendingOutput: Uint8Array[];
       pendingOutputBytes: number;
       outputBackpressured: boolean;
@@ -2004,28 +2005,30 @@ type TermWsData =
 // chunk anyway, so macOS showed multi-megabyte supergit->WebKit TCP send
 // queues and later UI actions looked like they arrived minutes late.
 //
-// The backlog doubles as the hidden-socket buffer: output for a hidden
-// terminal is queued here (not sent) and flushed on un-hide. When every socket
-// for a terminal is hidden, helper-side pause is the pressure-relief valve; it
+// The backlog doubles as the non-drainable-socket buffer: output is queued here
+// only when the browser says it cannot currently drain terminal bytes (for
+// example a backgrounded / suspended WebKit window). When every socket for a
+// terminal is non-drainable, helper-side pause is the pressure-relief valve; it
 // blocks fresh output upstream instead of letting this queue grow forever.
 //
 // Hidden backlogs are byte-exact because terminal streams are stateful: cutting
 // out older cursor / SGR sequences and later replaying the tail corrupts the
-// xterm screen. The memory bound for the normal hidden case comes from
-// helper-side output pause when no visible socket needs bytes. The visible path
-// still has a hard cap as an OOM guard for sockets the browser reports visible
-// but stops draining (for example an occluded WebKit window).
+// xterm screen. The memory bound for the normal suspended-window case comes
+// from helper-side output pause when no browser socket can drain bytes. The
+// drainable path still has a hard cap as an OOM guard for sockets the browser
+// reports drainable but that still stop consuming frames.
 
 function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
-  // Visible-only OOM guard: hidden sockets keep every queued byte, while
-  // helper-side pause prevents that hidden queue from growing indefinitely.
+  // Drainable-socket OOM guard: non-drainable sockets keep every queued byte,
+  // while helper-side pause prevents that suspended-window queue from growing
+  // indefinitely.
   ws.data.pendingOutputBytes = trimTerminalBacklog(
     ws.data.pendingOutput,
     ws.data.pendingOutputBytes,
-    ws.data.outputVisible,
+    ws.data.outputDrainable,
   );
 }
 
@@ -2100,39 +2103,47 @@ function sendTerminalOutput(
 }
 
 const visibleTerminalSockets = new Map<string, number>();
+const drainableTerminalSockets = new Map<string, number>();
 
-function addVisibleTerminalSocket(termId: string): void {
-  visibleTerminalSockets.set(
-    termId,
-    (visibleTerminalSockets.get(termId) ?? 0) + 1,
-  );
+function addCount(map: Map<string, number>, termId: string): void {
+  map.set(termId, (map.get(termId) ?? 0) + 1);
 }
 
-function removeVisibleTerminalSocket(termId: string): void {
-  const next = (visibleTerminalSockets.get(termId) ?? 0) - 1;
-  if (next > 0) visibleTerminalSockets.set(termId, next);
-  else visibleTerminalSockets.delete(termId);
+function removeCount(map: Map<string, number>, termId: string): void {
+  const next = (map.get(termId) ?? 0) - 1;
+  if (next > 0) map.set(termId, next);
+  else map.delete(termId);
 }
 
 function updateTerminalOutputMute(termId: string): void {
   const handle = terminalBackend.get(termId);
-  handle?.setOutputMuted?.((visibleTerminalSockets.get(termId) ?? 0) === 0);
+  handle?.setOutputMuted?.((drainableTerminalSockets.get(termId) ?? 0) === 0);
 }
 
 function setTerminalOutputVisible(
   ws: ServerWebSocket<TermWsData>,
   visible: boolean,
+  drainable: boolean = visible,
 ): void {
   if (ws.data.kind !== "terminal") return;
-  if (ws.data.outputVisible === visible) return;
+  const wasVisible = ws.data.outputVisible;
+  const wasDrainable = ws.data.outputDrainable;
+  if (wasVisible === visible && wasDrainable === drainable) return;
   ws.data.outputVisible = visible;
-  if (visible) {
-    addVisibleTerminalSocket(ws.data.termId);
+  ws.data.outputDrainable = drainable;
+  if (visible && !wasVisible) addCount(visibleTerminalSockets, ws.data.termId);
+  else if (!visible && wasVisible)
+    removeCount(visibleTerminalSockets, ws.data.termId);
+  if (drainable && !wasDrainable)
+    addCount(drainableTerminalSockets, ws.data.termId);
+  else if (!drainable && wasDrainable)
+    removeCount(drainableTerminalSockets, ws.data.termId);
+  if (drainable) {
     // Drain whatever buffered while this socket was hidden — same bytes, in
     // order, just delayed. No clear/repaint, so no risk of duplicated or
     // corrupted scrollback.
     flushTerminalOutput(ws);
-  } else removeVisibleTerminalSocket(ws.data.termId);
+  }
   updateTerminalOutputMute(ws.data.termId);
 }
 
@@ -2258,6 +2269,7 @@ const server = Bun.serve<TermWsData, never>({
                 termId,
                 unsubscribe: null,
                 outputVisible: true,
+                outputDrainable: true,
                 pendingOutput: [],
                 pendingOutputBytes: 0,
                 outputBackpressured: false,
@@ -8707,7 +8719,8 @@ const server = Bun.serve<TermWsData, never>({
       console.log(
         `supergit daemon: terminal ws open id=${termId} pid=${handle.pid}`,
       );
-      addVisibleTerminalSocket(termId);
+      addCount(visibleTerminalSockets, termId);
+      addCount(drainableTerminalSockets, termId);
       updateTerminalOutputMute(termId);
       const soundScanner = new SoundMarkerScanner();
       const sub: TerminalSubscriber = {
@@ -8717,12 +8730,14 @@ const server = Bun.serve<TermWsData, never>({
             broadcast("change", { kind: "sound_play", tag, termId });
           }
           if (output.length > 0) {
-            // Delivery-level mute: forward to a visible socket; for a hidden
-            // one, buffer the already-delivered bytes and flush them on
-            // un-hide. If every socket is hidden, helper-side pause prevents
-            // more bytes from reaching this subscriber until a viewer returns.
-            if (ws.data.outputVisible) sendTerminalOutput(ws, output);
-            else queueTerminalOutput(ws, output);
+            // Golden path: if the browser can drain bytes, send them. The
+            // client decides whether to paint immediately (visible) or buffer
+            // locally (offscreen). Only non-drainable sockets queue here.
+            if (ws.data.outputDrainable) sendTerminalOutput(ws, output);
+            else {
+              queueTerminalOutput(ws, output);
+              sendTerminalIoObserved(ws, output.byteLength);
+            }
           }
         },
         onState(state) {
@@ -8774,7 +8789,11 @@ const server = Bun.serve<TermWsData, never>({
               rows: clampRows(Number(parsed.rows)),
             });
           } else if (parsed?.type === "visibility") {
-            setTerminalOutputVisible(ws, parsed.visible === true);
+            setTerminalOutputVisible(
+              ws,
+              parsed.visible === true,
+              parsed.drain === true,
+            );
           } else if (parsed?.type === "paste-debug") {
             const id = typeof parsed.id === "string" ? parsed.id : "unknown";
             const phase =
@@ -8836,9 +8855,11 @@ const server = Bun.serve<TermWsData, never>({
       const termId = ws.data.termId;
       console.log(`supergit daemon: terminal ws close id=${termId}`);
       if (ws.data.outputVisible) {
-        removeVisibleTerminalSocket(termId);
-        updateTerminalOutputMute(termId);
+        removeCount(visibleTerminalSockets, termId);
       }
+      if (ws.data.outputDrainable)
+        removeCount(drainableTerminalSockets, termId);
+      updateTerminalOutputMute(termId);
       try {
         ws.data.unsubscribe?.();
       } catch {}

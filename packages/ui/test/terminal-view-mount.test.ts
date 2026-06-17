@@ -365,7 +365,7 @@ describe("TerminalView hidden terminal output", () => {
     // terminal-backlog.ts.
     expect(SOURCE).toContain("isTerminalVisible && !document.hidden");
     expect(SOURCE).toContain(
-      'JSON.stringify({ type: "visibility", visible })',
+      'JSON.stringify({ type: "visibility", visible, drain })',
     );
     expect(SOURCE).toContain(
       'document.addEventListener("visibilitychange"',
@@ -385,6 +385,15 @@ describe("TerminalView hidden terminal output", () => {
     expect(SOURCE).toContain(
       "{ rootMargin: OUTPUT_VISIBILITY_ROOT_MARGIN, threshold: 0 }",
     );
+  });
+
+  test("reports whether a hidden terminal socket can still drain output", () => {
+    const idx = SOURCE.indexOf("function sendVisibilityState()");
+    expect(idx).toBeGreaterThan(-1);
+    const end = SOURCE.indexOf("function publishTerminalIoStats", idx);
+    const block = SOURCE.slice(idx, end);
+    expect(block).toContain("const drain = !document.hidden");
+    expect(block).toContain('JSON.stringify({ type: "visibility", visible, drain })');
   });
 
   test("has an opt-in terminal I/O debug readout", () => {

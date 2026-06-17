@@ -220,7 +220,7 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     await handle.kill();
   }, 15_000);
 
-  test("agent terminal working state still updates while output-muted", async () => {
+  test("agent terminal output is paused while muted and delivered after unmute", async () => {
     const handle = await backend.spawn({
       cmd: [
         "bash",
@@ -233,23 +233,30 @@ describe.skipIf(isWin)("NodePtyBackend integration", () => {
     });
     expect(handle.setOutputMuted).toBeTypeOf("function");
 
-    const working: boolean[] = [];
+    const chunks: Uint8Array[] = [];
     handle.subscribe({
-      onData() {},
-      onExit() {},
-      onState(s) {
-        if (typeof s.working === "boolean") working.push(s.working);
+      onData(chunk) {
+        chunks.push(chunk);
       },
+      onExit() {},
     });
 
     handle.setOutputMuted?.(true);
     handle.write("go\n");
+    await new Promise((r) => setTimeout(r, 300));
+    let text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString(
+      "utf-8",
+    );
+    expect(text).not.toContain("agent-hidden-output");
+
+    handle.setOutputMuted?.(false);
     const deadline = Date.now() + 3000;
-    while (!working.includes(true) && Date.now() < deadline) {
+    while (!text.includes("agent-hidden-output") && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 25));
+      text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf-8");
     }
 
-    expect(working).toContain(true);
+    expect(text).toContain("agent-hidden-output");
     await handle.kill();
   }, 10_000);
 

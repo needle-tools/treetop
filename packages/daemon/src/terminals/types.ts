@@ -65,8 +65,9 @@ export interface TerminalSubscriber {
     configError?: { file: string } | null;
     /** True while the PTY is actively producing output (it emitted a byte
      *  within the last WORKING_IDLE_MS). Rides the same control channel as
-     *  `awaitingInput`; when all viewers are hidden, helper-side output pause
-     *  can delay fresh working-state edges until the terminal is visible again. */
+     *  `awaitingInput`; when no browser socket can drain output, helper-side
+     *  pause can delay fresh working-state edges until the terminal is
+     *  drainable again. */
     working?: boolean;
   }): void;
 }
@@ -76,7 +77,7 @@ export interface TerminalHandle {
   readonly pid: number;
   write(data: Uint8Array | string): void;
   resize(size: TerminalSize): void;
-  /** Pause helper-side output delivery while no visible client needs it.
+  /** Pause helper-side output delivery while no client can drain it.
    *  Input and PTY state continue; output resumes on unmute without dropping
    *  terminal bytes. */
   setOutputMuted?(muted: boolean): void;
