@@ -2849,6 +2849,27 @@
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
     scrollNewColIntoView(wtPath, s.source);
   }
+
+  function sessionSurfaceForPicker(s: AgentSession): SessionSurface | undefined {
+    if (s.agent !== "claude" && s.agent !== "codex") return undefined;
+    for (const key of sessionSurfaceKeys(s)) {
+      const remembered = sessionSurfaces[key];
+      if (remembered) return remembered;
+    }
+    const subject: {
+      agent: "claude" | "codex";
+      source: string;
+      sessionId?: string;
+      mode?: "terminal";
+    } = {
+      agent: s.agent,
+      source: s.source,
+      sessionId: s.sessionId,
+    };
+    const normalized = applySessionSurfacePreference(subject, sessionSurfaces);
+    return normalized.mode === "terminal" ? "terminal" : undefined;
+  }
+
   /** Mark a shell column as user-dismissed so `restoreLiveShells` won't
    *  re-add it on the next page load. Handles both the synthetic
    *  `__new__:` and the termId-based `__attached__:` forms: if the user
@@ -8643,6 +8664,7 @@
                           starredSources={starredSessions}
                           isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
                           tooltipFor={(s) => sessionTooltip(s)}
+                          surfaceFor={sessionSurfaceForPicker}
                           on:pick={(e) => {
                             activeTuisPopoverOpen = {
                               ...activeTuisPopoverOpen,
@@ -8747,6 +8769,7 @@
                           starredSources={starredSessions}
                           isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
                           tooltipFor={(s) => sessionTooltip(s)}
+                          surfaceFor={sessionSurfaceForPicker}
                           on:pick={(e) => {
                             agentsPopoverOpen = {
                               ...agentsPopoverOpen,

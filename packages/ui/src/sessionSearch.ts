@@ -34,6 +34,8 @@ export interface AgentSession {
   contextTokens?: number;
   contextTokensExact?: boolean;
   model?: string;
+  importedFrom?: string;
+  importedAt?: string;
 }
 
 const W_TITLE = 100;

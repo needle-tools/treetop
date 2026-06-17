@@ -1145,6 +1145,15 @@
             children: [
               {
                 kind: "action",
+                label: "Terminal",
+                iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
+                selected: mode === "terminal",
+                disabled: mode === "terminal",
+                title: resumeTitleForAgent(),
+                onSelect: resumeInTerminalSurface,
+              },
+              {
+                kind: "action",
                 label: "Visual",
                 iconSvg: [
                   "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
@@ -1154,15 +1163,6 @@
                 disabled: mode === "read",
                 title: "Show the visual session view",
                 onSelect: showVisualSurface,
-              },
-              {
-                kind: "action",
-                label: "Terminal",
-                iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
-                selected: mode === "terminal",
-                disabled: mode === "terminal",
-                title: resumeTitleForAgent(),
-                onSelect: resumeInTerminalSurface,
               },
             ],
           },

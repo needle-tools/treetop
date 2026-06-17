@@ -33,6 +33,7 @@
     orderNoQuery,
     type AgentSession,
   } from "./sessionSearch";
+  import { isLiveCodexAppSource, type SessionSurface } from "./storage";
   import { importedTooltip } from "./imported-badge";
 
   /** Number of trailing shell commands to show in the hover dock.
@@ -60,6 +61,10 @@
   /** Tooltip text per row — caller knows the worktree context. */
   export let tooltipFor: (s: AgentSession) => string = (s) =>
     s.manualTitle ?? s.aiTitle ?? s.title ?? "(no title)";
+  /** Last remembered surface for resumable agent sessions. The parent owns
+   *  this because the preference store lives alongside open-session state. */
+  export let surfaceFor: (s: AgentSession) => SessionSurface | undefined = () =>
+    undefined;
   /** Placeholder string for the search input. */
   export let placeholder = "Search by title or message…";
 
@@ -282,6 +287,30 @@
     cancelDismiss();
   }
 
+  function sessionSurface(sess: AgentSession): SessionSurface | undefined {
+    if (sess.agent !== "claude" && sess.agent !== "codex") return undefined;
+    return surfaceFor(sess);
+  }
+
+  function sessionAgentLabel(sess: AgentSession): string {
+    if (sess.agent === "claude") return "Claude";
+    if (sess.agent === "shell") return "Terminal";
+    if (sess.agent === "codex") {
+      const surface = sessionSurface(sess);
+      return surface === "read" || isLiveCodexAppSource(sess.source)
+        ? "Codex App"
+        : "Codex CLI";
+    }
+    if (sess.agent === "ollama") return "Ollama";
+    return sess.agent;
+  }
+
+  function sessionSurfaceLabel(sess: AgentSession): string | undefined {
+    const surface = sessionSurface(sess);
+    if (!surface) return undefined;
+    return surface === "read" ? "Visual" : "Terminal";
+  }
+
   onDestroy(() => {
     cancelShow();
     cancelDismiss();
@@ -354,6 +383,7 @@
         {:else}
           {@const sess = item.sess}
           {@const importedTip = importedTooltip(sess)}
+          {@const surfaceLabel = sessionSurfaceLabel(sess)}
           <button
             class="agent-row brand-{sess.agent}"
             class:dimmed={!isOpen(sess) && !item.dismissed}
@@ -397,11 +427,7 @@
               <span class="agent-dot agent-{sess.agent}"></span>
             {/if}
             <span class="agent-row-name">
-              {sess.agent === "claude"
-                ? "Claude"
-                : sess.agent === "codex"
-                  ? "Codex"
-                  : sess.agent}
+              {sessionAgentLabel(sess)}
             </span>
             {#if starredSources.has(sess.source)}
               <svg
@@ -480,15 +506,16 @@
             {/if}
             <span
               class="muted small agent-msgs"
-              title={sess.messageCount
-                ? sess.agent === "shell"
-                  ? `${sess.messageCount.toLocaleString()} command${sess.messageCount === 1 ? "" : "s"} in this session`
-                  : `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
-                : sess.agent === "shell"
-                  ? "no commands captured"
-                  : "no messages counted"}
+              title={surfaceLabel ??
+                (sess.messageCount
+                  ? sess.agent === "shell"
+                    ? `${sess.messageCount.toLocaleString()} command${sess.messageCount === 1 ? "" : "s"} in this session`
+                    : `${sess.messageCount.toLocaleString()} message${sess.messageCount === 1 ? "" : "s"} in this session`
+                  : sess.agent === "shell"
+                    ? "no commands captured"
+                    : "no messages counted")}
             >
-              {#if sess.messageCount}{sess.messageCount.toLocaleString()}
+              {#if surfaceLabel}{surfaceLabel}{:else if sess.messageCount}{sess.messageCount.toLocaleString()}
                 {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}
             </span>
             <span class="muted small agent-time"
