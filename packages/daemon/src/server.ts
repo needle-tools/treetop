@@ -7,7 +7,6 @@ import {
 } from "node:os";
 import {
   stat as fsStat,
-  unlink,
   readdir,
   writeFile as fsWriteFile,
   readFile,
@@ -191,6 +190,9 @@ import { listDrives } from "./drives";
 import { ProvisionManager } from "./provision-manager";
 import { makeProvisionSpawner } from "./provision-spawn";
 import { buildProvisionPlan } from "./provision";
+import { ClaudeCliAdapter } from "./claude-cli-adapter";
+import { CodexAppServerAdapter } from "./codex-app-server";
+import { createNativeAgentRegistry } from "./native-agent-adapters";
 
 const WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -233,6 +235,57 @@ const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 // Default stays "0.0.0.0" so existing LAN session-sharing is unaffected;
 // remote/tunnel deployments override with SUPERGIT_BIND=127.0.0.1.
 const BIND = process.env.SUPERGIT_BIND || "0.0.0.0";
+
+const codexAgent = new CodexAppServerAdapter();
+const nativeAgents = createNativeAgentRegistry({
+  claude: new ClaudeCliAdapter(),
+  codex: codexAgent,
+});
+
+function codexApprovalPolicy(value: unknown): unknown | undefined {
+  if (
+    value === "untrusted" ||
+    value === "on-failure" ||
+    value === "on-request" ||
+    value === "never"
+  ) {
+    return value;
+  }
+  if (value && typeof value === "object" && "granular" in value) return value;
+  return undefined;
+}
+
+function codexSandboxPolicy(value: unknown, cwd: string): Record<string, unknown> | undefined {
+  if (value && typeof value === "object") {
+    const type = (value as Record<string, unknown>).type;
+    if (
+      type === "dangerFullAccess" ||
+      type === "readOnly" ||
+      type === "workspaceWrite" ||
+      type === "externalSandbox"
+    ) {
+      return value as Record<string, unknown>;
+    }
+  }
+  if (value === "dangerFullAccess") return { type: "dangerFullAccess" };
+  if (value === "readOnly") {
+    return { type: "readOnly", networkAccess: false };
+  }
+  if (value === "workspaceWrite" || value === "workspace-write") {
+    return {
+      type: "workspaceWrite",
+      writableRoots: [cwd],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    };
+  }
+  return undefined;
+}
+
+function codexTurnString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
 
 /** Path to a built UI's `dist/` directory. When non-null the daemon
  *  serves static files from it for any GET that doesn't match an API
@@ -2032,6 +2085,18 @@ function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array)
   );
 }
 
+function sendTerminalIoObserved(
+  ws: ServerWebSocket<TermWsData>,
+  bytes: number,
+): void {
+  if (ws.data.kind !== "terminal" || bytes <= 0) return;
+  try {
+    ws.send(JSON.stringify({ type: "io", rxBytes: bytes }));
+  } catch {
+    // Socket may be closing; the buffered PTY bytes remain authoritative.
+  }
+}
+
 function takeTerminalOutputBacklog(
   ws: ServerWebSocket<TermWsData>,
 ): Uint8Array | null {
@@ -2644,15 +2709,25 @@ const server = Bun.serve<TermWsData, never>({
             },
             {
               method: "POST",
+              path: "/api/session/start",
+              body: {
+                agent: "codex",
+                cwd: "string",
+              },
+              description:
+                "start a native app-server-backed session and return {agent, sessionId, cwd, source, model}. Currently Codex app-server only.",
+            },
+            {
+              method: "POST",
               path: "/api/session/send",
               body: {
-                agent: "claude",
-                sessionId: "uuid",
+                agent: "claude|codex",
+                sessionId: "provider session/thread id",
                 cwd: "string",
                 text: "string",
               },
               description:
-                "send a prompt to an agent's session (claude only for now). Fire-and-forget: agent writes to its JSONL, UI polls for new messages. Returns the in-flight record id.",
+                "send a prompt to a native agent session. Claude uses CLI resume; Codex uses app-server thread resume/start. Fire-and-forget: the provider writes to its session store and the UI polls for new messages. Returns the in-flight record id.",
             },
             {
               method: "POST",
@@ -3411,6 +3486,214 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
+      if (url.pathname === "/api/session/start" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as {
+          agent?: unknown;
+          cwd?: unknown;
+        } | null;
+        const agent = body?.agent;
+        const cwd = body?.cwd;
+        if (typeof agent !== "string" || typeof cwd !== "string" || !cwd) {
+          return json({ error: "agent, cwd required" }, { status: 400 });
+        }
+        try {
+          const started = await nativeAgents.startSession({ agent, cwd });
+          return json({ ok: true, ...started });
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          if (/not supported/.test(message)) {
+            return json({ error: message }, { status: 501 });
+          }
+          return json({ error: message }, { status: 500 });
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/events" && req.method === "GET") {
+        const threadId = url.searchParams.get("threadId") || undefined;
+        let unsubscribe: (() => void) | null = null;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const send = (event: unknown) => {
+              try {
+                controller.enqueue(
+                  sseEncoder.encode(
+                    `event: codex\ndata: ${JSON.stringify(event)}\n\n`,
+                  ),
+                );
+              } catch {
+                unsubscribe?.();
+              }
+            };
+            controller.enqueue(sseEncoder.encode(`: connected\n\n`));
+            unsubscribe = codexAgent.subscribe(threadId, send);
+          },
+          cancel() {
+            unsubscribe?.();
+            unsubscribe = null;
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            ...CORS,
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        });
+      }
+
+      if (url.pathname === "/api/codex-app/models" && req.method === "GET") {
+        const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
+        try {
+          const models = await codexAgent.listModels(cwd);
+          return json({ ok: true, models });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/turns" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+          cwd?: unknown;
+          text?: unknown;
+          input?: unknown;
+          steer?: unknown;
+          model?: unknown;
+          approvalPolicy?: unknown;
+          sandboxPolicy?: unknown;
+          effort?: unknown;
+          summary?: unknown;
+        } | null;
+        const threadId =
+          typeof body?.threadId === "string" && body.threadId
+            ? body.threadId
+            : undefined;
+        const cwd = typeof body?.cwd === "string" ? body.cwd : "";
+        const text = typeof body?.text === "string" ? body.text : "";
+        const input = Array.isArray(body?.input)
+          ? (body.input as Record<string, unknown>[])
+          : undefined;
+        if (!cwd || (!text.trim() && !input?.length)) {
+          return json({ error: "cwd and text/input required" }, { status: 400 });
+        }
+        try {
+          if (threadId && (body?.steer || codexAgent.activeTurn(threadId))) {
+            const steered = await codexAgent.steerTurn({
+              threadId,
+              text,
+              input,
+            });
+            return json({ ok: true, steered: true, ...steered });
+          }
+          const turn = await codexAgent.startTurn({
+            threadId,
+            cwd,
+            text,
+            input,
+            overrides: {
+              model: codexTurnString(body?.model),
+              approvalPolicy: codexApprovalPolicy(body?.approvalPolicy),
+              sandboxPolicy: codexSandboxPolicy(body?.sandboxPolicy, cwd),
+              effort: codexTurnString(body?.effort),
+              summary: codexTurnString(body?.summary),
+            },
+          });
+          return json({
+            ok: true,
+            steered: false,
+            threadId: turn.threadId,
+            turnId: turn.turnId,
+          });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (
+        url.pathname === "/api/codex-app/turns/interrupt" &&
+        req.method === "POST"
+      ) {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+          turnId?: unknown;
+        } | null;
+        if (typeof body?.threadId !== "string" || !body.threadId) {
+          return json({ error: "threadId required" }, { status: 400 });
+        }
+        try {
+          await codexAgent.interruptTurn(
+            body.threadId,
+            typeof body.turnId === "string" ? body.turnId : undefined,
+          );
+          return json({ ok: true });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (
+        url.pathname.startsWith("/api/codex-app/requests/") &&
+        url.pathname.endsWith("/respond") &&
+        req.method === "POST"
+      ) {
+        const encoded = url.pathname
+          .slice("/api/codex-app/requests/".length)
+          .slice(0, -"/respond".length);
+        const rawId = decodeURIComponent(encoded);
+        const requestId = /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+        const body = (await req.json().catch(() => null)) as {
+          result?: unknown;
+          error?: unknown;
+          decision?: unknown;
+          answers?: unknown;
+        } | null;
+        try {
+          if (
+            body?.error &&
+            typeof body.error === "object" &&
+            typeof (body.error as { message?: unknown }).message === "string"
+          ) {
+            codexAgent.respondToRequest(requestId, {
+              error: body.error as { message: string },
+            });
+          } else if (body?.result && typeof body.result === "object") {
+            codexAgent.respondToRequest(requestId, {
+              result: body.result as Record<string, unknown>,
+            });
+          } else if (typeof body?.decision === "string") {
+            codexAgent.respondToRequest(requestId, {
+              result: { decision: body.decision },
+            });
+          } else if (body?.answers && typeof body.answers === "object") {
+            codexAgent.respondToRequest(requestId, {
+              result: { answers: body.answers as Record<string, unknown> },
+            });
+          } else {
+            return json(
+              { error: "result, decision, answers, or error required" },
+              { status: 400 },
+            );
+          }
+          return json({ ok: true });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
       if (url.pathname === "/api/session/send" && req.method === "POST") {
         const body = (await req.json().catch(() => null)) as {
           agent?: string;
@@ -3431,83 +3714,30 @@ const server = Bun.serve<TermWsData, never>({
         ) {
           return json({ error: "agent, cwd, text required" }, { status: 400 });
         }
-        if (agent !== "claude") {
-          // Only Claude wired up in v0; codex/copilot follow once we know
-          // their non-interactive resume invocation.
-          return json(
-            { error: `sending to ${agent} not supported yet` },
-            { status: 501 },
-          );
-        }
-        if (!sessionId) {
-          return json({ error: "claude needs sessionId" }, { status: 400 });
-        }
-        // Fire-and-forget. Claude appends to its own JSONL on disk; the UI's
-        // existing 2s session poll picks the new messages up naturally.
-        //
-        // `--permission-mode bypassPermissions` is needed because we run with
-        // `-p` (print, headless): there's no TTY for the user to approve edit
-        // / bash / network permissions, so without bypass claude would block
-        // forever waiting for a confirmation it can never receive. The user
-        // explicitly typed a prompt in this session, which is consent enough
-        // for v0. We can surface granular per-call approvals from the UI later.
-        // The claude CLI is itself a Bun-compiled standalone binary, so
-        // when it runs in a project cwd Bun's package-resolution machinery
-        // happily writes a `bun.lockb` / `bun.lock` there. We don't want
-        // those polluting the worktree, so snapshot what's there before
-        // spawn and unlink anything claude added once it exits.
-        const lockCandidates = [join(cwd, "bun.lockb"), join(cwd, "bun.lock")];
-        const preExisted = await Promise.all(
-          lockCandidates.map(async (p) => {
-            try {
-              await fsStat(p);
-              return true;
-            } catch {
-              return false;
-            }
-          }),
-        );
-
         try {
-          const proc = Bun.spawn({
-            cmd: [
-              "claude",
-              "-p",
-              "-r",
-              sessionId,
-              "--permission-mode",
-              "bypassPermissions",
-              text,
-            ],
-            cwd,
-            stdout: "ignore",
-            stderr: "ignore",
-          });
-          const rec = inflight.register({
+          const proc = nativeAgents.sendTurn({
             agent,
             sessionId,
             cwd,
             text,
-            proc,
           });
-          void proc.exited.then(async () => {
-            for (let i = 0; i < lockCandidates.length; i++) {
-              if (preExisted[i]) continue;
-              const p = lockCandidates[i]!;
-              try {
-                await fsStat(p);
-                await unlink(p);
-              } catch {
-                // not there, or unlink failed; nothing to do
-              }
-            }
+          const rec = inflight.register({
+            agent,
+            sessionId: sessionId ?? "",
+            cwd,
+            text,
+            proc,
           });
           return json({ ok: true, id: rec.id, pid: rec.pid });
         } catch (e) {
-          return json(
-            { error: e instanceof Error ? e.message : String(e) },
-            { status: 500 },
-          );
+          const message = e instanceof Error ? e.message : String(e);
+          if (/not supported/.test(message)) {
+            return json({ error: message }, { status: 501 });
+          }
+          if (/needs sessionId/.test(message)) {
+            return json({ error: message }, { status: 400 });
+          }
+          return json({ error: message }, { status: 500 });
         }
       }
 

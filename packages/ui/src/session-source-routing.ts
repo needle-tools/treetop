@@ -50,6 +50,7 @@ export interface OpenSession {
   agent: AgentSession["agent"] | "shell" | "files" | "history";
   source: string;
   resumeSessionId?: string;
+  transcriptSource?: string;
   preassignedSessionId?: string;
   mode?: "terminal";
   ollamaModel?: string;
@@ -68,6 +69,14 @@ export interface Worktree {
 
 export interface Repo {
   worktrees?: Worktree[];
+}
+
+export interface LiveAgentTerminal {
+  id: string;
+  ownerId?: string;
+  cwd: string;
+  agent?: string;
+  exitedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +114,77 @@ export function isOpenInWt(
   openSessionsByWt: Record<string, OpenSession[]>,
 ): boolean {
   return (openSessionsByWt[wtPath] ?? []).some((s) => s.source === source);
+}
+
+// ---------------------------------------------------------------------------
+// moveSessionStateKey
+//
+// Transient UI state (working / awaiting / exited / unread pulse timestamps)
+// is keyed by the session source used in openSessionsByWt. When a live column
+// is promoted from a synthetic source (`__new__:*`) to its canonical source
+// (real JSONL path or `__attached__:shell:<termId>`), the state must move with
+// it or the side dock reads a stale key and loses the real session state.
+// ---------------------------------------------------------------------------
+
+export function moveSessionStateKey<T>(
+  state: Record<string, T>,
+  from: string,
+  to: string,
+): Record<string, T> {
+  if (from === to || !(from in state)) return state;
+  const next = { ...state };
+  if (!(to in next)) next[to] = next[from]!;
+  delete next[from];
+  return next;
+}
+
+export function reconcileLiveAgentTerminals(
+  byWt: Record<string, OpenSession[]>,
+  repos: readonly Repo[],
+  terminals: readonly LiveAgentTerminal[],
+): Record<string, OpenSession[]> {
+  const liveByOwner = new Map<string, LiveAgentTerminal>();
+  for (const t of terminals) {
+    if (!t.ownerId || t.exitedAt || t.agent === "shell") continue;
+    liveByOwner.set(t.ownerId, t);
+  }
+  if (liveByOwner.size === 0) return byWt;
+
+  const sessionIdByWtAndSource = new Map<string, string>();
+  for (const repo of repos) {
+    for (const wt of repo.worktrees ?? []) {
+      for (const agent of wt.agents ?? []) {
+        if (!agent.sessionId) continue;
+        sessionIdByWtAndSource.set(`${wt.path}\0${agent.source}`, agent.sessionId);
+      }
+    }
+  }
+
+  let changed = false;
+  const next: Record<string, OpenSession[]> = { ...byWt };
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    let nextSessions: OpenSession[] | null = null;
+    sessions.forEach((s, index) => {
+      if (s.agent === "shell" || s.agent === "files" || s.agent === "history") return;
+      const sessionId =
+        s.resumeSessionId ??
+        s.preassignedSessionId ??
+        sessionIdByWtAndSource.get(`${wtPath}\0${s.source}`);
+      if (!sessionId) return;
+      const live = liveByOwner.get(sessionId);
+      if (!live || live.cwd !== wtPath) return;
+      if (s.attachTermId === live.id && s.mode === "terminal") return;
+      if (!nextSessions) nextSessions = sessions.slice();
+      nextSessions[index] = {
+        ...s,
+        mode: "terminal",
+        attachTermId: live.id,
+      };
+      changed = true;
+    });
+    if (nextSessions) next[wtPath] = nextSessions;
+  }
+  return changed ? next : byWt;
 }
 
 // ---------------------------------------------------------------------------

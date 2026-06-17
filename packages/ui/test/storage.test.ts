@@ -8,13 +8,16 @@ import {
   StarredSessionsStore,
   VisibleWorktreesStore,
   claudeModelAlias,
+  codexAppSource,
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  isLiveCodexAppSource,
   isForeignToWorktree,
   resolveTitleSource,
   setSessionMode,
   setSessionAttachTermId,
+  shouldPollSessionSource,
   stampDiscoveredSessionId,
   stampDiscoveredSessionIdWithDetail,
   type KVStore,
@@ -441,6 +444,43 @@ describe("filterToExistingSessions", () => {
     expect(
       filterToExistingSessions([mkSess("/a.jsonl")], new Set<string>()),
     ).toEqual([]);
+  });
+
+  test("keeps live Codex App sessions without waiting for a transcript scan", () => {
+    const persisted: PersistedSession[] = [
+      {
+        agent: "codex",
+        source: codexAppSource("019ed50f-696c-7a41-95b0-e824d2e5c372"),
+        resumeSessionId: "019ed50f-696c-7a41-95b0-e824d2e5c372",
+        transcriptSource: "/Users/me/.codex/sessions/rollout-new.jsonl",
+      },
+    ];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual(
+      persisted,
+    );
+  });
+
+  test("does not keep raw transcript paths merely because a resume id exists", () => {
+    const persisted: PersistedSession[] = [
+      {
+        agent: "codex",
+        source: "/Users/me/.codex/sessions/rollout-new.jsonl",
+        resumeSessionId: "019ed50f-696c-7a41-95b0-e824d2e5c372",
+      },
+    ];
+    expect(filterToExistingSessions(persisted, new Set<string>())).toEqual([]);
+  });
+
+  test("live Codex App sources are not session-file poll targets", () => {
+    const source = codexAppSource("thread-123");
+    expect(isLiveCodexAppSource(source)).toBe(true);
+    expect(shouldPollSessionSource({ agent: "codex", source })).toBe(false);
+    expect(
+      shouldPollSessionSource({
+        agent: "codex",
+        source: "/Users/me/.codex/sessions/thread-123.jsonl",
+      }),
+    ).toBe(true);
   });
 
   test("does NOT mutate the persisted array (callers persist the full thing)", () => {
@@ -1600,6 +1640,31 @@ describe("OpenSessionsStore + resumeSessionId round-trip", () => {
           agent: "claude",
           source: "__new__:claude:t_abc",
           resumeSessionId: "real-claude-sid-123",
+        },
+      ],
+    });
+  });
+
+  test("persists native app transcriptSource separately from live source", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/wt": [
+        {
+          agent: "codex",
+          source: codexAppSource("thread-123"),
+          resumeSessionId: "thread-123",
+          transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/wt": [
+        {
+          agent: "codex",
+          source: codexAppSource("thread-123"),
+          resumeSessionId: "thread-123",
+          transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
         },
       ],
     });

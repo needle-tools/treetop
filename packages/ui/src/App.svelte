@@ -5,6 +5,8 @@
     normalizeSessionForOpen,
     shellToSession,
     shellSourceToDismiss,
+    moveSessionStateKey,
+    reconcileLiveAgentTerminals,
   } from "./session-source-routing";
   import {
     createUnreadPulseManager,
@@ -87,7 +89,7 @@
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import { confirmDialog } from "./confirm-dialog";
+  import { choiceDialog, confirmDialog } from "./confirm-dialog";
   import SummarizeDialog from "./SummarizeDialog.svelte";
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
@@ -136,6 +138,7 @@
     OpenSessionsStore,
     VisibleWorktreesStore,
     SYNTHETIC_SOURCE_PREFIXES,
+    codexAppSource,
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
@@ -179,6 +182,10 @@
     duplicateRepoNotice,
   } from "./display-helpers";
   import { parseNDJSONLines } from "./ndjson-client";
+  import {
+    formatTerminalIoRate,
+    terminalIoStatsByKey,
+  } from "./terminal-write-buffer";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
@@ -497,6 +504,22 @@
         default: false,
       },
       {
+        key: "terminal.flashRepaints",
+        label: "Flash repainted cells",
+        description:
+          "When terminal I/O debug is visible, briefly flash cells whose rendered content changes.",
+        type: "boolean",
+        default: false,
+      },
+      {
+        key: "terminal.scaleRepaints",
+        label: "Scale repainted cells",
+        description:
+          "When terminal I/O debug is visible, briefly pop cells whose rendered content changes.",
+        type: "boolean",
+        default: false,
+      },
+      {
         key: "terminal.imagePasteBehavior",
         label: "Image paste",
         description:
@@ -555,6 +578,7 @@
     ],
   });
   const showGreeting = settingValue("appearance.showGreeting");
+  const showTerminalIoDebug = settingValue("terminal.showIoDebug");
 
   // Vines overlay (decorative; self-contained in ./vines). The "Show
   // vines" setting is the single source of truth — mount/unmount react to
@@ -921,38 +945,31 @@
           : x,
       ),
     };
-    {
-      const w = { ...transientWorking };
-      if (w[stampedSource] !== undefined) {
-        w[realSource] = w[stampedSource];
-        delete w[stampedSource];
-      }
-      transientWorking = w;
-    }
-    {
-      const a = { ...transientAwaiting };
-      if (a[stampedSource] !== undefined) {
-        a[realSource] = a[stampedSource];
-        delete a[stampedSource];
-      }
-      transientAwaiting = a;
-    }
-    if (transientExited[stampedSource] !== undefined) {
-      const e = { ...transientExited };
-      e[realSource] = e[stampedSource];
-      delete e[stampedSource];
-      transientExited = e;
-    }
-    if (transientFinishedAt[stampedSource] !== undefined) {
-      const f = { ...transientFinishedAt };
-      f[realSource] = f[stampedSource];
-      delete f[stampedSource];
-      transientFinishedAt = f;
-    }
-    if (workingStartedAt[stampedSource] !== undefined) {
-      workingStartedAt[realSource] = workingStartedAt[stampedSource];
-      workingStartedAt[stampedSource] = undefined;
-    }
+    transientWorking = moveSessionStateKey(
+      transientWorking,
+      stampedSource,
+      realSource,
+    );
+    transientAwaiting = moveSessionStateKey(
+      transientAwaiting,
+      stampedSource,
+      realSource,
+    );
+    transientExited = moveSessionStateKey(
+      transientExited,
+      stampedSource,
+      realSource,
+    );
+    transientFinishedAt = moveSessionStateKey(
+      transientFinishedAt,
+      stampedSource,
+      realSource,
+    );
+    workingStartedAt = moveSessionStateKey(
+      workingStartedAt,
+      stampedSource,
+      realSource,
+    );
     void migrateSessionTitleOnServer(stampedSource, realSource);
   }
 
@@ -1176,15 +1193,13 @@
     }
   }
 
-  // Dirty-state checkout dialog: the user clicked a branch, the daemon
-  // refused because the worktree is dirty; we surface a modal with
-  // explicit Stash / Force / Cancel choices.
-  let dirtyCheckout: null | {
+  type DirtyCheckoutContext = {
     repoId: string;
     wtPath: string;
     branch: string;
     message: string;
-  } = null;
+  };
+  type DirtyCheckoutAction = "stash" | "force" | "cancel";
 
   /** Surface a successful "stash & switch" as a toast. Uses the generic
    *  toast stack so dismiss + ttl behave consistently with errors. */
@@ -1251,26 +1266,51 @@
       return;
     }
     if (result.dirty) {
-      dirtyCheckout = {
+      const ctx: DirtyCheckoutContext = {
         repoId,
         wtPath,
         branch,
         message: result.error ?? "worktree has uncommitted changes",
       };
+      const action = await choiceDialog<DirtyCheckoutAction>({
+        title: "Worktree has uncommitted changes",
+        message: `Switching to ${branch} in ${wtPath} is blocked because the worktree is dirty. How would you like to handle your local changes?`,
+        detail: ctx.message,
+        choices: [
+          {
+            value: "stash",
+            label: "Stash & switch",
+            hint: "git stash push (recoverable with stash pop)",
+            recommended: true,
+          },
+          {
+            value: "force",
+            label: "Force & switch",
+            hint: "discards uncommitted changes - cannot be undone",
+            danger: true,
+          },
+          { value: "cancel", label: "Cancel" },
+        ],
+        cancelValue: "cancel",
+      });
+      await resolveDirty(ctx, action ?? "cancel");
       return;
     }
     error = result.error ?? "checkout failed";
   }
 
-  async function resolveDirty(action: "stash" | "force" | "cancel") {
-    if (!dirtyCheckout) return;
-    const ctx = dirtyCheckout;
-    dirtyCheckout = null;
+  async function resolveDirty(
+    ctx: DirtyCheckoutContext,
+    action: DirtyCheckoutAction,
+  ) {
     if (action === "cancel") return;
     if (action === "force") {
-      const confirmed = confirm(
-        `Force-checkout will discard your uncommitted changes in\n  ${ctx.wtPath}\n\nThis cannot be undone. Continue?`,
-      );
+      const confirmed = await confirmDialog({
+        title: "Discard uncommitted changes?",
+        message: `Force-checkout will discard your uncommitted changes in ${ctx.wtPath}. This cannot be undone.`,
+        confirmLabel: "Discard & switch",
+        danger: true,
+      });
       if (!confirmed) return;
     }
     const result = await doCheckout(ctx.repoId, ctx.wtPath, ctx.branch, {
@@ -1296,12 +1336,8 @@
   let pullBusy: Record<string, boolean> = {};
   let pushBusy: Record<string, boolean> = {};
 
-  /** Dirty-pull dialog: surfaced when `git pull --ff-only` failed
-   *  because the worktree has local changes that overlap the incoming
-   *  commits. Same shape as `dirtyCheckout` — explicit Stash & pull /
-   *  Cancel choices. */
-  let dirtyPull: null | { repoId: string; wtPath: string; message: string } =
-    null;
+  type DirtyPullContext = { repoId: string; wtPath: string; message: string };
+  type DirtyPullAction = "stash" | "cancel";
 
   async function doPull(
     repoId: string,
@@ -1405,11 +1441,28 @@
         return;
       }
       if (result.kind === "dirty") {
-        dirtyPull = {
+        const ctx: DirtyPullContext = {
           repoId,
           wtPath,
           message: result.error ?? "worktree has uncommitted changes",
         };
+        pullBusy = { ...pullBusy, [wtPath]: false };
+        const action = await choiceDialog<DirtyPullAction>({
+          title: "Pull would clobber uncommitted changes",
+          message: `Fast-forwarding ${wtPath} is blocked because your local edits overlap the incoming commits. How would you like to handle your local changes?`,
+          detail: ctx.message,
+          choices: [
+            {
+              value: "stash",
+              label: "Stash & pull",
+              hint: "git stash push (recoverable with stash pop)",
+              recommended: true,
+            },
+            { value: "cancel", label: "Cancel" },
+          ],
+          cancelValue: "cancel",
+        });
+        await resolveDirtyPull(ctx, action ?? "cancel");
         return;
       }
       if (result.kind === "diverged") {
@@ -1442,10 +1495,10 @@
     }
   }
 
-  async function resolveDirtyPull(action: "stash" | "cancel") {
-    if (!dirtyPull) return;
-    const ctx = dirtyPull;
-    dirtyPull = null;
+  async function resolveDirtyPull(
+    ctx: DirtyPullContext,
+    action: DirtyPullAction,
+  ) {
     if (action === "cancel") return;
     pullBusy = { ...pullBusy, [ctx.wtPath]: true };
     try {
@@ -1718,6 +1771,62 @@
     next.splice(insertAt, 0, entry);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
     scrollNewColIntoView(wtPath, synthetic);
+  }
+
+  /** Open a Codex app-server session as a normal chat/history column.
+   *  This is separate from the Codex CLI option above, which still
+   *  spawns the terminal TUI. The live column is keyed by the app-server
+   *  thread id; Codex's transcript path is kept only as transcript metadata. */
+  async function openNewCodexAppSession(wtPath: string): Promise<void> {
+    try {
+      const daemonId = daemonIdForWorktreePath(repos, wtPath);
+      const res = await fetch(apiUrl("/api/session/start", daemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: "codex", cwd: wtPath }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        sessionId?: string;
+        source?: string;
+        model?: string;
+      } | null;
+      if (!res.ok) {
+        addToast({
+          kind: "warning",
+          message:
+            body?.error ?? `Codex App failed to start (HTTP ${res.status})`,
+        });
+        return;
+      }
+      if (!body?.sessionId) {
+        addToast({
+          kind: "warning",
+          message: "Codex App started but did not return a thread id.",
+        });
+        return;
+      }
+      const liveSource = codexAppSource(body.sessionId);
+      const existing = openSessionsByWt[wtPath] ?? [];
+      const insertAt = visibleLeftInsertIndex(wtPath, existing);
+      const next = [...existing];
+      next.splice(insertAt, 0, {
+        agent: "codex",
+        source: liveSource,
+        resumeSessionId: body.sessionId,
+        transcriptSource: body.source,
+      });
+      openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+      scrollNewColIntoView(wtPath, liveSource);
+      void load();
+    } catch (e) {
+      addToast({
+        kind: "warning",
+        message: `Codex App failed to start: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      });
+    }
   }
 
   /** Source-path fallback for freshly-created Ollama chat sessions,
@@ -2521,18 +2630,31 @@
                   : x,
               ),
             };
-            if (transientWorking[s.source] !== undefined) {
-              transientWorking = {
-                ...transientWorking,
-                [match.source]: transientWorking[s.source],
-              };
-            }
-            if (transientAwaiting[s.source] !== undefined) {
-              transientAwaiting = {
-                ...transientAwaiting,
-                [match.source]: transientAwaiting[s.source],
-              };
-            }
+            transientWorking = moveSessionStateKey(
+              transientWorking,
+              s.source,
+              match.source,
+            );
+            transientAwaiting = moveSessionStateKey(
+              transientAwaiting,
+              s.source,
+              match.source,
+            );
+            transientExited = moveSessionStateKey(
+              transientExited,
+              s.source,
+              match.source,
+            );
+            transientFinishedAt = moveSessionStateKey(
+              transientFinishedAt,
+              s.source,
+              match.source,
+            );
+            workingStartedAt = moveSessionStateKey(
+              workingStartedAt,
+              s.source,
+              match.source,
+            );
             void migrateSessionTitleOnServer(s.source, match.source);
             promoted = true;
           }
@@ -2638,6 +2760,10 @@
      *  time (e.g. `qwen3-coder:30b`). Persisted so a reload re-spawns
      *  `ollama run <model>`, and surfaced in the agent pill. */
     ollamaModel?: string;
+    /** Optional. For live native app sessions, `source` is synthetic
+     *  and this is the provider transcript path for stopped/history
+     *  rendering and file-oriented actions. */
+    transcriptSource?: string;
     /** Absolute path to the context handoff file written by the daemon.
      *  Claude gets `--append-system-prompt-file <path>`, Codex gets it
      *  as a positional prompt reference. Ephemeral — not persisted. */
@@ -3564,10 +3690,11 @@
         },
       });
       const reposStream = fetchReposNDJSON(makeRepoHandlers());
-      const [e, s, t, dResp] = await Promise.all([
+      const [e, s, t, liveTermsResp, dResp] = await Promise.all([
         fetch(apiUrl("/api/events")),
         fetch(apiUrl("/api/shells")),
         fetch(apiUrl("/api/session-titles")),
+        fetch(apiUrl("/api/terminals")).catch(() => null),
         // Cheap local read of the remote-daemon registry; null if it
         // ever fails so fan-out is simply skipped (local path unaffected).
         fetch(apiUrl("/api/daemons")).catch(() => null),
@@ -3580,6 +3707,16 @@
       // in-place updates by id). Reassigning would reorder the dashboard
       // on every refresh.
       await reposStream;
+      if (liveTermsResp && liveTermsResp.ok) {
+        const liveTerms = await liveTermsResp.json().catch(() => []);
+        if (Array.isArray(liveTerms)) {
+          openSessionsByWt = reconcileLiveAgentTerminals(
+            openSessionsByWt,
+            repos,
+            liveTerms,
+          ) as typeof openSessionsByWt;
+        }
+      }
       // Fan out to any registered remote daemons. Each contributes its
       // repos (tagged with its daemonId) into the merged `repos` array,
       // appearing as folder rows beside the local ones. Best-effort: a
@@ -5825,12 +5962,13 @@
    *      reattaches to a still-alive PTY).
    *  Resumed SessionView columns in read-only chat mode are excluded
    *  — those have no PTY. */
+  type DockAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
   $: dockEntries = time("dockEntries", (): Array<{
     source: string;
     wtPath: string;
     rowKey: string;
     repoId: string;
-    agent: OpenSession["agent"];
+    agent: DockAgent;
     repoColor?: string;
     repoName: string;
     branch?: string;
@@ -5856,6 +5994,7 @@
      *  by the dock's 20-min auto-expiry or by App's on:pick
      *  handler when the user opens the session. */
     finishedAt?: number;
+    ioDebugLabel?: string;
   }> => {
     const out: ReturnType<typeof Array> = [] as any;
     for (const repo of repos) {
@@ -5896,6 +6035,8 @@
           // Agent and shell sessions appear regardless of mode
           // (terminal or read-only).
           if (
+            s.agent === "files" ||
+            s.agent === "history" ||
             s.source.startsWith("__files__:") ||
             s.source.startsWith("__remote__:") ||
             s.source.startsWith("__restore__:") ||
@@ -5914,6 +6055,10 @@
             : undefined;
           const meta = realMeta ?? bySource.get(s.source);
           const titleSource = resolveTitleSource(s, known);
+          const ioStats =
+            $showTerminalIoDebug === true
+              ? $terminalIoStatsByKey[s.source]
+              : undefined;
           out.push({
             source: s.source,
             wtPath: wt.path,
@@ -5951,6 +6096,9 @@
             // columns (SessionView in mode !== "terminal").
             exited: !isLiveTui,
             finishedAt: transientFinishedAt[s.source],
+            ioDebugLabel: ioStats
+              ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
+              : undefined,
           });
         }
       }
@@ -8175,7 +8323,7 @@
                                       ag.name as "claude" | "codex",
                                     );
                                   }}
-                                  title={`Spawn \`${ag.name}\` (no --resume) in ${wt.path}`}
+                                  title={`Spawn \`${ag.name}\` CLI (no --resume) in ${wt.path}`}
                                 >
                                   {#if ag.name === "claude"}
                                     <img
@@ -8196,13 +8344,37 @@
                                     {ag.name === "claude"
                                       ? "Claude"
                                       : ag.name === "codex"
-                                        ? "Codex"
+                                        ? "Codex CLI"
                                         : ag.name}
                                   </span>
                                   <span class="agent-title muted"
                                     >{ag.path}</span
                                   >
                                 </button>
+                                {#if ag.name === "codex"}
+                                  <button
+                                    class="agent-row new-agent-row"
+                                    on:click={() => {
+                                      newAgentPopoverOpen = {
+                                        ...newAgentPopoverOpen,
+                                        [wt.path]: false,
+                                      };
+                                      unfoldRowIfFolded(row.key);
+                                      void openNewCodexAppSession(wt.path);
+                                    }}
+                                    title={`Start Codex app-server chat in ${wt.path}`}
+                                  >
+                                    <img
+                                      class="agent-row-icon"
+                                      src="/agents/codex.svg"
+                                      alt=""
+                                    />
+                                    <span class="agent-row-name">Codex App</span>
+                                    <span class="agent-title muted">
+                                      app-server
+                                    </span>
+                                  </button>
+                                {/if}
                               {/if}
                             </li>
                           {/each}
@@ -9689,6 +9861,31 @@
                                       // key so it survives the swap (otherwise the
                                       // synthetic-source title gets orphaned and the
                                       // header reverts to "Name this session…").
+                                      transientWorking = moveSessionStateKey(
+                                        transientWorking,
+                                        s.source,
+                                        attachedSource,
+                                      );
+                                      transientAwaiting = moveSessionStateKey(
+                                        transientAwaiting,
+                                        s.source,
+                                        attachedSource,
+                                      );
+                                      transientExited = moveSessionStateKey(
+                                        transientExited,
+                                        s.source,
+                                        attachedSource,
+                                      );
+                                      transientFinishedAt = moveSessionStateKey(
+                                        transientFinishedAt,
+                                        s.source,
+                                        attachedSource,
+                                      );
+                                      workingStartedAt = moveSessionStateKey(
+                                        workingStartedAt,
+                                        s.source,
+                                        attachedSource,
+                                      );
                                       void migrateSessionTitleOnServer(
                                         s.source,
                                         attachedSource,
@@ -9780,9 +9977,15 @@
                                 />
                               {/key}
                             {:else}
-                              {@const agentMeta = (wt.agents ?? []).find(
-                                (a) => a.source === s.source,
-                              )}
+                              {@const agentMeta = s.resumeSessionId
+                                ? (wt.agents ?? []).find(
+                                    (a) =>
+                                      a.agent === s.agent &&
+                                      a.sessionId === s.resumeSessionId,
+                                  )
+                                : (wt.agents ?? []).find(
+                                    (a) => a.source === s.source,
+                                  )}
                               {#key claudeColGen[s.source] ?? 0}
                                 <SessionView
                                   agent={s.agent as
@@ -9790,6 +9993,8 @@
                                     | "codex"
                                     | "copilot"}
                                   source={s.source}
+                                  resumeSessionId={s.resumeSessionId}
+                                  transcriptSource={s.transcriptSource}
                                   wtPath={wt.path}
                                   daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                   totalMessageCount={agentMeta?.messageCount}
@@ -9873,7 +10078,7 @@
                                   onContinueWith={(targetAgent, ollamaModel) =>
                                     void continueSessionWith(
                                       wt.path,
-                                      s.source,
+                                      s.transcriptSource ?? s.source,
                                       targetAgent,
                                       ollamaModel,
                                     )}
@@ -10267,109 +10472,6 @@
   {repos}
   onAdd={addRemoteFolder}
 />
-
-{#if dirtyCheckout}
-  <div
-    class="modal-scrim"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="dirty-title"
-    tabindex="-1"
-    on:click={(e) => {
-      // Scrim click (NOT clicks on the modal itself) cancels — same as
-      // hitting Esc in a real dialog. Modal contents stop the event.
-      if (e.target === e.currentTarget) resolveDirty("cancel");
-    }}
-    on:keydown={(e) => {
-      if (e.key === "Escape") resolveDirty("cancel");
-    }}
-  >
-    <div class="modal" on:click|stopPropagation>
-      <h3 id="dirty-title">Worktree has uncommitted changes</h3>
-      <p class="modal-body">
-        Switching to <code>{dirtyCheckout.branch}</code> in
-        <code class="muted small">{dirtyCheckout.wtPath}</code>
-        is blocked because the worktree is dirty. How would you like to handle your
-        local changes?
-      </p>
-      <p class="modal-meta muted small">
-        {dirtyCheckout.message}
-      </p>
-      <div class="modal-actions">
-        <button
-          class="modal-action modal-action-recommended"
-          on:click={() => resolveDirty("stash")}
-        >
-          Stash &amp; switch
-          <span class="modal-hint"
-            >git stash push (recoverable with stash pop)</span
-          >
-        </button>
-        <button
-          class="modal-action modal-action-danger"
-          on:click={() => resolveDirty("force")}
-        >
-          Force &amp; switch
-          <span class="modal-hint"
-            >discards uncommitted changes — cannot be undone</span
-          >
-        </button>
-        <button
-          class="modal-action modal-action-neutral"
-          on:click={() => resolveDirty("cancel")}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-{#if dirtyPull}
-  <div
-    class="modal-scrim"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="dirty-pull-title"
-    tabindex="-1"
-    on:click={(e) => {
-      if (e.target === e.currentTarget) resolveDirtyPull("cancel");
-    }}
-    on:keydown={(e) => {
-      if (e.key === "Escape") resolveDirtyPull("cancel");
-    }}
-  >
-    <div class="modal" on:click|stopPropagation>
-      <h3 id="dirty-pull-title">Pull would clobber uncommitted changes</h3>
-      <p class="modal-body">
-        Fast-forwarding
-        <code class="muted small">{dirtyPull.wtPath}</code>
-        is blocked because your local edits overlap the incoming commits. How would
-        you like to handle your local changes?
-      </p>
-      <p class="modal-meta muted small">
-        {dirtyPull.message}
-      </p>
-      <div class="modal-actions">
-        <button
-          class="modal-action modal-action-recommended"
-          on:click={() => resolveDirtyPull("stash")}
-        >
-          Stash &amp; pull
-          <span class="modal-hint"
-            >git stash push (recoverable with stash pop)</span
-          >
-        </button>
-        <button
-          class="modal-action modal-action-neutral"
-          on:click={() => resolveDirtyPull("cancel")}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 {#if toasts.length > 0}
   <div class="toast-stack" role="region" aria-label="Notifications">

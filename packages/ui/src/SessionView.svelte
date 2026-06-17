@@ -11,12 +11,18 @@
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
-  import { claudeModelAlias } from "./storage";
+  import {
+    claudeModelAlias,
+    isLiveCodexAppSource,
+    shouldPollSessionSource,
+  } from "./storage";
   import {
     claudeSessionMenuItems,
     claudeAgentSettings,
     effortIcon,
+    type AgentSettingGroup,
   } from "./claude-session-menu";
+  import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import { shouldAutoSummarizeTui } from "./tui-auto-summary";
   import { openRepair } from "./repair-session-dialog";
@@ -90,6 +96,12 @@
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
   export let source: string;
+  /** Provider session/thread id for live native app sessions whose
+   *  supergit source is synthetic rather than an on-disk transcript path. */
+  export let resumeSessionId: string | undefined = undefined;
+  /** Provider transcript path for stopped/history views and file-oriented
+   *  menu actions. Live Codex App rendering does not poll this path. */
+  export let transcriptSource: string | undefined = undefined;
   /** Owning daemon for this session's worktree. Undefined ⇒ local daemon
    *  (byte-identical behaviour). Set for remote daemon folder rows. */
   export let daemonId: string | undefined = undefined;
@@ -229,8 +241,42 @@
     messages: NormalizedMessage[];
     manualTitle?: string;
   }
+  interface CodexAppEvent {
+    kind: "notification" | "request";
+    id?: string | number;
+    method: string;
+    params: Record<string, unknown>;
+    threadId?: string;
+    turnId?: string;
+    receivedAt: string;
+    seq?: number;
+  }
+  interface CodexModelInfo {
+    id: string;
+    model?: string;
+    displayName?: string;
+    description?: string;
+    isDefault?: boolean;
+    supportedReasoningEfforts?: string[];
+    defaultReasoningEffort?: string;
+  }
+  interface CodexUserInputOption {
+    label: string;
+    description: string | undefined;
+  }
+  interface CodexUserInputQuestion {
+    id: string;
+    header: string | undefined;
+    question: string;
+    isOther: boolean;
+    isSecret: boolean;
+    options: CodexUserInputOption[] | null;
+  }
 
   let session: NormalizedSession | null = null;
+  let liveCodexApp = false;
+  let sessionFileSource = "";
+  let shouldPollTranscript = true;
   let loading = false;
   let error = "";
   /** Outer column wrapper — used by the Save-as-link action so the
@@ -393,7 +439,7 @@
    *  state and the snippet's live-update mode. */
   let summaryRefreshing = false;
   async function refreshSummary(): Promise<void> {
-    if (!source) {
+    if (!sessionFileSource) {
       summarySnippet = "";
       summaryModel = "";
       summaryTitle = "";
@@ -401,13 +447,13 @@
       summarySource = "";
       return;
     }
-    const targetSource = source;
+    const targetSource = sessionFileSource;
     try {
       const qs = new URLSearchParams({ source: targetSource });
       const res = await fetch(apiUrl(`/api/sessions/summarize?${qs.toString()}`));
       if (!res.ok) {
         // Race: `source` could have changed while in flight.
-        if (targetSource === source) {
+        if (targetSource === sessionFileSource) {
           summarySnippet = "";
           summaryModel = "";
           summaryTitle = "";
@@ -425,14 +471,14 @@
           };
         } | null;
       };
-      if (targetSource !== source) return;
+      if (targetSource !== sessionFileSource) return;
       summarySnippet = body.summary?.body?.trim() ?? "";
       summaryModel = body.summary?.frontmatter?.model ?? "";
       summaryTitle = body.summary?.frontmatter?.title ?? "";
       summaryTotalMessages = body.summary?.frontmatter?.totalMessages ?? 0;
       summarySource = targetSource;
     } catch {
-      if (targetSource === source) {
+      if (targetSource === sessionFileSource) {
         summarySnippet = "";
         summaryModel = "";
         summaryTitle = "";
@@ -475,7 +521,7 @@
    *  notice with a click path into the dialog's install flow. */
   async function summarizeFromChip(): Promise<void> {
     if (summaryRefreshing) return;
-    if (!source) {
+    if (!sessionFileSource) {
       showSummarizeNotice("No session source available.");
       return;
     }
@@ -554,12 +600,12 @@
    *  during the stream the chip spins, the old snippet stays. */
   async function runSummaryStream(targetModel: string): Promise<void> {
     if (summaryRefreshing) return;
-    if (!source || !targetModel) {
+    if (!sessionFileSource || !targetModel) {
       showSummarizeNotice("No session source to summarise.");
       return;
     }
     summaryRefreshing = true;
-    const targetSource = source;
+    const targetSource = sessionFileSource;
     let collected = "";
     try {
       const res = await fetch(apiUrl("/api/sessions/summarize"), {
@@ -635,9 +681,9 @@
       summaryRefreshing = false;
     }
   }
-  // Re-fetch on mount + whenever `source` changes.
+  // Re-fetch on mount + whenever the transcript source changes.
   $: {
-    void source;
+    void sessionFileSource;
     void refreshSummary();
   }
   // Re-fetch whenever the global summarize dialog *closes* against
@@ -646,7 +692,7 @@
   let prevDialogSource: string | null = null;
   $: {
     const cur = $activeSummarize;
-    if (!cur && prevDialogSource === source) {
+    if (!cur && prevDialogSource === sessionFileSource) {
       void refreshSummary();
     }
     prevDialogSource = cur?.source ?? null;
@@ -899,11 +945,11 @@
 
   /** Open the on-disk directory that holds this session's transcript
    *  (`~/.claude/projects/<encoded>/…` or codex's session store) in the
-   *  OS file manager (Explorer / Finder / xdg). `source` is the absolute
-   *  path to the session file itself, so open its parent directory. This
-   *  is the actual session-log folder — NOT the repo/cwd the TUI runs in. */
+   *  OS file manager (Explorer / Finder / xdg). `sessionFileSource` is the
+   *  absolute path to the session file itself, so open its parent directory.
+   *  This is the actual session-log folder — NOT the repo/cwd the TUI runs in. */
   async function openSessionDirectory(): Promise<void> {
-    const dir = source ? splitParent(source).dir : "";
+    const dir = sessionFileSource ? splitParent(sessionFileSource).dir : "";
     if (!dir) return;
     try {
       const res = await fetch(apiUrl("/api/open"), {
@@ -960,9 +1006,9 @@
         icon: "⧉",
         disabled: !sid,
         title: sid
-          ? "Copy session id and file path to clipboard"
+          ? "Copy session id and transcript path to clipboard"
           : "No session id yet",
-        getText: () => `${sid}\n${source}`,
+        getText: () => `${sid}\n${sessionFileSource}`,
       },
       {
         kind: "action",
@@ -972,8 +1018,8 @@
           // the file manager".
           "M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
         ],
-        disabled: !source,
-        title: source
+        disabled: !sessionFileSource,
+        title: sessionFileSource
           ? "Open the folder containing this session's on-disk log file"
           : "No session file for this session yet",
         onSelect: () => void openSessionDirectory(),
@@ -982,12 +1028,12 @@
         kind: "action",
         label: "Summarize with Ollama",
         icon: "✦",
-        disabled: !(session && session.messages.length > 0),
+        disabled: !(session && session.messages.length > 0 && sessionFileSource),
         title:
           session && session.messages.length > 0
             ? "Summarize this session with a local Ollama model"
             : "Session is empty — nothing to summarize",
-        onSelect: () => openSummarize(source),
+        onSelect: () => openSummarize(sessionFileSource),
       },
       {
         kind: "action",
@@ -996,8 +1042,9 @@
           "M20 16V7a2 2 0 0 0-2-2H6",
           "M14 2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z",
         ],
+        disabled: !sessionFileSource,
         title: "Copy this session to another workspace for resuming there",
-        onSelect: () => openCopy(source),
+        onSelect: () => openCopy(sessionFileSource),
       },
       {
         kind: "action",
@@ -1005,8 +1052,9 @@
         // Lucide "send"-ish: paper-plane silhouette. Reads as "ship
         // this somewhere" without confusing with "open in external".
         iconSvg: ["M22 2 11 13", "m22 2-7 20-4-9-9-4 20-7z"],
+        disabled: !sessionFileSource,
         title: "Send this session to another supergit on the LAN",
-        onSelect: () => openShare(source),
+        onSelect: () => openShare(sessionFileSource),
       },
       {
         kind: "action",
@@ -1030,12 +1078,12 @@
         iconSvg: [
           "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
         ],
-        disabled: agent !== "claude",
+        disabled: agent !== "claude" || !sessionFileSource,
         title:
           agent === "claude"
             ? "Diagnose and repair broken parent chains in the JSONL file"
             : "Repair is only supported for Claude sessions",
-        onSelect: () => void openRepair(source),
+        onSelect: () => void openRepair(sessionFileSource),
       },
     ];
     if (onContinueWith && session && session.messages.length > 0) {
@@ -1085,7 +1133,12 @@
           onPickModel: (m) => onSetClaudeModel(m),
           onPickEffort: (e) => onSetClaudeEffort(e),
         })
+      : agent === "codex"
+        ? codexTurnSettings()
       : [];
+
+  $: codexAgentLabel =
+    agent === "codex" ? codexModel || model || "Codex App" : undefined;
 
   /** Pin this session as a sticky-link chip on the current
    *  worktree's row. Thin wrapper over the shared
@@ -1172,6 +1225,7 @@
   }
 
   async function load() {
+    if (!shouldPollTranscript) return;
     if (loading) return;
     if (ollamaStreamingIdx !== null) return;
     loading = true;
@@ -1243,6 +1297,211 @@
    *  response is arriving. Lets each SSE chunk append to the right
    *  bubble. Cleared on `done` or abort. */
   let ollamaStreamingIdx: number | null = null;
+  let codexEvents: EventSource | null = null;
+  let codexEventsThreadId: string | null = null;
+  let codexActiveTurnId: string | null = null;
+  let codexRequests: CodexAppEvent[] = [];
+  let codexRequestDrafts: Record<string, Record<string, string>> = {};
+  let codexModels: CodexModelInfo[] = [];
+  let codexModelsKey = "";
+  let codexModelsLoading = false;
+  let codexModelsError = "";
+  const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
+  const codexSavedSettings = readCodexSettings();
+  let codexModel = codexSavedSettings.model ?? "";
+  let codexSandbox = codexSavedSettings.sandbox ?? "workspaceWrite";
+  let codexApproval = codexSavedSettings.approval ?? "on-request";
+  let codexEffort = codexSavedSettings.effort ?? "";
+  let codexSummary = codexSavedSettings.summary ?? "auto";
+  const codexSeenEvents = new Set<string>();
+
+  $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
+  $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
+  $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
+
+  $: if (
+    liveCodexApp &&
+    resumeSessionId &&
+    (!session || session.sessionId !== resumeSessionId)
+  ) {
+    session = {
+      agent,
+      cwd: wtPath,
+      sessionId: resumeSessionId,
+      startedAt: new Date().toISOString(),
+      messages: [],
+    };
+  }
+
+  function readCodexSettings(): {
+    model?: string;
+    sandbox?: string;
+    approval?: string;
+    effort?: string;
+    summary?: string;
+  } {
+    try {
+      const raw = getDaemonKV().getItem(CODEX_SETTINGS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        model: typeof parsed.model === "string" ? parsed.model : undefined,
+        sandbox:
+          typeof parsed.sandbox === "string" ? parsed.sandbox : undefined,
+        approval:
+          typeof parsed.approval === "string" ? parsed.approval : undefined,
+        effort: typeof parsed.effort === "string" ? parsed.effort : undefined,
+        summary:
+          typeof parsed.summary === "string" ? parsed.summary : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  function persistCodexSettings(): void {
+    getDaemonKV().setItem(
+      CODEX_SETTINGS_KEY,
+      JSON.stringify({
+        model: codexModel,
+        sandbox: codexSandbox,
+        approval: codexApproval,
+        effort: codexEffort,
+        summary: codexSummary,
+      }),
+    );
+  }
+
+  function pickCodexModel(value: string): void {
+    codexModel = value;
+    persistCodexSettings();
+  }
+  function pickCodexSandbox(value: string): void {
+    codexSandbox = value;
+    persistCodexSettings();
+  }
+  function pickCodexApproval(value: string): void {
+    codexApproval = value;
+    persistCodexSettings();
+  }
+  function pickCodexEffort(value: string): void {
+    codexEffort = value;
+    persistCodexSettings();
+  }
+  function pickCodexSummary(value: string): void {
+    codexSummary = value;
+    persistCodexSettings();
+  }
+
+  function uniqueCodexModels(): CodexModelInfo[] {
+    const byValue = new Map<string, CodexModelInfo>();
+    for (const m of codexModels) byValue.set(m.id || m.model || "", m);
+    if (model && !byValue.has(model)) {
+      byValue.set(model, { id: model, displayName: model });
+    }
+    if (codexModel && !byValue.has(codexModel)) {
+      byValue.set(codexModel, { id: codexModel, displayName: codexModel });
+    }
+    return [...byValue.values()].filter((m) => !!(m.id || m.model));
+  }
+
+  function codexModelValue(m: CodexModelInfo): string {
+    return m.id || m.model || "";
+  }
+
+  function codexTurnSettings(): AgentSettingGroup[] {
+    const modelOptions = uniqueCodexModels()
+      .sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault))
+      .map((m) => {
+        const value = codexModelValue(m);
+        return {
+          value,
+          label: m.displayName || m.model || m.id,
+          selected:
+            codexModel === value ||
+            (!codexModel && (m.isDefault || value === model)),
+        };
+      });
+    return [
+      {
+        key: "codex-model",
+        label: codexModelsLoading
+          ? "Model"
+          : codexModelsError
+            ? "Model unavailable"
+            : "Model",
+        onPick: pickCodexModel,
+        options: [
+          { value: "", label: "Default", selected: !codexModel },
+          ...modelOptions,
+        ],
+      },
+      {
+        key: "codex-effort",
+        label: "Effort",
+        onPick: pickCodexEffort,
+        options: ["", "minimal", "low", "medium", "high"].map((value) => ({
+          value,
+          label: value || "Default",
+          selected: codexEffort === value,
+        })),
+      },
+      {
+        key: "codex-summary",
+        label: "Reasoning",
+        onPick: pickCodexSummary,
+        options: ["auto", "concise", "detailed", "none"].map((value) => ({
+          value,
+          label: value,
+          selected: codexSummary === value,
+        })),
+      },
+      {
+        key: "codex-sandbox",
+        label: "Sandbox",
+        onPick: pickCodexSandbox,
+        options: [
+          { value: "readOnly", label: "Read-only" },
+          { value: "workspaceWrite", label: "Workspace" },
+          { value: "dangerFullAccess", label: "Full access" },
+        ].map((opt) => ({ ...opt, selected: codexSandbox === opt.value })),
+      },
+      {
+        key: "codex-approval",
+        label: "Approvals",
+        onPick: pickCodexApproval,
+        options: [
+          { value: "untrusted", label: "Strict" },
+          { value: "on-request", label: "Ask" },
+          { value: "on-failure", label: "On failure" },
+          { value: "never", label: "Never" },
+        ].map((opt) => ({ ...opt, selected: codexApproval === opt.value })),
+      },
+    ];
+  }
+
+  async function loadCodexModels(cwd: string): Promise<void> {
+    if (!cwd || codexModelsLoading || codexModelsKey === cwd) return;
+    codexModelsLoading = true;
+    codexModelsError = "";
+    try {
+      const qs = new URLSearchParams({ cwd });
+      const res = await fetch(
+        apiUrl(`/api/codex-app/models?${qs.toString()}`, daemonId),
+      );
+      const body = (await res.json().catch(() => null)) as {
+        models?: CodexModelInfo[];
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      codexModels = Array.isArray(body?.models) ? body.models : [];
+      codexModelsKey = cwd;
+    } catch (e) {
+      codexModelsError = e instanceof Error ? e.message : String(e);
+    } finally {
+      codexModelsLoading = false;
+    }
+  }
 
   async function sendOllamaMessage(): Promise<void> {
     const text = inputText.trim();
@@ -1362,9 +1621,458 @@
     ollamaAbort?.abort();
   }
 
+  function codexEventKey(event: CodexAppEvent): string {
+    const id = event.id ?? "";
+    const delta =
+      typeof event.params?.delta === "string" ? event.params.delta : "";
+    return `${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
+  }
+
+  function openCodexEventStream(threadId: string): void {
+    if (codexEvents && codexEventsThreadId === threadId) return;
+    closeCodexEventStream();
+    codexEventsThreadId = threadId;
+    const qs = new URLSearchParams({ threadId });
+    const es = new EventSource(
+      apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId),
+    );
+    es.addEventListener("codex", (msg) => {
+      try {
+        applyCodexEvent(JSON.parse((msg as MessageEvent).data) as CodexAppEvent);
+      } catch {
+        // Ignore malformed frames; the daemon stream stays alive.
+      }
+    });
+    es.onerror = () => {
+      if (sending && agent === "codex") {
+        sendError = "Codex event stream disconnected; reconnecting…";
+      }
+    };
+    codexEvents = es;
+  }
+
+  function closeCodexEventStream(): void {
+    codexEvents?.close();
+    codexEvents = null;
+    codexEventsThreadId = null;
+  }
+
+  function applyCodexEvent(event: CodexAppEvent): void {
+    const key = codexEventKey(event);
+    if (codexSeenEvents.has(key)) return;
+    codexSeenEvents.add(key);
+    if (codexSeenEvents.size > 1000) {
+      const first = codexSeenEvents.values().next().value;
+      if (first) codexSeenEvents.delete(first);
+    }
+
+    if (event.kind === "request") {
+      codexRequests = [
+        ...codexRequests.filter((r) => r.id !== event.id),
+        event,
+      ];
+      awaitingInput = true;
+      return;
+    }
+
+    if (event.method === "turn/started") {
+      codexActiveTurnId = event.turnId ?? codexActiveTurnId;
+      sending = true;
+      sendError = "";
+      return;
+    }
+    if (event.method === "turn/completed") {
+      codexActiveTurnId = null;
+      sending = false;
+      awaitingInput = codexRequests.length > 0;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+      void load();
+      return;
+    }
+    if (event.method === "serverRequest/resolved") {
+      const id = (event.params?.requestId ?? event.params?.id) as
+        | string
+        | number
+        | undefined;
+      if (id !== undefined) {
+        codexRequests = codexRequests.filter((r) => r.id !== id);
+      }
+      awaitingInput = codexRequests.length > 0;
+      return;
+    }
+    if (event.method === "item/agentMessage/delta") {
+      appendCodexBlock(
+        `codex-agent-${event.params.itemId ?? event.turnId ?? "message"}`,
+        "assistant",
+        "text",
+        String(event.params.delta ?? ""),
+      );
+      return;
+    }
+    if (
+      event.method === "item/plan/delta" ||
+      event.method === "item/reasoning/summaryTextDelta" ||
+      event.method === "item/reasoning/textDelta"
+    ) {
+      appendCodexBlock(
+        `codex-plan-${event.params.itemId ?? event.turnId ?? "plan"}`,
+        "assistant",
+        "thinking",
+        String(event.params.delta ?? ""),
+      );
+      return;
+    }
+    if (
+      event.method === "command/exec/outputDelta" ||
+      event.method === "process/outputDelta" ||
+      event.method === "item/commandExecution/outputDelta" ||
+      event.method === "item/fileChange/outputDelta"
+    ) {
+      appendCodexBlock(
+        `codex-output-${event.params.itemId ?? event.turnId ?? "output"}`,
+        "tool",
+        "tool_result",
+        String(event.params.delta ?? ""),
+      );
+      return;
+    }
+    if (event.method === "item/fileChange/patchUpdated") {
+      upsertCodexToolUse(
+        `codex-file-${event.params.itemId ?? event.turnId ?? "file"}`,
+        "file change",
+        event.params.changes ?? event.params,
+      );
+      return;
+    }
+    if (event.method === "turn/plan/updated") {
+      upsertCodexToolUse(
+        `codex-turn-plan-${event.turnId ?? "plan"}`,
+        "plan",
+        event.params,
+      );
+      return;
+    }
+    if (event.method === "error" || event.method === "warning") {
+      const message =
+        typeof event.params.message === "string"
+          ? event.params.message
+          : JSON.stringify(event.params);
+      sendError = message;
+    }
+  }
+
+  function appendCodexBlock(
+    id: string,
+    role: NormalizedMessage["role"],
+    type: NormalizedBlock["type"],
+    delta: string,
+  ): void {
+    if (!delta || !session) return;
+    const messages = [...session.messages];
+    let msg = messages.find((m) => m.id === id);
+    if (!msg) {
+      msg = {
+        id,
+        role,
+        timestamp: new Date().toISOString(),
+        blocks: [{ type, text: "" }],
+      };
+      messages.push(msg);
+    }
+    let block = msg.blocks[0];
+    if (!block || block.type !== type) {
+      block = { type, text: "" };
+      msg.blocks = [block];
+    }
+    block.text = (block.text ?? "") + delta;
+    session = { ...session, messages };
+  }
+
+  function upsertCodexToolUse(
+    id: string,
+    toolName: string,
+    toolInput: unknown,
+  ): void {
+    if (!session) return;
+    const messages = [...session.messages];
+    const existing = messages.find((m) => m.id === id);
+    const block: NormalizedBlock = { type: "tool_use", toolName, toolInput };
+    if (existing) existing.blocks = [block];
+    else {
+      messages.push({
+        id,
+        role: "assistant",
+        timestamp: new Date().toISOString(),
+        blocks: [block],
+      });
+    }
+    session = { ...session, messages };
+  }
+
+  function optimisticCodexUser(text: string): void {
+    if (!session) return;
+    session = {
+      ...session,
+      messages: [
+        ...session.messages,
+        {
+          role: "user",
+          timestamp: new Date().toISOString(),
+          blocks: [{ type: "text", text }],
+        },
+      ],
+    };
+  }
+
+  function codexInputFromText(text: string): Record<string, unknown>[] {
+    const input: Record<string, unknown>[] = [
+      { type: "text", text, text_elements: [] },
+    ];
+    const imageRe =
+      /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|bmp))\s*\]/gi;
+    let match: RegExpExecArray | null;
+    while ((match = imageRe.exec(text)) !== null) {
+      input.push({ type: "localImage", path: match[1]!.trim() });
+    }
+    return input;
+  }
+
+  async function sendCodexMessage(): Promise<void> {
+    const text = inputText.trim();
+    if (!text || !session?.sessionId || !session.cwd) return;
+    sending = true;
+    sendError = "";
+    optimisticCodexUser(text);
+    inputText = "";
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      if (sending && agent === "codex") {
+        sendError = "Codex is still running; use Stop if you need to interrupt.";
+      }
+    }, 90_000);
+    try {
+      const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: session.sessionId,
+          cwd: session.cwd,
+          text,
+          input: codexInputFromText(text),
+          steer: !!codexActiveTurnId,
+          model: codexModel || undefined,
+          effort: codexEffort || undefined,
+          summary: codexSummary || undefined,
+          sandboxPolicy: codexSandbox,
+          approvalPolicy: codexApproval,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (typeof body?.turnId === "string") codexActiveTurnId = body.turnId;
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+      sending = false;
+      codexActiveTurnId = null;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+    }
+  }
+
+  async function stopCodexTurn(): Promise<void> {
+    if (!session?.sessionId) return;
+    try {
+      await fetch(apiUrl("/api/codex-app/turns/interrupt", daemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: session.sessionId,
+          turnId: codexActiveTurnId,
+        }),
+      });
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function codexRequestTitle(req: CodexAppEvent): string {
+    if (req.method.includes("commandExecution")) return "Command approval";
+    if (req.method.includes("fileChange")) return "File-change approval";
+    if (req.method.includes("permissions")) return "Permission request";
+    if (req.method.includes("requestUserInput")) return "Input requested";
+    return "Codex request";
+  }
+
+  function codexRequestPreview(req: CodexAppEvent): string {
+    const p = req.params ?? {};
+    const direct =
+      p.command ??
+      p.reason ??
+      p.cwd ??
+      p.grantRoot ??
+      p.itemId ??
+      p.permission ??
+      undefined;
+    if (Array.isArray(p.commandActions) && p.commandActions.length) {
+      return inputPreview(p.commandActions);
+    }
+    if (typeof direct === "string") return direct;
+    if (Array.isArray(direct)) return direct.join(" ");
+    try {
+      return JSON.stringify(p);
+    } catch {
+      return req.method;
+    }
+  }
+
+  function codexRequestKey(req: CodexAppEvent): string {
+    return String(req.id ?? `${req.method}:${req.receivedAt}`);
+  }
+
+  function codexRequestQuestions(req: CodexAppEvent): CodexUserInputQuestion[] {
+    const questions = req.params.questions;
+    if (!Array.isArray(questions)) return [];
+    return questions
+      .map((q) => (q && typeof q === "object" ? q : null))
+      .filter((q): q is Record<string, unknown> => !!q)
+      .map((q, idx) => {
+        const options: CodexUserInputOption[] | null = Array.isArray(q.options)
+          ? q.options.flatMap((opt) => {
+              if (!opt || typeof opt !== "object") return [];
+              const obj = opt as Record<string, unknown>;
+              const label = typeof obj.label === "string" ? obj.label : "";
+              if (!label) return [];
+              return [
+                {
+                  label,
+                  description:
+                    typeof obj.description === "string"
+                      ? obj.description
+                      : undefined,
+                },
+              ];
+            })
+          : null;
+        return {
+          id: typeof q.id === "string" && q.id ? q.id : `q${idx}`,
+          header: typeof q.header === "string" ? q.header : undefined,
+          question: typeof q.question === "string" ? q.question : "",
+          isOther: q.isOther === true,
+          isSecret: q.isSecret === true,
+          options,
+        };
+      });
+  }
+
+  function codexQuestionDraft(
+    req: CodexAppEvent,
+    q: CodexUserInputQuestion,
+  ): string {
+    return codexRequestDrafts[codexRequestKey(req)]?.[q.id] ?? "";
+  }
+
+  function setCodexQuestionDraft(
+    req: CodexAppEvent,
+    q: CodexUserInputQuestion,
+    value: string,
+  ): void {
+    const key = codexRequestKey(req);
+    codexRequestDrafts = {
+      ...codexRequestDrafts,
+      [key]: { ...(codexRequestDrafts[key] ?? {}), [q.id]: value },
+    };
+  }
+
+  function codexApprovalDecision(
+    req: CodexAppEvent,
+    action: "accept" | "acceptForSession" | "decline" | "cancel",
+  ): string {
+    if (req.method === "execCommandApproval" || req.method === "applyPatchApproval") {
+      if (action === "accept") return "approved";
+      if (action === "acceptForSession") return "approved_for_session";
+      if (action === "decline") return "denied";
+      return "abort";
+    }
+    return action;
+  }
+
+  function codexCanAcceptForSession(req: CodexAppEvent): boolean {
+    return (
+      req.method.includes("commandExecution") ||
+      req.method.includes("fileChange") ||
+      req.method === "execCommandApproval" ||
+      req.method === "applyPatchApproval"
+    );
+  }
+
+  function codexIsUserInputRequest(req: CodexAppEvent): boolean {
+    return req.method.includes("requestUserInput");
+  }
+
+  async function answerCodexRequest(
+    req: CodexAppEvent,
+    action: "accept" | "acceptForSession" | "decline" | "cancel",
+  ): Promise<void> {
+    if (req.id === undefined) return;
+    let result: Record<string, unknown>;
+    if (req.method === "execCommandApproval" || req.method === "applyPatchApproval") {
+      result = { decision: codexApprovalDecision(req, action) };
+    } else if (req.method.includes("permissions")) {
+      result =
+        action === "accept"
+          ? {
+              permissions: req.params.permissions ?? {},
+              scope: "turn",
+            }
+          : { permissions: {}, scope: "turn" };
+    } else if (codexIsUserInputRequest(req)) {
+      const answers: Record<string, { answers: string[] }> = {};
+      for (const q of codexRequestQuestions(req)) {
+        const value = codexQuestionDraft(req, q).trim();
+        if (value) answers[q.id] = { answers: [value] };
+      }
+      result = { answers };
+    } else {
+      result = { decision: codexApprovalDecision(req, action) };
+    }
+    try {
+      const res = await fetch(
+        apiUrl(
+          `/api/codex-app/requests/${encodeURIComponent(String(req.id))}/respond`,
+          daemonId,
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ result }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      codexRequests = codexRequests.filter((r) => r.id !== req.id);
+      const key = codexRequestKey(req);
+      const { [key]: _removed, ...rest } = codexRequestDrafts;
+      codexRequestDrafts = rest;
+      awaitingInput = codexRequests.length > 0;
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function sendMessage() {
     if (agent === "ollama") {
       await sendOllamaMessage();
+      return;
+    }
+    if (agent === "codex") {
+      await sendCodexMessage();
       return;
     }
     const text = inputText.trim();
@@ -1378,7 +2086,7 @@
     pendingTimer = setTimeout(() => {
       if (pendingSinceLen !== null) {
         sendError =
-          "Claude didn't respond in 90s — try again or check claude logs";
+          `${agentDisplayName()} didn't respond in 90s — try again or check agent logs`;
         pendingSinceLen = null;
         sending = false;
       }
@@ -1411,6 +2119,14 @@
     // load() does it once it observes the new message(s) on disk.
   }
 
+  $: showChatComposer =
+    mode === "read" && (agent === "ollama" || agent === "codex");
+
+  $: composerPlaceholder =
+    agent === "codex"
+      ? "Message Codex…"
+      : `Message ${model || "Ollama"}…`;
+
   function onComposerKey(e: KeyboardEvent) {
     // Enter sends. Shift+Enter inserts a newline. IME composition keeps
     // its own use of Enter and must not trigger a send.
@@ -1418,6 +2134,14 @@
       e.preventDefault();
       void sendMessage();
     }
+  }
+
+  function agentDisplayName(): string {
+    if (agent === "claude") return "Claude";
+    if (agent === "codex") return "Codex";
+    if (agent === "copilot") return "Copilot";
+    if (agent === "ollama") return model || "Ollama";
+    return "Agent";
   }
 
   function relTimeFromNow(ts: number): string {
@@ -1468,8 +2192,19 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
-  $: if (source) {
+  $: if (source && shouldPollTranscript) {
     void load();
+  }
+
+  $: {
+    const threadId =
+      agent === "codex" && mode === "read" ? session?.sessionId : undefined;
+    if (threadId) openCodexEventStream(threadId);
+    else closeCodexEventStream();
+  }
+
+  $: if (agent === "codex" && session?.cwd) {
+    void loadCodexModels(session.cwd);
   }
 
   // Scroll-to-bottom policy:
@@ -1504,34 +2239,37 @@
   let unregisterPoll: (() => void) | null = null;
 
   onMount(() => {
-    unregisterPoll = registerSessionPoll({
-      source,
-      daemonId,
-      getSessionId: () => session?.sessionId,
-      onSession: (bodyText, etag) => {
-        // Don't clobber a live Ollama stream mid-flight.
-        if (ollamaStreamingIdx !== null) return;
-        if (bodyText === lastResponseBody) return;
-        lastEtag = etag;
-        lastResponseBody = bodyText;
-        try {
-          applyParsedSession(JSON.parse(bodyText) as NormalizedSession);
-        } catch (e) {
-          error = e instanceof Error ? e.message : String(e);
-        }
-      },
-      onInflight: (list) => {
-        inflight = list as InflightRec[];
-      },
-    });
-    // Kick off an immediate inflight refresh so the indicator's accurate
-    // from the first render, not up to 2s later.
-    void refreshInflight();
+    if (shouldPollTranscript) {
+      unregisterPoll = registerSessionPoll({
+        source,
+        daemonId,
+        getSessionId: () => session?.sessionId,
+        onSession: (bodyText, etag) => {
+          // Don't clobber a live API stream mid-flight.
+          if (ollamaStreamingIdx !== null || codexActiveTurnId !== null) return;
+          if (bodyText === lastResponseBody) return;
+          lastEtag = etag;
+          lastResponseBody = bodyText;
+          try {
+            applyParsedSession(JSON.parse(bodyText) as NormalizedSession);
+          } catch (e) {
+            error = e instanceof Error ? e.message : String(e);
+          }
+        },
+        onInflight: (list) => {
+          inflight = list as unknown as InflightRec[];
+        },
+      });
+      // Kick off an immediate inflight refresh so the indicator's accurate
+      // from the first render, not up to 2s later.
+      void refreshInflight();
+    }
   });
 
   onDestroy(() => {
     if (unregisterPoll) unregisterPoll();
     if (pendingTimer) clearTimeout(pendingTimer);
+    closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
     cancelPinHide();
@@ -1559,7 +2297,7 @@
         ? model || undefined
         : agent === "claude"
           ? claudeModelAlias(claudeModel ?? model)
-          : undefined}
+          : codexAgentLabel}
       agentIcon={agentEffortIcon}
       {agentSettings}
       {source}
@@ -1579,7 +2317,7 @@
       {contextWindow}
       {model}
       lastActivityIso={session?.endedAt}
-      {lastUserMessageWithContext}
+      lastUserMessage={lastUserMessageWithContext}
       {pollCount}
       {lastLoadedAt}
       {inflight}
@@ -1754,7 +2492,7 @@
                   on:click={() => {
                     if (noticeAction === "install") {
                       dismissSummarizeNotice();
-                      openSummarize(source);
+                      openSummarize(sessionFileSource);
                     } else {
                       dismissSummarizeNotice();
                     }
@@ -1885,7 +2623,7 @@
   {:else if loading && !session}
     <LoadingOverlay text="loading session…" />
   {:else if session && session.messages.length === 0}
-    <p class="muted small">No messages parsed from this session.</p>
+    <p class="muted small">{liveCodexApp ? "No messages yet." : "No messages parsed from this session."}</p>
   {:else if session}
     <ul
       class="messages"
@@ -2002,22 +2740,116 @@
     </ul>
   {/if}
 
-  {#if agent === "ollama" && mode === "read"}
-    <!-- API-driven Ollama chat composer. Lives at the bottom of the
-         session column. Lets the user keep talking to the same
-         /api/ollama/chat session — full memory, no TUI involved.
-         See plans/ollama.md "Plan: API-driven chat mode". -->
+  {#if showChatComposer}
+    <!-- API-driven chat composer. Ollama streams through /api/ollama/chat;
+         Codex App streams through its app-server event channel. -->
     <div class="composer">
+      {#if agent === "codex" && codexRequests.length}
+        <div class="codex-requests">
+          {#each codexRequests as req (req.id)}
+            <div class="codex-request">
+              <div class="codex-request-main">
+                <span class="codex-request-title">{codexRequestTitle(req)}</span>
+                <code class="codex-request-preview" title={codexRequestPreview(req)}
+                  >{codexRequestPreview(req)}</code
+                >
+                {#if codexIsUserInputRequest(req)}
+                  <div class="codex-request-questions">
+                    {#each codexRequestQuestions(req) as q (q.id)}
+                      <label class="codex-request-question">
+                        <span>{q.header || q.question || "Answer"}</span>
+                        {#if q.question && q.header}
+                          <small>{q.question}</small>
+                        {/if}
+                        {#if q.options && q.options.length}
+                          <select
+                            value={codexQuestionDraft(req, q)}
+                            on:change={(e) =>
+                              setCodexQuestionDraft(
+                                req,
+                                q,
+                                (e.currentTarget as HTMLSelectElement).value,
+                              )}
+                          >
+                            <option value="">Choose…</option>
+                            {#each q.options as opt (opt.label)}
+                              <option value={opt.label}>
+                                {opt.label}{opt.description
+                                  ? ` — ${opt.description}`
+                                  : ""}
+                              </option>
+                            {/each}
+                          </select>
+                        {:else}
+                          <input
+                            type={q.isSecret ? "password" : "text"}
+                            value={codexQuestionDraft(req, q)}
+                            on:input={(e) =>
+                              setCodexQuestionDraft(
+                                req,
+                                q,
+                                (e.currentTarget as HTMLInputElement).value,
+                              )}
+                          />
+                        {/if}
+                      </label>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <div class="codex-request-actions">
+                {#if codexIsUserInputRequest(req)}
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "accept")}
+                    title="Send these answers to Codex">Send</button
+                  >
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "cancel")}
+                    title="Cancel this input request">Cancel</button
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "accept")}
+                    title="Approve this Codex request">Accept</button
+                  >
+                  {#if codexCanAcceptForSession(req)}
+                    <button
+                      type="button"
+                      on:click={() =>
+                        void answerCodexRequest(req, "acceptForSession")}
+                      title="Approve similar Codex requests for this session"
+                      >Session</button
+                    >
+                  {/if}
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "decline")}
+                    title="Decline this Codex request">Decline</button
+                  >
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "cancel")}
+                    title="Cancel this Codex request">Cancel</button
+                  >
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
       <div class="composer-box">
         <textarea
           class="composer-input"
           bind:value={inputText}
-          placeholder="Message {model || 'Ollama'}…"
+          placeholder={composerPlaceholder}
           rows="2"
           on:keydown={onComposerKey}
-          disabled={sending && !ollamaAbort}
+          disabled={sending && agent !== "codex" && !ollamaAbort}
         ></textarea>
-        {#if sending}
+        {#if sending && agent === "ollama"}
           <button
             type="button"
             class="composer-send is-sending"
@@ -2027,16 +2859,28 @@
           >
             ◼
           </button>
+        {:else if sending && agent === "codex"}
+          <button
+            type="button"
+            class="composer-send is-sending"
+            on:click={() => void stopCodexTurn()}
+            title="Stop Codex"
+            aria-label="Stop Codex"
+          >
+            ◼
+          </button>
         {:else}
           <button
             type="button"
             class="composer-send"
             on:click={() => void sendMessage()}
-            disabled={!inputText.trim()}
-            title="Send (Enter). Shift+Enter for newline."
+            disabled={!inputText.trim() || (sending && agent !== "codex")}
+            title={agent === "codex" && codexActiveTurnId
+              ? "Steer the running Codex turn"
+              : "Send (Enter). Shift+Enter for newline."}
             aria-label="Send"
           >
-            ↑
+            {sending ? "…" : "↑"}
           </button>
         {/if}
       </div>
@@ -2274,6 +3118,89 @@
      from sliding under the button. */
   .composer-box {
     position: relative;
+  }
+  .codex-requests {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0.45rem;
+  }
+  .codex-request {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.5rem;
+    align-items: start;
+    padding: 0.45rem 0.5rem;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+  }
+  .codex-request-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+  .codex-request-title {
+    color: var(--text-1);
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+  .codex-request-preview {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: transparent;
+    font-size: 0.72rem;
+  }
+  .codex-request-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    justify-content: flex-end;
+  }
+  .codex-request-actions button {
+    border: 1px solid var(--surface-3);
+    background: var(--surface-0);
+    color: var(--text-1);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 0.72rem;
+    padding: 0.25rem 0.42rem;
+    cursor: pointer;
+  }
+  .codex-request-actions button:hover {
+    border-color: var(--text-faint);
+  }
+  .codex-request-questions {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.35rem;
+  }
+  .codex-request-question {
+    display: grid;
+    gap: 0.18rem;
+    color: var(--text-1);
+    font-size: 0.75rem;
+  }
+  .codex-request-question small {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+  }
+  .codex-request-question input,
+  .codex-request-question select {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-0);
+    color: var(--text-1);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.38rem;
   }
   .composer-input {
     width: 100%;

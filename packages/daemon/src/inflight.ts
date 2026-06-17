@@ -9,7 +9,11 @@
  * — the next step up is to persist PIDs and adopt on boot.
  */
 
-import type { Subprocess } from "bun";
+export interface InflightProcess {
+  pid: number;
+  exited: Promise<unknown>;
+  kill(signal?: string): void;
+}
 
 export interface InflightSendRecord {
   id: string;
@@ -24,7 +28,7 @@ export interface InflightSendRecord {
 
 interface Entry {
   record: InflightSendRecord;
-  proc: Subprocess;
+  proc: InflightProcess;
 }
 
 const entries = new Map<string, Entry>();
@@ -45,7 +49,7 @@ export function register(opts: {
   sessionId: string;
   cwd: string;
   text: string;
-  proc: Subprocess;
+  proc: InflightProcess;
 }): InflightSendRecord {
   const id = `s_${Date.now().toString(36)}_${++seq}`;
   const record: InflightSendRecord = {

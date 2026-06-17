@@ -18,6 +18,8 @@ import {
   normalizeSessionForOpen,
   shellToSession,
   shellSourceToDismiss,
+  moveSessionStateKey,
+  reconcileLiveAgentTerminals,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -141,6 +143,140 @@ describe("isOpenInWt", () => {
     expect(
       isOpenInWt("/home/user/project2", "/ws/.claude/sessions/abc.jsonl", openSessionsByWt),
     ).toBe(false);
+  });
+});
+
+describe("moveSessionStateKey", () => {
+  test("moves a transient state value from synthetic source to canonical source", () => {
+    const before = { "__new__:claude:abc": true, other: false };
+    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toEqual({
+      "/real.jsonl": true,
+      other: false,
+    });
+  });
+
+  test("deletes the old key without clobbering an existing canonical value", () => {
+    const before = {
+      "__new__:claude:abc": true,
+      "/real.jsonl": false,
+    };
+    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toEqual({
+      "/real.jsonl": false,
+    });
+  });
+
+  test("returns the same object when there is no old key to move", () => {
+    const before = { "/real.jsonl": true };
+    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toBe(
+      before,
+    );
+  });
+
+  test("no-ops when source and destination are identical", () => {
+    const before = { "/real.jsonl": true };
+    expect(moveSessionStateKey(before, "/real.jsonl", "/real.jsonl")).toBe(before);
+  });
+});
+
+describe("reconcileLiveAgentTerminals", () => {
+  const wtPath = "/repo/fastvid";
+  const source = "/Users/me/.codex/sessions/rollout-019e975e.jsonl";
+  const repos: Repo[] = [
+    {
+      worktrees: [
+        {
+          path: wtPath,
+          agents: [
+            {
+              agent: "codex",
+              cwd: wtPath,
+              lastActive: "2026-06-17T09:59:15.736Z",
+              sessionId: "019e975e-33cc-7773-98fc-dc3d13033869",
+              source,
+              manualTitle: "Correctness of outputs",
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  test("attaches an open JSONL session to its live terminal by session owner", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [{ agent: "codex", source }],
+    };
+    const after = reconcileLiveAgentTerminals(before, repos, [
+      {
+        id: "t_live_fastvid",
+        ownerId: "019e975e-33cc-7773-98fc-dc3d13033869",
+        cwd: wtPath,
+        agent: "codex",
+      },
+    ]);
+
+    expect(after[wtPath]?.[0]).toMatchObject({
+      agent: "codex",
+      source,
+      mode: "terminal",
+      attachTermId: "t_live_fastvid",
+    });
+  });
+
+  test("replaces a stale attachTermId with the currently live terminal", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        {
+          agent: "codex",
+          source,
+          mode: "terminal",
+          attachTermId: "t_old_dead",
+        },
+      ],
+    };
+    const after = reconcileLiveAgentTerminals(before, repos, [
+      {
+        id: "t_live_fastvid",
+        ownerId: "019e975e-33cc-7773-98fc-dc3d13033869",
+        cwd: wtPath,
+        agent: "codex",
+      },
+    ]);
+
+    expect(after[wtPath]?.[0]?.attachTermId).toBe("t_live_fastvid");
+  });
+
+  test("does not attach a terminal from another worktree", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [{ agent: "codex", source }],
+    };
+
+    expect(
+      reconcileLiveAgentTerminals(before, repos, [
+        {
+          id: "t_other",
+          ownerId: "019e975e-33cc-7773-98fc-dc3d13033869",
+          cwd: "/repo/other",
+          agent: "codex",
+        },
+      ]),
+    ).toBe(before);
+  });
+
+  test("ignores shell terminals", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [{ agent: "codex", source }],
+    };
+
+    expect(
+      reconcileLiveAgentTerminals(before, repos, [
+        {
+          id: "t_shell",
+          ownerId: "019e975e-33cc-7773-98fc-dc3d13033869",
+          cwd: wtPath,
+          agent: "shell",
+        },
+      ]),
+    ).toBe(before);
   });
 });
 
