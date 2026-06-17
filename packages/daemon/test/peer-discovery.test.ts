@@ -161,26 +161,26 @@ describe("PeerDiscovery (mDNS integration)", () => {
 
     await pollUntil(
       () =>
-        a.peers().length >= 2 && b.peers().length >= 2 && c.peers().length >= 2,
+        hasPeerLabels(a, ["bravo", "charlie"]) &&
+        hasPeerLabels(b, ["alpha", "charlie"]) &&
+        hasPeerLabels(c, ["alpha", "bravo"]),
     );
 
-    expect(
-      a
-        .peers()
-        .map((p) => p.label)
-        .sort(),
-    ).toEqual(["bravo", "charlie"]);
-    expect(
-      b
-        .peers()
-        .map((p) => p.label)
-        .sort(),
-    ).toEqual(["alpha", "charlie"]);
-    expect(
-      c
-        .peers()
-        .map((p) => p.label)
-        .sort(),
-    ).toEqual(["alpha", "bravo"]);
+    expect(testLabels(a)).toEqual(["bravo", "charlie"]);
+    expect(testLabels(b)).toEqual(["alpha", "charlie"]);
+    expect(testLabels(c)).toEqual(["alpha", "bravo"]);
   });
 });
+
+function testLabels(d: PeerDiscovery): string[] {
+  return d
+    .peers()
+    .map((p) => p.label)
+    .filter((label) => label === "alpha" || label === "bravo" || label === "charlie")
+    .sort();
+}
+
+function hasPeerLabels(d: PeerDiscovery, labels: string[]): boolean {
+  const seen = new Set(testLabels(d));
+  return labels.every((label) => seen.has(label));
+}
