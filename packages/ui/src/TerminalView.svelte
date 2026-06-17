@@ -568,13 +568,15 @@
    *  terminal doesn't flip the idle ring to working. */
   let suppressActivityUntilTs = 0;
   const SUPPRESS_AROUND_FOCUS_MS = 500;
+  function setCurrentWorking(next: boolean) {
+    if (currentWorking === next) return;
+    currentWorking = next;
+    onWorkingChange(next);
+  }
   function noteActivity() {
     if (Date.now() < suppressActivityUntilTs) return;
     lastActivityTs = Date.now();
-    if (!currentWorking) {
-      currentWorking = true;
-      onWorkingChange(true);
-    }
+    setCurrentWorking(true);
   }
 
   /** Drop a socket's event handlers before closing it mid-startup (during
@@ -926,6 +928,8 @@
               sawExitFrame = true;
               exitInfo = { code: obj.code, signal: obj.signal };
               phase = "exited";
+              setCurrentWorking(false);
+              onAwaitingChange(false);
               // The config dialog is gone once the PTY exits (the user
               // chose an option, or it's respawning with a fixed config) —
               // drop the pill so it doesn't linger on the exited view.
@@ -934,14 +938,13 @@
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
-              // `working` now rides the onState channel (daemon-computed), the
-              // same channel as awaiting — so the dock shows activity even
-              // while this terminal is hidden and its output is muted. The
-              // local byte-silence ticker only LOWERS the flag while visible;
-              // hidden, this is the sole authority for both edges.
+              // `working` rides the daemon state channel too, so hidden and
+              // newly reattached terminals get the current activity snapshot.
+              // The local byte-silence ticker below is a defensive fallback
+              // for missed false-edges.
               if (typeof obj.working === "boolean") {
-                currentWorking = obj.working;
-                onWorkingChange(obj.working);
+                if (obj.working) lastActivityTs = Date.now();
+                setCurrentWorking(obj.working);
               }
               configError = obj.configError ?? null;
               // Error gone (or replaced) → drop any stale action feedback.
@@ -1407,20 +1410,17 @@
       publishTerminalIoStats();
     }, 1000);
 
-    // Drive the working → idle edge. The frame handler raises the flag
-    // on every chunk; this ticker is the only thing that lowers it,
-    // after WORKING_IDLE_MS of silence.
+    // Drive the working → idle edge. Raw byte observations and daemon state
+    // frames raise the flag; this ticker defensively lowers it after local
+    // silence. It intentionally runs even while the column is offscreen so a
+    // missed daemon false-edge cannot leave the dock stuck in "working" while
+    // the terminal I/O chip has already dropped to 0/s.
     workingTicker = setInterval(() => {
-      // Only lower from local byte-silence while VISIBLE. When hidden, output
-      // is muted (no bytes arrive by design), so the daemon's `working` on the
-      // onState channel owns the working↔idle edges — see the WS state handler.
       if (
-        isTerminalVisible &&
         currentWorking &&
         Date.now() - lastActivityTs > WORKING_IDLE_MS
       ) {
-        currentWorking = false;
-        onWorkingChange(false);
+        setCurrentWorking(false);
       }
     }, 500);
   });
@@ -1462,6 +1462,8 @@
       clearInterval(ioTicker);
       ioTicker = null;
     }
+    setCurrentWorking(false);
+    onAwaitingChange(false);
     removeTerminalIoStats(currentIoStatsId);
     if (sshPollTimer) {
       clearInterval(sshPollTimer);

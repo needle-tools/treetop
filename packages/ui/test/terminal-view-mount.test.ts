@@ -129,6 +129,34 @@ describe("TerminalView onDestroy socket teardown", () => {
     // onExit() and the unmount is misreported as a PTY exit.
     expect(detachIdx).toBeLessThan(closeIdx);
   });
+
+  test("reports idle before unmounting so dock state cannot stick working", () => {
+    const block = onDestroyBlock();
+    const clearIdx = block.indexOf("setCurrentWorking(false)");
+    const closeIdx = block.indexOf('ws.close(1000, "unmount")');
+    expect(
+      clearIdx,
+      "onDestroy must publish working=false before teardown",
+    ).toBeGreaterThan(-1);
+    expect(clearIdx).toBeLessThan(closeIdx);
+  });
+});
+
+describe("TerminalView working idle state", () => {
+  function workingTickerBlock(): string {
+    const idx = SOURCE.indexOf("workingTicker = setInterval");
+    expect(idx, "workingTicker not found in TerminalView").toBeGreaterThan(-1);
+    const endIdx = SOURCE.indexOf("}, 500);", idx);
+    expect(endIdx, "workingTicker interval end not found").toBeGreaterThan(idx);
+    return SOURCE.slice(idx, endIdx);
+  }
+
+  test("byte-silence can lower working even while the column is offscreen", () => {
+    const block = workingTickerBlock();
+    expect(block).toContain("currentWorking");
+    expect(block).toContain("Date.now() - lastActivityTs > WORKING_IDLE_MS");
+    expect(block).not.toContain("isTerminalVisible &&");
+  });
 });
 
 describe("TerminalView clipboard copy + paste", () => {
