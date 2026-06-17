@@ -1630,7 +1630,26 @@ describe("SessionSurfaceStore", () => {
     ).toEqual(["/agents/claude.jsonl", "session:claude:sid-1"]);
   });
 
-  test("applySessionSurfacePreference restores terminal mode for resumable Claude/Codex", () => {
+  test("applySessionSurfacePreference defaults resumable Claude/Codex to terminal", () => {
+    expect(
+      applySessionSurfacePreference(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          sessionId: "sid-1",
+        },
+        {},
+      ),
+    ).toEqual({
+      agent: "codex",
+      source: "/agents/codex.jsonl",
+      sessionId: "sid-1",
+      resumeSessionId: "sid-1",
+      mode: "terminal",
+    });
+  });
+
+  test("applySessionSurfacePreference restores terminal mode for remembered Claude/Codex", () => {
     expect(
       applySessionSurfacePreference(
         {
@@ -1669,14 +1688,7 @@ describe("SessionSurfaceStore", () => {
     });
   });
 
-  test("applySessionSurfacePreference does not force terminal for non-resumable or visual sessions", () => {
-    expect(
-      applySessionSurfacePreference(
-        { agent: "ollama", source: "/ollama/chat.jsonl", mode: "terminal" },
-        { "/ollama/chat.jsonl": "terminal" },
-      ),
-    ).toEqual({ agent: "ollama", source: "/ollama/chat.jsonl" });
-
+  test("applySessionSurfacePreference keeps visual mode only when explicitly remembered", () => {
     expect(
       applySessionSurfacePreference(
         {
@@ -1692,6 +1704,15 @@ describe("SessionSurfaceStore", () => {
       source: "/agents/claude.jsonl",
       resumeSessionId: "sid-1",
     });
+  });
+
+  test("applySessionSurfacePreference does not force terminal for non-resumable sessions", () => {
+    expect(
+      applySessionSurfacePreference(
+        { agent: "ollama", source: "/ollama/chat.jsonl", mode: "terminal" },
+        { "/ollama/chat.jsonl": "terminal" },
+      ),
+    ).toEqual({ agent: "ollama", source: "/ollama/chat.jsonl" });
   });
 
   test("reconcileOpenSessionsWithSurfacePreferences lets explicit read beat stale terminal mode", () => {

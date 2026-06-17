@@ -1831,6 +1831,7 @@
         source: liveSource,
         resumeSessionId: body.sessionId,
         transcriptSource: body.source,
+        mode: "terminal",
       });
       openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
       scrollNewColIntoView(wtPath, liveSource);

@@ -1006,43 +1006,6 @@
         : [];
     const base: SessionMenuItem[] = [
       ...claudeItems,
-      ...(canResumeInTerminalSurface()
-        ? [
-            {
-              kind: "submenu" as const,
-              label: "View as…",
-              iconSvg: [
-                "M4 6h16",
-                "M4 12h16",
-                "M4 18h16",
-              ],
-              title: "Change between visual and terminal session views",
-              children: [
-                {
-                  kind: "action" as const,
-                  label: "Visual",
-                  iconSvg: [
-                    "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
-                    "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
-                  ],
-                  selected: mode === "read",
-                  disabled: mode === "read",
-                  title: "Show the visual session view",
-                  onSelect: showVisualSurface,
-                },
-                {
-                  kind: "action" as const,
-                  label: "Terminal",
-                  iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
-                  selected: mode === "terminal",
-                  disabled: mode === "terminal",
-                  title: resumeTitleForAgent(),
-                  onSelect: resumeInTerminalSurface,
-                },
-              ],
-            },
-          ]
-        : []),
       {
         kind: "action",
         label: "Resume in external terminal",
@@ -1172,7 +1135,40 @@
         })),
       });
     }
-    return [...base, ...extraMenuItems];
+    const surfaceItems: SessionMenuItem[] = canResumeInTerminalSurface()
+      ? [
+          {
+            kind: "submenu",
+            label: "View as…",
+            iconSvg: ["M4 6h16", "M4 12h16", "M4 18h16"],
+            title: "Change between visual and terminal session views",
+            children: [
+              {
+                kind: "action",
+                label: "Visual",
+                iconSvg: [
+                  "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+                  "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+                ],
+                selected: mode === "read",
+                disabled: mode === "read",
+                title: "Show the visual session view",
+                onSelect: showVisualSurface,
+              },
+              {
+                kind: "action",
+                label: "Terminal",
+                iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
+                selected: mode === "terminal",
+                disabled: mode === "terminal",
+                title: resumeTitleForAgent(),
+                onSelect: resumeInTerminalSurface,
+              },
+            ],
+          },
+        ]
+      : [];
+    return [...base, ...extraMenuItems, ...surfaceItems];
   })();
 
   /** Colour-coded effort glyph shown in the agent pill after the model
@@ -1370,6 +1366,7 @@
   let codexEvents: EventSource | null = null;
   let codexEventsThreadId: string | null = null;
   let codexActiveTurnId: string | null = null;
+  let codexStreamReconnecting = false;
   let codexRequests: CodexAppEvent[] = [];
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
   let codexModels: CodexModelInfo[] = [];
@@ -1679,8 +1676,12 @@
     const es = new EventSource(
       apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId),
     );
+    es.onopen = () => {
+      codexStreamReconnecting = false;
+    };
     es.addEventListener("codex", (msg) => {
       try {
+        codexStreamReconnecting = false;
         applyCodexEvent(JSON.parse((msg as MessageEvent).data) as CodexAppEvent);
       } catch {
         // Ignore malformed frames; the daemon stream stays alive.
@@ -1688,7 +1689,7 @@
     });
     es.onerror = () => {
       if (sending && agent === "codex") {
-        sendError = "Codex event stream disconnected; reconnecting…";
+        codexStreamReconnecting = true;
       }
     };
     codexEvents = es;
@@ -1698,6 +1699,7 @@
     codexEvents?.close();
     codexEvents = null;
     codexEventsThreadId = null;
+    codexStreamReconnecting = false;
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
@@ -2053,6 +2055,7 @@
       !session.cwd
     )
       return;
+    if (sending && !codexActiveTurnId) return;
     sending = true;
     sendError = "";
     optimisticCodexUser(codexOptimisticText(text, attachments));
@@ -2343,6 +2346,14 @@
     agent === "codex"
       ? "Message Codex…"
       : `Message ${model || "Ollama"}…`;
+  $: codexComposerMode =
+    agent === "codex"
+      ? codexActiveTurnId
+        ? "Send steers the running turn"
+        : sending
+          ? "Starting Codex turn"
+        : "Send starts a new turn"
+      : "";
 
   function onComposerKey(e: KeyboardEvent) {
     // Enter sends. Shift+Enter inserts a newline. IME composition keeps
@@ -3133,6 +3144,19 @@
                 {/each}
               </select>
             </label>
+            <span
+              class="composer-send-mode"
+              class:reconnecting={codexStreamReconnecting}
+              title={codexStreamReconnecting
+                ? "The app-server event stream is reconnecting; the turn can still complete."
+                : codexComposerMode}
+            >
+              {#if codexStreamReconnecting}
+                stream reconnecting
+              {:else}
+                {codexComposerMode}
+              {/if}
+            </span>
           </div>
           <div class="composer-footer-right">
             {#if codexEffortGroup}
@@ -3184,6 +3208,18 @@
               ◼
             </button>
           {:else if sending && agent === "codex"}
+            {#if codexActiveTurnId && composerCanSend}
+              <button
+                type="button"
+                class="composer-send composer-steer"
+                on:click={() => void sendMessage()}
+                disabled={composerUploadingImages > 0}
+                title="Steer the running Codex turn"
+                aria-label="Steer Codex"
+              >
+                ↩
+              </button>
+            {/if}
             <button
               type="button"
               class="composer-send is-sending"
@@ -3760,6 +3796,9 @@
     gap: 0.35rem;
     min-width: 0;
   }
+  .composer-footer-left {
+    flex-wrap: wrap;
+  }
   .composer-footer-right {
     justify-content: flex-end;
   }
@@ -3802,10 +3841,21 @@
   .composer-model {
     width: min(13rem, 38vw);
   }
+  .composer-send-mode {
+    align-self: end;
+    color: var(--text-faint);
+    font-size: 0.68rem;
+    line-height: 1.75rem;
+    white-space: nowrap;
+  }
+  .composer-send-mode.reconnecting {
+    color: var(--text-muted);
+  }
   .composer-send-wrap {
     display: flex;
     align-items: end;
     justify-content: flex-end;
+    gap: 0.25rem;
   }
   .composer-send {
     display: inline-flex;
@@ -3827,6 +3877,15 @@
   .composer-send:hover:not(:disabled) {
     background: var(--text-2);
     border-color: var(--text-2);
+  }
+  .composer-steer {
+    background: transparent;
+    color: var(--text-1);
+    border-color: var(--surface-3);
+  }
+  .composer-steer:hover:not(:disabled) {
+    background: var(--surface-3);
+    border-color: var(--surface-3);
   }
   .composer-send:disabled {
     cursor: not-allowed;

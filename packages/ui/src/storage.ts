@@ -275,7 +275,9 @@ export interface PersistedSession {
    *  flipped from the markdown chat view to a live `claude --resume`
    *  PTY). On remount, the column should re-enter terminal mode so a
    *  page reload doesn't drop the user back to the read-only history.
-   *  Absence implies the default `"read"` mode. */
+   *  Absence is resolved by `applySessionSurfacePreference`: resumable
+   *  Claude/Codex sessions default to terminal unless the user explicitly
+   *  remembered the visual/read surface. */
   mode?: "terminal";
   /** Optional. The daemon terminal id of the live PTY this column is
    *  currently attached to, stamped on spawn so a remount/reopen in the
@@ -329,7 +331,7 @@ export function applySessionSurfacePreference<
   const supportsTerminalSurface =
     (withResume.agent === "claude" || withResume.agent === "codex") &&
     !!withResume.resumeSessionId;
-  let surface: SessionSurface = "read";
+  let surface: SessionSurface | undefined;
   for (const key of sessionSurfaceKeys(withResume)) {
     const remembered = surfaces[key];
     if (remembered) {
@@ -337,7 +339,7 @@ export function applySessionSurfacePreference<
       break;
     }
   }
-  if (supportsTerminalSurface && surface === "terminal") {
+  if (supportsTerminalSurface && surface !== "read") {
     return { ...withResume, mode: "terminal" } as T;
   }
   if (withResume.mode === "terminal") {
