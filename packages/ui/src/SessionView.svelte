@@ -38,6 +38,12 @@
     lastUserMessageWithContext as buildLastUserMessageWithContext,
   } from "./last-user-message";
   import { registerSessionPoll } from "./session-poll";
+  import {
+    codexEventThreadIdForSession,
+    subscribeCodexEvents,
+    type CodexAppEvent,
+    type CodexEventStreamState,
+  } from "./codex-event-stream";
   import { splitParent } from "./file-browser-utils";
   import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
@@ -255,16 +261,6 @@
     endedAt?: string;
     messages: NormalizedMessage[];
     manualTitle?: string;
-  }
-  interface CodexAppEvent {
-    kind: "notification" | "request";
-    id?: string | number;
-    method: string;
-    params: Record<string, unknown>;
-    threadId?: string;
-    turnId?: string;
-    receivedAt: string;
-    seq?: number;
   }
   interface CodexUserInputOption {
     label: string;
@@ -1389,13 +1385,9 @@
    *  response is arriving. Lets each SSE chunk append to the right
    *  bubble. Cleared on `done` or abort. */
   let ollamaStreamingIdx: number | null = null;
-  let codexEvents: EventSource | null = null;
+  let unsubscribeCodexEvents: (() => void) | null = null;
   let codexEventsThreadId: string | null = null;
-  let codexEventStreamState:
-    | "closed"
-    | "connecting"
-    | "live"
-    | "reconnecting" = "closed";
+  let codexEventStreamState: CodexEventStreamState | "closed" = "closed";
   let codexActiveTurnId: string | null = null;
   let codexRequests: CodexAppEvent[] = [];
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
@@ -1779,39 +1771,25 @@
   }
 
   function openCodexEventStream(threadId: string): void {
-    if (codexEvents && codexEventsThreadId === threadId) return;
+    if (unsubscribeCodexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
-    const qs = new URLSearchParams({ threadId });
-    const es = new EventSource(
-      apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId),
-    );
-    es.onopen = () => {
-      codexEventStreamState = "live";
-    };
-    es.addEventListener("codex", (msg) => {
-      codexEventStreamState = "live";
-      try {
-        applyCodexEvent(
-          JSON.parse((msg as MessageEvent).data) as CodexAppEvent,
-        );
-      } catch {
-        // Ignore malformed frames; the daemon stream stays alive.
-      }
+    unsubscribeCodexEvents = subscribeCodexEvents(daemonId, {
+      onState: (state) => {
+        codexEventStreamState = state;
+      },
+      onEvent: (event) => {
+        if (event.threadId && event.threadId !== threadId) return;
+        codexEventStreamState = "live";
+        applyCodexEvent(event);
+      },
     });
-    es.onerror = () => {
-      // EventSource reconnects on its own. The daemon owns the app-server
-      // turn, so a transient hidden-tab/offscreen transport hiccup should
-      // not surface as session state.
-      codexEventStreamState = "reconnecting";
-    };
-    codexEvents = es;
   }
 
   function closeCodexEventStream(): void {
-    codexEvents?.close();
-    codexEvents = null;
+    unsubscribeCodexEvents?.();
+    unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
   }
@@ -2764,8 +2742,12 @@
   }
 
   $: {
-    const threadId =
-      agent === "codex" && mode === "read" ? session?.sessionId : undefined;
+    const threadId = codexEventThreadIdForSession({
+      agent,
+      mode,
+      sessionId: session?.sessionId,
+      liveCodexApp,
+    });
     if (threadId) openCodexEventStream(threadId);
     else closeCodexEventStream();
   }
