@@ -159,6 +159,10 @@
    *  runtime). The parent persists this across reload so a hard refresh
    *  doesn't drop a user out of an active TUI back to history view. */
   export let initialMode: "read" | "terminal" = "read";
+  /** True only when the parent knows the user explicitly picked the
+   *  experimental visual app-server surface for this session. Default
+   *  read/transcript views must not grow the Codex composer. */
+  export let visualAppEnabled: boolean = false;
   /** Fired whenever the user flips between read and terminal mode (or
    *  the PTY exits and we flip back). The parent persists this so a
    *  page reload restores the same view. */
@@ -1387,6 +1391,11 @@
   let ollamaStreamingIdx: number | null = null;
   let codexEvents: EventSource | null = null;
   let codexEventsThreadId: string | null = null;
+  let codexEventStreamState:
+    | "closed"
+    | "connecting"
+    | "live"
+    | "reconnecting" = "closed";
   let codexActiveTurnId: string | null = null;
   let codexRequests: CodexAppEvent[] = [];
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
@@ -1412,6 +1421,7 @@
   const codexSeenEvents = new Set<string>();
 
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
+  $: codexVisualAppSurface = liveCodexApp && visualAppEnabled;
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
@@ -1772,11 +1782,16 @@
     if (codexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
     codexEventsThreadId = threadId;
+    codexEventStreamState = "connecting";
     const qs = new URLSearchParams({ threadId });
     const es = new EventSource(
       apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId),
     );
+    es.onopen = () => {
+      codexEventStreamState = "live";
+    };
     es.addEventListener("codex", (msg) => {
+      codexEventStreamState = "live";
       try {
         applyCodexEvent(
           JSON.parse((msg as MessageEvent).data) as CodexAppEvent,
@@ -1789,6 +1804,7 @@
       // EventSource reconnects on its own. The daemon owns the app-server
       // turn, so a transient hidden-tab/offscreen transport hiccup should
       // not surface as session state.
+      codexEventStreamState = "reconnecting";
     };
     codexEvents = es;
   }
@@ -1797,6 +1813,7 @@
     codexEvents?.close();
     codexEvents = null;
     codexEventsThreadId = null;
+    codexEventStreamState = "closed";
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
@@ -2617,9 +2634,10 @@
   }
 
   $: showChatComposer =
-    mode === "read" && (agent === "ollama" || agent === "codex");
+    mode === "read" &&
+    (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
   $: showComposerTray =
-    agent === "codex" &&
+    codexVisualAppSurface &&
     (codexRequests.length > 0 ||
       codexQueuedMessages.length > 0 ||
       composerAttachments.length > 0 ||
@@ -2638,6 +2656,24 @@
           ? `${codexQueuedMessages.length} queued`
           : ""
       : "";
+  $: codexLiveIndicatorLabel = codexRunning
+    ? "Running"
+    : codexEventStreamState === "live"
+      ? "Live"
+      : codexEventStreamState === "connecting"
+        ? "Connecting"
+        : codexEventStreamState === "reconnecting"
+          ? "Reconnecting"
+          : "Disconnected";
+  $: codexLiveIndicatorTitle = codexRunning
+    ? "Codex app-server reports an active turn for this session."
+    : codexEventStreamState === "live"
+      ? "Connected to the Codex app-server event stream for this session."
+      : codexEventStreamState === "connecting"
+        ? "Opening the Codex app-server event stream."
+        : codexEventStreamState === "reconnecting"
+          ? "Codex app-server event stream is reconnecting; EventSource will retry."
+          : "No Codex app-server event stream is connected.";
 
   function onComposerKey(e: KeyboardEvent) {
     // Enter sends. Shift+Enter inserts a newline. IME composition keeps
@@ -2801,7 +2837,8 @@
 
 <div
   class="session"
-  class:awaiting-input={mode === "terminal" && awaitingInput}
+  class:awaiting-input={(mode === "terminal" || codexVisualAppSurface) &&
+    awaitingInput}
   class:read-mode={mode === "read"}
   bind:this={sessionEl}
   on:mousemove={onSessionMouseMove}
@@ -2830,7 +2867,7 @@
       canEnd={!!effectiveSessionId && (agent === "claude" || agent === "codex")}
       {disposing}
       {awaitingInput}
-      working={mode === "terminal" && working}
+      working={mode === "terminal" ? working : codexVisualAppSurface && codexRunning}
       loadedMessageCount={session?.messages.length}
       {totalMessageCount}
       {contextTokens}
@@ -3556,6 +3593,17 @@
             {/if}
           </div>
           <div class="composer-footer-right">
+            <span
+              class="composer-live-indicator"
+              class:running={codexRunning}
+              class:connected={codexEventStreamState === "live" && !codexRunning}
+              class:reconnecting={codexEventStreamState === "reconnecting" ||
+                codexEventStreamState === "connecting"}
+              title={codexLiveIndicatorTitle}
+            >
+              <span class="composer-live-dot" aria-hidden="true"></span>
+              <span>{codexLiveIndicatorLabel}</span>
+            </span>
             {#if codexEffortGroup}
               <label class="composer-select-wrap composer-reasoning">
                 <span>{codexEffortGroup.label}</span>
@@ -4357,6 +4405,39 @@
   }
   .composer-footer-right {
     justify-content: flex-end;
+  }
+  .composer-live-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    align-self: end;
+    min-height: 1.75rem;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .composer-live-dot {
+    width: 0.46rem;
+    height: 0.46rem;
+    border-radius: 999px;
+    background: var(--text-faint);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface-0) 75%, transparent);
+  }
+  .composer-live-indicator.connected .composer-live-dot {
+    background: var(--status-clean);
+  }
+  .composer-live-indicator.running {
+    color: var(--text-1);
+  }
+  .composer-live-indicator.running .composer-live-dot {
+    background: var(--status-dirty);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--status-dirty) 45%, transparent),
+      0 0 10px color-mix(in srgb, var(--status-dirty) 45%, transparent);
+  }
+  .composer-live-indicator.reconnecting .composer-live-dot {
+    background: var(--status-dirty);
   }
   .composer-select-wrap {
     display: inline-grid;

@@ -336,7 +336,7 @@
       {#if pillInteractive}
         <button
           class="agent-pill agent-{agent} interactive"
-          class:working={mode === "terminal" && working}
+          class:working={working}
           class:idle={mode === "terminal" && !working}
           type="button"
           title={`${agent} settings — model & effort`}
@@ -350,7 +350,7 @@
       {:else}
         <span
           class="agent-pill agent-{agent}"
-          class:working={mode === "terminal" && working}
+          class:working={working}
           class:idle={mode === "terminal" && !working}
           >{@render pillBody()}</span
         >

@@ -327,11 +327,20 @@ describe("codexAgentSettings", () => {
           displayName: "GPT-5 Codex",
           isDefault: true,
           defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: [
+            "speed",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+          ],
         },
         {
           id: "gpt-5-codex-mini",
           displayName: "GPT-5 Codex Mini",
           defaultReasoningEffort: "low",
+          supportedReasoningEfforts: ["speed", "low"],
         },
       ],
       detectedModel: undefined,
@@ -390,7 +399,7 @@ describe("codexAgentSettings", () => {
     ]);
   });
 
-  test("reasoning budget options show the resolved app-server default when known", () => {
+  test("reasoning budget options come from the app-server model payload", () => {
     const [, effort] = build({ currentEffort: "medium" });
     expect(effort!.options.map((o) => o.value)).toEqual([
       "",
@@ -411,6 +420,30 @@ describe("codexAgentSettings", () => {
   test("reasoning default follows the explicitly selected model when app-server reports one", () => {
     const [, effort] = build({ currentModel: "gpt-5-codex-mini" });
     expect(effort!.options[0]!.label).toBe("Default (low)");
+    expect(effort!.options.map((o) => o.value)).toEqual([
+      "",
+      "speed",
+      "low",
+    ]);
+  });
+
+  test("reasoning options do not invent levels when app-server omits them", () => {
+    const [, effort] = build({
+      models: [
+        {
+          id: "gpt-5-codex",
+          displayName: "GPT-5 Codex",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+        },
+      ],
+      currentEffort: "custom-server-value",
+    });
+    expect(effort!.options.map((o) => o.value)).toEqual([
+      "",
+      "custom-server-value",
+    ]);
+    expect(effort!.options[0]!.label).toBe("Default (medium)");
   });
 
   test("onPick callbacks route through the matching Codex group", () => {

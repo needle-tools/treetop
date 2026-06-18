@@ -3136,6 +3136,18 @@
     sessionSurfaces = next;
     sessionSurfaceStore.save(next);
   }
+
+  function rememberedSessionSurface(s: OpenSession): SessionSurface | undefined {
+    for (const key of sessionSurfaceKeys(s)) {
+      const remembered = sessionSurfaces[key];
+      if (remembered) return remembered;
+    }
+    return undefined;
+  }
+
+  function isExplicitVisualSurface(s: OpenSession): boolean {
+    return rememberedSessionSurface(s) === "read";
+  }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
     "supergit:visibleWorktrees",
@@ -10070,6 +10082,14 @@
                                   resumeSessionId={s.resumeSessionId ??
                                     agentMeta?.sessionId}
                                   transcriptSource={s.transcriptSource}
+                                  visualAppEnabled={isExplicitVisualSurface({
+                                    ...s,
+                                    resumeSessionId:
+                                      s.resumeSessionId ??
+                                      agentMeta?.sessionId,
+                                    transcriptSource:
+                                      s.transcriptSource ?? agentMeta?.source,
+                                  })}
                                   wtPath={wt.path}
                                   daemonId={daemonIdForWorktreePath(repos, wt.path)}
                                   totalMessageCount={agentMeta?.messageCount}

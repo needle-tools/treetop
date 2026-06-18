@@ -255,13 +255,14 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
             obj.supportedReasoningEfforts,
           )
             ? obj.supportedReasoningEfforts
-                .map((effort) =>
-                  effort && typeof effort === "object"
+                .map((effort) => {
+                  if (typeof effort === "string") return cleanString(effort);
+                  return effort && typeof effort === "object"
                     ? cleanString(
                         (effort as Record<string, unknown>).reasoningEffort,
                       )
-                    : undefined,
-                )
+                    : undefined;
+                })
                 .filter((effort): effort is string => !!effort)
             : undefined,
           defaultReasoningEffort: cleanString(obj.defaultReasoningEffort),

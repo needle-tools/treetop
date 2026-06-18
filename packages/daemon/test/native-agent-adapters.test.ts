@@ -304,6 +304,7 @@ describe("CodexAppServerAdapter", () => {
             isDefault: true,
             defaultReasoningEffort: "medium",
             supportedReasoningEfforts: [
+              "speed",
               { reasoningEffort: "low", description: "fast" },
               { reasoningEffort: "high", description: "deep" },
             ],
@@ -321,7 +322,7 @@ describe("CodexAppServerAdapter", () => {
         description: "largest Codex model",
         isDefault: true,
         defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: ["low", "high"],
+        supportedReasoningEfforts: ["speed", "low", "high"],
       },
     ]);
   });
