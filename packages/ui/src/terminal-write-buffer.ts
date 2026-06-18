@@ -21,6 +21,7 @@ export interface TerminalIoStatsSample {
   txBytesPerSec: number;
   rxBytesTotal: number;
   txBytesTotal: number;
+  lastActivityAt: number | null;
   hiddenBufferedBytes: number;
   hiddenFlushes: number;
 }
@@ -33,6 +34,7 @@ export interface TerminalIoStatsTotals {
   txBytesPerSec: number;
   rxBytesTotal: number;
   txBytesTotal: number;
+  lastActivityAt: number | null;
   hiddenBufferedBytes: number;
   hiddenFlushes: number;
 }
@@ -45,9 +47,12 @@ const emptyTerminalIoStats: TerminalIoStatsTotals = {
   txBytesPerSec: 0,
   rxBytesTotal: 0,
   txBytesTotal: 0,
+  lastActivityAt: null,
   hiddenBufferedBytes: 0,
   hiddenFlushes: 0,
 };
+
+export const TERMINAL_ACTIVITY_RECENT_MS = 4_000;
 
 const terminalIoStatsById = writable<Record<string, TerminalIoStatsSample>>({});
 
@@ -69,6 +74,13 @@ export const terminalIoStats: Readable<TerminalIoStatsTotals> = derived(
       total.txBytesPerSec += sample.txBytesPerSec;
       total.rxBytesTotal += sample.rxBytesTotal;
       total.txBytesTotal += sample.txBytesTotal;
+      if (
+        sample.lastActivityAt !== null &&
+        (total.lastActivityAt === null ||
+          sample.lastActivityAt > total.lastActivityAt)
+      ) {
+        total.lastActivityAt = sample.lastActivityAt;
+      }
       total.hiddenBufferedBytes += sample.hiddenBufferedBytes;
       total.hiddenFlushes += sample.hiddenFlushes;
     }
@@ -104,6 +116,15 @@ export function formatTerminalIoRate(bytesPerSec: number): string {
     return `${(bytesPerSec / 1024).toFixed(1)}k/s`;
   }
   return `${Math.max(0, Math.round(bytesPerSec))}/s`;
+}
+
+export function isTerminalRecentlyActive(
+  sample: TerminalIoStatsSample | undefined,
+  now: number,
+  windowMs: number = TERMINAL_ACTIVITY_RECENT_MS,
+): boolean {
+  if (!sample || sample.lastActivityAt === null) return false;
+  return now - sample.lastActivityAt <= windowMs;
 }
 
 export class TerminalIoByteAccounting {

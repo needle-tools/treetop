@@ -74,6 +74,10 @@
      *  the dock (hover + click still work) but the dot shrinks to
      *  signal the session is ended. */
     exited: boolean;
+    /** True while the embedded terminal has emitted input/output in
+     *  the last few seconds. This is terminal liveness, separate
+     *  from agent "working" state. */
+    terminalActive: boolean;
     /** Timestamp (ms) of the most recent working→idle transition.
      *  When set and recent (< PULSE_MAX_MS), the dock pulses the
      *  dot as an "unread" reminder until the user re-focuses the
@@ -95,6 +99,7 @@
     repoColor?: string;
     repoName: string;
     ahead: number;
+    aheadDanger?: boolean;
     behind: number;
     staged: number;
     unstaged: number;
@@ -808,7 +813,11 @@
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
               <span class="dock-label-badges">
-                {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+                {#if rs?.ahead}<StatusBadge
+                    compact
+                    ahead={rs.ahead}
+                    danger={rs.aheadDanger}
+                  />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
                 {#if dirtyCount}<StatusBadge
                     compact
@@ -826,6 +835,7 @@
           class:dot-awaiting-urgent={e.awaiting &&
             isAwaitingUrgent(e.source, nowTick)}
           class:dot-exited={e.exited}
+          class:dot-terminal-active={e.terminalActive}
           class:dot-pulsing={isPulsing(e, nowTick)}
           class:dock-dot-focused={focusedSource === e.source}
           class:dock-dot-repo-first={i > 0 &&
@@ -849,6 +859,15 @@
               aria-hidden="true"
             >
               <circle cx="12" cy="12" r="9.5" pathLength="100" />
+              <rect
+                class="dock-dot-spinner-rect"
+                x="4"
+                y="4"
+                width="16"
+                height="16"
+                rx="3"
+                pathLength="100"
+              />
             </svg>
           </span>
           <span class="dock-label">
@@ -966,7 +985,11 @@
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
               <span class="dock-label-badges">
-                {#if rs?.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+                {#if rs?.ahead}<StatusBadge
+                    compact
+                    ahead={rs.ahead}
+                    danger={rs.aheadDanger}
+                  />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
                 {#if dirtyCount}<StatusBadge
                     compact
@@ -984,6 +1007,7 @@
           class:dot-awaiting-urgent={e.awaiting &&
             isAwaitingUrgent(e.source, nowTick)}
           class:dot-exited={e.exited}
+          class:dot-terminal-active={e.terminalActive}
           class:dot-pulsing={isPulsing(e, nowTick)}
           class:dock-dot-focused={focusedSource === e.source}
           class:dock-dot-repo-first={i > 0 &&
@@ -1007,6 +1031,15 @@
               aria-hidden="true"
             >
               <circle cx="12" cy="12" r="9.5" pathLength="100" />
+              <rect
+                class="dock-dot-spinner-rect"
+                x="4"
+                y="4"
+                width="16"
+                height="16"
+                rx="3"
+                pathLength="100"
+              />
             </svg>
           </span>
           <span class="dock-label">
@@ -1104,7 +1137,11 @@
           <span class="dock-label">
             <span class="dock-label-repo">{rs.repoName}</span>
             <span class="dock-label-badges">
-              {#if rs.ahead}<StatusBadge compact ahead={rs.ahead} />{/if}
+              {#if rs.ahead}<StatusBadge
+                  compact
+                  ahead={rs.ahead}
+                  danger={rs.aheadDanger}
+                />{/if}
               {#if rs.behind}<StatusBadge compact behind={rs.behind} />{/if}
               {#if dirtyCount && showInactive}<StatusBadge
                   compact
@@ -1763,10 +1800,13 @@
   .dock-dot:active {
     background: transparent;
   }
-  /* Working: hide the solid dot fill entirely and show a thick
-     rotating SVG arc in its place. The arc uses `stroke-linecap:
-     round` so the head and tail are clean rounded caps — the old
-     conic-gradient + mask trick couldn't round its line ends.
+  /* Working / terminal-active: show a rotating SVG arc on the
+     existing dock glyph. Working also dims the solid dot fill so
+     the arc becomes the primary agent-state signal; terminal-active
+     keeps the current dot/square intact and adds only motion.
+     The arc uses `stroke-linecap: round` so the head and tail are
+     clean rounded caps — the old conic-gradient + mask trick
+     couldn't round its line ends.
      Anchored to .dock-dot-inner so the spinner tracks the dot
      rather than the (much larger) padded hit-zone wrapper. */
   .dock-dot.dot-working .dock-dot-inner {
@@ -1790,13 +1830,15 @@
     opacity: 0;
     transition: opacity 220ms ease;
   }
-  /* Only spin while actually working. An always-running animation auto-
-     promotes its element to a compositor layer — so leaving `dock-spin` on
-     every (invisible) spinner kept EVERY idle dock dot on its own layer,
-     inflating the Layerize walk for nothing. Gating on `.dot-working` lets
-     idle dots de-promote. The tiny cost — the arc snaps from rest instead of
-     already-moving when a turn starts — is imperceptible at 0.9s/rev. */
-  .dock-dot.dot-working .dock-dot-spinner {
+  /* Only spin while actually working or recently streaming terminal I/O.
+     An always-running animation auto-promotes its element to a compositor
+     layer — so leaving `dock-spin` on every (invisible) spinner kept EVERY
+     idle dock dot on its own layer, inflating the Layerize walk for nothing.
+     Gating on state classes lets idle dots de-promote. The tiny cost — the
+     arc snaps from rest instead of already-moving when activity starts — is
+     imperceptible at 0.9s/rev. */
+  .dock-dot.dot-working .dock-dot-spinner,
+  .dock-dot.dot-terminal-active .dock-dot-spinner {
     opacity: 1;
     animation: dock-spin 0.9s linear infinite;
     /* NB: tried `will-change: transform` here (2026-06-10, 3fb231f) to
@@ -1808,7 +1850,7 @@
        (border + border-radius + rotate on an HTML element) — that composites
        without will-change. */
   }
-  .dock-dot-spinner circle {
+  .dock-dot-spinner :is(circle, rect) {
     fill: none;
     /* Brightened repo tint so the arc is clearly visible against
        whatever's behind the dock. Bumped saturation vs. the solid
@@ -1824,9 +1866,33 @@
        read as motion, short enough that the gap is unambiguous. */
     stroke-dasharray: 35 65;
   }
+  .dock-dot-spinner-rect {
+    display: none;
+  }
+  .dock-dot.agent-shell .dock-dot-spinner circle {
+    display: none;
+  }
+  .dock-dot.agent-shell .dock-dot-spinner-rect {
+    display: block;
+    stroke-dasharray: 24 76;
+    stroke-dashoffset: 0;
+  }
+  .dock-dot.agent-shell.dot-working .dock-dot-spinner,
+  .dock-dot.agent-shell.dot-terminal-active .dock-dot-spinner {
+    animation: none;
+  }
+  .dock-dot.agent-shell.dot-working .dock-dot-spinner-rect,
+  .dock-dot.agent-shell.dot-terminal-active .dock-dot-spinner-rect {
+    animation: dock-rect-dash 0.9s linear infinite;
+  }
   @keyframes dock-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+  @keyframes dock-rect-dash {
+    to {
+      stroke-dashoffset: -100;
     }
   }
 
@@ -1900,6 +1966,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .dock-dot-spinner,
+    .dock-dot-spinner-rect,
     .dock-dot.dot-awaiting .dock-dot-inner,
     .dock-dot.dot-awaiting-urgent .dock-dot-inner,
     .dock-dot.dot-awaiting .dock-dot-inner::after,

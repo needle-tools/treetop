@@ -1,14 +1,14 @@
 /**
- * Perf-regression guard: the dock "working" spinner must only animate while a
- * dot is actually working.
+ * Perf-regression guard: the dock spinner must only animate while a dot is
+ * actually active.
  *
  * An always-running CSS animation auto-promotes its element to a compositor
  * layer (see plans/performance.md + web.dev animations guide). The spinner
  * lives inside EVERY dock dot, so leaving `dock-spin` running unconditionally
  * (even at opacity:0 on idle dots) promoted every idle session circle to its
  * own layer — pure layer-count waste in the Layerize walk. The fix gates the
- * animation on `.dot-working`. If a refactor moves it back onto the bare
- * `.dock-dot-spinner`, this fails loudly.
+ * animation on explicit state classes. If a refactor moves it back onto the
+ * bare `.dock-dot-spinner`, this fails loudly.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -20,10 +20,10 @@ const SOURCE = readFileSync(
 );
 const FLAT = SOURCE.replace(/\s+/g, " ");
 
-describe("dock spinner is gated to working dots", () => {
-  test("dock-spin only animates under a .dot-working selector", () => {
+describe("dock spinner is gated to active dots", () => {
+  test("dock-spin only animates under active-state selectors", () => {
     expect(FLAT).toMatch(
-      /\.dock-dot\.dot-working\s+\.dock-dot-spinner\s*\{[^}]*animation:\s*dock-spin/,
+      /\.dock-dot\.dot-working\s+\.dock-dot-spinner,\s*\.dock-dot\.dot-terminal-active\s+\.dock-dot-spinner\s*\{[^}]*animation:\s*dock-spin/,
     );
   });
 
@@ -34,5 +34,14 @@ describe("dock spinner is gated to working dots", () => {
     const m = FLAT.match(/\.dock-dot-spinner\s*\{([^}]*position:\s*absolute[^}]*)\}/);
     expect(m, "standalone .dock-dot-spinner rule").not.toBeNull();
     expect(m![1]).not.toContain("animation:");
+  });
+
+  test("shell activity animates the rectangle stroke instead of rotating the whole svg", () => {
+    expect(FLAT).toMatch(
+      /\.dock-dot\.agent-shell\.dot-working\s+\.dock-dot-spinner,\s*\.dock-dot\.agent-shell\.dot-terminal-active\s+\.dock-dot-spinner\s*\{[^}]*animation:\s*none/,
+    );
+    expect(FLAT).toMatch(
+      /\.dock-dot\.agent-shell\.dot-working\s+\.dock-dot-spinner-rect,\s*\.dock-dot\.agent-shell\.dot-terminal-active\s+\.dock-dot-spinner-rect\s*\{[^}]*animation:\s*dock-rect-dash/,
+    );
   });
 });

@@ -46,6 +46,8 @@
    *  dirty alongside the repo name without competing with the
    *  worktree-row badges. */
   export let compact = false;
+  /** Red ahead badge for commits that have no remote target yet. */
+  export let danger = false;
 
   $: kind = pickBadgeKind(ahead, behind, dirty);
   $: clickable = onClick !== null;
@@ -56,6 +58,7 @@
     <button
       type="button"
       class="status-badge status-badge-ahead status-badge-clickable"
+      class:status-badge-ahead-danger={danger}
       class:pulsate={pulsate && !busy}
       class:status-badge-compact={compact}
       aria-label={title}
@@ -74,6 +77,7 @@
   {:else}
     <span
       class="status-badge status-badge-ahead"
+      class:status-badge-ahead-danger={danger}
       class:pulsate
       class:status-badge-compact={compact}
       ><svg class="status-badge-arrow" viewBox="0 0 12 12" aria-hidden="true"

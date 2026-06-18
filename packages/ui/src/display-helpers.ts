@@ -193,6 +193,15 @@ export function pushCount(
   return bs.ahead || (bs.unpushed ?? 0);
 }
 
+export function pushBadgeDanger(
+  bs:
+    | { upstream?: string | null; ahead: number; unpushed?: number | null }
+    | null
+    | undefined,
+): boolean {
+  return pushCount(bs) > 0 && !bs?.upstream;
+}
+
 // ---------------------------------------------------------------------------
 // targetGlyph  (was App.svelte ~line 5245)
 // ---------------------------------------------------------------------------

@@ -11,7 +11,9 @@ import {
   TerminalRepaintTracker,
   TerminalWriteBuffer,
   TerminalIoByteAccounting,
+  TERMINAL_ACTIVITY_RECENT_MS,
   formatTerminalIoRate,
+  isTerminalRecentlyActive,
   terminalIoStats,
   terminalIoStatsByKey,
   setTerminalIoStats,
@@ -87,6 +89,7 @@ describe("terminalIoStats", () => {
       txBytesPerSec: 8,
       rxBytesTotal: 4096,
       txBytesTotal: 40,
+      lastActivityAt: 1000,
       hiddenBufferedBytes: 2048,
       hiddenFlushes: 1,
     });
@@ -98,6 +101,7 @@ describe("terminalIoStats", () => {
         txBytesPerSec: 8,
         rxBytesTotal: 4096,
         txBytesTotal: 40,
+        lastActivityAt: 1000,
         hiddenBufferedBytes: 2048,
         hiddenFlushes: 1,
       },
@@ -117,6 +121,7 @@ describe("terminalIoStats", () => {
       txBytesPerSec: 8,
       rxBytesTotal: 1000,
       txBytesTotal: 40,
+      lastActivityAt: 1000,
       hiddenBufferedBytes: 0,
       hiddenFlushes: 1,
     });
@@ -126,6 +131,7 @@ describe("terminalIoStats", () => {
       txBytesPerSec: 2,
       rxBytesTotal: 2000,
       txBytesTotal: 10,
+      lastActivityAt: 2000,
       hiddenBufferedBytes: 512,
       hiddenFlushes: 3,
     });
@@ -138,6 +144,7 @@ describe("terminalIoStats", () => {
       txBytesPerSec: 10,
       rxBytesTotal: 3000,
       txBytesTotal: 50,
+      lastActivityAt: 2000,
       hiddenBufferedBytes: 512,
       hiddenFlushes: 4,
     });
@@ -150,12 +157,62 @@ describe("terminalIoStats", () => {
       txBytesPerSec: 8,
       rxBytesTotal: 1000,
       txBytesTotal: 40,
+      lastActivityAt: 1000,
       hiddenBufferedBytes: 0,
       hiddenFlushes: 1,
     });
     removeTerminalIoStats("a");
 
     expect(get(terminalIoStats).terminals).toBe(0);
+  });
+
+  test("classifies terminals active for a short window after I/O", () => {
+    expect(TERMINAL_ACTIVITY_RECENT_MS).toBe(4_000);
+    expect(
+      isTerminalRecentlyActive(
+        {
+          visible: true,
+          rxBytesPerSec: 0,
+          txBytesPerSec: 0,
+          rxBytesTotal: 0,
+          txBytesTotal: 0,
+          lastActivityAt: 10_000,
+          hiddenBufferedBytes: 0,
+          hiddenFlushes: 0,
+        },
+        13_999,
+      ),
+    ).toBe(true);
+    expect(
+      isTerminalRecentlyActive(
+        {
+          visible: true,
+          rxBytesPerSec: 0,
+          txBytesPerSec: 0,
+          rxBytesTotal: 0,
+          txBytesTotal: 0,
+          lastActivityAt: 10_000,
+          hiddenBufferedBytes: 0,
+          hiddenFlushes: 0,
+        },
+        14_001,
+      ),
+    ).toBe(false);
+    expect(
+      isTerminalRecentlyActive(
+        {
+          visible: true,
+          rxBytesPerSec: 0,
+          txBytesPerSec: 0,
+          rxBytesTotal: 0,
+          txBytesTotal: 0,
+          lastActivityAt: null,
+          hiddenBufferedBytes: 0,
+          hiddenFlushes: 0,
+        },
+        10_000,
+      ),
+    ).toBe(false);
   });
 });
 

@@ -185,11 +185,13 @@
     clampSubject,
     sessionTooltip,
     pushCount,
+    pushBadgeDanger,
     duplicateRepoNotice,
   } from "./display-helpers";
   import { parseNDJSONLines } from "./ndjson-client";
   import {
     formatTerminalIoRate,
+    isTerminalRecentlyActive,
     terminalIoStatsByKey,
   } from "./terminal-write-buffer";
 
@@ -1173,6 +1175,64 @@
   let branchesByWt: Record<string, BranchListing> = {};
   let branchesLoading: Record<string, boolean> = {};
   let branchSortMode: "recency" | "alpha" = "recency";
+  const SELECTED_REMOTE_KEY = "supergit:selectedRemoteByRepo";
+  let selectedRemoteByRepo: Record<string, string> = (() => {
+    try {
+      const raw = getDaemonKV().getItem(SELECTED_REMOTE_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  function selectedRemoteFor(repo: Repo): string | null {
+    const remotes = repo.remotes ?? [];
+    if (remotes.length === 0) return null;
+    const saved = selectedRemoteByRepo[repoPrefsKey(repo)];
+    if (saved && remotes.some((r) => r.name === saved)) return saved;
+    return remotes.find((r) => r.name === "origin")?.name ?? remotes[0]!.name;
+  }
+
+  function selectedRemotesForDaemon(
+    daemonId: string | undefined,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    const prefix = daemonId ? `${daemonId}:` : "";
+    for (const [key, remote] of Object.entries(selectedRemoteByRepo)) {
+      if (daemonId) {
+        if (key.startsWith(prefix)) out[key.slice(prefix.length)] = remote;
+      } else if (!key.includes(":")) {
+        out[key] = remote;
+      }
+    }
+    return out;
+  }
+
+  function selectedRemotesQuery(daemonId: string | undefined): string {
+    const selected = selectedRemotesForDaemon(daemonId);
+    return Object.keys(selected).length > 0
+      ? `?selectedRemotes=${encodeURIComponent(JSON.stringify(selected))}`
+      : "";
+  }
+
+  function setSelectedRemote(repo: Repo, remote: string): void {
+    const key = repoPrefsKey(repo);
+    selectedRemoteByRepo = { ...selectedRemoteByRepo, [key]: remote };
+    getDaemonKV().setItem(
+      SELECTED_REMOTE_KEY,
+      JSON.stringify(selectedRemoteByRepo),
+    );
+    void load();
+  }
+
+  function persistedSelectedRemoteForRepoId(repoId: string): string | null {
+    const repo = repos.find((r) => r.id === repoId);
+    if (!repo) return null;
+    const saved = selectedRemoteByRepo[repoPrefsKey(repo)];
+    return saved && (repo.remotes ?? []).some((r) => r.name === saved)
+      ? saved
+      : null;
+  }
 
   async function loadBranchesFor(repoId: string, wtPath: string) {
     branchesLoading = { ...branchesLoading, [wtPath]: true };
@@ -1355,7 +1415,11 @@
       const res = await fetch(apiUrl(`/api/repos/${repoId}/pull`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: wtPath, ...options }),
+        body: JSON.stringify({
+          path: wtPath,
+          remote: persistedSelectedRemoteForRepoId(repoId),
+          ...options,
+        }),
         signal: AbortSignal.timeout(90_000),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -1556,7 +1620,10 @@
       const res = await fetch(apiUrl(`/api/repos/${repoId}/push`, daemonIdForRepoId(repos, repoId)), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: wtPath }),
+        body: JSON.stringify({
+          path: wtPath,
+          remote: persistedSelectedRemoteForRepoId(repoId),
+        }),
         signal: AbortSignal.timeout(90_000),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -3653,7 +3720,10 @@
     },
     daemonId?: string,
   ): Promise<Repo[]> {
-    const r = await fetch(apiUrl("/api/repos", daemonId), { cache: "no-cache" });
+    const r = await fetch(
+      apiUrl(`/api/repos${selectedRemotesQuery(daemonId)}`, daemonId),
+      { cache: "no-cache" },
+    );
     if (!r.ok) throw new Error(`/api/repos: ${r.status}`);
     if (!r.body) throw new Error("/api/repos: response had no body");
     const reader = r.body.getReader();
@@ -6067,6 +6137,7 @@
     /** True once this column's PTY has exited. Drives the smaller
      *  "ended" dot in the side dock. */
     exited: boolean;
+    terminalActive: boolean;
     /** ms timestamp of the most recent working→idle transition.
      *  Drives the dock dot's "unread" pulse — set when the AI
      *  just finished a turn the user hasn't focused yet. Cleared
@@ -6128,10 +6199,9 @@
             : undefined;
           const meta = realMeta ?? bySource.get(s.source);
           const titleSource = resolveTitleSource(s, known);
+          const terminalIoStats = $terminalIoStatsByKey[s.source];
           const ioStats =
-            $showTerminalIoDebug === true
-              ? $terminalIoStatsByKey[s.source]
-              : undefined;
+            $showTerminalIoDebug === true ? terminalIoStats : undefined;
           out.push({
             source: s.source,
             wtPath: wt.path,
@@ -6168,6 +6238,9 @@
             // TUI right now: PTYs that exited, plus read-mode chat
             // columns (SessionView in mode !== "terminal").
             exited: !isLiveTui,
+            terminalActive:
+              isLiveTui &&
+              isTerminalRecentlyActive(terminalIoStats, Date.now()),
             finishedAt: transientFinishedAt[s.source],
             ioDebugLabel: ioStats
               ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
@@ -6194,6 +6267,7 @@
     );
     let ahead = 0;
     let behind = 0;
+    let aheadDanger = false;
     let staged = 0;
     let unstaged = 0;
     let untracked = 0;
@@ -6203,6 +6277,7 @@
       if (wt.branchStatus) {
         ahead += pushCount(wt.branchStatus);
         behind += wt.branchStatus.behind;
+        aheadDanger = aheadDanger || pushBadgeDanger(wt.branchStatus);
       }
       if (wt.fileStatus) {
         staged += wt.fileStatus.staged;
@@ -6217,6 +6292,7 @@
       repoName: repo.name ?? repoName(repo),
       ahead,
       behind,
+      aheadDanger,
       staged,
       unstaged,
       untracked,
@@ -6238,6 +6314,7 @@
       behind: number;
       dirty: number;
       upstream: string | null;
+      aheadDanger: boolean;
       daemonId: string | undefined;
     }>> = {};
     for (const repo of repos) {
@@ -6252,6 +6329,7 @@
         behind: number;
         dirty: number;
         upstream: string | null;
+        aheadDanger: boolean;
         daemonId: string | undefined;
       }> = [];
       for (const wt of repo.worktrees ?? []) {
@@ -6273,6 +6351,7 @@
           behind,
           dirty,
           upstream: wt.branchStatus?.upstream ?? null,
+          aheadDanger: pushBadgeDanger(wt.branchStatus),
           daemonId: daemonIdForWorktreePath(repos, wt.path),
         });
       }
@@ -8038,6 +8117,28 @@
                               : "A–Z"} ↻
                           </button>
                         </svelte:fragment>
+                        {#if (repo.remotes ?? []).length > 1}
+                          <label
+                            class="branch-remote-field"
+                            on:click|stopPropagation
+                          >
+                            <span>Remote</span>
+                            <select
+                              value={selectedRemoteFor(repo) ?? ""}
+                              on:change={(e) =>
+                                setSelectedRemote(
+                                  repo,
+                                  (e.currentTarget as HTMLSelectElement).value,
+                                )}
+                            >
+                              {#each repo.remotes ?? [] as remote (remote.name)}
+                                <option value={remote.name}>
+                                  {remote.name}
+                                </option>
+                              {/each}
+                            </select>
+                          </label>
+                        {/if}
                         {#if branchesLoading[wt.path]}
                           <p class="muted small nopad">Loading branches…</p>
                         {:else}
@@ -8128,6 +8229,7 @@
                       <span slot="trigger" class="status-badge-trigger">
                         <StatusBadge
                           ahead={fAhead}
+                          danger={pushBadgeDanger(wt.branchStatus)}
                           pulsate={wt.branchStatus
                             ? aheadAged(wt.branchStatus)
                             : false}

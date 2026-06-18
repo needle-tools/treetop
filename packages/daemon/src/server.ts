@@ -1314,8 +1314,10 @@ function broadcast(event: string, data: unknown): void {
 // sufficient. Cache hits stream the same shape from memory.
 const REPOS_CACHE_MS = 2500;
 type EnrichedRepo = Record<string, unknown> & { id: string };
-let reposInflight: Promise<EnrichedRepo[]> | null = null;
-let reposCache: { at: number; value: EnrichedRepo[] } | null = null;
+let reposInflight: { key: string; promise: Promise<EnrichedRepo[]> } | null =
+  null;
+let reposCache: { at: number; key: string; value: EnrichedRepo[] } | null =
+  null;
 let repsCacheGen = 0;
 
 // /api/agent-usage caches its (detectAgents + computeAgentUsage)
@@ -1368,8 +1370,8 @@ async function sharedDetectAgents(): Promise<AgentSession[]> {
   return agentsInflight;
 }
 
-// Per-worktree git-status cache. Keyed by worktree path; invalidated
-// selectively when the fs watcher fires for that specific path. Without
+// Per-worktree git-status cache. Keyed by worktree path + selected remote;
+// invalidated selectively when the fs watcher fires for that path. Without
 // this, /api/repos spawns 3 git subprocesses per worktree on every
 // refresh — a workspace with 5 repos × 3 worktrees = 45 processes.
 // With the cache, only worktrees that actually changed re-run git.
@@ -1389,18 +1391,32 @@ const WORKTREE_DETAILS_CACHE_MS = 5_000;
 const WORKTREE_DETAILS_CONCURRENCY = 8;
 const worktreeDetailLimit = createLimiter(WORKTREE_DETAILS_CONCURRENCY);
 
-function getCachedWorktreeDetails(wtPath: string): WorktreeDetails | null {
-  const cached = worktreeDetailsCache.get(wtPath);
+function worktreeDetailsCacheKey(
+  wtPath: string,
+  remote?: string | null,
+): string {
+  return `${wtPath}\0${remote ?? ""}`;
+}
+
+function getCachedWorktreeDetails(
+  wtPath: string,
+  remote?: string | null,
+): WorktreeDetails | null {
+  const key = worktreeDetailsCacheKey(wtPath, remote);
+  const cached = worktreeDetailsCache.get(key);
   if (!cached) return null;
   if (Date.now() - cached.at > WORKTREE_DETAILS_CACHE_MS) {
-    worktreeDetailsCache.delete(wtPath);
+    worktreeDetailsCache.delete(key);
     return null;
   }
   return cached.value;
 }
 
 function invalidateWorktreeDetails(wtPath: string): void {
-  worktreeDetailsCache.delete(wtPath);
+  const prefix = `${wtPath}\0`;
+  for (const key of worktreeDetailsCache.keys()) {
+    if (key.startsWith(prefix)) worktreeDetailsCache.delete(key);
+  }
 }
 
 // fs-watcher reaction: recompute just the changed worktree's git state and
@@ -1429,7 +1445,10 @@ async function onWorktreeFsChange(wtPath: string): Promise<void> {
     broadcast("change", { kind: "fs_change", path: wtPath });
     return;
   }
-  worktreeDetailsCache.set(wtPath, { at: Date.now(), value: details });
+  worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath), {
+    at: Date.now(),
+    value: details,
+  });
   if (reposCache) {
     patchWorktreeDetailsInRepos(
       reposCache.value as Array<{ worktrees?: unknown }>,
@@ -1526,15 +1545,67 @@ function reposNDJSONFromCache(
 /** Fresh build that yields each repo as soon as its worktrees finish
  *  enriching. Also populates the cache + resolves `reposInflight` so
  *  concurrent callers can share the work. */
-function reposNDJSONFresh(cors: Record<string, string>): Response {
+function selectedRemoteForRepo(
+  selectedRemotes: Record<string, string>,
+  repoId: string,
+  remotes: { name: string }[],
+): string | null {
+  const selected = selectedRemotes[repoId];
+  if (!selected) return null;
+  return remotes.some((r) => r.name === selected) ? selected : null;
+}
+
+function reposSelectionCacheKey(selectedRemotes: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(selectedRemotes)
+      .sort()
+      .map((key) => [key, selectedRemotes[key]]),
+  );
+}
+
+function parseSelectedRemotesParam(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (
+        typeof key === "string" &&
+        typeof value === "string" &&
+        key.length > 0 &&
+        value.length > 0
+      ) {
+        out[key] = value;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Fresh build that yields each repo as soon as its worktrees finish
+ *  enriching. Also populates the cache + resolves `reposInflight` so
+ *  concurrent callers can share the work. */
+function reposNDJSONFresh(
+  cors: Record<string, string>,
+  selectedRemotes: Record<string, string>,
+  cacheKey: string,
+): Response {
   const enc = new TextEncoder();
   const myGen = repsCacheGen;
   let resolveInflight: (v: EnrichedRepo[]) => void;
   let rejectInflight: (e: unknown) => void;
-  reposInflight = new Promise<EnrichedRepo[]>((res, rej) => {
-    resolveInflight = res;
-    rejectInflight = rej;
-  });
+  reposInflight = {
+    key: cacheKey,
+    promise: new Promise<EnrichedRepo[]>((res, rej) => {
+      resolveInflight = res;
+      rejectInflight = rej;
+    }),
+  };
 
   // Client may abort mid-stream (fast page reload, navigating away).
   // Once that happens the underlying controller is closed and any
@@ -1609,18 +1680,33 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
                   ]),
                   titledP,
                 ]);
+                const selectedRemote = selectedRemoteForRepo(
+                  selectedRemotes,
+                  repo.id,
+                  remotes,
+                );
                 const withDetails = await Promise.all(
                   worktrees.map(async (wt) => {
                     const tWt = performance.now();
-                    let details = getCachedWorktreeDetails(wt.path);
+                    let details = getCachedWorktreeDetails(
+                      wt.path,
+                      selectedRemote,
+                    );
                     if (!details) {
                       details = await worktreeDetailLimit(() =>
-                        getWorktreeDetails(wt.path),
+                        selectedRemote
+                          ? getWorktreeDetails(wt.path, {
+                              remote: selectedRemote,
+                            })
+                          : getWorktreeDetails(wt.path),
                       );
-                      worktreeDetailsCache.set(wt.path, {
-                        at: Date.now(),
-                        value: details,
-                      });
+                      worktreeDetailsCache.set(
+                        worktreeDetailsCacheKey(wt.path, selectedRemote),
+                        {
+                          at: Date.now(),
+                          value: details,
+                        },
+                      );
                     }
                     perWorktreeMs.push({
                       wt: wt.path,
@@ -1660,7 +1746,7 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
             .map((r) => byId.get(r.id))
             .filter((r): r is EnrichedRepo => r !== undefined);
           if (myGen === repsCacheGen) {
-            reposCache = { at: Date.now(), value: ordered };
+            reposCache = { at: Date.now(), key: cacheKey, value: ordered };
           }
           resolveInflight(ordered);
           const totalMs = performance.now() - t0;
@@ -1711,18 +1797,24 @@ function reposNDJSONFresh(cors: Record<string, string>): Response {
 async function reposNDJSONResponse(
   cors: Record<string, string>,
   jsonErr: (body: unknown, init?: ResponseInit) => Response,
+  selectedRemotes: Record<string, string>,
 ): Promise<Response> {
   const now = Date.now();
-  if (reposCache && now - reposCache.at < REPOS_CACHE_MS) {
+  const cacheKey = reposSelectionCacheKey(selectedRemotes);
+  if (
+    reposCache &&
+    reposCache.key === cacheKey &&
+    now - reposCache.at < REPOS_CACHE_MS
+  ) {
     return reposNDJSONFromCache(reposCache.value, cors);
   }
-  if (reposInflight) {
+  if (reposInflight && reposInflight.key === cacheKey) {
     // Concurrent caller during a fresh build — wait for it, then
     // replay the cached array. We could splice ourselves into the
     // live stream, but a wait+replay is simpler and the cost is
     // bounded by the in-flight build's own latency.
     try {
-      const value = await reposInflight;
+      const value = await reposInflight.promise;
       return reposNDJSONFromCache(value, cors);
     } catch (err) {
       return jsonErr(
@@ -1731,7 +1823,7 @@ async function reposNDJSONResponse(
       );
     }
   }
-  return reposNDJSONFresh(cors);
+  return reposNDJSONFresh(cors, selectedRemotes, cacheKey);
 }
 
 /** Invalidate the /api/repos result cache. Call from mutating routes so
@@ -3284,7 +3376,11 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/repos" && req.method === "GET") {
-        return reposNDJSONResponse(CORS, json);
+        return reposNDJSONResponse(
+          CORS,
+          json,
+          parseSelectedRemotesParam(url.searchParams.get("selectedRemotes")),
+        );
       }
 
       if (url.pathname === "/api/agents" && req.method === "GET") {
@@ -6521,16 +6617,24 @@ const server = Bun.serve<TermWsData, never>({
           const body = (await req.json().catch(() => null)) as {
             path?: unknown;
             preStash?: unknown;
+            remote?: unknown;
           } | null;
           const wtPath = body?.path;
           const preStash = body?.preStash === true;
+          const remote = typeof body?.remote === "string" ? body.remote : null;
           if (typeof wtPath !== "string" || wtPath.trim().length === 0) {
             return json({ error: "body.path is required" }, { status: 400 });
           }
           const repos = await workspace.listRepos();
           const repo = repos.find((r) => r.id === id);
           if (!repo) return json({ error: "repo not found" }, { status: 404 });
-          const result = await pullFastForward(wtPath, { preStash });
+          const remotes = remote ? await listRemotes(repo.path) : [];
+          const selectedRemote =
+            remote && remotes.some((r) => r.name === remote) ? remote : null;
+          const result = await pullFastForward(wtPath, {
+            preStash,
+            remote: selectedRemote,
+          });
           if (result.ok) {
             await events.append({
               type: "pull",
@@ -6573,15 +6677,22 @@ const server = Bun.serve<TermWsData, never>({
           const id = m[1]!;
           const body = (await req.json().catch(() => null)) as {
             path?: unknown;
+            remote?: unknown;
           } | null;
           const wtPath = body?.path;
+          const remote = typeof body?.remote === "string" ? body.remote : null;
           if (typeof wtPath !== "string" || wtPath.trim().length === 0) {
             return json({ error: "body.path is required" }, { status: 400 });
           }
           const repos = await workspace.listRepos();
           const repo = repos.find((r) => r.id === id);
           if (!repo) return json({ error: "repo not found" }, { status: 404 });
-          const result = await pushUpstream(wtPath);
+          const remotes = remote ? await listRemotes(repo.path) : [];
+          const selectedRemote =
+            remote && remotes.some((r) => r.name === remote) ? remote : null;
+          const result = await pushUpstream(wtPath, {
+            remote: selectedRemote,
+          });
           if (result.ok) {
             await events.append({
               type: "push",

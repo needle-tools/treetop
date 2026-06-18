@@ -13,6 +13,7 @@ import {
   fileManagerIcon,
   remoteButtonLabel,
   pushCount,
+  pushBadgeDanger,
 } from "../src/display-helpers";
 import type { RemoteRef } from "../src/display-helpers";
 
@@ -273,5 +274,25 @@ describe("pushCount", () => {
     expect(pushCount({ ahead: 0, unpushed: null })).toBe(0);
     expect(pushCount({ ahead: 0, unpushed: 0 })).toBe(0);
     expect(pushCount({ ahead: 0 })).toBe(0);
+  });
+});
+
+describe("pushBadgeDanger", () => {
+  it("marks unpushed commits with no remote target as danger", () => {
+    expect(pushBadgeDanger({ upstream: null, ahead: 0, unpushed: 2 })).toBe(
+      true,
+    );
+  });
+
+  it("keeps normal ahead commits green when a remote target exists", () => {
+    expect(
+      pushBadgeDanger({ upstream: "origin/main", ahead: 2, unpushed: null }),
+    ).toBe(false);
+  });
+
+  it("does not mark zero-count no-remote branches as danger", () => {
+    expect(pushBadgeDanger({ upstream: null, ahead: 0, unpushed: 0 })).toBe(
+      false,
+    );
   });
 });

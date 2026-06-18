@@ -24,6 +24,7 @@ import {
   mainWorktreePathFor,
   pullFastForward,
   pushUpstream,
+  getSelectedRemoteBranchStatus,
   type Worktree,
 } from "../src/git";
 import { stat } from "node:fs/promises";
@@ -332,6 +333,37 @@ describe("getWorktreeDetails against real git", () => {
     await $`git -C ${repo} push -u origin main -q`.quiet();
     const details = await getWorktreeDetails(repo);
     expect(details.branchStatus?.upstream).toBe("origin/main");
+    expect(details.branchStatus?.unpushed).toBeNull();
+  });
+
+  test("selected remote without a matching branch does not mask a worktree's configured upstream", async () => {
+    const upstreamBare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-upstream-bare-")),
+    );
+    await $`git -C ${upstreamBare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add origin ${upstreamBare}`.quiet();
+    await $`git -C ${repo} push -u origin main -q`.quiet();
+
+    const wtParent = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-wt-upstream-")),
+    );
+    const wtPath = join(wtParent, "feature");
+    await $`git -C ${repo} worktree add ${wtPath} -b feature -q`.quiet();
+    await $`git -C ${wtPath} commit --allow-empty -m remote-feature -q`.quiet();
+    await $`git -C ${wtPath} push -u origin feature -q`.quiet();
+    await $`git -C ${wtPath} commit --allow-empty -m local-feature -q`.quiet();
+
+    const otherBare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-other-bare-")),
+    );
+    await $`git -C ${otherBare} init -q --bare -b main`.quiet();
+    await $`git -C ${repo} remote add upstream ${otherBare}`.quiet();
+    await $`git -C ${repo} push -q upstream main`.quiet();
+
+    const details = await getWorktreeDetails(wtPath, { remote: "upstream" });
+    expect(details.branchStatus?.upstream).toBe("origin/feature");
+    expect(details.branchStatus?.ahead).toBe(1);
     expect(details.branchStatus?.unpushed).toBeNull();
   });
 });
@@ -1057,6 +1089,30 @@ describe("pullFastForward against real git", () => {
     ).stdout.toString();
     expect(stashList).toContain("supergit-auto");
   });
+
+  test("uses the selected remote branch instead of the configured upstream", async () => {
+    const { a, b } = await tempRepoTrio();
+    const upstreamBare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-upstream-bare-")),
+    );
+    await $`git -C ${upstreamBare} init -q --bare -b main`.quiet();
+    await $`git -C ${a} remote add upstream ${upstreamBare}`.quiet();
+    await $`git -C ${a} push -q upstream main`.quiet();
+
+    await writeFile(join(b, "origin-only.txt"), "origin\n");
+    await $`git -C ${b} add origin-only.txt`.quiet();
+    await $`git -C ${b} commit -m origin-only -q`.quiet();
+    await $`git -C ${b} push -q`.quiet();
+    await $`git -C ${a} fetch -q origin`.quiet();
+
+    const originStatus = await getSelectedRemoteBranchStatus(a, "origin");
+    const upstreamStatus = await getSelectedRemoteBranchStatus(a, "upstream");
+
+    expect(originStatus?.upstream).toBe("origin/main");
+    expect(originStatus?.behind).toBe(1);
+    expect(upstreamStatus?.upstream).toBe("upstream/main");
+    expect(upstreamStatus?.behind).toBe(0);
+  });
 });
 
 describe("pushUpstream against real git", () => {
@@ -1084,6 +1140,38 @@ describe("pushUpstream against real git", () => {
       .toString()
       .trim();
     expect(remoteHead).toBe(localHead);
+  });
+
+  test("pushes to the selected remote instead of the configured upstream", async () => {
+    const { a, bare } = await tempRepoTrio();
+    const upstreamBare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-push-upstream-bare-")),
+    );
+    await $`git -C ${upstreamBare} init -q --bare -b main`.quiet();
+    await $`git -C ${a} remote add upstream ${upstreamBare}`.quiet();
+    await $`git -C ${a} push -q upstream main`.quiet();
+
+    await writeFile(join(a, "to-upstream.txt"), "upstream\n");
+    await $`git -C ${a} add to-upstream.txt`.quiet();
+    await $`git -C ${a} commit -m to-upstream -q`.quiet();
+
+    const r = await pushUpstream(a, { remote: "upstream" });
+    expect(r.ok).toBe(true);
+    const localHead = (await $`git -C ${a} rev-parse HEAD`.quiet()).stdout
+      .toString()
+      .trim();
+    const upstreamHead = (
+      await $`git -C ${upstreamBare} rev-parse refs/heads/main`.quiet()
+    ).stdout
+      .toString()
+      .trim();
+    const originHead = (
+      await $`git -C ${bare} rev-parse refs/heads/main`.quiet()
+    ).stdout
+      .toString()
+      .trim();
+    expect(upstreamHead).toBe(localHead);
+    expect(originHead).not.toBe(localHead);
   });
 
   test("fails (non-fast-forward) when remote has diverged", async () => {

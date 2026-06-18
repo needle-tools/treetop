@@ -38,6 +38,7 @@
     path: string;
     branch: string;
     ahead: number;
+    aheadDanger?: boolean;
     behind: number;
     dirty: number;
     upstream: string | null;

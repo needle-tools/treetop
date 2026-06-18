@@ -260,8 +260,15 @@
   let txBytesPerSec = 0;
   let rxBytesTotal = 0;
   let txBytesTotal = 0;
+  let lastIoActivityAt: number | null = null;
+
+  function noteIoActivity(bytes: number): void {
+    if (bytes <= 0) return;
+    lastIoActivityAt = Date.now();
+  }
 
   function recordRx(bytes: number): void {
+    noteIoActivity(bytes);
     rxWindowBytes += bytes;
     rxBytesTotal += bytes;
   }
@@ -272,6 +279,7 @@
   }
 
   function recordTx(bytes: number): void {
+    noteIoActivity(bytes);
     txWindowBytes += bytes;
     txBytesTotal += bytes;
   }
@@ -669,6 +677,7 @@
       txBytesPerSec,
       rxBytesTotal,
       txBytesTotal,
+      lastActivityAt: lastIoActivityAt,
       hiddenBufferedBytes: writeBuffer.pendingBytes,
       hiddenFlushes,
     });

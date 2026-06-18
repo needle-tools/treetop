@@ -792,6 +792,10 @@ button.branch-button:hover {
   overflow: hidden;
   isolation: isolate;
 }
+.status-badge-ahead-danger {
+  color: var(--error-text);
+  background: var(--error-bg);
+}
 /* Two narrow edge strips (left = ::before, right = ::after) instead of
    a full-width pseudo masked down to the edges. CSS masks force a
    per-frame repaint of the whole masked layer even when only `transform`
@@ -822,6 +826,18 @@ button.branch-button:hover {
   );
   animation: badge-edge-flow-up 1.8s linear infinite;
   pointer-events: none;
+}
+.status-badge-ahead-danger::before,
+.status-badge-ahead-danger::after {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--error-text) 100%, transparent) 12%,
+    color-mix(in srgb, var(--error-text) 60%, transparent) 30%,
+    color-mix(in srgb, var(--error-text) 30%, transparent) 55%,
+    color-mix(in srgb, var(--error-text) 12%, transparent) 80%,
+    transparent 100%
+  );
 }
 .status-badge-ahead::before {
   left: 0;
@@ -868,6 +884,25 @@ button.branch-button:hover {
     background: #1f8a4a;
   }
 }
+.status-badge-ahead-danger.pulsate {
+  animation-name: status-badge-ahead-danger-blink;
+}
+@keyframes status-badge-ahead-danger-blink {
+  0%,
+  4%,
+  14%,
+  18%,
+  28%,
+  100% {
+    background: var(--error-bg);
+  }
+  5%,
+  13%,
+  19%,
+  27% {
+    background: color-mix(in srgb, var(--error-bg) 65%, var(--error-text));
+  }
+}
 /* Respect prefers-reduced-motion: drop both the heartbeat and the
    edge-flow streak, but keep a brighter background-mix as a static
    cue so the pill still reads as "unpushed work present." */
@@ -879,6 +914,15 @@ button.branch-button:hover {
       in srgb,
       var(--chip-green-bg) 55%,
       var(--chip-green-text) 45%
+    );
+  }
+  .status-badge-ahead-danger,
+  .status-badge-ahead-danger.pulsate {
+    animation: none;
+    background: color-mix(
+      in srgb,
+      var(--error-bg) 55%,
+      var(--error-text) 45%
     );
   }
   .status-badge-ahead::before,

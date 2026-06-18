@@ -527,14 +527,32 @@ export interface PullResult {
  *      a conflict and the stash was kept so the user can recover. */
 export async function pullFastForward(
   worktreePath: string,
-  options: { preStash?: boolean } = {},
+  options: { preStash?: boolean; remote?: string | null } = {},
 ): Promise<PullResult> {
+  const targetRef = async (): Promise<string> => {
+    if (!options.remote) return "@{u}";
+    const branch = await currentBranchName(worktreePath);
+    if (!branch) return "";
+    const ref = `refs/remotes/${options.remote}/${branch}`;
+    return (await remoteBranchRefExists(worktreePath, ref)) ? ref : "";
+  };
+
   const run = async (): Promise<PullResult> => {
     let r;
     try {
+      const target = await targetRef();
+      if (!target) {
+        return {
+          ok: false,
+          kind: "no_upstream",
+          message: options.remote
+            ? `No ${options.remote}/${(await currentBranchName(worktreePath)) ?? "HEAD"} remote branch.`
+            : "Branch has no upstream.",
+        };
+      }
       r = await runGitWithLockRetry(() =>
         raceTimeout(
-          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only @{u}`
+          $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} merge --ff-only ${target}`
             .quiet()
             .nothrow(),
           PUSH_PULL_TIMEOUT_MS,
@@ -660,12 +678,23 @@ export interface PushResult {
 /** Run `git push` in `worktreePath`, using whatever upstream the branch
  *  is configured to track. No `--force` — non-fast-forward failures
  *  surface to the caller verbatim so the UI can show them in a toast. */
-export async function pushUpstream(worktreePath: string): Promise<PushResult> {
+export async function pushUpstream(
+  worktreePath: string,
+  options: { remote?: string | null } = {},
+): Promise<PushResult> {
   let r;
   try {
+    const branch = options.remote ? await currentBranchName(worktreePath) : null;
+    const refspec = branch ? `HEAD:refs/heads/${branch}` : null;
     r = await runGitWithLockRetry(() =>
       raceTimeout(
-        $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`.quiet().nothrow(),
+        options.remote && refspec
+          ? $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push ${options.remote} ${refspec}`
+              .quiet()
+              .nothrow()
+          : $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`
+              .quiet()
+              .nothrow(),
         PUSH_PULL_TIMEOUT_MS,
         "git push",
       ),
@@ -935,6 +964,7 @@ export function parseWorktreeList(porcelain: string): Worktree[] {
 
 export async function getWorktreeDetails(
   worktreePath: string,
+  options: { remote?: string | null } = {},
 ): Promise<WorktreeDetails> {
   try {
     // Speculative third call: oldest local commit not on upstream. Errors
@@ -957,7 +987,16 @@ export async function getWorktreeDetails(
           .catch(() => ""),
       ],
     );
-    const branchStatus = parseBranchStatus(statusOut);
+    let branchStatus = parseBranchStatus(statusOut);
+    if (branchStatus && options.remote) {
+      const selectedStatus = await getSelectedRemoteBranchStatus(
+        worktreePath,
+        options.remote,
+      );
+      if (selectedStatus?.upstream || !branchStatus.upstream) {
+        branchStatus = selectedStatus ?? branchStatus;
+      }
+    }
     if (branchStatus && branchStatus.ahead > 0) {
       const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
       if (oldest.length > 0) branchStatus.aheadOldestTime = oldest;
@@ -997,6 +1036,73 @@ export async function getWorktreeDetails(
       lastCommit: null,
     };
   }
+}
+
+async function currentBranchName(worktreePath: string): Promise<string | null> {
+  const out = await $`git -C ${worktreePath} symbolic-ref --quiet --short HEAD`
+    .quiet()
+    .nothrow();
+  const branch = out.stdout.toString().trim();
+  return out.exitCode === 0 && branch.length > 0 ? branch : null;
+}
+
+async function remoteBranchRefExists(
+  worktreePath: string,
+  remoteRef: string,
+): Promise<boolean> {
+  const out =
+    await $`git -C ${worktreePath} rev-parse --verify --quiet ${remoteRef}^{commit}`
+      .quiet()
+      .nothrow();
+  return out.exitCode === 0;
+}
+
+export async function getSelectedRemoteBranchStatus(
+  worktreePath: string,
+  remote: string,
+): Promise<BranchStatus | null> {
+  const branch = await currentBranchName(worktreePath);
+  if (!branch) return null;
+  const remoteRef = `refs/remotes/${remote}/${branch}`;
+  if (await remoteBranchRefExists(worktreePath, remoteRef)) {
+    const [countsOut, oldestOut] = await Promise.all([
+      $`git -C ${worktreePath} rev-list --left-right --count HEAD...${remoteRef}`
+        .quiet()
+        .text()
+        .catch(() => ""),
+      $`git -C ${worktreePath} log ${remoteRef}..HEAD --reverse --format=%cI`
+        .quiet()
+        .text()
+        .catch(() => ""),
+    ]);
+    const [aheadRaw, behindRaw] = countsOut.trim().split(/\s+/);
+    const ahead = Number.parseInt(aheadRaw ?? "0", 10);
+    const behind = Number.parseInt(behindRaw ?? "0", 10);
+    const aheadOldestTime = oldestOut.split("\n")[0]?.trim() || null;
+    return {
+      branch,
+      upstream: `${remote}/${branch}`,
+      ahead: Number.isNaN(ahead) ? 0 : ahead,
+      behind: Number.isNaN(behind) ? 0 : behind,
+      aheadOldestTime,
+      unpushed: null,
+    };
+  }
+
+  const countOut =
+    await $`git -C ${worktreePath} rev-list --count HEAD --not --remotes=${remote}`
+      .quiet()
+      .text()
+      .catch(() => "");
+  const unpushed = Number.parseInt(countOut.trim(), 10);
+  return {
+    branch,
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    aheadOldestTime: null,
+    unpushed: Number.isNaN(unpushed) ? null : unpushed,
+  };
 }
 
 export function parseFileStatus(porcelain: string): FileStatus {
