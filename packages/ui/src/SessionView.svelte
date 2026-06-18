@@ -2070,14 +2070,22 @@
         inputType: blob.type || null,
         types: opts.types,
       });
+      const shrinkStarted = performance.now();
       const shrunk = await shrinkImageBlob(blob);
+      const shrinkMs = Math.round(performance.now() - shrinkStarted);
       logComposerAttach(debugId, "shrink-complete", startedAt, {
         outputBytes: shrunk.size,
         outputType: shrunk.type || null,
         changed: shrunk !== blob,
+        shrinkMs,
       });
+      const alphaStarted = performance.now();
       const hasAlpha = await imageBlobHasAlpha(shrunk);
-      logComposerAttach(debugId, "alpha-complete", startedAt, { hasAlpha });
+      const alphaMs = Math.round(performance.now() - alphaStarted);
+      logComposerAttach(debugId, "alpha-complete", startedAt, {
+        hasAlpha,
+        alphaMs,
+      });
       const filename =
         opts.filename && opts.filename !== "blob" ? opts.filename : undefined;
       const form = new FormData();
@@ -2087,6 +2095,17 @@
       );
       form.append("source", "codex-visual-image-paste");
       form.append("pasteDebugId", debugId);
+      form.append("clientSource", opts.source);
+      form.append("clientInputBytes", String(blob.size));
+      form.append("clientOutputBytes", String(shrunk.size));
+      if (blob.type) form.append("clientInputType", blob.type);
+      if (shrunk.type) form.append("clientOutputType", shrunk.type);
+      form.append("clientShrinkMs", String(shrinkMs));
+      form.append("clientAlphaMs", String(alphaMs));
+      form.append(
+        "clientBeforeUploadMs",
+        String(Math.round(performance.now() - startedAt)),
+      );
       logComposerAttach(debugId, "upload-start", startedAt, {
         uploadBytes: shrunk.size,
       });

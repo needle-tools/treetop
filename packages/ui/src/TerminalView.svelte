@@ -47,9 +47,15 @@
     type ConfigActionKind,
     type ConfigActionState,
   } from "./config-error-action";
-  import { describeWsClose, terminalWsCloseRepresentsExit } from "./errors";
+  import {
+    describeWsClose,
+    recordBrowserDiagnostic,
+    terminalWsCloseRepresentsExit,
+  } from "./errors";
   import { settingValue, getSetting, setSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
+
+  type PasteDebugExtra = Record<string, string | number | boolean | null>;
 
   const REPAINT_DEBUG_MAX_CELLS = 120;
   const REPAINT_DEBUG_TTL_MS = 520;
@@ -276,6 +282,20 @@
     return String(bytes);
   }
 
+  function makePasteDebugId(): string {
+    return `p_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+  }
+
+  function roundMs(ms: number): number {
+    return Math.round(ms);
+  }
+
+  function clipboardTypesLabel(types: string[]): string {
+    return types.slice(0, 16).join(",");
+  }
+
   function writeDebugToggle(key: string, checked: boolean): void {
     setSetting(key, checked);
   }
@@ -291,7 +311,7 @@
   function sendPasteDebug(
     id: string,
     phase: string,
-    extra: Record<string, string | number | boolean | null> = {},
+    extra: PasteDebugExtra = {},
   ): boolean {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try {
@@ -320,10 +340,11 @@
     );
   }
 
-  function sendNativeImagePaste(source: string): void {
-    const pasteDebugId = `p_${Date.now().toString(36)}_${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+  function sendNativeImagePaste(
+    source: string,
+    extra: PasteDebugExtra = {},
+  ): void {
+    const pasteDebugId = makePasteDebugId();
     const sent = sendTerminalInput(new Uint8Array([0x16]));
     sendPasteDebug(
       pasteDebugId,
@@ -331,6 +352,7 @@
       {
         mode: "direct",
         source,
+        ...extra,
       },
     );
     if (!sent) {
@@ -507,6 +529,20 @@
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
+  const startupTraceId = `term_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  const startupStartedAt = performance.now();
+  let startupLastLogAt = startupStartedAt;
+  let firstControlFrameLogged = false;
+  let firstOutputFrameLogged = false;
+  let startupLastFlushedCount = 0;
+  let startupEvents: Array<{
+    event: string;
+    elapsedMs: number;
+    sincePrevMs: number;
+    extra: Record<string, unknown>;
+  }> = [];
   /** Set when the WS fires `onerror` (which carries no detail). Lets the
    *  `onclose` that always follows compose the real message from the close
    *  code + reason instead of a bare "WebSocket error". */
@@ -519,24 +555,6 @@
   let exitInfo: { code: number; signal?: string } | null = null;
   let sawExitFrame = false;
   let focused = false;
-  /** Hard ceiling on how long we sit in `phase === "starting"`. POST
-   *  /api/terminals + WS handshake should take well under a second in
-   *  the happy path; 10s covers a slow machine + cold module init.
-   *  Beyond that the user is staring at a spinner with no signal — we
-   *  flip to error so they can close + retry instead of waiting forever. */
-  const STARTUP_TIMEOUT_MS = 10_000;
-  let startupTimer: ReturnType<typeof setTimeout> | null = null;
-  let startupAbort: AbortController | null = null;
-  /** On a cold daemon restart, every column respawns its PTY at once
-   *  while /api/repos enrich is scanning the workspace — the single
-   *  daemon event loop can stall a POST /api/terminals past the guard
-   *  above. That's transient, so rather than dropping the column to an
-   *  error on the first miss, auto-retry the spawn a couple of times
-   *  with a short backoff; only give up after MAX_SPAWN_ATTEMPTS. */
-  const MAX_SPAWN_ATTEMPTS = 3;
-  const SPAWN_RETRY_BACKOFF_MS = 750;
-  let spawnAttempts = 0;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the column is asked to RE-ATTACH to a pre-existing PTY
    *  (`attachTermId`) but that PTY is gone — most often because the daemon
    *  restarted, so every prior terminal id is dead and the WS upgrade 404s
@@ -574,12 +592,11 @@
     setCurrentWorking(true);
   }
 
-  /** Drop a socket's event handlers before closing it mid-startup (during
-   *  a retry). Otherwise its onclose fires while we're still
-   *  `phase === "starting"` and wrongly flips the column to "exited",
-   *  killing the retry. (Param is `s`, not `ws`, on purpose: a
-   *  source-scanning regression test keys off the first literal
-   *  `ws.onopen` being the real open handler below.) */
+  /** Drop a socket's event handlers before closing it deliberately. Otherwise
+   *  the socket's onclose path can misreport a user/interface teardown as a
+   *  terminal exit. (Param is `s`, not `ws`, on purpose: a source-scanning
+   *  regression test keys off the first literal `ws.onopen` being the real
+   *  open handler below.) */
   function detachSocket(s: WebSocket): void {
     s.onopen = s.onmessage = s.onerror = s.onclose = null;
   }
@@ -594,6 +611,55 @@
     const visible = isTerminalVisible && !document.hidden;
     const drain = !document.hidden;
     ws.send(JSON.stringify({ type: "visibility", visible, drain }));
+  }
+
+  function logTerminalStartup(
+    event: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const now = performance.now();
+    const elapsedMs = roundMs(now - startupStartedAt);
+    const sincePrevMs = roundMs(now - startupLastLogAt);
+    startupLastLogAt = now;
+    startupEvents = [
+      ...startupEvents,
+      { event, elapsedMs, sincePrevMs, extra },
+    ].slice(-64);
+  }
+
+  function flushTerminalStartupLog(
+    reason: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    if (startupEvents.length === 0) return;
+    const eventsSinceLastFlush = startupEvents.length - startupLastFlushedCount;
+    startupLastFlushedCount = startupEvents.length;
+    recordBrowserDiagnostic(`terminal-startup trace=${startupTraceId}`, {
+      reason,
+      traceId: startupTraceId,
+      elapsedMs: roundMs(performance.now() - startupStartedAt),
+      eventsSinceLastFlush,
+      ownerId: ownerId ?? null,
+      termId: terminalId || null,
+      attachTermId: attachTermId ?? null,
+      daemonId: daemonId ?? null,
+      agent: agent ?? null,
+      phase,
+      attachedThisAttempt,
+      triedAttachFallback,
+      documentHidden: typeof document === "undefined" ? null : document.hidden,
+      isTerminalVisible,
+      containerWidth: containerEl?.clientWidth ?? null,
+      containerHeight: containerEl?.clientHeight ?? null,
+      xtermCols: xterm?.cols ?? null,
+      xtermRows: xterm?.rows ?? null,
+      wsReadyState: ws?.readyState ?? null,
+      cmd0: cmd[0] ?? null,
+      cmdLen: cmd.length,
+      cwd,
+      events: startupEvents,
+      ...extra,
+    });
   }
 
   function publishTerminalIoStats(): void {
@@ -759,18 +825,6 @@
     if (batch) xterm.write(batch);
   }
 
-  function clearStartupGuard() {
-    if (startupTimer !== null) {
-      clearTimeout(startupTimer);
-      startupTimer = null;
-    }
-    if (retryTimer !== null) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-    startupAbort = null;
-  }
-
   /** Retry after a failed spawn. Tears down whatever half-state the
    *  failed attempt left behind (ws, startup guard, error text) and
    *  re-enters the spawn flow from scratch. The xterm instance itself
@@ -778,7 +832,6 @@
    *  buffer rather than the previous attempt's garbage scrollback. */
   function retry() {
     if (phase !== "error") return;
-    clearStartupGuard();
     if (ws) {
       try {
         ws.close(1000, "retry");
@@ -791,44 +844,19 @@
     terminalId = "";
     xterm?.clear();
     phase = "starting";
-    spawnAttempts = 0;
     void spawnPtyAndConnect();
   }
 
   async function spawnPtyAndConnect() {
-    spawnAttempts++;
     attachedThisAttempt = false;
     sawExitFrame = false;
-    startupAbort = new AbortController();
-    startupTimer = setTimeout(() => {
-      if (phase !== "starting") return;
-      // Force the in-flight POST (if any) to bail out so we can either
-      // retry cleanly or surface a concrete error. Detach the socket's
-      // handlers before closing: otherwise its onclose fires while we're
-      // still `phase === "starting"` and wrongly flips the column to
-      // "exited", killing the retry.
-      startupAbort?.abort();
-      if (ws) {
-        detachSocket(ws);
-        try {
-          ws.close(4000, "startup-timeout");
-        } catch {}
-        ws = null;
-      }
-      if (spawnAttempts < MAX_SPAWN_ATTEMPTS) {
-        // Daemon was likely slammed (cold-start enrich storm). Back off
-        // briefly, then try again — the spawn usually lands once the
-        // event loop frees up. Stays in `phase === "starting"` so the
-        // loading overlay keeps showing instead of flashing an error.
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          if (phase === "starting") void spawnPtyAndConnect();
-        }, SPAWN_RETRY_BACKOFF_MS);
-        return;
-      }
-      error = `Terminal didn't start within ${STARTUP_TIMEOUT_MS / 1000}s (after ${MAX_SPAWN_ATTEMPTS} tries). Close the column and try again — the daemon may be busy or the PTY backend stalled.`;
-      phase = "error";
-    }, STARTUP_TIMEOUT_MS);
+    firstControlFrameLogged = false;
+    firstOutputFrameLogged = false;
+    logTerminalStartup("spawn-flow-start", {
+      attachRequested: Boolean(attachTermId),
+      resumeFromTermId: resumeFromTermId ?? null,
+    });
+    flushTerminalStartupLog("spawn-flow-start");
     try {
       let id: string;
       if (attachTermId && !triedAttachFallback) {
@@ -839,6 +867,7 @@
         // falls back to a fresh spawn below.
         attachedThisAttempt = true;
         id = attachTermId;
+        logTerminalStartup("attach-existing-start", { attachTermId: id });
       } else {
         // xterm.cols/rows can be near-zero when the container hasn't
         // laid out yet (Svelte onMount races flex-parent settle). If we
@@ -848,6 +877,9 @@
         // real size before the user can type anything.
         const cols = Math.max(xterm?.cols ?? 80, 80);
         const rows = Math.max(xterm?.rows ?? 24, 24);
+        const postStartedAt = performance.now();
+        logTerminalStartup("post-start", { cols, rows });
+        flushTerminalStartupLog("post-start");
         const res = await fetch(apiUrl("/api/terminals", daemonId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -861,13 +893,20 @@
             previousTermId: resumeFromTermId,
             prefillCmd,
           }),
-          signal: startupAbort.signal,
         });
+        const body = await res.json().catch(() => null);
+        logTerminalStartup("post-response", {
+          status: res.status,
+          ok: res.ok,
+          fetchMs: roundMs(performance.now() - postStartedAt),
+        });
+        flushTerminalStartupLog("post-response");
         if (!res.ok) {
-          const body = await res.json().catch(() => null);
           throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
-        ({ id } = (await res.json()) as { id: string; pid: number });
+        const spawned = body as { id: string; pid: number };
+        id = spawned.id;
+        logTerminalStartup("post-json", { id, pid: spawned.pid });
       }
       terminalId = id;
       onSpawn(id);
@@ -881,11 +920,19 @@
         proto,
         daemonId,
       );
+      const wsCreatedAt = performance.now();
+      logTerminalStartup("ws-create", {
+        wsPath: `/api/terminals/${id}/io`,
+      });
+      flushTerminalStartupLog("ws-create");
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         phase = "live";
-        clearStartupGuard();
+        logTerminalStartup("ws-open", {
+          wsOpenMs: roundMs(performance.now() - wsCreatedAt),
+        });
+        flushTerminalStartupLog("ws-open");
         sendVisibilityState();
         // Resume + autofocus contract: when a Terminal column mounts
         // (either fresh or via Resume) we want two things, both keyed
@@ -908,8 +955,11 @@
         //     correctly via the user's "Add terminal" click chain, but
         //     resume has no click → we have to focus explicitly.
         requestAnimationFrame(() => {
+          const rafStartedAt = performance.now();
+          let fitAttempted = false;
           if (fit && xterm && containerEl && containerEl.clientWidth > 0) {
             try {
+              fitAttempted = true;
               fit.fit();
             } catch {
               /* pre-layout race; ignore */
@@ -917,10 +967,20 @@
             sendResize();
           }
           focusTerminal();
+          logTerminalStartup("ws-open-raf", {
+            rafMs: roundMs(performance.now() - rafStartedAt),
+            fitAttempted,
+          });
         });
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
+          if (!firstControlFrameLogged) {
+            firstControlFrameLogged = true;
+            logTerminalStartup("first-control-frame", {
+              bytes: ev.data.length,
+            });
+          }
           // Control frame from the daemon. Currently: exit, state, and hidden
           // IO byte observations while raw terminal output is buffered.
           try {
@@ -960,6 +1020,14 @@
         }
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
+        if (!firstOutputFrameLogged) {
+          firstOutputFrameLogged = true;
+          logTerminalStartup("first-output-frame", {
+            bytes: bytes.byteLength,
+            visible: isTerminalVisible,
+          });
+          flushTerminalStartupLog("first-output-frame");
+        }
         const newlyObservedBytes = ioAccounting.countRawBytes(bytes.byteLength);
         if (newlyObservedBytes > 0) recordRx(newlyObservedBytes);
         if (isTerminalVisible) {
@@ -977,11 +1045,18 @@
         // the `onclose` that always follows carries the daemon's close code
         // + reason, which is what we actually surface to the user.
         wsErrored = true;
-        clearStartupGuard();
+        logTerminalStartup("ws-error");
+        flushTerminalStartupLog("ws-error");
       };
       ws.onclose = (ev) => {
+        logTerminalStartup("ws-close", {
+          code: ev.code,
+          reason: ev.reason || null,
+          wasClean: ev.wasClean,
+          wsErrored,
+        });
+        flushTerminalStartupLog("ws-close");
         if (phase === "exited" || phase === "error") return;
-        clearStartupGuard();
         if (
           ev.code === 1000 &&
           !wsErrored &&
@@ -1004,9 +1079,12 @@
           phase === "starting"
         ) {
           triedAttachFallback = true;
+          logTerminalStartup("attach-fallback-start", {
+            code: ev.code,
+            reason: ev.reason || null,
+          });
           if (ws) detachSocket(ws);
           ws = null;
-          spawnAttempts = 0;
           void spawnPtyAndConnect();
           return;
         }
@@ -1024,16 +1102,14 @@
         phase = "error";
       };
     } catch (e) {
-      // AbortError = the startup timer bailed this POST so it could
-      // retry (or give up after MAX_SPAWN_ATTEMPTS). The timer owns that
-      // decision — bailing here would clobber a pending retry, so leave
-      // it be.
-      if (e instanceof DOMException && e.name === "AbortError") return;
+      logTerminalStartup("spawn-flow-error", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+      flushTerminalStartupLog("spawn-flow-error");
       if (phase !== "error") {
         error = e instanceof Error ? e.message : String(e);
         phase = "error";
       }
-      clearStartupGuard();
     }
   }
 
@@ -1097,6 +1173,7 @@
 
   onMount(() => {
     if (!containerEl) return;
+    logTerminalStartup("mount-start");
     xterm = new Terminal({
       fontFamily:
         '"SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace',
@@ -1152,6 +1229,7 @@
       ),
     );
     xterm.open(containerEl);
+    logTerminalStartup("xterm-opened");
     repaintRenderDisposable = xterm.onRender(handleTerminalRender);
     // Defer the initial fit to rAF so the flex parent has settled its
     // layout. A synchronous fit.fit() here races the browser's layout
@@ -1159,13 +1237,20 @@
     // promotion) and can measure containerEl at near-zero width, giving
     // xterm cols=2 and producing a 2-char-wide terminal.
     requestAnimationFrame(() => {
+      const rafStartedAt = performance.now();
+      let fitAttempted = false;
       if (fit && containerEl && containerEl.clientWidth > 0) {
         try {
+          fitAttempted = true;
           fit.fit();
         } catch {
           /* layout race; ResizeObserver will retry */
         }
       }
+      logTerminalStartup("initial-fit-raf", {
+        rafMs: roundMs(performance.now() - rafStartedAt),
+        fitAttempted,
+      });
     });
 
     // Capture-phase listener on the xterm container intercepts
@@ -1398,6 +1483,8 @@
     containerEl.addEventListener("focusout", armSuppress);
     containerEl.addEventListener("pointerdown", armSuppress);
 
+    logTerminalStartup("mount-ready");
+    flushTerminalStartupLog("mount-ready");
     void spawnPtyAndConnect();
     publishTerminalIoStats();
 
@@ -1453,7 +1540,6 @@
   }
 
   onDestroy(() => {
-    clearStartupGuard();
     if (workingTicker !== null) {
       clearInterval(workingTicker);
       workingTicker = null;
@@ -1540,10 +1626,13 @@
    *  the upload goes through the daemon instead of an extension host.
    *  We append a trailing space so consecutive drops/pastes don't
    *  concatenate into one unreadable line. */
-  async function uploadAndInsert(blob: Blob, filename?: string): Promise<void> {
-    const pasteDebugId = `p_${Date.now().toString(36)}_${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+  async function uploadAndInsert(
+    blob: Blob,
+    filename?: string,
+    debugExtra: PasteDebugExtra = {},
+  ): Promise<void> {
+    const pasteDebugId = makePasteDebugId();
+    const startedAt = performance.now();
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn(
         "supergit: terminal image paste ignored; websocket is not open",
@@ -1552,11 +1641,30 @@
     }
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
+      sendPasteDebug(pasteDebugId, "client-attach-start", {
+        mode: "attachment",
+        inputBytes: blob.size,
+        inputType: blob.type || null,
+        filename: filename ?? null,
+        ...debugExtra,
+      });
       // Downscale oversized screenshots before upload so the receiving
       // agent doesn't waste vision tokens on pixels Claude would have
       // resized away internally. Non-images, SVGs, GIFs and already-
       // small images pass through untouched.
+      const shrinkStarted = performance.now();
       const shrunk = await shrinkImageBlob(blob);
+      const shrinkMs = roundMs(performance.now() - shrinkStarted);
+      sendPasteDebug(pasteDebugId, "client-shrink-done", {
+        mode: "attachment",
+        inputBytes: blob.size,
+        outputBytes: shrunk.size,
+        inputType: blob.type || null,
+        outputType: shrunk.type || null,
+        changed: shrunk !== blob,
+        shrinkMs,
+        totalMs: roundMs(performance.now() - startedAt),
+      });
       const form = new FormData();
       form.append(
         "file",
@@ -1565,12 +1673,37 @@
       form.append("pasteDebugId", pasteDebugId);
       if (terminalId) form.append("termId", terminalId);
       form.append("source", "terminal-image-paste");
+      form.append("clientSource", String(debugExtra.source ?? "terminal"));
+      form.append("clientInputBytes", String(blob.size));
+      form.append("clientOutputBytes", String(shrunk.size));
+      if (blob.type) form.append("clientInputType", blob.type);
+      if (shrunk.type) form.append("clientOutputType", shrunk.type);
+      if (typeof debugExtra.readMs === "number") {
+        form.append("clientReadMs", String(debugExtra.readMs));
+      }
+      if (typeof debugExtra.blobMs === "number") {
+        form.append("clientBlobMs", String(debugExtra.blobMs));
+      }
+      form.append("clientShrinkMs", String(shrinkMs));
+      form.append(
+        "clientBeforeUploadMs",
+        String(roundMs(performance.now() - startedAt)),
+      );
       const controller = new AbortController();
       timeoutId = setTimeout(() => controller.abort(), 30_000);
+      const fetchStarted = performance.now();
       const res = await fetch(apiUrl("/api/attach", daemonId), {
         method: "POST",
         body: form,
         signal: controller.signal,
+      });
+      const fetchMs = roundMs(performance.now() - fetchStarted);
+      sendPasteDebug(pasteDebugId, "client-attach-response", {
+        mode: "attachment",
+        status: res.status,
+        ok: res.ok,
+        fetchMs,
+        totalMs: roundMs(performance.now() - startedAt),
       });
       if (!res.ok) {
         console.warn(
@@ -1614,22 +1747,44 @@
    *  phase listener to catch. */
   async function doClipboardPaste(): Promise<void> {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const pasteStarted = performance.now();
     // Prefer clipboard.read() — yields ClipboardItem[] with both image
     // and text payloads in a single round-trip. Falls back to readText()
     // if unsupported or denied (Firefox without permission, older
     // browsers without ClipboardItem).
     if (navigator.clipboard?.read) {
       try {
+        const readStarted = performance.now();
         const items = await navigator.clipboard.read();
+        const readMs = roundMs(performance.now() - readStarted);
+        const itemTypes = clipboardTypesLabel(
+          items.flatMap((item) => item.types),
+        );
         for (const item of items) {
           for (const type of item.types) {
             if (type.startsWith("image/")) {
               if (shouldUseNativeImagePaste()) {
-                sendNativeImagePaste("clipboard-read");
+                sendNativeImagePaste("clipboard-read", {
+                  readMs,
+                  itemCount: items.length,
+                  imageType: type,
+                  types: itemTypes,
+                  totalMs: roundMs(performance.now() - pasteStarted),
+                });
                 return;
               }
+              const blobStarted = performance.now();
               const blob = await item.getType(type);
-              await uploadAndInsert(blob);
+              const blobMs = roundMs(performance.now() - blobStarted);
+              await uploadAndInsert(blob, undefined, {
+                source: "clipboard-read",
+                readMs,
+                blobMs,
+                itemCount: items.length,
+                imageType: type,
+                types: itemTypes,
+                totalMs: roundMs(performance.now() - pasteStarted),
+              });
               return;
             }
           }
@@ -1700,6 +1855,10 @@
   function onPaste(e: ClipboardEvent): void {
     const cd = e.clipboardData;
     if (!cd) return;
+    const itemCount = cd.items.length;
+    const itemTypes = clipboardTypesLabel(
+      Array.from(cd.items, (item) => item.type || item.kind),
+    );
     const payload = extractNoteClipboardPayloadFromHtml(
       cd.getData("text/html"),
     );
@@ -1723,12 +1882,21 @@
         e.preventDefault();
         e.stopPropagation();
         if (shouldUseNativeImagePaste()) {
-          sendNativeImagePaste("paste-event");
+          sendNativeImagePaste("paste-event", {
+            itemCount,
+            imageType: it.type,
+            types: itemTypes,
+          });
           return;
         }
         const blob = it.getAsFile();
         if (blob) {
-          void uploadAndInsert(blob);
+          void uploadAndInsert(blob, blob.name || undefined, {
+            source: "paste-event",
+            itemCount,
+            imageType: it.type,
+            types: itemTypes,
+          });
           // Only handle the first image item; otherwise multiple PNGs
           // in the same clipboard event would race to land in the PTY.
           return;

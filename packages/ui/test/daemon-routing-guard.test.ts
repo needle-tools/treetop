@@ -77,6 +77,7 @@ const GLOBAL_ALLOWLIST: string[] = [
   "/api/open-default",
   // --- LOCAL machine system monitor (process list + kill by pid). ---
   "/api/processes",
+  "/api/debug",
   // --- "Open in" launcher helpers about the local machine. ---
   "/api/npm-scripts",
   "/api/config-fix",

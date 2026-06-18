@@ -17,6 +17,7 @@ import {
   decodeHtmlEntities,
   extractIconHrefs,
   patchWorktreeDetailsInRepos,
+  summarizeRequestCounts,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -32,9 +33,9 @@ describe("stripThinkingArtifacts", () => {
   });
 
   test("gemma4 <channel|> separator: takes everything after it", () => {
-    expect(stripThinkingArtifacts("thinking stuff<channel|>actual answer")).toBe(
-      "actual answer",
-    );
+    expect(
+      stripThinkingArtifacts("thinking stuff<channel|>actual answer"),
+    ).toBe("actual answer");
   });
 
   test("gemma4 <channel|> last-occurrence wins (multiple separators)", () => {
@@ -54,9 +55,9 @@ describe("stripThinkingArtifacts", () => {
   });
 
   test("<think> removal is case-insensitive (uppercase <THINK>)", () => {
-    expect(
-      stripThinkingArtifacts("<THINK>reasoning</THINK>result"),
-    ).toBe("result");
+    expect(stripThinkingArtifacts("<THINK>reasoning</THINK>result")).toBe(
+      "result",
+    );
   });
 
   test("multiple <think> blocks are all removed", () => {
@@ -96,7 +97,11 @@ describe("defaultLoginShell", () => {
       // On non-Windows without a powershell/cmd shell the fallthrough branch
       // returns ["-l"].  The real SHELL env may be bash/zsh — check it.
       const shell = result.shell.toLowerCase().replace(/\\/g, "/");
-      if (!shell.includes("powershell") && !shell.includes("pwsh") && !shell.includes("cmd")) {
+      if (
+        !shell.includes("powershell") &&
+        !shell.includes("pwsh") &&
+        !shell.includes("cmd")
+      ) {
         expect(result.args).toEqual(["-l"]);
       }
     }
@@ -183,7 +188,10 @@ describe("defaultLoginShell", () => {
 
   test("no SHELL, nothing detected → still returns /bin/sh (POSIX guarantee)", () => {
     withCleanShellEnv(() => {
-      const result = defaultLoginShell({ platform: "linux", exists: () => false });
+      const result = defaultLoginShell({
+        platform: "linux",
+        exists: () => false,
+      });
       expect(result.shell).toBe("/bin/sh");
     });
   });
@@ -349,6 +357,43 @@ describe("urlPriority", () => {
 });
 
 // ---------------------------------------------------------------------------
+// summarizeRequestCounts
+// ---------------------------------------------------------------------------
+describe("summarizeRequestCounts", () => {
+  test("reports total across every route, while top is limited and sorted", () => {
+    const report = summarizeRequestCounts(
+      [
+        ["/api/events", 3],
+        ["/api/session", 11],
+        ["/api/errors", 7],
+      ],
+      { windowStartedAt: 1_000, now: 3_000, windowMs: 10_000, limit: 2 },
+    );
+    expect(report.total).toBe(21);
+    expect(report.elapsedMs).toBe(2_000);
+    expect(report.perSec).toBe(10.5);
+    expect(report.top).toEqual([
+      { path: "/api/session", count: 11 },
+      { path: "/api/errors", count: 7 },
+    ]);
+  });
+
+  test("ignores non-positive and non-finite route counts", () => {
+    const report = summarizeRequestCounts(
+      [
+        ["/api/ok", 2],
+        ["/api/zero", 0],
+        ["/api/bad", Number.NaN],
+      ],
+      { windowStartedAt: 5_000, now: 5_000, windowMs: 10_000 },
+    );
+    expect(report.total).toBe(2);
+    expect(report.perSec).toBe(0);
+    expect(report.top).toEqual([{ path: "/api/ok", count: 2 }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // sanitiseMachineId
 // ---------------------------------------------------------------------------
 describe("sanitiseMachineId", () => {
@@ -454,7 +499,9 @@ describe("parseTarget", () => {
   });
 
   test("unknown type returns undefined", () => {
-    expect(parseTarget({ type: "unknown", value: "https://x.com" })).toBeUndefined();
+    expect(
+      parseTarget({ type: "unknown", value: "https://x.com" }),
+    ).toBeUndefined();
   });
 
   test("url type with valid value returns correct target", () => {
@@ -567,8 +614,8 @@ describe("decodeHtmlEntities", () => {
     expect(decodeHtmlEntities("a&gt;b")).toBe("a>b");
   });
 
-  test("&quot; → \"", () => {
-    expect(decodeHtmlEntities('say &quot;hello&quot;')).toBe('say "hello"');
+  test('&quot; → "', () => {
+    expect(decodeHtmlEntities("say &quot;hello&quot;")).toBe('say "hello"');
   });
 
   test("&apos; → '", () => {
@@ -656,7 +703,9 @@ describe("extractIconHrefs", () => {
   });
 
   test("returns empty array for HTML with no link tags at all", () => {
-    expect(extractIconHrefs("<html><head><title>X</title></head></html>")).toEqual([]);
+    expect(
+      extractIconHrefs("<html><head><title>X</title></head></html>"),
+    ).toEqual([]);
   });
 
   test("does not include non-icon links even in mixed HTML", () => {

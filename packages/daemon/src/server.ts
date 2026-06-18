@@ -16,7 +16,10 @@ import { existsSync, mkdirSync } from "node:fs";
 import { DuplicateRepoError, Workspace } from "./workspace";
 import { initDaemonLog } from "./daemon-log";
 import { installCrashGuard } from "./process-safety-net";
-import { repairAllClaudeJson, repairClaudeJsonFile } from "./claude-json-repair";
+import {
+  repairAllClaudeJson,
+  repairClaudeJsonFile,
+} from "./claude-json-repair";
 import {
   listWorktrees,
   mainWorktreePathFor,
@@ -69,9 +72,7 @@ import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
-import {
-  changeKindInvalidatesRepos,
-} from "./sse-change-kinds";
+import { changeKindInvalidatesRepos } from "./sse-change-kinds";
 import {
   terminalBackend,
   detectAgentLabel,
@@ -141,6 +142,7 @@ import {
   decodeHtmlEntities,
   extractIconHrefs,
   patchWorktreeDetailsInRepos,
+  summarizeRequestCounts,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -207,6 +209,25 @@ function stringFormValue(value: FormDataEntryValue | null): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
+function pasteLogValue(value: unknown): string | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(Math.round(value)) : null;
+  }
+  if (typeof value === "boolean") return String(value);
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/\s+/g, " ").slice(0, 180);
+  return /^[A-Za-z0-9._:/,@+=-]+$/.test(normalized)
+    ? normalized
+    : JSON.stringify(normalized);
+}
+
+function pasteLogPart(key: string, value: unknown): string {
+  const rendered = pasteLogValue(value);
+  return rendered === null ? "" : ` ${key}=${rendered}`;
+}
+
 // Last-resort crash guard: a stray unhandledRejection / uncaughtException
 // must NOT exit the daemon — every hosted TUI is a child of our PTY helper,
 // so the process dying kills every live session at once. Installed after
@@ -255,7 +276,10 @@ function codexApprovalPolicy(value: unknown): unknown | undefined {
   return undefined;
 }
 
-function codexSandboxPolicy(value: unknown, cwd: string): Record<string, unknown> | undefined {
+function codexSandboxPolicy(
+  value: unknown,
+  cwd: string,
+): Record<string, unknown> | undefined {
   if (value && typeof value === "object") {
     const type = (value as Record<string, unknown>).type;
     if (
@@ -511,7 +535,11 @@ function withSessionTitles<T extends { source: string }>(
   const manualTitle = titles[s.source];
   const aiTitle = aiTitles.get(s.source.toLowerCase());
   if (!manualTitle && !aiTitle) return s;
-  return { ...s, ...(manualTitle ? { manualTitle } : {}), ...(aiTitle ? { aiTitle } : {}) };
+  return {
+    ...s,
+    ...(manualTitle ? { manualTitle } : {}),
+    ...(aiTitle ? { aiTitle } : {}),
+  };
 }
 /** Single-flight per `repoId` for /api/repos/:id/summarize. Joins
  *  concurrent triggers (the dashboard paints rows in parallel) so
@@ -639,7 +667,10 @@ const provisionManager = new ProvisionManager({
   register: async (token, hostOverride) => {
     // Register at the host the user provisioned THROUGH (reachable from here),
     // not the box's self-detected IP baked into the token.
-    const daemon = await registerRemoteFromConnectionString(token, hostOverride);
+    const daemon = await registerRemoteFromConnectionString(
+      token,
+      hostOverride,
+    );
     // Best-effort: bring the tunnel up so the row goes live immediately. A
     // tunnel hiccup mustn't fail the (already-registered) provision.
     ensureRemoteTunnelPort(daemon.id).catch(() => {});
@@ -682,7 +713,6 @@ interface RunningCommand {
   cmd: string;
 }
 const runningCommands = new Map<string, RunningCommand>();
-
 
 /** Wrap a raw command string for execution via the platform's shell. */
 function shellExec(cmd: string): string[] {
@@ -775,7 +805,11 @@ async function detectPackageManagers(
     ["bun", "bun.lockb"],
   ];
   for (const [manager, file] of locks) {
-    if (await Bun.file(join(dir, file)).exists().catch(() => false)) {
+    if (
+      await Bun.file(join(dir, file))
+        .exists()
+        .catch(() => false)
+    ) {
       found.add(manager);
     }
   }
@@ -902,7 +936,6 @@ function findLocalIp(): string | null {
     /^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip);
   return candidates.find(isPrivate) ?? candidates[0] ?? null;
 }
-
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
 if (daemonLogPath) {
@@ -1187,6 +1220,7 @@ const sseEncoder = new TextEncoder();
 const requestCounts = new Map<string, number>();
 const REQUEST_RATE_INTERVAL_MS = 10_000;
 const REQUEST_RATE_MIN_TOTAL_TO_LOG = 50;
+let requestWindowStartedAt = Date.now();
 setInterval(() => {
   let total = 0;
   for (const n of requestCounts.values()) total += n;
@@ -1203,6 +1237,7 @@ setInterval(() => {
     );
   }
   requestCounts.clear();
+  requestWindowStartedAt = Date.now();
 }, REQUEST_RATE_INTERVAL_MS).unref?.();
 
 // Periodic SSE comment-frame heartbeat. Without this, an EventSource
@@ -1905,7 +1940,6 @@ async function fetchPageTitle(target: string): Promise<string | null> {
   return title;
 }
 
-
 // FS watcher registry. One watcher per worktree path; events from the
 // watcher debounce to a single broadcast("change", ...) so the UI
 // re-fetches /api/repos and the affected row refreshes its status +
@@ -2071,7 +2105,10 @@ type TermWsData =
 // drainable path still has a hard cap as an OOM guard for sockets the browser
 // reports drainable but that still stop consuming frames.
 
-function queueTerminalOutput(ws: ServerWebSocket<TermWsData>, chunk: Uint8Array) {
+function queueTerminalOutput(
+  ws: ServerWebSocket<TermWsData>,
+  chunk: Uint8Array,
+) {
   if (ws.data.kind !== "terminal") return;
   ws.data.pendingOutput.push(chunk);
   ws.data.pendingOutputBytes += chunk.byteLength;
@@ -2270,10 +2307,7 @@ const server = Bun.serve<TermWsData, never>({
     // Per-route request counter for the rolling rate log below. Bucket
     // by URL.pathname (verb-agnostic — same path different methods are
     // rare enough that the noise isn't worth the extra cardinality).
-    requestCounts.set(
-      url.pathname,
-      (requestCounts.get(url.pathname) ?? 0) + 1,
-    );
+    requestCounts.set(url.pathname, (requestCounts.get(url.pathname) ?? 0) + 1);
 
     const json = (body: unknown, init: ResponseInit = {}): Response =>
       new Response(JSON.stringify(body), {
@@ -2500,6 +2534,128 @@ const server = Bun.serve<TermWsData, never>({
         return json(timingsSnapshot());
       }
 
+      if (url.pathname === "/api/debug/analyze" && req.method === "GET") {
+        const startedAt = performance.now();
+        const probe = async <T>(
+          path: string,
+          run: () => T | Promise<T>,
+        ): Promise<
+          | { path: string; ok: true; ms: number; value: T }
+          | { path: string; ok: false; ms: number; error: string }
+        > => {
+          const t = performance.now();
+          try {
+            return {
+              path,
+              ok: true,
+              ms: Math.round(performance.now() - t),
+              value: await run(),
+            };
+          } catch (err) {
+            return {
+              path,
+              ok: false,
+              ms: Math.round(performance.now() - t),
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        };
+        const terminalRecords = terminalBackend.list();
+        const eventProbe = await probe("/api/events", async () => {
+          const all = await events.list();
+          return {
+            count: all.length,
+            recent: all
+              .slice(-10)
+              .reverse()
+              .map((ev) => ({
+                id: ev.id,
+                type: ev.type,
+                actor: ev.actor,
+                timestamp: ev.timestamp,
+                reversible: ev.reversible,
+                undone: ev.undone,
+              })),
+          };
+        });
+        const errorProbe = await probe("/api/errors", async () => {
+          const all = await errors.list();
+          return {
+            count: all.length,
+            recent: all.slice(0, 10).map((entry) => ({
+              id: entry.id,
+              timestamp: entry.timestamp,
+              kind: entry.kind,
+              source: entry.source,
+              method: entry.method,
+              route: entry.route,
+              status: entry.status,
+              message: entry.message,
+              count: (entry as { count?: number }).count,
+              extra: entry.extra,
+            })),
+          };
+        });
+        const timingsProbe = await probe("/api/debug/timings", () =>
+          timingsSnapshot(),
+        );
+        const memProbe = await probe("/api/debug/mem", () => ({
+          pid: process.pid,
+          uptimeSec: process.uptime(),
+          memoryUsage: process.memoryUsage(),
+        }));
+        const terminalsProbe = await probe("/api/terminals", () => {
+          const alive = terminalRecords.filter((t) => !t.exitedAt);
+          return {
+            total: terminalRecords.length,
+            alive: alive.length,
+            exited: terminalRecords.length - alive.length,
+            visible: alive.filter(
+              (t) => (visibleTerminalSockets.get(t.id) ?? 0) > 0,
+            ).length,
+            pendingWs: terminalSpawnPendingWs.size,
+            byAgent: alive.reduce<Record<string, number>>((acc, t) => {
+              const key = t.agent ?? "shell";
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {}),
+            recent: alive.slice(-10).map((t) => ({
+              id: t.id,
+              pid: t.pid,
+              agent: t.agent,
+              cwd: t.cwd,
+              cmd: t.cmd,
+              createdAt: t.createdAt,
+              lastOutputAt: t.lastOutputAt,
+              visibleCount: visibleTerminalSockets.get(t.id) ?? 0,
+            })),
+          };
+        });
+        const requestRate = summarizeRequestCounts(requestCounts.entries(), {
+          windowStartedAt: requestWindowStartedAt,
+          now: Date.now(),
+          windowMs: REQUEST_RATE_INTERVAL_MS,
+        });
+        const totalMs = Math.round(performance.now() - startedAt);
+        record("debug-analyze", totalMs);
+        const report = {
+          generatedAt: new Date().toISOString(),
+          durationMs: totalMs,
+          workspace: WORKSPACE_PATH,
+          pid: process.pid,
+          requestRate,
+          probes: {
+            events: eventProbe,
+            errors: errorProbe,
+            timings: timingsProbe,
+            memory: memProbe,
+            terminals: terminalsProbe,
+          },
+        };
+        console.log(`supergit daemon: debug analyze ${JSON.stringify(report)}`);
+        return json(report);
+      }
+
       if (url.pathname === "/api/shutdown" && req.method === "POST") {
         console.log("supergit daemon: /api/shutdown requested");
         setTimeout(() => shutdown("/api/shutdown"), 50);
@@ -2570,6 +2726,21 @@ const server = Bun.serve<TermWsData, never>({
         const pasteDebugId = stringFormValue(form.get("pasteDebugId"));
         const pasteTermId = stringFormValue(form.get("termId"));
         const pasteSource = stringFormValue(form.get("source"));
+        const clientAttachFields = [
+          ["clientSource", form.get("clientSource")],
+          ["clientInputBytes", form.get("clientInputBytes")],
+          ["clientOutputBytes", form.get("clientOutputBytes")],
+          ["clientInputType", form.get("clientInputType")],
+          ["clientOutputType", form.get("clientOutputType")],
+          ["clientReadMs", form.get("clientReadMs")],
+          ["clientBlobMs", form.get("clientBlobMs")],
+          ["clientShrinkMs", form.get("clientShrinkMs")],
+          ["clientAlphaMs", form.get("clientAlphaMs")],
+          ["clientBeforeUploadMs", form.get("clientBeforeUploadMs")],
+        ] as const;
+        const clientAttachDetails = clientAttachFields
+          .map(([key, value]) => pasteLogPart(key, stringFormValue(value)))
+          .join("");
         const result = await saveAttachment(
           join(WORKSPACE_PATH, "attachments"),
           bytes,
@@ -2582,7 +2753,7 @@ const server = Bun.serve<TermWsData, never>({
           pasteSource === "codex-visual-image-paste"
         ) {
           console.log(
-            `supergit daemon: paste-debug id=${pasteDebugId ?? "unknown"} phase=attach-saved term=${pasteTermId ?? "unknown"} source=${pasteSource ?? "unknown"} size=${bytes.byteLength} mime=${mimeType ?? "unknown"} file=${basename(result.path)} formMs=${Math.round(formParsedAt - attachStartedAt)} readMs=${Math.round(bytesReadAt - formParsedAt)} saveMs=${Math.round(savedAt - bytesReadAt)} totalMs=${Math.round(savedAt - attachStartedAt)}`,
+            `supergit daemon: paste-debug id=${pasteDebugId ?? "unknown"} phase=attach-saved term=${pasteTermId ?? "unknown"} source=${pasteSource ?? "unknown"} size=${bytes.byteLength} mime=${mimeType ?? "unknown"} file=${basename(result.path)} formMs=${Math.round(formParsedAt - attachStartedAt)} readMs=${Math.round(bytesReadAt - formParsedAt)} saveMs=${Math.round(savedAt - bytesReadAt)} totalMs=${Math.round(savedAt - attachStartedAt)}${clientAttachDetails}`,
           );
         }
         return json(result, { status: 201 });
@@ -2659,6 +2830,12 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/debug/timings",
               description:
                 "rolling latency percentiles for instrumented hot paths. Each named span: { count, p50, p95, max, last } in ms.",
+            },
+            {
+              method: "GET",
+              path: "/api/debug/analyze",
+              description:
+                "bounded JSON diagnostic report for server/UI backpressure triage. Logs the same JSON to daemon.log.",
             },
             {
               method: "POST",
@@ -3598,7 +3775,10 @@ const server = Bun.serve<TermWsData, never>({
           ? (body.input as Record<string, unknown>[])
           : undefined;
         if (!cwd || (!text.trim() && !input?.length)) {
-          return json({ error: "cwd and text/input required" }, { status: 400 });
+          return json(
+            { error: "cwd and text/input required" },
+            { status: 400 },
+          );
         }
         try {
           if (threadId && body?.steer === true) {
@@ -3846,9 +4026,7 @@ const server = Bun.serve<TermWsData, never>({
         // For Claude TUIs, look up the owning repo's accent colour so the
         // backend can tint the user-message box to match the repo chip.
         const userBoxColor =
-          agentHint === "claude"
-            ? await repoColorForCwd(body.cwd)
-            : undefined;
+          agentHint === "claude" ? await repoColorForCwd(body.cwd) : undefined;
         try {
           const terminalSpawnBackendStarted = performance.now();
           const handle = await terminalBackend.spawn({
@@ -4953,7 +5131,7 @@ const server = Bun.serve<TermWsData, never>({
                         role: "system",
                         content:
                           "You name developer chat sessions. Given a summary, reply with a single concise title of 3 to 6 words. " +
-                          "Plain text only: no quotes, no markdown, no trailing punctuation, no preamble like \"Title:\". Reply with the title and nothing else.",
+                          'Plain text only: no quotes, no markdown, no trailing punctuation, no preamble like "Title:". Reply with the title and nothing else.',
                       },
                       {
                         role: "user",
@@ -6683,8 +6861,7 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/api/npm-scripts" && req.method === "GET") {
         const dir = url.searchParams.get("dir") ?? "";
         const repoPath = url.searchParams.get("repoPath") ?? "";
-        const isAbsolute =
-          dir.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(dir);
+        const isAbsolute = dir.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(dir);
         let resolved: string;
         if (isAbsolute) {
           resolved = dir;
@@ -6753,10 +6930,7 @@ const server = Bun.serve<TermWsData, never>({
         let cwd: string;
         if (!linkCwd) {
           cwd = baseDir;
-        } else if (
-          linkCwd.startsWith("/") ||
-          /^[a-zA-Z]:[\\/]/.test(linkCwd)
-        ) {
+        } else if (linkCwd.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(linkCwd)) {
           cwd = linkCwd;
         } else {
           cwd = join(baseDir, linkCwd);
@@ -6777,13 +6951,29 @@ const server = Bun.serve<TermWsData, never>({
 
         if (runMode === "internal") {
           try {
+            const routeStarted = performance.now();
             const spawnCmd = shellExec(cmdLink.cmd);
+            const spawnStarted = performance.now();
             const handle = await terminalBackend.spawn({
               cmd: spawnCmd,
               cwd,
               size: { cols: 120, rows: 30 },
               env: terminalSpawnEnv(),
             });
+            const backendMs = performance.now() - spawnStarted;
+            const totalMs = performance.now() - routeStarted;
+            record("command-run-internal-spawn-backend", backendMs);
+            record("command-run-internal-post", totalMs);
+            terminalSpawnPendingWs.set(handle.id, performance.now());
+            terminalSpawnFinishedAt.set(handle.id, performance.now());
+            console.log(
+              `supergit daemon: command internal spawn termId=${handle.id} linkId=${linkId} repoId=${repoId} pid=${handle.pid} totalMs=${Math.round(totalMs)} backendMs=${Math.round(backendMs)} cwd=${cwd} cmd=${JSON.stringify(cmdLink.cmd)}`,
+            );
+            if (totalMs > TERMINAL_SPAWN_SLOW_MS) {
+              console.warn(
+                `supergit daemon: /api/command/run internal slow total=${Math.round(totalMs)}ms backend=${Math.round(backendMs)} linkId=${linkId} repoId=${repoId} cwd=${cwd} cmd=${JSON.stringify(cmdLink.cmd)}`,
+              );
+            }
             // Scan PTY output for localhost/LAN URLs for up to 2 minutes
             detectCommandUrl(handle, linkId, repoId);
             // Track as a shell for input capture + persistence
@@ -8013,13 +8203,28 @@ const server = Bun.serve<TermWsData, never>({
           },
           body.id,
         );
+        if (body.kind === "diagnostic") {
+          console.log(
+            `supergit daemon: browser diagnostic ${body.message} ${
+              body.extra ? JSON.stringify(body.extra) : "{}"
+            }`,
+          );
+        }
         broadcast("error", entry);
         return json(entry);
       }
 
       if (url.pathname === "/api/errors" && req.method === "DELETE") {
+        const startedAt = performance.now();
         await errors.clear();
         broadcast("error_clear", { ts: new Date().toISOString() });
+        const totalMs = performance.now() - startedAt;
+        record("errors-clear", totalMs);
+        if (totalMs > 1_000) {
+          console.warn(
+            `supergit daemon: /api/errors clear slow total=${Math.round(totalMs)}ms`,
+          );
+        }
         return json({ ok: true });
       }
 
@@ -8236,7 +8441,10 @@ const server = Bun.serve<TermWsData, never>({
           unknown
         > | null;
         if (!body || typeof body.host !== "string" || !body.host.trim()) {
-          return json({ error: "body.host (string) required" }, { status: 400 });
+          return json(
+            { error: "body.host (string) required" },
+            { status: 400 },
+          );
         }
         const jobId = provisionManager.start({
           payloadRoot: installPayload.root,
@@ -8247,7 +8455,8 @@ const server = Bun.serve<TermWsData, never>({
               typeof body.user === "string" && body.user.trim()
                 ? body.user.trim()
                 : undefined,
-            sshPort: typeof body.sshPort === "number" ? body.sshPort : undefined,
+            sshPort:
+              typeof body.sshPort === "number" ? body.sshPort : undefined,
             // Windows boxes need cmd/PowerShell commands (their default ssh
             // shell is cmd.exe); anything else ships the posix tar|bash plan.
             os: body.os === "windows" ? "windows" : undefined,
@@ -8465,7 +8674,11 @@ const server = Bun.serve<TermWsData, never>({
             };
           }
           const diagnosis = buildConnectionDiagnosis({
-            daemon: { label: daemon.label, host: daemon.host, port: daemon.port },
+            daemon: {
+              label: daemon.label,
+              host: daemon.host,
+              port: daemon.port,
+            },
             sshPath: sshPath ?? null,
             tunnel,
             probe,
@@ -8518,10 +8731,7 @@ const server = Bun.serve<TermWsData, never>({
           await tunnelManager.close(proxied.id);
           const removed = await workspace.removeRemoteDaemon(proxied.id);
           if (!removed) {
-            return json(
-              { error: "remote daemon not found" },
-              { status: 404 },
-            );
+            return json({ error: "remote daemon not found" }, { status: 404 });
           }
           broadcast("change", {
             kind: "remote_daemon_remove",
@@ -8959,7 +9169,11 @@ const server = Bun.serve<TermWsData, never>({
           .then((localPort) => {
             // The socket may have closed while the tunnel was coming up.
             if (data.bridge === null && (ws.readyState ?? 1) === 1) {
-              const remoteUrl = buildProxyWsUrl(localPort, data.rest, data.search);
+              const remoteUrl = buildProxyWsUrl(
+                localPort,
+                data.rest,
+                data.search,
+              );
               data.bridge = new RemoteWsBridge(remoteUrl, ws);
             }
           })
@@ -8987,7 +9201,9 @@ const server = Bun.serve<TermWsData, never>({
       orphanCleaner.onFrontendConnected();
       const pendingSpawnAt = terminalSpawnPendingWs.get(termId);
       const openAfterSpawnMs =
-        pendingSpawnAt === undefined ? undefined : performance.now() - pendingSpawnAt;
+        pendingSpawnAt === undefined
+          ? undefined
+          : performance.now() - pendingSpawnAt;
       if (openAfterSpawnMs !== undefined) {
         terminalSpawnPendingWs.delete(termId);
         record("terminal-ws-open-after-spawn", openAfterSpawnMs);
@@ -9018,7 +9234,9 @@ const server = Bun.serve<TermWsData, never>({
               terminalSpawnFinishedAt.delete(termId);
               terminalWsOpenedAt.delete(termId);
               const firstOutputAfterSpawnMs =
-                spawnFinishedAt === undefined ? undefined : now - spawnFinishedAt;
+                spawnFinishedAt === undefined
+                  ? undefined
+                  : now - spawnFinishedAt;
               const firstOutputAfterWsOpenMs =
                 wsOpenedAt === undefined ? undefined : now - wsOpenedAt;
               if (firstOutputAfterSpawnMs !== undefined) {
@@ -9122,11 +9340,26 @@ const server = Bun.serve<TermWsData, never>({
               typeof parsed.chars === "number" && Number.isFinite(parsed.chars)
                 ? parsed.chars
                 : null;
+            const reserved = new Set([
+              "type",
+              "id",
+              "phase",
+              "termId",
+              "file",
+              "bytes",
+              "chars",
+            ]);
+            const details = Object.entries(parsed)
+              .map(([key, value]) =>
+                reserved.has(key) ? "" : pasteLogPart(key, value),
+              )
+              .join("");
             console.log(
               `supergit daemon: paste-debug id=${id} phase=${phase} term=${ws.data.termId}` +
                 `${file ? ` file=${basename(file)}` : ""}` +
                 `${bytes === null ? "" : ` bytes=${bytes}`}` +
-                `${chars === null ? "" : ` chars=${chars}`}`,
+                `${chars === null ? "" : ` chars=${chars}`}` +
+                details,
             );
           }
         } catch {

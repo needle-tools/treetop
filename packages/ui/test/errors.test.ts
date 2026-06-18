@@ -5,6 +5,7 @@ import {
   setErrors,
   clearErrorsLocal,
   recordBrowserError,
+  recordBrowserDiagnostic,
   installFetchTracking,
   getErrors,
   __resetFetchTrackingForTests,
@@ -190,6 +191,23 @@ describe("frontend errors store", () => {
       expect(e.id).toMatch(/.+/);
       expect(Date.parse(e.timestamp)).not.toBeNaN();
       expect(e.status).toBe(502);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("recordBrowserDiagnostic records browser diagnostics with structured extra", () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("{}", { status: 200 });
+    try {
+      const e = recordBrowserDiagnostic("terminal-startup ws-open trace=t1", {
+        traceId: "t1",
+        elapsedMs: 12,
+      });
+      expect(e.kind).toBe("diagnostic");
+      expect(e.source).toBe("browser");
+      expect(e.message).toBe("terminal-startup ws-open trace=t1");
+      expect(e.extra).toEqual({ traceId: "t1", elapsedMs: 12 });
     } finally {
       globalThis.fetch = origFetch;
     }

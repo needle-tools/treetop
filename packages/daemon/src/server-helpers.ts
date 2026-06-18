@@ -53,9 +53,7 @@ export function defaultLoginShell(deps?: {
   const shell =
     process.env.SHELL ||
     process.env.COMSPEC ||
-    (platform === "win32"
-      ? "powershell.exe"
-      : firstExistingPosixShell(exists));
+    (platform === "win32" ? "powershell.exe" : firstExistingPosixShell(exists));
   const base = shell.toLowerCase().replace(/\\/g, "/");
   if (base.includes("powershell") || base.includes("pwsh"))
     return { shell, args: ["-NoLogo"] };
@@ -107,6 +105,41 @@ export function urlPriority(url: string): number {
     if (host === "localhost" || host === "127.0.0.1") return 1;
   } catch {}
   return 0;
+}
+
+export interface RequestRateSnapshot {
+  windowMs: number;
+  elapsedMs: number;
+  total: number;
+  perSec: number;
+  top: Array<{ path: string; count: number }>;
+}
+
+export function summarizeRequestCounts(
+  entries: Iterable<[string, number]>,
+  opts: {
+    windowStartedAt: number;
+    now: number;
+    windowMs: number;
+    limit?: number;
+  },
+): RequestRateSnapshot {
+  const rows = [...entries].filter(
+    ([, count]) => Number.isFinite(count) && count > 0,
+  );
+  const total = rows.reduce((sum, [, count]) => sum + count, 0);
+  const top = rows
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, opts.limit ?? 8)
+    .map(([path, count]) => ({ path, count }));
+  const elapsedMs = Math.max(0, opts.now - opts.windowStartedAt);
+  return {
+    windowMs: opts.windowMs,
+    elapsedMs,
+    total,
+    perSec: elapsedMs > 0 ? total / (elapsedMs / 1000) : 0,
+    top,
+  };
 }
 
 /** Strip a hostname down to a path-safe identifier — used as a

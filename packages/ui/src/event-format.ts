@@ -35,6 +35,7 @@ export interface Repo {
 export function errorKindLabel(e: FrontendErrorEntry): string {
   if (e.kind === "server") return "server";
   if (e.kind === "fetch") return "fetch";
+  if (e.kind === "diagnostic") return "diag";
   if (e.kind === "rejection") return "unhandled";
   return "uncaught";
 }

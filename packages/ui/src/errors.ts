@@ -16,7 +16,12 @@
  * is component-scoped, so we re-export a subscribe()-able list instead).
  */
 
-export type FrontendErrorKind = "fetch" | "uncaught" | "rejection" | "server";
+export type FrontendErrorKind =
+  | "fetch"
+  | "uncaught"
+  | "rejection"
+  | "server"
+  | "diagnostic";
 export type FrontendErrorSource = "browser" | "daemon";
 
 /**
@@ -275,6 +280,18 @@ export function recordBrowserError(
   pushError(entry);
   void postEntry(entry);
   return entry;
+}
+
+export function recordBrowserDiagnostic(
+  message: string,
+  extra: Record<string, unknown> = {},
+): FrontendErrorEntry {
+  return recordBrowserError({
+    kind: "diagnostic",
+    source: "browser",
+    message,
+    extra,
+  });
 }
 
 /** "User-recoverable" 4xx responses that should NOT show up in the

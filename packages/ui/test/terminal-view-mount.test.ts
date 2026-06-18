@@ -184,7 +184,7 @@ describe("TerminalView clipboard copy + paste", () => {
     // as drag-drop (uploadAndInsert); text routes through xterm.paste()
     // so bracketed-paste mode keeps working.
     expect(SOURCE).toContain("navigator.clipboard.read");
-    expect(SOURCE).toMatch(/uploadAndInsert\(blob\)/);
+    expect(SOURCE).toMatch(/uploadAndInsert\(blob\b/);
     expect(SOURCE).toMatch(/xterm\??\.paste\(text\)/);
   });
 
@@ -335,7 +335,10 @@ describe("TerminalView hidden terminal output", () => {
     expect(block).not.toContain("skipped hidden terminal output");
     const helperIdx = SOURCE.indexOf("function flushBufferedTerminalOutput()");
     expect(helperIdx).toBeGreaterThan(-1);
-    const helperEnd = SOURCE.indexOf("function clearStartupGuard", helperIdx);
+    const helperEnd = SOURCE.indexOf(
+      "function paintBufferedTerminalOutput",
+      helperIdx,
+    );
     const helper = SOURCE.slice(helperIdx, helperEnd);
     expect(helper).toContain("writeBuffer.flush()");
     expect(helper).toContain("hiddenFlushes += 1");
@@ -344,7 +347,10 @@ describe("TerminalView hidden terminal output", () => {
   test("flushes the retained hidden-output tail immediately on reveal", () => {
     const helperIdx = SOURCE.indexOf("function paintBufferedTerminalOutput()");
     expect(helperIdx).toBeGreaterThan(-1);
-    const helperEnd = SOURCE.indexOf("\n  function clearStartupGuard", helperIdx);
+    const helperEnd = SOURCE.indexOf(
+      "\n  /** Retry after a failed spawn",
+      helperIdx,
+    );
     const helper = SOURCE.slice(helperIdx, helperEnd);
     expect(helper).toContain("flushBufferedTerminalOutput()");
     expect(helper).toContain("xterm.write(batch)");
@@ -368,9 +374,7 @@ describe("TerminalView hidden terminal output", () => {
     expect(SOURCE).toContain(
       'JSON.stringify({ type: "visibility", visible, drain })',
     );
-    expect(SOURCE).toContain(
-      'document.addEventListener("visibilitychange"',
-    );
+    expect(SOURCE).toContain('document.addEventListener("visibilitychange"');
     const openIdx = SOURCE.indexOf("ws.onopen = () =>");
     expect(openIdx).toBeGreaterThan(-1);
     const messageIdx = SOURCE.indexOf("ws.onmessage", openIdx);
@@ -394,7 +398,9 @@ describe("TerminalView hidden terminal output", () => {
     const end = SOURCE.indexOf("function publishTerminalIoStats", idx);
     const block = SOURCE.slice(idx, end);
     expect(block).toContain("const drain = !document.hidden");
-    expect(block).toContain('JSON.stringify({ type: "visibility", visible, drain })');
+    expect(block).toContain(
+      'JSON.stringify({ type: "visibility", visible, drain })',
+    );
   });
 
   test("has an opt-in terminal I/O debug readout", () => {
@@ -414,9 +420,7 @@ describe("TerminalView hidden terminal output", () => {
 
   test("repaint flash and scale controls stay independent", () => {
     expect(SOURCE).toContain("...(repaintFlashEnabled");
-    expect(SOURCE).toContain(
-      'glyph.className = "term-repaint-glyph"',
-    );
+    expect(SOURCE).toContain('glyph.className = "term-repaint-glyph"');
     expect(SOURCE).toContain("element.replaceChildren(glyph)");
     expect(SOURCE).toContain(
       "foregroundColor: repaintFlashEnabled\n                ? REPAINT_DEBUG_FOREGROUND\n                : TERMINAL_THEME_BACKGROUND",

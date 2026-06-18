@@ -106,6 +106,48 @@
   font-size: 0.7rem;
   padding: 0.15rem 0.45rem;
 }
+.events-analyze {
+  border-top: 1px solid var(--surface-2);
+  margin-top: 0.45rem;
+  padding-top: 0.5rem;
+}
+.events-analyze-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.events-analyze-btn {
+  margin-left: 0;
+}
+.events-analyze-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.events-analyze-copy {
+  opacity: 1;
+}
+.events-analyze-error {
+  margin: 0.45rem 0 0;
+  color: var(--error-text, #ffb4ad);
+}
+.events-analyze-json {
+  max-height: 18rem;
+  margin: 0.55rem 0 0;
+  padding: 0.55rem 0.65rem;
+  overflow: auto;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-2);
+  font:
+    11px/1.45 "SF Mono",
+    "JetBrains Mono",
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  white-space: pre;
+}
 .err-list {
   list-style: none;
   margin: 0;
@@ -183,6 +225,10 @@
 .err-kind-uncaught {
   background: color-mix(in srgb, #1d3a5a 70%, transparent);
   color: #a8d0ff;
+}
+.err-kind-diagnostic {
+  background: color-mix(in srgb, #1f4d3a 70%, transparent);
+  color: #a8f0c6;
 }
 .err-msg {
   white-space: nowrap;

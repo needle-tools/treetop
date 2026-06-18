@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
   import Popover from "./Popover.svelte";
+  import { apiUrl } from "./api";
   import { errorKindLabel, eventToText } from "./event-format";
   import { relTime } from "./display-helpers";
   import type { FrontendErrorEntry } from "./errors";
@@ -14,6 +15,11 @@
   /** id of the event whose Copy button is flashing "Copied". */
   let copiedErrorId: string | null = null;
   let copiedErrorTimer: ReturnType<typeof setTimeout> | null = null;
+  let analyzeBusy = false;
+  let analyzeJson = "";
+  let analyzeError = "";
+  let analyzeCopied = false;
+  let analyzeCopiedTimer: ReturnType<typeof setTimeout> | null = null;
   function flashCopied(id: string) {
     copiedErrorId = id;
     if (copiedErrorTimer) clearTimeout(copiedErrorTimer);
@@ -22,13 +28,20 @@
       copiedErrorTimer = null;
     }, 1200);
   }
+  function flashAnalyzeCopied() {
+    analyzeCopied = true;
+    if (analyzeCopiedTimer) clearTimeout(analyzeCopiedTimer);
+    analyzeCopiedTimer = setTimeout(() => {
+      analyzeCopied = false;
+      analyzeCopiedTimer = null;
+    }, 1200);
+  }
   /** Robust clipboard write — the async Clipboard API is silently
    *  rejected in WebView2 / strict-Permissions contexts even under a
    *  trusted gesture, so we fall back to a transient offscreen textarea
    *  + execCommand("copy"). Same pattern as TerminalView.svelte. Only
    *  flash "Copied" once a write actually lands. */
-  function copyError(e: FrontendErrorEntry) {
-    const text = eventToText(e);
+  function copyText(text: string, onCopied: () => void, label: string) {
     const tryLegacy = (): boolean => {
       try {
         const ta = document.createElement("textarea");
@@ -54,22 +67,53 @@
     };
     const writeText = navigator.clipboard?.writeText;
     if (writeText) {
-      writeText.call(navigator.clipboard, text).then(
-        () => flashCopied(e.id),
-        () => {
-          if (tryLegacy()) flashCopied(e.id);
-          else console.warn("supergit: clipboard write failed (event copy)");
-        },
-      );
+      writeText.call(navigator.clipboard, text).then(onCopied, () => {
+        if (tryLegacy()) onCopied();
+        else console.warn(`supergit: clipboard write failed (${label})`);
+      });
       return;
     }
-    if (tryLegacy()) flashCopied(e.id);
-    else console.warn("supergit: clipboard write failed (event copy)");
+    if (tryLegacy()) onCopied();
+    else console.warn(`supergit: clipboard write failed (${label})`);
+  }
+  function copyError(e: FrontendErrorEntry) {
+    copyText(eventToText(e), () => flashCopied(e.id), "event copy");
+  }
+  function copyAnalyzeJson() {
+    if (!analyzeJson) return;
+    copyText(analyzeJson, flashAnalyzeCopied, "diagnostic analyze copy");
+  }
+  async function analyzeServer() {
+    if (analyzeBusy) return;
+    analyzeBusy = true;
+    analyzeError = "";
+    try {
+      const res = await fetch(apiUrl("/api/debug/analyze"), {
+        cache: "no-cache",
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          body && typeof body.error === "string"
+            ? body.error
+            : `/api/debug/analyze: ${res.status}`,
+        );
+      }
+      analyzeJson = JSON.stringify(body, null, 2);
+    } catch (err) {
+      analyzeError = err instanceof Error ? err.message : String(err);
+    } finally {
+      analyzeBusy = false;
+    }
   }
   // Preserve the SSE error_clear behavior locally: when the list empties
   // (cleared via Clear button or the daemon's error_clear broadcast),
   // drop the stale expand-state — mirrors App's old `errorExpanded = {}`.
   $: if (errorEntries.length === 0) errorExpanded = {};
+  onDestroy(() => {
+    if (copiedErrorTimer) clearTimeout(copiedErrorTimer);
+    if (analyzeCopiedTimer) clearTimeout(analyzeCopiedTimer);
+  });
 </script>
 
 <Popover variant="actions" extraClass="events-popover" unclamped>
@@ -102,15 +146,12 @@
               }
             }}
           >
-            <span class="err-kind err-kind-{e.kind}"
-              >{errorKindLabel(e)}</span
-            >
+            <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
             <span class="err-msg" title={e.message}>
               {e.message}
               {#if e.count && e.count > 1}
-                <span
-                  class="err-count"
-                  title={`${e.count} occurrences`}>× {e.count}</span
+                <span class="err-count" title={`${e.count} occurrences`}
+                  >× {e.count}</span
                 >
               {/if}
             </span>
@@ -148,8 +189,7 @@
                     : 'user'}">{e.source}</span
                 >
                 {#if e.method || e.route}
-                  <code class="err-route"
-                    >{e.method ?? ""} {e.route ?? ""}</code
+                  <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code
                   >
                 {/if}
                 {#if e.status !== undefined}
@@ -160,11 +200,7 @@
                 <pre class="err-stack">{e.stack}</pre>
               {/if}
               {#if e.extra && Object.keys(e.extra).length > 0}
-                <pre class="err-stack">{JSON.stringify(
-                    e.extra,
-                    null,
-                    2,
-                  )}</pre>
+                <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
               {/if}
             </div>
           {/if}
@@ -172,4 +208,45 @@
       {/each}
     </ul>
   {/if}
+  <div class="events-analyze">
+    <div class="events-analyze-actions">
+      <button
+        class="undo events-analyze-btn"
+        disabled={analyzeBusy}
+        on:click={analyzeServer}
+        title="Collect and log a bounded daemon diagnostic JSON report"
+      >
+        {analyzeBusy ? "Analyzing..." : "Analyze"}
+      </button>
+      {#if analyzeJson}
+        <button
+          class="err-copy events-analyze-copy"
+          on:click={copyAnalyzeJson}
+          title="Copy the diagnostic JSON"
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          {analyzeCopied ? "Copied" : "Copy JSON"}
+        </button>
+      {/if}
+    </div>
+    {#if analyzeError}
+      <p class="muted small events-analyze-error">{analyzeError}</p>
+    {/if}
+    {#if analyzeJson}
+      <pre class="events-analyze-json">{analyzeJson}</pre>
+    {/if}
+  </div>
 </Popover>

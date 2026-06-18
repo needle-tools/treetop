@@ -41,6 +41,9 @@ describe("errorKindLabel", () => {
   it("maps fetch", () => {
     expect(errorKindLabel(entry({ kind: "fetch" }))).toBe("fetch");
   });
+  it("maps diagnostic", () => {
+    expect(errorKindLabel(entry({ kind: "diagnostic" }))).toBe("diag");
+  });
   it("maps rejection to unhandled", () => {
     expect(errorKindLabel(entry({ kind: "rejection" }))).toBe("unhandled");
   });
