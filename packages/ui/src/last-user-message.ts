@@ -3,11 +3,37 @@ export interface MessageBlock {
   text?: string;
 }
 
-export interface Message {
+export interface Message<B extends MessageBlock = MessageBlock> {
   role: string;
-  blocks: MessageBlock[];
+  blocks: B[];
   timestamp?: string;
 }
+
+export interface VisualWorkEntry<
+  B extends MessageBlock = MessageBlock,
+  M extends Message<B> = Message<B>,
+> {
+  message: M;
+  blocks: B[];
+  messageIndex: number;
+}
+
+export type VisualTranscriptItem<
+  B extends MessageBlock = MessageBlock,
+  M extends Message<B> = Message<B>,
+> =
+  | {
+      kind: "message";
+      message: M;
+      blocks: B[];
+      messageIndex: number;
+    }
+  | {
+      kind: "work";
+      entries: VisualWorkEntry<B, M>[];
+      startedAt?: string;
+      endedAt?: string;
+    };
 
 const BURST_GAP_MS = 30_000;
 
@@ -72,4 +98,88 @@ export function lastUserMessageWithContext(
     if (pastBurst) return `${text}\n[…]\n${burst}`;
   }
   return burst;
+}
+
+function isAssistantResponseBlock(block: MessageBlock): boolean {
+  return block.type === "text";
+}
+
+function timestampMs(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+function pushPendingWork<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  out: VisualTranscriptItem<B, M>[],
+  pendingWork: VisualWorkEntry<B, M>[],
+): void {
+  for (const entry of pendingWork) {
+    out.push({
+      kind: "message",
+      message: entry.message,
+      blocks: entry.blocks,
+      messageIndex: entry.messageIndex,
+    });
+  }
+  pendingWork.length = 0;
+}
+
+export function buildVisualTranscriptItems<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(messages: readonly M[]): VisualTranscriptItem<B, M>[] {
+  const out: VisualTranscriptItem<B, M>[] = [];
+  const pendingWork: VisualWorkEntry<B, M>[] = [];
+  let lastUserTimestamp: string | undefined;
+
+  messages.forEach((message, messageIndex) => {
+    const blocks = message.blocks ?? [];
+    if (message.role === "user") {
+      pushPendingWork(out, pendingWork);
+      out.push({ kind: "message", message, blocks, messageIndex });
+      lastUserTimestamp = message.timestamp;
+      return;
+    }
+
+    if (message.role !== "assistant") {
+      pendingWork.push({ message, blocks, messageIndex });
+      return;
+    }
+
+    const responseBlocks = blocks.filter(isAssistantResponseBlock);
+    const workBlocks = blocks.filter((block) => !isAssistantResponseBlock(block));
+
+    if (workBlocks.length > 0) {
+      pendingWork.push({ message, blocks: workBlocks, messageIndex });
+    }
+
+    if (responseBlocks.length === 0) return;
+
+    if (pendingWork.length > 0) {
+      const firstWorkTs = pendingWork.find((entry) =>
+        timestampMs(entry.message.timestamp),
+      )?.message.timestamp;
+      out.push({
+        kind: "work",
+        entries: [...pendingWork],
+        startedAt: lastUserTimestamp ?? firstWorkTs,
+        endedAt: message.timestamp,
+      });
+      pendingWork.length = 0;
+    }
+
+    out.push({
+      kind: "message",
+      message,
+      blocks: responseBlocks,
+      messageIndex,
+    });
+  });
+
+  pushPendingWork(out, pendingWork);
+  return out;
 }

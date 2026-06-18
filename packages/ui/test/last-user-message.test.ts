@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
+  buildVisualTranscriptItems,
   lastUserMessageBurst,
   lastUserMessageWithContext,
   type Message,
@@ -148,5 +149,102 @@ describe("lastUserMessageWithContext", () => {
     expect(lastUserMessageWithContext(msgs, burst)).toBe(
       "can you fix the bug in server.ts?\n[…]\nok\nthx",
     );
+  });
+});
+
+describe("buildVisualTranscriptItems", () => {
+  it("keeps user turns as right-alignable message items", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "please fix it", "2026-06-19T10:00:00.000Z"),
+    ]);
+
+    expect(items).toEqual([
+      {
+        kind: "message",
+        message: msg("user", "please fix it", "2026-06-19T10:00:00.000Z"),
+        blocks: [{ type: "text", text: "please fix it" }],
+        messageIndex: 0,
+      },
+    ]);
+  });
+
+  it("collapses completed thinking and tool work before the response", () => {
+    const user = msg("user", "make it nicer", "2026-06-19T10:00:00.000Z");
+    const thinking: Message = {
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:10.000Z",
+      blocks: [{ type: "thinking", text: "checking the UI" }],
+    };
+    const tool: Message = {
+      role: "tool",
+      timestamp: "2026-06-19T10:00:30.000Z",
+      blocks: [{ type: "tool_result", text: "tests passed" }],
+    };
+    const response = msg("assistant", "Done.", "2026-06-19T10:01:15.000Z");
+
+    const items = buildVisualTranscriptItems([
+      user,
+      thinking,
+      tool,
+      response,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      startedAt: "2026-06-19T10:00:00.000Z",
+      endedAt: "2026-06-19T10:01:15.000Z",
+    });
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "thinking",
+      "tool_result",
+    ]);
+  });
+
+  it("leaves in-progress work expanded until a response exists", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+      {
+        role: "assistant",
+        timestamp: "2026-06-19T10:00:10.000Z",
+        blocks: [{ type: "thinking", text: "working" }],
+      },
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "message"]);
+    expect(items[1]).toMatchObject({
+      kind: "message",
+      blocks: [{ type: "thinking", text: "working" }],
+    });
+  });
+
+  it("splits mixed assistant work and response blocks", () => {
+    const mixed: Message = {
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:20.000Z",
+      blocks: [
+        { type: "thinking", text: "checking" },
+        { type: "text", text: "Here is the answer." },
+      ],
+    };
+    const items = buildVisualTranscriptItems([
+      msg("user", "question", "2026-06-19T10:00:00.000Z"),
+      mixed,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[2]?.kind !== "message") throw new Error("expected message item");
+    expect(items[2].blocks).toEqual([
+      { type: "text", text: "Here is the answer." },
+    ]);
   });
 });

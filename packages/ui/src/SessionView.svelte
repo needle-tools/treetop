@@ -34,8 +34,10 @@
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
   import {
+    buildVisualTranscriptItems,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
+    type VisualTranscriptItem,
   } from "./last-user-message";
   import { registerSessionPoll } from "./session-poll";
   import {
@@ -916,6 +918,11 @@
     session?.messages ?? [],
     lastUserMessage,
   );
+  let visualTranscriptItems: VisualTranscriptItem<
+    NormalizedBlock,
+    NormalizedMessage
+  >[] = [];
+  $: visualTranscriptItems = buildVisualTranscriptItems(session?.messages ?? []);
 
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView
@@ -1252,6 +1259,21 @@
     return flat.length > TOOL_RESULT_PREVIEW_MAX
       ? flat.slice(0, TOOL_RESULT_PREVIEW_MAX) + "…"
       : flat;
+  }
+
+  function formatWorkedDuration(startedAt?: string, endedAt?: string): string {
+    if (!startedAt || !endedAt) return "Worked";
+    const start = Date.parse(startedAt);
+    const end = Date.parse(endedAt);
+    if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
+      return "Worked";
+    }
+    const totalSeconds = Math.max(1, Math.round((end - start) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes <= 0) return `Worked for ${seconds}s`;
+    if (seconds === 0) return `Worked for ${minutes}m`;
+    return `Worked for ${minutes}m ${seconds}s`;
   }
 
   /** When non-null we have a prompt in flight. The numeric value is the
@@ -3192,6 +3214,74 @@
         : "No messages parsed from this session."}
     </p>
   {:else if session}
+    {#snippet renderMessageBlocks(
+      blocks: NormalizedBlock[],
+      m: NormalizedMessage,
+      messageIndex: number,
+    )}
+      {#each blocks as b}
+        {#if b.type === "text"}
+          {#if messageIndex === ollamaStreamingIdx && !(b.text ?? "").length}
+            <!-- Streaming bubble with no chunks yet — Ollama is
+                 still loading the model / generating its first
+                 token. Show a spinner inside the bubble so the
+                 user knows the request is alive, not stuck. -->
+            <div class="block text md ollama-waiting">
+              <LoadingSpinner size="0.9rem" label="Waiting for response" />
+            </div>
+          {:else}
+            <div class="block text md">{@html md(b.text)}</div>
+          {/if}
+        {:else if b.type === "thinking"}
+          <div class="block thinking">
+            <span class="tag-label">thinking</span>
+            <div class="tag-body md">{@html md(b.text)}</div>
+          </div>
+        {:else if b.type === "tool_use"}
+          <div class="block tool-use">
+            <ToolIcon name={b.toolName} />
+            <span class="tool-name">{b.toolName ?? "tool"}</span>
+            <code class="tool-input" title={inputPreview(b.toolInput)}>
+              {inputPreview(b.toolInput)}
+            </code>
+          </div>
+        {:else if b.type === "tool_result"}
+          <div class="block tool-result">
+            <span class="muted small">result</span>
+            <div class="tool-result-body">
+              <code class="tool-result-preview" title={b.text ?? ""}
+                >{toolResultPreview(b.text ?? "")}</code
+              >
+              <button
+                type="button"
+                class="copy-btn"
+                on:click={() => void copyToClipboard(b.text ?? "")}
+                title="Copy full tool result"
+                aria-label="Copy">Copy</button
+              >
+            </div>
+          </div>
+        {:else if b.type === "ide_context"}
+          <div class="block ide-context" title={b.tagName}>
+            <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "system_reminder"}
+          <div class="block sys-reminder" title={b.tagName}>
+            <span class="tag-label">system reminder</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "command"}
+          <div class="block command" title={b.tagName}>
+            <span class="tag-label">{b.tagName ?? "command"}</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "marker"}
+          <div class="block marker">{b.text}</div>
+        {/if}
+      {/each}
+    {/snippet}
+
     <ul
       class="messages"
       bind:this={messagesEl}
@@ -3199,110 +3289,94 @@
       on:mouseleave={onMessagesLeave}
       on:wheel={onMessagesWheel}
     >
-      {#each session.messages as m, i}
-        <li class="msg role-{m.role}">
-          <div class="msg-head">
-            <span
-              class="role"
-              class:assistant={m.role === "assistant"}
-              class:brand-claude={m.role === "assistant" && agent === "claude"}
-              class:brand-codex={m.role === "assistant" && agent === "codex"}
-              class:brand-ollama={m.role === "assistant" && agent === "ollama"}
-              class:brand-copilot={m.role === "assistant" &&
-                agent === "copilot"}
-            >
-              {#if m.role === "assistant" && agent === "claude"}
-                <img class="agent-icon" src="/agents/claude.svg" alt="" />
-              {:else if m.role === "assistant" && agent === "codex"}
-                <!-- Inlined so fill="currentColor" inherits the assistant
-                     row's brand-green colour. Real vector this time
-                     (codex2.svg) — single path. -->
-                <svg
-                  class="agent-icon agent-svg"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z"
-                  />
-                </svg>
-              {:else if m.role === "assistant" && agent === "ollama"}
-                <img class="agent-icon" src="/agents/ollama.svg" alt="" />
-              {/if}
-              {roleLabel(m.role, m.author)}
-            </span>
-            {#if m.timestamp}
+      {#each visualTranscriptItems as item}
+        {#if item.kind === "work"}
+          <li class="work-row">
+            <details class="work-foldout">
+              <summary>
+                <span>{formatWorkedDuration(item.startedAt, item.endedAt)}</span>
+                <span class="work-count">
+                  {item.entries.length}
+                  {item.entries.length === 1 ? "step" : "steps"}
+                </span>
+              </summary>
+              <div class="work-foldout-body">
+                {#each item.entries as entry}
+                  <details class="work-entry">
+                    <summary>
+                      <span>{roleLabel(entry.message.role, entry.message.author)}</span>
+                      {#if entry.message.timestamp}
+                        <span
+                          class="muted small"
+                          title={new Date(entry.message.timestamp).toLocaleString()}
+                        >
+                          {relTimeFromIso(entry.message.timestamp)}
+                        </span>
+                      {/if}
+                    </summary>
+                    <div class="work-entry-body">
+                      {@render renderMessageBlocks(
+                        entry.blocks,
+                        entry.message,
+                        entry.messageIndex,
+                      )}
+                    </div>
+                  </details>
+                {/each}
+              </div>
+            </details>
+          </li>
+        {:else}
+          {@const m = item.message}
+          <li
+            class="msg role-{m.role}"
+            class:user-message={m.role === "user"}
+            class:assistant-response={m.role === "assistant"}
+          >
+            <div class="msg-head">
               <span
-                class="muted small"
-                title={new Date(m.timestamp).toLocaleString()}
+                class="role"
+                class:assistant={m.role === "assistant"}
+                class:brand-claude={m.role === "assistant" && agent === "claude"}
+                class:brand-codex={m.role === "assistant" && agent === "codex"}
+                class:brand-ollama={m.role === "assistant" &&
+                  agent === "ollama"}
+                class:brand-copilot={m.role === "assistant" &&
+                  agent === "copilot"}
               >
-                {relTimeFromIso(m.timestamp)}
+                {#if m.role === "assistant" && agent === "claude"}
+                  <img class="agent-icon" src="/agents/claude.svg" alt="" />
+                {:else if m.role === "assistant" && agent === "codex"}
+                  <!-- Inlined so fill="currentColor" inherits the assistant
+                       row's brand-green colour. Real vector this time
+                       (codex2.svg) — single path. -->
+                  <svg
+                    class="agent-icon agent-svg"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z"
+                    />
+                  </svg>
+                {:else if m.role === "assistant" && agent === "ollama"}
+                  <img class="agent-icon" src="/agents/ollama.svg" alt="" />
+                {/if}
+                {roleLabel(m.role, m.author)}
               </span>
-            {/if}
-          </div>
-          {#each m.blocks as b}
-            {#if b.type === "text"}
-              {#if i === ollamaStreamingIdx && !(b.text ?? "").length}
-                <!-- Streaming bubble with no chunks yet — Ollama is
-                     still loading the model / generating its first
-                     token. Show a spinner inside the bubble so the
-                     user knows the request is alive, not stuck. -->
-                <div class="block text md ollama-waiting">
-                  <LoadingSpinner size="0.9rem" label="Waiting for response" />
-                </div>
-              {:else}
-                <div class="block text md">{@html md(b.text)}</div>
+              {#if m.timestamp}
+                <span
+                  class="muted small"
+                  title={new Date(m.timestamp).toLocaleString()}
+                >
+                  {relTimeFromIso(m.timestamp)}
+                </span>
               {/if}
-            {:else if b.type === "thinking"}
-              <div class="block thinking">
-                <span class="tag-label">thinking</span>
-                <div class="tag-body md">{@html md(b.text)}</div>
-              </div>
-            {:else if b.type === "tool_use"}
-              <div class="block tool-use">
-                <ToolIcon name={b.toolName} />
-                <span class="tool-name">{b.toolName ?? "tool"}</span>
-                <code class="tool-input" title={inputPreview(b.toolInput)}>
-                  {inputPreview(b.toolInput)}
-                </code>
-              </div>
-            {:else if b.type === "tool_result"}
-              <div class="block tool-result">
-                <span class="muted small">result</span>
-                <div class="tool-result-body">
-                  <code class="tool-result-preview" title={b.text ?? ""}
-                    >{toolResultPreview(b.text ?? "")}</code
-                  >
-                  <button
-                    type="button"
-                    class="copy-btn"
-                    on:click={() => void copyToClipboard(b.text ?? "")}
-                    title="Copy full tool result"
-                    aria-label="Copy">Copy</button
-                  >
-                </div>
-              </div>
-            {:else if b.type === "ide_context"}
-              <div class="block ide-context" title={b.tagName}>
-                <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
-                <span class="tag-body">{b.text}</span>
-              </div>
-            {:else if b.type === "system_reminder"}
-              <div class="block sys-reminder" title={b.tagName}>
-                <span class="tag-label">system reminder</span>
-                <span class="tag-body">{b.text}</span>
-              </div>
-            {:else if b.type === "command"}
-              <div class="block command" title={b.tagName}>
-                <span class="tag-label">{b.tagName ?? "command"}</span>
-                <span class="tag-body">{b.text}</span>
-              </div>
-            {:else if b.type === "marker"}
-              <div class="block marker">{b.text}</div>
-            {/if}
-          {/each}
-        </li>
+            </div>
+            {@render renderMessageBlocks(item.blocks, m, item.messageIndex)}
+          </li>
+        {/if}
       {/each}
     </ul>
   {/if}
@@ -4589,11 +4663,31 @@
     overscroll-behavior: auto contain;
   }
   .msg {
+    align-self: stretch;
     padding: 0.45rem 0.6rem;
     border-radius: var(--radius-sm);
     background: var(--surface-0);
     border: 1px solid var(--surface-2);
     font-size: 0.82rem;
+  }
+  .msg.user-message {
+    align-self: flex-end;
+    width: fit-content;
+    max-width: 75%;
+    background: color-mix(in srgb, var(--surface-3) 62%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--surface-3) 80%, transparent);
+  }
+  .msg.user-message .msg-head {
+    justify-content: flex-end;
+    text-align: right;
+  }
+  .msg.assistant-response {
+    background: transparent;
+    border-color: transparent;
+    padding-inline: 0.25rem;
+  }
+  .msg.assistant-response .msg-head {
+    margin-bottom: 0.15rem;
   }
   /* Role differentiation is via the .role label text now; no left bar. */
   .msg-head {
@@ -4641,6 +4735,83 @@
   }
   .block.text {
     word-break: break-word;
+  }
+  .work-row {
+    align-self: stretch;
+    list-style: none;
+    padding: 0;
+    margin: -0.05rem 0;
+  }
+  .work-foldout,
+  .work-entry {
+    border-radius: var(--radius-sm);
+  }
+  .work-foldout > summary,
+  .work-entry > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .work-foldout > summary {
+    width: fit-content;
+    max-width: 100%;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 65%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-1) 75%, transparent);
+    font-size: 0.72rem;
+  }
+  .work-foldout > summary:hover {
+    color: var(--text-1);
+    border-color: var(--surface-3);
+  }
+  .work-foldout > summary::-webkit-details-marker,
+  .work-entry > summary::-webkit-details-marker {
+    display: none;
+  }
+  .work-foldout > summary::before,
+  .work-entry > summary::before {
+    content: ">";
+    color: var(--text-faint);
+    font-size: 0.7rem;
+    transition: transform 120ms ease;
+  }
+  .work-foldout[open] > summary::before,
+  .work-entry[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .work-count {
+    color: var(--text-faint);
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+  }
+  .work-foldout-body {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.35rem 0 0.2rem 0.55rem;
+    padding-left: 0.6rem;
+    border-left: 1px solid var(--surface-3);
+  }
+  .work-entry {
+    padding: 0.25rem 0.45rem;
+    background: color-mix(in srgb, var(--surface-0) 58%, transparent);
+    border: 1px solid color-mix(in srgb, var(--surface-2) 70%, transparent);
+  }
+  .work-entry > summary {
+    justify-content: space-between;
+    font-size: 0.72rem;
+  }
+  .work-entry > summary span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .work-entry-body {
+    margin-top: 0.35rem;
   }
 
   /* Markdown rendering. Keep elements quiet enough for a chat density
