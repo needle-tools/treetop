@@ -313,6 +313,155 @@ function isExpectedClientError(status: number, method: string): boolean {
 
 let originalFetch: typeof fetch = globalThis.fetch?.bind(globalThis);
 let installed = false;
+let apiFetchSeq = 0;
+let apiFetchesInFlight = 0;
+
+const SLOW_API_MUTATION_MS = 250;
+const SLOW_API_READ_MS = 1_000;
+const LONG_TASK_MS = 250;
+
+interface ParsedApiRoute {
+  route: string;
+  apiPath: string;
+  daemonId?: string;
+}
+
+function roundMs(n: number): number {
+  return Math.round(n);
+}
+
+function routeFromFetchInput(input: RequestInfo | URL): string {
+  return typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+}
+
+function methodFromFetchInput(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): string {
+  const requestMethod =
+    typeof input === "object" && "method" in input ? input.method : undefined;
+  return (init?.method ?? requestMethod ?? "GET").toUpperCase();
+}
+
+function parseApiRoute(route: string): ParsedApiRoute | null {
+  let url: URL;
+  try {
+    url = new URL(route, "http://supergit.local");
+  } catch {
+    return route.startsWith("/api")
+      ? { route, apiPath: route.split("#", 1)[0] ?? route }
+      : null;
+  }
+  const fullPath = `${url.pathname}${url.search}`;
+  if (!url.pathname.startsWith("/api")) return null;
+  const remote = url.pathname.match(
+    /^\/api\/daemons\/([^/]+)(\/api(?:\/.*)?|\/api)$/,
+  );
+  if (remote) {
+    return {
+      route: fullPath,
+      apiPath: `${remote[2]}${url.search}`,
+      daemonId: decodeURIComponent(remote[1] ?? ""),
+    };
+  }
+  return { route: fullPath, apiPath: fullPath };
+}
+
+function shouldSkipSelfDiagnostic(route: string, method: string): boolean {
+  return route.includes("/api/errors") && method === "POST";
+}
+
+function slowFetchThreshold(method: string): number {
+  return method === "GET" || method === "HEAD"
+    ? SLOW_API_READ_MS
+    : SLOW_API_MUTATION_MS;
+}
+
+function fetchExtra(opts: {
+  traceId: string;
+  parsed: ParsedApiRoute;
+  method: string;
+  status?: number;
+  ok?: boolean;
+  statusText?: string;
+  fetchMs: number;
+  startedAtMs: number;
+  completedAtMs: number;
+  inFlightAtStart: number;
+  inFlightAtEnd: number;
+  cache?: RequestCache;
+  keepalive?: boolean;
+  hasBody?: boolean;
+}): Record<string, unknown> {
+  return {
+    traceId: opts.traceId,
+    route: opts.parsed.route,
+    apiPath: opts.parsed.apiPath,
+    daemonId: opts.parsed.daemonId,
+    method: opts.method,
+    status: opts.status,
+    ok: opts.ok,
+    statusText: opts.statusText,
+    fetchMs: roundMs(opts.fetchMs),
+    startedAtMs: roundMs(opts.startedAtMs),
+    completedAtMs: roundMs(opts.completedAtMs),
+    inFlightAtStart: opts.inFlightAtStart,
+    inFlightAtEnd: opts.inFlightAtEnd,
+    cache: opts.cache,
+    keepalive: opts.keepalive,
+    hasBody: opts.hasBody,
+    visibilityState: globalThis.document?.visibilityState,
+  };
+}
+
+function maybeRecordSlowApiFetch(opts: {
+  traceId: string;
+  parsed: ParsedApiRoute | null;
+  method: string;
+  status: number;
+  ok: boolean;
+  statusText: string;
+  fetchMs: number;
+  startedAtMs: number;
+  completedAtMs: number;
+  inFlightAtStart: number;
+  inFlightAtEnd: number;
+  init?: RequestInit;
+}): void {
+  if (!opts.parsed) return;
+  if (shouldSkipSelfDiagnostic(opts.parsed.route, opts.method)) return;
+  if (opts.fetchMs < slowFetchThreshold(opts.method)) return;
+  recordBrowserError({
+    kind: "diagnostic",
+    source: "browser",
+    message: `api-fetch ${opts.method} ${opts.parsed.apiPath} fetchMs=${roundMs(
+      opts.fetchMs,
+    )} status=${opts.status}`,
+    route: opts.parsed.route,
+    method: opts.method,
+    status: opts.status,
+    extra: fetchExtra({
+      traceId: opts.traceId,
+      parsed: opts.parsed,
+      method: opts.method,
+      status: opts.status,
+      ok: opts.ok,
+      statusText: opts.statusText,
+      fetchMs: opts.fetchMs,
+      startedAtMs: opts.startedAtMs,
+      completedAtMs: opts.completedAtMs,
+      inFlightAtStart: opts.inFlightAtStart,
+      inFlightAtEnd: opts.inFlightAtEnd,
+      cache: opts.init?.cache,
+      keepalive: opts.init?.keepalive,
+      hasBody: opts.init?.body != null,
+    }),
+  });
+}
 
 /** Test-only: re-set the install flag so a fresh `installFetchTracking`
  *  can capture a freshly-stubbed `globalThis.fetch` as its underlying
@@ -320,6 +469,8 @@ let installed = false;
  *  `installFetchTracking` once at startup. */
 export function __resetFetchTrackingForTests(): void {
   installed = false;
+  apiFetchSeq = 0;
+  apiFetchesInFlight = 0;
 }
 
 /**
@@ -333,20 +484,36 @@ export function installFetchTracking(): void {
   const orig = globalThis.fetch.bind(globalThis);
   originalFetch = orig;
   globalThis.fetch = async function trackedFetch(input, init) {
-    const method = (init?.method ?? "GET").toUpperCase();
-    const route =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
+    const method = methodFromFetchInput(input, init);
+    const route = routeFromFetchInput(input);
+    const parsed = parseApiRoute(route);
+    const traceId = `fetch-${++apiFetchSeq}`;
+    const startedAtMs = performance.now();
+    const inFlightAtStart = ++apiFetchesInFlight;
     try {
       const res = await orig(input as RequestInfo, init);
+      const completedAtMs = performance.now();
+      const fetchMs = completedAtMs - startedAtMs;
+      const inFlightAtEnd = apiFetchesInFlight;
+      maybeRecordSlowApiFetch({
+        traceId,
+        parsed,
+        method,
+        status: res.status,
+        ok: res.ok,
+        statusText: res.statusText,
+        fetchMs,
+        startedAtMs,
+        completedAtMs,
+        inFlightAtStart,
+        inFlightAtEnd,
+        init,
+      });
       if (
         !res.ok &&
         res.status !== 304 &&
         !isExpectedClientError(res.status, method) &&
-        !(route.includes("/api/errors") && method === "POST")
+        !shouldSkipSelfDiagnostic(route, method)
       ) {
         recordBrowserError({
           kind: "fetch",
@@ -355,14 +522,35 @@ export function installFetchTracking(): void {
           route,
           method,
           status: res.status,
+          extra: parsed
+            ? fetchExtra({
+                traceId,
+                parsed,
+                method,
+                status: res.status,
+                ok: res.ok,
+                statusText: res.statusText,
+                fetchMs,
+                startedAtMs,
+                completedAtMs,
+                inFlightAtStart,
+                inFlightAtEnd,
+                cache: init?.cache,
+                keepalive: init?.keepalive,
+                hasBody: init?.body != null,
+              })
+            : undefined,
         });
       }
       return res;
     } catch (err) {
+      const completedAtMs = performance.now();
+      const fetchMs = completedAtMs - startedAtMs;
+      const inFlightAtEnd = apiFetchesInFlight;
       const msg = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
       // Skip recording our own /api/errors POST failures (same reason).
-      if (!(route.includes("/api/errors") && method === "POST")) {
+      if (!shouldSkipSelfDiagnostic(route, method)) {
         recordBrowserError({
           kind: "fetch",
           source: "browser",
@@ -370,11 +558,62 @@ export function installFetchTracking(): void {
           route,
           method,
           stack,
+          extra: parsed
+            ? fetchExtra({
+                traceId,
+                parsed,
+                method,
+                fetchMs,
+                startedAtMs,
+                completedAtMs,
+                inFlightAtStart,
+                inFlightAtEnd,
+                cache: init?.cache,
+                keepalive: init?.keepalive,
+                hasBody: init?.body != null,
+              })
+            : undefined,
         });
       }
       throw err;
+    } finally {
+      apiFetchesInFlight = Math.max(0, apiFetchesInFlight - 1);
     }
   };
+}
+
+let browserResponsivenessInstalled = false;
+let longTaskObserver: PerformanceObserver | null = null;
+
+export function __resetBrowserResponsivenessTrackingForTests(): void {
+  browserResponsivenessInstalled = false;
+  longTaskObserver?.disconnect();
+  longTaskObserver = null;
+}
+
+export function installBrowserResponsivenessTracking(): void {
+  if (browserResponsivenessInstalled) return;
+  browserResponsivenessInstalled = true;
+  const Observer = globalThis.PerformanceObserver;
+  if (!Observer?.supportedEntryTypes?.includes("longtask")) return;
+  try {
+    longTaskObserver = new Observer((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.duration < LONG_TASK_MS) continue;
+        recordBrowserDiagnostic(
+          `browser-longtask durationMs=${roundMs(entry.duration)}`,
+          {
+            durationMs: roundMs(entry.duration),
+            startTimeMs: roundMs(entry.startTime),
+            name: entry.name,
+          },
+        );
+      }
+    });
+    longTaskObserver.observe({ entryTypes: ["longtask"] });
+  } catch {
+    // PerformanceObserver longtask support varies by browser shell.
+  }
 }
 
 /** Install window.onerror + unhandledrejection listeners. Idempotent. */
@@ -382,6 +621,7 @@ let globalsInstalled = false;
 export function installGlobalErrorHandlers(): void {
   if (globalsInstalled) return;
   globalsInstalled = true;
+  installBrowserResponsivenessTracking();
   globalThis.addEventListener("error", (evt) => {
     const e = (evt as ErrorEvent).error;
     recordBrowserError({
@@ -424,7 +664,7 @@ export async function hydrateFromServer(): Promise<void> {
 /** DELETE /api/errors then clear local state. */
 export async function clearErrors(): Promise<void> {
   try {
-    await originalFetch("/api/errors", { method: "DELETE" });
+    await fetch("/api/errors", { method: "DELETE" });
   } catch {
     // ignore; still clear locally so the popover empties
   }

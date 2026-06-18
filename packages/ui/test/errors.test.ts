@@ -7,8 +7,10 @@ import {
   recordBrowserError,
   recordBrowserDiagnostic,
   installFetchTracking,
+  installBrowserResponsivenessTracking,
   getErrors,
   __resetFetchTrackingForTests,
+  __resetBrowserResponsivenessTrackingForTests,
   describeWsClose,
   terminalWsCloseRepresentsExit,
   type FrontendErrorEntry,
@@ -369,5 +371,123 @@ describe("installFetchTracking — expected-client-error filter", () => {
     const res = await fetch("/api/session?source=foo.jsonl");
     expect(res.status).toBe(304);
     expect(getErrors().length).toBe(0);
+  });
+
+  test("records slow successful API mutations with structured timing", async () => {
+    let now = 1_000;
+    const savedNow = globalThis.performance.now;
+    Object.defineProperty(globalThis.performance, "now", {
+      configurable: true,
+      value: () => now,
+    });
+    globalThis.fetch = (async () => {
+      now = 1_375;
+      return new Response("", { status: 200, statusText: "OK" });
+    }) as typeof fetch;
+    try {
+      installFetchTracking();
+      const res = await fetch("/api/notes", { method: "POST" });
+      expect(res.status).toBe(200);
+      const entry = getErrors()[0];
+      expect(entry?.kind).toBe("diagnostic");
+      expect(entry?.message).toBe(
+        "api-fetch POST /api/notes fetchMs=375 status=200",
+      );
+      expect(entry?.route).toBe("/api/notes");
+      expect(entry?.method).toBe("POST");
+      expect(entry?.status).toBe(200);
+      expect(entry?.extra).toMatchObject({
+        route: "/api/notes",
+        apiPath: "/api/notes",
+        method: "POST",
+        status: 200,
+        fetchMs: 375,
+        inFlightAtStart: 1,
+        inFlightAtEnd: 1,
+      });
+    } finally {
+      Object.defineProperty(globalThis.performance, "now", {
+        configurable: true,
+        value: savedNow,
+      });
+    }
+  });
+
+  test("does not record fast successful API GETs", async () => {
+    let now = 2_000;
+    const savedNow = globalThis.performance.now;
+    Object.defineProperty(globalThis.performance, "now", {
+      configurable: true,
+      value: () => now,
+    });
+    globalThis.fetch = (async () => {
+      now = 2_050;
+      return new Response("", { status: 200, statusText: "OK" });
+    }) as typeof fetch;
+    try {
+      installFetchTracking();
+      const res = await fetch("/api/events");
+      expect(res.status).toBe(200);
+      expect(getErrors().length).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis.performance, "now", {
+        configurable: true,
+        value: savedNow,
+      });
+    }
+  });
+});
+
+describe("installBrowserResponsivenessTracking", () => {
+  let savedPerformanceObserver: unknown;
+
+  beforeEach(() => {
+    clearErrorsLocal();
+    __resetBrowserResponsivenessTrackingForTests();
+    savedPerformanceObserver = globalThis.PerformanceObserver;
+  });
+
+  afterEach(() => {
+    (
+      globalThis as typeof globalThis & { PerformanceObserver?: unknown }
+    ).PerformanceObserver = savedPerformanceObserver;
+    __resetBrowserResponsivenessTrackingForTests();
+  });
+
+  test("records browser long tasks as diagnostics", () => {
+    let callback:
+      | ((list: {
+          getEntries: () => Array<{
+            duration: number;
+            startTime: number;
+            name?: string;
+          }>;
+        }) => void)
+      | null = null;
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ["longtask"];
+      constructor(cb: NonNullable<typeof callback>) {
+        callback = cb;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    (
+      globalThis as typeof globalThis & { PerformanceObserver?: unknown }
+    ).PerformanceObserver = FakePerformanceObserver;
+
+    installBrowserResponsivenessTracking();
+    callback?.({
+      getEntries: () => [{ duration: 1_234.4, startTime: 55.2, name: "self" }],
+    });
+
+    const entry = getErrors()[0];
+    expect(entry?.kind).toBe("diagnostic");
+    expect(entry?.message).toBe("browser-longtask durationMs=1234");
+    expect(entry?.extra).toEqual({
+      durationMs: 1234,
+      startTimeMs: 55,
+      name: "self",
+    });
   });
 });
