@@ -248,11 +248,22 @@ export function uniqueCodexModels(opts: {
 
 export const CODEX_EFFORT_LEVELS = [
   "",
+  "speed",
   "minimal",
   "low",
   "medium",
   "high",
+  "xhigh",
 ] as const;
+
+const CODEX_EFFORT_LABELS: Record<string, string> = {
+  speed: "speed",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "extra high",
+};
 
 export const CODEX_SUMMARY_LEVELS = [
   "auto",
@@ -415,19 +426,23 @@ export function codexAgentSettings(opts: {
       key: "codex-effort",
       label: "Reasoning",
       onPick: opts.onPickEffort,
-      options: CODEX_EFFORT_LEVELS.map((value) => ({
-        value,
-        label:
-          value || (defaultReasoningEffort
-            ? `Default (${defaultReasoningEffort})`
-            : "Default"),
-        selected: opts.currentEffort === value,
-        title: value
-          ? undefined
-          : defaultReasoningEffort
-            ? `Uses the app-server default reasoning effort for this model, currently ${defaultReasoningEffort}`
-            : "Uses the app-server default reasoning effort for this model",
-      })),
+      options: CODEX_EFFORT_LEVELS.map((value) => {
+        const defaultLabel =
+          CODEX_EFFORT_LABELS[defaultReasoningEffort] ??
+          defaultReasoningEffort;
+        return {
+          value,
+          label:
+            CODEX_EFFORT_LABELS[value] ??
+            (defaultLabel ? `Default (${defaultLabel})` : "Default"),
+          selected: opts.currentEffort === value,
+          title: value
+            ? undefined
+            : defaultLabel
+              ? `Uses the app-server default reasoning effort for this model, currently ${defaultLabel}`
+              : "Uses the app-server default reasoning effort for this model",
+        };
+      }),
     },
     {
       key: "codex-summary",

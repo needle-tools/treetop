@@ -2535,6 +2535,7 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/attach" && req.method === "POST") {
+        const attachStartedAt = performance.now();
         // Browser-side TerminalView posts a multipart form here when the
         // user pastes an image or drops a file onto an xterm column. We
         // write the bytes under `<workspace>/attachments/` and return the
@@ -2548,6 +2549,7 @@ const server = Bun.serve<TermWsData, never>({
         // callers can't influence where bytes land, so no worktree-path
         // validation needed.
         const form = await req.formData().catch(() => null);
+        const formParsedAt = performance.now();
         if (!form) {
           return json(
             { error: "multipart/form-data body required" },
@@ -2561,6 +2563,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "file (Blob) is required" }, { status: 400 });
         }
         const bytes = new Uint8Array(await file.arrayBuffer());
+        const bytesReadAt = performance.now();
         const filename =
           file.name && file.name !== "blob" ? file.name : undefined;
         const mimeType = file.type || undefined;
@@ -2572,9 +2575,14 @@ const server = Bun.serve<TermWsData, never>({
           bytes,
           { filename, mimeType },
         );
-        if (pasteDebugId || pasteSource === "terminal-image-paste") {
+        const savedAt = performance.now();
+        if (
+          pasteDebugId ||
+          pasteSource === "terminal-image-paste" ||
+          pasteSource === "codex-visual-image-paste"
+        ) {
           console.log(
-            `supergit daemon: paste-debug id=${pasteDebugId ?? "unknown"} phase=attach-saved term=${pasteTermId ?? "unknown"} size=${bytes.byteLength} mime=${mimeType ?? "unknown"} file=${basename(result.path)}`,
+            `supergit daemon: paste-debug id=${pasteDebugId ?? "unknown"} phase=attach-saved term=${pasteTermId ?? "unknown"} source=${pasteSource ?? "unknown"} size=${bytes.byteLength} mime=${mimeType ?? "unknown"} file=${basename(result.path)} formMs=${Math.round(formParsedAt - attachStartedAt)} readMs=${Math.round(bytesReadAt - formParsedAt)} saveMs=${Math.round(savedAt - bytesReadAt)} totalMs=${Math.round(savedAt - attachStartedAt)}`,
           );
         }
         return json(result, { status: 201 });

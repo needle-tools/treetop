@@ -394,12 +394,15 @@ describe("codexAgentSettings", () => {
     const [, effort] = build({ currentEffort: "medium" });
     expect(effort!.options.map((o) => o.value)).toEqual([
       "",
+      "speed",
       "minimal",
       "low",
       "medium",
       "high",
+      "xhigh",
     ]);
     expect(effort!.options[0]!.label).toBe("Default (medium)");
+    expect(effort!.options.at(-1)!.label).toBe("extra high");
     expect(effort!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
       "medium",
     ]);
@@ -422,7 +425,7 @@ describe("codexAgentSettings", () => {
     for (const group of groups) group.onPick(group.options.at(-1)!.value);
     expect(picked).toEqual([
       "model:gpt-5-codex-mini",
-      "effort:high",
+      "effort:xhigh",
       "summary:none",
       "sandbox:dangerFullAccess",
       "approval:never",

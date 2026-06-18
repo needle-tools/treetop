@@ -101,6 +101,8 @@ changed; never batch-commit unrelated changes from other sessions.
 - String assertions over source files. Tests should exercise useful behavior
   through functions, stores, routes, or components; if behavior is hard to
   reach, refactor toward a testable unit instead of reading source text.
+  Do not add new source-text tests; treat existing ones as debt to replace
+  with behavior-level tests when touching the same surface.
 - Silent error handling (`unwrap_or_default()` style in hot paths).
 - `it.skip` / `xfail` without a tracking issue.
 - Refactor + new behavior in one PR.
@@ -248,6 +250,8 @@ but every block in the list below ships with tests *before* it ships:
 
 Anti-patterns we reject:
 - Tests that pass without asserting.
+- String assertions over source files. Do not add new ones; pay down existing
+  source-text tests by replacing them with behavior-level tests over time.
 - Mocking the database / filesystem / git when a temp dir works.
 - `it.skip` without a tracking issue.
 - "Refactor + new behavior in one PR" — refactor first (tests green),
