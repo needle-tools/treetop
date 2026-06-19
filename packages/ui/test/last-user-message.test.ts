@@ -394,6 +394,86 @@ describe("buildVisualTranscriptItems", () => {
     if (items[2]?.kind !== "message") throw new Error("expected message item");
     expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
   });
+
+  it("does not treat non-assistant text/media rows as the final response", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "please inspect this", "2026-06-19T10:00:00.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-06-19T10:00:01.000Z",
+        blocks: [{ type: "text", text: "[Task started]" }],
+      },
+      {
+        role: "tool",
+        timestamp: "2026-06-19T10:00:05.000Z",
+        blocks: [{ type: "tool_result", text: "tool wrote text" }],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-06-19T10:00:10.000Z",
+        blocks: [{ type: "tool_use", toolName: "exec_command" }],
+      },
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      open: true,
+    });
+  });
+
+  it("groups a Codex turn with multiple commentary/tool bursts under the user", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "fix these two UI bugs", "2026-06-19T14:20:48.142Z"),
+      msg(
+        "assistant",
+        "I’ll inspect the transcript.",
+        "2026-06-19T14:21:14.303Z",
+      ),
+      {
+        role: "assistant",
+        timestamp: "2026-06-19T14:21:14.401Z",
+        blocks: [{ type: "tool_use", toolName: "exec_command" }],
+      },
+      {
+        role: "tool",
+        timestamp: "2026-06-19T14:21:14.501Z",
+        blocks: [{ type: "tool_result", text: "Chunk ID: abc Output: ok" }],
+      },
+      msg(
+        "assistant",
+        "The rendering bug is isolated.",
+        "2026-06-19T14:21:34.452Z",
+      ),
+      {
+        role: "assistant",
+        timestamp: "2026-06-19T14:21:34.456Z",
+        blocks: [{ type: "tool_use", toolName: "exec_command" }],
+      },
+      {
+        role: "tool",
+        timestamp: "2026-06-19T14:21:34.526Z",
+        blocks: [{ type: "tool_result", text: "Chunk ID: def Output: ok" }],
+      },
+      msg(
+        "assistant",
+        "Done, both are fixed.",
+        "2026-06-19T14:22:20.000Z",
+      ),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].entries).toHaveLength(6);
+    if (items[2]?.kind !== "message") throw new Error("expected message item");
+    expect(items[2].blocks).toEqual([
+      { type: "text", text: "Done, both are fixed." },
+    ]);
+  });
 });
 
 describe("cleanVisualToolResultText", () => {

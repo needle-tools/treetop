@@ -88,14 +88,22 @@
 
   let liveNowIso = new Date().toISOString();
   let liveClock: ReturnType<typeof setInterval> | null = null;
+  let openMediaBlocks: NormalizedBlock[] = [];
+  let openMediaIndex = -1;
+
+  $: openMediaBlock =
+    openMediaIndex >= 0 ? openMediaBlocks[openMediaIndex] : undefined;
+  $: openMediaSrc = openMediaBlock ? mediaSourceUrl(openMediaBlock) : undefined;
+  $: hasOpenWork = items.some((item) => item.kind === "work" && item.open);
+  $: shouldRunLiveClock = active || hasOpenWork;
 
   $: {
-    if (active && !liveClock) {
+    if (shouldRunLiveClock && !liveClock) {
       liveNowIso = new Date().toISOString();
       liveClock = setInterval(() => {
         liveNowIso = new Date().toISOString();
       }, 1000);
-    } else if (!active && liveClock) {
+    } else if (!shouldRunLiveClock && liveClock) {
       clearInterval(liveClock);
       liveClock = null;
     }
@@ -128,6 +136,54 @@
     return DOMPurify.sanitize(
       marked.parse(processed, { async: false }) as string,
     );
+  }
+
+  function portal(node: HTMLElement): { destroy: () => void } {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (node.parentNode) node.parentNode.removeChild(node);
+      },
+    };
+  }
+
+  function isImageMediaBlock(block: NormalizedBlock): boolean {
+    return block.type === "media" && block.mediaKind === "image";
+  }
+
+  function imageMediaBlocks(blocks: NormalizedBlock[]): NormalizedBlock[] {
+    return blocks.filter(
+      (block) => isImageMediaBlock(block) && !!mediaSourceUrl(block),
+    );
+  }
+
+  function openMediaViewer(blocks: NormalizedBlock[], index: number): void {
+    openMediaBlocks = blocks;
+    openMediaIndex = index;
+  }
+
+  function closeMediaViewer(): void {
+    openMediaBlocks = [];
+    openMediaIndex = -1;
+  }
+
+  function openMediaByStep(step: number): void {
+    if (openMediaBlocks.length === 0) return;
+    openMediaIndex =
+      (openMediaIndex + step + openMediaBlocks.length) % openMediaBlocks.length;
+  }
+
+  function onMediaModalKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMediaViewer();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      openMediaByStep(-1);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      openMediaByStep(1);
+    }
   }
 
   async function copyToClipboard(text: string) {
@@ -194,7 +250,7 @@
     >,
   ): string | undefined {
     if (item.endedAt) return item.endedAt;
-    if (active && item.open) return liveNowIso;
+    if (item.open) return liveNowIso;
     return undefined;
   }
 
@@ -293,6 +349,14 @@
     return preview || roleLabel(entry.message.role, entry.message.author);
   }
 
+  function cleanThinkingTitle(text: string): string {
+    return text
+      .trim()
+      .replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/s, "$1")
+      .replace(/^(?:\*|_)(.*?)(?:\*|_)$/s, "$1")
+      .trim();
+  }
+
   function thinkingDisplay(text: string | undefined): {
     title: string;
     body: string;
@@ -303,7 +367,7 @@
       .trim();
     if (!cleaned) return { title: "", body: "" };
     const [firstLine = "", ...rest] = cleaned.split("\n");
-    const title = firstLine.trim();
+    const title = cleanThinkingTitle(firstLine);
     const body = rest.join("\n").trim();
     if (title && body && title.length <= 96) return { title, body };
     return { title: "", body: cleaned };
@@ -441,6 +505,30 @@
   }
 </script>
 
+{#snippet renderThinkingIcon()}
+  <svg
+    class="thinking-icon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path
+      d="M9.5 2.75a3.25 3.25 0 0 0-3.18 3.93A3.5 3.5 0 0 0 5 13.42a3.2 3.2 0 0 0 .94 5.53A3.35 3.35 0 0 0 12 17V6a3.25 3.25 0 0 0-2.5-3.25Z"
+    />
+    <path
+      d="M14.5 2.75a3.25 3.25 0 0 1 3.18 3.93A3.5 3.5 0 0 1 19 13.42a3.2 3.2 0 0 1-.94 5.53A3.35 3.35 0 0 1 12 17V6a3.25 3.25 0 0 1 2.5-3.25Z"
+    />
+    <path d="M8.25 8.25H12" />
+    <path d="M15.75 8.25H12" />
+    <path d="M7.75 13.25H12" />
+    <path d="M16.25 13.25H12" />
+  </svg>
+{/snippet}
+
 {#snippet renderImageAttachmentFrame(
   src: string,
   label: string,
@@ -461,8 +549,34 @@
   m: NormalizedMessage,
   messageIndex: number,
 )}
+  {@const userImageBlocks = m.role === "user" ? imageMediaBlocks(blocks) : []}
+  {#if userImageBlocks.length > 0}
+    <div class="block media-strip user-media-strip">
+      {#each userImageBlocks as imageBlock, imageIndex (`${imageBlock.path ?? imageBlock.url ?? "image"}:${imageIndex}`)}
+        {@const src = mediaSourceUrl(imageBlock)}
+        {#if src}
+          <button
+            type="button"
+            class="media-image-open"
+            title={`Open ${mediaLabel(imageBlock)}`}
+            aria-label={`Open ${mediaLabel(imageBlock)}`}
+            on:click={() => openMediaViewer(userImageBlocks, imageIndex)}
+          >
+            {@render renderImageAttachmentFrame(
+              src,
+              imageBlock.alt ?? mediaLabel(imageBlock),
+              !!imageBlock.hasAlpha,
+              "composer-photo-frame media-photo-frame",
+            )}
+          </button>
+        {/if}
+      {/each}
+    </div>
+  {/if}
   {#each blocks as b}
-    {#if b.type === "text"}
+    {#if m.role === "user" && isImageMediaBlock(b) && mediaSourceUrl(b)}
+      <!-- Rendered once in the horizontal image strip above. -->
+    {:else if b.type === "text"}
       {@const displayText = visualTextForBlock(b.text, m.role)}
       {#if messageIndex === ollamaStreamingIdx && !(b.text ?? "").length}
         <div class="block text md ollama-waiting">
@@ -474,7 +588,7 @@
     {:else if b.type === "thinking"}
       {@const thought = thinkingDisplay(b.text)}
       <div class="block thinking">
-        <span class="thinking-icon" aria-hidden="true">🧠</span>
+        {@render renderThinkingIcon()}
         <div class="thinking-copy">
           {#if thought.title}
             <div class="thinking-title">{thought.title}</div>
@@ -511,7 +625,13 @@
         class:media-image={b.mediaKind === "image"}
       >
         {#if b.mediaKind === "image" && src}
-          <a href={src} target="_blank" rel="noopener noreferrer">
+          <button
+            type="button"
+            class="media-image-open"
+            title={`Open ${mediaLabel(b)}`}
+            aria-label={`Open ${mediaLabel(b)}`}
+            on:click={() => openMediaViewer([b], 0)}
+          >
             {@render renderImageAttachmentFrame(
               src,
               b.alt ?? mediaLabel(b),
@@ -520,7 +640,7 @@
                 ? "composer-photo-frame media-photo-frame"
                 : "media-photo-frame",
             )}
-          </a>
+          </button>
           <figcaption>{mediaLabel(b)}</figcaption>
         {:else}
           <div class="media-artifact">
@@ -616,7 +736,7 @@
     {:else if b.type === "thinking"}
       {@const thought = thinkingDisplay(b.text)}
       <div class="work-step-detail">
-        <span class="thinking-icon" aria-hidden="true">🧠</span>
+        {@render renderThinkingIcon()}
         <div class="thinking-copy">
           {#if thought.title}
             <div class="thinking-title">{thought.title}</div>
@@ -690,7 +810,11 @@
   {#each items as item}
     {#if item.kind === "work"}
       <li class="work-row">
-        <details class="work-foldout" open={item.open}>
+        <details
+          class="work-foldout"
+          class:work-foldout-live={item.open && !item.endedAt}
+          open={item.open}
+        >
           <summary>
             <span>{formatWorkedDuration(item.startedAt, workEndedAt(item))}</span>
             <span class="work-count">
@@ -857,6 +981,73 @@
   {/each}
 </ul>
 
+{#if openMediaBlock && openMediaSrc}
+  <section
+    use:portal
+    class="attachment-media-scrim transcript-media-scrim"
+    role="presentation"
+    tabindex="-1"
+    on:click={closeMediaViewer}
+    on:keydown={onMediaModalKeydown}
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="attachment-media-modal attachment-media-modal-image"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image attachment"
+      tabindex="-1"
+      on:click|stopPropagation
+      on:dblclick|stopPropagation
+    >
+      <header class="attachment-media-head">
+        <span class="attachment-media-title">{mediaLabel(openMediaBlock)}</span>
+        {#if openMediaBlocks.length > 1}
+          <button
+            type="button"
+            class="attachment-media-nav"
+            aria-label="Previous image"
+            title="Previous image"
+            on:click={() => openMediaByStep(-1)}>‹</button
+          >
+          <button
+            type="button"
+            class="attachment-media-nav"
+            aria-label="Next image"
+            title="Next image"
+            on:click={() => openMediaByStep(1)}>›</button
+          >
+          <span class="attachment-media-count">
+            {openMediaIndex + 1} / {openMediaBlocks.length}
+          </span>
+        {/if}
+        <button
+          type="button"
+          class="sticky-btn tiny"
+          title="Close"
+          aria-label="Close"
+          on:click={closeMediaViewer}>×</button
+        >
+      </header>
+
+      <div class="attachment-media-shell attachment-media-shell-image">
+        <div class="attachment-media-body">
+          <span
+            class="sticky-photo-frame sticky-photo-frame-media"
+            class:sticky-photo-frame-transparent={openMediaBlock.hasAlpha}
+          >
+            <img
+              src={openMediaSrc}
+              alt={openMediaBlock.alt ?? mediaLabel(openMediaBlock)}
+              draggable="true"
+            />
+          </span>
+        </div>
+      </div>
+    </div>
+  </section>
+{/if}
+
 <style>
   .muted {
     color: var(--text-muted);
@@ -976,9 +1167,6 @@
   .msg.user-message .media-block {
     margin: 0;
     max-width: min(16rem, 100%);
-  }
-  .msg.user-message .media-block.media-image a {
-    width: min(4.8rem, 100%);
   }
   .msg.user-message .media-photo-frame img {
     max-height: 7.2rem;
@@ -1105,6 +1293,12 @@
     border-left: 1px solid color-mix(in srgb, var(--surface-3) 45%, transparent);
     min-width: 0;
     max-width: calc(100% - 1.7rem);
+  }
+  .work-foldout-live > .work-foldout-body {
+    max-height: min(42vh, 26rem);
+    overflow: auto;
+    padding-right: 0.35rem;
+    overscroll-behavior: contain;
   }
   .work-entry {
     padding: 0;
@@ -1618,17 +1812,45 @@
     margin: 0.35rem 0 0;
     max-width: min(100%, 34rem);
   }
+  .media-strip {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    max-width: min(100%, 34rem);
+  }
+  .user-media-strip {
+    justify-content: flex-end;
+  }
   .media-block a {
     color: var(--brand);
     text-decoration: none;
   }
-  .media-block.media-image a {
+  .media-image-open {
     display: block;
     width: min(18rem, 100%);
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: zoom-in;
   }
-  .media-block a:hover {
+  .user-media-strip .media-image-open {
+    width: 5.2rem;
+    flex: 0 0 auto;
+  }
+  .media-block a:hover,
+  .media-image-open:hover {
     text-decoration: underline;
+  }
+  .media-image-open:hover .sticky-photo-frame {
+    transform: translateY(-1px);
+    box-shadow:
+      0 2px 4px rgba(0, 0, 0, 0.22),
+      0 9px 18px rgba(0, 0, 0, 0.18);
   }
   .media-photo-frame {
     box-sizing: border-box;
@@ -1732,10 +1954,11 @@
   }
   .thinking-icon {
     flex: 0 0 auto;
-    width: 1.1em;
-    line-height: 1.35;
-    opacity: 0.82;
-    font-size: 0.92em;
+    width: 1rem;
+    height: 1rem;
+    margin-top: 0.1rem;
+    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+    opacity: 0.9;
   }
   .thinking-copy {
     min-width: 0;
@@ -1769,6 +1992,9 @@
   }
   .work-step-detail .thinking-copy .tag-body {
     color: var(--text-muted);
+  }
+  .work-step-detail .thinking-icon {
+    margin-top: 0.18rem;
   }
   .block.marker {
     margin-top: 0.2rem;

@@ -521,8 +521,16 @@ export function buildVisualWorkDisplayEntries<
   return out;
 }
 
-function isAssistantResponseBlock(block: MessageBlock): boolean {
+function isResponseBlock(block: MessageBlock): boolean {
   return block.type === "text" || block.type === "media";
+}
+
+function isAssistantResponseEntry<B extends MessageBlock, M extends Message<B>>(
+  entry: VisualWorkEntry<B, M>,
+): boolean {
+  return (
+    entry.message.role === "assistant" && entry.blocks.some(isResponseBlock)
+  );
 }
 
 function timestampMs(value: string | undefined): number | undefined {
@@ -555,9 +563,7 @@ export function buildVisualTranscriptItems<
     userTimestamp: string | undefined,
     active: boolean,
   ): void {
-    const hasResponse = entries.some((entry) =>
-      entry.blocks.some(isAssistantResponseBlock),
-    );
+    const hasResponse = entries.some(isAssistantResponseEntry);
     if (active || !hasResponse) {
       if (entries.length > 0) {
         const firstWorkTs = entries.find((entry) =>
@@ -574,16 +580,14 @@ export function buildVisualTranscriptItems<
     }
 
     const finalResponseIndex = entries.findLastIndex(
-      (entry) =>
-        entry.message.role === "assistant" &&
-        entry.blocks.some(isAssistantResponseBlock),
+      (entry) => isAssistantResponseEntry(entry),
     );
     const finalResponse = entries[finalResponseIndex]!;
     const workEntries: VisualWorkEntry<B, M>[] = [];
     entries.forEach((entry, entryIndex) => {
       const blocks =
         entryIndex === finalResponseIndex
-          ? entry.blocks.filter((block) => !isAssistantResponseBlock(block))
+          ? entry.blocks.filter((block) => !isResponseBlock(block))
           : entry.blocks;
       if (blocks.length > 0) {
         workEntries.push({ ...entry, blocks });
@@ -605,7 +609,7 @@ export function buildVisualTranscriptItems<
     out.push({
       kind: "message",
       message: finalResponse.message,
-      blocks: finalResponse.blocks.filter(isAssistantResponseBlock),
+      blocks: finalResponse.blocks.filter(isResponseBlock),
       messageIndex: finalResponse.messageIndex,
     });
   }

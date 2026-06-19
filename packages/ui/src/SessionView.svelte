@@ -878,7 +878,7 @@
     NormalizedMessage
   >[] = [];
   $: visualTranscriptItems = buildVisualTranscriptItems(session?.messages ?? [], {
-    active: liveCodexApp && codexRunning,
+    active: visualTranscriptActive,
   });
 
   /** Build the shell command we'd hand to an external terminal to
@@ -1422,6 +1422,7 @@
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
+  $: visualTranscriptActive = liveCodexApp ? codexRunning : sending;
   $: codexLastMessageActivityIso = session?.messages
     .map((m) => m.timestamp)
     .filter((ts): ts is string => !!ts)
@@ -3325,7 +3326,7 @@
       onMessagesEnter={onMessagesEnter}
       onMessagesLeave={onMessagesLeave}
       onMessagesWheel={onMessagesWheel}
-      active={codexRunning || sending}
+      active={visualTranscriptActive}
     />
   {/if}
 
