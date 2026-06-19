@@ -1683,6 +1683,7 @@
   let codexQueuedMessages: CodexQueuedMessage<ImageInlineAttachment>[] = [];
   let codexQueueDraining = false;
   let codexQueueBlocked = false;
+  let codexQueueExpanded = false;
   let editingCodexQueueId: string | null = null;
   let editingCodexQueueText = "";
   let editingCodexQueueAttachments: ImageInlineAttachment[] = [];
@@ -2781,6 +2782,7 @@
   function beginEditCodexQueuedMessage(
     item: CodexQueuedMessage<ImageInlineAttachment>,
   ): void {
+    codexQueueExpanded = true;
     editingCodexQueueId = item.id;
     editingCodexQueueText = item.text;
     editingCodexQueueAttachments = [...item.attachments];
@@ -3095,12 +3097,10 @@
     mode === "read" &&
     (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
   $: showComposerTray =
-    codexVisualAppSurface &&
-    (codexRequests.length > 0 ||
-      codexQueuedMessages.length > 0 ||
-      composerAttachments.length > 0 ||
-      composerUploadingImages > 0 ||
-      !!composerAttachmentError);
+    codexVisualAppSurface && codexRequests.length > 0;
+  $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
+    codexQueueExpanded = false;
+  }
 
   $: composerPlaceholder =
     agent === "codex" ? "Message Codex…" : `Message ${model || "Ollama"}…`;
@@ -4083,270 +4083,278 @@
   {#if showChatComposer}
     <!-- API-driven chat composer. Ollama streams through /api/ollama/chat;
          Codex App streams through its app-server event channel. -->
-    <div class="composer">
+    <div class="composer-shell">
       {#if showComposerTray}
         <div class="composer-tray">
-          {#if agent === "codex" && codexRequests.length}
-            <div class="codex-requests">
-              {#each codexRequests as req (req.id)}
-                <div class="codex-request">
-                  <div class="codex-request-main">
-                    <span class="codex-request-title"
-                      >{codexRequestTitle(req)}</span
-                    >
-                    <code
-                      class="codex-request-preview"
-                      title={codexRequestPreview(req)}
-                      >{codexRequestPreview(req)}</code
-                    >
-                    {#if codexIsUserInputRequest(req)}
-                      <div class="codex-request-questions">
-                        {#each codexRequestQuestions(req) as q (q.id)}
-                          <label class="codex-request-question">
-                            <span>{q.header || q.question || "Answer"}</span>
-                            {#if q.question && q.header}
-                              <small>{q.question}</small>
-                            {/if}
-                            {#if q.options && q.options.length}
-                              <select
-                                value={codexQuestionDraft(req, q)}
-                                on:change={(e) =>
-                                  setCodexQuestionDraft(
-                                    req,
-                                    q,
-                                    (e.currentTarget as HTMLSelectElement)
-                                      .value,
-                                  )}
-                              >
-                                <option value="">Choose…</option>
-                                {#each q.options as opt (opt.label)}
-                                  <option value={opt.label}>
-                                    {opt.label}{opt.description
-                                      ? ` — ${opt.description}`
-                                      : ""}
-                                  </option>
-                                {/each}
-                              </select>
-                            {:else}
-                              <input
-                                type={q.isSecret ? "password" : "text"}
-                                value={codexQuestionDraft(req, q)}
-                                on:input={(e) =>
-                                  setCodexQuestionDraft(
-                                    req,
-                                    q,
-                                    (e.currentTarget as HTMLInputElement).value,
-                                  )}
-                              />
-                            {/if}
-                          </label>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="codex-request-actions">
-                    {#if codexIsUserInputRequest(req)}
-                      <button
-                        type="button"
-                        on:click={() => void answerCodexRequest(req, "accept")}
-                        title="Send these answers to Codex">Send</button
-                      >
-                      <button
-                        type="button"
-                        on:click={() => void answerCodexRequest(req, "cancel")}
-                        title="Cancel this input request">Cancel</button
-                      >
-                    {:else}
-                      <button
-                        type="button"
-                        on:click={() => void answerCodexRequest(req, "accept")}
-                        title="Approve this Codex request">Accept</button
-                      >
-                      {#if codexCanAcceptForSession(req)}
-                        <button
-                          type="button"
-                          on:click={() =>
-                            void answerCodexRequest(req, "acceptForSession")}
-                          title="Approve similar Codex requests for this session"
-                          >Session</button
-                        >
-                      {/if}
-                      <button
-                        type="button"
-                        on:click={() => void answerCodexRequest(req, "decline")}
-                        title="Decline this Codex request">Decline</button
-                      >
-                      <button
-                        type="button"
-                        on:click={() => void answerCodexRequest(req, "cancel")}
-                        title="Cancel this Codex request">Cancel</button
-                      >
-                    {/if}
-                  </div>
+          <div class="codex-requests">
+            {#each codexRequests as req (req.id)}
+              <div class="codex-request">
+                <div class="codex-request-main">
+                  <span class="codex-request-title"
+                    >{codexRequestTitle(req)}</span
+                  >
+                  <code
+                    class="codex-request-preview"
+                    title={codexRequestPreview(req)}
+                    >{codexRequestPreview(req)}</code
+                  >
+                  {#if codexIsUserInputRequest(req)}
+                    <div class="codex-request-questions">
+                      {#each codexRequestQuestions(req) as q (q.id)}
+                        <label class="codex-request-question">
+                          <span>{q.header || q.question || "Answer"}</span>
+                          {#if q.question && q.header}
+                            <small>{q.question}</small>
+                          {/if}
+                          {#if q.options && q.options.length}
+                            <select
+                              value={codexQuestionDraft(req, q)}
+                              on:change={(e) =>
+                                setCodexQuestionDraft(
+                                  req,
+                                  q,
+                                  (e.currentTarget as HTMLSelectElement).value,
+                                )}
+                            >
+                              <option value="">Choose…</option>
+                              {#each q.options as opt (opt.label)}
+                                <option value={opt.label}>
+                                  {opt.label}{opt.description
+                                    ? ` — ${opt.description}`
+                                    : ""}
+                                </option>
+                              {/each}
+                            </select>
+                          {:else}
+                            <input
+                              type={q.isSecret ? "password" : "text"}
+                              value={codexQuestionDraft(req, q)}
+                              on:input={(e) =>
+                                setCodexQuestionDraft(
+                                  req,
+                                  q,
+                                  (e.currentTarget as HTMLInputElement).value,
+                                )}
+                            />
+                          {/if}
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
-              {/each}
-            </div>
-          {/if}
-          {#if agent === "codex" && codexQueuedMessages.length}
-            <div class="codex-queue" aria-label="Queued Codex messages">
-              {#each codexQueuedMessages as item (item.id)}
-                {@const queueAttachments =
-                  editingCodexQueueId === item.id
-                    ? editingCodexQueueAttachments
-                    : item.attachments}
-                <div class="codex-queue-item">
-                  <div
-                    class="codex-queue-main"
-                    class:editing={editingCodexQueueId === item.id}
-                    class:hasAttachments={queueAttachments.length > 0}
-                  >
-                    <span class="codex-queue-label">queued</span>
-                    {#if editingCodexQueueId === item.id}
-                      <textarea
-                        class="codex-queue-edit"
-                        bind:value={editingCodexQueueText}
-                        rows="2"
-                      ></textarea>
-                    {:else}
-                      <div class="codex-queue-preview" title={item.text}>
-                        {item.text || "(attachments only)"}
-                      </div>
-                    {/if}
-                    {#if queueAttachments.length}
-                      <div class="codex-queue-attachments">
-                        {#each queueAttachments as attachment, attachmentIndex (`${item.id}:${attachment.path}:${attachmentIndex}`)}
-                          <div class="composer-attachment codex-queue-attachment">
-                            {@render renderImageAttachmentFrame(
-                              composerImageUrl(attachment),
-                              inlineAttachmentLabel(attachment),
-                              !!attachment.hasAlpha,
-                              "composer-photo-frame codex-queue-photo",
-                            )}
-                            {#if editingCodexQueueId === item.id}
-                              <button
-                                type="button"
-                                class="composer-attachment-remove"
-                                on:click={() =>
-                                  removeEditingCodexQueueAttachment(
-                                    attachmentIndex,
-                                  )}
-                                title={`Remove ${inlineAttachmentLabel(attachment)}`}
-                                aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
-                              >
-                                ×
-                              </button>
-                            {/if}
-                          </div>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="codex-queue-actions">
-                    {#if editingCodexQueueId === item.id}
-                      <button
-                        type="button"
-                        on:click={() => saveCodexQueuedMessage(item.id)}
-                        disabled={!canSaveCodexQueueEdit(
-                          editingCodexQueueText,
-                          editingCodexQueueAttachments,
-                        )}
-                        title="Save queued message">Save</button
-                      >
-                      <button
-                        type="button"
-                        on:click={cancelEditCodexQueuedMessage}
-                        title="Cancel edit">Cancel</button
-                      >
-                    {:else}
-                      <button
-                        type="button"
-                        on:click={() => beginEditCodexQueuedMessage(item)}
-                        title="Edit queued message">Edit</button
-                      >
-                      {#if codexActiveTurnId}
-                        <button
-                          type="button"
-                          on:click={() => void steerCodexQueuedMessage(item)}
-                          title="Send this queued message as steering now"
-                          >Steer</button
-                        >
-                      {:else}
-                        <button
-                          type="button"
-                          on:click={() => void runCodexQueuedMessage(item)}
-                          title="Run this queued message now">Run</button
-                        >
-                      {/if}
-                      <button
-                        type="button"
-                        on:click={() => removeCodexQueuedMessage(item.id)}
-                        title="Remove queued message">Remove</button
-                      >
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-          {#if agent === "codex" && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
-            <div class="composer-attachments" aria-label="Message attachments">
-              {#each composerAttachments as attachment, i (`${attachment.path}:${i}`)}
-                <div class="composer-attachment">
-                  <button
-                    type="button"
-                    class="composer-attachment-open"
-                    on:click={() => openComposerAttachmentAt(i)}
-                    title={`Open ${inlineAttachmentLabel(attachment)}`}
-                    aria-label={`Open ${inlineAttachmentLabel(attachment)}`}
-                  >
-                    {@render renderImageAttachmentFrame(
-                      composerImageUrl(attachment),
-                      inlineAttachmentLabel(attachment),
-                      !!attachment.hasAlpha,
-                      "composer-photo-frame",
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    class="composer-attachment-remove"
-                    on:click={() => removeComposerAttachment(i)}
-                    title={`Remove ${inlineAttachmentLabel(attachment)}`}
-                    aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
-                  >
-                    ×
-                  </button>
-                </div>
-              {/each}
-              {#if composerUploadingImages}
-                {#each Array.from({ length: composerUploadingImages }) as _, i}
-                  <div
-                    class="composer-attachment"
-                    aria-label="Attaching image"
-                    title="Attaching image"
-                  >
-                    <span
-                      class="sticky-photo-frame composer-photo-frame composer-photo-frame-uploading"
+                <div class="codex-request-actions">
+                  {#if codexIsUserInputRequest(req)}
+                    <button
+                      type="button"
+                      on:click={() => void answerCodexRequest(req, "accept")}
+                      title="Send these answers to Codex">Send</button
                     >
-                      <span
-                        class="composer-photo-frame-uploading-mark"
-                        aria-hidden="true"
-                      ></span>
-                    </span>
-                  </div>
-                {/each}
-              {/if}
-              {#if composerAttachmentError}
-                <span
-                  class="composer-attachment-error"
-                  title={composerAttachmentError}
-                >
-                  {composerAttachmentError}
-                </span>
-              {/if}
-            </div>
-          {/if}
+                    <button
+                      type="button"
+                      on:click={() => void answerCodexRequest(req, "cancel")}
+                      title="Cancel this input request">Cancel</button
+                    >
+                  {:else}
+                    <button
+                      type="button"
+                      on:click={() => void answerCodexRequest(req, "accept")}
+                      title="Approve this Codex request">Accept</button
+                    >
+                    {#if codexCanAcceptForSession(req)}
+                      <button
+                        type="button"
+                        on:click={() =>
+                          void answerCodexRequest(req, "acceptForSession")}
+                        title="Approve similar Codex requests for this session"
+                        >Session</button
+                      >
+                    {/if}
+                    <button
+                      type="button"
+                      on:click={() => void answerCodexRequest(req, "decline")}
+                      title="Decline this Codex request">Decline</button
+                    >
+                    <button
+                      type="button"
+                      on:click={() => void answerCodexRequest(req, "cancel")}
+                      title="Cancel this Codex request">Cancel</button
+                    >
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
+      {#if agent === "codex" && codexQueuedMessages.length && codexQueueExpanded}
+        <div class="codex-queue-pane" aria-label="Queued Codex messages">
+          <div class="codex-queue">
+            {#each codexQueuedMessages as item (item.id)}
+              {@const queueAttachments =
+                editingCodexQueueId === item.id
+                  ? editingCodexQueueAttachments
+                  : item.attachments}
+              <div class="codex-queue-item">
+                <div
+                  class="codex-queue-main"
+                  class:editing={editingCodexQueueId === item.id}
+                  class:hasAttachments={queueAttachments.length > 0}
+                >
+                  <span class="codex-queue-label">queued</span>
+                  {#if editingCodexQueueId === item.id}
+                    <textarea
+                      class="codex-queue-edit"
+                      bind:value={editingCodexQueueText}
+                      rows="2"
+                    ></textarea>
+                  {:else}
+                    <div class="codex-queue-preview" title={item.text}>
+                      {item.text || "(attachments only)"}
+                    </div>
+                  {/if}
+                  {#if queueAttachments.length}
+                    <div class="codex-queue-attachments">
+                      {#each queueAttachments as attachment, attachmentIndex (`${item.id}:${attachment.path}:${attachmentIndex}`)}
+                        <div class="composer-attachment codex-queue-attachment">
+                          {@render renderImageAttachmentFrame(
+                            composerImageUrl(attachment),
+                            inlineAttachmentLabel(attachment),
+                            !!attachment.hasAlpha,
+                            "composer-photo-frame codex-queue-photo",
+                          )}
+                          {#if editingCodexQueueId === item.id}
+                            <button
+                              type="button"
+                              class="composer-attachment-remove"
+                              on:click={() =>
+                                removeEditingCodexQueueAttachment(
+                                  attachmentIndex,
+                                )}
+                              title={`Remove ${inlineAttachmentLabel(attachment)}`}
+                              aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
+                            >
+                              ×
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+                <div class="codex-queue-actions">
+                  {#if editingCodexQueueId === item.id}
+                    <button
+                      type="button"
+                      on:click={() => saveCodexQueuedMessage(item.id)}
+                      disabled={!canSaveCodexQueueEdit(
+                        editingCodexQueueText,
+                        editingCodexQueueAttachments,
+                      )}
+                      title="Save queued message"
+                      aria-label="Save queued message">✓</button
+                    >
+                    <button
+                      type="button"
+                      on:click={cancelEditCodexQueuedMessage}
+                      title="Cancel edit"
+                      aria-label="Cancel edit">×</button
+                    >
+                  {:else}
+                    <button
+                      type="button"
+                      on:click={() => beginEditCodexQueuedMessage(item)}
+                      title="Edit queued message"
+                      aria-label="Edit queued message">✎</button
+                    >
+                    {#if codexActiveTurnId}
+                      <button
+                        type="button"
+                        on:click={() => void steerCodexQueuedMessage(item)}
+                        title="Send this queued message as steering now"
+                        aria-label="Steer queued message">↩</button
+                      >
+                    {:else}
+                      <button
+                        type="button"
+                        on:click={() => void runCodexQueuedMessage(item)}
+                        title="Run this queued message now"
+                        aria-label="Run queued message">▶</button
+                      >
+                    {/if}
+                    <button
+                      type="button"
+                      on:click={() => removeCodexQueuedMessage(item.id)}
+                      title="Remove queued message"
+                      aria-label="Remove queued message">×</button
+                    >
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      <div
+        class="composer"
+        class:wide-actions={agent === "codex" && codexRunning}
+      >
+        {#if agent === "codex" && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
+          <div class="composer-attachments" aria-label="Message attachments">
+            {#each composerAttachments as attachment, i (`${attachment.path}:${i}`)}
+              <div class="composer-attachment">
+                <button
+                  type="button"
+                  class="composer-attachment-open"
+                  on:click={() => openComposerAttachmentAt(i)}
+                  title={`Open ${inlineAttachmentLabel(attachment)}`}
+                  aria-label={`Open ${inlineAttachmentLabel(attachment)}`}
+                >
+                  {@render renderImageAttachmentFrame(
+                    composerImageUrl(attachment),
+                    inlineAttachmentLabel(attachment),
+                    !!attachment.hasAlpha,
+                    "composer-photo-frame",
+                  )}
+                </button>
+                <button
+                  type="button"
+                  class="composer-attachment-remove"
+                  on:click={() => removeComposerAttachment(i)}
+                  title={`Remove ${inlineAttachmentLabel(attachment)}`}
+                  aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
+                >
+                  ×
+                </button>
+              </div>
+            {/each}
+            {#if composerUploadingImages}
+              {#each Array.from({ length: composerUploadingImages }) as _, i}
+                <div
+                  class="composer-attachment"
+                  aria-label="Attaching image"
+                  title="Attaching image"
+                >
+                  <span
+                    class="sticky-photo-frame composer-photo-frame composer-photo-frame-uploading"
+                  >
+                    <span
+                      class="composer-photo-frame-uploading-mark"
+                      aria-hidden="true"
+                    ></span>
+                  </span>
+                </div>
+              {/each}
+            {/if}
+            {#if composerAttachmentError}
+              <span
+                class="composer-attachment-error"
+                title={composerAttachmentError}
+              >
+                {composerAttachmentError}
+              </span>
+            {/if}
+          </div>
+        {/if}
       <div class="composer-box">
         <textarea
           class="composer-input"
@@ -4362,6 +4370,22 @@
       </div>
       <div class="composer-footer">
         <div class="composer-send-wrap">
+          {#if agent === "codex" && codexQueuedMessages.length}
+            <button
+              type="button"
+              class="codex-queue-badge"
+              class:expanded={codexQueueExpanded}
+              on:click={() => (codexQueueExpanded = !codexQueueExpanded)}
+              title={codexQueueExpanded
+                ? "Collapse queued messages"
+                : "Show queued messages"}
+              aria-label={codexQueueExpanded
+                ? "Collapse queued messages"
+                : "Show queued messages"}
+            >
+              Queue: {codexQueuedMessages.length}
+            </button>
+          {/if}
           {#if sending && agent === "ollama"}
             <button
               type="button"
@@ -4426,6 +4450,7 @@
     {#if sendError}
       <div class="composer-error" title={sendError}>{sendError}</div>
     {/if}
+    </div>
   {/if}
   {#if openComposerAttachment && openComposerAttachmentIndex !== null}
     <div
@@ -4745,33 +4770,36 @@
   }
   /* One rounded chat control: the textarea is the surface, and the send
      actions sit inside it rather than in a second footer panel. */
-  .composer {
+  .composer-shell {
     position: relative;
     z-index: 3;
     align-self: center;
     width: min(calc(100% - 1.6rem), 56rem);
-    min-height: 6.4rem;
     margin: 0.45rem auto 0.6rem;
+    flex: 0 0 auto;
+  }
+  .composer {
+    width: 100%;
+    min-height: 6.4rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
     border-radius: 1.25rem;
     background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-1));
     padding: 0.72rem 3.75rem 0.72rem 0.95rem;
     display: flex;
     flex-direction: column;
-    flex: 0 0 auto;
     gap: 0.15rem;
     box-sizing: border-box;
     overflow: visible;
     box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
   }
-  .composer:has(.composer-send-wrap button + button) {
+  .composer.wide-actions {
     padding-right: 8rem;
   }
-  .session.empty-chat-composer:not(.has-composer-error) .composer {
+  .session.empty-chat-composer:not(.has-composer-error) .composer-shell {
     margin-top: auto;
     margin-bottom: auto;
   }
-  .session.empty-chat-composer.has-composer-error .composer {
+  .session.empty-chat-composer.has-composer-error .composer-shell {
     margin-top: auto;
     margin-bottom: 0.35rem;
   }
@@ -4792,6 +4820,21 @@
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--surface-2) 94%, transparent);
     box-shadow: 0 10px 26px -20px rgba(0, 0, 0, 0.9);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .codex-queue-pane {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.4rem);
+    z-index: 5;
+    width: min(100%, 42rem);
+    max-height: min(16rem, 38vh);
+    padding: 0.35rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--surface-2) 96%, transparent);
+    box-shadow: 0 14px 30px -22px rgba(0, 0, 0, 0.9);
     overflow-y: auto;
     overscroll-behavior: contain;
   }
@@ -4937,14 +4980,19 @@
     gap: 0.28rem;
   }
   .codex-queue-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem;
+    height: 1.55rem;
     border: 1px solid var(--surface-3);
     border-radius: var(--radius-sm);
     background: var(--surface-0);
     color: var(--text-1);
     font: inherit;
-    font-size: 0.7rem;
+    font-size: 0.78rem;
     line-height: 1;
-    padding: 0.26rem 0.38rem;
+    padding: 0;
     cursor: pointer;
   }
   .codex-queue-actions button:hover:not(:disabled) {
@@ -5166,10 +5214,35 @@
     min-width: 0;
   }
   .composer-send-wrap {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 0.25rem;
+  }
+  .codex-queue-badge {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.35rem);
+    max-width: 8rem;
+    border: 1px solid color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 650;
+    line-height: 1;
+    padding: 0.3rem 0.48rem;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.9);
+  }
+  .codex-queue-badge:hover,
+  .codex-queue-badge.expanded {
+    color: var(--text-1);
+    border-color: color-mix(in srgb, var(--status-clean) 62%, var(--surface-3));
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
   }
   .composer-send {
     display: inline-flex;
@@ -5215,13 +5288,17 @@
     border-color: var(--surface-3);
   }
   @media (max-width: 720px) {
-    .composer {
+    .composer-shell {
       width: calc(100% - 0.9rem);
-      min-height: 5.8rem;
       margin-inline: auto;
+    }
+    .composer {
+      width: 100%;
+      min-height: 5.8rem;
+      margin-inline: 0;
       padding-right: 3.35rem;
     }
-    .composer:has(.composer-send-wrap button + button) {
+    .composer.wide-actions {
       padding-right: 7.25rem;
     }
     .composer-input {
