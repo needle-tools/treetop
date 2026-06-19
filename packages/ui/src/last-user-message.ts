@@ -135,10 +135,31 @@ export function lastUserMessageWithContext(
   return burst;
 }
 
+const CODEX_IMAGE_ENVELOPE_RE = /<image\b[^>]*>\s*/gi;
+
+function codexImageEnvelopeAttrs(raw: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRe =
+    /([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\[[^\]]+\]|[^\s>]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(raw)) !== null) {
+    attrs[(match[1] ?? "").toLowerCase()] =
+      match[2] ?? match[3] ?? match[4] ?? "";
+  }
+  return attrs;
+}
+
+function codexImageEnvelopeLabel(rawName: string | undefined): string {
+  const trimmed = rawName?.trim() ?? "";
+  if (!trimmed) return "Image";
+  const bracketed = trimmed.match(/^\[(.+)\]$/);
+  return bracketed?.[1]?.trim() || trimmed;
+}
+
 export function cleanVisualUserText(text: string | undefined): string {
   if (!text) return "";
   return text
-    .replace(/<image\s+name=\[Image\s+#\d+\]\s+path="[^"]+"\s*>\s*/g, "")
+    .replace(CODEX_IMAGE_ENVELOPE_RE, "")
     .replace(/\s*\[Image\s+#\d+\]\s*/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -156,13 +177,14 @@ export function visualUserImageAttachments(
 ): VisualUserImageAttachment[] {
   if (!text) return [];
   return Array.from(
-    text.matchAll(
-      /<image\s+name=\[(Image\s+#\d+)\]\s+path="([^"]+)"\s*>/g,
-    ),
-    (match) => ({
-      label: match[1] ?? "Image",
-      path: match[2] ?? "",
-    }),
+    text.matchAll(CODEX_IMAGE_ENVELOPE_RE),
+    (match) => {
+      const attrs = codexImageEnvelopeAttrs(match[0] ?? "");
+      return {
+        label: codexImageEnvelopeLabel(attrs.name),
+        path: attrs.path ?? attrs.file_path ?? attrs.src ?? attrs.url ?? "",
+      };
+    },
   ).filter((attachment) => attachment.path.trim().length > 0);
 }
 

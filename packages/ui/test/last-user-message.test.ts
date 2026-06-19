@@ -177,6 +177,20 @@ describe("cleanVisualUserText", () => {
     ]);
   });
 
+  it("handles live Codex image envelope variants and drops orphan tags", () => {
+    const text = [
+      'before <image name="Image #1" path="/tmp/live one.png">',
+      "<image name=[Image #2] file_path='/tmp/live-two.webp'>",
+      "<image name=>",
+      "after [Image #1][Image #2]",
+    ].join("\n");
+    expect(visualUserImageAttachments(text)).toEqual([
+      { label: "Image #1", path: "/tmp/live one.png" },
+      { label: "Image #2", path: "/tmp/live-two.webp" },
+    ]);
+    expect(cleanVisualUserText(text)).toBe("before after");
+  });
+
   it("keeps ordinary text unchanged", () => {
     expect(cleanVisualUserText("please keep this")).toBe("please keep this");
   });
