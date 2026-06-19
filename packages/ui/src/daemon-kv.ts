@@ -20,6 +20,7 @@ const MIGRATED_KEYS = [
   "supergit:notes-offsets",
   "supergit:notes-zorder",
   "supergit:openSessions",
+  "supergit:openSessions:previous",
   "supergit:commitsExpanded",
   "supergit:visibleWorktrees",
   "supergit:notesHidden",
@@ -33,6 +34,7 @@ const MIGRATED_KEYS = [
   "supergit:commandTermSources",
   "supergit:scrollY",
   "supergit:selectedRemoteByRepo",
+  "supergit:sessionSurfaces",
 ] as const;
 
 class DaemonKVStore implements KVStore {

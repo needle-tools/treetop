@@ -296,10 +296,7 @@
     if (sess.agent === "claude") return "Claude";
     if (sess.agent === "shell") return "Terminal";
     if (sess.agent === "codex") {
-      const surface = sessionSurface(sess);
-      return surface === "read" || isLiveCodexAppSource(sess.source)
-        ? "Codex App"
-        : "Codex CLI";
+      return isLiveCodexAppSource(sess.source) ? "Codex App" : "Codex CLI";
     }
     if (sess.agent === "ollama") return "Ollama";
     return sess.agent;

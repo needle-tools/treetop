@@ -219,12 +219,14 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
 
   async steerTurn(req: {
     threadId: string;
+    expectedTurnId: string;
     text?: string;
     input?: JsonObject[];
   }): Promise<{ turnId?: string }> {
     const rpc = await this.ensureRpc(process.cwd());
     const result = await rpc.request("turn/steer", {
       threadId: req.threadId,
+      expectedTurnId: req.expectedTurnId,
       input: req.input ?? textInput(req.text ?? ""),
     });
     return { turnId: nestedString(result, ["turnId"]) };

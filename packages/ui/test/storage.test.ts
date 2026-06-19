@@ -14,16 +14,20 @@ import {
   cmdForOpenSession,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
+  hideVisibleWorktree,
   isLiveCodexAppSource,
   isForeignToWorktree,
+  isSessionForeignToWorktree,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
   sessionSurfaceKeys,
+  showVisibleWorktree,
   setSessionMode,
   setSessionAttachTermId,
   shouldPollSessionSource,
   stampDiscoveredSessionId,
   stampDiscoveredSessionIdWithDetail,
+  toggleVisibleWorktree,
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
@@ -341,6 +345,34 @@ describe("OpenSessionsStore", () => {
     });
   });
 
+  test("save keeps the previous open-session payload as a recovery backup", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/wt": [
+        { agent: "codex", source: "/one.jsonl" },
+        { agent: "codex", source: "/two.jsonl" },
+      ],
+    });
+    const first = m.getItem(KEY);
+    s.save({
+      "/wt": [{ agent: "codex", source: "/one.jsonl" }],
+    });
+    expect(m.getItem(`${KEY}:previous`)).toBe(first);
+  });
+
+  test("save does not churn the recovery backup when the payload is unchanged", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    const data = {
+      "/wt": [{ agent: "codex" as const, source: "/one.jsonl" }],
+    };
+    s.save(data);
+    m.setItem(`${KEY}:previous`, "sentinel");
+    s.save(data);
+    expect(m.getItem(`${KEY}:previous`)).toBe("sentinel");
+  });
+
   test("round-trips claudeModel + claudeEffort", () => {
     const m = new MemStore();
     const s = new OpenSessionsStore(m, KEY);
@@ -475,6 +507,32 @@ describe("filterToExistingSessions", () => {
     expect(filterToExistingSessions(persisted, new Set<string>())).toEqual([]);
   });
 
+  test("keeps an open session when the known daemon session matches by provider session id", () => {
+    const persisted: PersistedSession[] = [
+      {
+        agent: "codex",
+        source: "/Users/me/.codex/sessions/older-path.jsonl",
+        resumeSessionId: "019ed50f-696c-7a41-95b0-e824d2e5c372",
+      },
+    ];
+    const existing = new Set([
+      "session:codex:019ed50f-696c-7a41-95b0-e824d2e5c372",
+    ]);
+    expect(filterToExistingSessions(persisted, existing)).toEqual(persisted);
+  });
+
+  test("keeps an open session when the known daemon session matches by transcript source alias", () => {
+    const persisted: PersistedSession[] = [
+      {
+        agent: "codex",
+        source: "__codex_app__:019ed50f-696c-7a41-95b0-e824d2e5c372",
+        transcriptSource: "/Users/me/.codex/sessions/current-path.jsonl",
+      },
+    ];
+    const existing = new Set(["/Users/me/.codex/sessions/current-path.jsonl"]);
+    expect(filterToExistingSessions(persisted, existing)).toEqual(persisted);
+  });
+
   test("live Codex App sources are not session-file poll targets", () => {
     const source = codexAppSource("thread-123");
     expect(isLiveCodexAppSource(source)).toBe(true);
@@ -606,6 +664,32 @@ describe("isForeignToWorktree", () => {
     expect(isForeignToWorktree("__restore__:t_2", empty)).toBe(false);
     expect(isForeignToWorktree("__transcript__:shell:t_3", empty)).toBe(false);
   });
+
+  test("a session matching by provider session id is not foreign", () => {
+    expect(
+      isSessionForeignToWorktree(
+        {
+          agent: "codex",
+          source: "/Users/me/.codex/sessions/old-path.jsonl",
+          resumeSessionId: "019ed50f-696c-7a41-95b0-e824d2e5c372",
+        },
+        new Set(["session:codex:019ed50f-696c-7a41-95b0-e824d2e5c372"]),
+      ),
+    ).toBe(false);
+  });
+
+  test("a session matching by transcript source alias is not foreign", () => {
+    expect(
+      isSessionForeignToWorktree(
+        {
+          agent: "codex",
+          source: "__codex_app__:019ed50f-696c-7a41-95b0-e824d2e5c372",
+          transcriptSource: "/Users/me/.codex/sessions/current-path.jsonl",
+        },
+        new Set(["/Users/me/.codex/sessions/current-path.jsonl"]),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("VisibleWorktreesStore", () => {
@@ -624,7 +708,7 @@ describe("VisibleWorktreesStore", () => {
     expect(reloaded).toEqual({ rA: ["/path/a", "/path/b"], rB: ["/path/c"] });
   });
 
-  test("save drops empty arrays and non-string entries on the way out", () => {
+  test("save preserves empty arrays and drops non-string entries on the way out", () => {
     const store = new MemStore();
     const s = new VisibleWorktreesStore(store, KEY);
     s.save({
@@ -633,7 +717,11 @@ describe("VisibleWorktreesStore", () => {
       rGarbage: ["/ok", 42 as unknown as string, ""],
     });
     const reloaded = new VisibleWorktreesStore(store, KEY).load();
-    expect(reloaded).toEqual({ rA: ["/keep"], rGarbage: ["/ok"] });
+    expect(reloaded).toEqual({
+      rA: ["/keep"],
+      rEmpty: [],
+      rGarbage: ["/ok"],
+    });
   });
 
   test("tolerates corrupt JSON without throwing", () => {
@@ -1630,7 +1718,7 @@ describe("SessionSurfaceStore", () => {
     ).toEqual(["/agents/claude.jsonl", "session:claude:sid-1"]);
   });
 
-  test("applySessionSurfacePreference defaults resumable Claude/Codex to terminal", () => {
+  test("applySessionSurfacePreference stamps a provider session id without spawning a terminal", () => {
     expect(
       applySessionSurfacePreference(
         {
@@ -1645,11 +1733,10 @@ describe("SessionSurfaceStore", () => {
       source: "/agents/codex.jsonl",
       sessionId: "sid-1",
       resumeSessionId: "sid-1",
-      mode: "terminal",
     });
   });
 
-  test("applySessionSurfacePreference restores terminal mode for remembered Claude/Codex", () => {
+  test("applySessionSurfacePreference does not turn remembered terminal transcript style into a live TUI", () => {
     expect(
       applySessionSurfacePreference(
         {
@@ -1664,11 +1751,10 @@ describe("SessionSurfaceStore", () => {
       source: "/agents/claude.jsonl",
       sessionId: "sid-1",
       resumeSessionId: "sid-1",
-      mode: "terminal",
     });
   });
 
-  test("applySessionSurfacePreference uses transcript aliases for Codex App sessions", () => {
+  test("applySessionSurfacePreference keeps transcript aliases from forcing Codex App live mode", () => {
     expect(
       applySessionSurfacePreference(
         {
@@ -1684,7 +1770,26 @@ describe("SessionSurfaceStore", () => {
       source: "__codex_app__:thread-1",
       transcriptSource: "/agents/codex-thread-1.jsonl",
       resumeSessionId: "thread-1",
-      mode: "terminal",
+    });
+  });
+
+  test("applySessionSurfacePreference keeps explicit Codex App visual chat mode", () => {
+    expect(
+      applySessionSurfacePreference(
+        {
+          agent: "codex",
+          source: codexAppSource("thread-1"),
+          transcriptSource: "/agents/codex-thread-1.jsonl",
+          resumeSessionId: "thread-1",
+          mode: "terminal",
+        },
+        { "session:codex:thread-1": "read" },
+      ),
+    ).toEqual({
+      agent: "codex",
+      source: codexAppSource("thread-1"),
+      transcriptSource: "/agents/codex-thread-1.jsonl",
+      resumeSessionId: "thread-1",
     });
   });
 
@@ -2017,6 +2122,43 @@ describe("effectiveVisibleWorktrees", () => {
         rA: ["/wt/A/feature-deleted", "/repos/A"],
       }),
     ).toEqual(["/repos/A"]);
+  });
+});
+
+describe("visible worktree mutations", () => {
+  const disk = ["/repos/A", "/wt/A/feature", "/wt/A/other"];
+
+  test("showVisibleWorktree reveals a new path after the originating worktree", () => {
+    expect(
+      showVisibleWorktree("rA", disk, {}, "/wt/A/feature", "/repos/A"),
+    ).toEqual({ rA: ["/repos/A", "/wt/A/feature"] });
+  });
+
+  test("showVisibleWorktree appends when the origin is not visible", () => {
+    expect(
+      showVisibleWorktree(
+        "rA",
+        disk,
+        { rA: ["/repos/A"] },
+        "/wt/A/other",
+        "/wt/A/feature",
+      ),
+    ).toEqual({ rA: ["/repos/A", "/wt/A/other"] });
+  });
+
+  test("hideVisibleWorktree keeps an explicit empty list instead of falling back", () => {
+    expect(hideVisibleWorktree("rA", disk, {}, "/repos/A")).toEqual({
+      rA: [],
+    });
+  });
+
+  test("toggleVisibleWorktree hides visible paths and shows hidden paths", () => {
+    expect(toggleVisibleWorktree("rA", disk, {}, "/repos/A")).toEqual({
+      rA: [],
+    });
+    expect(toggleVisibleWorktree("rA", disk, {}, "/wt/A/feature")).toEqual({
+      rA: ["/repos/A", "/wt/A/feature"],
+    });
   });
 });
 

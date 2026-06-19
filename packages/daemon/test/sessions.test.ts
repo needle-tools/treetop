@@ -137,6 +137,38 @@ describe("parseClaudeJsonl", () => {
     });
   });
 
+  test("normalises Claude image content as media blocks", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this?" },
+          {
+            type: "image",
+            source: {
+              type: "url",
+              url: "https://example.test/shot.png",
+              media_type: "image/png",
+            },
+          },
+        ],
+      },
+    });
+    const session = parseClaudeJsonl(line);
+    expect(session.messages[0]?.blocks).toEqual([
+      { type: "text", text: "what is in this?" },
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/png",
+        url: "https://example.test/shot.png",
+        title: "Image",
+        alt: "Image",
+      },
+    ]);
+  });
+
   test("relabels role=user messages that only contain tool_result blocks as 'tool'", () => {
     // Anthropic's API convention: tool results are sent back to the model
     // as user-role messages. Claude Code writes those into the JSONL with
@@ -228,18 +260,32 @@ describe("parseClaudeJsonl", () => {
       }),
     ].join("\n");
     const s = parseClaudeJsonl(text);
-    expect(s.messages).toHaveLength(1);
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "marker",
+      text: "[Context compacted]",
+    });
   });
 
-  test("ignores summary and unknown types", () => {
+  test("renders Claude summary records as compaction markers", () => {
     const text = [
-      JSON.stringify({ type: "summary", summary: "x" }),
+      JSON.stringify({
+        type: "summary",
+        summary: "previous context",
+        timestamp: "2026-05-26T12:00:00.000Z",
+      }),
       JSON.stringify({
         type: "system",
         message: { role: "system", content: "y" },
       }),
     ].join("\n");
-    expect(parseClaudeJsonl(text).messages).toEqual([]);
+    expect(parseClaudeJsonl(text).messages).toEqual([
+      {
+        role: "system",
+        blocks: [{ type: "marker", text: "[Context compacted]" }],
+        timestamp: "2026-05-26T12:00:00.000Z",
+      },
+    ]);
   });
 });
 
@@ -492,6 +538,80 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[1]?.blocks[0]).toEqual({ type: "text", text: "world" });
   });
 
+  test("normalises Codex image input and output content as media blocks", () => {
+    const line = JSON.stringify({
+      timestamp: "2026-06-19T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: "Generated this:" },
+          {
+            type: "output_image",
+            path: "/tmp/supergit/attachments/generated.png",
+            mime_type: "image/png",
+            filename: "generated.png",
+          },
+          {
+            type: "input_image",
+            image_url: {
+              url: "https://example.test/reference.webp",
+              media_type: "image/webp",
+            },
+          },
+        ],
+      },
+    });
+    const session = parseCodexJsonl(line);
+    expect(session.messages[0]?.blocks).toEqual([
+      { type: "text", text: "Generated this:" },
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/png",
+        path: "/tmp/supergit/attachments/generated.png",
+        title: "generated.png",
+        alt: "generated.png",
+      },
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/webp",
+        url: "https://example.test/reference.webp",
+        title: "Image",
+        alt: "Image",
+      },
+    ]);
+  });
+
+  test("keeps Codex image generation calls visible before media exists", () => {
+    const line = JSON.stringify({
+      timestamp: "2026-06-19T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "image_generation_call",
+        call_id: "call-img-1",
+        prompt: "a tidy agent UI",
+        status: "in_progress",
+      },
+    });
+    const session = parseCodexJsonl(line);
+    expect(session.messages[0]?.blocks).toEqual([
+      {
+        type: "tool_use",
+        toolName: "image_generation_call",
+        toolInput: {
+          type: "image_generation_call",
+          call_id: "call-img-1",
+          prompt: "a tidy agent UI",
+          status: "in_progress",
+        },
+        toolUseId: "call-img-1",
+      },
+    ]);
+  });
+
   test("splits Codex protocol markers out of assistant output text", () => {
     const text = JSON.stringify({
       type: "response_item",
@@ -621,6 +741,11 @@ describe("parseCodexJsonl", () => {
         type: "compacted",
       }),
       JSON.stringify({
+        timestamp: "2026-05-26T12:00:04.000Z",
+        type: "event_msg",
+        payload: { type: "context_compacted" },
+      }),
+      JSON.stringify({
         type: "event_msg",
         payload: { type: "token_count", info: {} },
       }),
@@ -632,8 +757,9 @@ describe("parseCodexJsonl", () => {
       "tool_result",
       "marker",
       "marker",
+      "marker",
     ]);
-    expect(s.messages[0]?.blocks[0]?.text).toContain("task started");
+    expect(s.messages[0]?.blocks[0]?.text).toContain("Task started");
     expect(s.messages[1]?.role).toBe("tool");
     expect(s.messages[1]?.blocks[0]).toEqual({
       type: "tool_result",
@@ -641,7 +767,8 @@ describe("parseCodexJsonl", () => {
       text: "Success. Updated files\n",
     });
     expect(s.messages[2]?.blocks[0]?.text).toContain("interrupted");
-    expect(s.messages[3]?.blocks[0]?.text).toContain("context compacted");
+    expect(s.messages[3]?.blocks[0]?.text).toContain("Context compacted");
+    expect(s.messages[4]?.blocks[0]?.text).toContain("Context compacted");
   });
 
   test("still skips duplicate Codex message events and metadata noise", () => {
@@ -689,6 +816,25 @@ describe("getSessionResponseJson cache", () => {
     return JSON.stringify({
       type: "user",
       message: { role: "user", content },
+      timestamp: ts,
+    });
+  }
+
+  function claudeAssistantLine(content: string, ts: string) {
+    return JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content },
+      timestamp: ts,
+    });
+  }
+
+  function claudeToolResultLine(content: string, ts: string) {
+    return JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu-1", content }],
+      },
       timestamp: ts,
     });
   }
@@ -913,6 +1059,119 @@ describe("getSessionResponseJson cache", () => {
     expect(b.messages[98]?.blocks[0]?.text).toBe("after-1");
     // The trim still drops from the head — msg-52 is now the oldest kept.
     expect(b.messages[0]?.blocks[0]?.text).toBe("msg-52");
+  });
+
+  test("keeps the old tail and widens it to include the last two user turns", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const lines: string[] = [
+      claudeLine("old setup", "2026-05-12T01:00:00Z"),
+      claudeAssistantLine("old done", "2026-05-12T01:00:01Z"),
+      claudeLine("please fix the UI", "2026-05-12T01:00:02Z"),
+    ];
+    for (let i = 0; i < 120; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `tool-${i}`,
+          `2026-05-12T01:${String(i + 3).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    lines.push(
+      claudeAssistantLine("first fix done", "2026-05-12T03:03:00Z"),
+      claudeLine("one more thing", "2026-05-12T03:04:00Z"),
+      claudeAssistantLine("second fix done", "2026-05-12T03:05:00Z"),
+    );
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const parsed = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(parsed.messages.length).toBeGreaterThan(100);
+    expect(parsed.messages[0]?.role).toBe("user");
+    expect(parsed.messages[0]?.blocks[0]?.text).toBe("please fix the UI");
+    expect(
+      parsed.messages.filter((m: { role: string }) => m.role === "user").length,
+    ).toBe(2);
+    expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("second fix done");
+  });
+
+  test("does not shrink the old tail when it already has two user turns", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const lines: string[] = [];
+    for (let i = 0; i < 150; i++) {
+      lines.push(claudeLine(`msg-${i}`, `2026-05-12T01:00:00Z`));
+    }
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const parsed = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(parsed.messages).toHaveLength(100);
+    expect(parsed.messages[0]?.blocks[0]?.text).toBe("msg-50");
+    expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("msg-149");
+  });
+
+  test("widens to the containing user turn even when the capped tail already has later users", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const lines: string[] = [
+      claudeLine("first user turn", "2026-05-12T01:00:00Z"),
+    ];
+    for (let i = 0; i < 50; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `first-turn-tool-${i}`,
+          `2026-05-12T01:${String(i + 1).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    lines.push(
+      claudeAssistantLine("first turn done", "2026-05-12T02:00:00Z"),
+      claudeLine("second user turn", "2026-05-12T02:01:00Z"),
+      claudeAssistantLine("second turn done", "2026-05-12T02:02:00Z"),
+      claudeLine("third user turn", "2026-05-12T02:03:00Z"),
+      claudeAssistantLine("third turn started", "2026-05-12T02:04:00Z"),
+    );
+    for (let i = 0; i < 74; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `third-turn-tool-${i}`,
+          `2026-05-12T03:${String(i + 1).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const parsed = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(parsed.messages.length).toBeGreaterThan(100);
+    expect(parsed.messages[0]?.role).toBe("user");
+    expect(parsed.messages[0]?.blocks[0]?.text).toBe("first user turn");
+    expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("third-turn-tool-73");
+  });
+
+  test("keeps the old tail and widens it to include the only recent user turn", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const lines: string[] = [
+      claudeLine("please inspect this", "2026-05-12T01:00:00Z"),
+    ];
+    for (let i = 0; i < 120; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `tool-${i}`,
+          `2026-05-12T01:${String(i + 1).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const parsed = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(parsed.messages.length).toBeGreaterThan(100);
+    expect(parsed.messages[0]?.role).toBe("user");
+    expect(parsed.messages[0]?.blocks[0]?.text).toBe("please inspect this");
+    expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("tool-119");
   });
 
   test("clips oversized strings inside tool_use.toolInput (Write/Edit content)", async () => {

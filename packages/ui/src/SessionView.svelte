@@ -19,11 +19,8 @@
   import {
     claudeSessionMenuItems,
     claudeAgentSettings,
-    codexAccessOptions,
     codexAgentSettings,
-    parseCodexAccessValue,
     effortIcon,
-    type AgentSettingGroup,
     type CodexModelInfo,
   } from "./claude-session-menu";
   import { getDaemonKV } from "./daemon-kv";
@@ -34,9 +31,16 @@
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
   import {
+    buildVisualWorkDisplayEntries,
     buildVisualTranscriptItems,
+    cleanVisualUserText,
+    cleanVisualToolResultText,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
+    visualFileEditSummaryForBlock,
+    type VisualFileEditSummary,
+    type VisualMarkerKind,
+    type VisualWorkEntry,
     type VisualTranscriptItem,
   } from "./last-user-message";
   import { registerSessionPoll } from "./session-poll";
@@ -54,6 +58,16 @@
     type ImageInlineAttachment,
   } from "./note-inline-attachments";
   import { randomUUID } from "./random-id";
+  import {
+    canSaveCodexQueueEdit,
+    enqueueCodexQueue,
+    parseCodexQueue,
+    removeCodexQueuedAttachment,
+    removeCodexQueuedMessage as removeCodexQueueItem,
+    updateCodexQueuedMessage,
+    type CodexQueuedMessage,
+  } from "./codex-queue";
+  import { markdownCodeBlockHtml } from "./markdown-code";
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -80,6 +94,9 @@
         const href = token.href ?? "";
         const title = token.title ? ` title="${escapeAttr(token.title)}"` : "";
         return `<a href="${escapeAttr(href)}"${title} target="_blank" rel="noopener noreferrer">${token.text}</a>`;
+      },
+      code(token: { text?: string; lang?: string | null }) {
+        return markdownCodeBlockHtml(token.text ?? "", token.lang);
       },
     },
   });
@@ -141,6 +158,10 @@
    *  shows even though the default gate (which requires Claude or
    *  Codex + a sessionId) would have hidden it. */
   export let onCustomResume: (() => void) | undefined = undefined;
+  /** Called when the column is in visual display mode and the user clicks
+   *  Resume. For Codex App, the parent swaps a stopped transcript source
+   *  to the live app-server source while preserving the transcript path. */
+  export let onVisualResume: (() => void) | undefined = undefined;
   /** Optional extra menu items appended after the built-in ones in
    *  the header's burger menu. Used by Ollama to inject "Resume with
    *  context" alongside the default Resume action. */
@@ -167,6 +188,11 @@
    *  runtime). The parent persists this across reload so a hard refresh
    *  doesn't drop a user out of an active TUI back to history view. */
   export let initialMode: "read" | "terminal" = "read";
+  /** Presentation style for the saved transcript when this column is not
+   *  running a live PTY. "read" is the visual chat layout; "terminal"
+   *  keeps the same parsed transcript but renders it as square-edged,
+   *  monospace terminal history. */
+  export let initialTranscriptSurface: "read" | "terminal" = "read";
   /** True only when the parent knows the user explicitly picked the
    *  experimental visual app-server surface for this session. Default
    *  read/transcript views must not grow the Codex composer. */
@@ -175,6 +201,11 @@
    *  the PTY exits and we flip back). The parent persists this so a
    *  page reload restores the same view. */
   export let onModeChange: (mode: "read" | "terminal") => void = () => {};
+  /** Fired when the user picks "View as…" from the overflow menu. Unlike
+   *  onModeChange, this must never spawn or stop a PTY. */
+  export let onTranscriptSurfaceChange: (
+    surface: "read" | "terminal",
+  ) => void = () => {};
   /** Bubble PTY state up to App so the session-dock dot can render
      the same working/awaiting animations as the agent pill. Same
      shape as NewSessionCol's on:workingChange / on:awaitingChange. */
@@ -235,6 +266,7 @@
       | "thinking"
       | "tool_use"
       | "tool_result"
+      | "media"
       | "ide_context"
       | "system_reminder"
       | "command"
@@ -244,6 +276,12 @@
     toolInput?: unknown;
     toolUseId?: string;
     tagName?: string;
+    mediaKind?: "image" | "file" | "artifact";
+    mimeType?: string;
+    path?: string;
+    url?: string;
+    title?: string;
+    alt?: string;
   }
   interface NormalizedMessage {
     role: "user" | "assistant" | "system" | "tool";
@@ -276,16 +314,10 @@
     isSecret: boolean;
     options: CodexUserInputOption[] | null;
   }
-  interface CodexQueuedMessage {
-    id: string;
-    text: string;
-    attachments: ImageInlineAttachment[];
-    createdAt: string;
-  }
-
   let session: NormalizedSession | null = null;
   let liveCodexApp = false;
   let sessionFileSource = "";
+  let sessionPollSource = "";
   let shouldPollTranscript = true;
   let loading = false;
   let error = "";
@@ -716,6 +748,7 @@
    *  Initial value comes from `initialMode` so the parent can hydrate
    *  it from persisted state on remount. */
   let mode: "read" | "terminal" = initialMode;
+  let transcriptSurface: "read" | "terminal" = initialTranscriptSurface;
   // Notify the parent on every user-initiated mode flip so it can
   // persist the preference. We compare against `prevMode` so the initial
   // assignment doesn't fire a callback before any interaction (the
@@ -724,6 +757,11 @@
   $: if (mode !== prevMode) {
     prevMode = mode;
     onModeChange(mode);
+  }
+  let prevTranscriptSurface: "read" | "terminal" = initialTranscriptSurface;
+  $: if (transcriptSurface !== prevTranscriptSurface) {
+    prevTranscriptSurface = transcriptSurface;
+    onTranscriptSurfaceChange(transcriptSurface);
   }
 
   /** Auto-refresh the session summary every 5 minutes while the TUI
@@ -900,6 +938,25 @@
     }
   }
 
+  function handleMarkdownCodeCopy(e: MouseEvent): void {
+    const target = e.target as HTMLElement | null;
+    const button = target?.closest<HTMLButtonElement>(".md-code-copy");
+    if (!button) return;
+    const frame = button.closest(".md-code-frame");
+    const code = frame?.querySelector("pre code")?.textContent ?? "";
+    if (!code) return;
+    void copyToClipboard(code);
+  }
+
+  function codeCopy(node: HTMLElement): { destroy: () => void } {
+    node.addEventListener("click", handleMarkdownCodeCopy);
+    return {
+      destroy() {
+        node.removeEventListener("click", handleMarkdownCodeCopy);
+      },
+    };
+  }
+
   /** Walk the normalized message tree from the tail and return the
    *  text content of the most recent user-typed message(s) — used by
    *  the header's "last activity" tooltip + the pinned overlay so
@@ -970,19 +1027,60 @@
     );
   }
 
+  function canResumeInVisualSurface(): boolean {
+    return (
+      codexVisualAppSurface ||
+      (agent === "codex" && !!effectiveSessionId && !!onVisualResume)
+    );
+  }
+
+  function canResumeCurrentSurface(): boolean {
+    return transcriptSurface === "terminal"
+      ? canResumeInTerminalSurface()
+      : canResumeInVisualSurface();
+  }
+
   function resumeTitleForAgent(): string {
+    if (transcriptSurface !== "terminal") {
+      return agent === "codex"
+        ? "Resume this Codex session in the visual chat surface"
+        : "Resume this session in the visual chat surface";
+    }
     return agent === "codex"
       ? "Spawn a live `codex resume <id>` PTY in this session's cwd"
       : "Spawn a live `claude --resume <id>` PTY in this session's cwd";
   }
 
   function showVisualSurface(): void {
-    mode = "read";
+    transcriptSurface = "read";
+    if (mode === "terminal") {
+      terminalId = null;
+      hasRenderedOnce = false;
+      mode = "read";
+      void load();
+    }
+  }
+
+  function showTerminalTranscriptSurface(): void {
+    transcriptSurface = "terminal";
   }
 
   function resumeInTerminalSurface(): void {
     if (onCustomResume) onCustomResume();
-    else mode = "terminal";
+    else {
+      transcriptSurface = "terminal";
+      mode = "terminal";
+    }
+  }
+
+  function resumeInVisualSurface(): void {
+    transcriptSurface = "read";
+    onVisualResume?.();
+  }
+
+  function resumeCurrentSurface(): void {
+    if (transcriptSurface === "terminal") resumeInTerminalSurface();
+    else resumeInVisualSurface();
   }
 
   /** Open the on-disk directory that holds this session's transcript
@@ -1158,39 +1256,43 @@
         })),
       });
     }
-    const surfaceItems: SessionMenuItem[] = canResumeInTerminalSurface()
-      ? [
+    const effectiveSurface = mode === "terminal" ? "terminal" : transcriptSurface;
+    const surfaceItems: SessionMenuItem[] = [
+      {
+        kind: "submenu",
+        label: "View as",
+        iconSvg: [
+          "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+          "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+        ],
+        title: "Switch display style without resuming the session",
+        children: [
           {
-            kind: "submenu",
-            label: "View as…",
-            iconSvg: ["M4 6h16", "M4 12h16", "M4 18h16"],
-            title: "Change between visual and terminal session views",
-            children: [
-              {
-                kind: "action",
-                label: "Terminal",
-                iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
-                selected: mode === "terminal",
-                disabled: mode === "terminal",
-                title: resumeTitleForAgent(),
-                onSelect: resumeInTerminalSurface,
-              },
-              {
-                kind: "action",
-                label: "Visual",
-                iconSvg: [
-                  "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
-                  "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
-                ],
-                selected: mode === "read",
-                disabled: mode === "read",
-                title: "Show the visual session view",
-                onSelect: showVisualSurface,
-              },
+            kind: "action",
+            label: "Visual",
+            iconSvg: [
+              "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+              "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
             ],
+            selected: effectiveSurface === "read",
+            title: liveCodexApp
+              ? "Use the app-server visual chat surface for this Codex App session"
+              : mode === "terminal"
+                ? "Detach the live terminal view and show this session in visual chat style"
+                : "Show the transcript in visual chat style",
+            onSelect: showVisualSurface,
           },
-        ]
-      : [];
+          {
+            kind: "action",
+            label: "Terminal",
+            iconSvg: ["m4 17 6-6-6-6", "M12 19h8"],
+            selected: effectiveSurface === "terminal",
+            title: "Show the transcript in terminal style",
+            onSelect: showTerminalTranscriptSurface,
+          },
+        ],
+      },
+    ];
     return [...base, ...extraMenuItems, ...surfaceItems];
   })();
 
@@ -1247,20 +1349,6 @@
     }
   }
 
-  /** Squash a tool-result blob into a single one-line preview for the
-   *  chat. Newlines and consecutive whitespace collapse to a single
-   *  space; leading/trailing whitespace is trimmed; everything past
-   *  `max` chars becomes "…". The Copy button still exposes the raw
-   *  text — this is purely a render-time clamp. */
-  const TOOL_RESULT_PREVIEW_MAX = 200;
-  function toolResultPreview(text: string): string {
-    if (!text) return "";
-    const flat = text.replace(/\s+/g, " ").trim();
-    return flat.length > TOOL_RESULT_PREVIEW_MAX
-      ? flat.slice(0, TOOL_RESULT_PREVIEW_MAX) + "…"
-      : flat;
-  }
-
   function formatWorkedDuration(startedAt?: string, endedAt?: string): string {
     if (!startedAt || !endedAt) return "Worked";
     const start = Date.parse(startedAt);
@@ -1274,6 +1362,169 @@
     if (minutes <= 0) return `Worked for ${seconds}s`;
     if (seconds === 0) return `Worked for ${minutes}m`;
     return `Worked for ${minutes}m ${seconds}s`;
+  }
+
+  function formatToolWallTime(seconds: number | undefined): string | undefined {
+    if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
+    if (seconds <= 0) return undefined;
+    if (seconds < 1) return `${Math.max(1, Math.round(seconds * 1000))}ms`;
+    if (seconds < 10) return `${seconds.toFixed(1)}s`;
+    return `${Math.round(seconds)}s`;
+  }
+
+  function visualTextForBlock(
+    text: string | undefined,
+    role: string,
+  ): string {
+    return role === "user" ? cleanVisualUserText(text) : (text ?? "");
+  }
+
+  function displayBlocksForMessage(
+    blocks: NormalizedBlock[],
+    role: string,
+  ): NormalizedBlock[] {
+    if (role !== "user") return blocks;
+    return [
+      ...blocks.filter((block) => block.type === "media"),
+      ...blocks.filter((block) => block.type !== "media"),
+    ];
+  }
+
+  function workEntryBlocksText(blocks: NormalizedBlock[]): string {
+    return blocks
+      .map((block) =>
+        block.type === "tool_use"
+          ? `${block.toolName ?? "tool"} ${inputPreview(block.toolInput)}`
+          : block.type === "tool_result"
+            ? cleanVisualToolResultText(block.text).body
+          : (block.text ?? ""),
+      )
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isPlainAssistantWorkText(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): boolean {
+    return (
+      entry.message.role === "assistant" &&
+      entry.blocks.length > 0 &&
+      entry.blocks.every((block) => block.type === "text")
+    );
+  }
+
+  function workEntryTitle(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): string {
+    const first = entry.blocks[0];
+    if (!first) return roleLabel(entry.message.role, entry.message.author);
+    if (first.type === "thinking") return "Thinking";
+    if (first.type === "tool_use") {
+      return first.toolName ?? "Used a tool";
+    }
+    if (first.type === "tool_result") {
+      const cleaned = cleanVisualToolResultText(first.text);
+      return cleaned.wrappedCodexChunk
+        ? cleaned.title
+        : workEntryBlocksText(entry.blocks) || cleaned.title;
+    }
+    if (first.type === "media") return mediaLabel(first);
+    if (first.type === "ide_context") return first.tagName ?? "IDE context";
+    if (first.type === "system_reminder") return "System reminder";
+    if (first.type === "command") return first.tagName ?? "Command";
+    const preview = workEntryBlocksText(entry.blocks);
+    return preview || roleLabel(entry.message.role, entry.message.author);
+  }
+
+  function thinkingDisplay(text: string | undefined): {
+    title: string;
+    body: string;
+  } {
+    const raw = (text ?? "").replace(/\r\n/g, "\n").trim();
+    const cleaned = raw
+      .replace(/^thinking(?:\s*[:—–-]\s*|\s+)/i, "")
+      .trim();
+    if (!cleaned) return { title: "", body: "" };
+    const [firstLine = "", ...rest] = cleaned.split("\n");
+    const title = firstLine.trim();
+    const body = rest.join("\n").trim();
+    if (title && body && title.length <= 96) {
+      return { title, body };
+    }
+    return { title: "", body: cleaned };
+  }
+
+  function workEntryToolUseBlock(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): NormalizedBlock | undefined {
+    return entry.blocks.find((block) => block.type === "tool_use");
+  }
+
+  function workEntryFileEditSummary(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): VisualFileEditSummary | undefined {
+    return visualFileEditSummaryForBlock(workEntryToolUseBlock(entry));
+  }
+
+  function fileEditBasename(path: string): string {
+    return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+  }
+
+  function fileEditActionLabel(action: string): string {
+    if (action === "added") return "Added";
+    if (action === "deleted") return "Deleted";
+    return "Edited";
+  }
+
+  function workEntryToolPreview(block: NormalizedBlock): string {
+    const text =
+      block.toolName === "exec_command"
+        ? toolInputCode(block)
+        : inputPreview(block.toolInput);
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  function toolUsesInlineCommandLabel(block: NormalizedBlock): boolean {
+    if (!workEntryToolPreview(block)) return false;
+    const name = (block.toolName ?? "").toLowerCase();
+    return name.includes("bash") || name.includes("shell") || name.includes("exec");
+  }
+
+  function workEntryToolResult(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+  ): ReturnType<typeof cleanVisualToolResultText> | undefined {
+    const block = entry?.blocks.find((b) => b.type === "tool_result");
+    if (!block) return undefined;
+    return cleanVisualToolResultText(block.text);
+  }
+
+  function toolResultLabel(
+    result: ReturnType<typeof cleanVisualToolResultText>,
+  ): string {
+    const parts = [result.title];
+    const duration = formatToolWallTime(result.wallTimeSeconds);
+    if (duration) parts.push(duration);
+    return parts.join(" · ");
+  }
+
+  function toolResultMeta(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+  ): string {
+    const result = workEntryToolResult(entry);
+    if (!result?.wrappedCodexChunk) return "";
+    const parts: string[] = [];
+    const duration = formatToolWallTime(result.wallTimeSeconds);
+    if (duration) parts.push(duration);
+    if (!result.body) parts.push("no output");
+    return parts.join(" · ");
+  }
+
+  function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
+    if (kind === "complete") return "✓";
+    if (kind === "compacted") return "⇥";
+    if (kind === "aborted") return "!";
+    return "•";
   }
 
   /** When non-null we have a prompt in flight. The numeric value is the
@@ -1329,13 +1580,13 @@
   }
 
   async function load() {
-    if (!shouldPollTranscript) return;
+    if (!shouldPollTranscript || !sessionPollSource) return;
     if (loading) return;
     if (ollamaStreamingIdx !== null) return;
     loading = true;
     error = "";
     try {
-      const qs = new URLSearchParams({ source });
+      const qs = new URLSearchParams({ source: sessionPollSource });
       const headers: Record<string, string> = {};
       if (lastEtag) headers["If-None-Match"] = lastEtag;
       const res = await fetch(
@@ -1413,11 +1664,12 @@
   let codexActiveTurnId: string | null = null;
   let codexRequests: CodexAppEvent[] = [];
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
-  let codexQueuedMessages: CodexQueuedMessage[] = [];
+  let codexQueuedMessages: CodexQueuedMessage<ImageInlineAttachment>[] = [];
   let codexQueueDraining = false;
   let codexQueueBlocked = false;
   let editingCodexQueueId: string | null = null;
   let editingCodexQueueText = "";
+  let editingCodexQueueAttachments: ImageInlineAttachment[] = [];
   let codexLiveLastActivityIso: string | undefined = undefined;
   let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
@@ -1433,11 +1685,17 @@
   let codexEffort = codexSavedSettings.effort ?? "";
   let codexSummary = codexSavedSettings.summary ?? "auto";
   const codexSeenEvents = new Set<string>();
+  const codexUnhandledEventMethods = new Set<string>();
 
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
-  $: codexVisualAppSurface = liveCodexApp && visualAppEnabled;
+  $: codexVisualAppSurface =
+    liveCodexApp && visualAppEnabled && transcriptSurface === "read";
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
-  $: shouldPollTranscript = shouldPollSessionSource({ agent, source });
+  $: sessionPollSource = sessionFileSource || source;
+  $: shouldPollTranscript = shouldPollSessionSource({
+    agent,
+    source: sessionPollSource,
+  });
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
@@ -1539,31 +1797,11 @@
     return id ? `${CODEX_QUEUE_KEY_PREFIX}${id}` : undefined;
   }
 
-  function readCodexQueue(key: string): CodexQueuedMessage[] {
+  function readCodexQueue(
+    key: string,
+  ): CodexQueuedMessage<ImageInlineAttachment>[] {
     try {
-      const raw = getDaemonKV().getItem(key);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item): CodexQueuedMessage | null => {
-          if (!item || typeof item !== "object") return null;
-          const obj = item as Record<string, unknown>;
-          if (typeof obj.id !== "string" || typeof obj.text !== "string")
-            return null;
-          return {
-            id: obj.id,
-            text: obj.text,
-            attachments: Array.isArray(obj.attachments)
-              ? (obj.attachments as ImageInlineAttachment[])
-              : [],
-            createdAt:
-              typeof obj.createdAt === "string"
-                ? obj.createdAt
-                : new Date().toISOString(),
-          };
-        })
-        .filter((item): item is CodexQueuedMessage => !!item);
+      return parseCodexQueue<ImageInlineAttachment>(getDaemonKV().getItem(key));
     } catch {
       return [];
     }
@@ -1620,30 +1858,6 @@
     onPickSandbox: pickCodexSandbox,
     onPickApproval: pickCodexApproval,
   });
-  $: codexModelGroup = codexSettings.find((g) => g.key === "codex-model");
-  $: codexEffortGroup = codexSettings.find((g) => g.key === "codex-effort");
-  $: codexAccessGroup = {
-    key: "codex-access",
-    label: "Permissions",
-    options: codexAccessOptions({
-      currentSandbox: codexSandbox,
-      currentApproval: codexApproval,
-    }),
-    onPick: pickCodexAccess,
-  } satisfies AgentSettingGroup;
-
-  function pickCodexAccess(value: string): void {
-    const parsed = parseCodexAccessValue(value);
-    if (!parsed) return;
-    codexSandbox = parsed.sandbox;
-    codexApproval = parsed.approval;
-    persistCodexSettings();
-  }
-
-  function selectedSettingValue(group: AgentSettingGroup | undefined): string {
-    return group?.options.find((o) => o.selected)?.value ?? "";
-  }
-
   async function loadCodexModels(cwd: string): Promise<void> {
     if (!cwd || codexModelsLoading || codexModelsKey === cwd) return;
     codexModelsLoading = true;
@@ -1792,6 +2006,122 @@
     return `${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
   }
 
+  function codexStringParam(
+    obj: Record<string, unknown> | undefined,
+    key: string,
+  ): string | undefined {
+    const value = obj?.[key];
+    return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  function codexObjectParam(
+    obj: Record<string, unknown> | undefined,
+    key: string,
+  ): Record<string, unknown> | undefined {
+    const value = obj?.[key];
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : undefined;
+  }
+
+  function mediaKindFromEvidence(
+    type: string | undefined,
+    mimeType: string | undefined,
+    source: string | undefined,
+  ): "image" | "file" | "artifact" {
+    const t = type?.toLowerCase() ?? "";
+    const mime = mimeType?.toLowerCase() ?? "";
+    const src = source?.toLowerCase() ?? "";
+    if (
+      t.includes("image") ||
+      mime.startsWith("image/") ||
+      /\.(png|jpe?g|gif|webp|svg|bmp|avif)(?:$|[?#])/i.test(src)
+    ) {
+      return "image";
+    }
+    return src || mime ? "file" : "artifact";
+  }
+
+  function codexMediaBlockFromParams(
+    method: string,
+    params: Record<string, unknown>,
+  ): NormalizedBlock | null {
+    const source =
+      codexObjectParam(params, "source") ??
+      codexObjectParam(params, "image_url") ??
+      codexObjectParam(params, "output_image") ??
+      codexObjectParam(params, "file");
+    const container = source ?? params;
+    const type =
+      codexStringParam(params, "type") ??
+      codexStringParam(container, "type") ??
+      method;
+    const path =
+      codexStringParam(params, "path") ??
+      codexStringParam(params, "file_path") ??
+      codexStringParam(params, "filePath") ??
+      codexStringParam(container, "path") ??
+      codexStringParam(container, "file_path") ??
+      codexStringParam(container, "filePath");
+    const url =
+      codexStringParam(params, "url") ??
+      codexStringParam(params, "image_url") ??
+      codexStringParam(container, "url") ??
+      codexStringParam(container, "image_url");
+    const mimeType =
+      codexStringParam(params, "mime_type") ??
+      codexStringParam(params, "mimeType") ??
+      codexStringParam(params, "media_type") ??
+      codexStringParam(container, "mime_type") ??
+      codexStringParam(container, "mimeType") ??
+      codexStringParam(container, "media_type");
+    const sourceRef = path ?? url;
+    const kind = mediaKindFromEvidence(type, mimeType, sourceRef);
+    const methodLooksRelevant = /(?:image|media|artifact|file)$/i.test(
+      method,
+    );
+    const hasImageEvidence =
+      kind === "image" ||
+      type.toLowerCase().includes("image") ||
+      (mimeType?.toLowerCase().startsWith("image/") ?? false);
+    if (!hasImageEvidence && !methodLooksRelevant) return null;
+    if (!sourceRef && !mimeType) return null;
+
+    const title =
+      codexStringParam(params, "title") ??
+      codexStringParam(params, "name") ??
+      codexStringParam(params, "filename") ??
+      codexStringParam(container, "title") ??
+      codexStringParam(container, "name") ??
+      codexStringParam(container, "filename") ??
+      (kind === "image" ? "Image" : "Artifact");
+    const alt =
+      codexStringParam(params, "alt") ??
+      codexStringParam(params, "alt_text") ??
+      codexStringParam(container, "alt") ??
+      codexStringParam(container, "alt_text") ??
+      title;
+    return {
+      type: "media",
+      mediaKind: kind,
+      mimeType,
+      path,
+      url,
+      title,
+      alt,
+    };
+  }
+
+  function logUnhandledCodexEvent(event: CodexAppEvent): void {
+    if (codexUnhandledEventMethods.has(event.method)) return;
+    codexUnhandledEventMethods.add(event.method);
+    console.warn("supergit: unhandled Codex app-server event", {
+      method: event.method,
+      kind: event.kind,
+      paramKeys: Object.keys(event.params ?? {}),
+    });
+  }
+
   function openCodexEventStream(threadId: string): void {
     if (unsubscribeCodexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
@@ -1933,7 +2263,17 @@
           ? event.params.message
           : JSON.stringify(event.params);
       sendError = message;
+      return;
     }
+    const media = codexMediaBlockFromParams(event.method, event.params);
+    if (media) {
+      upsertCodexMedia(
+        `codex-media-${event.params.itemId ?? event.turnId ?? event.seq ?? "media"}`,
+        media,
+      );
+      return;
+    }
+    logUnhandledCodexEvent(event);
   }
 
   function appendCodexBlock(
@@ -1963,6 +2303,24 @@
     session = { ...session, messages };
   }
 
+  function upsertCodexMedia(id: string, block: NormalizedBlock): void {
+    if (!session) return;
+    const messages = [...session.messages];
+    let msg = messages.find((m) => m.id === id);
+    if (!msg) {
+      msg = {
+        id,
+        role: "assistant",
+        timestamp: new Date().toISOString(),
+        blocks: [block],
+      };
+      messages.push(msg);
+    } else {
+      msg.blocks = [block];
+    }
+    session = { ...session, messages };
+  }
+
   function upsertCodexToolUse(
     id: string,
     toolName: string,
@@ -1984,19 +2342,29 @@
     session = { ...session, messages };
   }
 
-  function optimisticCodexUser(text: string): void {
-    if (!session) return;
+  function optimisticCodexUser(text: string): string | null {
+    if (!session) return null;
+    const id = `codex-optimistic-user-${randomUUID()}`;
     session = {
       ...session,
       messages: [
         ...session.messages,
         {
+          id,
           role: "user",
           timestamp: new Date().toISOString(),
           blocks: [{ type: "text", text }],
         },
       ],
     };
+    return id;
+  }
+
+  function removeOptimisticCodexUser(id: string | null): void {
+    if (!session || !id) return;
+    const messages = session.messages.filter((m) => m.id !== id);
+    if (messages.length === session.messages.length) return;
+    session = { ...session, messages };
   }
 
   function codexOptimisticText(
@@ -2013,6 +2381,27 @@
     return apiUrl(
       `/api/image?path=${encodeURIComponent(attachment.path)}`,
       daemonId,
+    );
+  }
+
+  function mediaSourceUrl(block: NormalizedBlock): string | undefined {
+    if (block.path && block.mediaKind === "image") {
+      return apiUrl(
+        `/api/image?path=${encodeURIComponent(block.path)}`,
+        daemonId,
+      );
+    }
+    return block.url;
+  }
+
+  function mediaLabel(block: NormalizedBlock): string {
+    return (
+      block.title ??
+      block.alt ??
+      block.path?.split("/").pop() ??
+      block.url ??
+      block.mimeType ??
+      "Artifact"
     );
   }
 
@@ -2263,15 +2652,12 @@
     text: string;
     attachments: ImageInlineAttachment[];
   }): void {
-    codexQueuedMessages = [
-      ...codexQueuedMessages,
-      {
-        id: randomUUID(),
-        text: payload.text,
-        attachments: payload.attachments,
-        createdAt: new Date().toISOString(),
-      },
-    ];
+    codexQueuedMessages = enqueueCodexQueue(
+      codexQueuedMessages,
+      payload,
+      randomUUID(),
+      new Date().toISOString(),
+    );
     codexLiveLastActivityIso = new Date().toISOString();
     codexQueueBlocked = false;
     sendError = "";
@@ -2286,14 +2672,19 @@
 
   async function startCodexTurn(
     payload: { text: string; attachments: ImageInlineAttachment[] },
-    opts: { steer: boolean; fromQueue?: CodexQueuedMessage } = { steer: false },
+    opts: {
+      steer: boolean;
+      fromQueue?: CodexQueuedMessage<ImageInlineAttachment>;
+    } = { steer: false },
   ): Promise<boolean> {
     if (!session?.sessionId || !session.cwd) return false;
     if (!opts.steer && sending) return false;
     sending = true;
     sendError = "";
     codexLiveLastActivityIso = new Date().toISOString();
-    optimisticCodexUser(codexOptimisticText(payload.text, payload.attachments));
+    const optimisticId = optimisticCodexUser(
+      codexOptimisticText(payload.text, payload.attachments),
+    );
     try {
       const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
         method: "POST",
@@ -2304,6 +2695,7 @@
           text: payload.text,
           input: codexAppInputFromComposer(payload.text, payload.attachments),
           steer: opts.steer,
+          expectedTurnId: opts.steer ? codexActiveTurnId : undefined,
           model: codexModel || undefined,
           effort: codexEffort || undefined,
           summary: codexSummary || undefined,
@@ -2316,6 +2708,7 @@
       if (typeof body?.turnId === "string") codexActiveTurnId = body.turnId;
       return true;
     } catch (e) {
+      removeOptimisticCodexUser(optimisticId);
       sendError = e instanceof Error ? e.message : String(e);
       sending = opts.steer ? true : false;
       if (opts.fromQueue) {
@@ -2361,33 +2754,55 @@
     }
   }
 
-  function beginEditCodexQueuedMessage(item: CodexQueuedMessage): void {
+  function beginEditCodexQueuedMessage(
+    item: CodexQueuedMessage<ImageInlineAttachment>,
+  ): void {
     editingCodexQueueId = item.id;
     editingCodexQueueText = item.text;
+    editingCodexQueueAttachments = [...item.attachments];
   }
 
   function cancelEditCodexQueuedMessage(): void {
     editingCodexQueueId = null;
     editingCodexQueueText = "";
+    editingCodexQueueAttachments = [];
   }
 
   function saveCodexQueuedMessage(id: string): void {
-    const text = editingCodexQueueText.trim();
-    codexQueuedMessages = codexQueuedMessages.map((item) =>
-      item.id === id ? { ...item, text } : item,
+    if (
+      !canSaveCodexQueueEdit(
+        editingCodexQueueText,
+        editingCodexQueueAttachments,
+      )
+    )
+      return;
+    codexQueuedMessages = updateCodexQueuedMessage(
+      codexQueuedMessages,
+      id,
+      {
+        text: editingCodexQueueText,
+        attachments: editingCodexQueueAttachments,
+      },
     );
     codexQueueBlocked = false;
     cancelEditCodexQueuedMessage();
   }
 
   function removeCodexQueuedMessage(id: string): void {
-    codexQueuedMessages = codexQueuedMessages.filter((item) => item.id !== id);
+    codexQueuedMessages = removeCodexQueueItem(codexQueuedMessages, id);
     codexQueueBlocked = false;
     if (editingCodexQueueId === id) cancelEditCodexQueuedMessage();
   }
 
+  function removeEditingCodexQueueAttachment(index: number): void {
+    editingCodexQueueAttachments = removeCodexQueuedAttachment(
+      editingCodexQueueAttachments,
+      index,
+    );
+  }
+
   async function runCodexQueuedMessage(
-    item: CodexQueuedMessage,
+    item: CodexQueuedMessage<ImageInlineAttachment>,
   ): Promise<void> {
     if (codexRunning) return;
     codexQueueBlocked = false;
@@ -2400,7 +2815,7 @@
   }
 
   async function steerCodexQueuedMessage(
-    item: CodexQueuedMessage,
+    item: CodexQueuedMessage<ImageInlineAttachment>,
   ): Promise<void> {
     if (!codexActiveTurnId) return;
     codexQueueBlocked = false;
@@ -2665,35 +3080,6 @@
 
   $: composerPlaceholder =
     agent === "codex" ? "Message Codex…" : `Message ${model || "Ollama"}…`;
-  $: codexComposerMode =
-    agent === "codex"
-      ? codexRunning
-        ? codexQueuedMessages.length > 0
-          ? `${codexQueuedMessages.length} queued`
-          : "Running"
-        : codexQueuedMessages.length > 0
-          ? `${codexQueuedMessages.length} queued`
-          : ""
-      : "";
-  $: codexLiveIndicatorLabel = codexRunning
-    ? "Running"
-    : codexEventStreamState === "live"
-      ? "Live"
-      : codexEventStreamState === "connecting"
-        ? "Connecting"
-        : codexEventStreamState === "reconnecting"
-          ? "Reconnecting"
-          : "Disconnected";
-  $: codexLiveIndicatorTitle = codexRunning
-    ? "Codex app-server reports an active turn for this session."
-    : codexEventStreamState === "live"
-      ? "Connected to the Codex app-server event stream for this session."
-      : codexEventStreamState === "connecting"
-        ? "Opening the Codex app-server event stream."
-        : codexEventStreamState === "reconnecting"
-          ? "Codex app-server event stream is reconnecting; EventSource will retry."
-          : "No Codex app-server event stream is connected.";
-
   function onComposerKey(e: KeyboardEvent) {
     // Enter sends. Shift+Enter inserts a newline. IME composition keeps
     // its own use of Enter and must not trigger a send.
@@ -2759,7 +3145,32 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
-  $: if (source && shouldPollTranscript) {
+  function toolInputCode(block: NormalizedBlock): string {
+    const input = block.toolInput;
+    if (
+      block.toolName === "exec_command" &&
+      input &&
+      typeof input === "object" &&
+      "cmd" in input
+    ) {
+      const cmd = (input as { cmd?: unknown }).cmd;
+      if (typeof cmd === "string") return cmd;
+      if (Array.isArray(cmd)) return cmd.map(String).join(" ");
+    }
+    if (input === undefined) return "";
+    if (typeof input === "string") return input;
+    try {
+      return JSON.stringify(input, null, 2);
+    } catch {
+      return String(input);
+    }
+  }
+
+  function toolInputLanguage(block: NormalizedBlock): string {
+    return block.toolName === "exec_command" ? "sh" : "json";
+  }
+
+  $: if (sessionPollSource && shouldPollTranscript) {
     void load();
   }
 
@@ -2822,7 +3233,7 @@
   onMount(() => {
     if (shouldPollTranscript) {
       unregisterPoll = registerSessionPoll({
-        source,
+        source: sessionPollSource,
         daemonId,
         getSessionId: () => session?.sessionId,
         onSession: (bodyText, etag) => {
@@ -2863,6 +3274,11 @@
   class:awaiting-input={(mode === "terminal" || codexVisualAppSurface) &&
     awaitingInput}
   class:read-mode={mode === "read"}
+  class:terminal-transcript-surface={mode === "read" &&
+    transcriptSurface === "terminal"}
+  class:empty-chat-composer={showChatComposer &&
+    (session?.messages.length ?? 0) === 0}
+  class:has-composer-error={!!sendError}
   bind:this={sessionEl}
   on:mousemove={onSessionMouseMove}
   on:mouseleave={onSessionMouseLeave}
@@ -2886,7 +3302,8 @@
       {manualTitle}
       aiTitle={summaryTitle}
       {mode}
-      canResume={canResumeInTerminalSurface()}
+      transcriptSurface={mode === "terminal" ? "terminal" : transcriptSurface}
+      canResume={canResumeCurrentSurface()}
       canEnd={!!effectiveSessionId && (agent === "claude" || agent === "codex")}
       {disposing}
       {awaitingInput}
@@ -2907,7 +3324,7 @@
       {starred}
       {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
-      onResume={resumeInTerminalSurface}
+      onResume={resumeCurrentSurface}
       onEndSession={disposeTerminal}
       onCancelInflight={cancelAllInflight}
       {onClose}
@@ -3207,7 +3624,7 @@
     <p class="error">{error}</p>
   {:else if loading && !session}
     <LoadingOverlay text="loading session…" />
-  {:else if session && session.messages.length === 0}
+  {:else if session && session.messages.length === 0 && !showChatComposer}
     <p class="muted small">
       {liveCodexApp
         ? "No messages yet."
@@ -3221,6 +3638,7 @@
     )}
       {#each blocks as b}
         {#if b.type === "text"}
+          {@const displayText = visualTextForBlock(b.text, m.role)}
           {#if messageIndex === ollamaStreamingIdx && !(b.text ?? "").length}
             <!-- Streaming bubble with no chunks yet — Ollama is
                  still loading the model / generating its first
@@ -3229,13 +3647,21 @@
             <div class="block text md ollama-waiting">
               <LoadingSpinner size="0.9rem" label="Waiting for response" />
             </div>
-          {:else}
-            <div class="block text md">{@html md(b.text)}</div>
+          {:else if displayText}
+            <div class="block text md">{@html md(displayText)}</div>
           {/if}
         {:else if b.type === "thinking"}
+          {@const thought = thinkingDisplay(b.text)}
           <div class="block thinking">
-            <span class="tag-label">thinking</span>
-            <div class="tag-body md">{@html md(b.text)}</div>
+            <span class="thinking-icon" aria-hidden="true">🧠</span>
+            <div class="thinking-copy">
+              {#if thought.title}
+                <div class="thinking-title">{thought.title}</div>
+              {/if}
+              {#if thought.body}
+                <div class="tag-body md">{@html md(thought.body)}</div>
+              {/if}
+            </div>
           </div>
         {:else if b.type === "tool_use"}
           <div class="block tool-use">
@@ -3246,21 +3672,47 @@
             </code>
           </div>
         {:else if b.type === "tool_result"}
-          <div class="block tool-result">
-            <span class="muted small">result</span>
-            <div class="tool-result-body">
-              <code class="tool-result-preview" title={b.text ?? ""}
-                >{toolResultPreview(b.text ?? "")}</code
-              >
-              <button
-                type="button"
-                class="copy-btn"
-                on:click={() => void copyToClipboard(b.text ?? "")}
-                title="Copy full tool result"
-                aria-label="Copy">Copy</button
-              >
+          {@const cleaned = cleanVisualToolResultText(b.text)}
+          {#if cleaned.body || cleaned.wrappedCodexChunk}
+            <div class="block tool-result md" class:tool-result-empty={!cleaned.body}>
+              <span class="muted small">{toolResultLabel(cleaned)}</span>
+              {#if cleaned.body}
+              {@html markdownCodeBlockHtml(cleaned.body, "text")}
+              {:else}
+                <span class="tool-result-empty-text">no output</span>
+              {/if}
             </div>
-          </div>
+          {/if}
+        {:else if b.type === "media"}
+          {@const src = mediaSourceUrl(b)}
+          <figure
+            class="block media-block"
+            class:media-image={b.mediaKind === "image"}
+          >
+            {#if b.mediaKind === "image" && src}
+              <a href={src} target="_blank" rel="noopener noreferrer">
+                <img src={src} alt={b.alt ?? mediaLabel(b)} />
+              </a>
+              <figcaption>{mediaLabel(b)}</figcaption>
+            {:else}
+              <div class="media-artifact">
+                <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
+                {#if src}
+                  <a href={src} target="_blank" rel="noopener noreferrer">
+                    {mediaLabel(b)}
+                  </a>
+                {:else}
+                  <span>{mediaLabel(b)}</span>
+                {/if}
+                {#if b.mimeType}
+                  <span class="muted small">{b.mimeType}</span>
+                {/if}
+              </div>
+              {#if b.text}
+                <div class="media-note">{b.text}</div>
+              {/if}
+            {/if}
+          </figure>
         {:else if b.type === "ide_context"}
           <div class="block ide-context" title={b.tagName}>
             <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
@@ -3282,12 +3734,130 @@
       {/each}
     {/snippet}
 
+    {#snippet renderFileEditSummary(summary: VisualFileEditSummary)}
+      <div class="work-file-edits">
+        <div class="work-file-edits-title">
+          <span class="work-file-edits-icon" aria-hidden="true">✎</span>
+          <span>{summary.title}</span>
+        </div>
+        <div class="work-file-edit-list">
+          {#each summary.files as file}
+            {#if file.raw}
+              <details class="work-file-edit-detail">
+                <summary class="work-file-edit-row">
+                  <span class="work-file-action">{fileEditActionLabel(file.action)}</span>
+                  <span class="work-file-path" title={file.path}>
+                    {fileEditBasename(file.path)}
+                  </span>
+                  {#if file.additions !== undefined}
+                    <span class="work-file-add">+{file.additions}</span>
+                  {/if}
+                  {#if file.deletions !== undefined}
+                    <span class="work-file-del">-{file.deletions}</span>
+                  {/if}
+                </summary>
+                <div class="md work-file-raw">
+                  {@html markdownCodeBlockHtml(file.raw, "diff")}
+                </div>
+              </details>
+            {:else}
+              <div class="work-file-edit-row">
+                <span class="work-file-action">{fileEditActionLabel(file.action)}</span>
+                <span class="work-file-path" title={file.path}>
+                  {fileEditBasename(file.path)}
+                </span>
+                {#if file.additions !== undefined}
+                  <span class="work-file-add">+{file.additions}</span>
+                {/if}
+                {#if file.deletions !== undefined}
+                  <span class="work-file-del">-{file.deletions}</span>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        </div>
+      </div>
+    {/snippet}
+
+    {#snippet renderWorkEntryBlocks(blocks: NormalizedBlock[])}
+      {#each blocks as b}
+        {#if b.type === "text"}
+          {#if b.text}
+            <div class="work-step-text md">{@html md(b.text)}</div>
+          {/if}
+        {:else if b.type === "thinking"}
+          {@const thought = thinkingDisplay(b.text)}
+          <div class="work-step-detail">
+            <span class="thinking-icon" aria-hidden="true">🧠</span>
+            <div class="thinking-copy">
+              {#if thought.title}
+                <div class="thinking-title">{thought.title}</div>
+              {/if}
+              {#if thought.body}
+                <div class="tag-body md">{@html md(thought.body)}</div>
+              {/if}
+            </div>
+          </div>
+        {:else if b.type === "tool_use"}
+          {@const inputCode = toolInputCode(b)}
+          {#if inputCode}
+            <div class="md work-tool-code">
+              {@html markdownCodeBlockHtml(inputCode, toolInputLanguage(b))}
+            </div>
+          {/if}
+        {:else if b.type === "tool_result"}
+          {@const cleaned = cleanVisualToolResultText(b.text)}
+          {#if cleaned.body || cleaned.wrappedCodexChunk}
+            <div class="md work-tool-output" class:work-tool-output-empty={!cleaned.body}>
+              <div class="work-tool-output-label">{toolResultLabel(cleaned)}</div>
+              {#if cleaned.body}
+              {@html markdownCodeBlockHtml(cleaned.body, "text")}
+              {:else}
+                <span class="work-tool-empty-text">no output</span>
+              {/if}
+            </div>
+          {/if}
+        {:else if b.type === "media"}
+          {@const src = mediaSourceUrl(b)}
+          <div class="work-step-detail">
+            <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
+            {#if src}
+              <a href={src} target="_blank" rel="noopener noreferrer">
+                {mediaLabel(b)}
+              </a>
+            {:else}
+              <span>{mediaLabel(b)}</span>
+            {/if}
+          </div>
+        {:else if b.type === "ide_context"}
+          <div class="work-step-detail">
+            <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "system_reminder"}
+          <div class="work-step-detail">
+            <span class="tag-label">system reminder</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "command"}
+          <div class="work-step-detail">
+            <span class="tag-label">{b.tagName ?? "command"}</span>
+            <span class="tag-body">{b.text}</span>
+          </div>
+        {:else if b.type === "marker"}
+          <div class="work-step-detail">{b.text}</div>
+        {/if}
+      {/each}
+    {/snippet}
+
     <ul
       class="messages"
+      class:terminal-transcript={transcriptSurface === "terminal"}
       bind:this={messagesEl}
       on:mouseenter={onMessagesEnter}
       on:mouseleave={onMessagesLeave}
       on:wheel={onMessagesWheel}
+      use:codeCopy
     >
       {#each visualTranscriptItems as item}
         {#if item.kind === "work"}
@@ -3301,10 +3871,29 @@
                 </span>
               </summary>
               <div class="work-foldout-body">
-                {#each item.entries as entry}
-                  <details class="work-entry">
-                    <summary>
-                      <span>{roleLabel(entry.message.role, entry.message.author)}</span>
+                {#each buildVisualWorkDisplayEntries(item.entries) as displayEntry}
+                  {@const entry = displayEntry.entry}
+                  {#if isPlainAssistantWorkText(entry)}
+                    <div class="work-entry-inline">
+                      {@render renderWorkEntryBlocks(entry.blocks)}
+                      {#if displayEntry.pairedResult}
+                        {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
+                      {/if}
+                    </div>
+                  {:else if displayEntry.kind === "marker" && displayEntry.markerBlock}
+                    {@const markerBlock = displayEntry.markerBlock}
+                    <div
+                      class="work-marker-pill"
+                      class:complete={displayEntry.markerKind === "complete"}
+                      class:started={displayEntry.markerKind === "started"}
+                      class:compacted={displayEntry.markerKind === "compacted"}
+                      class:aborted={displayEntry.markerKind === "aborted"}
+                      title={markerBlock.text}
+                    >
+                      <span class="work-marker-icon" aria-hidden="true">
+                        {workMarkerIcon(displayEntry.markerKind)}
+                      </span>
+                      <span>{displayEntry.markerLabel}</span>
                       {#if entry.message.timestamp}
                         <span
                           class="muted small"
@@ -3313,15 +3902,76 @@
                           {relTimeFromIso(entry.message.timestamp)}
                         </span>
                       {/if}
-                    </summary>
-                    <div class="work-entry-body">
-                      {@render renderMessageBlocks(
-                        entry.blocks,
-                        entry.message,
-                        entry.messageIndex,
-                      )}
                     </div>
-                  </details>
+                  {:else}
+                    {@const toolBlock = workEntryToolUseBlock(entry)}
+                    {@const editSummary = workEntryFileEditSummary(entry)}
+                    {@const resultMeta = toolResultMeta(displayEntry.pairedResult)}
+                    {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
+                    <details class="work-entry">
+                      <summary>
+                        {#if toolBlock}
+                          {#if editSummary}
+                            <span class="work-tool-chip icon-only file-edit">
+                              <span class="work-file-edits-icon" aria-hidden="true">✎</span>
+                            </span>
+                          {:else}
+                            <span
+                              class="work-tool-chip"
+                              class:icon-only={toolUsesInlineCommandLabel(toolBlock)}
+                            >
+                              <ToolIcon name={toolBlock.toolName} />
+                              {#if !toolUsesInlineCommandLabel(toolBlock)}
+                              <span>{toolBlock.toolName ?? "tool"}</span>
+                              {/if}
+                            </span>
+                          {/if}
+                          {#if editSummary}
+                            <span
+                              class="work-tool-preview work-file-edit-preview"
+                              title={editSummary.files.map((file) => file.path).join("\n")}
+                            >
+                              {editSummary.title}
+                            </span>
+                          {:else if toolPreview}
+                            <span class="work-tool-preview" title={toolPreview}>
+                              {toolPreview}
+                            </span>
+                          {/if}
+                          {#if resultMeta}
+                            <span class="work-tool-meta">{resultMeta}</span>
+                          {/if}
+                        {:else}
+                          <span>{workEntryTitle(entry)}</span>
+                        {/if}
+                        {#if entry.message.timestamp}
+                          <span
+                            class="muted small work-entry-time"
+                            title={new Date(entry.message.timestamp).toLocaleString()}
+                          >
+                            {relTimeFromIso(entry.message.timestamp)}
+                          </span>
+                        {/if}
+                      </summary>
+                      <div class="work-entry-body">
+                        {#if editSummary}
+                          {@render renderFileEditSummary(editSummary)}
+                          <details class="work-raw-tool-details">
+                            <summary>Raw tool input/output</summary>
+                            {@render renderWorkEntryBlocks(entry.blocks)}
+                            {#if displayEntry.pairedResult}
+                              {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
+                            {/if}
+                          </details>
+                        {:else}
+                          {@render renderWorkEntryBlocks(entry.blocks)}
+                          {#if displayEntry.pairedResult}
+                            {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
+                          {/if}
+                        {/if}
+                      </div>
+                    </details>
+                  {/if}
                 {/each}
               </div>
             </details>
@@ -3374,7 +4024,11 @@
                 </span>
               {/if}
             </div>
-            {@render renderMessageBlocks(item.blocks, m, item.messageIndex)}
+            {@render renderMessageBlocks(
+              displayBlocksForMessage(item.blocks, m.role),
+              m,
+              item.messageIndex,
+            )}
           </li>
         {/if}
       {/each}
@@ -3491,6 +4145,10 @@
           {#if agent === "codex" && codexQueuedMessages.length}
             <div class="codex-queue" aria-label="Queued Codex messages">
               {#each codexQueuedMessages as item, i (item.id)}
+                {@const queueAttachments =
+                  editingCodexQueueId === item.id
+                    ? editingCodexQueueAttachments
+                    : item.attachments}
                 <div class="codex-queue-item">
                   <div class="codex-queue-main">
                     <span class="codex-queue-label">queued {i + 1}</span>
@@ -3505,20 +4163,36 @@
                         {item.text || "(attachments only)"}
                       </div>
                     {/if}
-                    {#if item.attachments.length}
+                    {#if queueAttachments.length}
                       <div class="codex-queue-attachments">
-                        {#each item.attachments as attachment (`${item.id}:${attachment.path}`)}
-                          <span
-                            class="sticky-photo-frame composer-photo-frame codex-queue-photo"
-                            class:sticky-photo-frame-transparent={attachment.hasAlpha}
-                            title={inlineAttachmentLabel(attachment)}
-                          >
-                            <img
-                              src={composerImageUrl(attachment)}
-                              alt={inlineAttachmentLabel(attachment)}
-                              draggable="false"
-                            />
-                          </span>
+                        {#each queueAttachments as attachment, attachmentIndex (`${item.id}:${attachment.path}:${attachmentIndex}`)}
+                          <div class="composer-attachment codex-queue-attachment">
+                            <span
+                              class="sticky-photo-frame composer-photo-frame codex-queue-photo"
+                              class:sticky-photo-frame-transparent={attachment.hasAlpha}
+                              title={inlineAttachmentLabel(attachment)}
+                            >
+                              <img
+                                src={composerImageUrl(attachment)}
+                                alt={inlineAttachmentLabel(attachment)}
+                                draggable="false"
+                              />
+                            </span>
+                            {#if editingCodexQueueId === item.id}
+                              <button
+                                type="button"
+                                class="composer-attachment-remove"
+                                on:click={() =>
+                                  removeEditingCodexQueueAttachment(
+                                    attachmentIndex,
+                                  )}
+                                title={`Remove ${inlineAttachmentLabel(attachment)}`}
+                                aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
+                              >
+                                ×
+                              </button>
+                            {/if}
+                          </div>
                         {/each}
                       </div>
                     {/if}
@@ -3528,8 +4202,10 @@
                       <button
                         type="button"
                         on:click={() => saveCodexQueuedMessage(item.id)}
-                        disabled={!editingCodexQueueText.trim() &&
-                          item.attachments.length === 0}
+                        disabled={!canSaveCodexQueueEdit(
+                          editingCodexQueueText,
+                          editingCodexQueueAttachments,
+                        )}
                         title="Save queued message">Save</button
                       >
                       <button
@@ -3645,79 +4321,6 @@
         ></textarea>
       </div>
       <div class="composer-footer">
-        {#if agent === "codex"}
-          <div class="composer-footer-left">
-            <label class="composer-select-wrap composer-access">
-              <span>{codexAccessGroup.label}</span>
-              <select
-                value={selectedSettingValue(codexAccessGroup)}
-                on:change={(e) =>
-                  codexAccessGroup.onPick(
-                    (e.currentTarget as HTMLSelectElement).value,
-                  )}
-              >
-                {#each codexAccessGroup.options as opt (opt.value)}
-                  <option value={opt.value}>{opt.label}</option>
-                {/each}
-              </select>
-            </label>
-            {#if codexComposerMode}
-              <span class="composer-send-mode" title={codexComposerMode}>
-                {codexComposerMode}
-              </span>
-            {/if}
-          </div>
-          <div class="composer-footer-right">
-            <span
-              class="composer-live-indicator"
-              class:running={codexRunning}
-              class:connected={codexEventStreamState === "live" && !codexRunning}
-              class:reconnecting={codexEventStreamState === "reconnecting" ||
-                codexEventStreamState === "connecting"}
-              title={codexLiveIndicatorTitle}
-            >
-              <span class="composer-live-dot" aria-hidden="true"></span>
-              <span>{codexLiveIndicatorLabel}</span>
-            </span>
-            {#if codexEffortGroup}
-              <label class="composer-select-wrap composer-reasoning">
-                <span>{codexEffortGroup.label}</span>
-                <select
-                  value={selectedSettingValue(codexEffortGroup)}
-                  on:change={(e) =>
-                    codexEffortGroup?.onPick(
-                      (e.currentTarget as HTMLSelectElement).value,
-                    )}
-                >
-                  {#each codexEffortGroup.options as opt (opt.value)}
-                    <option value={opt.value}>{opt.label}</option>
-                  {/each}
-                </select>
-              </label>
-            {/if}
-            {#if codexModelGroup}
-              <label class="composer-select-wrap composer-model">
-                <span>{codexModelGroup.label}</span>
-                <select
-                  value={selectedSettingValue(codexModelGroup)}
-                  on:change={(e) =>
-                    codexModelGroup?.onPick(
-                      (e.currentTarget as HTMLSelectElement).value,
-                    )}
-                  title={codexModelsError || undefined}
-                >
-                  {#each codexModelGroup.options as opt (opt.value)}
-                    <option value={opt.value} title={opt.title}
-                      >{opt.label}</option
-                    >
-                  {/each}
-                </select>
-              </label>
-            {/if}
-          </div>
-        {:else}
-          <span></span>
-        {/if}
         <div class="composer-send-wrap">
           {#if sending && agent === "ollama"}
             <button
@@ -3779,10 +4382,10 @@
           {/if}
         </div>
       </div>
-      {#if sendError}
-        <div class="composer-error" title={sendError}>{sendError}</div>
-      {/if}
     </div>
+    {#if sendError}
+      <div class="composer-error" title={sendError}>{sendError}</div>
+    {/if}
   {/if}
   {#if openComposerAttachment && openComposerAttachmentIndex !== null}
     <div
@@ -3906,6 +4509,16 @@
      transient TUI columns. */
   .session.awaiting-input {
     border-color: var(--status-dirty);
+  }
+  .session.terminal-transcript-surface {
+    border-radius: 0;
+  }
+  .session.terminal-transcript-surface :global(header),
+  .session.terminal-transcript-surface :global(button),
+  .session.terminal-transcript-surface :global(input),
+  .session.terminal-transcript-surface :global(select),
+  .session.terminal-transcript-surface :global(textarea) {
+    border-radius: 0 !important;
   }
   /* Composited attention pulse. The old version animated box-shadow with
      an interpolated color-mix(var()), which WebKit re-resolves EVERY frame
@@ -4090,20 +4703,37 @@
     padding: 0.5rem 0.75rem;
     margin: 0;
   }
-  /* Composer pinned at the bottom of the session column. Borrowed from
-     the same surface tokens as the header for visual consistency. */
+  /* One rounded chat control: the textarea is the surface, and the send
+     actions sit inside it rather than in a second footer panel. */
   .composer {
     position: relative;
     z-index: 3;
-    border-top: 1px solid var(--surface-3);
-    background: var(--surface-2);
-    padding: 0.5rem 0.6rem;
+    align-self: center;
+    width: min(calc(100% - 1.6rem), 56rem);
+    min-height: 6.4rem;
+    margin: 0.45rem auto 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 1.25rem;
+    background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-1));
+    padding: 0.72rem 3.75rem 0.72rem 0.95rem;
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
-    gap: 0.35rem;
+    gap: 0.15rem;
     box-sizing: border-box;
     overflow: visible;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+  }
+  .composer:has(.composer-send-wrap button + button) {
+    padding-right: 8rem;
+  }
+  .session.empty-chat-composer:not(.has-composer-error) .composer {
+    margin-top: auto;
+    margin-bottom: auto;
+  }
+  .session.empty-chat-composer.has-composer-error .composer {
+    margin-top: auto;
+    margin-bottom: 0.35rem;
   }
   .composer-tray {
     position: absolute;
@@ -4126,9 +4756,13 @@
     overscroll-behavior: contain;
   }
   .composer-box,
-  .composer-footer,
-  .composer-error {
+  .composer-footer {
     flex: 0 0 auto;
+  }
+  .composer-box {
+    min-width: 0;
+    flex: 1 1 auto;
+    display: flex;
   }
   .codex-requests {
     display: flex;
@@ -4237,6 +4871,9 @@
     gap: 0.3rem;
     overflow-x: auto;
   }
+  .codex-queue-attachment {
+    width: 3.5rem;
+  }
   .codex-queue-photo {
     width: 3.5rem;
     padding: 4px 4px 10px;
@@ -4299,22 +4936,20 @@
   .composer-input {
     width: 100%;
     box-sizing: border-box;
+    flex: 1 1 auto;
     resize: none;
-    min-height: 2.5rem;
-    background: var(--surface-1);
+    min-height: 4.9rem;
+    background: transparent;
     color: var(--text-1);
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    padding: 0.5rem 0.6rem;
+    border: 0;
+    border-radius: 0;
+    padding: 0.15rem 0 0;
     font: inherit;
     font-size: 0.85rem;
     line-height: 1.35;
   }
   .composer-input:focus {
     outline: none;
-    /* Subtle neutral focus state — no brand color so the chat field
-       doesn't shout for attention. */
-    border-color: var(--text-faint);
   }
   .composer-input::placeholder {
     color: var(--text-muted);
@@ -4455,117 +5090,35 @@
     align-items: center;
   }
   .composer-error {
+    align-self: center;
+    width: min(calc(100% - 1.6rem), 56rem);
+    flex: 0 0 auto;
+    margin: -0.35rem auto 0.45rem;
+    box-sizing: border-box;
     color: var(--error-text);
-    font-size: 0.75rem;
+    font-size: 0.68rem;
+    line-height: 1.25;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .composer-footer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: end;
-    gap: 0.45rem;
-    min-width: 0;
+  .session.empty-chat-composer.has-composer-error .composer-error {
+    margin-top: auto;
   }
-  .composer-footer-left,
-  .composer-footer-right {
+  .composer-footer {
+    position: absolute;
+    right: 0.7rem;
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
-    align-items: end;
+    justify-content: flex-end;
+    align-items: center;
     gap: 0.35rem;
     min-width: 0;
   }
-  .composer-footer-left {
-    flex-wrap: wrap;
-  }
-  .composer-footer-right {
-    justify-content: flex-end;
-  }
-  .composer-live-indicator {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.28rem;
-    align-self: end;
-    min-height: 1.75rem;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    line-height: 1;
-    white-space: nowrap;
-  }
-  .composer-live-dot {
-    width: 0.46rem;
-    height: 0.46rem;
-    border-radius: 999px;
-    background: var(--text-faint);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface-0) 75%, transparent);
-  }
-  .composer-live-indicator.connected .composer-live-dot {
-    background: var(--status-clean);
-  }
-  .composer-live-indicator.running {
-    color: var(--text-1);
-  }
-  .composer-live-indicator.running .composer-live-dot {
-    background: var(--status-dirty);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--status-dirty) 45%, transparent),
-      0 0 10px color-mix(in srgb, var(--status-dirty) 45%, transparent);
-  }
-  .composer-live-indicator.reconnecting .composer-live-dot {
-    background: var(--status-dirty);
-  }
-  .composer-select-wrap {
-    display: inline-grid;
-    gap: 0.12rem;
-    min-width: 0;
-    color: var(--text-muted);
-    font-size: 0.64rem;
-    line-height: 1.1;
-  }
-  .composer-select-wrap span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .composer-select-wrap select {
-    height: 1.75rem;
-    min-width: 0;
-    max-width: 100%;
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    background: var(--surface-1);
-    color: var(--text-1);
-    font: inherit;
-    font-size: 0.74rem;
-    line-height: 1;
-    padding: 0 1.45rem 0 0.45rem;
-  }
-  .composer-select-wrap select:focus {
-    outline: none;
-    border-color: var(--text-faint);
-  }
-  .composer-access {
-    width: min(13.5rem, 100%);
-  }
-  .composer-reasoning {
-    width: 7.5rem;
-  }
-  .composer-model {
-    width: min(13rem, 38vw);
-  }
-  .composer-send-mode {
-    align-self: end;
-    color: var(--text-faint);
-    font-size: 0.68rem;
-    line-height: 1.75rem;
-    white-space: nowrap;
-  }
-  .composer-send-mode.reconnecting {
-    color: var(--text-muted);
-  }
   .composer-send-wrap {
     display: flex;
-    align-items: end;
+    align-items: center;
     justify-content: flex-end;
     gap: 0.25rem;
   }
@@ -4573,12 +5126,12 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 1.75rem;
+    width: 2.15rem;
+    height: 2.15rem;
     background: var(--text-1);
     color: var(--surface-0);
     border: 1px solid var(--text-1);
-    border-radius: var(--radius-sm);
+    border-radius: 0.55rem;
     cursor: pointer;
     transition:
       background 0.1s ease,
@@ -4613,24 +5166,17 @@
     border-color: var(--surface-3);
   }
   @media (max-width: 720px) {
-    .composer-footer {
-      grid-template-columns: minmax(0, 1fr) auto;
+    .composer {
+      width: calc(100% - 0.9rem);
+      min-height: 5.8rem;
+      margin-inline: auto;
+      padding-right: 3.35rem;
     }
-    .composer-footer-right {
-      grid-column: 1 / -1;
-      grid-row: 2;
-      justify-content: stretch;
+    .composer:has(.composer-send-wrap button + button) {
+      padding-right: 7.25rem;
     }
-    .composer-footer-right .composer-select-wrap {
-      flex: 1 1 0;
-      width: auto;
-    }
-    .composer-send-wrap {
-      grid-column: 2;
-      grid-row: 1;
-    }
-    .composer-model {
-      max-width: none;
+    .composer-input {
+      min-height: 4.4rem;
     }
   }
   /* `.loading-overlay` + `.spinner` retired — the shared
@@ -4662,6 +5208,72 @@
        shorthand.) */
     overscroll-behavior: auto contain;
   }
+  .messages.terminal-transcript {
+    gap: 0.18rem;
+    padding: 1.1rem 0.45rem 0.35rem;
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+  .messages.terminal-transcript :global(*) {
+    border-radius: 0 !important;
+  }
+  .messages.terminal-transcript .msg,
+  .messages.terminal-transcript .msg.user-message,
+  .messages.terminal-transcript .msg.assistant-response {
+    align-self: stretch;
+    width: auto;
+    max-width: none;
+    padding: 0.2rem 0.25rem;
+    border: 0;
+    background: transparent;
+    font: inherit;
+  }
+  .messages.terminal-transcript .msg-head {
+    display: flex;
+    margin-bottom: 0.12rem;
+  }
+  .messages.terminal-transcript .msg.user-message {
+    align-items: stretch;
+  }
+  .messages.terminal-transcript .msg.user-message .block.text {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .messages.terminal-transcript .block,
+  .messages.terminal-transcript .md,
+  .messages.terminal-transcript .md :global(*) {
+    font-family: inherit;
+  }
+  .messages.terminal-transcript .role,
+  .messages.terminal-transcript .role.assistant {
+    font-family: inherit;
+    font-size: 0.72rem;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .messages.terminal-transcript .work-foldout > summary {
+    border: 0;
+    background: transparent;
+    padding-inline: 0;
+  }
+  .messages.terminal-transcript .work-foldout-body,
+  .messages.terminal-transcript .work-entry-body {
+    border-left-color: color-mix(
+      in srgb,
+      var(--text-muted) 28%,
+      transparent
+    );
+  }
+  .messages.terminal-transcript .work-tool-chip,
+  .messages.terminal-transcript .work-marker-pill,
+  .messages.terminal-transcript .md :global(code),
+  .messages.terminal-transcript .md :global(.md-code-frame) {
+    background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+  }
   .msg {
     align-self: stretch;
     padding: 0.45rem 0.6rem;
@@ -4672,14 +5284,36 @@
   }
   .msg.user-message {
     align-self: flex-end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
     width: fit-content;
-    max-width: 75%;
-    background: color-mix(in srgb, var(--surface-3) 62%, var(--surface-1));
-    border-color: color-mix(in srgb, var(--surface-3) 80%, transparent);
+    max-width: 80%;
+    padding: 0;
+    background: transparent;
+    border-color: transparent;
   }
   .msg.user-message .msg-head {
-    justify-content: flex-end;
-    text-align: right;
+    display: none;
+  }
+  .msg.user-message .block.text {
+    padding: 0.45rem 0.7rem;
+    border-radius: 1rem;
+    background: color-mix(in srgb, var(--surface-3) 62%, var(--surface-1));
+    border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
+    text-align: left;
+  }
+  .msg.user-message .media-block {
+    margin: 0;
+    max-width: min(16rem, 100%);
+  }
+  .msg.user-message .media-block.media-image img {
+    max-height: 10rem;
+    border-radius: 0.8rem;
+  }
+  .msg.user-message .media-block figcaption {
+    display: none;
   }
   .msg.assistant-response {
     background: transparent;
@@ -4740,17 +5374,20 @@
     align-self: stretch;
     list-style: none;
     padding: 0;
-    margin: -0.05rem 0;
+    margin: 0.15rem 0;
+    min-width: 0;
   }
   .work-foldout,
   .work-entry {
     border-radius: var(--radius-sm);
+    min-width: 0;
   }
   .work-foldout > summary,
   .work-entry > summary {
     display: flex;
     align-items: center;
     gap: 0.45rem;
+    list-style: none;
     color: var(--text-muted);
     cursor: pointer;
     user-select: none;
@@ -4763,10 +5400,14 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--surface-1) 75%, transparent);
     font-size: 0.72rem;
+    line-height: 1.2;
   }
   .work-foldout > summary:hover {
     color: var(--text-1);
     border-color: var(--surface-3);
+  }
+  .work-foldout[open] > summary {
+    color: var(--text-1);
   }
   .work-foldout > summary::-webkit-details-marker,
   .work-entry > summary::-webkit-details-marker {
@@ -4774,10 +5415,12 @@
   }
   .work-foldout > summary::before,
   .work-entry > summary::before {
-    content: ">";
+    content: "▸";
+    display: inline-block;
+    line-height: 1;
     color: var(--text-faint);
     font-size: 0.7rem;
-    transition: transform 120ms ease;
+    transition: transform 0.15s ease-out;
   }
   .work-foldout[open] > summary::before,
   .work-entry[open] > summary::before {
@@ -4790,34 +5433,330 @@
   }
   .work-foldout-body {
     display: grid;
-    gap: 0.35rem;
-    margin: 0.35rem 0 0.2rem 0.55rem;
-    padding-left: 0.6rem;
-    border-left: 1px solid var(--surface-3);
+    gap: 0.38rem;
+    margin: 0.55rem 0 0.15rem 1.05rem;
+    padding-left: 0.65rem;
+    border-left: 1px solid color-mix(in srgb, var(--surface-3) 45%, transparent);
+    min-width: 0;
+    max-width: calc(100% - 1.7rem);
   }
   .work-entry {
-    padding: 0.25rem 0.45rem;
-    background: color-mix(in srgb, var(--surface-0) 58%, transparent);
-    border: 1px solid color-mix(in srgb, var(--surface-2) 70%, transparent);
+    padding: 0;
+    background: transparent;
+    border: 0;
+    min-width: 0;
+  }
+  .work-entry-inline {
+    color: var(--text-2);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .work-marker-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0.16rem 0.46rem 0.18rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 48%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    line-height: 1.2;
+  }
+  .work-marker-pill.complete {
+    border-color: color-mix(in srgb, var(--ok) 38%, var(--surface-3));
+    background: color-mix(in srgb, var(--ok) 13%, transparent);
+    color: color-mix(in srgb, var(--ok) 78%, var(--text-1));
+  }
+  .work-marker-pill.started {
+    color: var(--text-faint);
+  }
+  .work-marker-pill.compacted {
+    border-color: color-mix(in srgb, var(--accent, #6aa9ff) 28%, var(--surface-3));
+    background: color-mix(in srgb, var(--accent, #6aa9ff) 9%, transparent);
+    color: color-mix(in srgb, var(--accent, #6aa9ff) 62%, var(--text-1));
+  }
+  .work-marker-pill.aborted {
+    border-color: color-mix(in srgb, var(--danger, #e5707a) 34%, var(--surface-3));
+    background: color-mix(in srgb, var(--danger, #e5707a) 10%, transparent);
+    color: color-mix(in srgb, var(--danger, #e5707a) 72%, var(--text-1));
+  }
+  .work-marker-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 0.95rem;
+    height: 0.95rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    font-size: 0.68rem;
+    line-height: 1;
   }
   .work-entry > summary {
-    justify-content: space-between;
-    font-size: 0.72rem;
+    justify-content: flex-start;
+    min-height: 1.7rem;
+    padding: 0.15rem 0.2rem;
+    border-radius: 0.45rem;
+    font-size: 0.76rem;
+    line-height: 1.25;
   }
-  .work-entry > summary span:first-child {
+  .work-entry > summary:hover {
+    background: color-mix(in srgb, var(--surface-1) 48%, transparent);
+    color: var(--text-1);
+  }
+  .work-entry > summary > span:not(.work-tool-chip):first-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .work-tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: 0 0 auto;
+    padding: 0.1rem 0.38rem 0.12rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 55%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+    color: var(--text-2);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.74rem;
+    line-height: 1.15;
+  }
+  .work-tool-chip.icon-only {
+    padding: 0.14rem 0.32rem;
+  }
+  .work-tool-chip.file-edit {
+    color: var(--text-muted);
+  }
+  .work-tool-chip span {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .work-tool-preview {
+    flex: 1 1 auto;
+    min-width: 4rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.7rem;
+  }
+  .work-entry[open] > summary .work-tool-preview {
+    display: none;
+  }
+  .work-file-edit-preview {
+    color: var(--text-muted);
+  }
+  .work-tool-meta {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+    font-size: 0.7rem;
+  }
+  .work-entry-time {
+    display: none;
+    flex: 0 0 auto;
+  }
+  .work-entry[open] > summary .work-entry-time {
+    display: inline;
+  }
   .work-entry-body {
-    margin-top: 0.35rem;
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0.25rem 0 0.45rem 0.9rem;
+    padding-left: 0.55rem;
+    border-left: 1px solid color-mix(in srgb, var(--surface-3) 35%, transparent);
+    color: var(--text-2);
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+  .work-file-edits {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+    color: var(--text-2);
+  }
+  .work-file-edits-title,
+  .work-file-edit-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.42rem;
+    min-width: 0;
+  }
+  .work-file-edits-title {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+  .work-file-edits-icon {
+    color: var(--text-faint);
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+  }
+  .work-file-edit-list {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+  .work-file-edit-detail {
+    min-width: 0;
+  }
+  .work-file-edit-detail > summary,
+  .work-raw-tool-details > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .work-file-edit-detail > summary::-webkit-details-marker,
+  .work-raw-tool-details > summary::-webkit-details-marker {
+    display: none;
+  }
+  .work-file-edit-detail > summary::before,
+  .work-raw-tool-details > summary::before {
+    content: "▸";
+    display: inline-block;
+    flex: 0 0 auto;
+    color: var(--text-faint);
+    line-height: 1;
+    transition: transform 0.15s ease-out;
+  }
+  .work-file-edit-detail[open] > summary::before,
+  .work-raw-tool-details[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .work-file-action {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+  }
+  .work-file-path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--accent, #6aa9ff);
+  }
+  .work-file-add,
+  .work-file-del {
+    flex: 0 0 auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.78rem;
+  }
+  .work-file-add {
+    color: var(--ok, #31d078);
+  }
+  .work-file-del {
+    color: var(--bad, #ff5a5a);
+  }
+  .work-file-raw {
+    margin: 0.24rem 0 0.42rem 1.1rem;
+    min-width: 0;
+  }
+  .work-raw-tool-details {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    margin-top: 0.15rem;
+  }
+  .work-raw-tool-details > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+    color: var(--text-faint);
+    font-size: 0.72rem;
+  }
+  .work-raw-tool-details > summary:hover {
+    color: var(--text-muted);
+  }
+  .work-step-text,
+  .work-step-detail,
+  .work-tool-code,
+  .work-tool-output {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .work-step-detail {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    color: var(--text-muted);
+  }
+  .work-step-detail .tag-body {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-2);
+  }
+  .work-tool-code,
+  .work-tool-output {
+    display: grid;
+    gap: 0.22rem;
+  }
+  .work-tool-output-label {
+    color: var(--text-muted);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.7rem;
+    line-height: 1.2;
+  }
+  .work-tool-empty-text,
+  .tool-result-empty-text {
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.74rem;
+  }
+  .work-foldout-body .md :global(.md-code-frame),
+  .work-entry-body .md :global(.md-code-frame) {
+    max-width: 100%;
+    margin: 0.08rem 0;
+  }
+  .work-tool-code :global(.md-code-frame),
+  .work-tool-output :global(.md-code-frame),
+  .block.tool-result :global(.md-code-frame) {
+    display: flex;
+    flex-direction: column;
+    max-height: min(26rem, 46vh);
+  }
+  .work-foldout-body .md :global(pre),
+  .work-entry-body .md :global(pre) {
+    max-width: 100%;
+    font-size: 0.78rem;
+  }
+  .work-tool-code :global(pre),
+  .work-tool-output :global(pre),
+  .block.tool-result :global(pre) {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 22rem;
+    overflow: auto;
+  }
+  .work-foldout-body .md :global(p),
+  .work-entry-body .md :global(p) {
+    margin: 0.2em 0;
   }
 
   /* Markdown rendering. Keep elements quiet enough for a chat density
      (small margins, subtle code chips). */
   .md :global(p) {
-    margin: 0.35em 0;
+    margin: 0.35em 0 0.55em;
   }
   .md :global(p:first-child) {
     margin-top: 0;
@@ -4826,24 +5765,91 @@
     margin-bottom: 0;
   }
   .md :global(code) {
-    background: var(--surface-2);
-    padding: 0.05em 0.35em;
-    border-radius: 3px;
+    background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    padding: 0.08em 0.35em;
+    border-radius: 0.32rem;
     font-family: ui-monospace, monospace;
-    font-size: 0.92em;
+    font-size: 0.86em;
+    color: var(--text-1);
+  }
+  .md :global(.md-code-frame) {
+    margin: 0.65em 0;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 0.7rem;
+    background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  }
+  .md :global(.md-code-head) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 1.45rem;
+    padding: 0.22rem 0.5rem 0.02rem;
+    color: var(--text-muted);
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+  }
+  .md :global(.md-code-lang) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .md :global(.md-code-copy) {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.32rem;
+    height: 1.16rem;
+    min-width: 1.32rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0;
+    cursor: pointer;
+  }
+  .md :global(.md-code-copy::before),
+  .md :global(.md-code-copy::after) {
+    content: "";
+    position: absolute;
+    width: 0.42rem;
+    height: 0.52rem;
+    border: 1.25px solid currentColor;
+    border-radius: 0.11rem;
+  }
+  .md :global(.md-code-copy::before) {
+    transform: translate(-0.08rem, 0.06rem);
+  }
+  .md :global(.md-code-copy::after) {
+    transform: translate(0.09rem, -0.08rem);
+    background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  }
+  .md :global(.md-code-copy:hover) {
+    border-color: var(--surface-3);
+    background: color-mix(in srgb, var(--surface-1) 80%, transparent);
+    color: var(--text-1);
   }
   .md :global(pre) {
-    background: var(--surface-0);
-    padding: 0.55em 0.75em;
-    border-radius: 4px;
+    margin: 0;
+    padding: 0.22rem 0.65rem 0.62rem;
     overflow-x: auto;
-    margin: 0.45em 0;
-    font-size: 0.82em;
-    border: 1px solid var(--surface-2);
+    background: transparent;
+    font-family: ui-monospace, monospace;
+    font-size: 0.86em;
+    line-height: 1.5;
   }
   .md :global(pre code) {
+    display: block;
+    border: 0;
+    border-radius: 0;
     background: transparent;
     padding: 0;
+    color: var(--text-1);
     font-size: inherit;
   }
   .md :global(ul),
@@ -4942,46 +5948,62 @@
   .block.tool-result {
     margin-top: 0.3rem;
   }
-  /* Body row: one-line preview grows, copy button pins right. The
-     preview is whitespace-collapsed + substring-clamped server-side
-     (`toolResultPreview`) so the chat scroll doesn't drown in
-     200-line tool outputs. No height clamp — that was cutting glyphs
-     vertically. The Copy button exposes the raw multi-line text. */
-  .tool-result-body {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
+  .block.tool-result .muted {
+    display: block;
+    margin-bottom: 0.2rem;
   }
-  .block.tool-result .tool-result-preview {
-    flex: 1;
-    min-width: 0;
-    margin: 0.2rem 0 0;
-    padding: 0.3rem 0.6rem;
-    background: var(--surface-2);
+  .media-block {
+    margin: 0.35rem 0 0;
+    max-width: min(100%, 34rem);
+  }
+  .media-block a {
+    color: var(--brand);
+    text-decoration: none;
+  }
+  .media-block a:hover {
+    text-decoration: underline;
+  }
+  .media-block.media-image img {
+    display: block;
+    max-width: 100%;
+    max-height: 34vh;
+    width: auto;
+    height: auto;
     border-radius: var(--radius-sm);
-    font-family: ui-monospace, monospace;
-    font-size: 0.75rem;
-    color: var(--text-3);
-    white-space: nowrap;
+    background: var(--surface-2);
+    border: 1px solid var(--surface-3);
+    object-fit: contain;
+  }
+  .media-block figcaption {
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .block.tool-result .copy-btn {
-    flex: 0 0 auto;
-    margin-top: 0.2rem;
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--surface-3);
+  .media-artifact {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    padding: 0.25rem 0.5rem;
     border-radius: var(--radius-sm);
-    padding: 0.15rem 0.5rem;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    line-height: 1;
-    cursor: pointer;
+    background: rgba(160, 160, 160, 0.06);
+    color: var(--text-muted);
+    font-size: 0.76rem;
   }
-  .block.tool-result .copy-btn:hover {
-    background: var(--surface-3);
-    color: var(--text-1);
+  .media-artifact > a,
+  .media-artifact > span:not(.tag-label) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .media-note {
+    margin-top: 0.2rem;
+    color: var(--text-faint);
+    font-size: 0.72rem;
   }
   .block.ide-context,
   .block.sys-reminder,
@@ -5029,22 +6051,54 @@
   .block.thinking {
     display: flex;
     gap: 0.5rem;
-    align-items: baseline;
+    align-items: flex-start;
     margin-top: 0.25rem;
     padding: 0.25rem 0.5rem;
     background: rgba(160, 160, 160, 0.06);
     border-radius: var(--radius-sm);
-    font-style: italic;
     color: var(--text-muted);
     font-size: 0.78rem;
     line-height: 1.4;
   }
+  .thinking-icon {
+    flex: 0 0 auto;
+    width: 1.1em;
+    line-height: 1.35;
+    opacity: 0.82;
+    font-size: 0.92em;
+  }
+  .thinking-copy {
+    min-width: 0;
+    display: grid;
+    gap: 0.18rem;
+  }
+  .thinking-title {
+    color: var(--text-2);
+    font-weight: 650;
+    font-style: normal;
+  }
   .block.thinking .tag-body {
     color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
     flex: 1;
+  }
+  .thinking-copy .tag-body {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    font-style: normal;
+  }
+  .thinking-copy .tag-body :global(p) {
+    margin: 0 0 0.45rem;
+  }
+  .thinking-copy .tag-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .work-step-detail .thinking-copy .tag-body {
+    color: var(--text-muted);
   }
   .block.marker {
     margin-top: 0.2rem;

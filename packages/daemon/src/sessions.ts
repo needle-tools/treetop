@@ -20,6 +20,8 @@ export type NormalizedBlockKind =
   | "thinking"
   | "tool_use"
   | "tool_result"
+  /** Image/file artifact produced by or supplied to an agent. */
+  | "media"
   /** IDE state injected by the wrapper (`<ide_opened_file>`, `<ide_selection>` …). */
   | "ide_context"
   /** `<system-reminder>` … `</system-reminder>` wrappers. */
@@ -49,6 +51,13 @@ export interface NormalizedBlock {
   toolUseId?: string;
   /** For ide_context / system_reminder / command: the tag name, e.g. "ide_opened_file". */
   tagName?: string;
+  /** media only. */
+  mediaKind?: "image" | "file" | "artifact";
+  mimeType?: string;
+  path?: string;
+  url?: string;
+  title?: string;
+  alt?: string;
 }
 
 /**
@@ -152,6 +161,114 @@ function clipToolInput(input: unknown): unknown {
   return input;
 }
 
+function stringProp(
+  obj: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = obj[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function objectProp(
+  obj: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = obj[key];
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function mediaKindFrom(
+  type: string | undefined,
+  mimeType: string | undefined,
+  source: string | undefined,
+): "image" | "file" | "artifact" {
+  const t = type?.toLowerCase() ?? "";
+  const mime = mimeType?.toLowerCase() ?? "";
+  const src = source?.toLowerCase() ?? "";
+  if (
+    t.includes("image") ||
+    mime.startsWith("image/") ||
+    /\.(png|jpe?g|gif|webp|svg|bmp|avif)(?:$|[?#])/i.test(src)
+  ) {
+    return "image";
+  }
+  return src || mime ? "file" : "artifact";
+}
+
+function mediaBlockFromContent(
+  raw: Record<string, unknown>,
+): NormalizedBlock | null {
+  const type = stringProp(raw, "type");
+  const source = objectProp(raw, "source");
+  const imageUrl = objectProp(raw, "image_url");
+  const outputImage = objectProp(raw, "output_image");
+  const file = objectProp(raw, "file");
+  const container = outputImage ?? imageUrl ?? source ?? file ?? raw;
+
+  const path =
+    stringProp(raw, "path") ??
+    stringProp(raw, "file_path") ??
+    stringProp(raw, "filePath") ??
+    stringProp(container, "path") ??
+    stringProp(container, "file_path") ??
+    stringProp(container, "filePath");
+  const url =
+    stringProp(raw, "url") ??
+    stringProp(raw, "image_url") ??
+    stringProp(container, "url") ??
+    stringProp(container, "image_url");
+  const mimeType =
+    stringProp(raw, "mime_type") ??
+    stringProp(raw, "mimeType") ??
+    stringProp(raw, "media_type") ??
+    stringProp(container, "mime_type") ??
+    stringProp(container, "mimeType") ??
+    stringProp(container, "media_type");
+  const sourceRef = path ?? url;
+  const kind = mediaKindFrom(type, mimeType, sourceRef);
+  const isMediaType =
+    type === "image" ||
+    type === "input_image" ||
+    type === "output_image" ||
+    type === "localImage" ||
+    type === "file" ||
+    type === "artifact" ||
+    type === "input_file" ||
+    type === "output_file";
+  if (!isMediaType && !sourceRef && !mimeType) return null;
+
+  const title =
+    stringProp(raw, "title") ??
+    stringProp(raw, "name") ??
+    stringProp(raw, "filename") ??
+    stringProp(container, "title") ??
+    stringProp(container, "name") ??
+    stringProp(container, "filename") ??
+    (kind === "image" ? "Image" : "Artifact");
+  const alt =
+    stringProp(raw, "alt") ??
+    stringProp(raw, "alt_text") ??
+    stringProp(container, "alt") ??
+    stringProp(container, "alt_text") ??
+    title;
+
+  const block: NormalizedBlock = {
+    type: "media",
+    mediaKind: kind,
+    title,
+    alt,
+  };
+  if (mimeType) block.mimeType = mimeType;
+  if (path) block.path = path;
+  if (url) block.url = url;
+  if (!path && !url && source?.type === "base64") {
+    block.text = `[${mimeType ?? "image"} data stored in source transcript]`;
+  }
+  return block;
+}
+
 /** Process a single JSONL line into `out`. Returns void; mutates `out`
  *  in place. Used by both the batch `parseClaudeJsonl` and the
  *  incremental tail-parser in `getSessionResponseJson`. */
@@ -168,6 +285,18 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
     out.sessionId = obj.sessionId;
 
   const type = obj.type;
+  if (type === "summary") {
+    const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+    if (ts && !out.startedAt) out.startedAt = ts;
+    if (ts) out.endedAt = ts;
+    pushSessionMessage(
+      out,
+      "system",
+      [{ type: "marker", text: "[Context compacted]" }],
+      ts,
+    );
+    return;
+  }
   if (type !== "user" && type !== "assistant") return;
   // `isMeta: true` is Claude Code's flag for system-injected records
   // written under `type: "user"`: the resume nudge ("Continue from
@@ -227,6 +356,9 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
           toolUseId:
             typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
         });
+      } else {
+        const media = mediaBlockFromContent(b);
+        if (media) blocks.push(media);
       }
     }
   }
@@ -270,7 +402,7 @@ function codexTimestamp(obj: Record<string, unknown>): string | undefined {
   return typeof obj.timestamp === "string" ? obj.timestamp : undefined;
 }
 
-function pushCodexMessage(
+function pushSessionMessage(
   out: NormalizedSession,
   role: NormalizedRole,
   blocks: NormalizedBlock[],
@@ -339,17 +471,17 @@ function codexTextBlocks(text: string): NormalizedBlock[] {
 function codexEventMarker(payload: Record<string, unknown>): string | null {
   switch (payload.type) {
     case "task_started":
-      return "[Codex task started]";
+      return "[Task started]";
     case "task_complete":
-      return "[Codex task complete]";
+      return "[Task complete]";
     case "context_compacted":
-      return "[Codex context compacted]";
+      return "[Context compacted]";
     case "turn_aborted": {
       const reason =
         typeof payload.reason === "string" && payload.reason.trim()
           ? `: ${payload.reason.trim()}`
           : "";
-      return `[Codex turn aborted${reason}]`;
+      return `[Turn aborted${reason}]`;
     }
     default:
       return null;
@@ -425,7 +557,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         p.type === "function_call"
           ? codexToolInput(p.arguments)
           : clipToolInput(p.input);
-      pushCodexMessage(
+      pushSessionMessage(
         out,
         "assistant",
         [
@@ -445,7 +577,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       p.type === "custom_tool_call_output"
     ) {
       const text = typeof p.output === "string" ? p.output : "";
-      pushCodexMessage(
+      pushSessionMessage(
         out,
         "tool",
         [
@@ -460,7 +592,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       return;
     }
     if (p.type === "web_search_call") {
-      pushCodexMessage(
+      pushSessionMessage(
         out,
         "assistant",
         [
@@ -478,6 +610,38 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       );
       return;
     }
+    if (
+      typeof p.type === "string" &&
+      /image.*(?:call|generation)/i.test(p.type)
+    ) {
+      const media = mediaBlockFromContent(p);
+      if (media && (media.path || media.url || media.mimeType)) {
+        pushSessionMessage(out, "assistant", [media], ts);
+      } else {
+        pushSessionMessage(
+          out,
+          "assistant",
+          [
+            {
+              type: "tool_use",
+              toolName: p.type,
+              toolInput: clipToolInput(p),
+              toolUseId:
+                typeof p.call_id === "string" ? p.call_id : undefined,
+            },
+          ],
+          ts,
+        );
+      }
+      return;
+    }
+    {
+      const media = mediaBlockFromContent(p);
+      if (media && (media.path || media.url || media.mimeType)) {
+        pushSessionMessage(out, "assistant", [media], ts);
+        return;
+      }
+    }
     if (p.type !== "message") return;
     const role: NormalizedRole = (() => {
       if (typeof p.role !== "string") return "user";
@@ -492,19 +656,22 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
           blocks.push(...codexTextBlocks(b.text));
+        } else {
+          const media = mediaBlockFromContent(b);
+          if (media) blocks.push(media);
         }
       }
     } else if (typeof p.content === "string") {
       blocks.push(...codexTextBlocks(p.content));
     }
-    pushCodexMessage(out, role, blocks, ts);
+    pushSessionMessage(out, role, blocks, ts);
     return;
   }
   if (obj.type === "compacted") {
-    pushCodexMessage(
+    pushSessionMessage(
       out,
       "system",
-      [{ type: "marker", text: "[Codex context compacted]" }],
+      [{ type: "marker", text: "[Context compacted]" }],
       codexTimestamp(obj),
     );
     return;
@@ -518,11 +685,11 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
     const ts = codexTimestamp(obj);
     const marker = codexEventMarker(p);
     if (marker) {
-      pushCodexMessage(out, "system", [{ type: "marker", text: marker }], ts);
+      pushSessionMessage(out, "system", [{ type: "marker", text: marker }], ts);
       return;
     }
     if (p.type === "patch_apply_end") {
-      pushCodexMessage(
+      pushSessionMessage(
         out,
         "tool",
         [
@@ -537,7 +704,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       return;
     }
     if (p.type === "web_search_end") {
-      pushCodexMessage(
+      pushSessionMessage(
         out,
         "tool",
         [
@@ -853,12 +1020,46 @@ function appendChunk(
   return trailing;
 }
 
-/** Trim `messages` down to the last MAX_CACHED_MESSAGES entries. In place;
- *  no-op when already short. */
+/** Keep at least the old bounded recent tail, and widen it only when needed
+ *  to include the user turn that owns the oldest retained row plus up to the
+ *  last two real user turns. The newest of those may be the currently-active
+ *  turn, with no assistant response yet. Agent logs can emit hundreds of tiny
+ *  tool messages after one prompt; slicing only the last N messages would hand
+ *  the UI orphan tool rows with no user bubble to group under. */
 function trimMessages(session: NormalizedSession): void {
-  if (session.messages.length > MAX_CACHED_MESSAGES) {
-    session.messages = session.messages.slice(-MAX_CACHED_MESSAGES);
+  const count = session.messages.length;
+  if (count <= MAX_CACHED_MESSAGES) return;
+
+  const cappedStart = count - MAX_CACHED_MESSAGES;
+
+  let containingTurnStart = -1;
+  for (let i = cappedStart; i >= 0; i--) {
+    if (session.messages[i]?.role === "user") {
+      containingTurnStart = i;
+      break;
+    }
   }
+
+  let seenUsers = 0;
+  let userBoundaryStart = -1;
+  for (let i = count - 1; i >= 0; i--) {
+    if (session.messages[i]?.role !== "user") continue;
+    seenUsers += 1;
+    userBoundaryStart = i;
+    if (seenUsers === 2) {
+      break;
+    }
+  }
+
+  const start =
+    userBoundaryStart === -1 && containingTurnStart === -1
+      ? cappedStart
+      : Math.min(
+          cappedStart,
+          ...(userBoundaryStart === -1 ? [] : [userBoundaryStart]),
+          ...(containingTurnStart === -1 ? [] : [containingTurnStart]),
+        );
+  session.messages = session.messages.slice(start);
 }
 
 /**

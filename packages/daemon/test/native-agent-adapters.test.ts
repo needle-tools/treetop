@@ -408,6 +408,7 @@ describe("CodexAppServerAdapter", () => {
 
     const steer = adapter.steerTurn({
       threadId: "thr_existing",
+      expectedTurnId: "turn_live",
       text: "one more constraint",
     });
     await waitFor(() => fake.writes[4], "turn steer request");
@@ -416,6 +417,7 @@ describe("CodexAppServerAdapter", () => {
       method: "turn/steer",
       params: {
         threadId: "thr_existing",
+        expectedTurnId: "turn_live",
         input: [
           { type: "text", text: "one more constraint", text_elements: [] },
         ],

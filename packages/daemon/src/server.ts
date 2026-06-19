@@ -3855,6 +3855,7 @@ const server = Bun.serve<TermWsData, never>({
           text?: unknown;
           input?: unknown;
           steer?: unknown;
+          expectedTurnId?: unknown;
           model?: unknown;
           approvalPolicy?: unknown;
           sandboxPolicy?: unknown;
@@ -3878,8 +3879,19 @@ const server = Bun.serve<TermWsData, never>({
         }
         try {
           if (threadId && body?.steer === true) {
+            const expectedTurnId =
+              typeof body?.expectedTurnId === "string" && body.expectedTurnId
+                ? body.expectedTurnId
+                : undefined;
+            if (!expectedTurnId) {
+              return json(
+                { error: "expectedTurnId required for steering" },
+                { status: 400 },
+              );
+            }
             const steered = await codexAgent.steerTurn({
               threadId,
+              expectedTurnId,
               text,
               input,
             });
@@ -6542,6 +6554,7 @@ const server = Bun.serve<TermWsData, never>({
             actor: "user",
             payload: { repoId: id, branch: created.branch, path: created.path },
           });
+          invalidateReposCache();
           broadcast("change", { kind: "create_worktree", path: created.path });
           void reconcileWorktreeWatchers();
           return json(created, { status: 201 });
@@ -6577,6 +6590,8 @@ const server = Bun.serve<TermWsData, never>({
             actor: "user",
             payload: { repoId: id, path: wtPath, force },
           });
+          invalidateWorktreeDetails(wtPath);
+          invalidateReposCache();
           broadcast("change", { kind: "remove_worktree", path: wtPath });
           void reconcileWorktreeWatchers();
           return json({ ok: true });

@@ -1,8 +1,12 @@
 import { describe, it, expect } from "bun:test";
 import {
+  buildVisualWorkDisplayEntries,
   buildVisualTranscriptItems,
+  cleanVisualUserText,
+  cleanVisualToolResultText,
   lastUserMessageBurst,
   lastUserMessageWithContext,
+  visualFileEditSummaryForBlock,
   type Message,
 } from "../src/last-user-message";
 
@@ -152,6 +156,20 @@ describe("lastUserMessageWithContext", () => {
   });
 });
 
+describe("cleanVisualUserText", () => {
+  it("removes Codex image envelopes and inline image references", () => {
+    expect(
+      cleanVisualUserText(
+        '<image name=[Image #1] path="/tmp/screen.png">\nhey remove this[Image #1]',
+      ),
+    ).toBe("hey remove this");
+  });
+
+  it("keeps ordinary text unchanged", () => {
+    expect(cleanVisualUserText("please keep this")).toBe("please keep this");
+  });
+});
+
 describe("buildVisualTranscriptItems", () => {
   it("keeps user turns as right-alignable message items", () => {
     const items = buildVisualTranscriptItems([
@@ -246,5 +264,372 @@ describe("buildVisualTranscriptItems", () => {
     expect(items[2].blocks).toEqual([
       { type: "text", text: "Here is the answer." },
     ]);
+  });
+
+  it("treats assistant media as response content", () => {
+    const mediaMessage: Message = {
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:20.000Z",
+      blocks: [
+        { type: "thinking", text: "generating" },
+        { type: "media", text: "generated image" },
+      ],
+    };
+    const items = buildVisualTranscriptItems([
+      msg("user", "make an image", "2026-06-19T10:00:00.000Z"),
+      mediaMessage,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[2]?.kind !== "message") throw new Error("expected message item");
+    expect(items[2].blocks).toEqual([{ type: "media", text: "generated image" }]);
+  });
+
+  it("folds post-response system chatter into the turn work before the final response", () => {
+    const user = msg("user", "fix the bug", "2026-06-19T10:00:00.000Z");
+    const earlyResponse = msg(
+      "assistant",
+      "I'll take a look.",
+      "2026-06-19T10:00:05.000Z",
+    );
+    const tool: Message = {
+      role: "tool",
+      timestamp: "2026-06-19T10:00:20.000Z",
+      blocks: [{ type: "tool_result", text: "patched file" }],
+    };
+    const system: Message = {
+      role: "system",
+      timestamp: "2026-06-19T10:01:00.000Z",
+      blocks: [{ type: "text", text: "[task complete]" }],
+    };
+    const finalResponse = msg(
+      "assistant",
+      "Done.",
+      "2026-06-19T10:01:15.000Z",
+    );
+
+    const items = buildVisualTranscriptItems([
+      user,
+      earlyResponse,
+      tool,
+      system,
+      finalResponse,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].entries.map((entry) => entry.message.role)).toEqual([
+      "assistant",
+      "tool",
+      "system",
+    ]);
+    if (items[2]?.kind !== "message") throw new Error("expected message item");
+    expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
+  });
+});
+
+describe("cleanVisualToolResultText", () => {
+  it("strips Codex command chunk metadata and keeps the command output", () => {
+    expect(
+      cleanVisualToolResultText(
+        'Chunk ID: 5f747b Wall time: 0.0000 seconds Process exited with code 0 Original token count: 538 Output: src/App.svelte | 2 +-',
+      ),
+    ).toEqual({
+      title: "Command output",
+      body: "src/App.svelte | 2 +-",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 0,
+      exitCode: 0,
+      originalTokenCount: 538,
+    });
+  });
+
+  it("renders empty successful Codex command chunks as a quiet completion", () => {
+    expect(
+      cleanVisualToolResultText(
+        "Chunk ID: ddaf07 Wall time: 0.0000 seconds Process exited with code 0 Original token count: 0 Output:",
+      ),
+    ).toEqual({
+      title: "Command completed",
+      body: "",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 0,
+      exitCode: 0,
+      originalTokenCount: 0,
+    });
+  });
+
+  it("renders non-zero Codex command chunks as failed without exposing raw exit copy", () => {
+    expect(
+      cleanVisualToolResultText(
+        "Chunk ID: abc123 Wall time: 0.4210 seconds Process exited with code 2 Original token count: 4 Output:",
+      ),
+    ).toEqual({
+      title: "Command failed",
+      body: "",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 0.421,
+      exitCode: 2,
+      originalTokenCount: 4,
+    });
+  });
+
+  it("leaves ordinary tool results alone", () => {
+    expect(cleanVisualToolResultText("tests passed")).toEqual({
+      title: "Tool result",
+      body: "tests passed",
+      wrappedCodexChunk: false,
+    });
+  });
+});
+
+describe("buildVisualWorkDisplayEntries", () => {
+  it("pairs a tool use with the immediately following tool result", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [{ type: "tool_use", text: "exec_command" }],
+      },
+      blocks: [{ type: "tool_use", text: "exec_command" }],
+      messageIndex: 1,
+    };
+    const toolResult = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "tests passed" }],
+      },
+      blocks: [{ type: "tool_result", text: "tests passed" }],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse, toolResult]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolUse);
+    expect(entries[0]?.pairedResult).toBe(toolResult);
+  });
+
+  it("pairs grouped tool results back to their tool use ids", () => {
+    const firstToolUse = {
+      message: {
+        role: "assistant",
+        blocks: [{ type: "tool_use", text: "exec_command", toolUseId: "a" }],
+      },
+      blocks: [{ type: "tool_use", text: "exec_command", toolUseId: "a" }],
+      messageIndex: 1,
+    };
+    const secondToolUse = {
+      message: {
+        role: "assistant",
+        blocks: [{ type: "tool_use", text: "exec_command", toolUseId: "b" }],
+      },
+      blocks: [{ type: "tool_use", text: "exec_command", toolUseId: "b" }],
+      messageIndex: 2,
+    };
+    const secondResult = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "second", toolUseId: "b" }],
+      },
+      blocks: [{ type: "tool_result", text: "second", toolUseId: "b" }],
+      messageIndex: 3,
+    };
+    const firstResult = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "first", toolUseId: "a" }],
+      },
+      blocks: [{ type: "tool_result", text: "first", toolUseId: "a" }],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      firstToolUse,
+      secondToolUse,
+      secondResult,
+      firstResult,
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.entry).toBe(firstToolUse);
+    expect(entries[0]?.pairedResult).toBe(firstResult);
+    expect(entries[1]?.entry).toBe(secondToolUse);
+    expect(entries[1]?.pairedResult).toBe(secondResult);
+  });
+
+  it("keeps standalone tool results visible", () => {
+    const toolResult = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "tests passed" }],
+      },
+      blocks: [{ type: "tool_result", text: "tests passed" }],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolResult]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolResult);
+    expect(entries[0]?.pairedResult).toBeUndefined();
+  });
+
+  it("classifies marker-only rows for badge rendering", () => {
+    const marker = {
+      message: {
+        role: "system",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+      blocks: [{ type: "marker", text: "[Task complete]" }],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([marker]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "marker",
+      markerKind: "complete",
+      markerLabel: "Task complete",
+    });
+    expect(entries[0]?.entry).toBe(marker);
+  });
+
+  it("classifies compaction and abort markers as distinct badges", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "system",
+          blocks: [{ type: "marker", text: "[Context compacted]" }],
+        },
+        blocks: [{ type: "marker", text: "[Context compacted]" }],
+        messageIndex: 4,
+      },
+      {
+        message: {
+          role: "system",
+          blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
+        },
+        blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
+        messageIndex: 5,
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        kind: "marker",
+        markerKind: "compacted",
+        markerLabel: "Context compacted",
+      },
+      {
+        kind: "marker",
+        markerKind: "aborted",
+        markerLabel: "Turn aborted",
+      },
+    ]);
+  });
+});
+
+describe("visualFileEditSummaryForBlock", () => {
+  it("summarizes Codex apply_patch input into edited files with line counts", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "apply_patch",
+        toolInput: [
+          "*** Begin Patch",
+          "*** Update File: packages/ui/src/SessionView.svelte",
+          "@@",
+          "-  old line",
+          "+  new line",
+          "+  another line",
+          "*** Update File: packages/ui/src/codex-event-stream.ts",
+          "@@",
+          "+export function reconnect() {}",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+    ).toEqual({
+      title: "Edited 2 files",
+      files: [
+        {
+          path: "packages/ui/src/SessionView.svelte",
+          action: "edited",
+          additions: 2,
+          deletions: 1,
+          raw: [
+            "*** Update File: packages/ui/src/SessionView.svelte",
+            "@@",
+            "-  old line",
+            "+  new line",
+            "+  another line",
+          ].join("\n"),
+        },
+        {
+          path: "packages/ui/src/codex-event-stream.ts",
+          action: "edited",
+          additions: 1,
+          deletions: 0,
+          raw: [
+            "*** Update File: packages/ui/src/codex-event-stream.ts",
+            "@@",
+            "+export function reconnect() {}",
+          ].join("\n"),
+        },
+      ],
+    });
+  });
+
+  it("summarizes Codex app-server file change arrays", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: {
+          changes: [
+            { path: "src/App.svelte", action: "modify" },
+            { path: "src/new.ts", action: "add" },
+          ],
+        },
+      }),
+    ).toEqual({
+      title: "Edited 2 files",
+      files: [
+        { path: "src/App.svelte", action: "edited" },
+        { path: "src/new.ts", action: "added" },
+      ],
+    });
+  });
+
+  it("summarizes Claude edit tool inputs", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "Edit",
+        toolInput: {
+          file_path: "/repo/src/App.svelte",
+          old_string: "old\nline\n",
+          new_string: "new\nline\nextra\n",
+        },
+      }),
+    ).toEqual({
+      title: "Edited App.svelte",
+      files: [
+        {
+          path: "/repo/src/App.svelte",
+          action: "edited",
+          additions: 3,
+          deletions: 2,
+        },
+      ],
+    });
   });
 });

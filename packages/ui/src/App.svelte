@@ -145,12 +145,15 @@
     cmdForOpenSession,
     effectiveVisibleWorktrees,
     filterToExistingSessions,
-    isForeignToWorktree,
+    hideVisibleWorktree,
+    isSessionForeignToWorktree,
     reconcileOpenSessionsWithSurfacePreferences,
     sessionSurfaceKeys,
     setSessionMode,
     setSessionAttachTermId,
+    showVisibleWorktree,
     stampDiscoveredSessionIdWithDetail,
+    toggleVisibleWorktree,
     resolveTitleSource,
     type PersistedSession,
     type SessionSurface,
@@ -1876,14 +1879,15 @@
       const liveSource = codexAppSource(body.sessionId);
       const existing = openSessionsByWt[wtPath] ?? [];
       const insertAt = visibleLeftInsertIndex(wtPath, existing);
-      const next = [...existing];
-      next.splice(insertAt, 0, {
+      const entry: OpenSession = {
         agent: "codex",
         source: liveSource,
         resumeSessionId: body.sessionId,
         transcriptSource: body.source,
-        mode: "terminal",
-      });
+      };
+      rememberSessionSurface(entry, "read");
+      const next = [...existing];
+      next.splice(insertAt, 0, entry);
       openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
       scrollNewColIntoView(wtPath, liveSource);
       void load();
@@ -2753,7 +2757,7 @@
   let newWtBranch: Record<string, string> = {};
   let newWtBusy: Record<string, boolean> = {};
 
-  async function createWorktree(repoId: string) {
+  async function createWorktree(repoId: string, originPath?: string | null) {
     const branch = (newWtBranch[repoId] ?? "").trim();
     if (!branch) return;
     error = "";
@@ -2784,9 +2788,23 @@
           ? `New branch \`${body.branch ?? branch}\` and worktree at ${body.path ?? ""}`
           : `Checked out existing \`${body.branch ?? branch}\` into ${body.path ?? ""}`,
       });
+      const repo = repos.find((r) => r.id === repoId);
+      if (repo && body.path) {
+        visibleWorktreesByRepo = showVisibleWorktree(
+          repoPrefsKey(repo),
+          [...repo.worktrees.map((w) => w.path), body.path],
+          visibleWorktreesByRepo,
+          body.path,
+          originPath,
+        );
+      }
       newWtBranch = { ...newWtBranch, [repoId]: "" };
       newWtOpen = { ...newWtOpen, [repoId]: false };
       await load();
+      if (body.path) {
+        await tick();
+        jumpToWorktreeRow(body.path);
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -2824,9 +2842,10 @@
      *  same UUID, just observed via JSONL) the resume path takes
      *  over. Claude-only; codex has no equivalent flag. */
     preassignedSessionId?: string;
-    /** Optional. `"terminal"` means SessionView should hydrate in
-     *  terminal mode on remount (i.e. immediately spawn the resume PTY
-     *  instead of showing the read-only chat view). Absent ⇒ read. */
+    /** Optional. `"terminal"` means SessionView should hydrate into live
+     *  terminal output on remount. This is process state, not the
+     *  visual-vs-terminal transcript display preference. Absent ⇒ stopped
+     *  transcript/read mode. */
     mode?: "terminal";
     /** Optional. For ollama columns: the model tag picked at spawn
      *  time (e.g. `qwen3-coder:30b`). Persisted so a reload re-spawns
@@ -3212,8 +3231,38 @@
     return undefined;
   }
 
+  function transcriptSurfaceForSession(s: OpenSession): SessionSurface {
+    return rememberedSessionSurface(s) ??
+      (s.mode === "terminal" ? "terminal" : "read");
+  }
+
   function isExplicitVisualSurface(s: OpenSession): boolean {
     return rememberedSessionSurface(s) === "read";
+  }
+
+  function resumeCodexVisualSession(
+    wtPath: string,
+    s: OpenSession,
+    sessionId: string | undefined,
+    transcriptSource: string | undefined,
+  ): void {
+    const sid = sessionId ?? s.resumeSessionId;
+    if (s.agent !== "codex" || !sid) return;
+    const liveSource = codexAppSource(sid);
+    const nextEntry: OpenSession = {
+      ...s,
+      source: liveSource,
+      resumeSessionId: sid,
+      transcriptSource: transcriptSource ?? s.transcriptSource ?? s.source,
+    };
+    delete nextEntry.mode;
+    rememberSessionSurface(nextEntry, "read");
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((x) => (x.source === s.source ? nextEntry : x)),
+    };
+    scrollNewColIntoView(wtPath, liveSource);
   }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
@@ -3460,9 +3509,10 @@
     focusedSource = entry.source;
 
     // After one Svelte flush + a paint, check whether the column
-    // actually landed in the DOM. If not, the dock entry is genuinely
-    // unreachable and we should clean it up — but only if the daemon
-    // confirms the underlying source is gone, never on a network blip.
+    // actually landed in the DOM. If not, warn the user, but never
+    // mutate openSessionsByWt from this automatic verification path:
+    // a render/filtering regression must not become persisted layout
+    // data loss.
     await tick();
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => resolve()),
@@ -3494,9 +3544,17 @@
           (rr.worktrees ?? []).some((w) => w.path === entry.wtPath),
         );
       } else {
+        const entryKeys = sessionSurfaceKeys({
+          agent: entry.agent,
+          source: entry.source,
+          resumeSessionId: entry.resumeSessionId,
+          transcriptSource: entry.transcriptSource,
+        });
         stillExists = fresh.some((rr) =>
           (rr.worktrees ?? []).some((w) =>
-            (w.agents ?? []).some((a) => a.source === entry.source),
+            (w.agents ?? []).some((a) =>
+              sessionSurfaceKeys(a).some((key) => entryKeys.includes(key)),
+            ),
           ),
         );
       }
@@ -3506,14 +3564,10 @@
     if (daemonReachable && !stillExists) {
       const label = entry.manualTitle ?? entry.title ?? "this session";
       addToast({
-        kind: "info",
-        title: "Stale session removed",
-        message: `${label} no longer exists on disk; closing its dock entry.`,
+        kind: "warning",
+        title: "Session could not be revealed",
+        message: `${label} did not render, but it was left open so your layout is preserved.`,
       });
-      closeSessionInWt(entry.wtPath, {
-        agent: entry.agent,
-        source: entry.source,
-      } as OpenSession);
     }
     // daemonReachable === false → daemon is down or restarting; leave
     // openSessionsByWt untouched so the entry is still there once the
@@ -3657,14 +3711,12 @@
     wtPath: string,
     diskPaths: string[],
   ) {
-    const key = repoPrefsKey(repo);
-    const current = effectiveVisibleWorktrees(
-      key,
+    visibleWorktreesByRepo = hideVisibleWorktree(
+      repoPrefsKey(repo),
       diskPaths,
       visibleWorktreesByRepo,
+      wtPath,
     );
-    const next = current.filter((p) => p !== wtPath);
-    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [key]: next };
   }
 
   /** Toggle a worktree's visibility in the dashboard from the picker. */
@@ -3673,17 +3725,12 @@
     wtPath: string,
     diskPaths: string[],
   ) {
-    const key = repoPrefsKey(repo);
-    const current = effectiveVisibleWorktrees(
-      key,
+    visibleWorktreesByRepo = toggleVisibleWorktree(
+      repoPrefsKey(repo),
       diskPaths,
       visibleWorktreesByRepo,
+      wtPath,
     );
-    const isVisible = current.includes(wtPath);
-    const next = isVisible
-      ? current.filter((p) => p !== wtPath)
-      : [...current, wtPath];
-    visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [key]: next };
   }
 
   /** Refetch only `/api/events` and republish. Same effect on the
@@ -5327,6 +5374,15 @@
       // from local state so the UI doesn't try to resume into a path that
       // no longer exists. (The reactive watcher persists this back to
       // storage; we don't need to call .save directly.)
+      const repo = repos.find((r) => r.id === repoId);
+      if (repo) {
+        visibleWorktreesByRepo = hideVisibleWorktree(
+          repoPrefsKey(repo),
+          repo.worktrees.map((w) => w.path),
+          visibleWorktreesByRepo,
+          wt.path,
+        );
+      }
       const next = { ...openSessionsByWt };
       delete next[wt.path];
       openSessionsByWt = next;
@@ -6132,10 +6188,11 @@
      *  for shells and for `__new__:` columns that haven't been
      *  stamped with a `resumeSessionId` yet. */
     transcriptSource?: string;
+    resumeSessionId?: string;
     working: boolean;
     awaiting: boolean;
-    /** True once this column's PTY has exited. Drives the smaller
-     *  "ended" dot in the side dock. */
+    /** True once this column has no live PTY transport. The side dock
+     *  dims these rows without changing marker size. */
     exited: boolean;
     terminalActive: boolean;
     /** ms timestamp of the most recent working→idle transition.
@@ -6154,7 +6211,10 @@
         const known = pickerSessionsByWt[wt.path] ?? [];
         const bySource = new Map<string, (typeof known)[number]>();
         for (const a of known) bySource.set(a.source, a);
-        const knownSources = new Set(bySource.keys());
+        const knownSources = new Set<string>();
+        for (const a of known) {
+          for (const key of sessionSurfaceKeys(a)) knownSources.add(key);
+        }
         const rowKey = `${repo.id}|${wt.path}`;
         for (const s of opens) {
           // Skip real (file-backed) sessions the daemon doesn't associate
@@ -6164,7 +6224,7 @@
           // worktree's branch (e.g. a needle-logs-view session showing as
           // "supergit main"). The sessions-strip already drops these via
           // filterToExistingSessions; this is the same per-worktree gate.
-          if (isForeignToWorktree(s.source, knownSources)) continue;
+          if (isSessionForeignToWorktree(s, knownSources)) continue;
           // Live TUI means the column can point at an actual live PTY
           // from `/api/terminals`. Persisted terminal mode alone is only
           // a surface preference, not proof that the agent is still
@@ -6221,6 +6281,7 @@
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
             recentMessageCount: meta?.recentMessageCount,
+            resumeSessionId: s.resumeSessionId,
             transcriptSource:
               meta?.source && !meta.source.startsWith("__")
                 ? meta.source
@@ -6230,13 +6291,14 @@
             // never surface a working/awaiting state for them in the
             // dock. The shell dot stays static; its live-PTY state
             // is conveyed by its dedicated terminal-style square
-            // (vs. the round agent dot) and the `exited` shrink.
+            // (vs. the round agent dot).
             working: s.agent === "shell" ? false : !!transientWorking[s.source],
             awaiting:
               s.agent === "shell" ? false : !!transientAwaiting[s.source],
-            // "Small dot" mode covers everything that isn't a live
-            // TUI right now: PTYs that exited, plus read-mode chat
-            // columns (SessionView in mode !== "terminal").
+            // Inactive covers everything that isn't a live TUI right
+            // now: PTYs that exited, plus read-mode chat columns
+            // (SessionView in mode !== "terminal"). The dock dims
+            // those entries but keeps marker geometry stable.
             exited: !isLiveTui,
             terminalActive:
               isLiveTui &&
@@ -9364,7 +9426,7 @@
                                 >{wOption.nonGit ? "—" : wOption.branch}</span
                               >
                               <span class="agent-title">{wOption.path}</span>
-                              {#if !wOption.nonGit}
+                              {#if !wOption.nonGit && wOption.path !== repo.path}
                                 <button
                                   class="row-close wt-pick-kill"
                                   on:click|stopPropagation={() => {
@@ -9394,7 +9456,7 @@
                             if (!branch) return;
                             const key = wt ? wt.path : repo.id;
                             wtPickerOpen = { ...wtPickerOpen, [key]: false };
-                            void createWorktree(repo.id);
+                            void createWorktree(repo.id, wt?.path ?? null);
                           }}
                         >
                           <input
@@ -9499,7 +9561,9 @@
                     bind:value={newWtBranch[repo.id]}
                     disabled={newWtBusy[repo.id]}
                     on:keydown={(e) => {
-                      if (e.key === "Enter") createWorktree(repo.id);
+                      if (e.key === "Enter") {
+                        createWorktree(repo.id, wt?.path ?? null);
+                      }
                       if (e.key === "Escape") {
                         newWtOpen = { ...newWtOpen, [repo.id]: false };
                       }
@@ -9509,7 +9573,7 @@
                     class="tiny"
                     disabled={!newWtBranch[repo.id]?.trim() ||
                       newWtBusy[repo.id]}
-                    on:click={() => createWorktree(repo.id)}
+                    on:click={() => createWorktree(repo.id, wt?.path ?? null)}
                   >
                     {newWtBusy[repo.id] ? "Creating…" : "Create"}
                   </button>
@@ -9676,7 +9740,7 @@
                   {@const stripFilter = stripFilterByWt[wt.path]}
                   {#if (openSessionsByWt[wt.path]?.length ?? 0) > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
                     {@const existingSources = new Set(
-                      (wt.agents ?? []).map((a) => a.source),
+                      (wt.agents ?? []).flatMap((a) => sessionSurfaceKeys(a)),
                     )}
                     {@const visibleSessions = filterToExistingSessions(
                       openSessionsByWt[wt.path] ?? [],
@@ -10229,7 +10293,18 @@
                                   initialMode={s.mode === "terminal"
                                     ? "terminal"
                                     : "read"}
-                                  onModeChange={(m) => {
+                                  initialTranscriptSurface={transcriptSurfaceForSession(
+                                    {
+                                      ...s,
+                                      resumeSessionId:
+                                        s.resumeSessionId ??
+                                        agentMeta?.sessionId,
+                                      transcriptSource:
+                                        s.transcriptSource ??
+                                        agentMeta?.source,
+                                    },
+                                  )}
+                                  onTranscriptSurfaceChange={(surface) => {
                                     rememberSessionSurface(
                                       {
                                         ...s,
@@ -10240,8 +10315,33 @@
                                           s.transcriptSource ??
                                           agentMeta?.source,
                                       },
-                                      m,
+                                      surface,
                                     );
+                                  }}
+                                  onVisualResume={() => {
+                                    resumeCodexVisualSession(
+                                      wt.path,
+                                      s,
+                                      s.resumeSessionId ??
+                                        agentMeta?.sessionId,
+                                      s.transcriptSource ?? agentMeta?.source,
+                                    );
+                                  }}
+                                  onModeChange={(m) => {
+                                    if (m === "terminal") {
+                                      rememberSessionSurface(
+                                        {
+                                          ...s,
+                                          resumeSessionId:
+                                            s.resumeSessionId ??
+                                            agentMeta?.sessionId,
+                                          transcriptSource:
+                                            s.transcriptSource ??
+                                            agentMeta?.source,
+                                        },
+                                        "terminal",
+                                      );
+                                    }
                                     // Persist so a reload restores the same view —
                                     // otherwise a user who clicked "Resume in
                                     // terminal" before refreshing lands back in

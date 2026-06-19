@@ -70,9 +70,10 @@
     transcriptSource?: string;
     working: boolean;
     awaiting: boolean;
-    /** True once the column's PTY has exited. The row stays in
-     *  the dock (hover + click still work) but the dot shrinks to
-     *  signal the session is ended. */
+    /** True once the column has no live PTY transport. The row stays in
+     *  the dock (hover + click still work) and dims slightly, but it keeps
+     *  the same geometry as live rows; Visual vs Terminal is display style,
+     *  not a sidebar marker-size distinction. */
     exited: boolean;
     /** True while the embedded terminal has emitted input/output in
      *  the last few seconds. This is terminal liveness, separate
@@ -858,16 +859,19 @@
               viewBox="0 0 24 24"
               aria-hidden="true"
             >
-              <circle cx="12" cy="12" r="9.5" pathLength="100" />
-              <rect
-                class="dock-dot-spinner-rect"
-                x="4"
-                y="4"
-                width="16"
-                height="16"
-                rx="3"
-                pathLength="100"
-              />
+              {#if e.agent === "shell"}
+                <rect
+                  class="dock-dot-spinner-rect"
+                  x="2.5"
+                  y="2.5"
+                  width="19"
+                  height="19"
+                  rx="4"
+                  pathLength="100"
+                />
+              {:else}
+                <circle cx="12" cy="12" r="9.5" pathLength="100" />
+              {/if}
             </svg>
           </span>
           <span class="dock-label">
@@ -1030,16 +1034,19 @@
               viewBox="0 0 24 24"
               aria-hidden="true"
             >
-              <circle cx="12" cy="12" r="9.5" pathLength="100" />
-              <rect
-                class="dock-dot-spinner-rect"
-                x="4"
-                y="4"
-                width="16"
-                height="16"
-                rx="3"
-                pathLength="100"
-              />
+              {#if e.agent === "shell"}
+                <rect
+                  class="dock-dot-spinner-rect"
+                  x="2.5"
+                  y="2.5"
+                  width="19"
+                  height="19"
+                  rx="4"
+                  pathLength="100"
+                />
+              {:else}
+                <circle cx="12" cy="12" r="9.5" pathLength="100" />
+              {/if}
             </svg>
           </span>
           <span class="dock-label">
@@ -1583,16 +1590,12 @@
       animation: none;
     }
   }
-  /* Ended / inactive session: shrink the visible dot via a transform
-     so the box dimensions stay at 10×10. Keeping the box size means
-     the small dot is horizontally centered on the same x as the
-     big-dot rows, and the wrapping button keeps its full hit zone
-     for hover + click. transform-origin: center scales around the
-     dot's middle so it stays put while shrinking. */
+  /* Ended / inactive session: keep the same marker geometry as live
+     rows. Visual-vs-terminal and live-vs-stopped affect behavior, not
+     the sidebar dot size; shrinking these made healthy stopped
+     transcripts look like accidental specks. */
   .dock-dot.dot-exited .dock-dot-inner {
-    transform: scale(0.6);
-    transform-origin: center;
-    opacity: 0.55;
+    opacity: 0.62;
   }
   /* Inactive sessions also dim the session-name label to match
      the dot — bright text-1 was reserved for *live* rows. */
@@ -1867,9 +1870,6 @@
     stroke-dasharray: 35 65;
   }
   .dock-dot-spinner-rect {
-    display: none;
-  }
-  .dock-dot.agent-shell .dock-dot-spinner circle {
     display: none;
   }
   .dock-dot.agent-shell .dock-dot-spinner-rect {

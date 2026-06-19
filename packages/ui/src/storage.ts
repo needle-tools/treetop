@@ -270,14 +270,11 @@ export interface PersistedSession {
    *  land on the same session file). Once `resumeSessionId` is stamped,
    *  this becomes ignored — the resume path takes over. */
   preassignedSessionId?: string;
-  /** Optional. When `"terminal"`, the SessionView column for this source
-   *  was last seen with "Resume in terminal" mode active (i.e. the user
-   *  flipped from the markdown chat view to a live `claude --resume`
-   *  PTY). On remount, the column should re-enter terminal mode so a
-   *  page reload doesn't drop the user back to the read-only history.
-   *  Absence is resolved by `applySessionSurfacePreference`: resumable
-   *  Claude/Codex sessions default to terminal unless the user explicitly
-   *  remembered the visual/read surface. */
+  /** Optional. When `"terminal"`, the mounted SessionView should own a
+   *  live `claude --resume` / `codex resume` PTY. This is deliberately
+   *  separate from the visual-vs-terminal transcript preference stored in
+   *  SessionSurfaceStore: a user can view the saved transcript in terminal
+   *  style without spawning or attaching a process. */
   mode?: "terminal";
   /** Optional. The daemon terminal id of the live PTY this column is
    *  currently attached to, stamped on spawn so a remount/reopen in the
@@ -339,10 +336,10 @@ export function applySessionSurfacePreference<
       break;
     }
   }
-  if (supportsTerminalSurface && surface !== "read") {
-    return { ...withResume, mode: "terminal" } as T;
-  }
-  if (withResume.mode === "terminal") {
+  if (
+    withResume.mode === "terminal" &&
+    (!supportsTerminalSurface || surface === "read")
+  ) {
     const next = { ...withResume };
     delete next.mode;
     return next as T;
@@ -487,7 +484,12 @@ export class OpenSessionsStore {
   /** Persists the map. Errors (quota / privacy mode) are swallowed. */
   save(data: Record<string, PersistedSession[]>): void {
     try {
-      this.storage.setItem(this.key, JSON.stringify(data));
+      const next = JSON.stringify(data);
+      const previous = this.storage.getItem(this.key);
+      if (previous !== null && previous !== next) {
+        this.storage.setItem(`${this.key}:previous`, previous);
+      }
+      this.storage.setItem(this.key, next);
     } catch {
       // best-effort
     }
@@ -568,10 +570,23 @@ export function filterToExistingSessions(
     if (seen.has(s.source)) return false;
     const keep =
       SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
-      existingSources.has(s.source);
+      sessionSurfaceKeys(s).some((key) => existingSources.has(key));
     if (keep) seen.add(s.source);
     return keep;
   });
+}
+
+export function isSessionForeignToWorktree(
+  session: Pick<
+    PersistedSession,
+    "agent" | "source" | "resumeSessionId" | "transcriptSource"
+  >,
+  knownSources: ReadonlySet<string>,
+): boolean {
+  if (SYNTHETIC_SOURCE_PREFIXES.some((p) => session.source.startsWith(p))) {
+    return false;
+  }
+  return !sessionSurfaceKeys(session).some((key) => knownSources.has(key));
 }
 
 /**
@@ -886,14 +901,15 @@ export class VisibleWorktreesStore {
 
   save(map: Record<string, string[]>): void {
     try {
-      // Strip empty arrays + non-string entries on the way out so we
-      // don't accumulate garbage.
+      // Strip non-string entries on the way out so we don't accumulate
+      // garbage. Keep empty arrays: an explicit [] means "hide every
+      // worktree row for this repo" and must survive reload.
       const sanitized: Record<string, string[]> = {};
       for (const [k, v] of Object.entries(map)) {
         const paths = (v ?? []).filter(
           (p) => typeof p === "string" && p.length > 0,
         );
-        if (paths.length > 0) sanitized[k] = paths;
+        sanitized[k] = paths;
       }
       this.storage.setItem(this.key, JSON.stringify(sanitized));
     } catch {
@@ -926,6 +942,47 @@ export function effectiveVisibleWorktrees(
   }
   const onDisk = new Set(diskWorktreePaths);
   return entry.filter((p) => onDisk.has(p));
+}
+
+export function showVisibleWorktree(
+  repoId: string,
+  diskWorktreePaths: string[],
+  stored: Record<string, string[]>,
+  wtPath: string,
+  afterPath?: string | null,
+): Record<string, string[]> {
+  if (!diskWorktreePaths.includes(wtPath)) return stored;
+  const current = effectiveVisibleWorktrees(repoId, diskWorktreePaths, stored);
+  if (current.includes(wtPath)) return stored;
+  const insertAt =
+    afterPath && current.includes(afterPath)
+      ? current.indexOf(afterPath) + 1
+      : current.length;
+  const next = [...current];
+  next.splice(insertAt, 0, wtPath);
+  return { ...stored, [repoId]: next };
+}
+
+export function hideVisibleWorktree(
+  repoId: string,
+  diskWorktreePaths: string[],
+  stored: Record<string, string[]>,
+  wtPath: string,
+): Record<string, string[]> {
+  const current = effectiveVisibleWorktrees(repoId, diskWorktreePaths, stored);
+  return { ...stored, [repoId]: current.filter((p) => p !== wtPath) };
+}
+
+export function toggleVisibleWorktree(
+  repoId: string,
+  diskWorktreePaths: string[],
+  stored: Record<string, string[]>,
+  wtPath: string,
+): Record<string, string[]> {
+  const current = effectiveVisibleWorktrees(repoId, diskWorktreePaths, stored);
+  return current.includes(wtPath)
+    ? hideVisibleWorktree(repoId, diskWorktreePaths, stored, wtPath)
+    : showVisibleWorktree(repoId, diskWorktreePaths, stored, wtPath);
 }
 
 /**
