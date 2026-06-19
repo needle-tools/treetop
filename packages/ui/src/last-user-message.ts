@@ -146,6 +146,26 @@ export function cleanVisualUserText(text: string | undefined): string {
     .trim();
 }
 
+export interface VisualUserImageAttachment {
+  label: string;
+  path: string;
+}
+
+export function visualUserImageAttachments(
+  text: string | undefined,
+): VisualUserImageAttachment[] {
+  if (!text) return [];
+  return Array.from(
+    text.matchAll(
+      /<image\s+name=\[(Image\s+#\d+)\]\s+path="([^"]+)"\s*>/g,
+    ),
+    (match) => ({
+      label: match[1] ?? "Image",
+      path: match[2] ?? "",
+    }),
+  ).filter((attachment) => attachment.path.trim().length > 0);
+}
+
 export interface VisualToolResultText {
   title: string;
   body: string;

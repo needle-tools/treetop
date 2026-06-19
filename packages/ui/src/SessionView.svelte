@@ -38,6 +38,7 @@
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
     visualFileEditSummaryForBlock,
+    visualUserImageAttachments,
     type VisualFileEditSummary,
     type VisualMarkerKind,
     type VisualWorkEntry,
@@ -282,6 +283,7 @@
     url?: string;
     title?: string;
     alt?: string;
+    hasAlpha?: boolean;
   }
   interface NormalizedMessage {
     role: "user" | "assistant" | "system" | "tool";
@@ -1384,10 +1386,24 @@
     role: string,
   ): NormalizedBlock[] {
     if (role !== "user") return blocks;
-    return [
-      ...blocks.filter((block) => block.type === "media"),
-      ...blocks.filter((block) => block.type !== "media"),
-    ];
+    const mediaBlocks = blocks.filter((block) => block.type === "media");
+    const bodyBlocks = blocks
+      .filter((block) => block.type !== "media")
+      .flatMap((block): NormalizedBlock[] => {
+        if (block.type !== "text") return [block];
+        const attachments = visualUserImageAttachments(block.text).map(
+          (attachment): NormalizedBlock => ({
+            type: "media",
+            mediaKind: "image",
+            path: attachment.path,
+            title: attachment.label,
+            alt: attachment.label,
+          }),
+        );
+        const text = cleanVisualUserText(block.text);
+        return [...attachments, ...(text ? [{ ...block, text }] : [])];
+      });
+    return [...mediaBlocks, ...bodyBlocks];
   }
 
   function workEntryBlocksText(blocks: NormalizedBlock[]): string {
@@ -2342,9 +2358,26 @@
     session = { ...session, messages };
   }
 
-  function optimisticCodexUser(text: string): string | null {
+  function optimisticCodexUser(
+    text: string,
+    attachments: readonly ImageInlineAttachment[] = [],
+  ): string | null {
     if (!session) return null;
     const id = `codex-optimistic-user-${randomUUID()}`;
+    const blocks: NormalizedBlock[] = [
+      ...attachments.map(
+        (attachment): NormalizedBlock => ({
+          type: "media",
+          mediaKind: "image",
+          path: attachment.path,
+          title: inlineAttachmentLabel(attachment),
+          alt: inlineAttachmentLabel(attachment),
+          mimeType: attachment.mimeType,
+          hasAlpha: attachment.hasAlpha,
+        }),
+      ),
+      ...(text ? [{ type: "text" as const, text }] : []),
+    ];
     session = {
       ...session,
       messages: [
@@ -2353,7 +2386,7 @@
           id,
           role: "user",
           timestamp: new Date().toISOString(),
-          blocks: [{ type: "text", text }],
+          blocks,
         },
       ],
     };
@@ -2365,16 +2398,6 @@
     const messages = session.messages.filter((m) => m.id !== id);
     if (messages.length === session.messages.length) return;
     session = { ...session, messages };
-  }
-
-  function codexOptimisticText(
-    text: string,
-    attachments: readonly ImageInlineAttachment[],
-  ): string {
-    const imageMarkers = attachments.map(
-      (attachment) => `[Image: source: ${attachment.path}]`,
-    );
-    return [text, ...imageMarkers].filter(Boolean).join("\n");
   }
 
   function composerImageUrl(attachment: ImageInlineAttachment): string {
@@ -2683,7 +2706,8 @@
     sendError = "";
     codexLiveLastActivityIso = new Date().toISOString();
     const optimisticId = optimisticCodexUser(
-      codexOptimisticText(payload.text, payload.attachments),
+      payload.text,
+      payload.attachments,
     );
     try {
       const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
@@ -3558,6 +3582,21 @@
     {/if}
   </div>
 
+  {#snippet renderImageAttachmentFrame(
+    src: string,
+    label: string,
+    hasAlpha: boolean,
+    extraClass: string,
+  )}
+    <span
+      class={`sticky-photo-frame ${extraClass}`.trim()}
+      class:sticky-photo-frame-transparent={hasAlpha}
+      title={label}
+    >
+      <img src={src} alt={label} draggable="false" />
+    </span>
+  {/snippet}
+
   {#if mode === "terminal" && effectiveSessionId && effectiveSessionCwd}
     <TerminalView
       cmd={agent === "codex"
@@ -3690,9 +3729,14 @@
           >
             {#if b.mediaKind === "image" && src}
               <a href={src} target="_blank" rel="noopener noreferrer">
-                <span class="sticky-photo-frame media-photo-frame">
-                  <img src={src} alt={b.alt ?? mediaLabel(b)} />
-                </span>
+                {@render renderImageAttachmentFrame(
+                  src,
+                  b.alt ?? mediaLabel(b),
+                  !!b.hasAlpha,
+                  m.role === "user"
+                    ? "composer-photo-frame media-photo-frame"
+                    : "media-photo-frame",
+                )}
               </a>
               <figcaption>{mediaLabel(b)}</figcaption>
             {:else}
@@ -4168,17 +4212,12 @@
                       <div class="codex-queue-attachments">
                         {#each queueAttachments as attachment, attachmentIndex (`${item.id}:${attachment.path}:${attachmentIndex}`)}
                           <div class="composer-attachment codex-queue-attachment">
-                            <span
-                              class="sticky-photo-frame composer-photo-frame codex-queue-photo"
-                              class:sticky-photo-frame-transparent={attachment.hasAlpha}
-                              title={inlineAttachmentLabel(attachment)}
-                            >
-                              <img
-                                src={composerImageUrl(attachment)}
-                                alt={inlineAttachmentLabel(attachment)}
-                                draggable="false"
-                              />
-                            </span>
+                            {@render renderImageAttachmentFrame(
+                              composerImageUrl(attachment),
+                              inlineAttachmentLabel(attachment),
+                              !!attachment.hasAlpha,
+                              "composer-photo-frame codex-queue-photo",
+                            )}
                             {#if editingCodexQueueId === item.id}
                               <button
                                 type="button"
@@ -4256,16 +4295,12 @@
                     title={`Open ${inlineAttachmentLabel(attachment)}`}
                     aria-label={`Open ${inlineAttachmentLabel(attachment)}`}
                   >
-                    <span
-                      class="sticky-photo-frame composer-photo-frame"
-                      class:sticky-photo-frame-transparent={attachment.hasAlpha}
-                    >
-                      <img
-                        src={composerImageUrl(attachment)}
-                        alt={inlineAttachmentLabel(attachment)}
-                        draggable="false"
-                      />
-                    </span>
+                    {@render renderImageAttachmentFrame(
+                      composerImageUrl(attachment),
+                      inlineAttachmentLabel(attachment),
+                      !!attachment.hasAlpha,
+                      "composer-photo-frame",
+                    )}
                   </button>
                   <button
                     type="button"
@@ -5310,7 +5345,7 @@
     max-width: min(16rem, 100%);
   }
   .msg.user-message .media-block.media-image a {
-    width: min(12rem, 100%);
+    width: min(4.8rem, 100%);
   }
   .msg.user-message .media-photo-frame img {
     max-height: 7.2rem;

@@ -6,6 +6,7 @@ import {
   cleanVisualToolResultText,
   lastUserMessageBurst,
   lastUserMessageWithContext,
+  visualUserImageAttachments,
   visualFileEditSummaryForBlock,
   type Message,
 } from "../src/last-user-message";
@@ -163,6 +164,17 @@ describe("cleanVisualUserText", () => {
         '<image name=[Image #1] path="/tmp/screen.png">\nhey remove this[Image #1]',
       ),
     ).toBe("hey remove this");
+  });
+
+  it("extracts Codex user image envelopes before cleaning text", () => {
+    expect(
+      visualUserImageAttachments(
+        '<image name=[Image #1] path="/tmp/screen.png">\n<image name=[Image #2] path="/tmp/other.jpg">\nhey[Image #1][Image #2]',
+      ),
+    ).toEqual([
+      { label: "Image #1", path: "/tmp/screen.png" },
+      { label: "Image #2", path: "/tmp/other.jpg" },
+    ]);
   });
 
   it("keeps ordinary text unchanged", () => {
