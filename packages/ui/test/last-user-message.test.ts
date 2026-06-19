@@ -260,10 +260,44 @@ describe("buildVisualTranscriptItems", () => {
       },
     ]);
 
-    expect(items.map((item) => item.kind)).toEqual(["message", "message"]);
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
     expect(items[1]).toMatchObject({
-      kind: "message",
-      blocks: [{ type: "thinking", text: "working" }],
+      kind: "work",
+      open: true,
+      entries: [
+        {
+          blocks: [{ type: "thinking", text: "working" }],
+        },
+      ],
+    });
+  });
+
+  it("keeps the active turn expanded instead of showing a final response", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:10.000Z",
+          blocks: [{ type: "thinking", text: "checking" }],
+        },
+        msg(
+          "assistant",
+          "Partial streamed answer",
+          "2026-06-19T10:00:20.000Z",
+        ),
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      open: true,
+      entries: [
+        { blocks: [{ type: "thinking", text: "checking" }] },
+        { blocks: [{ type: "text", text: "Partial streamed answer" }] },
+      ],
     });
   });
 

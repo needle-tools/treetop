@@ -36,6 +36,7 @@ export type VisualTranscriptItem<
       entries: VisualWorkEntry<B, M>[];
       startedAt?: string;
       endedAt?: string;
+      open?: boolean;
     };
 
 export type VisualMarkerKind =
@@ -533,7 +534,10 @@ function timestampMs(value: string | undefined): number | undefined {
 export function buildVisualTranscriptItems<
   B extends MessageBlock,
   M extends Message<B>,
->(messages: readonly M[]): VisualTranscriptItem<B, M>[] {
+>(
+  messages: readonly M[],
+  opts: { active?: boolean } = {},
+): VisualTranscriptItem<B, M>[] {
   const out: VisualTranscriptItem<B, M>[] = [];
   let messageIndex = 0;
 
@@ -549,18 +553,31 @@ export function buildVisualTranscriptItems<
   function pushTurnWorkAndResponse(
     entries: VisualWorkEntry<B, M>[],
     userTimestamp: string | undefined,
+    active: boolean,
   ): void {
+    const hasResponse = entries.some((entry) =>
+      entry.blocks.some(isAssistantResponseBlock),
+    );
+    if (active || !hasResponse) {
+      if (entries.length > 0) {
+        const firstWorkTs = entries.find((entry) =>
+          timestampMs(entry.message.timestamp),
+        )?.message.timestamp;
+        out.push({
+          kind: "work",
+          entries,
+          startedAt: userTimestamp ?? firstWorkTs,
+          open: true,
+        });
+      }
+      return;
+    }
+
     const finalResponseIndex = entries.findLastIndex(
       (entry) =>
         entry.message.role === "assistant" &&
         entry.blocks.some(isAssistantResponseBlock),
     );
-
-    if (finalResponseIndex === -1) {
-      for (const entry of entries) pushMessage(entry);
-      return;
-    }
-
     const finalResponse = entries[finalResponseIndex]!;
     const workEntries: VisualWorkEntry<B, M>[] = [];
     entries.forEach((entry, entryIndex) => {
@@ -618,7 +635,11 @@ export function buildVisualTranscriptItems<
       });
       messageIndex += 1;
     }
-    pushTurnWorkAndResponse(turnEntries, userTimestamp);
+    pushTurnWorkAndResponse(
+      turnEntries,
+      userTimestamp,
+      opts.active === true && messageIndex >= messages.length,
+    );
   }
 
   return out;

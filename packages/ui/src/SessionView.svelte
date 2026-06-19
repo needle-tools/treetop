@@ -981,7 +981,9 @@
     NormalizedBlock,
     NormalizedMessage
   >[] = [];
-  $: visualTranscriptItems = buildVisualTranscriptItems(session?.messages ?? []);
+  $: visualTranscriptItems = buildVisualTranscriptItems(session?.messages ?? [], {
+    active: liveCodexApp && codexRunning,
+  });
 
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView
@@ -3907,7 +3909,7 @@
       {#each visualTranscriptItems as item}
         {#if item.kind === "work"}
           <li class="work-row">
-            <details class="work-foldout">
+            <details class="work-foldout" open={item.open}>
               <summary>
                 <span>{formatWorkedDuration(item.startedAt, item.endedAt)}</span>
                 <span class="work-count">
