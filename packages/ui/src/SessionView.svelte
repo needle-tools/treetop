@@ -4189,14 +4189,18 @@
           {/if}
           {#if agent === "codex" && codexQueuedMessages.length}
             <div class="codex-queue" aria-label="Queued Codex messages">
-              {#each codexQueuedMessages as item, i (item.id)}
+              {#each codexQueuedMessages as item (item.id)}
                 {@const queueAttachments =
                   editingCodexQueueId === item.id
                     ? editingCodexQueueAttachments
                     : item.attachments}
                 <div class="codex-queue-item">
-                  <div class="codex-queue-main">
-                    <span class="codex-queue-label">queued {i + 1}</span>
+                  <div
+                    class="codex-queue-main"
+                    class:editing={editingCodexQueueId === item.id}
+                    class:hasAttachments={queueAttachments.length > 0}
+                  >
+                    <span class="codex-queue-label">queued</span>
                     {#if editingCodexQueueId === item.id}
                       <textarea
                         class="codex-queue-edit"
@@ -4870,10 +4874,17 @@
   }
   .codex-queue-main {
     min-width: 0;
-    display: grid;
-    gap: 0.22rem;
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+  }
+  .codex-queue-main.editing,
+  .codex-queue-main.hasAttachments {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
   .codex-queue-label {
+    flex: 0 0 auto;
     color: var(--text-faint);
     font-size: 0.64rem;
     line-height: 1;
@@ -4889,6 +4900,7 @@
     white-space: nowrap;
   }
   .codex-queue-edit {
+    flex: 1 1 12rem;
     width: 100%;
     box-sizing: border-box;
     resize: vertical;
@@ -4903,6 +4915,7 @@
     padding: 0.35rem 0.42rem;
   }
   .codex-queue-attachments {
+    flex: 1 0 100%;
     display: flex;
     gap: 0.3rem;
     overflow-x: auto;
